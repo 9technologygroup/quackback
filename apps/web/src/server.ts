@@ -16,10 +16,17 @@ if (process.env.SECRET_KEY) {
     import('@/lib/server/domains/settings/settings.service'),
     import('@/lib/server/config'),
     import('@tanstack/react-start/server'),
-  ]).catch(() => {
-    // Pool initialization happens inside getDatabase()/getRedis(); if the
-    // first probe fails the next real query will retry from cold.
-  })
+  ])
+    .then(() =>
+      // Stage 1C: boot lifecycle handlers run after the DB pool is warm.
+      // Fire-and-forget — individual handlers swallow their own errors so
+      // a bad handler never blocks pod readiness.
+      import('@/lib/server/boot/run-boot-handlers').then(({ runBootHandlers }) => runBootHandlers())
+    )
+    .catch(() => {
+      // Pool initialization happens inside getDatabase()/getRedis(); if the
+      // first probe fails the next real query will retry from cold.
+    })
 }
 
 logStartupBanner()
