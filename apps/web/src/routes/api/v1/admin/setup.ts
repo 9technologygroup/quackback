@@ -250,12 +250,22 @@ async function provisionAdminAndMintLogin(
   // is set at provision time by the chart and is the canonical source.
   // Falling back to the request's Host preserves dev local-curl flows.
   const portalUrl = process.env.BASE_URL ?? `https://${request.headers.get('host') ?? 'localhost'}`
-  return await mintMagicLinkUrl({
+
+  // mintMagicLinkUrl builds a URL pointing at the /verify-magic-link
+  // wrapper page (loading-state UX for email clicks). For an
+  // orchestrator-driven server redirect we want the *direct* verify
+  // endpoint: pure 302 + Set-Cookie, no JS flash. Mint via the helper
+  // (so token capture stays uniform) then rewrite the path.
+  const wrapperUrl = await mintMagicLinkUrl({
     email,
     callbackPath: '/onboarding',
     errorCallbackPath: '/auth/login',
     portalUrl,
   })
+  const wrapper = new URL(wrapperUrl)
+  const direct = new URL('/api/auth/magic-link/verify', wrapper.origin)
+  direct.search = wrapper.search
+  return direct.toString()
 }
 
 function parseSetupState(s: string | null): Partial<SetupState> | null {
