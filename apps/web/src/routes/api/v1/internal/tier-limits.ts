@@ -3,8 +3,10 @@ import { eq } from 'drizzle-orm'
 import { db, settings } from '@/lib/server/db'
 import { invalidateTierLimitsCache } from '@/lib/server/domains/settings/tier-limits.service'
 import { resetAuth } from '@/lib/server/auth/index'
+// Internal endpoints auth directly against the per-tenant
+// INTERNAL_API_KEY env var (CP-projected via OpenBao+ESO).
+// No api_keys-table indirection, no scope check.
 import { authenticateInternal } from '@/lib/server/domains/api-keys/internal-auth'
-import { SCOPE_INTERNAL_TIER_LIMITS } from '@/lib/server/domains/api-keys/scopes'
 
 /**
  * POST /api/v1/internal/tier-limits
@@ -22,8 +24,8 @@ export const Route = createFileRoute('/api/v1/internal/tier-limits')({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const auth = await authenticateInternal(request, SCOPE_INTERNAL_TIER_LIMITS)
-        if (auth instanceof Response) return auth
+        const auth = await authenticateInternal(request)
+        if (auth) return auth
 
         let payload: unknown
         try {

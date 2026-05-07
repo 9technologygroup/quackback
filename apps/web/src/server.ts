@@ -20,18 +20,6 @@ if (process.env.SECRET_KEY) {
     // Pool initialization happens inside getDatabase()/getRedis(); if the
     // first probe fails the next real query will retry from cold.
   })
-
-  // Stage 1C: boot lifecycle handlers. INTENTIONALLY NOT chained off the
-  // warmup Promise.all — a transient warmup failure (e.g. Redis blip)
-  // must not skip the api_keys upsert, otherwise (post Stage 1E) CP would
-  // hit persistent 403s on tier-sync until the pod restarts. Boot
-  // handlers do their own DB access and have their own error handling.
-  import('@/lib/server/boot/run-boot-handlers')
-    .then(({ runBootHandlers }) => runBootHandlers())
-    .catch(() => {
-      // Module load failure is the only thing this catch sees; the
-      // handlers themselves swallow runtime errors per-handler.
-    })
 }
 
 logStartupBanner()

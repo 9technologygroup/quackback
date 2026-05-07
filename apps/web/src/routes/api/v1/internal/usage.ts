@@ -3,7 +3,6 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { db, posts, boards, principal } from '@/lib/server/db'
 import { aiTokensThisMonth } from '@/lib/server/domains/ai/usage-counter'
 import { authenticateInternal } from '@/lib/server/domains/api-keys/internal-auth'
-import { SCOPE_INTERNAL_TIER_LIMITS } from '@/lib/server/domains/api-keys/scopes'
 
 /**
  * GET /api/v1/internal/usage
@@ -16,8 +15,8 @@ export const Route = createFileRoute('/api/v1/internal/usage')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const auth = await authenticateInternal(request, SCOPE_INTERNAL_TIER_LIMITS)
-        if (auth instanceof Response) return auth
+        const auth = await authenticateInternal(request)
+        if (auth) return auth
 
         const [aiTokens, postRow, boardRow, seatRow] = await Promise.all([
           aiTokensThisMonth(),

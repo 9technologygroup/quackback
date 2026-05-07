@@ -162,14 +162,6 @@ export async function verifyApiKey(key: string, scope?: string): Promise<ApiKey 
   return toApiKey(apiKey)
 }
 
-/**
- * Convenience alias for callers that always pass a scope. Equivalent to
- * `verifyApiKey(key, scope)` but the name documents intent at the call site.
- */
-export async function verifyApiKeyWithScope(key: string, scope: string): Promise<ApiKey | null> {
-  return verifyApiKey(key, scope)
-}
-
 function hasScope(scopesRaw: string | null, scope: string): boolean {
   if (!scopesRaw) return false
   try {
