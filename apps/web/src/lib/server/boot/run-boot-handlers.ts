@@ -1,25 +1,23 @@
 /**
  * Boot lifecycle hub. Runs once per pod start, after the DB pool +
- * import-cache warmup but before the request handler accepts traffic.
- * Each handler is fire-and-forget at the orchestrator level — a
- * single bad handler must not block boot — so each handler is
- * responsible for its own try/catch internally.
+ * import-cache warmup. Each handler is fire-and-forget at the
+ * orchestrator level — a single bad handler must not block boot — so
+ * each handler is responsible for its own try/catch internally.
  *
  * Registered handlers:
- *   - upsertInternalApiKey (Stage 1C): ensures the api_keys row
- *     matching the projected INTERNAL_API_KEY env var exists.
- *   - pullBootConfig (Stage 3A): GETs the configured provider URL,
- *     applies versioned sections (tierLimits today; bootstrap in 3B).
+ *   - upsertInternalApiKey (Stage 1B/1C): ensures the api_keys row
+ *     matching the projected INTERNAL_API_KEY env var exists. CP needs
+ *     this row to exist before it can authenticate its tier-sync push
+ *     at /api/v1/internal/tier-limits.
  *
- * Order matters: upsertInternalApiKey runs first because the bearer
- * pull token used by pullBootConfig is unrelated to api_keys, but a
- * future handler (Stage 3B's bootstrap-callback) will rely on the
- * api_keys row existing.
+ * Tier-limits delivery itself is intentionally NOT a boot handler.
+ * CP's existing tier-sync queue pushes via the internal API once the
+ * pod is healthy — same path Stripe webhooks use for plan changes.
+ * No boot-time HTTP call, no env-var injection, no new endpoint.
  */
 
 import { upsertInternalApiKey } from './internal-api-key-upsert'
-import { pullBootConfig } from './pull-boot-config'
 
 export async function runBootHandlers(): Promise<void> {
-  await Promise.allSettled([upsertInternalApiKey(), pullBootConfig()])
+  await Promise.allSettled([upsertInternalApiKey()])
 }
