@@ -71,11 +71,7 @@ RUN bun build packages/db/src/migrate.ts \
     bun build packages/db/src/seed.ts \
     --target=bun \
     --bundle \
-    --outfile=/tmp/seed.mjs && \
-    bun build packages/db/src/seed-workspace.ts \
-    --target=bun \
-    --bundle \
-    --outfile=/tmp/seed-workspace.mjs
+    --outfile=/tmp/seed.mjs
 
 # ============================================================================
 # Production runner
@@ -98,10 +94,6 @@ COPY --from=builder --chown=quackback:nodejs /app/apps/web/.output ./.output
 # read at runtime by drizzle's migrator.
 COPY --from=builder --chown=quackback:nodejs /tmp/migrate.mjs ./migrate.mjs
 COPY --from=builder --chown=quackback:nodejs /tmp/seed.mjs ./seed.mjs
-# Workspace bootstrap — runs at startup when WORKSPACE_NAME is set
-# (deploy automation can pre-seed name/slug/useCase/tier-limits
-# without an HTTP round-trip post-deploy).
-COPY --from=builder --chown=quackback:nodejs /tmp/seed-workspace.mjs ./seed-workspace.mjs
 COPY --from=builder --chown=quackback:nodejs /app/packages/db/drizzle ./drizzle
 
 # Copy entrypoint script

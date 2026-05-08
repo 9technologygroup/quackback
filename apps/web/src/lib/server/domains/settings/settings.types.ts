@@ -26,6 +26,21 @@ export interface AuthConfig {
   oauth: OAuthProviders
   /** Allow public signup vs invitation-only */
   openSignup: boolean
+  /**
+   * Optional OIDC SSO admin sign-in. Populated from the declarative
+   * config file via the reconciler. With no file present, the
+   * env-driven path (SSO_OIDC_* env vars) provides the same Better-
+   * Auth wiring as a fallback. The client *secret* is never in DB — it
+   * always rides on SSO_OIDC_CLIENT_SECRET so a DB dump can't leak it.
+   */
+  ssoOidc?: {
+    enabled: boolean
+    providerName: string
+    discoveryUrl: string
+    clientId: string
+    isDefault: boolean
+    autoCreateUsers: boolean
+  }
 }
 
 /**
@@ -57,9 +72,8 @@ export interface PortalAuthMethods {
   /** Whether one-click magic-link sign-in is enabled. The magicLink
    * better-auth plugin is always wired (used by team invitations);
    * this toggle controls whether the portal login UI surfaces it as a
-   * sign-in option. Cloud admins always have it on; self-hosted
-   * defaults to off so the only auth surface is what the admin
-   * explicitly chose. */
+   * sign-in option. Defaults to off so the only auth surface is what
+   * the admin has explicitly chosen. */
   magicLink?: boolean
   /** Dynamic OAuth provider toggles keyed by provider ID (github, google, discord, etc.) */
   [providerId: string]: boolean | undefined
@@ -421,6 +435,14 @@ export interface TenantSettings {
   featureFlags: FeatureFlags
   brandingData: SettingsBrandingData
   faviconData: { url: string } | null
+  /** Dot-paths managed by `/etc/quackback/config.yaml`. Matching in-app
+   *  form controls render disabled when the path appears here. Empty
+   *  list = nothing locked. */
+  managedFieldPaths: string[]
+  /** Workspace state, written by the config-file reconciler when
+   *  spec.state is set. Defaults to 'active' when the column has never
+   *  been written. */
+  state: 'active' | 'suspended' | 'deleting'
 }
 
 // =============================================================================

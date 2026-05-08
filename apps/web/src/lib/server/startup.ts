@@ -125,4 +125,11 @@ export function logStartupBanner(): void {
   import('./domains/feedback/sources/quackback.source')
     .then(({ ensureQuackbackFeedbackSource }) => ensureQuackbackFeedbackSource())
     .catch((err) => console.error('[Startup] Failed to ensure quackback feedback source:', err))
+
+  // Quackback config file watcher — reconciles managed fields from
+  // /etc/quackback/config.yaml on every change. No-op when the file
+  // is absent (self-host default).
+  import('@/lib/server/config-file')
+    .then(({ startQuackbackConfigWatcher }) => startQuackbackConfigWatcher())
+    .catch((err) => console.error('[Startup] Failed to start config-file watcher:', err))
 }

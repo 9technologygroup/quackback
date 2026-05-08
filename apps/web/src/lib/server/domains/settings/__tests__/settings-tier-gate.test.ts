@@ -35,6 +35,13 @@ vi.mock('../settings.helpers', () => ({
   deepMerge: <T>(a: T, b: Partial<T>) => ({ ...a, ...b }),
 }))
 
+// updateAuthConfig runs assertNotManaged() at its head; the gate
+// dynamic-imports getTenantSettings, which would crash without this
+// stub. The tier gate is the unit under test, so let every path through.
+vi.mock('@/lib/server/config-file/managed-guard', () => ({
+  assertNotManaged: vi.fn(async () => {}),
+}))
+
 import { updateAuthConfig, updateDeveloperConfig } from '../settings.service'
 import { getTierLimits } from '@/lib/server/domains/settings/tier-limits.service'
 import { OSS_TIER_LIMITS } from '@/lib/server/domains/settings/tier-limits.types'

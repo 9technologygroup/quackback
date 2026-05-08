@@ -16,6 +16,7 @@ import type { TenantSettings } from '@/lib/shared/types/settings'
 import { ThemeProvider } from '@/components/theme-provider'
 import { DefaultErrorPage } from '@/components/shared/error-page'
 import { OttHandler } from '@/components/shared/ott-handler'
+import { isSuspensionExempt } from '@/lib/server/middleware/suspension-guard'
 
 export interface RouterContext {
   queryClient: QueryClient
@@ -24,6 +25,9 @@ export interface RouterContext {
   settings?: TenantSettings | null
   userRole?: 'admin' | 'member' | 'user' | null
   themeCookie?: BootstrapData['themeCookie']
+  managedFieldPaths?: string[]
+  state?: 'active' | 'suspended' | 'deleting'
+  registeredAuthProviders?: string[]
 }
 
 // Paths that are allowed before onboarding is complete
@@ -45,7 +49,16 @@ function isOnboardingExempt(pathname: string): boolean {
 
 export const Route = createRootRouteWithContext<RouterContext>()({
   beforeLoad: async ({ location }) => {
-    const { baseUrl, session, settings, userRole, themeCookie } = await getBootstrapData()
+    const {
+      baseUrl,
+      session,
+      settings,
+      userRole,
+      themeCookie,
+      managedFieldPaths,
+      state,
+      registeredAuthProviders,
+    } = await getBootstrapData()
 
     if (!isOnboardingExempt(location.pathname)) {
       const setupState = getSetupState(settings?.settings?.setupState ?? null)
@@ -54,12 +67,19 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       }
     }
 
+    if (settings && state !== 'active' && !isSuspensionExempt(location.pathname)) {
+      throw redirect({ to: '/suspended' })
+    }
+
     return {
       baseUrl,
       session,
       settings,
       userRole,
       themeCookie,
+      managedFieldPaths,
+      state,
+      registeredAuthProviders,
     }
   },
   head: () => ({

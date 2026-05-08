@@ -1,6 +1,7 @@
 import { db, eq, settings } from '@/lib/server/db'
 import { deleteObject } from '@/lib/server/storage/s3'
 import { ValidationError } from '@/lib/shared/errors'
+import { assertNotManaged } from '@/lib/server/config-file/managed-guard'
 import type { BrandingConfig } from './settings.types'
 import {
   requireSettings,
@@ -304,6 +305,7 @@ export async function updateHeaderDisplayName(name: string | null): Promise<stri
 export async function updateWorkspaceName(name: string): Promise<string> {
   console.log(`[domain:settings] updateWorkspaceName`)
   try {
+    await assertNotManaged('workspace.name')
     const org = await requireSettings()
     const sanitizedName = name.trim()
     if (!sanitizedName) throw new ValidationError('INVALID_NAME', 'Workspace name cannot be empty')

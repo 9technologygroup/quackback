@@ -15,8 +15,8 @@ import { generateId } from '@quackback/ids'
 import { config } from '@/lib/server/config'
 
 // Plugin callbacks (magicLink, emailOTP) stash tokens here instead of
-// emailing — callers that own the email template (invitations, Cloud
-// bootstrap, combined sign-in email) drain the stash and email themselves.
+// emailing — callers that own the email template (invitations,
+// combined sign-in email) drain the stash and email themselves.
 const STASH_TTL_MS = 30_000
 
 function makeStash<T>() {
@@ -54,6 +54,27 @@ export const getOTP = (email: string) => otpStash.take(email)
 type AuthInstance = Awaited<ReturnType<typeof createAuth>>
 let _auth: AuthInstance | null = null
 
+import {
+  scheduleSsoSecretRetry as scheduleSsoSecretRetryHelper,
+  _cancelSsoSecretRetry,
+} from './sso-secret-retry'
+
+const ssoRetryDeps = {
+  getSecret: () => process.env.SSO_OIDC_CLIENT_SECRET,
+  resetAuth: () => resetAuth(),
+  schedule: (fn: () => void, ms: number) => setTimeout(fn, ms),
+  cancel: (h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  log: (msg: string) => console.log(msg),
+}
+function scheduleSsoSecretRetry(): void {
+  scheduleSsoSecretRetryHelper(ssoRetryDeps)
+}
+
+/** Test-only: cancel any pending retry so vitest can exit cleanly. */
+export function _cancelSsoSecretRetryForTests(): void {
+  _cancelSsoSecretRetry(ssoRetryDeps)
+}
+
 async function createAuth() {
   // Dynamic imports to prevent client bundling
   const {
@@ -78,6 +99,7 @@ async function createAuth() {
     await import('@/lib/server/domains/platform-credentials/platform-credential.service')
   const { getAllAuthProviders } = await import('./auth-providers')
   const { getTierLimits } = await import('@/lib/server/domains/settings/tier-limits.service')
+  const { getTenantSettings } = await import('@/lib/server/domains/settings/settings.service')
 
   // Build socialProviders config from DB-stored credentials
   const socialProviders: Record<string, Record<string, string>> = {}
@@ -92,32 +114,61 @@ async function createAuth() {
     scopes?: string[]
   }> = []
 
-  // Defense-in-depth: a Pro tenant who configured SSO before downgrading
-  // would still have OIDC creds in the DB. Skip generic-oauth providers
-  // when the tier flag is off so the login button never renders and the
-  // /sign-in/oauth2 callback path 404s on that providerId.
+  // Defense-in-depth: a workspace that configured SSO on a higher tier
+  // would still have OIDC creds in the DB after a downgrade. Skip
+  // generic-oauth providers when the tier flag is off so the login
+  // button never renders and the /sign-in/oauth2 callback path 404s
+  // on that providerId.
   const tierLimits = await getTierLimits()
 
-  // Optional environment-baked SSO provider. When the operator (a
-  // self-hoster pointing at their company IdP, or any other deploy
-  // automation) sets the SSO_OIDC_* env trio, register it as a
-  // genericOAuth provider with id `sso` so the sign-in route can
-  // surface a one-click button. Bypasses the platform-credentials
-  // table because it's pure runtime config — there's no admin UI
-  // for it on purpose, the operator owns the env.
-  if (
-    process.env.SSO_OIDC_DISCOVERY_URL &&
-    process.env.SSO_OIDC_CLIENT_ID &&
-    process.env.SSO_OIDC_CLIENT_SECRET
-  ) {
-    genericOAuthConfigs.push({
-      providerId: 'sso',
-      clientId: process.env.SSO_OIDC_CLIENT_ID,
-      clientSecret: process.env.SSO_OIDC_CLIENT_SECRET,
-      discoveryUrl: process.env.SSO_OIDC_DISCOVERY_URL,
-      scopes: ['openid', 'email', 'profile'],
-    })
-    trustedProviders.push('sso')
+  // Optional SSO provider. DB-first (settings.authConfig.ssoOidc, set
+  // by the declarative config-file reconciler) with env-var fallback
+  // (SSO_OIDC_* trio). The client *secret* always comes from env; the
+  // file and DB never hold secrets, so a config-file dump or DB read
+  // can't leak it.
+  const tenantSettings = await getTenantSettings()
+  const ssoFromDb = tenantSettings?.authConfig?.ssoOidc
+  const ssoEnabled =
+    ssoFromDb?.enabled ??
+    Boolean(
+      process.env.SSO_OIDC_DISCOVERY_URL &&
+      process.env.SSO_OIDC_CLIENT_ID &&
+      process.env.SSO_OIDC_CLIENT_SECRET
+    )
+
+  if (ssoEnabled) {
+    const cfg = ssoFromDb ?? {
+      providerName: process.env.SSO_OIDC_PROVIDER_NAME ?? 'SSO',
+      discoveryUrl: process.env.SSO_OIDC_DISCOVERY_URL!,
+      clientId: process.env.SSO_OIDC_CLIENT_ID!,
+      isDefault: true,
+      autoCreateUsers: true,
+    }
+    const clientSecret = process.env.SSO_OIDC_CLIENT_SECRET
+    if (!clientSecret) {
+      // DB says "enabled" but SSO_OIDC_CLIENT_SECRET hasn't been
+      // populated yet. Logging without registering keeps the rest of
+      // Better-Auth functional and lets the password / magic-link /
+      // other-OAuth fallbacks carry the sign-in load.
+      console.error('[auth] ssoOidc enabled but SSO_OIDC_CLIENT_SECRET not set')
+      // Schedule a one-shot re-init. Without this, the cached _auth
+      // instance is missing the SSO provider until pod restart — a
+      // hard outage for workspaces whose admins only have OIDC login.
+      // Idempotent under multiple ticks: any later createAuth() call
+      // re-reads env, so resetAuth() is the only side effect needed
+      // here. If the secret never arrives, the timer fires once, sees
+      // env still empty, and quietly no-ops.
+      scheduleSsoSecretRetry()
+    } else {
+      genericOAuthConfigs.push({
+        providerId: 'sso',
+        clientId: cfg.clientId,
+        clientSecret,
+        discoveryUrl: cfg.discoveryUrl,
+        scopes: ['openid', 'email', 'profile'],
+      })
+      trustedProviders.push('sso')
+    }
   }
 
   for (const provider of getAllAuthProviders()) {

@@ -36,8 +36,8 @@ describe('visibleSteps', () => {
   })
 
   it('pre-seeded tenant shows only the steps still owed', () => {
-    // Workspace name + use case stamped at deploy time (env-baked
-    // seed-workspace.mjs). The user shows up in /onboarding/account
+    // Workspace name + use case stamped at deploy time (file-watcher
+    // reconciles spec.config.workspace). The user shows up in /onboarding/account
     // first (no session yet), creates an account, then sees just
     // the boards step — not "Step 4 of 4".
     const setupState = baseState({

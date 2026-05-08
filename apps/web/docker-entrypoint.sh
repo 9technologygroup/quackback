@@ -26,16 +26,6 @@ if [ "$SEED_DATABASE" = "true" ]; then
   echo "Seeding complete."
 fi
 
-# Workspace bootstrap (idempotent). Runs whenever WORKSPACE_NAME is
-# in the env — deploy automation can pre-seed the workspace step so
-# the user doesn't have to walk the in-app onboarding wizard. No-op
-# when the env var is absent.
-if [ -n "$WORKSPACE_NAME" ]; then
-  echo ""
-  echo "Seeding workspace from env (WORKSPACE_NAME='$WORKSPACE_NAME')..."
-  bun /app/seed-workspace.mjs
-fi
-
 # Start the application
 echo ""
 echo "Starting Quackback server on port ${PORT:-3000}..."

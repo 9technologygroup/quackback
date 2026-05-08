@@ -1,6 +1,7 @@
 import { db, eq, settings } from '@/lib/server/db'
 import { cacheGet, cacheSet, CACHE_KEYS } from '@/lib/server/redis'
 import { ValidationError } from '@/lib/shared/errors'
+import { assertNotManaged } from '@/lib/server/config-file/managed-guard'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
 import type {
   AuthConfig,
@@ -116,8 +117,23 @@ const STANDARD_OAUTH_PROVIDERS = new Set(['google', 'github', 'microsoft', 'disc
 export async function updateAuthConfig(input: UpdateAuthConfigInput): Promise<AuthConfig> {
   console.log(`[domain:settings] updateAuthConfig`)
   try {
-    // Tier gate: refuse non-standard OAuth providers when customOidcProvider is off.
-    // No-op in OSS (feature is true).
+    // Managed-fields gate: refuse touching OAuth providers / openSignup
+    // that the config file at `/etc/quackback/config.yaml` has declared.
+    // Per-key so the file can lock one provider while leaving others
+    // UI-editable. Runs BEFORE the tier gate so a 403 FIELD_MANAGED
+    // error shows up cleanly even when the user is on a tier that
+    // would otherwise also block the change.
+    if (input.oauth) {
+      for (const key of Object.keys(input.oauth)) {
+        await assertNotManaged(`auth.oauth.${key}`)
+      }
+    }
+    if (input.openSignup !== undefined) {
+      await assertNotManaged('auth.openSignup')
+    }
+
+    // Tier gate: refuse non-standard OAuth providers when
+    // customOidcProvider is off. No-op when the feature is unlimited.
     if (input.oauth) {
       const { getTierLimits } = await import('@/lib/server/domains/settings/tier-limits.service')
       const { enforceFeatureGate } = await import('@/lib/server/domains/settings/tier-enforce')
@@ -381,6 +397,8 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
       featureFlags,
       brandingData,
       faviconData: brandingData.faviconUrl ? { url: brandingData.faviconUrl } : null,
+      managedFieldPaths: org.managedFieldPaths ?? [],
+      state: (org.state as 'active' | 'suspended' | 'deleting' | null) ?? 'active',
     }
 
     // 1h TTL: settings change rarely and every mutation in this file
@@ -418,6 +436,12 @@ export async function isFeatureEnabled(flag: keyof FeatureFlags): Promise<boolea
  * Update feature flags (partial update, merges with existing)
  */
 export async function updateFeatureFlags(input: Partial<FeatureFlags>): Promise<FeatureFlags> {
+  // Per-key managed gate: only the keys declared in the config file
+  // are locked; every other flag stays UI-editable. Assert before any
+  // DB write so a partial update with one locked key fails atomically.
+  for (const key of Object.keys(input)) {
+    await assertNotManaged(`features.${key}`)
+  }
   const org = await requireSettings()
   const current: FeatureFlags = {
     ...DEFAULT_FEATURE_FLAGS,
