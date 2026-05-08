@@ -43,11 +43,14 @@ vi.mock('@/lib/server/domains/api/rate-limit', () => ({
   getClientIp: vi.fn(() => '127.0.0.1'),
 }))
 
-// Mock settings service so getDeveloperConfig doesn't hit the real DB
+// Mock settings service so getDeveloperConfig doesn't hit the real DB.
+// `getTenantSettings` is consumed lazily by the suspension guard (which the
+// API auth chokepoint invokes); returning `null` keeps the workspace 'active'.
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   getDeveloperConfig: vi
     .fn()
     .mockResolvedValue({ mcpEnabled: true, mcpPortalAccessEnabled: false }),
+  getTenantSettings: vi.fn().mockResolvedValue(null),
 }))
 
 // Mock config so baseUrl is available (used in WWW-Authenticate header)
