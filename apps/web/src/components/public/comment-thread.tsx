@@ -10,8 +10,10 @@ import {
   MapPinIcon,
 } from '@heroicons/react/24/solid'
 import { PencilSquareIcon, TrashIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { CheckBadgeIcon } from '@heroicons/react/24/solid'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { TimeAgo } from '@/components/ui/time-ago'
@@ -98,6 +100,8 @@ interface CommentThreadProps {
   user?: { name: string | null; email: string; principalId?: PrincipalId }
   /** Logo URL for the team badge (from branding settings) */
   teamBadgeLogoUrl?: string
+  /** Workspace name shown in the team-badge tooltip ("{name} Member") */
+  teamBadgeLabel?: string
   /** Message to show when comments are locked (overrides "Sign in to comment") */
   lockedMessage?: string
   /** Called when unauthenticated user tries to comment */
@@ -140,6 +144,7 @@ export function CommentThread({
   allowCommenting = true,
   user,
   teamBadgeLogoUrl,
+  teamBadgeLabel,
   lockedMessage,
   onAuthRequired,
   createComment,
@@ -225,6 +230,7 @@ export function CommentThread({
             allowCommenting,
             user,
             teamBadgeLogoUrl,
+            teamBadgeLabel,
             createComment,
             pinnedCommentId,
             canPinComments,
@@ -250,6 +256,7 @@ interface CommentItemProps {
   depth?: number
   user?: { name: string | null; email: string; principalId?: PrincipalId }
   teamBadgeLogoUrl?: string
+  teamBadgeLabel?: string
   createComment?: CreateCommentMutation
   pinnedCommentId?: string | null
   // Admin mode props
@@ -280,6 +287,7 @@ function CommentItem({
   depth = 0,
   user,
   teamBadgeLogoUrl,
+  teamBadgeLabel,
   createComment,
   pinnedCommentId,
   canPinComments = false,
@@ -336,10 +344,7 @@ function CommentItem({
   // Server re-checks; client heuristic avoids showing the button to unrelated users
   const isAuthor = !!user?.principalId && comment.principalId === user.principalId
   const canEdit = !isDeleted && (isTeamMember || isAuthor)
-  const canDelete =
-    !isDeleted &&
-    !!onDeleteComment &&
-    (isTeamMember || isAuthor)
+  const canDelete = !isDeleted && !!onDeleteComment && (isTeamMember || isAuthor)
   const isBeingDeleted = deletingCommentId === comment.id
   // Can restore: deleted, team member, and restore handler provided
   const canRestore = isDeleted && isTeamMember && !!onRestoreComment
@@ -451,6 +456,7 @@ function CommentItem({
                     depth={depth + 1}
                     user={user}
                     teamBadgeLogoUrl={teamBadgeLogoUrl}
+                    teamBadgeLabel={teamBadgeLabel}
                     createComment={createComment}
                     pinnedCommentId={pinnedCommentId}
                     canPinComments={canPinComments}
@@ -517,19 +523,53 @@ function CommentItem({
                 })}
             </span>
             {comment.isTeamMember && (
-              <Badge className="text-[10px] px-1.5 py-0 bg-primary/15 text-primary border-0">
-                {teamBadgeLogoUrl ? (
-                  <img
-                    src={teamBadgeLogoUrl}
-                    alt=""
-                    className="h-2.5 w-2.5 me-0.5 rounded-sm object-contain"
-                  />
-                ) : null}
-                {intl.formatMessage({
-                  id: 'portal.commentThread.teamBadge',
-                  defaultMessage: 'Team',
-                })}
-              </Badge>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className="inline-flex items-center justify-center h-5 w-5 rounded-md bg-primary/15 text-primary cursor-default"
+                    aria-label={intl.formatMessage(
+                      {
+                        id: 'portal.commentThread.teamBadgeAria',
+                        defaultMessage: '{name} Member',
+                      },
+                      {
+                        name:
+                          teamBadgeLabel ??
+                          intl.formatMessage({
+                            id: 'portal.commentThread.teamBadgeFallbackName',
+                            defaultMessage: 'Team',
+                          }),
+                      }
+                    )}
+                  >
+                    {teamBadgeLogoUrl ? (
+                      <img
+                        src={teamBadgeLogoUrl}
+                        alt=""
+                        className="h-4 w-4 rounded-sm object-contain"
+                      />
+                    ) : (
+                      <CheckBadgeIcon className="h-4 w-4" />
+                    )}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {intl.formatMessage(
+                    {
+                      id: 'portal.commentThread.teamBadge',
+                      defaultMessage: '{name} Member',
+                    },
+                    {
+                      name:
+                        teamBadgeLabel ??
+                        intl.formatMessage({
+                          id: 'portal.commentThread.teamBadgeFallbackName',
+                          defaultMessage: 'Team',
+                        }),
+                    }
+                  )}
+                </TooltipContent>
+              </Tooltip>
             )}
             {comment.isPrivate && !insidePrivateCard && (
               <Badge className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-0">
@@ -571,7 +611,11 @@ function CommentItem({
                 onChange={(e) => setEditContent(e.target.value)}
                 onKeyDown={(e) => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') handleSaveEdit()
-                  else if (e.key === 'Escape') { setIsEditing(false); setEditContent(comment.content); setEditError(null) }
+                  else if (e.key === 'Escape') {
+                    setIsEditing(false)
+                    setEditContent(comment.content)
+                    setEditError(null)
+                  }
                 }}
                 rows={3}
                 className="w-full max-w-lg rounded-md border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
@@ -586,18 +630,31 @@ function CommentItem({
                 >
                   <CheckIcon className="h-3 w-3 me-1" />
                   {editMutation.isPending
-                    ? intl.formatMessage({ id: 'portal.commentThread.saving', defaultMessage: 'Saving…' })
-                    : intl.formatMessage({ id: 'portal.commentThread.save', defaultMessage: 'Save' })}
+                    ? intl.formatMessage({
+                        id: 'portal.commentThread.saving',
+                        defaultMessage: 'Saving…',
+                      })
+                    : intl.formatMessage({
+                        id: 'portal.commentThread.save',
+                        defaultMessage: 'Save',
+                      })}
                 </Button>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-7 px-3 text-xs"
-                  onClick={() => { setIsEditing(false); setEditContent(comment.content); setEditError(null) }}
+                  onClick={() => {
+                    setIsEditing(false)
+                    setEditContent(comment.content)
+                    setEditError(null)
+                  }}
                   disabled={editMutation.isPending}
                 >
                   <XMarkIcon className="h-3 w-3 me-1" />
-                  {intl.formatMessage({ id: 'portal.commentThread.cancel', defaultMessage: 'Cancel' })}
+                  {intl.formatMessage({
+                    id: 'portal.commentThread.cancel',
+                    defaultMessage: 'Cancel',
+                  })}
                 </Button>
               </div>
             </div>
@@ -756,7 +813,10 @@ function CommentItem({
                 variant="ghost"
                 size="sm"
                 className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => { setIsEditing(true); setEditContent(comment.content) }}
+                onClick={() => {
+                  setIsEditing(true)
+                  setEditContent(comment.content)
+                }}
               >
                 <PencilSquareIcon className="h-3 w-3 me-1" />
                 {intl.formatMessage({ id: 'portal.commentThread.edit', defaultMessage: 'Edit' })}
