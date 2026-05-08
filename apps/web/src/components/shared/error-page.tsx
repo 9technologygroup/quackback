@@ -12,7 +12,7 @@ interface FriendlyShellProps {
   fullPage?: boolean
 }
 
-function FriendlyShell({ children, fullPage = true }: FriendlyShellProps) {
+export function FriendlyShell({ children, fullPage = true }: FriendlyShellProps) {
   return (
     <div
       className={cn(

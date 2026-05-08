@@ -47,7 +47,6 @@ export class DeletingError extends DomainException {
  * and any descendant such as `/api/auth/sign-in/email`.
  */
 export const SUSPENSION_EXEMPT_PATHS = [
-  '/suspended',
   '/admin/login',
   '/admin/signup',
   '/auth/',

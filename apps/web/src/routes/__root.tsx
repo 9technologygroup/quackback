@@ -16,6 +16,7 @@ import type { TenantSettings } from '@/lib/shared/types/settings'
 import { ThemeProvider } from '@/components/theme-provider'
 import { DefaultErrorPage } from '@/components/shared/error-page'
 import { OttHandler } from '@/components/shared/ott-handler'
+import { SuspendedView } from '@/components/shared/suspended-view'
 import { isSuspensionExempt } from '@/lib/server/middleware/suspension-guard'
 
 export interface RouterContext {
@@ -67,9 +68,12 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       }
     }
 
-    if (settings && state !== 'active' && !isSuspensionExempt(location.pathname)) {
-      throw redirect({ to: '/suspended' })
-    }
+    // Suspension renders inline in RootComponent rather than redirecting
+    // to /suspended — same URL, content reflects state. When CP flips
+    // state back to active, the next render shows the actual page
+    // without the user having to navigate. Exempt paths (login,
+    // oauth callbacks, magic-link landing) skip the inline overlay
+    // so suspended owners can still get back in.
 
     return {
       baseUrl,
@@ -142,10 +146,20 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 })
 
 function RootComponent() {
+  // Suspension overlay: render the unavailable/archived message inline
+  // instead of redirecting to a /suspended URL. Same URL stays in the
+  // address bar so when the workspace state flips back to active the
+  // next render shows the actual page content. Exempt paths (login,
+  // oauth callbacks, magic-link landing) skip the overlay so suspended
+  // owners can still get back in.
+  const ctx = Route.useRouteContext()
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const showSuspended = ctx.state && ctx.state !== 'active' && !isSuspensionExempt(pathname)
+
   return (
     <RootDocument>
       <OttHandler />
-      <Outlet />
+      {showSuspended ? <SuspendedView state={ctx.state!} /> : <Outlet />}
     </RootDocument>
   )
 }
