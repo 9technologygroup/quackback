@@ -592,10 +592,14 @@ function SsoConfiguredForm({
 
         <ConfirmDialog
           open={confirmAdminRoleOpen}
-          onOpenChange={setConfirmAdminRoleOpen}
+          onOpenChange={(open) => {
+            if (!open) setPendingRoleChange(null)
+            setConfirmAdminRoleOpen(open)
+          }}
           title="Auto-create new users as admin?"
           description="Anyone who signs in via SSO at a verified domain will land with full admin access. Make sure your IdP's user directory is curated."
           warning={{ title: 'High-blast-radius default.' }}
+          variant="destructive"
           confirmLabel="Use admin as default"
           onConfirm={() => {
             if (pendingRoleChange) setDraft({ ...draft, autoProvisionRole: pendingRoleChange })
