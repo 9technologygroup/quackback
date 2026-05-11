@@ -28,28 +28,56 @@ export interface AuthConfig {
   openSignup: boolean
   /**
    * Optional OIDC SSO admin sign-in. Populated from the declarative
-   * config file via the reconciler. With no file present, the
-   * env-driven path (SSO_OIDC_* env vars) provides the same Better-
-   * Auth wiring as a fallback. The client *secret* is never in DB — it
-   * always rides on SSO_OIDC_CLIENT_SECRET so a DB dump can't leak it.
+   * config file via the reconciler or by the admin auth settings UI.
+   * The client *secret* is **not** in this JSON — it lives encrypted
+   * in `platform_credentials` with `integrationType='auth_sso'` so a
+   * settings-row dump can't leak it.
    */
   ssoOidc?: {
     enabled: boolean
-    providerName: string
     discoveryUrl: string
     clientId: string
-    isDefault: boolean
     autoCreateUsers: boolean
   }
 }
 
 /**
- * Default auth config for new organizations
+ * A workspace's verified SSO domain. Routing semantics:
+ *  - `verifiedAt: null` — pending DNS verification, no behaviour change.
+ *  - `verifiedAt: <ISO>` — emails at this domain are routed to SSO by
+ *    default on the login form.
+ *  - `enforced: true` (with `verifiedAt: <ISO>`) — emails at this domain
+ *    are hard-bound to SSO; password / magic-link / non-SSO OAuth are
+ *    blocked. Toggling `enforced=true` requires the calling admin to
+ *    have signed in via SSO within the bootstrap window (lockout guard)
+ *    AND email-delivery configured (break-glass precondition).
+ */
+export interface VerifiedDomain {
+  id: `domain_${string}`
+  /** Canonical lowercase ASCII FQDN — `normalizeDomain` output. */
+  name: string
+  /** Random token, intentionally public via DNS TXT. */
+  verificationToken: string
+  /** ISO-8601 UTC. Null = pending verification. */
+  verifiedAt: string | null
+  /** Per-domain hard-binding switch. Default false. */
+  enforced: boolean
+  /** ISO-8601 UTC. */
+  createdAt: string
+}
+
+/**
+ * Default auth config for new organizations.
+ *
+ * `password: false` matches the prior hardcoded behaviour on
+ * /admin/login, where team sign-in was forced through magic-link only.
+ * Operators can flip it on via the admin auth settings page.
  */
 export const DEFAULT_AUTH_CONFIG: AuthConfig = {
   oauth: {
     google: true,
     github: true,
+    password: false,
   },
   openSignup: false,
 }
@@ -351,11 +379,16 @@ export const DEFAULT_HELP_CENTER_CONFIG: HelpCenterConfig = {
 // =============================================================================
 
 /**
- * Input for updating auth config (partial update)
+ * Input for updating auth config (partial update). Each top-level key
+ * is optional; nested ssoOidc is per-key partial too. The mutator
+ * deep-merges over the stored value and re-validates the merged
+ * result, so a partial like `{ ssoOidc: { enforced: true } }` works
+ * provided the stored ssoOidc already has the required fields.
  */
 export interface UpdateAuthConfigInput {
   oauth?: OAuthProviders
   openSignup?: boolean
+  ssoOidc?: Partial<NonNullable<AuthConfig['ssoOidc']>>
 }
 
 /**
@@ -376,8 +409,6 @@ export interface UpdatePortalConfigInput {
 export interface PublicAuthConfig {
   oauth: OAuthProviders
   openSignup: boolean
-  /** Display name overrides for generic OAuth providers (e.g. custom-oidc → "Okta") */
-  customProviderNames?: Record<string, string>
 }
 
 /**
@@ -439,6 +470,10 @@ export interface TenantSettings {
    *  form controls render disabled when the path appears here. Empty
    *  list = nothing locked. */
   managedFieldPaths: string[]
+  /** Verified SSO domains ordered by creation. Empty when no domains
+   *  have been added. The auth runtime reads this to decide routing
+   *  (sso-default vs methods) and hard-binding (per-row `enforced`). */
+  verifiedDomains: VerifiedDomain[]
   /** Workspace state, written by the config-file reconciler when
    *  spec.state is set. Defaults to 'active' when the column has never
    *  been written. */

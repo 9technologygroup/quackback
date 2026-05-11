@@ -1,6 +1,7 @@
-import { db, eq, settings } from '@/lib/server/db'
+import { db, eq, settings, ssoVerifiedDomain } from '@/lib/server/db'
 import { cacheGet, cacheSet, CACHE_KEYS } from '@/lib/server/redis'
 import { ValidationError } from '@/lib/shared/errors'
+import { httpsUrl } from '@/lib/shared/schemas/auth'
 import { assertNotManaged } from '@/lib/server/config-file/managed-guard'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
 import type {
@@ -17,6 +18,7 @@ import type {
   TenantSettings,
   SettingsBrandingData,
   HelpCenterConfig,
+  VerifiedDomain,
 } from './settings.types'
 import {
   DEFAULT_AUTH_CONFIG,
@@ -67,8 +69,9 @@ async function getPortalPassthroughKeys(): Promise<string[]> {
 }
 
 /**
- * Fetch display name overrides for generic OAuth providers (e.g. custom-oidc).
- * Returns a map of providerId → displayName for providers that have a custom displayName configured.
+ * Display-name overrides for generic OAuth providers (currently only
+ * `custom-oidc`, which is exposed on the portal surface only). Returns
+ * a map of providerId → displayName when an admin has set one.
  */
 async function getCustomProviderNames(
   oauth: Record<string, boolean | undefined>,
@@ -117,12 +120,12 @@ const STANDARD_OAUTH_PROVIDERS = new Set(['google', 'github', 'microsoft', 'disc
 export async function updateAuthConfig(input: UpdateAuthConfigInput): Promise<AuthConfig> {
   console.log(`[domain:settings] updateAuthConfig`)
   try {
-    // Managed-fields gate: refuse touching OAuth providers / openSignup
-    // that the config file at `/etc/quackback/config.yaml` has declared.
-    // Per-key so the file can lock one provider while leaving others
-    // UI-editable. Runs BEFORE the tier gate so a 403 FIELD_MANAGED
-    // error shows up cleanly even when the user is on a tier that
-    // would otherwise also block the change.
+    // Managed-fields gate: refuse touching paths the config file at
+    // `/etc/quackback/config.yaml` has declared. Per-key so the file
+    // can lock one knob while leaving siblings UI-editable. Runs
+    // BEFORE the tier gate so a 403 FIELD_MANAGED error shows up
+    // cleanly even when the user is on a tier that would otherwise
+    // also block the change.
     if (input.oauth) {
       for (const key of Object.keys(input.oauth)) {
         await assertNotManaged(`auth.oauth.${key}`)
@@ -130,6 +133,11 @@ export async function updateAuthConfig(input: UpdateAuthConfigInput): Promise<Au
     }
     if (input.openSignup !== undefined) {
       await assertNotManaged('auth.openSignup')
+    }
+    if (input.ssoOidc) {
+      for (const key of Object.keys(input.ssoOidc)) {
+        await assertNotManaged(`auth.ssoOidc.${key}`)
+      }
     }
 
     // Tier gate: refuse non-standard OAuth providers when
@@ -150,18 +158,291 @@ export async function updateAuthConfig(input: UpdateAuthConfigInput): Promise<Au
       }
     }
 
+    // Tier gate: ssoOidc itself requires customOidcProvider. Reject
+    // attempts to enable or configure SSO when the tier is off.
+    if (input.ssoOidc?.enabled === true) {
+      const { getTierLimits } = await import('@/lib/server/domains/settings/tier-limits.service')
+      const { enforceFeatureGate } = await import('@/lib/server/domains/settings/tier-enforce')
+      const limits = await getTierLimits()
+      enforceFeatureGate({
+        enabled: limits.features.customOidcProvider,
+        feature: 'customOidcProvider',
+        friendly: 'Single sign-on (OIDC)',
+      })
+
+      // Secret-presence gate: enabling SSO without a saved client
+      // secret would register a Better-Auth provider that 4xxs on
+      // every callback. Force the admin to paste the secret first via
+      // the UI's ClientSecretField component (which writes to
+      // platform_credentials and triggers a rebuild on save).
+      const { ValidationError } = await import('@/lib/shared/errors')
+      const { hasSsoClientSecret } = await import('@/lib/server/auth/sso-secret')
+      if (!(await hasSsoClientSecret())) {
+        throw new ValidationError(
+          'SSO_NO_CLIENT_SECRET',
+          'Save the SSO client secret before enabling SSO sign-in.'
+        )
+      }
+    }
+
     const org = await requireSettings()
     const existing = parseJsonConfig(org.authConfig, DEFAULT_AUTH_CONFIG)
     const updated = deepMerge(existing, input as Partial<AuthConfig>)
-    await db
-      .update(settings)
-      .set({ authConfig: JSON.stringify(updated) })
-      .where(eq(settings.id, org.id))
+
+    // Partial-write validation: a naked `{ ssoOidc: { enabled: true } }`
+    // shouldn't land in DB if the stored ssoOidc is missing discoveryUrl
+    // / clientId — the runtime would skip registration and the workspace
+    // would have an orphaned half-config.
+    if (updated.ssoOidc) {
+      const isHttps = httpsUrl.safeParse(updated.ssoOidc.discoveryUrl ?? '').success
+      if (updated.ssoOidc.enabled) {
+        if (!updated.ssoOidc.discoveryUrl || !updated.ssoOidc.clientId || !isHttps) {
+          throw new ValidationError(
+            'INVALID_SSO_CONFIG',
+            'SSO requires an https:// discoveryUrl and clientId when enabled.'
+          )
+        }
+      }
+      // Block private/loopback/link-local discovery URLs at write time
+      // so the auth runtime never gets handed an SSRF target. The runtime
+      // fetches `discoveryUrl` (and the metadata's JWKS / token URLs)
+      // on every login; checking once here is cheaper and catches the
+      // bad value before it's persisted.
+      if (isHttps && updated.ssoOidc.discoveryUrl) {
+        const { checkUrlSafety } = await import('@/lib/server/content/ssrf-guard')
+        const safety = await checkUrlSafety(updated.ssoOidc.discoveryUrl)
+        if (!safety.safe) {
+          throw new ValidationError(
+            'INVALID_SSO_CONFIG',
+            safety.reason === 'ssrf-rejected'
+              ? 'Discovery URL must point to a public IdP, not a private or loopback address.'
+              : 'Discovery URL is not a valid https:// URL.'
+          )
+        }
+      }
+    }
+
+    // Atomic bump of auth_config_version + the JSON write in the same
+    // transaction. Without the version bump other pods would keep
+    // stale Better-Auth instances until their next cache TTL expiry.
+    const { bumpAuthConfigVersionInTx } = await import('@/lib/server/auth/config-version')
+    const { resetAuth } = await import('@/lib/server/auth')
+    await db.transaction(async (tx) => {
+      await tx
+        .update(settings)
+        .set({ authConfig: JSON.stringify(updated) })
+        .where(eq(settings.id, org.id))
+      await bumpAuthConfigVersionInTx(tx)
+    })
+    // invalidateSettingsCache drops the Redis cache entry so other pods
+    // re-read the bumped version on next request. The local resetAuth
+    // skips the next-request wait on the calling pod.
+    resetAuth()
     await invalidateSettingsCache()
     return updated
   } catch (error) {
     console.error(`[domain:settings] updateAuthConfig failed:`, error)
     wrapDbError('update auth config', error)
+  }
+}
+
+/**
+ * Verified-domain CRUD lives in its own table (`sso_verified_domain`)
+ * since multi-domain. Each write bumps `auth_config_version` so cached
+ * Better-Auth instances on other pods rebuild on their next request —
+ * mirrors the invalidation pattern of `updateAuthConfig`.
+ */
+export const MAX_VERIFIED_DOMAINS = 10
+
+function rowToVerifiedDomain(row: typeof ssoVerifiedDomain.$inferSelect): VerifiedDomain {
+  return {
+    id: row.id,
+    name: row.name,
+    verificationToken: row.verificationToken,
+    verifiedAt: row.verifiedAt ? row.verifiedAt.toISOString() : null,
+    enforced: row.enforced,
+    createdAt: row.createdAt.toISOString(),
+  }
+}
+
+/** Random base32-style token used as the DNS TXT value. 15 random bytes
+ *  → 24 chars of Crockford base32 (no look-alike characters). */
+function generateVerificationToken(): string {
+  const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+  const buf = new Uint8Array(15)
+  crypto.getRandomValues(buf)
+  let bits = 0
+  let value = 0
+  let out = ''
+  for (const b of buf) {
+    value = (value << 8) | b
+    bits += 8
+    while (bits >= 5) {
+      out += ALPHABET[(value >>> (bits - 5)) & 31]
+      bits -= 5
+    }
+  }
+  if (bits > 0) out += ALPHABET[(value << (5 - bits)) & 31]
+  return out
+}
+
+/**
+ * Insert a verified-domain row for `name`. Idempotent: if a row with
+ * that name already exists, returns the existing row (preserves its
+ * pending/verified state and token). Caps at MAX_VERIFIED_DOMAINS.
+ */
+export async function insertVerifiedDomain(name: string): Promise<VerifiedDomain> {
+  console.log(`[domain:settings] insertVerifiedDomain name=${name}`)
+  try {
+    const { bumpAuthConfigVersionInTx } = await import('@/lib/server/auth/config-version')
+    const { resetAuth } = await import('@/lib/server/auth')
+
+    const inserted = await db.transaction(async (tx) => {
+      const existing = await tx
+        .select()
+        .from(ssoVerifiedDomain)
+        .where(eq(ssoVerifiedDomain.name, name))
+      if (existing.length > 0) {
+        return { row: existing[0], created: false }
+      }
+      const count = await tx.$count(ssoVerifiedDomain)
+      if (count >= MAX_VERIFIED_DOMAINS) {
+        throw new ValidationError(
+          'MAX_DOMAINS_REACHED',
+          `Maximum of ${MAX_VERIFIED_DOMAINS} verified domains reached.`
+        )
+      }
+      const [row] = await tx
+        .insert(ssoVerifiedDomain)
+        .values({
+          name,
+          verificationToken: generateVerificationToken(),
+        })
+        .returning()
+      await bumpAuthConfigVersionInTx(tx)
+      return { row, created: true }
+    })
+    if (inserted.created) {
+      resetAuth()
+      await invalidateSettingsCache()
+    }
+    return rowToVerifiedDomain(inserted.row)
+  } catch (error) {
+    console.error(`[domain:settings] insertVerifiedDomain failed:`, error)
+    wrapDbError('insert verified domain', error)
+  }
+}
+
+/** Remove a verified-domain row by id. No-op if the row doesn't exist. */
+export async function removeVerifiedDomain(id: `domain_${string}`): Promise<void> {
+  console.log(`[domain:settings] removeVerifiedDomain id=${id}`)
+  try {
+    const { bumpAuthConfigVersionInTx } = await import('@/lib/server/auth/config-version')
+    const { resetAuth } = await import('@/lib/server/auth')
+
+    const removed = await db.transaction(async (tx) => {
+      const deleted = await tx
+        .delete(ssoVerifiedDomain)
+        .where(eq(ssoVerifiedDomain.id, id))
+        .returning({ id: ssoVerifiedDomain.id })
+      if (deleted.length === 0) return false
+      await bumpAuthConfigVersionInTx(tx)
+      return true
+    })
+    if (removed) {
+      resetAuth()
+      await invalidateSettingsCache()
+    }
+  } catch (error) {
+    console.error(`[domain:settings] removeVerifiedDomain failed:`, error)
+    wrapDbError('remove verified domain', error)
+  }
+}
+
+/**
+ * Stamp `verifiedAt` on a verified-domain row — race-protected by an
+ * expected-token check inside the same transaction. Surfaces
+ * STALE_VERIFICATION_TOKEN when the row has been rotated or removed
+ * between the caller's read-of-token and the DNS lookup.
+ */
+export async function stampVerifiedDomain(input: {
+  id: `domain_${string}`
+  expectedToken: string
+  verifiedAt: string
+}): Promise<VerifiedDomain> {
+  console.log(`[domain:settings] stampVerifiedDomain id=${input.id}`)
+  try {
+    const { bumpAuthConfigVersionInTx } = await import('@/lib/server/auth/config-version')
+    const { resetAuth } = await import('@/lib/server/auth')
+
+    const updated = await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(ssoVerifiedDomain)
+        .where(eq(ssoVerifiedDomain.id, input.id))
+      if (!current || current.verificationToken !== input.expectedToken) {
+        throw new ValidationError(
+          'STALE_VERIFICATION_TOKEN',
+          'Domain changed during verification. Refresh and try again.'
+        )
+      }
+      const [row] = await tx
+        .update(ssoVerifiedDomain)
+        .set({ verifiedAt: new Date(input.verifiedAt) })
+        .where(eq(ssoVerifiedDomain.id, input.id))
+        .returning()
+      await bumpAuthConfigVersionInTx(tx)
+      return row
+    })
+    resetAuth()
+    await invalidateSettingsCache()
+    return rowToVerifiedDomain(updated)
+  } catch (error) {
+    console.error(`[domain:settings] stampVerifiedDomain failed:`, error)
+    wrapDbError('stamp verified domain', error)
+  }
+}
+
+/** Flip the per-domain enforcement flag. Workspace-scoped bootstrap
+ *  precondition (recent SSO sign-in + email configured) is enforced
+ *  upstream in the server function. */
+export async function setVerifiedDomainEnforced(
+  id: `domain_${string}`,
+  enforced: boolean
+): Promise<VerifiedDomain> {
+  console.log(`[domain:settings] setVerifiedDomainEnforced id=${id} enforced=${enforced}`)
+  try {
+    const { bumpAuthConfigVersionInTx } = await import('@/lib/server/auth/config-version')
+    const { resetAuth } = await import('@/lib/server/auth')
+
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(ssoVerifiedDomain)
+        .set({ enforced })
+        .where(eq(ssoVerifiedDomain.id, id))
+        .returning()
+      if (!row) {
+        throw new ValidationError('VERIFIED_DOMAIN_NOT_FOUND', 'Domain not found.')
+      }
+      await bumpAuthConfigVersionInTx(tx)
+      return row
+    })
+    resetAuth()
+    await invalidateSettingsCache()
+    return rowToVerifiedDomain(updated)
+  } catch (error) {
+    console.error(`[domain:settings] setVerifiedDomainEnforced failed:`, error)
+    wrapDbError('set verified domain enforced', error)
+  }
+}
+
+export async function listVerifiedDomains(): Promise<VerifiedDomain[]> {
+  try {
+    const rows = await db.select().from(ssoVerifiedDomain).orderBy(ssoVerifiedDomain.createdAt)
+    return rows.map(rowToVerifiedDomain)
+  } catch (error) {
+    console.error(`[domain:settings] listVerifiedDomains failed:`, error)
+    wrapDbError('list verified domains', error)
   }
 }
 
@@ -190,10 +471,21 @@ export async function updatePortalConfig(input: UpdatePortalConfigInput): Promis
       )
     }
 
-    await db
-      .update(settings)
-      .set({ portalConfig: JSON.stringify(updated) })
-      .where(eq(settings.id, org.id))
+    // Provider registration in `auth/index.ts` reads
+    // portalConfig.oauth at build time — toggling a portal OAuth
+    // provider must invalidate other pods' Better-Auth instances or
+    // they'll keep serving the stale provider list until cache TTL.
+    // Mirrors the bump+resetAuth pattern in updateAuthConfig.
+    const { bumpAuthConfigVersionInTx } = await import('@/lib/server/auth/config-version')
+    const { resetAuth } = await import('@/lib/server/auth')
+    await db.transaction(async (tx) => {
+      await tx
+        .update(settings)
+        .set({ portalConfig: JSON.stringify(updated) })
+        .where(eq(settings.id, org.id))
+      await bumpAuthConfigVersionInTx(tx)
+    })
+    resetAuth()
     await invalidateSettingsCache()
     return updated
   } catch (error) {
@@ -276,11 +568,9 @@ export async function getPublicAuthConfig(): Promise<PublicAuthConfig> {
 
     const configuredTypes = await getConfiguredAuthTypes()
     const filteredOAuth = filterOAuthByCredentials(authConfig.oauth, configuredTypes, ['password'])
-    const customProviderNames = await getCustomProviderNames(filteredOAuth, configuredTypes)
     return {
       oauth: filteredOAuth,
       openSignup: authConfig.openSignup,
-      ...(customProviderNames && { customProviderNames }),
     }
   } catch (error) {
     console.error(`[domain:settings] getPublicAuthConfig failed:`, error)
@@ -341,9 +631,10 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
       ...(org.featureFlags ? JSON.parse(org.featureFlags) : {}),
     }
 
-    const [configuredTypes, portalPassthroughKeys] = await Promise.all([
+    const [configuredTypes, portalPassthroughKeys, verifiedDomains] = await Promise.all([
       getConfiguredAuthTypes(),
       getPortalPassthroughKeys(),
+      listVerifiedDomains(),
     ])
     const filteredAuthOAuth = filterOAuthByCredentials(authConfig.oauth, configuredTypes, [
       'password',
@@ -353,10 +644,9 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
       configuredTypes,
       portalPassthroughKeys
     )
-    const [authCustomNames, portalCustomNames] = await Promise.all([
-      getCustomProviderNames(filteredAuthOAuth, configuredTypes),
-      getCustomProviderNames(filteredPortalOAuth, configuredTypes),
-    ])
+    // Only portal exposes generic-oauth providers, so display-name overrides
+    // are computed for the portal surface only.
+    const portalCustomNames = await getCustomProviderNames(filteredPortalOAuth, configuredTypes)
 
     const brandingData: SettingsBrandingData = {
       name: org.name,
@@ -380,7 +670,6 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
       publicAuthConfig: {
         oauth: filteredAuthOAuth,
         openSignup: authConfig.openSignup,
-        ...(authCustomNames && { customProviderNames: authCustomNames }),
       },
       publicPortalConfig: {
         oauth: filteredPortalOAuth,
@@ -399,6 +688,7 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
       faviconData: brandingData.faviconUrl ? { url: brandingData.faviconUrl } : null,
       managedFieldPaths: org.managedFieldPaths ?? [],
       state: (org.state as 'active' | 'suspended' | 'deleting' | null) ?? 'active',
+      verifiedDomains,
     }
 
     // 1h TTL: settings change rarely and every mutation in this file

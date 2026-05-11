@@ -7,7 +7,16 @@
  * @see https://www.better-auth.com/docs/adapters/drizzle
  */
 import { relations } from 'drizzle-orm'
-import { pgTable, text, timestamp, boolean, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core'
+import {
+  pgTable,
+  text,
+  timestamp,
+  boolean,
+  index,
+  uniqueIndex,
+  jsonb,
+  integer,
+} from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
 import { apiKeys } from './api-keys'
@@ -237,7 +246,51 @@ export const settings = pgTable('settings', {
    * `/suspended`.
    */
   state: text('state').$type<'active' | 'suspended' | 'deleting'>().notNull().default('active'),
+  /**
+   * Monotonic version bumped on every auth-instance-affecting write
+   * (authConfig, ssoOidc, oauth toggles, platform credentials, tier
+   * limits, config-file reconciler). Pods compare their cached auth
+   * instance's recorded version against this value on each request and
+   * call resetAuth() on mismatch — defense-in-depth backstop for the
+   * Redis pub/sub invalidation channel `auth:config-invalidate`.
+   *
+   * Mutated only via atomic SQL `auth_config_version + 1` to avoid
+   * lost-update on concurrent writes.
+   */
+  authConfigVersion: integer('auth_config_version').notNull().default(0),
 })
+
+/**
+ * Verified SSO domains for the workspace.
+ *
+ * Each row pairs an email domain with the workspace's OIDC IdP:
+ *  - `verified_at` null = pending DNS verification.
+ *  - `verified_at` non-null = routes emails at this domain to SSO.
+ *  - `enforced=true` = hard-binds emails at this domain to SSO (blocks
+ *    password / magic-link / non-SSO OAuth).
+ *
+ * Single-tenant per deployment so no settings_id FK is needed. The
+ * UNIQUE constraint on `name` keeps each domain on one row regardless
+ * of pending/verified state.
+ */
+export const ssoVerifiedDomain = pgTable(
+  'sso_verified_domain',
+  {
+    id: typeIdWithDefault('domain')('id').primaryKey(),
+    /** Canonical lowercase ASCII FQDN — `normalizeDomain` output. */
+    name: text('name').notNull(),
+    /** Random base32-ish token; intentionally public via DNS TXT. */
+    verificationToken: text('verification_token').notNull(),
+    /** Null until DNS lookup confirms the TXT record. */
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    /** When true: emails at this domain are hard-bound to SSO. */
+    enforced: boolean('enforced').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    nameUnique: uniqueIndex('sso_verified_domain_name_unique').on(t.name),
+  })
+)
 
 /**
  * Metadata for service principals (discriminated union by kind)
@@ -283,6 +336,16 @@ export const principal = pgTable(
     // Metadata for service principals (discriminated union by kind)
     serviceMetadata: jsonb('service_metadata').$type<ServiceMetadata | null>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    /**
+     * Last time this principal completed an SSO sign-in (Better-Auth
+     * generic-OAuth callback with providerId='sso' creating a new
+     * session). Read by the SSO-enforcement bootstrap guard to refuse
+     * enabling enforcement without a recent SSO sign-in window — stops
+     * an admin who only signed in via magic-link from locking themselves
+     * out. Null = never signed in via SSO. Written by the
+     * /oauth2/callback/:providerId hooks.after middleware.
+     */
+    lastSsoSignInAt: timestamp('last_sso_sign_in_at', { withTimezone: true }),
   },
   (table) => [
     // Ensure one principal record per human user (partial index excludes service principals)

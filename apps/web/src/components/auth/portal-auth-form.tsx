@@ -33,6 +33,10 @@ interface PortalAuthFormProps {
   authConfig?: PortalAuthMethods
   /** Display name overrides for generic OAuth providers */
   customProviderNames?: Record<string, string>
+  /** Pre-filled email — used by the team-login dispatcher when the
+   *  user's email didn't match the verified SSO domain and we hand
+   *  control off to the methods form. */
+  initialEmail?: string
 }
 
 /**
@@ -47,6 +51,7 @@ export function PortalAuthForm({
   callbackUrl = '/',
   authConfig,
   customProviderNames,
+  initialEmail,
 }: PortalAuthFormProps) {
   const passwordEnabled = authConfig?.password ?? true
   const magicLinkEnabled = authConfig?.magicLink ?? false
@@ -56,7 +61,7 @@ export function PortalAuthForm({
 
   const [step, setStep] = useState<AuthFormStep>(defaultStep)
   const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(initialEmail ?? '')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)

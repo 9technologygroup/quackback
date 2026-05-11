@@ -393,6 +393,27 @@
       "when": 1778457600002,
       "tag": "0055_hook_deliveries",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1778457600003,
+      "tag": "0056_admin_auth_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1778457600004,
+      "tag": "0057_drop_team_custom_oidc",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1778457600005,
+      "tag": "0058_sso_verified_domains",
+      "breakpoints": true
     }
   ]
 }

@@ -4,7 +4,6 @@ import {
   Cog6ToothIcon,
   UsersIcon,
   Squares2X2Icon,
-  LockClosedIcon,
   PaintBrushIcon,
   PuzzlePieceIcon,
   ChevronUpIcon,
@@ -50,6 +49,16 @@ export function buildNavSections(flags?: { helpCenter?: boolean }): NavSection[]
       ],
     },
     {
+      label: 'Security',
+      items: [
+        {
+          label: 'Authentication',
+          to: '/admin/settings/security/authentication',
+          icon: ShieldCheckIcon,
+        },
+      ],
+    },
+    {
       label: 'Feedback',
       items: [
         { label: 'Boards', to: '/admin/settings/boards', icon: Squares2X2Icon },
@@ -71,7 +80,6 @@ export function buildNavSections(flags?: { helpCenter?: boolean }): NavSection[]
     {
       label: 'End Users',
       items: [
-        { label: 'Authentication', to: '/admin/settings/portal-auth', icon: LockClosedIcon },
         {
           label: 'User Attributes',
           to: '/admin/settings/user-attributes',

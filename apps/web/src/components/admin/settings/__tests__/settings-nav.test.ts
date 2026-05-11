@@ -76,6 +76,7 @@ describe('buildNavSections', () => {
     expect(labels).toEqual([
       'General',
       'Customization',
+      'Security',
       'Feedback',
       'Help Center',
       'End Users',
@@ -86,6 +87,30 @@ describe('buildNavSections', () => {
   it('has the expected section order without helpCenter', () => {
     const sections = buildNavSections()
     const labels = sections.map((s) => s.label)
-    expect(labels).toEqual(['General', 'Customization', 'Feedback', 'End Users', 'Developers'])
+    expect(labels).toEqual([
+      'General',
+      'Customization',
+      'Security',
+      'Feedback',
+      'End Users',
+      'Developers',
+    ])
+  })
+
+  it('places Authentication item under Security', () => {
+    const sections = buildNavSections()
+    const security = sections.find((s) => s.label === 'Security')!
+    expect(security.items).toHaveLength(1)
+    expect(security.items[0].label).toBe('Authentication')
+    expect(security.items[0].to).toBe('/admin/settings/security/authentication')
+  })
+
+  it('does NOT duplicate Authentication under End Users (single canonical entry under Security)', () => {
+    const sections = buildNavSections()
+    const endUsers = sections.find((s) => s.label === 'End Users')!
+    const authEntries = endUsers.items.filter((i) => i.label === 'Authentication')
+    expect(authEntries).toHaveLength(0)
+    // User Attributes is the only End Users entry left
+    expect(endUsers.items.map((i) => i.label)).toEqual(['User Attributes'])
   })
 })

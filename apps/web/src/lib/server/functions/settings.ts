@@ -78,6 +78,30 @@ export const fetchPublicAuthConfig = createServerFn({ method: 'GET' }).handler(a
   }
 })
 
+/**
+ * Full team-side auth config including ssoOidc. Admin-only — surfaces
+ * to the admin auth settings page editor. clientSecret is never in
+ * authConfig (it lives on the env), so this is safe to ship to the
+ * admin form even though it's broader than `fetchPublicAuthConfig`.
+ */
+export const fetchAuthConfigFn = createServerFn({ method: 'GET' }).handler(async () => {
+  console.log(`[fn:settings] fetchAuthConfigFn`)
+  try {
+    await requireAuth({ roles: ['admin'] })
+    const { getTenantSettings } = await import('@/lib/server/domains/settings/settings.service')
+    const tenant = await getTenantSettings()
+    return (
+      tenant?.authConfig ?? {
+        oauth: { google: true, github: true, password: false },
+        openSignup: false,
+      }
+    )
+  } catch (error) {
+    console.error(`[fn:settings] fetchAuthConfigFn failed:`, error)
+    throw error
+  }
+})
+
 export const fetchDeveloperConfig = createServerFn({ method: 'GET' }).handler(async () => {
   console.log(`[fn:settings] fetchDeveloperConfig`)
   try {
@@ -245,6 +269,40 @@ export const updatePortalConfigFn = createServerFn({ method: 'POST' })
       return await updatePortalConfig(data as UpdatePortalConfigInput)
     } catch (error) {
       console.error(`[fn:settings] updatePortalConfigFn failed:`, error)
+      throw error
+    }
+  })
+
+const updateAuthConfigSchema = z.object({
+  oauth: z.record(z.string(), z.boolean().optional()).optional(),
+  openSignup: z.boolean().optional(),
+  ssoOidc: z
+    .object({
+      enabled: z.boolean().optional(),
+      discoveryUrl: z.string().url().optional(),
+      clientId: z.string().min(1).optional(),
+      autoCreateUsers: z.boolean().optional(),
+      // ssoOidc.enforced is intentionally NOT accepted here — it goes
+      // through setSsoEnforcedFn so the bootstrap-guard + break-glass
+      // preconditions run. ssoOidc.domain is server-owned via
+      // setSsoDomainFn / verifyDomainFn, never accepted here.
+    })
+    .strict()
+    .optional(),
+})
+
+export type UpdateAuthConfigActionInput = z.infer<typeof updateAuthConfigSchema>
+
+export const updateAuthConfigFn = createServerFn({ method: 'POST' })
+  .inputValidator(updateAuthConfigSchema)
+  .handler(async ({ data }) => {
+    console.log(`[fn:settings] updateAuthConfigFn`)
+    try {
+      await requireAuth({ roles: ['admin'] })
+      const { updateAuthConfig } = await import('@/lib/server/domains/settings/settings.service')
+      return await updateAuthConfig(data as Parameters<typeof updateAuthConfig>[0])
+    } catch (error) {
+      console.error(`[fn:settings] updateAuthConfigFn failed:`, error)
       throw error
     }
   })

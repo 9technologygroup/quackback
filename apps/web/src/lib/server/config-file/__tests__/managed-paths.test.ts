@@ -58,21 +58,19 @@ describe('computeManagedPaths', () => {
         auth: {
           ssoOidc: {
             enabled: true,
-            providerName: 'Acme SSO',
             discoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
             clientId: 'workspace-x',
-            isDefault: true,
             autoCreateUsers: true,
+            enforced: false,
           },
         },
       })
     ).toEqual([
       'auth.ssoOidc.enabled',
-      'auth.ssoOidc.providerName',
       'auth.ssoOidc.discoveryUrl',
       'auth.ssoOidc.clientId',
-      'auth.ssoOidc.isDefault',
       'auth.ssoOidc.autoCreateUsers',
+      'auth.ssoOidc.enforced',
     ])
   })
 })

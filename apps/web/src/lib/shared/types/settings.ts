@@ -13,6 +13,7 @@ export type {
   PortalAuthMethods,
   TenantSettings,
   HelpCenterConfig,
+  AuthConfig,
 } from '@/lib/server/domains/settings'
 
 // FeatureFlags and FEATURE_FLAG_REGISTRY live only in settings.types (not barrel-exported)

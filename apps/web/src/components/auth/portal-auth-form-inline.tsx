@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useServerFn } from '@tanstack/react-start'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { FormError } from '@/components/shared/form-error'
@@ -17,6 +18,7 @@ import {
 } from '@/components/auth/oauth-buttons'
 import { openAuthPopup, usePopupTracker } from '@/lib/client/hooks/use-auth-broadcast'
 import { authClient } from '@/lib/client/auth-client'
+import { lookupAuthMethodsFn, SSO_UNAVAILABLE_MESSAGE } from '@/lib/server/functions/auth'
 import { OtpCodeStep } from './otp-code-step'
 import { useEmailSignin } from './use-email-signin'
 import type { AuthFormStep } from './email-signin-types'
@@ -107,6 +109,8 @@ export function PortalAuthFormInline({
   const [loadingInvitation, setLoadingInvitation] = useState(!!invitationId)
   const [popupBlocked, setPopupBlocked] = useState(false)
 
+  const lookupAuthMethods = useServerFn(lookupAuthMethodsFn)
+
   const emailSignin = useEmailSignin({
     callbackUrl: '/',
     onSuccess: async () => {
@@ -114,6 +118,85 @@ export function PortalAuthFormInline({
       postAuthSuccess()
     },
   })
+
+  // Verified-domain hard-binding gate. The debounced effect classifies
+  // the email after 300ms of typing and stashes both the result and the
+  // email it applies to. `lastCheckedEmail` makes the submit-time
+  // short-circuit race-free: if the user edits the email and submits
+  // within the debounce window, the short-circuit refuses to fire on
+  // the stale classification and falls through to a fresh lookup.
+  type SsoLookupKind = 'sso-redirect' | 'sso-unavailable' | null
+  const [ssoKind, setSsoKind] = useState<SsoLookupKind>(null)
+  const gatedBySso = ssoKind === 'sso-redirect'
+  const ssoUnavailable = ssoKind === 'sso-unavailable'
+  const [lastCheckedEmail, setLastCheckedEmail] = useState('')
+  // Generation counter to discard stale `lookupAuthMethods` responses.
+  // Two requests can be in flight simultaneously when the user pauses
+  // briefly (first lookup fires) then resumes typing (second timer
+  // scheduled, then fires). Without this counter the late-arriving
+  // earlier response would clobber the newer classification.
+  const lookupGen = useRef(0)
+  useEffect(() => {
+    const trimmed = email.trim()
+    if (!trimmed.includes('@') || trimmed.length < 4) {
+      lookupGen.current++
+      setSsoKind(null)
+      setLastCheckedEmail('')
+      return
+    }
+    const gen = ++lookupGen.current
+    const handle = setTimeout(async () => {
+      try {
+        const result = await lookupAuthMethods({
+          data: { email: trimmed, surface: 'portal' },
+        })
+        if (gen !== lookupGen.current) return
+        setSsoKind(
+          result.kind === 'sso-redirect' || result.kind === 'sso-unavailable' ? result.kind : null
+        )
+        setLastCheckedEmail(trimmed)
+      } catch {
+        if (gen !== lookupGen.current) return
+        setSsoKind(null)
+        setLastCheckedEmail('')
+      }
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [email, lookupAuthMethods])
+
+  /** Redirects to SSO if `emailValue` is on the verified domain.
+   *  Returns true when a redirect is in flight (caller should bail). */
+  const maybeRedirectToSso = async (emailValue: string): Promise<boolean> => {
+    const trimmed = emailValue.trim()
+    if (!trimmed) return false
+    // Short-circuit only when the debounce already classified THIS
+    // email — avoids both a redundant lookup and a wrong-redirect race
+    // if the email changed since the last classification.
+    if (gatedBySso && trimmed === lastCheckedEmail) {
+      await authClient.signIn.oauth2({ providerId: 'sso', callbackURL: '/' })
+      return true
+    }
+    if (ssoUnavailable && trimmed === lastCheckedEmail) {
+      setError(SSO_UNAVAILABLE_MESSAGE)
+      return true
+    }
+    try {
+      const result = await lookupAuthMethods({
+        data: { email: trimmed, surface: 'portal' },
+      })
+      if (result.kind === 'sso-redirect') {
+        await authClient.signIn.oauth2({ providerId: 'sso', callbackURL: '/' })
+        return true
+      }
+      if (result.kind === 'sso-unavailable') {
+        setError(SSO_UNAVAILABLE_MESSAGE)
+        return true
+      }
+    } catch {
+      // Fall through to the normal path on transient server failure.
+    }
+    return false
+  }
 
   // Track popup windows
   const { trackPopup, clearPopup, hasPopup, focusPopup } = usePopupTracker({
@@ -168,16 +251,23 @@ export function PortalAuthFormInline({
       setError('Email is required')
       return
     }
+
+    // Verified-domain hard-binding: short-circuit before validating the
+    // password (the password field is hidden in this state anyway, so a
+    // "Password is required" error would be confusing).
+    setLoadingAction('password')
+    if (await maybeRedirectToSso(email)) return
+
     if (!password) {
+      setLoadingAction(null)
       setError('Password is required')
       return
     }
     if (mode === 'signup' && password.length < 8) {
+      setLoadingAction(null)
       setError('Password must be at least 8 characters')
       return
     }
-
-    setLoadingAction('password')
     try {
       if (mode === 'signup') {
         const result = await authClient.signUp.email({
@@ -208,6 +298,7 @@ export function PortalAuthFormInline({
   const requestSigninEmail = async () => {
     setError('')
     setLoadingAction('email')
+    if (await maybeRedirectToSso(email)) return
     const res = await emailSignin.requestEmail(email)
     setLoadingAction(null)
     if (res.ok) setStep('code')
@@ -274,6 +365,13 @@ export function PortalAuthFormInline({
       focusPopup()
       return
     }
+
+    // Verified-domain gate: if the typed email is on the SSO-bound
+    // domain, the social OAuth callback would be revoked at Layer C
+    // anyway. Skip the popup + bounce by redirecting to SSO directly.
+    // Covers the race where a user types a gated email and clicks a
+    // social button before the debounced gate UI hides it.
+    if (await maybeRedirectToSso(email)) return
 
     setLoadingAction(provider.id)
     setPopupBlocked(false)
@@ -345,9 +443,14 @@ export function PortalAuthFormInline({
     )
   }
 
+  // When the typed email is on the tenant's verified SSO domain, every
+  // non-SSO path will be bounced server-side at Layer C. Hide them.
+  // `ssoUnavailable` gates identically but routes to an error since
+  // SSO itself isn't a working fallback either.
+  const ssoBlocked = gatedBySso || ssoUnavailable
   const showOAuthOnDefault =
-    showOAuth && (step === 'credentials' || step === 'email') && !invitation
-  const hasCredentialForm = step === 'credentials' && passwordEnabled
+    !ssoBlocked && showOAuth && (step === 'credentials' || step === 'email') && !invitation
+  const hasCredentialForm = step === 'credentials' && (passwordEnabled || ssoBlocked)
   const hasEmailForm = step === 'email' && magicLinkEnabled
 
   return (
@@ -445,22 +548,24 @@ export function PortalAuthFormInline({
             )}
           </div>
 
-          <div className="space-y-2">
-            <label htmlFor="inline-password" className="text-sm font-medium">
-              Password
-            </label>
-            <Input
-              id="inline-password"
-              type="password"
-              placeholder={mode === 'signup' ? 'At least 8 characters' : '••••••••'}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={loadingAction !== null}
-              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-            />
-          </div>
+          {!ssoBlocked && passwordEnabled && (
+            <div className="space-y-2">
+              <label htmlFor="inline-password" className="text-sm font-medium">
+                Password
+              </label>
+              <Input
+                id="inline-password"
+                type="password"
+                placeholder={mode === 'signup' ? 'At least 8 characters' : '••••••••'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={loadingAction !== null}
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+              />
+            </div>
+          )}
 
-          {mode === 'login' && (
+          {!ssoBlocked && mode === 'login' && passwordEnabled && (
             <div className="text-right">
               <button
                 type="button"
@@ -475,18 +580,28 @@ export function PortalAuthFormInline({
             </div>
           )}
 
-          <Button type="submit" disabled={loadingAction !== null} className="w-full">
-            {loadingAction === 'password' && (
-              <ArrowPathIcon className="mr-2 h-4 w-4 animate-spin" />
-            )}
-            {loadingAction === 'password'
-              ? mode === 'signup'
-                ? 'Creating account...'
-                : 'Signing in...'
-              : mode === 'signup'
-                ? 'Create account'
-                : 'Sign in'}
-          </Button>
+          {gatedBySso && (
+            <p className="text-xs text-muted-foreground">
+              This email signs in via your organization&apos;s identity provider.
+            </p>
+          )}
+
+          {!ssoUnavailable && (
+            <Button type="submit" disabled={loadingAction !== null} className="w-full">
+              {loadingAction === 'password' && (
+                <ArrowPathIcon className="mr-2 h-4 w-4 animate-spin" />
+              )}
+              {gatedBySso
+                ? 'Continue with SSO'
+                : loadingAction === 'password'
+                  ? mode === 'signup'
+                    ? 'Creating account...'
+                    : 'Signing in...'
+                  : mode === 'signup'
+                    ? 'Create account'
+                    : 'Sign in'}
+            </Button>
+          )}
 
           {/* Link to email sign-in if also enabled */}
           {magicLinkEnabled && (

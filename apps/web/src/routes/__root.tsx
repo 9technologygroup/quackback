@@ -192,8 +192,11 @@ class SafeRootDocument extends Component<{ children: ReactNode }, { hasError: bo
   }
 }
 
-// Non-portal routes that should never have a forced theme
-const NON_PORTAL_PREFIXES = ['/admin', '/auth', '/onboarding', '/api', '/complete-signup']
+// Non-portal routes that should never have a forced theme. `/auth/*`
+// is intentionally treated as portal-adjacent — its login / signup /
+// reset pages match the public portal's branding so visitors don't
+// feel like they crossed into a different product.
+const NON_PORTAL_PREFIXES = ['/admin', '/onboarding', '/api', '/complete-signup']
 
 function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
   const { settings, themeCookie } = Route.useRouteContext()

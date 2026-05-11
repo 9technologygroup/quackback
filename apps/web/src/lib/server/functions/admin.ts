@@ -490,21 +490,23 @@ export const fetchIntegrationByType = createServerFn({ method: 'GET' })
 
 /**
  * Public auth configuration surface for the unauthenticated onboarding
- * shell. Tells the client whether an env-baked SSO provider is wired
- * up so the account-creation step can offer the one-click button
- * instead of the manual Jane-Doe form. Only non-secret signals are
- * returned; the client never sees the OAuth client secret.
+ * shell. Tells the client whether SSO is configured + usable so the
+ * account-creation step can offer the one-click button instead of the
+ * manual Jane-Doe form. Only non-secret signals are returned.
  *
- * `ssoEnabled` is true iff all three SSO_OIDC_* env vars are
- * populated — the same gate the `auth/index.ts` server uses to
- * register the genericOAuth provider, so the two stay in lockstep.
+ * `ssoEnabled` reflects the same registration check `createAuth()` runs:
+ * `settings.authConfig.ssoOidc.enabled` AND a client secret exists in
+ * `platform_credentials` (`auth_sso`) AND the `customOidcProvider`
+ * tier flag is on. In practice this is rarely true at first-onboarding
+ * time (no admin yet to configure SSO) — but a re-onboard against an
+ * existing tenant DB will use SSO when the row is there.
  */
 export const getPublicAuthConfig = createServerFn({ method: 'GET' }).handler(async () => {
-  const ssoEnabled = Boolean(
-    process.env.SSO_OIDC_DISCOVERY_URL &&
-    process.env.SSO_OIDC_CLIENT_ID &&
-    process.env.SSO_OIDC_CLIENT_SECRET
-  )
+  const { getTenantSettings } = await import('@/lib/server/domains/settings/settings.service')
+  const { getTierLimits } = await import('@/lib/server/domains/settings/tier-limits.service')
+  const { isSsoActuallyRegistered } = await import('@/lib/server/auth/sso-secret')
+  const [tenant, tierLimits] = await Promise.all([getTenantSettings(), getTierLimits()])
+  const ssoEnabled = await isSsoActuallyRegistered(tenant?.authConfig?.ssoOidc, tierLimits)
   return { ssoEnabled }
 })
 
