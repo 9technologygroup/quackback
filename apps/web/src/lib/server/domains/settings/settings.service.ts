@@ -185,6 +185,20 @@ export async function updateAuthConfig(input: UpdateAuthConfigInput): Promise<Au
       }
     }
 
+    // Enum guard for autoProvisionRole. Runs before the DB read so a
+    // malformed API call (e.g. `{ ssoOidc: { autoProvisionRole: 'root' } }`)
+    // can't poison the stored JSON blob. The JIT hook downstream trusts
+    // this field to map to a known role.
+    if (input.ssoOidc?.autoProvisionRole !== undefined) {
+      const allowed = ['admin', 'member', 'user'] as const
+      if (!allowed.includes(input.ssoOidc.autoProvisionRole as (typeof allowed)[number])) {
+        throw new ValidationError(
+          'INVALID_SSO_CONFIG',
+          `autoProvisionRole must be one of ${allowed.join(', ')}.`
+        )
+      }
+    }
+
     const org = await requireSettings()
     const existing = parseJsonConfig(org.authConfig, DEFAULT_AUTH_CONFIG)
     const updated = deepMerge(existing, input as Partial<AuthConfig>)
