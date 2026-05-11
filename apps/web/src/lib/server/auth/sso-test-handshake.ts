@@ -120,10 +120,20 @@ export async function runHandshake(input: HandshakeInput): Promise<HandshakeResu
     }
   }
 
-  const discoveryRes = await fetch(input.discoveryUrl, {
-    redirect: 'manual',
-    signal: AbortSignal.timeout(5000),
-  })
+  let discoveryRes: Response
+  try {
+    discoveryRes = await fetch(input.discoveryUrl, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch (err) {
+    return {
+      ok: false,
+      stage: 'discovery-fetch',
+      hint: `Discovery URL could not be reached: ${err instanceof Error ? err.message : 'network error'}. Check the URL, your DNS/firewall, and IdP availability.`,
+      steps,
+    }
+  }
   if (!discoveryRes.ok) {
     return {
       ok: false,

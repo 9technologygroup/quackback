@@ -58,6 +58,19 @@ describe('runHandshake', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
+  it('returns a structured discovery-fetch failure when fetch throws', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => {
+      throw new TypeError('fetch failed: ECONNRESET')
+    })
+
+    const result = await runHandshake(baseInput)
+
+    if (result.ok) throw new Error('expected failure')
+    expect(result.ok).toBe(false)
+    expect(result.stage).toBe('discovery-fetch')
+    expect(result.hint).toMatch(/ECONNRESET|fetch failed|could not be reached/i)
+  })
+
   it('surfaces token-exchange error with human hint', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       new Response(
