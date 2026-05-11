@@ -175,4 +175,102 @@ export const getSsoTestResultFn = createServerFn({ method: 'POST' })
     return (await cacheGet<SsoTestDiagnostic>(`${CACHE_PREFIX}result:${data.testId}`)) ?? null
   })
 
+/**
+ * Wire-safe payload the /admin/sso/test/callback route's loader returns
+ * to its component. `testId` is null when the redirect was malformed
+ * (no state) or the session expired.
+ */
+export type SsoTestCallbackData = {
+  result: SsoTestDiagnostic['result']
+  testId: string | null
+}
+
+/**
+ * Handles the IdP redirect server-side: reads the per-state session
+ * from Redis (one-time use, deleted before the handshake), runs
+ * runHandshake, and persists the wire-safe result for the polling
+ * fallback. Lives here (not in the route file) so the route's client
+ * bundle never tries to import @/lib/server/redis or ioredis.
+ *
+ * No admin guard: the popup target needs to work without re-auth in
+ * the popup window. The handshake never touches user/session state.
+ */
+export const runSsoTestCallbackFn = createServerFn({ method: 'POST' })
+  .inputValidator(
+    z.object({
+      state: z.string().optional(),
+      code: z.string().optional(),
+      error: z.string().optional(),
+      errorDescription: z.string().optional(),
+    })
+  )
+  .handler(async ({ data }): Promise<SsoTestCallbackData> => {
+    const { cacheGet, cacheSet, cacheDel } = await import('@/lib/server/redis')
+    const { runHandshake } = await import('@/lib/server/auth/sso-test-handshake')
+
+    if (!data.state) {
+      return {
+        result: {
+          ok: false,
+          stage: 'state-validation',
+          hint: 'IdP redirect did not include a state parameter.',
+          steps: [],
+        },
+        testId: null,
+      }
+    }
+
+    const sessionKey = `${CACHE_PREFIX}${data.state}`
+    const session = await cacheGet<TestSession>(sessionKey)
+    if (!session) {
+      return {
+        result: {
+          ok: false,
+          stage: 'state-validation',
+          hint: 'Test session expired or invalid. Start the test again.',
+          steps: [],
+        },
+        testId: null,
+      }
+    }
+
+    // One-time-use: delete before invoking the handshake so the
+    // state/nonce can never be replayed even if the handshake hangs.
+    await cacheDel(sessionKey)
+
+    const result = await runHandshake({
+      state: data.state,
+      code: data.code ?? null,
+      idpError: data.error ?? null,
+      idpErrorDescription: data.errorDescription ?? null,
+      expectedState: session.state,
+      expectedNonce: session.nonce,
+      discoveryUrl: session.discoveryUrl,
+      clientId: session.clientId,
+      clientSecret: session.clientSecret,
+      redirectUri: session.redirectUri,
+    })
+
+    // Strip the failure-branch `raw` debug field before persisting:
+    // TanStack's serializable-input check rejects `unknown` payloads,
+    // and SsoTestDiagnostic deliberately omits it.
+    const wireResult: SsoTestDiagnostic['result'] = result.ok
+      ? result
+      : {
+          ok: false,
+          stage: result.stage,
+          errorCode: result.errorCode,
+          hint: result.hint,
+          steps: result.steps,
+        }
+
+    await cacheSet(
+      `${CACHE_PREFIX}result:${session.testId}`,
+      { result: wireResult } satisfies SsoTestDiagnostic,
+      600
+    )
+
+    return { result: wireResult, testId: session.testId }
+  })
+
 export type { TestSession }

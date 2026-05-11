@@ -17,7 +17,7 @@ import { ThemeProvider } from '@/components/theme-provider'
 import { DefaultErrorPage } from '@/components/shared/error-page'
 import { OttHandler } from '@/components/shared/ott-handler'
 import { SuspendedView } from '@/components/shared/suspended-view'
-import { isSuspensionExempt } from '@/lib/server/middleware/suspension-guard'
+import { isSuspensionExempt } from '@/lib/server/middleware/suspension-paths'
 
 export interface RouterContext {
   queryClient: QueryClient
