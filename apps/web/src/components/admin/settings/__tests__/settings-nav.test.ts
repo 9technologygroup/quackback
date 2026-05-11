@@ -56,14 +56,6 @@ describe('buildNavSections', () => {
     expect(widgetItem).toBeUndefined()
   })
 
-  it('places Experimental under Developers', () => {
-    const sections = buildNavSections()
-    const developers = sections.find((s) => s.label === 'Developers')!
-    const experimental = developers.items.find((i) => i.label === 'Experimental')
-    expect(experimental).toBeDefined()
-    expect(experimental!.to).toBe('/admin/settings/experimental')
-  })
-
   it('has no Portal section (merged into other groups)', () => {
     const sections = buildNavSections({ helpCenter: true })
     const labels = sections.map((s) => s.label)
@@ -82,6 +74,12 @@ describe('buildNavSections', () => {
     expect(labels).not.toContain('General')
   })
 
+  it('has no separate Developers section (folded into Administration)', () => {
+    const sections = buildNavSections({ helpCenter: true })
+    const labels = sections.map((s) => s.label)
+    expect(labels).not.toContain('Developers')
+  })
+
   it('has the expected section order with helpCenter flag on', () => {
     const sections = buildNavSections({ helpCenter: true })
     const labels = sections.map((s) => s.label)
@@ -91,29 +89,24 @@ describe('buildNavSections', () => {
       'Feedback',
       'Help Center',
       'End Users',
-      'Developers',
     ])
   })
 
   it('has the expected section order without helpCenter', () => {
     const sections = buildNavSections()
     const labels = sections.map((s) => s.label)
-    expect(labels).toEqual([
-      'Administration',
-      'Customization',
-      'Feedback',
-      'End Users',
-      'Developers',
-    ])
+    expect(labels).toEqual(['Administration', 'Customization', 'Feedback', 'End Users'])
   })
 
-  it('Administration contains Members, Integrations, Security in that order', () => {
+  it('Administration contains Members, Integrations, Security, API, Experimental in that order', () => {
     const sections = buildNavSections()
     const administration = sections.find((s) => s.label === 'Administration')!
     expect(administration.items.map((i) => i.label)).toEqual([
       'Members',
       'Integrations',
       'Security',
+      'API',
+      'Experimental',
     ])
   })
 
@@ -136,6 +129,28 @@ describe('buildNavSections', () => {
     const administration = sections.find((s) => s.label === 'Administration')!
     const integrations = administration.items.find((i) => i.label === 'Integrations')!
     expect(integrations.to).toBe('/admin/settings/integrations')
+  })
+
+  it('API points at the combined api URL', () => {
+    const sections = buildNavSections()
+    const administration = sections.find((s) => s.label === 'Administration')!
+    const api = administration.items.find((i) => i.label === 'API')!
+    expect(api.to).toBe('/admin/settings/api')
+  })
+
+  it('Experimental points at the experimental URL', () => {
+    const sections = buildNavSections()
+    const administration = sections.find((s) => s.label === 'Administration')!
+    const experimental = administration.items.find((i) => i.label === 'Experimental')!
+    expect(experimental.to).toBe('/admin/settings/experimental')
+  })
+
+  it('does NOT list standalone API Keys, Webhooks, or MCP entries anywhere', () => {
+    const sections = buildNavSections({ helpCenter: true })
+    const allItems = sections.flatMap((s) => s.items.map((i) => i.label))
+    expect(allItems).not.toContain('API Keys')
+    expect(allItems).not.toContain('Webhooks')
+    expect(allItems).not.toContain('MCP Server')
   })
 
   it('does NOT duplicate Security/Authentication under End Users', () => {

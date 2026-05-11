@@ -9,8 +9,6 @@ import {
   ChevronUpIcon,
   ChevronDownIcon,
   KeyIcon,
-  BoltIcon,
-  CommandLineIcon,
   ChatBubbleLeftRightIcon,
   AdjustmentsHorizontalIcon,
   ShieldCheckIcon,
@@ -44,6 +42,8 @@ export function buildNavSections(flags?: { helpCenter?: boolean }): NavSection[]
           to: '/admin/settings/security/authentication',
           icon: ShieldCheckIcon,
         },
+        { label: 'API', to: '/admin/settings/api', icon: KeyIcon },
+        { label: 'Experimental', to: '/admin/settings/experimental', icon: BeakerIcon },
       ],
     },
     {
@@ -71,27 +71,16 @@ export function buildNavSections(flags?: { helpCenter?: boolean }): NavSection[]
     })
   }
 
-  sections.push(
-    {
-      label: 'End Users',
-      items: [
-        {
-          label: 'User Attributes',
-          to: '/admin/settings/user-attributes',
-          icon: AdjustmentsHorizontalIcon,
-        },
-      ],
-    },
-    {
-      label: 'Developers',
-      items: [
-        { label: 'API Keys', to: '/admin/settings/api-keys', icon: KeyIcon },
-        { label: 'Webhooks', to: '/admin/settings/webhooks', icon: BoltIcon },
-        { label: 'MCP Server', to: '/admin/settings/mcp', icon: CommandLineIcon },
-        { label: 'Experimental', to: '/admin/settings/experimental', icon: BeakerIcon },
-      ],
-    }
-  )
+  sections.push({
+    label: 'End Users',
+    items: [
+      {
+        label: 'User Attributes',
+        to: '/admin/settings/user-attributes',
+        icon: AdjustmentsHorizontalIcon,
+      },
+    ],
+  })
 
   return sections
 }
