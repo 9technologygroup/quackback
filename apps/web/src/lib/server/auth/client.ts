@@ -5,6 +5,7 @@ import {
   genericOAuthClient,
   magicLinkClient,
   oneTimeTokenClient,
+  twoFactorClient,
 } from 'better-auth/client/plugins'
 
 /**
@@ -25,6 +26,9 @@ export const authClient = createAuthClient({
     genericOAuthClient(),
     magicLinkClient(),
     oneTimeTokenClient(),
+    twoFactorClient({
+      twoFactorPage: '/auth/two-factor',
+    }),
   ],
 })
 

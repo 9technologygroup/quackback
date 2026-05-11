@@ -121,6 +121,7 @@ export {
   settings,
   settingsRelations,
   ssoVerifiedDomain,
+  twoFactor,
   user,
   userRelations,
   verification,

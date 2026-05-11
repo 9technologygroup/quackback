@@ -45,6 +45,10 @@ export const user = pgTable(
     metadata: text('metadata'),
     // Anonymous user flag (Better Auth anonymous plugin)
     isAnonymous: boolean('is_anonymous').default(false).notNull(),
+    // Better-Auth twoFactor plugin — flips true once the user verifies
+    // their TOTP secret. Read by the sign-in flow to decide whether to
+    // emit the 2FA challenge response (`twoFactorRedirect: true`).
+    twoFactorEnabled: boolean('two_factor_enabled').notNull().default(false),
   },
   (table) => [
     // Email is unique when present (partial index — nulls are allowed)
@@ -53,6 +57,27 @@ export const user = pgTable(
       .where(sql`email IS NOT NULL`),
   ]
 )
+
+/**
+ * Two-factor enrolments managed by Better-Auth's twoFactor plugin.
+ *
+ * One row per user once TOTP is enabled. `secret` is the symmetric-
+ * encrypted TOTP shared secret; `backupCodes` is a packed string of
+ * one-time recovery codes (also encrypted). `verified` flips false
+ * during the brief window between `/two-factor/enable` and the
+ * subsequent `/two-factor/verify-totp`; the default `true` matches
+ * Better-Auth's expectation for newly-inserted rows.
+ */
+export const twoFactor = pgTable('two_factor', {
+  id: typeIdWithDefault('two_factor')('id').primaryKey(),
+  userId: typeIdColumn('user')('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  secret: text('secret').notNull(),
+  backupCodes: text('backup_codes').notNull(),
+  verified: boolean('verified').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})
 
 export const session = pgTable(
   'session',

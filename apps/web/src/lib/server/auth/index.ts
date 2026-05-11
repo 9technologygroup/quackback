@@ -8,6 +8,7 @@ import {
   jwt,
   genericOAuth,
   bearer,
+  twoFactor,
 } from 'better-auth/plugins'
 import { oauthProvider } from '@better-auth/oauth-provider'
 import { tanstackStartCookies } from 'better-auth/tanstack-start'
@@ -76,6 +77,7 @@ async function createAuth() {
     oauthAccessToken: oauthAccessTokenTable,
     oauthRefreshToken: oauthRefreshTokenTable,
     oauthConsent: oauthConsentTable,
+    twoFactor: twoFactorTable,
     eq,
   } = await import('@/lib/server/db')
   const { sendPasswordResetEmail, isEmailConfigured } = await import('@quackback/email')
@@ -260,6 +262,11 @@ async function createAuth() {
         oauthAccessToken: oauthAccessTokenTable,
         oauthRefreshToken: oauthRefreshTokenTable,
         oauthConsent: oauthConsentTable,
+        // The twoFactor plugin uses model name "twoFactor"; our Drizzle
+        // table is `two_factor` (snake-case). The column→field mapping
+        // (camelCase plugin field → snake_case column) is handled by
+        // matching column names in the table definition itself.
+        twoFactor: twoFactorTable,
       },
     }),
 
@@ -569,6 +576,17 @@ async function createAuth() {
       // Bearer token plugin — converts Authorization: Bearer headers to session lookups.
       // Used by the widget iframe which can't set cookies in cross-origin contexts.
       bearer(),
+
+      // TOTP-based 2FA. Adds /two-factor/enable, /two-factor/verify, etc.
+      // No UI yet — surfaced in user profile + sign-in challenge in
+      // subsequent tasks.
+      twoFactor({
+        issuer: 'Quackback',
+        totpOptions: {
+          period: 30,
+          digits: 6,
+        },
+      }),
 
       // TanStack Start cookie management plugin (must be last)
       tanstackStartCookies(),
