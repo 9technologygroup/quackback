@@ -73,11 +73,14 @@ export async function isAuthMethodAllowed(
 
   if (provider === 'sso') return { allowed: true }
 
-  // Password is gated by the team-side authConfig.oauth.password
+  // Password is gated by the team-side authConfig.oauth.password.
+  // Defaults to enabled when the key is absent so v0.9.9 tenants who
+  // never had `password` in their stored authConfig keep their team
+  // sign-in working after upgrade. Explicit `false` blocks.
   // toggle. Default-false in DEFAULT_AUTH_CONFIG matches the previous
   // hardcoded /admin/login behavior.
   if (provider === 'credential' || provider === 'password') {
-    const enabled = authConfig?.oauth?.password === true
+    const enabled = authConfig?.oauth?.password !== false
     return enabled ? { allowed: true } : { allowed: false, error: 'password_method_not_allowed' }
   }
 

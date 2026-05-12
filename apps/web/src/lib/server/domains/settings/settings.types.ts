@@ -89,15 +89,18 @@ export interface VerifiedDomain {
 /**
  * Default auth config for new organizations.
  *
- * `password: false` matches the prior hardcoded behaviour on
- * /admin/login, where team sign-in was forced through magic-link only.
- * Operators can flip it on via the admin auth settings page.
+ * `password: true` matches the prior hardcoded behaviour in v0.9.9 and
+ * earlier, where team password sign-in was always allowed regardless
+ * of any stored config. Pre-upgrade tenants whose `authConfig.oauth`
+ * has no `password` key also fall back to this default via the
+ * `?? true` check in `isAuthMethodAllowed`, so upgrading from v0.9.9
+ * doesn't lock admins out of their team surface.
  */
 export const DEFAULT_AUTH_CONFIG: AuthConfig = {
   oauth: {
     google: true,
     github: true,
-    password: false,
+    password: true,
   },
   openSignup: false,
 }

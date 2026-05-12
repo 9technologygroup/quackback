@@ -95,7 +95,10 @@ export function AdminAuthSettings({
   const isManaged = (path: string) => isPathManagedFromBootstrap(path, managedFieldPaths)
 
   const oauthState = (authConfig.oauth ?? {}) as Record<string, boolean | undefined>
-  const passwordEnabled = oauthState.password === true
+  // Matches the server-side gate semantics: undefined => enabled (v0.9.9
+  // and earlier had no `password` key; we keep their sign-in working
+  // post-upgrade). Only an explicit `false` flips the toggle off.
+  const passwordEnabled = oauthState.password !== false
   const ssoConfig = authConfig.ssoOidc
 
   // Team sign-in methods: magic-link (always on) + password (optional) +
@@ -512,24 +515,6 @@ function SsoConfiguredForm({
        *  pill). Credentials need an explicit Save. */}
       <div className="space-y-4">
         <RedirectUriCallout uri={ssoStatus.redirectUri} />
-
-        <details className="text-xs">
-          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-            Show test redirect URI
-          </summary>
-          <div className="mt-2 rounded-md border border-border/40 p-3 space-y-2">
-            <p className="text-muted-foreground">
-              Add this second URI to your IdP&rsquo;s allowed-redirect list so the Test sign-in
-              button can complete the flow.
-            </p>
-            <code className="block rounded bg-muted/30 px-2 py-1 font-mono break-all">
-              {ssoStatus.redirectUri.replace(
-                '/api/auth/oauth2/callback/sso',
-                '/admin/sso/test/callback'
-              )}
-            </code>
-          </div>
-        </details>
 
         <IdpDiscoveryFields
           kind={idpKind}
