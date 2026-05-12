@@ -16,7 +16,9 @@
  *     cleanup for OAuth callbacks where the email isn't known until
  *     after the upstream token exchange. setSessionCookie has already
  *     run; on policy reject we delete the session row, clear the
- *     cookie, and redirect.
+ *     cookie, and redirect. Also hosts the workspace Require-2FA gate
+ *     for credential sign-in success (post-auth, to avoid leaking
+ *     account state to anonymous probes).
  */
 
 import { createAuthMiddleware } from 'better-auth/api'
@@ -164,12 +166,9 @@ export const hooksBefore = createAuthMiddleware(async (ctx) => {
 
   const { db, user: userTable, principal: principalTable, eq } = await import('@/lib/server/db')
   type UserId = `user_${string}`
-  // Single read per attempt: pull both `id` (for the principal lookup)
-  // and `twoFactorEnabled` (for the Require-2FA gate below) so the hot
-  // password-sign-in path makes one DB round-trip instead of two.
   const userRow = await db.query.user.findFirst({
     where: eq(userTable.email, email),
-    columns: { id: true, twoFactorEnabled: true },
+    columns: { id: true },
   })
   if (!userRow) return
 
@@ -190,26 +189,11 @@ export const hooksBefore = createAuthMiddleware(async (ctx) => {
     throw ctx.redirect(`${target}?error=${result.error ?? 'auth_method_blocked'}`)
   }
 
-  // Workspace-wide Require 2FA gate. Only fires for password sign-in
-  // — magic-link stays open as the break-glass so an admin who lost
-  // their authenticator can still get back in and re-enroll. SSO is
-  // governed by the IdP's own MFA attestations, so we don't second-
-  // guess it here.
-  if (provider === 'credential') {
-    const workspaceRequired = tenant?.authConfig?.twoFactor?.required === true
-    if (workspaceRequired) {
-      const { shouldRequire2FA } = await import('./two-factor-policy')
-      if (
-        shouldRequire2FA({
-          role: principalRow.role as 'admin' | 'member' | 'user',
-          userHas2FA: userRow.twoFactorEnabled === true,
-          workspaceRequired,
-        })
-      ) {
-        throw ctx.redirect('/auth/two-factor-setup-required')
-      }
-    }
-  }
+  // NB: the workspace-wide Require-2FA gate used to live here, but
+  // gating before password verification leaks account state — an
+  // attacker can probe the redirect to enumerate team-role users
+  // without 2FA. The check now runs in `handleCredentialPostSignInGate`
+  // below (Layer C), after Better-Auth has verified the password.
 })
 
 /**
@@ -477,6 +461,103 @@ async function handleCallbackPolicyCleanup(
 }
 
 /**
+ * Workspace `Require 2FA` gate for password sign-in.
+ *
+ * Fires after Better-Auth has verified the password and created the
+ * session (matches the same path set as Better-Auth's twoFactor plugin:
+ * `/sign-in/email`, `/sign-in/username`, `/sign-in/phone-number`). When
+ * the workspace has 2FA required and the just-authenticated user is a
+ * team-role principal with no enrolled 2FA, we revoke the brand-new
+ * session and redirect to the setup-required landing page.
+ *
+ * Why post-auth: pre-auth gating leaks account state — an attacker can
+ * try `email=alice@acme.com` with any password and observe the redirect
+ * to `/auth/two-factor-setup-required` to confirm Alice exists, is a
+ * team member, and has no 2FA. Post-auth verification closes that
+ * oracle: the only path that reaches the gate is a real password
+ * success, so the redirect is no more informative than any other
+ * post-sign-in landing page.
+ *
+ * Better-Auth's own twoFactor plugin handles users who DO have 2FA
+ * enrolled — its hook matches the same paths, sees `twoFactorEnabled`,
+ * deletes the session, and emits `twoFactorRedirect: true` for the
+ * client to navigate to the challenge page. Our hook is the
+ * complementary case: enrollment missing but required.
+ */
+const CREDENTIAL_SIGN_IN_PATHS = new Set<string>([
+  '/sign-in/email',
+  '/sign-in/username',
+  '/sign-in/phone-number',
+])
+
+export async function handleCredentialPostSignInGate(
+  ctx: {
+    path?: string
+    context?: {
+      newSession?: {
+        user?: { id?: string }
+        session?: { token?: string }
+      } | null
+    }
+    redirect: (url: string) => Error
+  },
+  tenant: Awaited<
+    ReturnType<typeof import('@/lib/server/domains/settings/settings.service').getTenantSettings>
+  >
+): Promise<void> {
+  if (!CREDENTIAL_SIGN_IN_PATHS.has(ctx.path ?? '')) return
+
+  const workspaceRequired = tenant?.authConfig?.twoFactor?.required === true
+  if (!workspaceRequired) return
+
+  const userId = ctx.context?.newSession?.user?.id
+  const token = ctx.context?.newSession?.session?.token
+  // No newSession means Better-Auth's twoFactor plugin already
+  // intercepted (user has 2FA enrolled — challenge handoff). Bail.
+  if (typeof userId !== 'string' || typeof token !== 'string') return
+
+  const {
+    db,
+    user: userTable,
+    principal: principalTable,
+    session: sessionTable,
+    eq,
+  } = await import('@/lib/server/db')
+  type UserId = `user_${string}`
+  const userIdTyped = userId as UserId
+
+  const userRow = await db.query.user.findFirst({
+    where: eq(userTable.id, userIdTyped),
+    columns: { twoFactorEnabled: true },
+  })
+  const principalRow = await db.query.principal.findFirst({
+    where: eq(principalTable.userId, userIdTyped),
+    columns: { role: true },
+  })
+  if (!principalRow) return
+
+  const { shouldRequire2FA } = await import('./two-factor-policy')
+  if (
+    !shouldRequire2FA({
+      role: principalRow.role as 'admin' | 'member' | 'user',
+      userHas2FA: userRow?.twoFactorEnabled === true,
+      workspaceRequired,
+    })
+  ) {
+    return
+  }
+
+  // Revoke the just-created session row BEFORE throwing the redirect —
+  // otherwise the user is signed in despite the redirect. We delete by
+  // token to mirror `revokeSession`. The cookie is cleared by the
+  // matching helper.
+  await db.delete(sessionTable).where(eq(sessionTable.token, token))
+  const { deleteSessionCookie } = await import('better-auth/cookies')
+  deleteSessionCookie(ctx as SessionCtx)
+  throw ctx.redirect('/auth/two-factor-setup-required')
+}
+
+/**
  * Composed `hooks.after` middleware. Order matters: bootstrap admin
  * promotion + lastSsoSignInAt run before policy cleanup, so a
  * legitimate first-SSO sign-in still claims admin even if a stale
@@ -497,6 +578,12 @@ export const hooksAfter = createAuthMiddleware(async (ctx) => {
 
   await handleCallbackPolicyCleanup(
     ctx as Parameters<typeof handleCallbackPolicyCleanup>[0],
+    tenant
+  )
+  // Workspace Require-2FA gate for password sign-in success — closes
+  // the pre-auth enumeration oracle that used to live in hooksBefore.
+  await handleCredentialPostSignInGate(
+    ctx as Parameters<typeof handleCredentialPostSignInGate>[0],
     tenant
   )
   // Auto-provision runs last so it observes post-bootstrap and post-
