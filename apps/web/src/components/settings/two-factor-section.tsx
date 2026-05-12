@@ -63,34 +63,99 @@ export function TwoFactorSection({ enrolled, onChanged }: Props) {
   )
 }
 
+/**
+ * Shared password-confirm form used by the 2FA setup + disable dialogs.
+ * Both surfaces re-prompt for the user's password before a sensitive
+ * change, with the same error/pending wiring — only the submit label,
+ * button variant, fallback error message, and onSubmit action differ.
+ */
+function PasswordConfirmForm({
+  onCancel,
+  onSubmit,
+  pendingLabel,
+  submitLabel,
+  fallbackError,
+  description,
+  variant,
+  inputId,
+}: {
+  onCancel: () => void
+  onSubmit: (password: string) => Promise<void>
+  pendingLabel: string
+  submitLabel: string
+  fallbackError: string
+  description: string
+  variant?: 'default' | 'destructive'
+  inputId?: string
+}) {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [pending, setPending] = useState(false)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setPending(true)
+    try {
+      await onSubmit(password)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : fallbackError)
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <p className="text-sm text-muted-foreground">{description}</p>
+      {inputId && (
+        <Label htmlFor={inputId} className="sr-only">
+          Password
+        </Label>
+      )}
+      <Input
+        id={inputId}
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        autoFocus
+        required
+      />
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      <DialogFooter>
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={pending}>
+          Cancel
+        </Button>
+        <Button type="submit" variant={variant} disabled={pending || !password}>
+          {pending ? pendingLabel : submitLabel}
+        </Button>
+      </DialogFooter>
+    </form>
+  )
+}
+
 function SetupDialog({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
   const [step, setStep] = useState<'password' | 'qr' | 'backup'>('password')
-  const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [backupCodes, setBackupCodes] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
 
-  async function handleEnable(e: React.FormEvent) {
-    e.preventDefault()
-    setError(null)
-    setPending(true)
-    try {
-      const { data, error: betterErr } = await authClient.twoFactor.enable({
-        password,
-      })
-      if (betterErr) throw new Error(betterErr.message ?? 'Could not start 2FA setup.')
-      if (!data) throw new Error('Empty response from 2FA enable endpoint.')
-      const dataUrl = await QRCode.toDataURL(data.totpURI)
-      setQrDataUrl(dataUrl)
-      setBackupCodes(data.backupCodes)
-      setStep('qr')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not start 2FA setup.')
-    } finally {
-      setPending(false)
-    }
+  async function handleEnable(password: string) {
+    const { data, error: betterErr } = await authClient.twoFactor.enable({
+      password,
+    })
+    if (betterErr) throw new Error(betterErr.message ?? 'Could not start 2FA setup.')
+    if (!data) throw new Error('Empty response from 2FA enable endpoint.')
+    const dataUrl = await QRCode.toDataURL(data.totpURI)
+    setQrDataUrl(dataUrl)
+    setBackupCodes(data.backupCodes)
+    setStep('qr')
   }
 
   async function verifyCode(value: string) {
@@ -124,35 +189,15 @@ function SetupDialog({ onClose, onComplete }: { onClose: () => void; onComplete:
           </DialogTitle>
         </DialogHeader>
         {step === 'password' && (
-          <form onSubmit={handleEnable} className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              For your security, re-enter your password to enable two-factor authentication.
-            </p>
-            <Label htmlFor="tf-password" className="sr-only">
-              Password
-            </Label>
-            <Input
-              id="tf-password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoFocus
-              required
-            />
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-            <DialogFooter>
-              <Button type="button" variant="ghost" onClick={onClose} disabled={pending}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={pending || !password}>
-                {pending ? 'Working…' : 'Continue'}
-              </Button>
-            </DialogFooter>
-          </form>
+          <PasswordConfirmForm
+            inputId="tf-password"
+            description="For your security, re-enter your password to enable two-factor authentication."
+            onCancel={onClose}
+            onSubmit={handleEnable}
+            pendingLabel="Working…"
+            submitLabel="Continue"
+            fallbackError="Could not start 2FA setup."
+          />
         )}
         {step === 'qr' && (
           <form onSubmit={handleVerify} className="space-y-3">
@@ -237,23 +282,10 @@ function SetupDialog({ onClose, onComplete }: { onClose: () => void; onComplete:
 }
 
 function DisableDialog({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [pending, setPending] = useState(false)
-
-  async function handleDisable(e: React.FormEvent) {
-    e.preventDefault()
-    setError(null)
-    setPending(true)
-    try {
-      const { error: betterErr } = await authClient.twoFactor.disable({ password })
-      if (betterErr) throw new Error(betterErr.message ?? 'Could not disable two-factor.')
-      onComplete()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not disable two-factor.')
-    } finally {
-      setPending(false)
-    }
+  async function handleDisable(password: string) {
+    const { error: betterErr } = await authClient.twoFactor.disable({ password })
+    if (betterErr) throw new Error(betterErr.message ?? 'Could not disable two-factor.')
+    onComplete()
   }
 
   return (
@@ -262,32 +294,15 @@ function DisableDialog({ onClose, onComplete }: { onClose: () => void; onComplet
         <DialogHeader>
           <DialogTitle>Disable two-factor authentication?</DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleDisable} className="space-y-3">
-          <p className="text-sm text-muted-foreground">
-            Confirm your password to disable two-factor. Your authenticator will stop working
-            immediately.
-          </p>
-          <Input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoFocus
-            required
-          />
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={onClose} disabled={pending}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="destructive" disabled={pending || !password}>
-              {pending ? 'Disabling…' : 'Disable'}
-            </Button>
-          </DialogFooter>
-        </form>
+        <PasswordConfirmForm
+          description="Confirm your password to disable two-factor. Your authenticator will stop working immediately."
+          onCancel={onClose}
+          onSubmit={handleDisable}
+          pendingLabel="Disabling…"
+          submitLabel="Disable"
+          fallbackError="Could not disable two-factor."
+          variant="destructive"
+        />
       </DialogContent>
     </Dialog>
   )
