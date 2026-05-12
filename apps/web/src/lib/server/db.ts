@@ -195,6 +195,8 @@ export {
   hookDeliveries,
   // Schema tables - audit log
   auditLog,
+  // Schema tables - sso recovery codes
+  ssoRecoveryCode,
   // Schema tables - segments
   segments,
   segmentsRelations,
