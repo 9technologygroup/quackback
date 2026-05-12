@@ -11,10 +11,11 @@
  */
 
 import { createServerFn } from '@tanstack/react-start'
+import { getRequestHeaders } from '@tanstack/react-start/server'
 import type { UserId } from '@quackback/ids'
 import { z } from 'zod'
 import { and, db, eq, like, twoFactor, user, verification } from '@/lib/server/db'
-import { actorFromAuth, recordAuditEvent } from '@/lib/server/audit/log'
+import { actorFromAuth, withAuditEvent } from '@/lib/server/audit/log'
 import { requireAuth } from './auth-helpers'
 
 const input = z.object({
@@ -27,24 +28,30 @@ export const adminResetTwoFactorFn = createServerFn({ method: 'POST' })
     const auth = await requireAuth({ roles: ['admin'] })
     const userId = data.userId as UserId
 
-    // Wrap the three writes in a tx so a mid-flight failure can't leave
-    // the user in a partial state (e.g. twoFactor row gone but
-    // twoFactorEnabled still true, or trust-device records lingering).
-    await db.transaction(async (tx) => {
-      await tx.delete(twoFactor).where(eq(twoFactor.userId, userId))
-      await tx.update(user).set({ twoFactorEnabled: false }).where(eq(user.id, userId))
-      await tx
-        .delete(verification)
-        .where(and(like(verification.identifier, 'trust-device-%'), eq(verification.value, userId)))
-    })
+    return withAuditEvent(
+      {
+        event: 'two_factor.reset_by_admin',
+        actor: actorFromAuth(auth),
+        target: { type: 'user', id: userId },
+        headers: getRequestHeaders(),
+      },
+      async () => {
+        // Wrap the three writes in a tx so a mid-flight failure can't
+        // leave the user in a partial state (e.g. twoFactor row gone
+        // but twoFactorEnabled still true, or trust-device records
+        // lingering).
+        await db.transaction(async (tx) => {
+          await tx.delete(twoFactor).where(eq(twoFactor.userId, userId))
+          await tx.update(user).set({ twoFactorEnabled: false }).where(eq(user.id, userId))
+          await tx
+            .delete(verification)
+            .where(
+              and(like(verification.identifier, 'trust-device-%'), eq(verification.value, userId))
+            )
+        })
 
-    await recordAuditEvent({
-      event: 'two_factor.reset_by_admin',
-      outcome: 'success',
-      actor: actorFromAuth(auth),
-      target: { type: 'user', id: userId },
-    })
-
-    console.log(`[admin] admin=${auth.user.id} reset 2FA for user=${userId}`)
-    return { success: true }
+        console.log(`[admin] admin=${auth.user.id} reset 2FA for user=${userId}`)
+        return { success: true }
+      }
+    )
   })

@@ -104,6 +104,10 @@ vi.mock('@/lib/server/content/ssrf-guard', () => ({
   checkUrlSafety: vi.fn().mockResolvedValue({ safe: true }),
 }))
 
+vi.mock('@tanstack/react-start/server', () => ({
+  getRequestHeaders: () => new Headers(),
+}))
+
 beforeEach(() => {
   vi.clearAllMocks()
   hoisted.mockRequireAuth.mockResolvedValue({

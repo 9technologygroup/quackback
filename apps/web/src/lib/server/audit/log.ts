@@ -67,8 +67,8 @@ export interface RecordAuditEventInput {
   event: AuditEventType
   outcome?: AuditEventOutcome
   actor: AuditActor
-  /** Optional Request — IP comes from `getClientIp`, UA from `user-agent`. */
-  request?: Request
+  /** Request headers — IP comes from `getClientIp`, UA from `user-agent`. */
+  headers?: Headers
   target?: AuditTarget
   before?: unknown
   after?: unknown
@@ -81,8 +81,8 @@ export function actorFromAuth(auth: AuthContext): AuditActor {
 }
 
 export async function recordAuditEvent(input: RecordAuditEventInput): Promise<void> {
-  const ip = input.request ? getClientIp(input.request) : null
-  const userAgent = input.request?.headers.get('user-agent') ?? null
+  const ip = input.headers ? getClientIp(input.headers) : null
+  const userAgent = input.headers?.get('user-agent') ?? null
 
   try {
     await db.insert(auditLog).values({
@@ -115,6 +115,27 @@ export async function recordAuditEvent(input: RecordAuditEventInput): Promise<vo
  * For success-only audits (admin reset 2FA, generate codes) call
  * `recordAuditEvent` directly after the mutation succeeds.
  */
+/** Cap on the `metadata.reason` extracted from thrown errors. */
+const MAX_REASON_LEN = 200
+
+/**
+ * Derive a stable, length-capped `reason` string from a thrown error.
+ *
+ * Prefers `error.code` (typed Quackback errors like ValidationError /
+ * ForbiddenError set this to a stable identifier). Falls back to a
+ * truncated `error.message` so messages don't leak full backtraces or
+ * unbounded user input into the audit row.
+ */
+function extractReason(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    return String((error as { code: unknown }).code).slice(0, MAX_REASON_LEN)
+  }
+  if (error instanceof Error) {
+    return error.message.slice(0, MAX_REASON_LEN)
+  }
+  return 'UNEXPECTED'
+}
+
 export async function withAuditEvent<T>(
   spec: {
     event: AuditEventType
@@ -123,7 +144,7 @@ export async function withAuditEvent<T>(
     before?: unknown
     after?: unknown
     metadata?: Record<string, unknown>
-    request?: Request
+    headers?: Headers
   },
   mutation: () => Promise<T>
 ): Promise<T> {
@@ -137,16 +158,10 @@ export async function withAuditEvent<T>(
       before: spec.before,
       after: spec.after,
       metadata: spec.metadata,
-      request: spec.request,
+      headers: spec.headers,
     })
     return result
   } catch (error) {
-    const reason =
-      error && typeof error === 'object' && 'code' in error
-        ? String((error as { code: unknown }).code)
-        : error instanceof Error
-          ? error.message
-          : 'UNEXPECTED'
     await recordAuditEvent({
       event: spec.event,
       outcome: 'failure',
@@ -154,8 +169,8 @@ export async function withAuditEvent<T>(
       target: spec.target,
       before: spec.before,
       after: spec.after,
-      metadata: { ...(spec.metadata ?? {}), reason },
-      request: spec.request,
+      metadata: { ...(spec.metadata ?? {}), reason: extractReason(error) },
+      headers: spec.headers,
     })
     throw error
   }

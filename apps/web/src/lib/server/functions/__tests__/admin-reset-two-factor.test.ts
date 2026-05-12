@@ -85,6 +85,33 @@ vi.mock('@/lib/server/audit/log', () => ({
     email: auth.user.email,
     role: auth.principal.role,
   }),
+  withAuditEvent: async (
+    spec: { event: string; metadata?: Record<string, unknown>; [k: string]: unknown },
+    fn: () => Promise<unknown>
+  ) => {
+    try {
+      const result = await fn()
+      await hoisted.recordAuditEvent({ ...spec, outcome: 'success' })
+      return result
+    } catch (error) {
+      const reason =
+        error && typeof error === 'object' && 'code' in error
+          ? String((error as { code: unknown }).code)
+          : error instanceof Error
+            ? error.message
+            : 'UNEXPECTED'
+      await hoisted.recordAuditEvent({
+        ...spec,
+        outcome: 'failure',
+        metadata: { ...(spec.metadata ?? {}), reason },
+      })
+      throw error
+    }
+  },
+}))
+
+vi.mock('@tanstack/react-start/server', () => ({
+  getRequestHeaders: () => new Headers(),
 }))
 
 beforeEach(() => {
@@ -165,7 +192,7 @@ describe('adminResetTwoFactorFn', () => {
     expect(call.target).toEqual({ type: 'user', id: 'user_target' })
   })
 
-  it('does NOT record audit when the underlying transaction throws', async () => {
+  it('records a failure audit row when the underlying transaction throws', async () => {
     hoisted.requireAuth.mockResolvedValue({
       user: { id: 'user_admin', email: 'admin@example.com' },
       principal: { id: 'principal_admin', role: 'admin' },
@@ -176,6 +203,10 @@ describe('adminResetTwoFactorFn', () => {
       'db down'
     )
 
-    expect(hoisted.recordAuditEvent).not.toHaveBeenCalled()
+    expect(hoisted.recordAuditEvent).toHaveBeenCalledTimes(1)
+    const call = hoisted.recordAuditEvent.mock.calls[0][0]
+    expect(call.event).toBe('two_factor.reset_by_admin')
+    expect(call.outcome).toBe('failure')
+    expect(call.metadata).toMatchObject({ reason: 'db down' })
   })
 })

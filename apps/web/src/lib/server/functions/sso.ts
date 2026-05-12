@@ -24,6 +24,7 @@
  */
 
 import { createServerFn } from '@tanstack/react-start'
+import { getRequestHeaders } from '@tanstack/react-start/server'
 import { z } from 'zod'
 import { ConflictError, ForbiddenError } from '@/lib/shared/errors'
 import { httpsUrl } from '@/lib/shared/schemas/auth'
@@ -234,6 +235,7 @@ export const setVerifiedDomainEnforcedFn = createServerFn({ method: 'POST' })
         target: { type: 'sso_verified_domain', id: data.id },
         before,
         after: { enforced: data.enforced },
+        headers: getRequestHeaders(),
       },
       async () => {
         if (data.enforced) {
@@ -400,6 +402,7 @@ export const setSsoClientSecretFn = createServerFn({ method: 'POST' })
         event: 'sso.config.changed',
         actor: actorFromAuth(auth),
         metadata: { field: 'clientSecret', action: 'set' },
+        headers: getRequestHeaders(),
       },
       async () => {
         const { savePlatformCredentials } =
@@ -428,6 +431,7 @@ export const clearSsoClientSecretFn = createServerFn({ method: 'POST' }).handler
       event: 'sso.config.changed',
       actor: actorFromAuth(auth),
       metadata: { field: 'clientSecret', action: 'cleared' },
+      headers: getRequestHeaders(),
     },
     async () => {
       // Refuse to clear while any verified domain has enforcement on —

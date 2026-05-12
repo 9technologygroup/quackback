@@ -80,18 +80,16 @@ describe('recordAuditEvent', () => {
     expect(mockInsertValues.mock.calls[0][0].eventOutcome).toBe('failure')
   })
 
-  it('extracts ip and user-agent from a Request', async () => {
-    const request = new Request('https://example.com/admin/x', {
-      headers: {
-        'x-forwarded-for': '203.0.113.45, 10.0.0.1',
-        'user-agent': 'Mozilla/5.0 (Test)',
-      },
+  it('extracts ip and user-agent from headers', async () => {
+    const headers = new Headers({
+      'x-forwarded-for': '203.0.113.45, 10.0.0.1',
+      'user-agent': 'Mozilla/5.0 (Test)',
     })
 
     await recordAuditEvent({
       event: 'sso.config.changed',
       actor: { email: 'a@b.com' },
-      request,
+      headers,
     })
 
     const row = mockInsertValues.mock.calls[0][0]
@@ -175,6 +173,18 @@ describe('withAuditEvent', () => {
     ).rejects.toThrow('plain failure')
 
     expect(mockInsertValues.mock.calls[0][0].metadata).toMatchObject({ reason: 'plain failure' })
+  })
+
+  it('caps reason length to keep PII out of unbounded error messages', async () => {
+    const longMessage = 'x'.repeat(500)
+    await expect(
+      withAuditEvent({ event: 'sso.config.changed', actor: { email: 'a@b.com' } }, async () => {
+        throw new Error(longMessage)
+      })
+    ).rejects.toThrow()
+
+    const reason = (mockInsertValues.mock.calls[0][0].metadata as { reason: string }).reason
+    expect(reason.length).toBeLessThanOrEqual(200)
   })
 
   it('preserves caller-supplied metadata on the failure event', async () => {

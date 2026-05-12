@@ -94,6 +94,23 @@ vi.mock('@/lib/server/content/ssrf-guard', () => ({
   checkUrlSafety: hoisted.mockCheckUrlSafety,
 }))
 
+vi.mock('@/lib/server/audit/log', () => ({
+  recordAuditEvent: vi.fn(),
+  actorFromAuth: (auth: { user: { id: string; email: string }; principal: { role: string } }) => ({
+    userId: auth.user.id,
+    email: auth.user.email,
+    role: auth.principal.role,
+  }),
+  withAuditEvent: async (
+    _spec: { event: string; metadata?: Record<string, unknown>; [k: string]: unknown },
+    fn: () => Promise<unknown>
+  ) => fn(),
+}))
+
+vi.mock('@tanstack/react-start/server', () => ({
+  getRequestHeaders: () => new Headers(),
+}))
+
 beforeEach(() => {
   vi.clearAllMocks()
   hoisted.mockRequireAuth.mockResolvedValue({

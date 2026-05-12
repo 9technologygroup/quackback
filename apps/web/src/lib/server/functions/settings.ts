@@ -355,37 +355,96 @@ export const updateAuthConfigFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     console.log(`[fn:settings] updateAuthConfigFn`)
     try {
+      const { getRequestHeaders } = await import('@tanstack/react-start/server')
       const auth = await requireAuth({ roles: ['admin'] })
       const actor = actorFromAuth(auth)
+      const headers = getRequestHeaders()
 
       const { updateAuthConfig, getAuthConfig } =
         await import('@/lib/server/domains/settings/settings.service')
 
-      // Snapshot only when the payload touches an audit-tracked key —
-      // saves a settings read on every routine save.
-      const tracksAnyToggle =
+      // Snapshot when the payload touches an audit-tracked key OR the
+      // ssoOidc subtree. Both audits compare prior/new state to decide
+      // whether to emit. Routine non-tracked saves skip the read.
+      const tracksAnyToggle = Boolean(
         data.oauth && AUDIT_TRACKED_OAUTH_KEYS.some(({ key }) => key in (data.oauth ?? {}))
-      const before = tracksAnyToggle ? await getAuthConfig() : null
+      )
+      const tracksSso = Boolean(data.ssoOidc)
+      const before = tracksAnyToggle || tracksSso ? await getAuthConfig() : null
 
-      const result = await updateAuthConfig(data as Parameters<typeof updateAuthConfig>[0])
+      try {
+        const result = await updateAuthConfig(data as Parameters<typeof updateAuthConfig>[0])
 
-      if (tracksAnyToggle && before && data.oauth) {
-        for (const { key, enabled, disabled } of AUDIT_TRACKED_OAUTH_KEYS) {
-          if (!(key in data.oauth)) continue
-          const next = data.oauth[key]
-          const prior = (before.oauth as Record<string, boolean | undefined>)?.[key]
-          if (typeof next !== 'boolean' || next === prior) continue
+        if (tracksAnyToggle && before && data.oauth) {
+          for (const { key, enabled, disabled } of AUDIT_TRACKED_OAUTH_KEYS) {
+            if (!(key in data.oauth)) continue
+            const next = data.oauth[key]
+            const prior = (before.oauth as Record<string, boolean | undefined>)?.[key]
+            if (typeof next !== 'boolean' || next === prior) continue
+            await recordAuditEvent({
+              event: next ? enabled : disabled,
+              outcome: 'success',
+              actor,
+              headers,
+              before: { [key]: prior ?? null },
+              after: { [key]: next },
+            })
+          }
+        }
+
+        if (tracksSso && before && data.ssoOidc) {
+          const priorSso = (before.ssoOidc ?? {}) as Record<string, unknown>
+          const changedFields: string[] = []
+          for (const key of Object.keys(data.ssoOidc)) {
+            if (priorSso[key] !== (data.ssoOidc as Record<string, unknown>)[key]) {
+              changedFields.push(key)
+            }
+          }
+          if (changedFields.length > 0) {
+            await recordAuditEvent({
+              event: 'sso.config.changed',
+              outcome: 'success',
+              actor,
+              headers,
+              metadata: { fields: changedFields },
+            })
+          }
+        }
+
+        return result
+      } catch (error) {
+        // Symmetric failure audit so blocked attempts (tier gate,
+        // managed-fields, secret-presence) show up in the log.
+        if (tracksAnyToggle && data.oauth) {
+          for (const { key, enabled, disabled } of AUDIT_TRACKED_OAUTH_KEYS) {
+            if (!(key in data.oauth)) continue
+            const next = data.oauth[key]
+            if (typeof next !== 'boolean') continue
+            await recordAuditEvent({
+              event: next ? enabled : disabled,
+              outcome: 'failure',
+              actor,
+              headers,
+              metadata: {
+                reason: error instanceof Error ? error.message.slice(0, 200) : 'UNEXPECTED',
+              },
+            })
+          }
+        }
+        if (tracksSso) {
           await recordAuditEvent({
-            event: next ? enabled : disabled,
-            outcome: 'success',
+            event: 'sso.config.changed',
+            outcome: 'failure',
             actor,
-            before: { [key]: prior ?? null },
-            after: { [key]: next },
+            headers,
+            metadata: {
+              fields: Object.keys(data.ssoOidc ?? {}),
+              reason: error instanceof Error ? error.message.slice(0, 200) : 'UNEXPECTED',
+            },
           })
         }
+        throw error
       }
-
-      return result
     } catch (error) {
       console.error(`[fn:settings] updateAuthConfigFn failed:`, error)
       throw error

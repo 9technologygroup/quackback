@@ -46,6 +46,10 @@ vi.mock('@/lib/server/audit/log', () => ({
   }),
 }))
 
+vi.mock('@tanstack/react-start/server', () => ({
+  getRequestHeaders: () => new Headers(),
+}))
+
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   updateAuthConfig: hoisted.mockUpdateAuthConfig,
   getAuthConfig: hoisted.mockGetAuthConfig,
@@ -183,7 +187,7 @@ describe('updateAuthConfigFn audit-log wiring', () => {
     expect(hoisted.mockRecordAuditEvent).not.toHaveBeenCalled()
   })
 
-  it('does NOT record password/magic_link audit when update throws', async () => {
+  it('records a failure audit row when the underlying update throws', async () => {
     hoisted.mockUpdateAuthConfig.mockRejectedValueOnce(new Error('boom'))
     hoisted.mockGetAuthConfig.mockResolvedValue({
       oauth: { password: true, magicLink: true },
@@ -191,7 +195,45 @@ describe('updateAuthConfigFn audit-log wiring', () => {
 
     await expect(updateAuthConfig({ data: { oauth: { password: false } } })).rejects.toThrow()
 
+    const call = hoisted.mockRecordAuditEvent.mock.calls.find(
+      (c) => c[0].event === 'auth.password.disabled'
+    )
+    expect(call).toBeDefined()
+    expect(call?.[0].outcome).toBe('failure')
+    expect(call?.[0].metadata).toMatchObject({ reason: 'boom' })
+  })
+
+  it('records sso.config.changed when ssoOidc fields are mutated', async () => {
+    hoisted.mockGetAuthConfig.mockResolvedValue({
+      oauth: { password: true, magicLink: true },
+      ssoOidc: { enabled: false, autoCreateUsers: false },
+    })
+
+    await updateAuthConfig({
+      data: {
+        ssoOidc: { enabled: true, autoCreateUsers: true },
+      },
+    })
+
+    const ssoCall = hoisted.mockRecordAuditEvent.mock.calls.find(
+      (c) => c[0].event === 'sso.config.changed'
+    )
+    expect(ssoCall).toBeDefined()
+    expect(ssoCall?.[0].outcome).toBe('success')
+    expect(ssoCall?.[0].metadata).toMatchObject({
+      fields: expect.arrayContaining(['enabled', 'autoCreateUsers']),
+    })
+  })
+
+  it('does NOT record sso.config.changed when no ssoOidc values changed', async () => {
+    hoisted.mockGetAuthConfig.mockResolvedValue({
+      oauth: { password: true },
+      ssoOidc: { enabled: false },
+    })
+
+    await updateAuthConfig({ data: { ssoOidc: { enabled: false } } })
+
     const events = hoisted.mockRecordAuditEvent.mock.calls.map((c) => c[0].event)
-    expect(events).not.toContain('auth.password.disabled')
+    expect(events).not.toContain('sso.config.changed')
   })
 })

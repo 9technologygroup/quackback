@@ -114,6 +114,10 @@ vi.mock('@/lib/server/db', () => ({
   eq: vi.fn(),
 }))
 
+vi.mock('@tanstack/react-start/server', () => ({
+  getRequestHeaders: () => new Headers(),
+}))
+
 beforeEach(() => {
   vi.clearAllMocks()
   hoisted.mockRequireAuth.mockResolvedValue({
