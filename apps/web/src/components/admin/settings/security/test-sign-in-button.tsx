@@ -1,22 +1,36 @@
 /**
- * Admin "Test sign-in" button. Opens a popup against the IdP's
- * authorize URL and listens for the diagnostic result the
- * `/admin/sso/test/callback` route posts back via window.postMessage.
- * Falls back to polling `getSsoTestResultFn` every 2s in case the
- * popup is closed before the postMessage fires (e.g. an IdP redirect
- * to an error page that's on a different origin and so can't post).
+ * Admin "Test sign-in" button. Clicking it opens a modal that holds
+ * the whole test lifecycle: a waiting state while the admin completes
+ * the IdP round-trip in a popup, then the diagnostic result rendered
+ * in-place when the callback route postMessages back. The modal is
+ * the single visible surface — no inline result panel, no inline
+ * error alert under the button.
  *
- * Renders an inline result panel with the per-stage step list — the
- * admin sees exactly where the handshake broke (token-exchange,
- * signature-verify, claim-check, …) without having to dig through
- * IdP logs.
+ * Fallbacks:
+ *  - postMessage origin + source checks are the auth on result delivery.
+ *  - 5-minute polling cap against `getSsoTestResultFn` covers the case
+ *    where the popup lands on an off-origin error page and so can't post.
+ *  - usePopupTracker flips the modal back to a "popup closed" error if
+ *    the admin abandons the popup without finishing.
+ *
+ * Closing the modal mid-test aborts the polling, untracks the popup,
+ * and resets state. Late postMessage / poll results after close are
+ * ignored.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { useServerFn } from '@tanstack/react-start'
-import { CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/solid'
+import { ArrowPathIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/solid'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { startSsoTestFn, getSsoTestResultFn } from '@/lib/server/functions/sso-test'
 import type { HandshakeResult } from '@/lib/server/auth/sso-test-handshake'
 import { SSO_TEST_POSTMESSAGE_SOURCE } from '@/lib/shared/sso-test-keys'
@@ -33,8 +47,7 @@ const MAX_POLLS = 150
  *  `raw?: unknown` debug field. The callback route strips `raw` before
  *  writing the diagnostic to Redis (TanStack's serializable-input
  *  check rejects unknown shapes), so the wire payload is structurally
- *  this narrower type. Keeps the panel rendering off any field that
- *  isn't actually present on the result. */
+ *  this narrower type. */
 type WireResult =
   | Extract<HandshakeResult, { ok: true }>
   | Omit<Extract<HandshakeResult, { ok: false }>, 'raw'>
@@ -42,11 +55,11 @@ type WireResult =
 function friendlyStartError(error: string): string {
   switch (error) {
     case 'sso-not-configured':
-      return 'Save your IdP discovery URL and client ID before testing.'
+      return 'Add your discovery URL and client ID first.'
     case 'no-secret':
-      return 'Save a client secret before testing.'
+      return 'Add your client secret first.'
     case 'discovery-unreachable':
-      return "Couldn't fetch the discovery URL. Check that it's reachable and points at a valid OIDC document."
+      return "We couldn't reach your IdP. Check that your discovery URL is correct."
     default:
       return error
   }
@@ -55,6 +68,7 @@ function friendlyStartError(error: string): string {
 export function TestSignInButton({ disabled }: { disabled?: boolean }) {
   const startTest = useServerFn(startSsoTestFn)
   const pollResult = useServerFn(getSsoTestResultFn)
+  const [modalOpen, setModalOpen] = useState(false)
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<WireResult | null>(null)
@@ -67,19 +81,15 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
     }
   }
 
-  // If the admin closes the popup without finishing the round-trip we
-  // can short-circuit the polling fallback (5-minute cap) and flip the
-  // button back to "Test sign-in" immediately. Result-delivery paths
-  // (postMessage, poll hit) call clearPopup() so this doesn't fire
-  // after a successful test.
   const { trackPopup, clearPopup } = usePopupTracker({
     onPopupClosed: () => {
-      // Only react if we're still in-flight; a stale callback after a
-      // result has already landed would otherwise stomp the success UI.
+      // Only react if the admin hasn't seen a result yet; a stale
+      // close-callback after a successful test would otherwise stomp
+      // the success UI.
       setTesting((stillTesting) => {
-        if (stillTesting) {
-          clearPoll()
-        }
+        if (!stillTesting) return stillTesting
+        clearPoll()
+        setError('You closed the popup before sign-in finished. Try again.')
         return false
       })
     },
@@ -109,15 +119,25 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
     return () => clearPoll()
   }, [])
 
+  function handleClose() {
+    clearPoll()
+    clearPopup()
+    setModalOpen(false)
+    setTesting(false)
+    // Keep `result` / `error` populated through the close animation;
+    // the next `handleStart` clears them.
+  }
+
   async function handleStart() {
     setError(null)
     setResult(null)
     setTesting(true)
+    setModalOpen(true)
     let r: Awaited<ReturnType<typeof startTest>>
     try {
       r = await startTest({ data: {} })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not start the test.')
+      setError(err instanceof Error ? err.message : "Couldn't start the test.")
       setTesting(false)
       return
     }
@@ -128,18 +148,11 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
     }
     const popup = openAuthPopup(r.authorizeUrl)
     if (!popup) {
-      setError('Popup blocked. Allow popups for this site and try again.')
+      setError('Your browser blocked the popup. Allow popups and try again.')
       setTesting(false)
       return
     }
-    // postMessage origin + source checks are the only auth on result
-    // delivery; trackPopup gets us closed-window detection so we don't
-    // wait the full 5 minutes if the admin abandons the popup.
     trackPopup(popup)
-    // Polling fallback: if the popup lands on an off-origin error page
-    // the postMessage will never fire, but the callback route may still
-    // have written a diagnostic to Redis. Cleared the moment a result
-    // arrives, the poll cap is hit, or the component unmounts.
     clearPoll()
     let pollCount = 0
     pollRef.current = setInterval(async () => {
@@ -148,7 +161,7 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
         clearPoll()
         clearPopup()
         setTesting(false)
-        setError('Test sign-in did not complete. Try again or check your IdP redirect URI.')
+        setError("Sign-in didn't finish in time. Try again, or check your IdP's redirect URI.")
         return
       }
       try {
@@ -167,17 +180,75 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
   }
 
   return (
-    <div className="space-y-3">
+    <>
       <Button onClick={handleStart} disabled={disabled || testing} variant="outline">
-        {testing ? 'Testing sign-in…' : 'Test sign-in'}
+        Test sign-in
       </Button>
-      {error && (
-        <Alert variant="destructive">
-          <ExclamationTriangleIcon className="h-4 w-4" />
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-      {result && <TestResultPanel result={result} />}
+      <Dialog
+        open={modalOpen}
+        onOpenChange={(open) => {
+          if (!open) handleClose()
+        }}
+      >
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 p-0 sm:max-w-lg">
+          <DialogHeader className="shrink-0 px-6 pt-6 pb-2">
+            <DialogTitle>Test sign-in</DialogTitle>
+            <DialogDescription>
+              {testing
+                ? "Sign in to your IdP in the popup. We'll show what happened here when you're done."
+                : result
+                  ? result.ok
+                    ? 'Looks good — everything went through.'
+                    : "Something didn't connect. The steps below show where."
+                  : "Sign in to your IdP in a popup. We'll walk you through what happened."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto px-6 pb-2">
+            {error ? (
+              <Alert variant="destructive">
+                <ExclamationTriangleIcon className="h-4 w-4" />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : result ? (
+              <TestResultPanel result={result} />
+            ) : testing ? (
+              <WaitingState />
+            ) : null}
+          </div>
+          <DialogFooter className="shrink-0 px-6 pt-2 pb-6">
+            {testing ? (
+              <Button variant="outline" size="sm" onClick={handleClose}>
+                Cancel
+              </Button>
+            ) : (
+              <>
+                <Button variant="outline" size="sm" onClick={handleClose}>
+                  Close
+                </Button>
+                {(result || error) && (
+                  <Button size="sm" onClick={handleStart}>
+                    Try again
+                  </Button>
+                )}
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+function WaitingState() {
+  return (
+    <div className="flex flex-col items-center gap-3 py-10 text-center">
+      <ArrowPathIcon className="h-6 w-6 animate-spin text-muted-foreground" />
+      <div className="space-y-1">
+        <p className="text-sm font-medium">Waiting for your sign-in</p>
+        <p className="text-xs text-muted-foreground">
+          A popup just opened. Sign in there and the result will appear here.
+        </p>
+      </div>
     </div>
   )
 }
@@ -220,12 +291,12 @@ function TestResultPanel({ result }: { result: WireResult }) {
       <div className="rounded-md border border-green-500/30 bg-green-500/5 p-3 space-y-2">
         <div className="flex items-center gap-2 text-sm font-medium text-green-700">
           <CheckCircleIcon className="h-4 w-4" />
-          Sign-in flow succeeded
+          Sign-in works
         </div>
         <StepList steps={result.steps} />
         <details className="text-xs">
           <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-            Show claims and token info
+            Show what your IdP returned
           </summary>
           <pre className="mt-2 overflow-auto rounded bg-muted/30 p-2 font-mono text-[11px]">
             {JSON.stringify({ claims: result.claims, tokenInfo: result.tokenInfo }, null, 2)}
@@ -238,7 +309,7 @@ function TestResultPanel({ result }: { result: WireResult }) {
     <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 space-y-2">
       <div className="flex items-center gap-2 text-sm font-medium text-destructive">
         <ExclamationTriangleIcon className="h-4 w-4" />
-        Failed at: {STAGE_LABELS[result.stage] ?? result.stage}
+        Stopped at: {STAGE_LABELS[result.stage] ?? result.stage}
         {result.errorCode && (
           <code className="ml-1 text-[11px] text-muted-foreground">({result.errorCode})</code>
         )}
