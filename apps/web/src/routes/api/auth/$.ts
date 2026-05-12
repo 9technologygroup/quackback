@@ -51,6 +51,7 @@ export const Route = createFileRoute('/api/auth/$')({
               testId: handled.testId,
               result: handled.result,
               origin: url.origin,
+              identityMatched: handled.identityMatched,
             })
           }
         }

@@ -4,8 +4,10 @@
  * `sso-test:<state>` Redis key dispatches the diagnostic handshake;
  * a miss falls through to a real OAuth sign-in.
  *
- * `runHandshake` is import-graph-isolated from db/session/user/account,
- * so a Test sign-in cannot create a session or mutate user state.
+ * `runHandshake` itself imports nothing from db/session/user/account
+ * tables. After a successful match this handler does one read of `user.email`
+ * and one write to `principal.last_sso_sign_in_at` — narrow, idempotent,
+ * and bound to the admin who started the test.
  */
 
 import { runHandshake } from '@/lib/server/auth/sso-test-handshake'
@@ -29,6 +31,7 @@ export interface SsoTestCallbackInput {
 export interface SsoTestCallbackHandled {
   testId: string
   result: SsoTestDiagnostic['result']
+  identityMatched: boolean
 }
 
 /**
@@ -83,13 +86,40 @@ export async function handleSsoTestCallback(
         steps: result.steps,
       }
 
+  // Identity-match path: a successful Test sign-in where the IdP-returned
+  // `email` claim case-insensitively matches the admin who started the
+  // test unlocks the per-domain SSO enforcement bootstrap gate by writing
+  // `principal.last_sso_sign_in_at`. Bound to identity-match so it can't
+  // be used as a backdoor (a different admin's IdP login doesn't count).
+  let identityMatched = false
+  if (result.ok && result.claims.email) {
+    const { db, user, principal, eq } = await import('@/lib/server/db')
+    type UserId = `user_${string}`
+    const admin = await db.query.user.findFirst({
+      where: eq(user.id, session.adminUserId as UserId),
+      columns: { email: true },
+    })
+    const adminEmail = admin?.email?.toLowerCase().trim() ?? null
+    const idpEmail = String(result.claims.email).toLowerCase().trim()
+    if (adminEmail && idpEmail && adminEmail === idpEmail) {
+      identityMatched = true
+      await db
+        .update(principal)
+        .set({ lastSsoSignInAt: new Date() })
+        .where(eq(principal.userId, session.adminUserId as UserId))
+      console.log(
+        `[sso-test] identity match — unlocked enforcement gate for adminUserId=${session.adminUserId}`
+      )
+    }
+  }
+
   await cacheSet(
     ssoTestResultKey(session.testId),
-    { result: wireResult } satisfies SsoTestDiagnostic,
+    { result: wireResult, identityMatched } satisfies SsoTestDiagnostic,
     RESULT_TTL_SECONDS
   )
 
-  return { testId: session.testId, result: wireResult }
+  return { testId: session.testId, result: wireResult, identityMatched }
 }
 
 /**
@@ -104,15 +134,18 @@ export function renderSsoTestCallbackHtml({
   testId,
   result,
   origin,
+  identityMatched,
 }: {
   testId: string
   result: SsoTestDiagnostic['result']
   origin: string
+  identityMatched: boolean
 }): Response {
   const payload = jsSafeJson({
     source: SSO_TEST_POSTMESSAGE_SOURCE,
     testId,
     result,
+    identityMatched,
   })
 
   const escapedOrigin = JSON.stringify(origin)

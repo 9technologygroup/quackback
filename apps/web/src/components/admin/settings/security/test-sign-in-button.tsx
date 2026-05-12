@@ -85,6 +85,7 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<WireResult | null>(null)
+  const [identityMatched, setIdentityMatched] = useState<boolean | undefined>(undefined)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // Mirror `modalOpen` in a ref so the message handler + poll tick can
   // read the latest value without re-attaching every time it flips.
@@ -123,11 +124,16 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
     function onMessage(e: MessageEvent) {
       if (!modalOpenRef.current) return
       if (e.origin !== window.location.origin) return
-      const data = e.data as { source?: string; result?: WireResult } | null
+      const data = e.data as {
+        source?: string
+        result?: WireResult
+        identityMatched?: boolean
+      } | null
       if (!data || typeof data !== 'object') return
       if (data.source !== SSO_TEST_POSTMESSAGE_SOURCE) return
       if (!data.result) return
       setResult(data.result)
+      setIdentityMatched(data.identityMatched)
       setTesting(false)
       clearPoll()
       clearPopup()
@@ -153,6 +159,7 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
   async function handleStart() {
     setError(null)
     setResult(null)
+    setIdentityMatched(undefined)
     setTesting(true)
     setModalOpen(true)
     let r: Awaited<ReturnType<typeof startTest>>
@@ -196,6 +203,7 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
             return
           }
           setResult(diag.result)
+          setIdentityMatched(diag.identityMatched)
           setTesting(false)
           clearPoll()
           clearPopup()
@@ -230,7 +238,7 @@ export function TestSignInButton({ disabled }: { disabled?: boolean }) {
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             ) : result ? (
-              <TestResultPanel result={result} />
+              <TestResultPanel result={result} identityMatched={identityMatched} />
             ) : testing ? (
               <WaitingState />
             ) : null}
@@ -305,7 +313,13 @@ function StepList({ steps }: { steps: WireResult['steps'] }) {
   )
 }
 
-function TestResultPanel({ result }: { result: WireResult }) {
+function TestResultPanel({
+  result,
+  identityMatched,
+}: {
+  result: WireResult
+  identityMatched: boolean | undefined
+}) {
   if (result.ok) {
     return (
       <div className="rounded-md border border-green-500/30 bg-green-500/5 p-3 space-y-2">
@@ -314,6 +328,18 @@ function TestResultPanel({ result }: { result: WireResult }) {
           Sign-in works
         </div>
         <StepList steps={result.steps} />
+        {identityMatched ? (
+          <div className="rounded border border-green-500/30 bg-green-500/10 p-2 text-xs text-green-700">
+            <span className="font-medium">✓ Identity matches your admin account.</span> You can now
+            turn on Require SSO for verified domains.
+          </div>
+        ) : (
+          <div className="rounded border border-muted bg-muted/30 p-2 text-xs text-muted-foreground">
+            <span className="font-medium">ℹ</span> Tested as{' '}
+            {result.claims.email ?? 'an account with no email claim'}, but you're signed in as
+            someone else. To unlock enforcement, sign in to the IdP using your own admin email.
+          </div>
+        )}
         <details className="text-xs">
           <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
             Show what your IdP returned

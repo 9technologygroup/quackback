@@ -167,6 +167,14 @@ export type SsoTestDiagnostic = {
         hint: string
         steps: DiagnosticStep[]
       }
+  /**
+   * Set when result.ok and the IdP-returned `email` claim
+   * case-insensitively matches the admin who started the test.
+   * When true, `principal.last_sso_sign_in_at` has been updated
+   * for that admin and the per-domain SSO enforcement bootstrap
+   * gate is satisfied for the standard 7-day window.
+   */
+  identityMatched?: boolean
 }
 
 export const getSsoTestResultFn = createServerFn({ method: 'POST' })
