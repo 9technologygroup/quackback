@@ -1,8 +1,6 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { ArrowPathIcon, EnvelopeIcon, KeyIcon } from '@heroicons/react/24/solid'
-import { InformationCircleIcon } from '@heroicons/react/24/outline'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { MethodRow } from '@/components/admin/settings/auth-shared/method-row'
 import { OAuthProviderGrid } from '@/components/admin/settings/auth-shared/oauth-provider-grid'
 import { AuthProviderCredentialsDialog } from '@/components/admin/settings/portal-auth/auth-provider-credentials-dialog'
@@ -141,13 +139,6 @@ export function PortalAuthTab({ initialOauth, credentialStatus }: PortalAuthTabP
               (magicLinkEnabled && enabledMethodCount === 1)
             }
           />
-          <Alert>
-            <InformationCircleIcon className="h-4 w-4" />
-            <AlertDescription className="text-xs">
-              Single sign-on is for team admins only. See the <strong>Team</strong> tab to configure
-              it.
-            </AlertDescription>
-          </Alert>
         </div>
       </div>
 
