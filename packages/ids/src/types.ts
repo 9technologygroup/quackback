@@ -193,6 +193,13 @@ export type SubscriptionId = TypeId<'subscription'>
 export type InvoiceId = TypeId<'invoice'>
 
 // ============================================
+// Audit Entity IDs
+// ============================================
+
+/** Audit log entry ID - e.g., audit_01h455vb4pex5vsknk084sn02q */
+export type AuditId = TypeId<'audit'>
+
+// ============================================
 // Type Utilities
 // ============================================
 
@@ -256,6 +263,7 @@ export interface EntityIdMap {
   category: HelpCenterCategoryId
   article: HelpCenterArticleId
   article_feedback: HelpCenterFeedbackId
+  audit: AuditId
 }
 
 /**

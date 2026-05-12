@@ -191,6 +191,8 @@ export {
   webhooksRelations,
   // Schema tables - hook delivery idempotency
   hookDeliveries,
+  // Schema tables - audit log
+  auditLog,
   // Schema tables - segments
   segments,
   segmentsRelations,

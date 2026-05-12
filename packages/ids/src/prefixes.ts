@@ -92,6 +92,12 @@ export const ID_PREFIXES = {
 
   api_key: 'api_key',
   webhook: 'webhook',
+
+  // ============================================
+  // Audit
+  // ============================================
+
+  audit: 'audit',
 } as const
 
 /**
