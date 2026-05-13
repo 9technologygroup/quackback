@@ -27,7 +27,6 @@ import { CopyButton } from '@/components/shared/copy-button'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
 import { VerifiedDomainBlock } from './verified-domain-block'
-import { SsoEnforcementMode } from './sso-enforcement-mode'
 import { AttributeMappingSection } from './attribute-mapping-section'
 import { TimeAgo } from '@/components/ui/time-ago'
 import {
@@ -684,10 +683,7 @@ function SsoConfiguredForm({
         <VerifiedDomainBlock />
       </div>
 
-      {/* Section 3 — Workspace-wide enforcement mode. */}
-      <SsoEnforcementMode authConfig={{ ssoOidc: config } as AuthConfig} />
-
-      {/* Section 4 — IdP-attribute-based role mapping. */}
+      {/* Section 3 — IdP-attribute-based role mapping. */}
       <AttributeMappingSection currentMapping={config.attributeMapping} />
     </div>
   )

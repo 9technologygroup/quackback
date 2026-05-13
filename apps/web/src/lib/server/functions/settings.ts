@@ -246,12 +246,11 @@ export const fetchUserProfile = createServerFn({ method: 'GET' })
         await getTierLimits()
       )
       const role = (principalRow?.role ?? 'user') as 'admin' | 'member' | 'user'
-      // Use the full predicate so the profile page also hides the
-      // password section for team users locked in by workspace-wide
-      // `ssoOidc.required`, not just per-domain enforced users. When
-      // SSO isn't actually viable (tier downgrade, missing secret) the
-      // predicate fails open — the UI then surfaces the password
-      // section as a fallback, mirroring the sign-in flow.
+      // Use the full predicate so the profile page hides the password
+      // section for users at an enforced verified domain. When SSO isn't
+      // actually viable (tier downgrade, missing secret) the predicate
+      // fails open — the UI then surfaces the password section as a
+      // fallback, mirroring the sign-in flow.
       const ssoEnforced = isHardBound(
         'credential',
         userRecord?.email ?? null,
@@ -359,12 +358,6 @@ export const updateAuthConfigSchema = z.object({
       clientId: z.string().min(1).optional(),
       autoCreateUsers: z.boolean().optional(),
       autoProvisionRole: z.enum(['admin', 'member', 'user']).optional(),
-      // Workspace-wide enforce is server-owned via setSsoRequiredFn —
-      // the shape stays in the schema so reads (which round-trip the
-      // existing config back through updateAuthConfig in places like
-      // the config-file reconciler) don't strip it.
-      required: z.boolean().optional(),
-      allowMagicLinkUnderRequired: z.boolean().optional(),
       attributeMapping: z
         .object({
           claimPath: z.string().min(1),

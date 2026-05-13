@@ -45,25 +45,6 @@ export interface AuthConfig {
      */
     autoProvisionRole?: 'admin' | 'member' | 'user'
     /**
-     * Workspace-wide hard-binding to SSO for all team-role users.
-     *
-     * When `required=true`, every admin/member must sign in via SSO —
-     * password and non-SSO OAuth are blocked regardless of whether
-     * their email domain is in `sso_verified_domain`. Recovery codes
-     * remain valid as the break-glass. Magic-link is auto-disabled on
-     * enable unless `allowMagicLinkUnderRequired` is set.
-     *
-     * Default `undefined` means workspace-wide enforcement is off;
-     * per-domain `sso_verified_domain.enforced` still applies.
-     */
-    required?: boolean
-    /**
-     * Opt-in escape hatch: keeps magic-link sign-in available even when
-     * `required=true`. Default `undefined`/false means magic-link is
-     * disabled on the same call that enables workspace-wide require.
-     */
-    allowMagicLinkUnderRequired?: boolean
-    /**
      * Optional IdP-attribute → role mapping. When set, the SSO callback
      * resolves the user's role from a claim on the ID token instead of
      * falling back to `autoProvisionRole`. The mapping is first-match-
