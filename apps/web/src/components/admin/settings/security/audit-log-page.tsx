@@ -5,6 +5,7 @@
  */
 import { useMemo, useState } from 'react'
 import { useSuspenseQuery } from '@tanstack/react-query'
+import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
 import { ArrowDownTrayIcon } from '@heroicons/react/24/solid'
 import {
   Table,
@@ -69,18 +70,6 @@ export function rangeToFromIso(range: TimeRange): string | undefined {
   const minuteMs = 60 * 1000
   const now = Math.floor(Date.now() / minuteMs) * minuteMs
   return new Date(now - days * 24 * 60 * 60 * 1000).toISOString()
-}
-
-/** Tiny debounce hook — keeps the audit-log filter from spamming the
- *  server fn with every keystroke. */
-function useDebounced<T>(value: T, ms: number): T {
-  const [debounced, setDebounced] = useState(value)
-  // Reset on each input change; clear on unmount.
-  useMemo(() => {
-    const timer = setTimeout(() => setDebounced(value), ms)
-    return () => clearTimeout(timer)
-  }, [value, ms])
-  return debounced
 }
 
 /**
@@ -205,9 +194,9 @@ export function AuditLogPage() {
   const [eventType, setEventType] = useState<string>('all')
   const [timeRange, setTimeRange] = useState<TimeRange>('30d')
   const [actorEmailInput, setActorEmailInput] = useState<string>('')
-  // Debounce the actor filter so each keystroke doesn't fire a fresh
-  // server-fn request. 300ms feels like "instant" without spamming.
-  const debouncedActorEmail = useDebounced(actorEmailInput, 300)
+  // Debounce so each keystroke doesn't fire a fresh server-fn request.
+  // 300ms feels instant without spamming.
+  const debouncedActorEmail = useDebouncedValue(actorEmailInput, 300)
 
   const filters = useMemo(
     () => ({

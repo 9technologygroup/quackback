@@ -137,16 +137,13 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
       .where(eq(principal.type, 'user'))
 
     // The `max()` aggregate comes back as a string from postgres-js
-    // (the Date mapping only fires on plain timestamp column selects),
-    // so we accept both shapes and normalise to a real Date.
+    // (Date mapping only fires on plain timestamp column selects);
+    // normalise to Date for the TeamMember type. Different shape from
+    // the server-fn boundary (which wants string), so we use a Date
+    // constructor directly rather than going through toIsoStringOrNull.
     return rawMembers.map((m) => ({
       ...m,
-      lastSignInAt:
-        m.lastSignInAt instanceof Date
-          ? m.lastSignInAt
-          : typeof m.lastSignInAt === 'string'
-            ? new Date(m.lastSignInAt)
-            : null,
+      lastSignInAt: m.lastSignInAt == null ? null : new Date(m.lastSignInAt),
     }))
   } catch (error) {
     console.error('Error listing team members:', error)

@@ -301,17 +301,12 @@ export const forceSignOutUserFn = createServerFn({ method: 'POST' })
     const auth = await requireAuth({ roles: ['admin'] })
     const targetUserId = data.userId as UserId
 
-    const { db, session, eq, sql } = await import('@/lib/server/db')
-    const result = (await db.execute(sql`
-      DELETE FROM "session"
-      WHERE "user_id" = ${targetUserId}
-    `)) as unknown as { count?: number; length?: number }
-    // postgres-js exposes the affected-row count on `.count`; node-pg
-    // would put it on `rowCount`. We don't ship that driver but read
-    // both shapes defensively.
-    void session
-    void eq
-    const revokeCount = result.count ?? result.length ?? 0
+    const { db, session } = await import('@/lib/server/db')
+    const deleted = await db
+      .delete(session)
+      .where(eq(session.userId, targetUserId))
+      .returning({ id: session.id })
+    const revokeCount = deleted.length
 
     const { recordAuditEvent, actorFromAuth } = await import('@/lib/server/audit/log')
     const { getRequestHeaders } = await import('@tanstack/react-start/server')

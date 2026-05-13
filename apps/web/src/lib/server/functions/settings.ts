@@ -157,18 +157,14 @@ export const fetchTeamMembersAndInvitations = createServerFn({ method: 'GET' }).
         .where(ne(principal.role, 'user'))
 
       // Serialise to ISO string on the boundary so the client type
-      // stays narrow (`string | null`). The aggregate `max()` comes
-      // back as a string from postgres-js (not a Date — that mapping
-      // only fires on plain timestamp column selects), so we accept
-      // either and normalise.
+      // stays narrow (`string | null`). `toIsoStringOrNull` handles
+      // both the Date and string shapes — postgres-js returns the
+      // `max()` aggregate as a string, plain timestamp selects come
+      // back as Date.
+      const { toIsoStringOrNull } = await import('@/lib/shared/utils/date')
       const members = membersRaw.map((m) => ({
         ...m,
-        lastSignInAt:
-          m.lastSignInAt instanceof Date
-            ? m.lastSignInAt.toISOString()
-            : typeof m.lastSignInAt === 'string'
-              ? new Date(m.lastSignInAt).toISOString()
-              : null,
+        lastSignInAt: toIsoStringOrNull(m.lastSignInAt),
       }))
 
       const pendingInvitations = await db.query.invitation.findMany({

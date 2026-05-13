@@ -96,7 +96,15 @@ export const session = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
   },
-  (table) => [index('session_userId_idx').on(table.userId)]
+  (table) => [
+    index('session_userId_idx').on(table.userId),
+    // Composite index drives the `max(session.created_at) GROUP BY
+    // user_id` aggregate used by the team-list "last sign-in" column
+    // — without it, the planner does an index scan on `session_userId_idx`
+    // but still reads every row's created_at. With this, the planner
+    // can do an index-only scan and stop at the first row per group.
+    index('session_userId_createdAt_idx').on(table.userId, table.createdAt.desc()),
+  ]
 )
 
 export const account = pgTable(
