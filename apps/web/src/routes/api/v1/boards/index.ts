@@ -7,6 +7,12 @@ import {
   badRequestResponse,
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
+const audienceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('public') }),
+  z.object({ kind: z.literal('authenticated') }),
+  z.object({ kind: z.literal('team') }),
+  z.object({ kind: z.literal('segments'), segmentIds: z.array(z.string()).max(50) }),
+])
 
 // Input validation schema
 const createBoardSchema = z.object({
@@ -18,7 +24,7 @@ const createBoardSchema = z.object({
     .regex(/^[a-z0-9-]+$/, 'Slug must contain only lowercase letters, numbers, and hyphens')
     .optional(),
   description: z.string().max(500).optional(),
-  isPublic: z.boolean().optional().default(true),
+  audience: audienceSchema.optional(),
 })
 
 export const Route = createFileRoute('/api/v1/boards/')({
@@ -44,7 +50,7 @@ export const Route = createFileRoute('/api/v1/boards/')({
               name: board.name,
               slug: board.slug,
               description: board.description,
-              isPublic: board.isPublic,
+              audience: board.audience,
               postCount: board.postCount,
               createdAt: board.createdAt.toISOString(),
               updatedAt: board.updatedAt.toISOString(),
@@ -80,7 +86,7 @@ export const Route = createFileRoute('/api/v1/boards/')({
             name: parsed.data.name,
             slug: parsed.data.slug,
             description: parsed.data.description,
-            isPublic: parsed.data.isPublic,
+            audience: parsed.data.audience,
           })
 
           return createdResponse({
@@ -88,7 +94,7 @@ export const Route = createFileRoute('/api/v1/boards/')({
             name: board.name,
             slug: board.slug,
             description: board.description,
-            isPublic: board.isPublic,
+            audience: board.audience,
             createdAt: board.createdAt.toISOString(),
             updatedAt: board.updatedAt.toISOString(),
           })

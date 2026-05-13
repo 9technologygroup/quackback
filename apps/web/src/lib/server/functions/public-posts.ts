@@ -16,9 +16,15 @@ import {
 import { tiptapContentSchema } from '@/lib/shared/schemas/posts'
 import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
 import { getRequestHeaders } from '@tanstack/react-start/server'
-import { getOptionalAuth, requireAuth, hasAuthCredentials } from './auth-helpers'
+import {
+  getOptionalAuth,
+  requireAuth,
+  hasAuthCredentials,
+  policyActorFromAuth,
+} from './auth-helpers'
 import { getSettings } from './workspace'
 import { listPublicPosts, getAllUserVotedPostIds } from '@/lib/server/domains/posts/post.public'
+import { canViewBoard } from '@/lib/server/policy'
 import {
   getPublicRoadmapPostsPaginated,
   getVoteAndSubscriptionStatus,
@@ -351,7 +357,16 @@ export const createPublicPostFn = createServerFn({ method: 'POST' })
       ])
 
       // Validate results
-      if (!board || !board.isPublic) {
+      if (!board) {
+        throw new Error('Board not found')
+      }
+
+      // Authorize via policy. canViewBoard handles all four audience kinds —
+      // a "not found" framing for any denial preserves the previous behaviour
+      // (don't leak existence). Note: createPost will re-check via
+      // canCreatePost with the same actor, so this is defense-in-depth.
+      const actor = await policyActorFromAuth(ctx)
+      if (!canViewBoard(actor, board).allowed) {
         throw new Error('Board not found')
       }
 
@@ -378,6 +393,7 @@ export const createPublicPostFn = createServerFn({ method: 'POST' })
         userId: ctx.user.id as UserId,
         name: ctx.user.name || ctx.user.email,
         email: ctx.user.email,
+        actor,
       }
 
       // Create the post (events dispatched by service layer)

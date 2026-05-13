@@ -10,12 +10,19 @@ import {
 import { parseTypeId } from '@/lib/server/domains/api/validation'
 import type { BoardId } from '@quackback/ids'
 
+const audienceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('public') }),
+  z.object({ kind: z.literal('authenticated') }),
+  z.object({ kind: z.literal('team') }),
+  z.object({ kind: z.literal('segments'), segmentIds: z.array(z.string()).max(50) }),
+])
+
 // Input validation schema
 const updateBoardSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   slug: z.string().min(1).max(100).optional(),
   description: z.string().max(500).nullable().optional(),
-  isPublic: z.boolean().optional(),
+  audience: audienceSchema.optional(),
 })
 
 export const Route = createFileRoute('/api/v1/boards/$boardId')({
@@ -40,7 +47,7 @@ export const Route = createFileRoute('/api/v1/boards/$boardId')({
             name: board.name,
             slug: board.slug,
             description: board.description,
-            isPublic: board.isPublic,
+            audience: board.audience,
             settings: board.settings,
             createdAt: board.createdAt.toISOString(),
             updatedAt: board.updatedAt.toISOString(),
@@ -75,7 +82,7 @@ export const Route = createFileRoute('/api/v1/boards/$boardId')({
             name: parsed.data.name,
             slug: parsed.data.slug,
             description: parsed.data.description,
-            isPublic: parsed.data.isPublic,
+            audience: parsed.data.audience,
           })
 
           return successResponse({
@@ -83,7 +90,7 @@ export const Route = createFileRoute('/api/v1/boards/$boardId')({
             name: board.name,
             slug: board.slug,
             description: board.description,
-            isPublic: board.isPublic,
+            audience: board.audience,
             settings: board.settings,
             createdAt: board.createdAt.toISOString(),
             updatedAt: board.updatedAt.toISOString(),

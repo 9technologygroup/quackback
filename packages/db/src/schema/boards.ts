@@ -16,7 +16,9 @@ export const boards = pgTable(
     slug: text('slug').notNull().unique(),
     name: text('name').notNull(),
     description: text('description'),
-    isPublic: boolean('is_public').default(true).notNull(),
+    // v1 access controls — see BoardAudience / BoardModeration in ../types.
+    // Replaces the legacy `is_public` boolean. Existing rows are backfilled
+    // by the 0056 migration before the column is dropped.
     audience: jsonb('audience').$type<BoardAudience>().default(DEFAULT_BOARD_AUDIENCE).notNull(),
     moderation: jsonb('moderation')
       .$type<BoardModeration>()
@@ -30,7 +32,6 @@ export const boards = pgTable(
   },
   (table) => [
     // Note: boards_slug_unique constraint already provides uniqueness; no separate index needed
-    index('boards_is_public_idx').on(table.isPublic),
     index('boards_deleted_at_idx').on(table.deletedAt),
   ]
 )

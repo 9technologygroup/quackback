@@ -40,8 +40,7 @@ export function useCreateBoard() {
         name: input.name,
         slug: slugify(input.name),
         description: input.description ?? null,
-        isPublic: input.isPublic ?? true,
-        audience: DEFAULT_BOARD_AUDIENCE,
+        audience: input.audience ?? DEFAULT_BOARD_AUDIENCE,
         moderation: DEFAULT_BOARD_MODERATION,
         settings: {},
         createdAt: new Date(),
@@ -90,7 +89,7 @@ export function useUpdateBoard() {
             ...board,
             ...(input.name !== undefined && { name: input.name }),
             ...(input.description !== undefined && { description: input.description }),
-            ...(input.isPublic !== undefined && { isPublic: input.isPublic }),
+            ...(input.audience !== undefined && { audience: input.audience }),
             ...(optimisticSettings !== undefined && { settings: optimisticSettings }),
             updatedAt: new Date(),
           }
@@ -103,7 +102,7 @@ export function useUpdateBoard() {
           ...previousDetail,
           ...(input.name !== undefined && { name: input.name }),
           ...(input.description !== undefined && { description: input.description }),
-          ...(input.isPublic !== undefined && { isPublic: input.isPublic }),
+          ...(input.audience !== undefined && { audience: input.audience }),
           ...(optimisticSettings !== undefined && { settings: optimisticSettings }),
           updatedAt: new Date(),
         })

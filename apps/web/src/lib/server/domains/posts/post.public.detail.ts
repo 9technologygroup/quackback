@@ -20,11 +20,12 @@ import { buildCommentTree, toStatusChange } from '@/lib/shared'
 import type { PublicPostDetail, PublicComment, PinnedComment } from './post.types'
 import { resolveAvatarUrl, parseJson, parseAvatarData } from './post.public'
 import { getExecuteRows } from '@/lib/server/utils'
+import { canViewPost, ANONYMOUS_ACTOR, type Actor } from '@/lib/server/policy'
 
 export async function getPublicPostDetail(
   postId: PostId,
   principalId?: PrincipalId,
-  options?: { includePrivateComments?: boolean }
+  options?: { includePrivateComments?: boolean; actor?: Actor }
 ): Promise<PublicPostDetail | null> {
   const postUuid = toUuid(postId)
 
@@ -46,7 +47,9 @@ export async function getPublicPostDetail(
         boardId: boards.id,
         boardName: boards.name,
         boardSlug: boards.slug,
-        boardIsPublic: boards.isPublic,
+        boardAudience: boards.audience,
+        postModerationState: posts.moderationState,
+        postPrincipalId: posts.principalId,
         tagsJson: sql<string>`COALESCE(
           (SELECT json_agg(json_build_object('id', t.id, 'name', t.name, 'color', t.color))
            FROM ${postTags} pt
@@ -145,7 +148,22 @@ export async function getPublicPostDetail(
   ])
 
   const postResult = postResults[0]
-  if (!postResult || !postResult.boardIsPublic) {
+  if (!postResult) {
+    return null
+  }
+
+  // Authorize the read through policy.posts.canViewPost. This gates:
+  //   - boards with non-public audience (team, authenticated, segments)
+  //   - posts in non-published moderationState for non-authors and non-team
+  // The 404-on-deny shape matches the previous behaviour (don't leak
+  // existence to unauthorized callers).
+  const actor = options?.actor ?? ANONYMOUS_ACTOR
+  const viewDecision = canViewPost(
+    actor,
+    { moderationState: postResult.postModerationState, principalId: postResult.postPrincipalId },
+    { audience: postResult.boardAudience }
+  )
+  if (!viewDecision.allowed) {
     return null
   }
 

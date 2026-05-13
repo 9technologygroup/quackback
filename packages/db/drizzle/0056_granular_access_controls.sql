@@ -37,6 +37,11 @@ SET "audience" = CASE
 END
 WHERE "audience" = '{"kind":"public"}'::jsonb;
 
+-- Drop the legacy isPublic column. Audience is now the sole source of truth
+-- for board visibility. CASCADE drops the supporting boards_is_public_idx.
+DROP INDEX IF EXISTS "boards_is_public_idx";
+ALTER TABLE "boards" DROP COLUMN IF EXISTS "is_public";
+
 -- ---------------------------------------------------------------
 -- 2. segments.slug (add nullable, backfill, then enforce NOT NULL)
 -- ---------------------------------------------------------------

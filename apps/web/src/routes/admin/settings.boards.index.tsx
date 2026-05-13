@@ -29,7 +29,7 @@ interface BoardForSettings {
   name: string
   slug: string
   description: string | null
-  isPublic: boolean
+  audience: import('@/lib/shared/db-types').BoardAudience
 }
 
 const searchSchema = z.object({

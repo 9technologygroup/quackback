@@ -22,13 +22,22 @@ import { invalidateSettingsCache } from '@/lib/server/domains/settings/settings.
 // Schemas
 // ============================================
 
+const audienceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('public') }),
+  z.object({ kind: z.literal('authenticated') }),
+  z.object({ kind: z.literal('team') }),
+  z.object({ kind: z.literal('segments'), segmentIds: z.array(z.string()).max(50) }),
+])
+
 const createBoardSchema = z.object({
   name: z
     .string()
     .min(1, 'Board name is required')
     .max(100, 'Board name must be 100 characters or less'),
   description: z.string().max(500, 'Description must be 500 characters or less').optional(),
-  isPublic: z.boolean().default(true),
+  // Defaults to public when omitted. Richer audience choices land via this
+  // field on the same create call — no separate post-create step needed.
+  audience: audienceSchema.optional(),
 })
 
 const getBoardSchema = z.object({
@@ -45,7 +54,7 @@ const updateBoardSchema = z.object({
   id: z.string(),
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).nullable().optional(),
-  isPublic: z.boolean().optional(),
+  audience: audienceSchema.optional(),
   settings: boardSettingsSchema.optional(),
 })
 
@@ -132,7 +141,7 @@ export const createBoardFn = createServerFn({ method: 'POST' })
     const board = await createBoard({
       name: data.name,
       description: data.description,
-      isPublic: data.isPublic,
+      audience: data.audience,
     })
     console.log(`[fn:boards] createBoardFn: id=${board.id}`)
     return serializeBoard(board)
@@ -150,7 +159,7 @@ export const updateBoardFn = createServerFn({ method: 'POST' })
     const board = await updateBoard(data.id as BoardId, {
       name: data.name,
       description: data.description,
-      isPublic: data.isPublic,
+      audience: data.audience,
       settings: data.settings as BoardSettings | undefined,
     })
     console.log(`[fn:boards] updateBoardFn: updated id=${board.id}`)
@@ -209,7 +218,8 @@ export const createBoardsBatchFn = createServerFn({ method: 'POST' })
       const board = await createBoard({
         name: boardInput.name,
         description: boardInput.description,
-        isPublic: true,
+        // Onboarding-batch boards default to public; admins can lock them
+        // down later via updateBoardAccessFn.
       })
       createdBoards.push(serializeBoard(board))
     }
@@ -261,12 +271,7 @@ import { isAdmin } from '@/lib/shared/roles'
 import { ForbiddenError, NotFoundError } from '@/lib/shared/errors'
 import { recordAuditEvent, actorFromAuth } from '@/lib/server/audit/log'
 
-const audienceSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('public') }),
-  z.object({ kind: z.literal('authenticated') }),
-  z.object({ kind: z.literal('team') }),
-  z.object({ kind: z.literal('segments'), segmentIds: z.array(z.string()).max(50) }),
-])
+// audienceSchema is defined at the top of this file (reused by create/update).
 
 const moderationSchema = z.object({
   requireApproval: z.enum(['none', 'anonymous', 'authenticated', 'all']),

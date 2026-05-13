@@ -19,7 +19,6 @@ describe('Schema definitions', () => {
       expect(columns).toContain('slug')
       expect(columns).toContain('name')
       expect(columns).toContain('description')
-      expect(columns).toContain('isPublic')
       expect(columns).toContain('audience')
       expect(columns).toContain('moderation')
       expect(columns).toContain('settings')
@@ -30,7 +29,14 @@ describe('Schema definitions', () => {
 
     it('has correct column count', () => {
       const columns = Object.keys(getTableColumns(boards))
-      expect(columns.length).toBe(11)
+      expect(columns.length).toBe(10)
+    })
+
+    it('no longer has the legacy isPublic column', () => {
+      // Regression guard for the unified migration that dropped is_public
+      // in favour of `audience`. New code reads audience exclusively.
+      const columns = Object.keys(getTableColumns(boards))
+      expect(columns).not.toContain('isPublic')
     })
   })
 

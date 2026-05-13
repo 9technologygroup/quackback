@@ -84,21 +84,17 @@ export async function createBoard(input: CreateBoardInput): Promise<Board> {
     slug = `${baseSlug}-${counter}`
   }
 
-  // Phase-2 deploy invariant: dual-write isPublic + audience so a new
-  // board created on this code path lands with a consistent visibility
-  // record across both columns. Until isPublic is fully retired (Task 21
-  // follow-up), readers may consult either; they must not disagree.
-  const isPublic = input.isPublic ?? true
-  const audience: BoardAudience = isPublic ? { kind: 'public' } : { kind: 'team' }
+  // Create the board. Audience defaults to public when omitted; richer
+  // choices (authenticated/team/segments) can be set here on create or
+  // changed later via updateBoardAccessFn (admin-only, audited).
+  const audience: BoardAudience = input.audience ?? { kind: 'public' }
 
-  // Create the board
   const [board] = await db
     .insert(boards)
     .values({
       name: input.name.trim(),
       slug,
       description: input.description?.trim() || null,
-      isPublic,
       audience,
       settings: input.settings || {},
     })
@@ -170,14 +166,7 @@ export async function updateBoard(id: BoardId, input: UpdateBoardInput): Promise
   if (input.name !== undefined) updateData.name = input.name.trim()
   if (input.description !== undefined) updateData.description = input.description?.trim() || null
   if (slug !== existingBoard.slug) updateData.slug = slug
-  if (input.isPublic !== undefined) {
-    updateData.isPublic = input.isPublic
-    // Dual-write: when the legacy isPublic toggle changes via the old
-    // admin UI, mirror it onto audience so portal queries (which now
-    // read audience) stay consistent. Granular audience changes go
-    // through updateBoardAccessFn (admin-only, audited) instead.
-    updateData.audience = input.isPublic ? { kind: 'public' } : { kind: 'team' }
-  }
+  if (input.audience !== undefined) updateData.audience = input.audience
   if (input.settings !== undefined) updateData.settings = input.settings
 
   // Update the board

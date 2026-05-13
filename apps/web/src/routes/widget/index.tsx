@@ -56,7 +56,7 @@ export const Route = createFileRoute('/widget/')({
         color: s.color,
       })),
       boards: portalData.boards
-        .filter((b) => b.isPublic)
+        .filter((b) => b.audience.kind === 'public')
         .map((b) => ({
           id: b.id as string,
           name: b.name,

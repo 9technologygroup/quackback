@@ -35,6 +35,12 @@ vi.mock('@/lib/server/functions/auth-helpers', () => ({
   getOptionalAuth: vi.fn(),
   hasAuthCredentials: vi.fn().mockReturnValue(false),
   hasSessionCookie: vi.fn().mockReturnValue(false),
+  policyActorFromAuth: vi.fn(async () => ({
+    principalId: null,
+    role: null,
+    principalType: 'anonymous' as const,
+    segmentIds: new Set(),
+  })),
 }))
 
 // --- Mock: settings service (dynamic import target for toggleVoteFn and createCommentFn) ---
@@ -259,7 +265,13 @@ describe('createPublicPostFn anonymous feature flag', () => {
     content: 'Some content',
   }
 
-  const MOCK_BOARD = { id: 'board_123', name: 'General', slug: 'general', isPublic: true }
+  const MOCK_BOARD = {
+    id: 'board_123',
+    name: 'General',
+    slug: 'general',
+    audience: { kind: 'public' as const },
+    moderation: { requireApproval: 'none' as const, trustedSegmentIds: [] },
+  }
   const MOCK_STATUS = { id: 'status_123' }
   const MOCK_POST = {
     id: 'post_new',
