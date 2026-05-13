@@ -488,3 +488,30 @@ describe('lookupAuthMethodsFn — team magic-link toggle', () => {
     expect(result).toMatchObject({ authConfig: { magicLink: true } })
   })
 })
+
+describe('lookupAuthMethodsFn — ssoOidc.required is inert (workspace-wide mode removed)', () => {
+  it('ignores ssoOidc.required for team surface (workspace-wide mode removed)', async () => {
+    // The `required` flag is inert; team users at non-verified-domain
+    // emails should fall through to the methods form, not `sso-redirect`.
+    hoisted.mockGetTenantSettings.mockResolvedValue({
+      authConfig: {
+        oauth: { password: true },
+        openSignup: false,
+        ssoOidc: {
+          enabled: true,
+          discoveryUrl: 'https://idp.example/.well-known/openid-configuration',
+          clientId: 'cid',
+          autoCreateUsers: false,
+          required: true, // inert
+        },
+      },
+      verifiedDomains: [],
+      publicAuthConfig: { oauth: { password: true } },
+    })
+
+    const result = await lookupAuthMethods({
+      data: { email: 'newhire@example.com', surface: 'team' },
+    })
+    expect((result as { kind: string }).kind).toBe('methods')
+  })
+})
