@@ -30,6 +30,7 @@ import {
   type VerifyDomainResult,
 } from '@/lib/server/functions/sso'
 import type { VerifiedDomain } from '@/lib/server/domains/settings/settings.types'
+import { useSsoTestSignIn } from './use-sso-test-sign-in'
 
 const MAX_VERIFIED_DOMAINS = 10
 
@@ -132,17 +133,18 @@ export function VerifiedDomainsSection() {
   )
 }
 
-function DomainRow({
-  domain,
-  enforcementEligible,
-}: {
-  domain: VerifiedDomain
-  enforcementEligible: boolean
-}) {
+/**
+ * All the mutation logic + state for one verified-domain row, shared
+ * by the desktop `DomainRow` and the mobile `DomainCard` — they differ
+ * only in JSX layout. Centralising it here means the test-sign-in gate
+ * on the Require SSO toggle is wired once.
+ */
+function useDomainEnforcement(domain: VerifiedDomain, enforcementEligible: boolean) {
   const queryClient = useQueryClient()
   const remove = useServerFn(removeVerifiedDomainFn)
   const verify = useServerFn(verifyDomainFn)
   const setEnforced = useServerFn(setVerifiedDomainEnforcedFn)
+  const { open: openTestSignIn } = useSsoTestSignIn()
 
   const [pending, setPending] = useState(false)
   const [verifyResult, setVerifyResult] = useState<VerifyDomainResult | null>(null)
@@ -198,11 +200,67 @@ function DomainRow({
     }
   }
 
-  const enforcementDisabledReason = !isVerified
-    ? 'Verify this domain first.'
-    : !enforcementEligible
-      ? 'Run a successful test sign-in first.'
-      : null
+  /**
+   * Require SSO toggle handler. Turning OFF is immediate. Turning ON:
+   *  - not test-eligible → open the shared test sign-in modal; an
+   *    identity-matched success auto-advances to the confirm dialog
+   *  - eligible → straight to the confirm dialog
+   * The toggle itself is never disabled for eligibility — only for an
+   * unverified domain (which the parent already guards by not rendering
+   * the toggle until verified).
+   */
+  function handleEnforceToggle(next: boolean) {
+    if (!next) {
+      void applyEnforced(false)
+      return
+    }
+    if (!enforcementEligible) {
+      openTestSignIn({
+        reason: `Run a successful test sign-in before enforcing SSO on ${domain.name}.`,
+        onSuccess: () => setEnforceConfirmOpen(true),
+      })
+      return
+    }
+    setEnforceConfirmOpen(true)
+  }
+
+  return {
+    pending,
+    verifyResult,
+    enforceError,
+    removeOpen,
+    setRemoveOpen,
+    enforceConfirmOpen,
+    setEnforceConfirmOpen,
+    isVerified,
+    handleVerify,
+    handleRemove,
+    applyEnforced,
+    handleEnforceToggle,
+  }
+}
+
+function DomainRow({
+  domain,
+  enforcementEligible,
+}: {
+  domain: VerifiedDomain
+  enforcementEligible: boolean
+}) {
+  const {
+    pending,
+    verifyResult,
+    enforceError,
+    removeOpen,
+    setRemoveOpen,
+    enforceConfirmOpen,
+    setEnforceConfirmOpen,
+    isVerified,
+    handleVerify,
+    handleRemove,
+    applyEnforced,
+    handleEnforceToggle,
+  } = useDomainEnforcement(domain, enforcementEligible)
 
   return (
     <>
@@ -232,14 +290,8 @@ function DomainRow({
           {isVerified && (
             <Switch
               checked={domain.enforced}
-              onCheckedChange={(next) => {
-                if (next) {
-                  setEnforceConfirmOpen(true)
-                } else {
-                  void applyEnforced(false)
-                }
-              }}
-              disabled={pending || (!domain.enforced && !!enforcementDisabledReason)}
+              onCheckedChange={handleEnforceToggle}
+              disabled={pending}
               aria-label={`Require SSO for ${domain.name}`}
             />
           )}
@@ -298,17 +350,12 @@ function DomainRow({
         </TableRow>
       )}
 
-      {isVerified && (enforcementDisabledReason || enforceError) && !domain.enforced && (
+      {isVerified && enforceError && !domain.enforced && (
         <TableRow className="border-t-0 hover:bg-transparent">
           <TableCell colSpan={4} className="bg-muted/30 py-2">
-            {enforceError && (
-              <Alert variant="destructive">
-                <AlertDescription className="text-xs">{enforceError}</AlertDescription>
-              </Alert>
-            )}
-            {enforcementDisabledReason && !enforceError && (
-              <p className="text-[11px] text-muted-foreground">{enforcementDisabledReason}</p>
-            )}
+            <Alert variant="destructive">
+              <AlertDescription className="text-xs">{enforceError}</AlertDescription>
+            </Alert>
           </TableCell>
         </TableRow>
       )}
@@ -356,70 +403,20 @@ function DomainCard({
   domain: VerifiedDomain
   enforcementEligible: boolean
 }) {
-  const queryClient = useQueryClient()
-  const remove = useServerFn(removeVerifiedDomainFn)
-  const verify = useServerFn(verifyDomainFn)
-  const setEnforced = useServerFn(setVerifiedDomainEnforcedFn)
-
-  const [pending, setPending] = useState(false)
-  const [verifyResult, setVerifyResult] = useState<VerifyDomainResult | null>(null)
-  const [enforceError, setEnforceError] = useState<string | null>(null)
-  const [removeOpen, setRemoveOpen] = useState(false)
-  const [enforceConfirmOpen, setEnforceConfirmOpen] = useState(false)
-
-  const isVerified = domain.verifiedAt !== null
-
-  const refresh = async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['settings', 'verifiedDomains'] }),
-      queryClient.invalidateQueries({ queryKey: ['admin', 'ssoStatus'] }),
-    ])
-  }
-
-  async function handleVerify() {
-    setVerifyResult(null)
-    setPending(true)
-    try {
-      const r = await verify({ data: { id: domain.id } })
-      setVerifyResult(r)
-      if (r.verified) await refresh()
-    } catch {
-      setVerifyResult({ verified: false, reason: 'lookup-failed' })
-    } finally {
-      setPending(false)
-    }
-  }
-
-  async function handleRemove() {
-    setPending(true)
-    try {
-      await remove({ data: { id: domain.id } })
-      await refresh()
-    } finally {
-      setPending(false)
-      setRemoveOpen(false)
-    }
-  }
-
-  async function applyEnforced(next: boolean) {
-    setEnforceError(null)
-    setPending(true)
-    try {
-      await setEnforced({ data: { id: domain.id, enforced: next } })
-      await refresh()
-    } catch (err) {
-      setEnforceError(err instanceof Error ? err.message : 'Could not change enforcement.')
-    } finally {
-      setPending(false)
-      setEnforceConfirmOpen(false)
-    }
-  }
-
-  const enforcementDisabledReason = !isVerified
-    ? 'Verify this domain first.'
-    : !enforcementEligible
-      ? 'Run a successful test sign-in first.'
-      : null
+  const {
+    pending,
+    verifyResult,
+    enforceError,
+    removeOpen,
+    setRemoveOpen,
+    enforceConfirmOpen,
+    setEnforceConfirmOpen,
+    isVerified,
+    handleVerify,
+    handleRemove,
+    applyEnforced,
+    handleEnforceToggle,
+  } = useDomainEnforcement(domain, enforcementEligible)
 
   return (
     <>
@@ -456,31 +453,20 @@ function DomainCard({
               <Switch
                 id={`require-sso-card-${domain.id}`}
                 checked={domain.enforced}
-                onCheckedChange={(next) => {
-                  if (next) {
-                    setEnforceConfirmOpen(true)
-                  } else {
-                    void applyEnforced(false)
-                  }
-                }}
-                disabled={pending || (!domain.enforced && !!enforcementDisabledReason)}
+                onCheckedChange={handleEnforceToggle}
+                disabled={pending}
                 aria-label={`Require SSO for ${domain.name}`}
               />
             </div>
           )}
         </div>
 
-        {/* Enforcement hint */}
-        {isVerified && (enforcementDisabledReason || enforceError) && !domain.enforced && (
+        {/* Enforcement error hint */}
+        {isVerified && enforceError && !domain.enforced && (
           <div>
-            {enforceError && (
-              <Alert variant="destructive">
-                <AlertDescription className="text-xs">{enforceError}</AlertDescription>
-              </Alert>
-            )}
-            {enforcementDisabledReason && !enforceError && (
-              <p className="text-[11px] text-muted-foreground">{enforcementDisabledReason}</p>
-            )}
+            <Alert variant="destructive">
+              <AlertDescription className="text-xs">{enforceError}</AlertDescription>
+            </Alert>
           </div>
         )}
 

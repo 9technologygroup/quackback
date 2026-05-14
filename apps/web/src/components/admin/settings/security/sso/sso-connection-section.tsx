@@ -37,6 +37,7 @@ import { useRouteContext } from '@tanstack/react-router'
 import type { AuthConfig } from '@/lib/shared/types/settings'
 import type { SsoStatus } from '@/lib/server/functions/sso'
 import { TestSignInButton } from './test-sign-in-button'
+import { useSsoTestSignIn } from './use-sso-test-sign-in'
 
 interface SsoConnectionSectionProps {
   initialConfig: AuthConfig
@@ -454,6 +455,7 @@ function SsoConfiguredForm({
   const [pendingRoleChange, setPendingRoleChange] = useState<'admin' | 'member' | 'user' | null>(
     null
   )
+  const { open: openTestSignIn } = useSsoTestSignIn()
 
   const fieldManaged = (key: keyof NonNullable<AuthConfig['ssoOidc']>) =>
     isManaged(`auth.ssoOidc.${String(key)}`)
@@ -494,8 +496,24 @@ function SsoConfiguredForm({
   /** Toggle the master Enabled flag. Immediate-save (like Password
    *  and OAuth toggles elsewhere) — no Save click needed for a single
    *  boolean. Updates the local draft optimistically so the header
-   *  reflects the change before the round-trip lands. */
+   *  reflects the change before the round-trip lands.
+   *
+   *  Turning ON is gated: enabling SSO needs a test sign-in that
+   *  postdates the last connection-details change. When the server
+   *  status says we're not eligible, the toggle opens the shared test
+   *  sign-in modal instead of failing the save — an identity-matched
+   *  success then auto-applies the enable. Turning OFF is never gated. */
   const handleEnabledToggle = async (next: boolean) => {
+    if (next && !ssoStatus.enableEligible) {
+      openTestSignIn({
+        reason: 'Run a successful test sign-in before enabling SSO.',
+        onSuccess: async () => {
+          setDraft((d) => ({ ...d, enabled: true }))
+          await onSave({ enabled: true })
+        },
+      })
+      return
+    }
     setDraft({ ...draft, enabled: next })
     await onSave({ enabled: next })
   }
