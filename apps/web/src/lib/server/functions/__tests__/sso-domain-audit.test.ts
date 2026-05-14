@@ -37,7 +37,9 @@ const hoisted = vi.hoisted(() => ({
   mockHasSsoClientSecret: vi.fn(),
   mockGetTierLimits: vi.fn(),
   mockIsEmailConfigured: vi.fn().mockReturnValue(true),
-  mockPrincipalFindFirst: vi.fn(),
+  mockGetAuthConfig: vi.fn(),
+  // Resolves to the `[maxRow]` array from the max-team-SSO-sign-in query.
+  mockMaxSignInRow: vi.fn(),
 }))
 
 vi.mock('@/lib/server/functions/auth-helpers', () => ({
@@ -80,6 +82,7 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   setVerifiedDomainEnforced: hoisted.mockSetVerifiedDomainEnforced,
   listVerifiedDomains: hoisted.mockListVerifiedDomains,
   getTenantSettings: vi.fn(),
+  getAuthConfig: hoisted.mockGetAuthConfig,
   updateAuthConfig: vi.fn(),
   setSsoDomainSubtree: vi.fn(),
 }))
@@ -102,15 +105,23 @@ vi.mock('@/lib/server/content/ssrf-guard', () => ({
   checkUrlSafety: vi.fn().mockResolvedValue({ safe: true }),
 }))
 
+// setVerifiedDomainEnforcedFn's enforce gate runs a max-team-SSO-sign-in
+// query: db.select(...).from(...).where(inArray(...)).orderBy(sql`...`).limit(1)
 vi.mock('@/lib/server/db', () => ({
   db: {
-    query: {
-      principal: {
-        findFirst: hoisted.mockPrincipalFindFirst,
-      },
-    },
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () => hoisted.mockMaxSignInRow(),
+          }),
+        }),
+      }),
+    }),
   },
-  principal: {},
+  principal: { lastSsoSignInAt: 'last_sso_col', role: 'role_col' },
+  sql: (strings: TemplateStringsArray) => strings,
+  inArray: vi.fn(),
   eq: vi.fn(),
 }))
 
@@ -124,9 +135,16 @@ beforeEach(() => {
     user: { id: 'user_admin1', email: 'admin@example.com' },
     principal: { id: 'principal_admin1', role: 'admin' },
   })
-  hoisted.mockPrincipalFindFirst.mockResolvedValue({
-    lastSsoSignInAt: new Date(),
+  // Default: the enforce gate passes via a fresh test sign-in — a
+  // lastSuccessfulTestAt that postdates the last detailsChangedAt.
+  hoisted.mockGetAuthConfig.mockResolvedValue({
+    ssoOidc: {
+      detailsChangedAt: '2026-05-10T00:00:00.000Z',
+      lastSuccessfulTestAt: '2026-05-12T00:00:00.000Z',
+    },
   })
+  // No real team SSO sign-in by default — the test sign-in carries it.
+  hoisted.mockMaxSignInRow.mockResolvedValue([{ ts: null }])
   hoisted.mockListVerifiedDomains.mockResolvedValue([
     {
       id: 'domain_acme',
@@ -186,8 +204,16 @@ describe('setVerifiedDomainEnforcedFn audit-log wiring', () => {
     expect(call.outcome).toBe('success')
   })
 
-  it('records a failure event when the bootstrap guard rejects the enable', async () => {
-    hoisted.mockPrincipalFindFirst.mockResolvedValue({ lastSsoSignInAt: null })
+  it('records a failure event when the test-sign-in gate rejects the enable', async () => {
+    // No valid test sign-in (test predates the last details change) and
+    // no real team SSO sign-in — the enforce gate is locked.
+    hoisted.mockGetAuthConfig.mockResolvedValue({
+      ssoOidc: {
+        detailsChangedAt: '2026-05-12T00:00:00.000Z',
+        lastSuccessfulTestAt: '2026-05-10T00:00:00.000Z',
+      },
+    })
+    hoisted.mockMaxSignInRow.mockResolvedValue([{ ts: null }])
 
     await expect(
       setVerifiedDomainEnforced({ data: { id: 'domain_acme', enforced: true } })
@@ -197,6 +223,6 @@ describe('setVerifiedDomainEnforcedFn audit-log wiring', () => {
     const call = hoisted.mockRecordAuditEvent.mock.calls[0][0]
     expect(call.event).toBe('sso.enforcement.domain.enabled')
     expect(call.outcome).toBe('failure')
-    expect(call.metadata).toMatchObject({ reason: 'SSO_BOOTSTRAP_GUARD' })
+    expect(call.metadata).toMatchObject({ reason: 'SSO_TEST_REQUIRED' })
   })
 })
