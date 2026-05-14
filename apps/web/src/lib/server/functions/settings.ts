@@ -393,12 +393,6 @@ export const updateAuthConfigSchema = z.object({
     })
     .strict()
     .optional(),
-  security: z
-    .object({
-      notifyOnNewSignIn: z.boolean().optional(),
-    })
-    .strict()
-    .optional(),
 })
 
 export type UpdateAuthConfigActionInput = z.infer<typeof updateAuthConfigSchema>

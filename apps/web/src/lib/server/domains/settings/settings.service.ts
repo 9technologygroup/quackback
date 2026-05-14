@@ -153,11 +153,6 @@ export async function updateAuthConfig(input: UpdateAuthConfigInput): Promise<Au
         await assertNotManaged(`auth.twoFactor.${key}`)
       }
     }
-    if (input.security) {
-      for (const key of Object.keys(input.security)) {
-        await assertNotManaged(`auth.security.${key}`)
-      }
-    }
 
     // Tier gate: refuse non-standard OAuth providers when
     // customOidcProvider is off. No-op when the feature is unlimited.

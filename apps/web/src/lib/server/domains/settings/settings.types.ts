@@ -100,23 +100,6 @@ export interface AuthConfig {
    * existing tenants pre-migration aren't suddenly locked out.
    */
   twoFactor?: { required: boolean }
-  /**
-   * Security defaults that span all team auth methods. Per-workspace
-   * toggles so admins with stringent compliance / audit-noise
-   * constraints can opt out of the default-on behaviour. Self-hosters
-   * who don't have email delivery configured can also turn this off
-   * to silence dev-mode console logging.
-   */
-  security?: {
-    /**
-     * Send the workspace owner an email when their account signs in
-     * from a previously-unseen device (UA + /24 IP subnet bucket).
-     * First-line defense against credential compromise — the user
-     * notices an unfamiliar sign-in and can revoke the session.
-     * Default `true`.
-     */
-    notifyOnNewSignIn?: boolean
-  }
 }
 
 /**
@@ -471,7 +454,6 @@ export interface UpdateAuthConfigInput {
   openSignup?: boolean
   ssoOidc?: Partial<NonNullable<AuthConfig['ssoOidc']>>
   twoFactor?: Partial<NonNullable<AuthConfig['twoFactor']>>
-  security?: Partial<NonNullable<AuthConfig['security']>>
 }
 
 /**

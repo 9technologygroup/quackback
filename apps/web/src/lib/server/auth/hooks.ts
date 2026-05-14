@@ -929,9 +929,8 @@ export async function handleSignInSuccessAudit(ctx: {
  * fingerprint; on success we fire the email + audit row in parallel
  * and refresh the SET's 90-day TTL. On failure we roll back the
  * claim so the next sign-in re-fires the alert rather than losing
- * it to a transient SMTP outage. Workspace-configurable via
- * `authConfig.security.notifyOnNewSignIn` (default on). All errors
- * swallowed — Redis/SMTP outages must not break sign-in.
+ * it to a transient SMTP outage. All errors swallowed — Redis/SMTP
+ * outages must not break sign-in.
  */
 export async function handleNewDeviceNotification(
   ctx: {
@@ -947,8 +946,6 @@ export async function handleNewDeviceNotification(
     ReturnType<typeof import('@/lib/server/domains/settings/settings.service').getTenantSettings>
   >
 ): Promise<void> {
-  if (tenant?.authConfig?.security?.notifyOnNewSignIn === false) return
-
   const userId = ctx.context?.newSession?.user?.id
   const email = ctx.context?.newSession?.user?.email
   const token = ctx.context?.newSession?.session?.token
@@ -1020,8 +1017,7 @@ export async function handleNewDeviceNotification(
  *     that actually stuck.
  *  7. `handleNewDeviceNotification` — sends a "new device" email +
  *     records an audit row when the user's UA + /24-IP combination
- *     hasn't been seen for them within the last 90 days. Workspace-
- *     configurable via `authConfig.security.notifyOnNewSignIn`.
+ *     hasn't been seen for them within the last 90 days.
  */
 export const hooksAfter = createAuthMiddleware(async (ctx) => {
   if (process.env.AUTH_HOOKS_DEBUG === '1') {

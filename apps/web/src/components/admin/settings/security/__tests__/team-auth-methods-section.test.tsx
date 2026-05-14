@@ -1,9 +1,8 @@
 // @vitest-environment happy-dom
 /**
  * <TeamAuthMethodsSection> — smoke test for the extracted component.
- * Renders the four method rows (password, magic-link, 2FA, new-device
- * notification) and reflects the initialConfig prop state into the
- * switches.
+ * Renders the three method rows (password, magic-link, 2FA) and
+ * reflects the initialConfig prop state into the switches.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
@@ -35,14 +34,13 @@ function renderWith(config: AuthConfig) {
 }
 
 describe('<TeamAuthMethodsSection>', () => {
-  it('renders rows for password, magic-link, 2FA, and new-device notification', () => {
+  it('renders rows for password, magic-link, and 2FA', () => {
     renderWith(baseConfig)
     // Each row has a label and a description — use getAllByText so
     // multiple matches (label + description both containing the term) pass.
     expect(screen.getAllByText(/password/i).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/magic link/i).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/2fa/i).length).toBeGreaterThan(0)
-    expect(screen.getAllByText(/new device/i).length).toBeGreaterThan(0)
   })
 
   it('reflects the password=false state from initialConfig', () => {

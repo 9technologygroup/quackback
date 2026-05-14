@@ -79,68 +79,62 @@ export function TeamAuthMethodsSection({ initialConfig }: TeamAuthMethodsSection
   }
 
   return (
-    <SettingsCard
-      title="Sign-in methods"
-      description="Email magic link is always on for invitations and recovery. Single sign-on is managed below."
-      contentClassName="space-y-4"
-    >
-      <MethodRow
-        icon={KeyIcon}
-        label="Password"
-        description="Sign in with email and password."
-        checked={passwordEnabled}
-        onCheckedChange={togglePassword}
-        disabled={
-          saving ||
-          isPending ||
-          isManaged('auth.oauth.password') ||
-          isLastTeamMethod(passwordEnabled) ||
-          (passwordEnabled && twoFactorRequired)
-        }
-        badge={isManaged('auth.oauth.password') ? 'Managed' : undefined}
-      />
-      <MethodRow
-        icon={EnvelopeIcon}
-        label="Magic link"
-        description="Sign in with a one-click link emailed to the user. Invitations and recovery-code flows always work — this toggle only controls whether the option appears on the team sign-in form."
-        checked={magicLinkEnabled}
-        onCheckedChange={toggleMagicLink}
-        disabled={
-          saving ||
-          isPending ||
-          isManaged('auth.oauth.magicLink') ||
-          isLastTeamMethod(magicLinkEnabled)
-        }
-        badge={isManaged('auth.oauth.magicLink') ? 'Managed' : undefined}
-      />
-      <MethodRow
-        icon={ShieldCheckIcon}
-        label="Require 2FA for team members"
-        description={
-          passwordEnabled
-            ? 'Admins and members must complete a TOTP challenge on every password sign-in, and magic-link sign-in is refused for users who have enrolled. Recovery codes remain available as the break-glass.'
-            : 'Enable Password sign-in first — enrolling a TOTP authenticator requires confirming a password.'
-        }
-        checked={twoFactorRequired}
-        onCheckedChange={toggleTwoFactorRequired}
-        disabled={saving || isPending || isManaged('auth.twoFactor.required') || !passwordEnabled}
-        badge={isManaged('auth.twoFactor.required') ? 'Managed' : undefined}
-      />
-      <MethodRow
-        icon={EnvelopeIcon}
-        label="Email me when a new device signs in"
-        description="When someone signs in from a browser or network we haven't seen before, we'll send the account owner an email. First-line defense against credential compromise."
-        checked={authConfig.security?.notifyOnNewSignIn !== false}
-        onCheckedChange={(checked) => {
-          setAuthConfig((prev: AuthConfig) => ({
-            ...prev,
-            security: { ...(prev.security ?? {}), notifyOnNewSignIn: checked },
-          }))
-          void save({ security: { notifyOnNewSignIn: checked } })
-        }}
-        disabled={saving || isPending || isManaged('auth.security.notifyOnNewSignIn')}
-        badge={isManaged('auth.security.notifyOnNewSignIn') ? 'Managed' : undefined}
-      />
-    </SettingsCard>
+    <>
+      <SettingsCard
+        title="Sign-in methods"
+        description="How your team signs in to the admin dashboard."
+        contentClassName="space-y-4"
+      >
+        <MethodRow
+          icon={KeyIcon}
+          label="Password"
+          description="Sign in with email and password."
+          checked={passwordEnabled}
+          onCheckedChange={togglePassword}
+          disabled={
+            saving ||
+            isPending ||
+            isManaged('auth.oauth.password') ||
+            isLastTeamMethod(passwordEnabled) ||
+            (passwordEnabled && twoFactorRequired)
+          }
+          badge={isManaged('auth.oauth.password') ? 'Managed' : undefined}
+        />
+        <MethodRow
+          icon={EnvelopeIcon}
+          label="Email magic link"
+          description="One-click link or 6-digit code by email."
+          checked={magicLinkEnabled}
+          onCheckedChange={toggleMagicLink}
+          disabled={
+            saving ||
+            isPending ||
+            isManaged('auth.oauth.magicLink') ||
+            isLastTeamMethod(magicLinkEnabled)
+          }
+          badge={isManaged('auth.oauth.magicLink') ? 'Managed' : undefined}
+        />
+      </SettingsCard>
+
+      <SettingsCard
+        title="Team security policy"
+        description="Requirements applied on top of the sign-in methods above."
+        contentClassName="space-y-4"
+      >
+        <MethodRow
+          icon={ShieldCheckIcon}
+          label="Require 2FA for team members"
+          description={
+            passwordEnabled
+              ? 'Members must pass a TOTP challenge to sign in. Recovery codes are the break-glass.'
+              : 'Enable Password sign-in first — enrolling 2FA requires a password.'
+          }
+          checked={twoFactorRequired}
+          onCheckedChange={toggleTwoFactorRequired}
+          disabled={saving || isPending || isManaged('auth.twoFactor.required') || !passwordEnabled}
+          badge={isManaged('auth.twoFactor.required') ? 'Managed' : undefined}
+        />
+      </SettingsCard>
+    </>
   )
 }

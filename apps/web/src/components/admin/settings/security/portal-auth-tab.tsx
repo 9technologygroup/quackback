@@ -107,7 +107,7 @@ export function PortalAuthTab({
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Card — Sign-in Methods */}
       <div className="rounded-xl border border-border/50 bg-card shadow-sm">
         <div className="px-6 py-4 border-b border-border/50">
