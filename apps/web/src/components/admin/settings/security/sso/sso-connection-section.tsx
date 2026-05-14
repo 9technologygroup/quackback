@@ -50,6 +50,51 @@ interface SsoConnectionSectionProps {
  *  no plaintext-length side-channel and no extra decrypt per render. */
 const SAVED_SECRET_MASK = '•'.repeat(12)
 
+/** Human labels for the ssoOidc field paths a server-fn validation
+ *  error can reference. Keeps the save toast readable instead of
+ *  dumping raw Zod issue JSON at the admin. */
+const SSO_FIELD_LABELS: Record<string, string> = {
+  'ssoOidc.discoveryUrl': 'Discovery URL',
+  'ssoOidc.clientId': 'Client ID',
+  'ssoOidc.autoProvisionRole': 'Default role',
+  'ssoOidc.autoCreateUsers': 'Auto-create accounts',
+}
+
+interface ZodIssueLike {
+  path?: (string | number)[]
+  message?: string
+  code?: string
+}
+
+/**
+ * Best-effort: turn a server-fn validation rejection (whose `.message`
+ * is a stringified Zod issue array) into one human sentence. Falls back
+ * to the raw message when the shape isn't a Zod issue array — so a
+ * plain server error (e.g. "Save the SSO client secret before
+ * enabling SSO sign-in.") still passes through verbatim.
+ */
+function friendlySaveError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : ''
+  if (!raw) return 'Could not save settings.'
+  let issues: ZodIssueLike[]
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return raw
+    issues = parsed as ZodIssueLike[]
+  } catch {
+    return raw
+  }
+  if (issues.length === 0) return raw
+  const parts = issues.map((iss) => {
+    const pathKey = (iss.path ?? []).join('.')
+    const label = SSO_FIELD_LABELS[pathKey] ?? pathKey ?? 'A field'
+    if (iss.code === 'invalid_format') return `${label} must be a valid https:// URL`
+    if (iss.code === 'too_small') return `${label} is required`
+    return `${label}: ${iss.message ?? 'is invalid'}`
+  })
+  return parts.length === 1 ? parts[0] : `Fix the following before saving — ${parts.join('; ')}`
+}
+
 export function SsoConnectionSection({
   initialConfig,
   customOidcProviderTier,
@@ -106,7 +151,7 @@ export function SsoConnectionSection({
       })
       toast.success('Authentication settings saved.')
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not save settings.')
+      toast.error(friendlySaveError(err))
       throw err
     } finally {
       setSaving(false)
@@ -425,7 +470,7 @@ function SsoConfiguredForm({
         setSecretTouched(false)
         onSecretChanged()
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Could not save the secret.'
+        const msg = friendlySaveError(err)
         setSecretError(msg)
         toast.error(msg)
         return
