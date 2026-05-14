@@ -86,33 +86,34 @@ export async function handleSsoTestCallback(
         steps: result.steps,
       }
 
-  // Identity-match path: a successful Test sign-in where the IdP-returned
-  // `email` claim case-insensitively matches the admin who started the
-  // test unlocks the SSO gates (enabling SSO + per-domain enforcement)
-  // by stamping `ssoOidc.lastSuccessfulTestAt`. Bound to identity-match
-  // so it can't be a backdoor — a different admin's IdP login doesn't
-  // count. Workspace-level: any admin's identity-matched test unlocks
-  // the gate for the workspace, and the gate logic compares the stamp
-  // against `ssoOidc.detailsChangedAt` so a stale test (predating the
-  // last discoveryUrl / clientId / secret change) no longer counts.
+  // A successful test sign-in stamps `ssoOidc.lastSuccessfulTestAt`,
+  // which unlocks the SSO gates (enabling SSO + per-domain enforcement).
+  // The test ran a real end-to-end OIDC handshake against the
+  // workspace's IdP — that the handshake completed is the meaningful
+  // proof the connection works, regardless of which IdP account signed
+  // in. The gate logic compares the stamp against
+  // `ssoOidc.detailsChangedAt`, so a stale test (predating the last
+  // discoveryUrl / clientId / secret change) no longer counts.
+  //
+  // `identityMatched` is still computed — purely informational, shown
+  // in the result panel as a "you tested as a different account" FYI —
+  // but it does not gate anything.
   let identityMatched = false
-  if (result.ok && result.claims.email) {
-    const { db, user, eq } = await import('@/lib/server/db')
-    type UserId = `user_${string}`
-    const admin = await db.query.user.findFirst({
-      where: eq(user.id, session.adminUserId as UserId),
-      columns: { email: true },
-    })
-    const adminEmail = admin?.email?.toLowerCase().trim() ?? null
-    const idpEmail = String(result.claims.email).toLowerCase().trim()
-    if (adminEmail && idpEmail && adminEmail === idpEmail) {
-      identityMatched = true
-      const { markSsoTestSucceeded } =
-        await import('@/lib/server/domains/settings/settings.service')
-      await markSsoTestSucceeded()
-      console.log(
-        `[sso-test] identity match — unlocked SSO gates for adminUserId=${session.adminUserId}`
-      )
+  if (result.ok) {
+    const { markSsoTestSucceeded } = await import('@/lib/server/domains/settings/settings.service')
+    await markSsoTestSucceeded()
+    console.log(`[sso-test] success — unlocked SSO gates (adminUserId=${session.adminUserId})`)
+
+    if (result.claims.email) {
+      const { db, user, eq } = await import('@/lib/server/db')
+      type UserId = `user_${string}`
+      const admin = await db.query.user.findFirst({
+        where: eq(user.id, session.adminUserId as UserId),
+        columns: { email: true },
+      })
+      const adminEmail = admin?.email?.toLowerCase().trim() ?? null
+      const idpEmail = String(result.claims.email).toLowerCase().trim()
+      identityMatched = !!adminEmail && !!idpEmail && adminEmail === idpEmail
     }
   }
 

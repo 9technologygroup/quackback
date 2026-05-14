@@ -208,7 +208,10 @@ describe('handleSsoTestCallback', () => {
     )
   })
 
-  it('mismatching email does NOT stamp lastSuccessfulTestAt and returns identityMatched=false', async () => {
+  it('mismatching email still stamps lastSuccessfulTestAt but returns identityMatched=false', async () => {
+    // A successful handshake proves the connection works regardless of
+    // which IdP account signed in — so the stamp lands. identityMatched
+    // is reported (false here) purely as informational context.
     hoisted.cacheGet.mockResolvedValueOnce(validSession)
     const okResult = {
       ok: true,
@@ -227,7 +230,7 @@ describe('handleSsoTestCallback', () => {
     })
 
     expect(handled?.identityMatched).toBe(false)
-    expect(hoisted.markSsoTestSucceeded).not.toHaveBeenCalled()
+    expect(hoisted.markSsoTestSucceeded).toHaveBeenCalledTimes(1)
     expect(hoisted.cacheSet).toHaveBeenCalledWith(
       'sso-test:result:ssotest_abc',
       { result: okResult, identityMatched: false },
@@ -235,7 +238,7 @@ describe('handleSsoTestCallback', () => {
     )
   })
 
-  it('no email claim returns identityMatched=false and skips the user lookup', async () => {
+  it('no email claim still stamps but returns identityMatched=false and skips the user lookup', async () => {
     hoisted.cacheGet.mockResolvedValueOnce(validSession)
     const okResult = {
       ok: true,
@@ -254,7 +257,7 @@ describe('handleSsoTestCallback', () => {
 
     expect(handled?.identityMatched).toBe(false)
     expect(hoisted.userFindFirst).not.toHaveBeenCalled()
-    expect(hoisted.markSsoTestSucceeded).not.toHaveBeenCalled()
+    expect(hoisted.markSsoTestSucceeded).toHaveBeenCalledTimes(1)
   })
 
   it('failed handshake does not stamp lastSuccessfulTestAt', async () => {

@@ -7,12 +7,11 @@
  *   3. the per-domain "Require SSO" toggle (same gate for enforcement).
  *
  * The gate triggers pass a `reason` (shown in the prompt) and an
- * `onSuccess` callback. `onSuccess` fires ONLY on an identity-matched
- * successful test — that's the exact condition under which the server
- * stamped `ssoOidc.lastSuccessfulTestAt`, so the originally-attempted
- * action (enable / enforce) will now pass its server-side gate. A
- * successful-but-not-identity-matched test does NOT auto-apply: the
- * gate is still locked.
+ * `onSuccess` callback. `onSuccess` fires on ANY successful test — the
+ * server stamps `ssoOidc.lastSuccessfulTestAt` on success, so the
+ * originally-attempted action (enable / enforce) will pass its
+ * server-side gate. The IdP-returned identity is shown in the result
+ * panel for context but does not gate the auto-apply.
  *
  * The popup / polling / postMessage lifecycle is lifted verbatim from
  * the old self-contained `<TestSignInButton>` — only the owner moved.
@@ -50,16 +49,16 @@ const POLL_INTERVAL_MS = 2000
 // bail well before that so we don't poll an expired session forever.
 const MAX_POLLS = 150
 
-/** Callback fired when an identity-matched test succeeds — used by the
- *  Enable / Require-SSO gates to auto-apply the action that triggered
- *  the prompt. May be async; the modal shows "Applying…" while it runs. */
+/** Callback fired when a test sign-in succeeds — used by the Enable /
+ *  Require-SSO gates to auto-apply the action that triggered the
+ *  prompt. May be async; the modal shows "Applying…" while it runs. */
 type OnSuccess = () => void | Promise<void>
 
 interface OpenOptions {
-  /** Gate context shown in the prompt, e.g. "Verify sign-in before
-   *  enabling SSO." Omit for the standalone Test button. */
+  /** Gate context shown in the prompt, e.g. "Test sign-in required
+   *  before enabling SSO." Omit for the standalone Test button. */
   reason?: string
-  /** Runs after an identity-matched success. */
+  /** Runs after a successful test sign-in. */
   onSuccess?: OnSuccess
 }
 
@@ -83,16 +82,21 @@ export function SsoTestSignInProvider({ children }: { children: ReactNode }) {
   const startTest = useServerFn(startSsoTestFn)
   const pollResult = useServerFn(getSsoTestResultFn)
   const [state, dispatch] = useReducer(ssoTestReducer, initialSsoTestState)
-  // `true` while an identity-matched success's onSuccess callback runs.
+  // `true` while a successful test's onSuccess callback runs.
   const [applying, setApplying] = useState(false)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const onSuccessRef = useRef<OnSuccess | null>(null)
-  // Mirror the open phase in a ref so the message handler / poll tick
-  // read the latest value without re-attaching.
-  const openRef = useRef(false)
+  // Mirror "is a test actively in flight" in a ref so the popup / poll /
+  // postMessage handlers read the latest value without re-attaching.
+  // Gating on `=== 'testing'` (not `!== 'closed'`) is load-bearing: the
+  // IdP callback popup auto-closes ~1.5s AFTER a successful sign-in, so
+  // by the time `onPopupClosed` fires the phase is already 'result'.
+  // Treating that as an abandoned popup would stomp the success state
+  // and race the auto-apply.
+  const testingRef = useRef(false)
   useEffect(() => {
-    openRef.current = state.phase !== 'closed'
+    testingRef.current = state.phase === 'testing'
   }, [state.phase])
 
   const clearPoll = useCallback(() => {
@@ -104,9 +108,10 @@ export function SsoTestSignInProvider({ children }: { children: ReactNode }) {
 
   const { trackPopup, clearPopup } = usePopupTracker({
     onPopupClosed: () => {
-      // Only react if the test is still in flight — a stale close
-      // callback after a result would otherwise stomp the result UI.
-      if (!openRef.current) return
+      // Only react while the test is still in flight — a close callback
+      // after a result (incl. the popup's own auto-close on success)
+      // must not stomp the result UI.
+      if (!testingRef.current) return
       clearPoll()
       dispatch({
         type: 'failed',
@@ -115,10 +120,10 @@ export function SsoTestSignInProvider({ children }: { children: ReactNode }) {
     },
   })
 
-  // After an identity-matched success, run the gate's onSuccess (e.g.
-  // "now actually enable SSO"), showing "Applying…" while it runs, then
-  // close. A non-identity-matched success leaves the modal on its
-  // result view so the admin can read why the gate is still locked.
+  // After a successful test, run the gate's onSuccess (e.g. "now
+  // actually enable SSO"), showing "Applying…" while it runs, then
+  // close. No-op when there's no pending action (the standalone Test
+  // button opens the modal without an onSuccess).
   const runAutoApply = useCallback(async () => {
     const cb = onSuccessRef.current
     if (!cb) return
@@ -139,9 +144,11 @@ export function SsoTestSignInProvider({ children }: { children: ReactNode }) {
 
   // postMessage listener — origin + source checks keep stray messages
   // (extensions, other tabs, the IdP itself) from ending the test early.
+  // Only act while testing: a late message after the poll already
+  // resolved (or after close) is dropped.
   useEffect(() => {
     function onMessage(e: MessageEvent) {
-      if (!openRef.current) return
+      if (!testingRef.current) return
       if (e.origin !== window.location.origin) return
       const data = e.data as {
         source?: string
@@ -158,7 +165,7 @@ export function SsoTestSignInProvider({ children }: { children: ReactNode }) {
         result: data.result,
         identityMatched: data.identityMatched,
       })
-      if (data.result.ok && data.identityMatched) void runAutoApply()
+      if (data.result.ok) void runAutoApply()
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
@@ -220,19 +227,17 @@ export function SsoTestSignInProvider({ children }: { children: ReactNode }) {
       try {
         const diag = await pollResult({ data: { testId: r.testId } })
         if (diag && diag.result) {
-          if (!openRef.current) {
-            clearPoll()
-            clearPopup()
-            return
-          }
           clearPoll()
           clearPopup()
+          // The postMessage path may have already resolved this test —
+          // if we're no longer testing, drop the poll result.
+          if (!testingRef.current) return
           dispatch({
             type: 'resolved',
             result: diag.result,
             identityMatched: diag.identityMatched,
           })
-          if (diag.result.ok && diag.identityMatched) void runAutoApply()
+          if (diag.result.ok) void runAutoApply()
         }
       } catch {
         // Transient poll error — the popup may still postMessage.
@@ -435,16 +440,15 @@ function TestResultPanel({
           Sign-in works
         </div>
         <StepList steps={result.steps} />
-        {identityMatched ? (
-          <div className="rounded border border-green-500/30 bg-green-500/10 p-2 text-xs text-green-700">
-            <span className="font-medium">Identity confirmed.</span> SSO actions are unlocked.
-          </div>
-        ) : (
+        {/* Identity is informational only — it doesn't gate anything.
+         *  Flag a mismatch so the admin notices if they tested as the
+         *  wrong account, but the SSO connection itself is verified. */}
+        {identityMatched === false && result.claims.email ? (
           <div className="rounded border border-muted bg-muted/30 p-2 text-xs text-muted-foreground">
-            Tested as {result.claims.email ?? 'an account with no email'}, not your admin account.
-            Sign in with your own admin email to unlock SSO actions.
+            Tested as {result.claims.email} — a different account than yours. The connection still
+            works.
           </div>
-        )}
+        ) : null}
         <details className="text-xs">
           <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
             Show IdP response
