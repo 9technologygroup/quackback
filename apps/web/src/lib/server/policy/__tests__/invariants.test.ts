@@ -23,6 +23,7 @@ import type { SQL } from 'drizzle-orm'
 // branded string. Generate once at module load; values are stable.
 const PRINCIPAL_USER = createId('principal') as PrincipalId
 const PRINCIPAL_USER_ALPHA = createId('principal') as PrincipalId
+const PRINCIPAL_USER_ALPHABETA = createId('principal') as PrincipalId
 const PRINCIPAL_SERVICE = createId('principal') as PrincipalId
 const PRINCIPAL_MEMBER = createId('principal') as PrincipalId
 const PRINCIPAL_ADMIN = createId('principal') as PrincipalId
@@ -47,6 +48,14 @@ const actors: Record<string, Actor> = {
     role: 'user',
     principalType: 'user',
     segmentIds: new Set([SEGMENT_ALPHA]),
+  }),
+  // Two memberships — exercises the multi-element ARRAY[$2, $3] render in
+  // boardViewFilter (the exact sql.join path the ANY(()) fix rewrote).
+  userInAlphaBeta: buildActor({
+    principalId: PRINCIPAL_USER_ALPHABETA,
+    role: 'user',
+    principalType: 'user',
+    segmentIds: new Set([SEGMENT_ALPHA, SEGMENT_BETA]),
   }),
   service: buildActor({
     principalId: PRINCIPAL_SERVICE,
@@ -126,6 +135,47 @@ function toQueryShape(fragment: SQL): { sql: string; params: unknown[] } {
   return dialect.sqlToQuery(fragment)
 }
 
+// H5 — structural SQL-validity guard. The policy `xFilter` functions hand-build
+// SQL; a malformed fragment (e.g. an empty `ANY(())`) is a Postgres syntax
+// error that string-shape tests do not catch. This validator rejects the
+// known failure modes.
+function assertValidFilterSql(rendered: string): void {
+  if (rendered.trim().length === 0) {
+    throw new Error('rendered SQL is empty')
+  }
+  // Targets the specific shipped bug shape — an immediately-empty paren pair
+  // inside ANY(). It is not a general empty-set detector (e.g. ANY(ARRAY[])
+  // would pass); full row-level verification is deferred to spec item G5.
+  if (/ANY\(\s*\(\s*\)/.test(rendered)) {
+    throw new Error(`empty ANY(()) in rendered SQL: ${rendered}`)
+  }
+  let depth = 0
+  for (const ch of rendered) {
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    if (depth < 0) throw new Error(`unbalanced parens in rendered SQL: ${rendered}`)
+  }
+  if (depth !== 0) throw new Error(`unbalanced parens in rendered SQL: ${rendered}`)
+}
+
+describe('assertValidFilterSql helper', () => {
+  it('rejects an empty ANY(()) construct', () => {
+    expect(() => assertValidFilterSql(`seg = ANY(()::text[])`)).toThrow(/empty ANY/)
+  })
+  it('rejects unbalanced parentheses', () => {
+    expect(() => assertValidFilterSql(`(a = b`)).toThrow(/unbalanced/)
+  })
+  it('rejects a close-before-open paren', () => {
+    expect(() => assertValidFilterSql(`)a(`)).toThrow(/unbalanced/)
+  })
+  it('rejects empty SQL', () => {
+    expect(() => assertValidFilterSql(`   `)).toThrow(/empty/)
+  })
+  it('accepts a well-formed fragment', () => {
+    expect(() => assertValidFilterSql(`(a = ANY(ARRAY[$1]::text[]))`)).not.toThrow()
+  })
+})
+
 describe('boardViewFilter — SQL shape', () => {
   it('team actor produces a constant-true predicate', () => {
     const { sql, params } = toQueryShape(boardViewFilter(actors.admin))
@@ -190,6 +240,17 @@ describe('boardViewFilter — SQL shape', () => {
     expect(a.sql).toBe(b.sql)
     expect(a.params).toEqual(b.params)
   })
+})
+
+describe('view filters — structural SQL validity (H5)', () => {
+  for (const [name, actor] of Object.entries(actors)) {
+    it(`boardViewFilter renders structurally valid SQL for actor=${name}`, () => {
+      assertValidFilterSql(toQueryShape(boardViewFilter(actor)).sql)
+    })
+    it(`postViewFilter renders structurally valid SQL for actor=${name}`, () => {
+      assertValidFilterSql(toQueryShape(postViewFilter(actor)).sql)
+    })
+  }
 })
 
 describe('postViewFilter — SQL shape', () => {
