@@ -1,14 +1,18 @@
 import { useState, useTransition } from 'react'
 import { createFileRoute, useRouter } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
-import { ShieldCheckIcon } from '@heroicons/react/24/solid'
+import { ShieldCheckIcon, ArrowPathIcon } from '@heroicons/react/24/solid'
 import { settingsQueries } from '@/lib/client/queries/settings'
 import { updateModerationDefaultFn } from '@/lib/server/functions/settings'
 import { BackLink } from '@/components/ui/back-link'
 import { PageHeader } from '@/components/shared/page-header'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import {
+  requireApprovalToToggles,
+  togglesToRequireApproval,
+  type ApprovalToggles,
+} from '@/lib/shared/moderation-policy'
 
 export const Route = createFileRoute('/admin/settings/moderation')({
   loader: async ({ context }) => {
@@ -22,55 +26,71 @@ export const Route = createFileRoute('/admin/settings/moderation')({
   component: ModerationSettingsPage,
 })
 
-const LEVELS: {
-  value: 'none' | 'anonymous' | 'authenticated' | 'all'
+interface ModerationToggleProps {
+  id: string
   label: string
   description: string
-}[] = [
-  {
-    value: 'none',
-    label: 'No approval needed',
-    description: 'Posts publish immediately on every board that inherits this default.',
-  },
-  {
-    value: 'anonymous',
-    label: 'Approve anonymous submissions',
-    description: 'Posts from visitors without an account wait for review.',
-  },
-  {
-    value: 'authenticated',
-    label: 'Approve signed-in submissions',
-    description: 'Posts from signed-in portal users wait for review.',
-  },
-  {
-    value: 'all',
-    label: 'Approve all submissions',
-    description: 'Every post waits for review before publishing.',
-  },
-]
+  checked: boolean
+  saving?: boolean
+  onCheckedChange: (checked: boolean) => void
+  disabled?: boolean
+}
+
+/** A single labelled toggle row — mirrors the Permissions page's idiom. */
+function ModerationToggle({
+  id,
+  label,
+  description,
+  checked,
+  saving,
+  onCheckedChange,
+  disabled,
+}: ModerationToggleProps) {
+  return (
+    <div className="flex items-center justify-between py-4 first:pt-0 last:pb-0">
+      <div className="pr-4">
+        <label htmlFor={id} className="text-sm font-medium cursor-pointer">
+          {label}
+        </label>
+        <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+      </div>
+      <div className="flex items-center gap-2">
+        {saving && <ArrowPathIcon className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+        <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
+      </div>
+    </div>
+  )
+}
 
 function ModerationSettingsPage() {
   const router = useRouter()
   const portalConfigQuery = useSuspenseQuery(settingsQueries.portalConfig())
   const [isPending, startTransition] = useTransition()
-  const [value, setValue] = useState(
-    portalConfigQuery.data.moderationDefault?.requireApproval ?? 'none'
+  const [toggles, setToggles] = useState<ApprovalToggles>(() =>
+    requireApprovalToToggles(portalConfigQuery.data.moderationDefault?.requireApproval ?? 'none')
   )
-  const [saving, setSaving] = useState(false)
+  const [savingKey, setSavingKey] = useState<keyof ApprovalToggles | null>(null)
 
-  async function onChange(next: 'none' | 'anonymous' | 'authenticated' | 'all') {
-    const prev = value
-    setValue(next)
-    setSaving(true)
+  // Each toggle independently saves: the two booleans are mapped back to the
+  // single `requireApproval` enum the server stores. Optimistic with revert.
+  async function update(key: keyof ApprovalToggles, checked: boolean) {
+    const prev = toggles
+    const next = { ...toggles, [key]: checked }
+    setToggles(next)
+    setSavingKey(key)
     try {
-      await updateModerationDefaultFn({ data: { requireApproval: next } })
+      await updateModerationDefaultFn({
+        data: { requireApproval: togglesToRequireApproval(next) },
+      })
       startTransition(() => router.invalidate())
     } catch {
-      setValue(prev)
+      setToggles(prev)
     } finally {
-      setSaving(false)
+      setSavingKey(null)
     }
   }
+
+  const busy = savingKey !== null || isPending
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -84,32 +104,28 @@ function ModerationSettingsPage() {
       />
       <SettingsCard
         title="Default approval policy"
-        description="Applied to every board set to inherit."
+        description="Posts from the selected groups wait for review before publishing. Applied to every board set to inherit."
       >
-        <RadioGroup
-          value={value}
-          onValueChange={(v) => onChange(v as typeof value)}
-          className="grid gap-3"
-        >
-          {LEVELS.map((lvl) => (
-            <Label
-              key={lvl.value}
-              htmlFor={`mod-${lvl.value}`}
-              className="flex items-start gap-3 rounded-lg border p-4 cursor-pointer hover:bg-muted/50 [&:has([data-state=checked])]:border-primary [&:has([data-state=checked])]:bg-primary/5"
-            >
-              <RadioGroupItem
-                value={lvl.value}
-                id={`mod-${lvl.value}`}
-                className="mt-0.5"
-                disabled={saving || isPending}
-              />
-              <div className="flex-1 space-y-1">
-                <span className="font-medium">{lvl.label}</span>
-                <p className="text-xs text-muted-foreground">{lvl.description}</p>
-              </div>
-            </Label>
-          ))}
-        </RadioGroup>
+        <div className="divide-y divide-border/50">
+          <ModerationToggle
+            id="moderate-anonymous"
+            label="Anonymous visitors"
+            description="Hold posts from people without an account for review."
+            checked={toggles.anonymous}
+            saving={savingKey === 'anonymous'}
+            onCheckedChange={(checked) => update('anonymous', checked)}
+            disabled={busy}
+          />
+          <ModerationToggle
+            id="moderate-authenticated"
+            label="Signed-in portal users"
+            description="Hold posts from signed-in portal users for review."
+            checked={toggles.authenticated}
+            saving={savingKey === 'authenticated'}
+            onCheckedChange={(checked) => update('authenticated', checked)}
+            disabled={busy}
+          />
+        </div>
       </SettingsCard>
     </div>
   )
