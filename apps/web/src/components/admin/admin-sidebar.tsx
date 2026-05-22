@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link, useRouter, useRouterState, useRouteContext } from '@tanstack/react-router'
 import {
   ChatBubbleLeftIcon,
@@ -28,9 +29,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { signOut } from '@/lib/client/auth-client'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { NotificationBell } from '@/components/notifications'
-import { cn } from '@/lib/shared/utils'
+import { cn, formatBadgeCount } from '@/lib/shared/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { LatestVersionResult } from '@/lib/server/functions/version'
+import { adminQueries } from '@/lib/client/queries/admin'
 
 interface AdminSidebarProps {
   initialUserData?: {
@@ -41,9 +43,11 @@ interface AdminSidebarProps {
   latestVersion?: LatestVersionResult | null
 }
 
-const navItems = [
-  { label: 'Feedback', href: '/admin/feedback', icon: ChatBubbleLeftIcon },
-  { label: 'Moderation', href: '/admin/moderation', icon: ShieldCheckIcon },
+const navItemsBefore = [{ label: 'Feedback', href: '/admin/feedback', icon: ChatBubbleLeftIcon }]
+
+const moderationNavItem = { label: 'Moderation', href: '/admin/moderation', icon: ShieldCheckIcon }
+
+const navItemsAfter = [
   { label: 'Roadmap', href: '/admin/roadmap', icon: MapIcon },
   { label: 'Changelog', href: '/admin/changelog', icon: DocumentTextIcon },
   { label: 'Help Center', href: '/admin/help-center', icon: BookOpenIcon },
@@ -60,12 +64,14 @@ function NavItem({
   icon: Icon,
   label,
   isActive,
+  badge,
   onClick,
 }: {
   href: string
   icon: typeof ChatBubbleLeftIcon
   label: string
   isActive: boolean
+  badge?: number
   onClick?: () => void
 }) {
   return (
@@ -75,17 +81,23 @@ function NavItem({
           to={href}
           onClick={onClick}
           className={cn(
-            'flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-200',
+            'relative flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-200',
             'text-muted-foreground/70 hover:text-foreground hover:bg-muted/50',
             isActive && 'bg-muted/80 text-foreground'
           )}
         >
           <Icon className="h-5 w-5" />
+          {badge != null && badge > 0 && (
+            <span className="absolute top-1 right-1 min-w-[14px] h-[14px] px-0.5 inline-flex items-center justify-center text-[9px] font-semibold rounded-full bg-primary/15 text-primary leading-none">
+              {formatBadgeCount(badge)}
+            </span>
+          )}
           <span className="sr-only">{label}</span>
         </Link>
       </TooltipTrigger>
       <TooltipContent side="right" sideOffset={8}>
         {label}
+        {badge != null && badge > 0 && ` (${badge})`}
       </TooltipContent>
     </Tooltip>
   )
@@ -96,6 +108,15 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
   const { session, settings } = useRouteContext({ from: '__root__' })
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const flags = settings?.featureFlags as { analytics?: boolean; helpCenter?: boolean } | undefined
+  const { data: moderationStatus } = useQuery(adminQueries.moderationStatus())
+  const showModeration = moderationStatus?.enabled || (moderationStatus?.pendingCount ?? 0) > 0
+  const pendingCount = moderationStatus?.pendingCount ?? 0
+
+  const navItems = [
+    ...navItemsBefore,
+    ...(showModeration ? [moderationNavItem] : []),
+    ...navItemsAfter,
+  ]
 
   const filteredNavItems = navItems.filter((item) => {
     if (item.href === '/admin/analytics') return flags?.analytics ?? false
@@ -138,6 +159,9 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
                   icon={item.icon}
                   label={item.label}
                   isActive={isNavActive(pathname, item.href)}
+                  badge={
+                    item.href === '/admin/moderation' && pendingCount > 0 ? pendingCount : undefined
+                  }
                 />
               ))}
             </nav>
@@ -291,6 +315,8 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
               {filteredNavItems.map((item) => {
                 const isActive = isNavActive(pathname, item.href)
                 const Icon = item.icon
+                const itemBadge =
+                  item.href === '/admin/moderation' && pendingCount > 0 ? pendingCount : undefined
                 return (
                   <Link
                     key={item.href}
@@ -304,6 +330,11 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
                   >
                     <Icon className="h-5 w-5" />
                     {item.label}
+                    {itemBadge != null && (
+                      <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-semibold rounded-full bg-primary/15 text-primary">
+                        {formatBadgeCount(itemBadge)}
+                      </span>
+                    )}
                   </Link>
                 )
               })}

@@ -24,6 +24,7 @@ import {
 import { getSsoStatusFn } from '@/lib/server/functions/sso'
 import { listAuditEventsFn } from '@/lib/server/functions/audit-log'
 import { listRecoveryCodesFn } from '@/lib/server/functions/recovery-codes'
+import { getModerationStatus } from '@/lib/server/functions/moderation'
 import { fetchApiKeys } from '@/lib/server/functions/api-keys'
 import { fetchWebhooks } from '@/lib/server/functions/webhooks'
 import { fetchRoadmaps } from '@/lib/server/functions/roadmaps'
@@ -449,6 +450,17 @@ export const adminQueries = {
       queryKey: ['admin', 'recoveryCodes'],
       queryFn: () => listRecoveryCodesFn({ data: {} }),
       staleTime: 30 * 1000,
+    }),
+
+  /**
+   * Moderation status: whether moderation is enabled + pending post count.
+   * Drives the conditional sidebar entry and its backlog badge.
+   */
+  moderationStatus: () =>
+    queryOptions({
+      queryKey: ['admin', 'moderationStatus'],
+      queryFn: () => getModerationStatus(),
+      staleTime: 30 * 1000, // 30s - count changes as posts are approved/rejected
     }),
 
   /**
