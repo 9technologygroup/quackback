@@ -5,32 +5,13 @@
  * isn't visible, and create is always denied when view is denied.
  */
 import { and, eq, or, sql, type SQL } from 'drizzle-orm'
-import {
-  posts,
-  type BoardAudience,
-  type BoardModeration,
-  type ModerationState,
-} from '@/lib/server/db'
+import { posts, type BoardAudience, type ModerationState } from '@/lib/server/db'
 import type { PrincipalId } from '@quackback/ids'
 import { allowDecision, denyDecision, isTeamActor, type Actor, type Decision } from './types'
 import { canViewBoard, boardViewFilter } from './boards'
 
-/** A board's approval policy after `'inherit'` has been resolved away. */
-export type ResolvedRequireApproval = 'none' | 'anonymous' | 'authenticated' | 'all'
-
-/**
- * Collapse a board's `requireApproval` to a concrete level. Total: an absent
- * board config inherits; `'inherit'` takes the workspace default; an absent
- * global default is `'none'`. The policy layer never sees `'inherit'`.
- */
-export function resolveRequireApproval(
-  boardModeration: BoardModeration | undefined,
-  globalDefault: ResolvedRequireApproval | undefined
-): ResolvedRequireApproval {
-  const board = boardModeration?.requireApproval ?? 'inherit'
-  if (board === 'inherit') return globalDefault ?? 'none'
-  return board
-}
+/** The workspace moderation policy. Boards no longer have a per-board override. */
+export type RequireApproval = 'none' | 'anonymous' | 'authenticated' | 'all'
 
 interface PostShape {
   moderationState: ModerationState
@@ -39,7 +20,6 @@ interface PostShape {
 
 interface BoardShape {
   audience: BoardAudience
-  moderation?: BoardModeration
 }
 
 const isTeam = isTeamActor
@@ -107,21 +87,18 @@ export type CreateDecision =
 export function canCreatePost(
   actor: Actor,
   board: BoardShape,
-  globalDefault: ResolvedRequireApproval | undefined
+  globalDefault: RequireApproval | undefined
 ): CreateDecision {
   const view = canViewBoard(actor, board)
   if (!view.allowed) return { allowed: false, reason: view.reason }
 
-  const moderation = board.moderation ?? { requireApproval: 'inherit', trustedSegmentIds: [] }
-  const requireApproval = resolveRequireApproval(moderation, globalDefault)
-
-  if (moderation.trustedSegmentIds.some((id) => actor.segmentIds.has(id as never))) {
-    return { allowed: true, requiresApproval: false }
-  }
+  // Team always bypasses the moderation queue.
   if (isTeam(actor)) {
     return { allowed: true, requiresApproval: false }
   }
 
+  // Approval is driven purely by the workspace-wide moderation policy.
+  const requireApproval = globalDefault ?? 'none'
   const requires =
     requireApproval === 'all' ||
     (requireApproval === 'anonymous' && actor.principalType !== 'user') ||

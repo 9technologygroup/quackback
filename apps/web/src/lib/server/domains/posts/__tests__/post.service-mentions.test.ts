@@ -75,7 +75,6 @@ vi.mock('@/lib/server/db', async () => {
             slug: 'feedback',
             name: 'Feedback',
             audience: { kind: 'public' },
-            moderation: { requireApproval: 'none', trustedSegmentIds: [] },
           }),
         },
         postStatuses: {

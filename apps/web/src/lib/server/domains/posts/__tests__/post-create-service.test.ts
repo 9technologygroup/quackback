@@ -51,7 +51,6 @@ vi.mock('@/lib/server/db', async () => {
             slug: 'feedback',
             name: 'Feedback',
             audience: { kind: 'public' },
-            moderation: { requireApproval: 'none', trustedSegmentIds: [] },
           }),
         },
         postStatuses: {
@@ -160,17 +159,15 @@ describe('createPost held audit event', () => {
     const { db } = await import('@/lib/server/db')
     const { getPortalConfig } = await import('@/lib/server/domains/settings/settings.service')
 
-    // Board moderation requires approval for all
     vi.mocked(db.query.boards.findFirst).mockResolvedValueOnce({
       id: 'board_b',
       slug: 'feedback',
       name: 'Feedback',
       audience: { kind: 'public' },
-      moderation: { requireApproval: 'all', trustedSegmentIds: [] },
     } as unknown as Awaited<ReturnType<typeof db.query.boards.findFirst>>)
-    // Portal default: no additional approval needed (board setting drives this)
+    // Workspace moderation policy requires approval for all submissions.
     vi.mocked(getPortalConfig).mockResolvedValueOnce({
-      moderationDefault: { requireApproval: 'none' },
+      moderationDefault: { requireApproval: 'all' },
     } as unknown as Awaited<ReturnType<typeof getPortalConfig>>)
 
     const { createPost } = await import('../post.service')
@@ -202,13 +199,12 @@ describe('createPost held audit event', () => {
     const { db } = await import('@/lib/server/db')
     const { getPortalConfig } = await import('@/lib/server/domains/settings/settings.service')
 
-    // Board moderation: no approval required
+    // Workspace moderation policy: no approval required
     vi.mocked(db.query.boards.findFirst).mockResolvedValueOnce({
       id: 'board_b',
       slug: 'feedback',
       name: 'Feedback',
       audience: { kind: 'public' },
-      moderation: { requireApproval: 'none', trustedSegmentIds: [] },
     } as unknown as Awaited<ReturnType<typeof db.query.boards.findFirst>>)
     vi.mocked(getPortalConfig).mockResolvedValueOnce({
       moderationDefault: { requireApproval: 'none' },

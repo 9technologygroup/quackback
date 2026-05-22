@@ -14,13 +14,7 @@ import {
   type UpdateBoardInput,
   type DeleteBoardInput,
 } from '@/lib/server/functions/boards'
-import {
-  type Board,
-  type BoardAudience,
-  type BoardModeration,
-  DEFAULT_BOARD_AUDIENCE,
-  DEFAULT_BOARD_MODERATION,
-} from '@/lib/shared/db-types'
+import { type Board, type BoardAudience, DEFAULT_BOARD_AUDIENCE } from '@/lib/shared/db-types'
 import type { BoardId } from '@quackback/ids'
 import { boardKeys } from '@/lib/client/hooks/use-boards-query'
 import { adminQueries } from '@/lib/client/queries/admin'
@@ -48,7 +42,6 @@ export function useCreateBoard() {
         slug: slugify(input.name),
         description: input.description ?? null,
         audience: input.isPublic === false ? { kind: 'team' as const } : DEFAULT_BOARD_AUDIENCE,
-        moderation: DEFAULT_BOARD_MODERATION,
         settings: {},
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -138,7 +131,7 @@ export function useUpdateBoard() {
 }
 
 /**
- * Hook to update board audience and/or moderation.
+ * Hook to update board audience.
  *
  * Admin-only server-side. Use this from the Access tab; never from the
  * general-update path, which mustn't carry visibility changes.
@@ -146,11 +139,8 @@ export function useUpdateBoard() {
 export function useUpdateBoardAccess() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (input: {
-      boardId: BoardId
-      audience?: BoardAudience
-      moderation?: BoardModeration
-    }) => updateBoardAccessFn({ data: input }),
+    mutationFn: (input: { boardId: BoardId; audience?: BoardAudience }) =>
+      updateBoardAccessFn({ data: input }),
     onMutate: async (input) => {
       await queryClient.cancelQueries({ queryKey: boardKeys.lists() })
       await queryClient.cancelQueries({ queryKey: boardKeys.detail(input.boardId) })
@@ -164,7 +154,6 @@ export function useUpdateBoardAccess() {
             : {
                 ...board,
                 ...(input.audience !== undefined && { audience: input.audience }),
-                ...(input.moderation !== undefined && { moderation: input.moderation }),
                 updatedAt: new Date(),
               }
         )
@@ -174,7 +163,6 @@ export function useUpdateBoardAccess() {
         queryClient.setQueryData<Board>(boardKeys.detail(input.boardId), {
           ...previousDetail,
           ...(input.audience !== undefined && { audience: input.audience }),
-          ...(input.moderation !== undefined && { moderation: input.moderation }),
           updatedAt: new Date(),
         })
       }

@@ -32,7 +32,6 @@ vi.mock('@/lib/server/db', async () => {
     inArray: drizzle.inArray,
     asc: drizzle.asc,
     sql: drizzle.sql,
-    DEFAULT_BOARD_MODERATION: { requireApproval: 'inherit', trustedSegmentIds: [] },
   }
 })
 
@@ -54,7 +53,6 @@ const EXISTING_BOARD = {
   slug: 'original',
   description: null,
   audience: { kind: 'public' },
-  moderation: { requireApproval: 'none', trustedSegmentIds: [] },
   settings: {},
   createdAt: new Date(),
   updatedAt: new Date(),

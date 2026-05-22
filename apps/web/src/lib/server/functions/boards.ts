@@ -294,7 +294,7 @@ export const createBoardsBatchFn = createServerFn({ method: 'POST' })
   })
 
 // ============================================
-// v1 access controls — board audience + moderation
+// v1 access controls — board audience
 // ============================================
 
 import { isAdmin } from '@/lib/shared/roles'
@@ -303,19 +303,13 @@ import { recordAuditEvent, actorFromAuth } from '@/lib/server/audit/log'
 
 // audienceSchema is defined at the top of this file (reused by create/update).
 
-export const moderationSchema = z.object({
-  requireApproval: z.enum(['inherit', 'none', 'anonymous', 'authenticated', 'all']),
-  trustedSegmentIds: z.array(z.string()).max(50),
-})
-
 const updateBoardAccessSchema = z.object({
   boardId: z.string(),
   audience: audienceSchema.optional(),
-  moderation: moderationSchema.optional(),
 })
 
 /**
- * Update board.audience and/or board.moderation.
+ * Update board.audience.
  *
  * isAdmin-gated — granting/revoking access is policy-level work. Members can
  * moderate posts (approve/reject) but not change who sees the board. Mirrors
@@ -335,7 +329,6 @@ export const updateBoardAccessFn = createServerFn({ method: 'POST' })
 
     const updates: Record<string, unknown> = {}
     if (data.audience) updates.audience = data.audience
-    if (data.moderation) updates.moderation = data.moderation
     if (Object.keys(updates).length === 0) return { ok: true }
 
     await db
@@ -350,15 +343,6 @@ export const updateBoardAccessFn = createServerFn({ method: 'POST' })
         target: { type: 'board', id: data.boardId },
         before: { audience: before.audience },
         after: { audience: data.audience },
-      })
-    }
-    if (data.moderation) {
-      await recordAuditEvent({
-        event: 'board.moderation.changed',
-        actor: actorFromAuth(auth),
-        target: { type: 'board', id: data.boardId },
-        before: { moderation: before.moderation },
-        after: { moderation: data.moderation },
       })
     }
 

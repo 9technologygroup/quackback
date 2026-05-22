@@ -1,13 +1,7 @@
 import { pgTable, text, timestamp, boolean, jsonb, integer, index } from 'drizzle-orm/pg-core'
 import { relations } from 'drizzle-orm'
 import { typeIdWithDefault } from '@quackback/ids/drizzle'
-import {
-  type BoardSettings,
-  type BoardAudience,
-  type BoardModeration,
-  DEFAULT_BOARD_AUDIENCE,
-  DEFAULT_BOARD_MODERATION,
-} from '../types'
+import { type BoardSettings, type BoardAudience, DEFAULT_BOARD_AUDIENCE } from '../types'
 
 export const boards = pgTable(
   'boards',
@@ -16,14 +10,10 @@ export const boards = pgTable(
     slug: text('slug').notNull().unique(),
     name: text('name').notNull(),
     description: text('description'),
-    // v1 access controls — see BoardAudience / BoardModeration in ../types.
-    // Replaces the legacy `is_public` boolean. Existing rows are backfilled
-    // by the 0056 migration before the column is dropped.
+    // v1 access controls — see BoardAudience in ../types. Replaces the legacy
+    // `is_public` boolean. Existing rows are backfilled by the 0066 migration
+    // before the column is dropped.
     audience: jsonb('audience').$type<BoardAudience>().default(DEFAULT_BOARD_AUDIENCE).notNull(),
-    moderation: jsonb('moderation')
-      .$type<BoardModeration>()
-      .default(DEFAULT_BOARD_MODERATION)
-      .notNull(),
     settings: jsonb('settings').$type<BoardSettings>().default({}).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

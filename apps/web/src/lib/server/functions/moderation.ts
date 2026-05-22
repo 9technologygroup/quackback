@@ -8,8 +8,8 @@
  *
  * Approve and reject are team-level operations (admin OR member): mirrors
  * Canny/Featurebase where moderators are a separate concept from workspace
- * admins. Changing board-level moderation *policy* (Task 19) is admin-only
- * because granting/revoking visibility is policy-level work.
+ * admins. Changing the workspace moderation *policy* is admin-only and lives
+ * on the Settings → Moderation page.
  */
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
@@ -125,18 +125,7 @@ export const getModerationStatus = createServerFn({ method: 'GET' }).handler(asy
     .where(and(eq(posts.moderationState, 'pending'), isNull(posts.deletedAt)))
 
   const portalConfig = await getPortalConfig()
-  const globalGates = portalConfig.moderationDefault.requireApproval !== 'none'
+  const enabled = portalConfig.moderationDefault.requireApproval !== 'none'
 
-  const [boardGate] = await db
-    .select({ exists: sql<boolean>`true` })
-    .from(boards)
-    .where(
-      and(
-        isNull(boards.deletedAt),
-        sql`${boards.moderation} ->> 'requireApproval' IN ('anonymous','authenticated','all')`
-      )
-    )
-    .limit(1)
-
-  return { enabled: globalGates || Boolean(boardGate), pendingCount }
+  return { enabled, pendingCount }
 })

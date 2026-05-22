@@ -204,8 +204,8 @@ export interface PortalFeatures {
 }
 
 /**
- * Workspace-wide default post-approval policy. A board with
- * `moderation.requireApproval === 'inherit'` follows this value.
+ * Workspace-wide post-approval policy. Applies to every board — there is
+ * no per-board override.
  */
 export interface ModerationDefault {
   requireApproval: 'none' | 'anonymous' | 'authenticated' | 'all'
@@ -242,7 +242,7 @@ export interface PortalConfig {
   features: PortalFeatures
   /** Welcome card on the portal index. Optional — absent = disabled. */
   welcomeCard?: PortalWelcomeCard
-  /** Workspace default approval policy; boards on 'inherit' follow it. */
+  /** Workspace-wide approval policy; applies to every board. */
   moderationDefault: ModerationDefault
 }
 

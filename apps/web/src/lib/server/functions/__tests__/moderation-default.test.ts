@@ -1,8 +1,8 @@
 /**
  * Tests for updateModerationDefaultFn.
  *
- * Admin-only mutation — changes the workspace-wide post-approval default
- * that boards on 'inherit' follow. The test pins: the isAdmin gate, the
+ * Admin-only mutation — changes the workspace-wide post-approval policy
+ * that applies to every board. The test pins: the isAdmin gate, the
  * audit event shape, and all four valid requireApproval values.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'

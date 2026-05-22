@@ -286,18 +286,18 @@ describe('canViewBoard — idempotence + freshness', () => {
 
   it('a board with extra fields beyond audience still works (structural typing)', () => {
     // canViewBoard's input type is `{ audience: BoardAudience }`. By
-    // structural typing, a richer board record (with moderation, settings,
-    // timestamps, …) is accepted without casts. This guards against any
-    // future refactor that tightens the input shape and breaks list-query
-    // callers that pass the full row.
+    // structural typing, a richer board record (with settings, timestamps,
+    // …) is accepted without casts. This guards against any future refactor
+    // that tightens the input shape and breaks list-query callers that pass
+    // the full row.
     interface FatBoard {
       audience: BoardAudience
-      moderation: { requireApproval: string; trustedSegmentIds: string[] }
+      settings: Record<string, unknown>
       label: string
     }
     const board: FatBoard = {
       audience: { kind: 'public' },
-      moderation: { requireApproval: 'all', trustedSegmentIds: [] },
+      settings: {},
       label: 'noise',
     }
     expect(canViewBoard(portalUserInAlpha, board)).toEqual({ allowed: true })

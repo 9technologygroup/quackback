@@ -80,7 +80,7 @@ export async function createComment(
       principalId: post.principalId,
       isCommentsLocked: post.isCommentsLocked,
     },
-    { audience: board.audience, moderation: board.moderation ?? undefined }
+    { audience: board.audience }
   )
   if (!decision.allowed) {
     throw new ForbiddenError('FORBIDDEN', decision.reason)

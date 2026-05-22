@@ -270,7 +270,6 @@ describe('createPublicPostFn anonymous feature flag', () => {
     name: 'General',
     slug: 'general',
     audience: { kind: 'public' as const },
-    moderation: { requireApproval: 'none' as const, trustedSegmentIds: [] },
   }
   const MOCK_STATUS = { id: 'status_123' }
   const MOCK_POST = {

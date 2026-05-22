@@ -226,7 +226,8 @@ import { segmentIdsForPrincipal } from '@/lib/server/domains/segments/segment-me
 /**
  * Preserve all three principal types. Collapsing 'anonymous' onto 'user'
  * is a security bug: a Better Auth anonymous session would satisfy
- * audience.kind='authenticated' and bypass moderation.requireApproval='anonymous'.
+ * audience.kind='authenticated' and dodge the workspace requireApproval='anonymous'
+ * moderation gate.
  */
 function normalizePrincipalType(raw: string | null | undefined): PrincipalType {
   if (raw === 'service') return 'service'

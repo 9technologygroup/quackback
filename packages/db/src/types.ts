@@ -47,18 +47,7 @@ export type BoardAudience =
   | { kind: 'team' }
   | { kind: 'segments'; segmentIds: string[] }
 
-// Stored in boards.moderation jsonb. trustedSegmentIds bypass requireApproval
-// even when their submitter category would normally be gated.
-export interface BoardModeration {
-  requireApproval: 'inherit' | 'none' | 'anonymous' | 'authenticated' | 'all'
-  trustedSegmentIds: string[]
-}
-
 export const DEFAULT_BOARD_AUDIENCE: BoardAudience = { kind: 'public' }
-export const DEFAULT_BOARD_MODERATION: BoardModeration = {
-  requireApproval: 'inherit',
-  trustedSegmentIds: [],
-}
 
 // Integration config (stored in integrations.config JSONB column)
 // Each integration defines its own typed config at the integration layer.

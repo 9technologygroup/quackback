@@ -8,7 +8,7 @@
  * data model and server stay unchanged.
  */
 
-/** The four concrete approval levels (board `'inherit'` is resolved away before this). */
+/** The four workspace approval levels. */
 export type RequireApprovalLevel = 'none' | 'anonymous' | 'authenticated' | 'all'
 
 export interface ApprovalToggles {

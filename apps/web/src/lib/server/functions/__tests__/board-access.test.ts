@@ -56,7 +56,6 @@ vi.mock('@/lib/server/domains/settings/settings.helpers', () => ({
 type BoardRow = {
   id: string
   audience: { kind: string; segmentIds?: string[] }
-  moderation: { requireApproval: string; trustedSegmentIds: string[] }
 }
 const state: {
   boards: BoardRow[]
@@ -129,13 +128,12 @@ import { ForbiddenError, NotFoundError } from '@/lib/shared/errors'
 // declaration order. Boards.ts has many existing fns ahead of
 // updateBoardAccessFn — we resolve it via name, not index.
 import * as boardsModule from '../boards'
-import { moderationSchema } from '../boards'
 
 function getUpdateBoardAccessFn(): Handler {
   // updateBoardAccessFn was appended last; pick the last handler captured
-  // that matches the expected behaviour (it accepts {boardId, audience?,
-  // moderation?}). We bind via the module export's metadata as a sanity
-  // check, then return the matching captured handler.
+  // that matches the expected behaviour (it accepts {boardId, audience?}).
+  // We bind via the module export's metadata as a sanity check, then
+  // return the matching captured handler.
   expect(boardsModule).toHaveProperty('updateBoardAccessFn')
   return hoisted.handlers[hoisted.handlers.length - 1]
 }
@@ -154,7 +152,6 @@ const AUTH_USER = { ...AUTH_ADMIN, principal: { ...AUTH_ADMIN.principal, role: '
 const BOARD_DEFAULT: BoardRow = {
   id: 'board_1',
   audience: { kind: 'public' },
-  moderation: { requireApproval: 'none', trustedSegmentIds: [] },
 }
 
 beforeEach(() => {
@@ -241,83 +238,10 @@ describe('updateBoardAccessFn — audit branches', () => {
     })
   })
 
-  it('moderation-only update fires one event (board.moderation.changed)', async () => {
-    await getUpdateBoardAccessFn()({
-      data: {
-        boardId: 'board_1',
-        moderation: { requireApproval: 'all', trustedSegmentIds: [] },
-      },
-    })
-    expect(state.auditEvents).toHaveLength(1)
-    expect(state.auditEvents[0].event).toBe('board.moderation.changed')
-  })
-
-  it('both-field update fires two events', async () => {
-    await getUpdateBoardAccessFn()({
-      data: {
-        boardId: 'board_1',
-        audience: { kind: 'authenticated' },
-        moderation: { requireApproval: 'anonymous', trustedSegmentIds: [] },
-      },
-    })
-    expect(state.auditEvents.map((e) => e.event).sort()).toEqual([
-      'board.audience.changed',
-      'board.moderation.changed',
-    ])
-  })
-
   it('no-field update is a no-op — no audit, no db update', async () => {
     await getUpdateBoardAccessFn()({ data: { boardId: 'board_1' } })
     expect(state.updates).toEqual([])
     expect(state.auditEvents).toEqual([])
-  })
-})
-
-describe('updateBoardAccessFn — accepts all four requireApproval values', () => {
-  beforeEach(() => mockRequireAuth.mockResolvedValue(AUTH_ADMIN))
-
-  it.each(['none', 'anonymous', 'authenticated', 'all'] as const)(
-    'requireApproval=%s',
-    async (ra) => {
-      await getUpdateBoardAccessFn()({
-        data: {
-          boardId: 'board_1',
-          moderation: { requireApproval: ra, trustedSegmentIds: [] },
-        },
-      })
-      expect(state.boards[0].moderation.requireApproval).toBe(ra)
-    }
-  )
-})
-
-describe('updateBoardAccessFn — requireApproval accepts inherit', () => {
-  beforeEach(() => mockRequireAuth.mockResolvedValue(AUTH_ADMIN))
-
-  it("requireApproval='inherit' resolves { ok: true } and persists the value", async () => {
-    const result = await getUpdateBoardAccessFn()({
-      data: {
-        boardId: 'board_1',
-        moderation: { requireApproval: 'inherit', trustedSegmentIds: [] },
-      },
-    })
-    expect(result).toEqual({ ok: true })
-    expect(state.boards[0].moderation.requireApproval).toBe('inherit')
-  })
-})
-
-describe('moderationSchema', () => {
-  it.each(['inherit', 'none', 'anonymous', 'authenticated', 'all'])(
-    'accepts requireApproval=%s',
-    (val) => {
-      expect(() =>
-        moderationSchema.parse({ requireApproval: val, trustedSegmentIds: [] })
-      ).not.toThrow()
-    }
-  )
-  it('rejects an unknown requireApproval value', () => {
-    expect(
-      moderationSchema.safeParse({ requireApproval: 'bogus', trustedSegmentIds: [] }).success
-    ).toBe(false)
   })
 })
 

@@ -4,18 +4,18 @@
  * Goals:
  *  - Every moderationState × audience × actor combination behaves as
  *    specified, with the author-of-own-pending escape hatch covered.
- *  - canCreatePost: every requireApproval value × every principalType ×
- *    trusted-bypass present/absent × team/non-team.
+ *  - canCreatePost: every workspace requireApproval value × every
+ *    principalType × team/non-team.
  *  - Author-pending recognition is principalId-equality, not falsy-equality
  *    (null !== null must NOT match).
  *
  * Pairs with boards.test.ts (audience matrix) and segment-membership tests.
  */
 import { describe, it, expect } from 'vitest'
-import { canViewPost, canCreatePost, canCreateComment, resolveRequireApproval } from '../posts'
+import { canViewPost, canCreatePost, canCreateComment } from '../posts'
 import { ANONYMOUS_ACTOR, type Actor } from '../types'
 import type { SegmentId, PrincipalId } from '@quackback/ids'
-import type { BoardAudience, BoardModeration, ModerationState } from '@/lib/server/db'
+import type { BoardAudience, ModerationState } from '@/lib/server/db'
 import { MODERATION_STATES } from '@/lib/server/db'
 
 // ----------------------------------------------------------------------
@@ -243,11 +243,7 @@ describe('canViewPost — board denies first, post never inspected', () => {
 const requireApprovalValues = ['none', 'anonymous', 'authenticated', 'all'] as const
 type RequireApproval = (typeof requireApprovalValues)[number]
 
-function moderation(requireApproval: RequireApproval, trusted: string[] = []): BoardModeration {
-  return { requireApproval, trustedSegmentIds: trusted }
-}
-
-describe('canCreatePost — happy-path moderation matrix', () => {
+describe('canCreatePost — happy-path moderation matrix (workspace policy)', () => {
   it.each([
     // anonymous submitter
     { ra: 'none' as RequireApproval, actor: anon, want: false },
@@ -267,14 +263,7 @@ describe('canCreatePost — happy-path moderation matrix', () => {
   ])(
     'requireApproval=$ra + actor.principalType=$actor.principalType → requiresApproval=$want',
     ({ ra, actor, want }) => {
-      const decision = canCreatePost(
-        actor,
-        {
-          audience: { kind: 'public' },
-          moderation: moderation(ra),
-        },
-        undefined
-      )
+      const decision = canCreatePost(actor, { audience: { kind: 'public' } }, ra)
       expect(decision.allowed).toBe(true)
       if (decision.allowed) expect(decision.requiresApproval).toBe(want)
     }
@@ -300,196 +289,67 @@ describe('canCreatePost — happy-path moderation matrix', () => {
   //
   // Why we kept it: the alternative is a deliberate design decision
   // (extend requireApproval to a four-value enum that distinguishes
-  // service from anonymous, or add a separate gateService flag). The
-  // current behaviour fails *closed* (over-moderates rather than
-  // under-moderates) so it ships safely; a v2 design call should be
-  // driven by real customer feedback rather than guessed.
+  // service from anonymous). The current behaviour fails *closed*
+  // (over-moderates rather than under-moderates) so it ships safely;
+  // a v2 design call should be driven by real customer feedback
+  // rather than guessed.
   //
   // TODO(v2): revisit when an integrator complains. Either treat
-  // service as 'authenticated' for moderation, or add a separate
-  // `boards.moderation.gateService: boolean` knob.
+  // service as 'authenticated' for moderation, or distinguish it
+  // from anonymous in the workspace policy enum.
   // ────────────────────────────────────────────────────────────────────
   it('DESIGN PIN: service principalType is gated by requireApproval=anonymous (over-moderates)', () => {
-    const decision = canCreatePost(
-      service,
-      {
-        audience: { kind: 'public' },
-        moderation: moderation('anonymous'),
-      },
-      undefined
-    )
+    const decision = canCreatePost(service, { audience: { kind: 'public' } }, 'anonymous')
     expect(decision).toEqual({ allowed: true, requiresApproval: true })
   })
 })
 
 describe('canCreatePost — team always bypasses approval', () => {
   it.each(requireApprovalValues)('admin + requireApproval=%s', (ra) => {
-    expect(
-      canCreatePost(admin, { audience: { kind: 'public' }, moderation: moderation(ra) }, undefined)
-    ).toEqual({ allowed: true, requiresApproval: false })
+    expect(canCreatePost(admin, { audience: { kind: 'public' } }, ra)).toEqual({
+      allowed: true,
+      requiresApproval: false,
+    })
   })
 
   it.each(requireApprovalValues)('member + requireApproval=%s', (ra) => {
-    expect(
-      canCreatePost(member, { audience: { kind: 'public' }, moderation: moderation(ra) }, undefined)
-    ).toEqual({ allowed: true, requiresApproval: false })
-  })
-})
-
-describe('canCreatePost — trusted-segment bypass', () => {
-  it('trusted-segment member bypasses every requireApproval level', () => {
-    for (const ra of requireApprovalValues) {
-      expect(
-        canCreatePost(
-          trustedPortal,
-          {
-            audience: { kind: 'public' },
-            moderation: moderation(ra, ['segment_trusted']),
-          },
-          undefined
-        )
-      ).toEqual({ allowed: true, requiresApproval: false })
-    }
-  })
-
-  it('non-trusted-segment user is NOT bypassed by an unrelated trusted segment', () => {
-    const decision = canCreatePost(
-      portal,
-      {
-        audience: { kind: 'public' },
-        moderation: moderation('all', ['segment_other']),
-      },
-      undefined
-    )
-    expect(decision).toEqual({ allowed: true, requiresApproval: true })
-  })
-
-  it('trusted bypass only requires ANY listed segment to match', () => {
-    const actor: Actor = {
-      ...portal,
-      segmentIds: new Set(['segment_a', 'segment_trusted'] as SegmentId[]),
-    }
-    expect(
-      canCreatePost(
-        actor,
-        {
-          audience: { kind: 'public' },
-          moderation: moderation('all', ['segment_unrelated', 'segment_trusted']),
-        },
-        undefined
-      )
-    ).toEqual({ allowed: true, requiresApproval: false })
-  })
-
-  it('trusted-segment bypass works even when actor cannot otherwise view the board', () => {
-    // segments-audience board: actor is in 'segment_trusted' so they CAN view AND bypass.
-    expect(
-      canCreatePost(
-        trustedPortal,
-        {
-          audience: { kind: 'segments', segmentIds: ['segment_trusted'] },
-          moderation: moderation('all', ['segment_trusted']),
-        },
-        undefined
-      )
-    ).toEqual({ allowed: true, requiresApproval: false })
+    expect(canCreatePost(member, { audience: { kind: 'public' } }, ra)).toEqual({
+      allowed: true,
+      requiresApproval: false,
+    })
   })
 })
 
 describe('canCreatePost — board view denied → create denied', () => {
   it('anonymous cannot post on authenticated-only board', () => {
-    const decision = canCreatePost(
-      anon,
-      {
-        audience: { kind: 'authenticated' },
-        moderation: moderation('none'),
-      },
-      undefined
-    )
+    const decision = canCreatePost(anon, { audience: { kind: 'authenticated' } }, 'none')
     expect(decision.allowed).toBe(false)
   })
 
   it('portal user cannot post on team-only board', () => {
-    const decision = canCreatePost(
-      portal,
-      {
-        audience: { kind: 'team' },
-        moderation: moderation('none'),
-      },
-      undefined
-    )
+    const decision = canCreatePost(portal, { audience: { kind: 'team' } }, 'none')
     expect(decision.allowed).toBe(false)
   })
 
   it('portal user cannot post on segments-only board if they are not a member', () => {
     const decision = canCreatePost(
       portal,
-      {
-        audience: { kind: 'segments', segmentIds: ['segment_other'] },
-        moderation: moderation('none'),
-      },
-      undefined
+      { audience: { kind: 'segments', segmentIds: ['segment_other'] } },
+      'none'
     )
     expect(decision.allowed).toBe(false)
   })
 })
 
-describe('canCreatePost — moderation defaults safely when undefined', () => {
-  it('treats absent moderation as { requireApproval: inherit, trusted: [] } resolved to none', () => {
+describe('canCreatePost — global default treated as none when undefined', () => {
+  it('an absent workspace policy resolves to no approval required', () => {
     const decision = canCreatePost(portal, { audience: { kind: 'public' } }, undefined)
     expect(decision).toEqual({ allowed: true, requiresApproval: false })
   })
 
-  it('absent moderation does not crash on missing trustedSegmentIds', () => {
-    expect(() =>
-      canCreatePost(trustedPortal, { audience: { kind: 'public' } }, undefined)
-    ).not.toThrow()
-  })
-})
-
-describe('canCreatePost — inherit resolution via global default', () => {
-  it('a board on inherit follows the global default (all → requires approval)', () => {
-    const decision = canCreatePost(
-      anon,
-      {
-        audience: { kind: 'public' },
-        moderation: { requireApproval: 'inherit', trustedSegmentIds: [] },
-      },
-      'all'
-    )
-    expect(decision).toEqual({ allowed: true, requiresApproval: true })
-  })
-  it('an explicit board override beats the global default', () => {
-    const decision = canCreatePost(
-      anon,
-      {
-        audience: { kind: 'public' },
-        moderation: { requireApproval: 'none', trustedSegmentIds: [] },
-      },
-      'all'
-    )
+  it('an anonymous submitter with an absent policy is not gated', () => {
+    const decision = canCreatePost(anon, { audience: { kind: 'public' } }, undefined)
     expect(decision).toEqual({ allowed: true, requiresApproval: false })
-  })
-})
-
-describe('resolveRequireApproval', () => {
-  it('returns the global default when the board inherits', () => {
-    expect(
-      resolveRequireApproval({ requireApproval: 'inherit', trustedSegmentIds: [] }, 'all')
-    ).toBe('all')
-  })
-  it('returns the board value when the board overrides', () => {
-    expect(
-      resolveRequireApproval({ requireApproval: 'anonymous', trustedSegmentIds: [] }, 'all')
-    ).toBe('anonymous')
-  })
-  it('falls back to none when the board config is absent', () => {
-    expect(resolveRequireApproval(undefined, undefined)).toBe('none')
-  })
-  it('falls back to none when inheriting and the global default is absent', () => {
-    expect(
-      resolveRequireApproval({ requireApproval: 'inherit', trustedSegmentIds: [] }, undefined)
-    ).toBe('none')
   })
 })
 

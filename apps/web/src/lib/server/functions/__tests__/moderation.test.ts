@@ -244,7 +244,6 @@ vi.mock('@/lib/server/db', () => ({
     id: { __table: 'boards', __col: 'id' } satisfies ColRef,
     name: { __table: 'boards', __col: 'name' } satisfies ColRef,
     deletedAt: { __table: 'boards', __col: 'deletedAt' } satisfies ColRef,
-    moderation: { __table: 'boards', __col: 'moderation' } satisfies ColRef,
   },
   principal: {
     id: { __table: 'principal', __col: 'id' } satisfies ColRef,
@@ -554,26 +553,18 @@ describe('listPendingPostsFn — listPendingPosts exclusion + enrichment', () =>
 // getModerationStatus
 // ----------------------------------------------------------------------
 
-// Helper: build a db.select mock that returns count on first call, board rows
-// on second call. Mirrors the two sequential selects inside getModerationStatus.
+// Helper: build a db.select mock that returns the pending count. This is the
+// only select getModerationStatus runs — `enabled` derives purely from the
+// workspace moderation policy.
 import { db } from '@/lib/server/db'
 
-function stubSelectCalls(pendingCount: number, boardGateRow: boolean) {
+function stubSelectCalls(pendingCount: number) {
   const countChain = {
     from: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve([{ count: pendingCount }])),
     })),
   }
-  const boardChain = {
-    from: vi.fn(() => ({
-      where: vi.fn(() => ({
-        limit: vi.fn(() => Promise.resolve(boardGateRow ? [{ exists: true }] : [])),
-      })),
-    })),
-  }
-  // First call → count query, second call → boards query
   vi.mocked(db.select).mockImplementationOnce(() => countChain as never)
-  vi.mocked(db.select).mockImplementationOnce(() => boardChain as never)
 }
 
 describe('getModerationStatus', () => {
@@ -593,7 +584,7 @@ describe('getModerationStatus', () => {
   })
 
   it('pendingCount reflects count of pending + non-deleted posts', async () => {
-    stubSelectCalls(7, false)
+    stubSelectCalls(7)
     mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'none' } })
     const result = (await getModerationStatusHandler()({ data: {} })) as {
       enabled: boolean
@@ -602,9 +593,8 @@ describe('getModerationStatus', () => {
     expect(result.pendingCount).toBe(7)
   })
 
-  it('enabled=true when global default is not none (board gate is off)', async () => {
-    // Global gate on, no board gate → enabled
-    stubSelectCalls(0, false)
+  it('enabled=true when the workspace moderation policy is not none', async () => {
+    stubSelectCalls(0)
     mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'all' } })
     const result = (await getModerationStatusHandler()({ data: {} })) as {
       enabled: boolean
@@ -613,20 +603,8 @@ describe('getModerationStatus', () => {
     expect(result.enabled).toBe(true)
   })
 
-  it('enabled=true when a board has an explicit gating requireApproval (global is none)', async () => {
-    // Global gate off, board gate on → enabled
-    stubSelectCalls(0, true)
-    mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'none' } })
-    const result = (await getModerationStatusHandler()({ data: {} })) as {
-      enabled: boolean
-      pendingCount: number
-    }
-    expect(result.enabled).toBe(true)
-  })
-
-  it('enabled=false when neither global nor any board has a gate', async () => {
-    // Both off → disabled
-    stubSelectCalls(0, false)
+  it('enabled=false when the workspace moderation policy is none', async () => {
+    stubSelectCalls(0)
     mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'none' } })
     const result = (await getModerationStatusHandler()({ data: {} })) as {
       enabled: boolean
@@ -635,8 +613,8 @@ describe('getModerationStatus', () => {
     expect(result.enabled).toBe(false)
   })
 
-  it('enabled=true when both global and board gate are on', async () => {
-    stubSelectCalls(3, true)
+  it('enabled=true for a partial gating policy (anonymous), pendingCount passes through', async () => {
+    stubSelectCalls(3)
     mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'anonymous' } })
     const result = (await getModerationStatusHandler()({ data: {} })) as {
       enabled: boolean

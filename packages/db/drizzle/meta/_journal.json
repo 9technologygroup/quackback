@@ -470,13 +470,6 @@
       "when": 1778457600013,
       "tag": "0066_granular_access_controls",
       "breakpoints": true
-    },
-    {
-      "idx": 67,
-      "version": "7",
-      "when": 1779409736731,
-      "tag": "0067_board_moderation_inherit",
-      "breakpoints": true
     }
   ]
 }

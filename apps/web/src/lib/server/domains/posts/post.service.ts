@@ -127,13 +127,13 @@ export async function createPost(
     throw new NotFoundError('BOARD_NOT_FOUND', `Board with ID ${input.boardId} not found`)
   }
 
-  // Per-board moderation gate. Submissions on boards with requireApproval
-  // matching the submitter category land in 'pending' instead of 'published'.
-  // Trusted-segment members + team always bypass.
+  // Workspace moderation gate. Submissions matching the configured
+  // requireApproval category land in 'pending' instead of 'published'.
+  // Team always bypasses.
   const portalConfig = await getPortalConfig()
   const createDecision = canCreatePost(
     author.actor ?? ANONYMOUS_ACTOR,
-    { audience: board.audience, moderation: board.moderation },
+    { audience: board.audience },
     portalConfig.moderationDefault.requireApproval
   )
   if (!createDecision.allowed) {

@@ -4,7 +4,6 @@
 --
 -- Adds:
 --   * boards.audience (jsonb) — new visibility model; backfilled from is_public
---   * boards.moderation (jsonb) — per-board moderation policy
 --   * Drops boards.is_public (audience is sole source of truth)
 --   * segments.slug (text, unique on non-deleted rows)
 --   * user_segments.added_by enum widened to ['manual','dynamic','sso','widget','api']
@@ -18,15 +17,11 @@
 -- ============================================================================
 
 -- ---------------------------------------------------------------
--- 1. boards.audience + boards.moderation (additive)
+-- 1. boards.audience (additive)
 -- ---------------------------------------------------------------
 ALTER TABLE "boards"
   ADD COLUMN IF NOT EXISTS "audience" jsonb NOT NULL
   DEFAULT '{"kind":"public"}'::jsonb;
-
-ALTER TABLE "boards"
-  ADD COLUMN IF NOT EXISTS "moderation" jsonb NOT NULL
-  DEFAULT '{"requireApproval":"none","trustedSegmentIds":[]}'::jsonb;
 
 -- Backfill audience from legacy is_public flag. WHERE-guard keeps re-runs idempotent.
 UPDATE "boards"

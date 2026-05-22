@@ -65,7 +65,6 @@ vi.mock('@/lib/server/db', async () => {
               id: 'board_b',
               slug: 'b',
               audience: { kind: 'public' },
-              moderation: { requireApproval: 'none', trustedSegmentIds: [] },
             },
           }),
         },
