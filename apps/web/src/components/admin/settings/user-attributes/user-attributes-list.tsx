@@ -35,6 +35,7 @@ import {
 } from '@/lib/client/mutations'
 import type { UserAttributeItem } from '@/lib/client/hooks/use-user-attributes-queries'
 import type { UserAttributeId } from '@quackback/ids'
+import { BUILTIN_FIELDS } from '@/lib/shared/segment-builtin-fields'
 
 const ATTRIBUTE_TYPES = [
   { value: 'string', label: 'Text' },
@@ -297,6 +298,35 @@ function AttributeRow({
   )
 }
 
+function BuiltinFieldRow({ field }: { field: (typeof BUILTIN_FIELDS)[number] }) {
+  const badgeClass = TYPE_BADGE_COLORS[field.type] ?? ''
+  const typeLabel = ATTRIBUTE_TYPES.find((t) => t.value === field.type)?.label ?? field.type
+
+  return (
+    <div className="flex items-center gap-4 py-3 border-b border-border/50 last:border-0">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-medium text-sm text-foreground">{field.label}</span>
+          <code className="text-[11px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded font-mono">
+            {field.key}
+          </code>
+          <span
+            className={`inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded border ${badgeClass}`}
+          >
+            {typeLabel}
+          </span>
+          <span className="inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded border bg-muted/60 text-muted-foreground border-border/40">
+            Built-in
+          </span>
+        </div>
+        {field.description && (
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">{field.description}</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 interface UserAttributesListProps {
   initialAttributes: UserAttributeItem[]
 }
@@ -367,31 +397,57 @@ export function UserAttributesList({ initialAttributes }: UserAttributesListProp
         </Button>
       }
     >
-      {attributes.length === 0 ? (
-        <EmptyState
-          icon={AdjustmentsHorizontalIcon}
-          title="No attributes yet"
-          description="Add custom user attributes to enable richer segmentation rules."
-          action={
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <PlusIcon className="h-4 w-4 mr-1.5" />
-              New attribute
-            </Button>
-          }
-          className="py-10"
-        />
-      ) : (
-        <div className="divide-y divide-border/50">
-          {attributes.map((attr) => (
-            <AttributeRow
-              key={attr.id}
-              attribute={attr}
-              onEdit={() => setEditTarget(attr)}
-              onDelete={() => setDeleteTarget(attr)}
-            />
+      {/* Built-in fields sub-section */}
+      <div className="mb-6">
+        <div className="mb-3">
+          <h3 className="text-sm font-medium text-foreground">Built-in fields</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Platform fields available in all segment rules. Read-only.
+          </p>
+        </div>
+        <div className="divide-y divide-border/50 rounded-lg border border-border/40 px-4">
+          {BUILTIN_FIELDS.map((field) => (
+            <BuiltinFieldRow key={field.key} field={field} />
           ))}
         </div>
-      )}
+      </div>
+
+      {/* Custom attributes sub-section */}
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-foreground">Custom attributes</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Attributes you define to extend the built-in fields with app-specific data.
+            </p>
+          </div>
+        </div>
+        {attributes.length === 0 ? (
+          <EmptyState
+            icon={AdjustmentsHorizontalIcon}
+            title="No attributes yet"
+            description="Add custom user attributes to enable richer segmentation rules."
+            action={
+              <Button size="sm" onClick={() => setCreateOpen(true)}>
+                <PlusIcon className="h-4 w-4 mr-1.5" />
+                New attribute
+              </Button>
+            }
+            className="py-10"
+          />
+        ) : (
+          <div className="divide-y divide-border/50 rounded-lg border border-border/40 px-4">
+            {attributes.map((attr) => (
+              <AttributeRow
+                key={attr.id}
+                attribute={attr}
+                onEdit={() => setEditTarget(attr)}
+                onDelete={() => setDeleteTarget(attr)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Create dialog */}
       <AttributeFormDialog
