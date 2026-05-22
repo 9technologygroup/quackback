@@ -89,9 +89,6 @@ export function useUpdateBoard() {
             ...board,
             ...(input.name !== undefined && { name: input.name }),
             ...(input.description !== undefined && { description: input.description }),
-            ...(input.isPublic !== undefined && {
-              audience: input.isPublic ? DEFAULT_BOARD_AUDIENCE : ({ kind: 'team' } as const),
-            }),
             ...(optimisticSettings !== undefined && { settings: optimisticSettings }),
             updatedAt: new Date(),
           }
@@ -104,9 +101,6 @@ export function useUpdateBoard() {
           ...previousDetail,
           ...(input.name !== undefined && { name: input.name }),
           ...(input.description !== undefined && { description: input.description }),
-          ...(input.isPublic !== undefined && {
-            audience: input.isPublic ? DEFAULT_BOARD_AUDIENCE : ({ kind: 'team' } as const),
-          }),
           ...(optimisticSettings !== undefined && { settings: optimisticSettings }),
           updatedAt: new Date(),
         })

@@ -5,10 +5,10 @@
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import type { BoardId } from '@quackback/ids'
-import type { BoardSettings, BoardAudience, SetupState } from '@/lib/server/db'
+import type { BoardSettings, SetupState } from '@/lib/server/db'
 import { requireAuth } from './auth-helpers'
 import { getSettings } from './workspace'
-import { db, settings, boards, eq, and, isNull } from '@/lib/server/db'
+import { db, settings, boards, eq } from '@/lib/server/db'
 import {
   listBoards,
   getBoardById,
@@ -60,7 +60,6 @@ const updateBoardSchema = z.object({
   // policy changes, admin-only via updateBoardAccessFn. If we accepted
   // audience on this team-level path, members could grant/revoke board
   // visibility despite the access-control split.
-  isPublic: z.boolean().optional(),
   settings: boardSettingsSchema.optional(),
 })
 
@@ -161,6 +160,11 @@ export const createBoardFn = createServerFn({ method: 'POST' })
 
 /**
  * Update an existing board
+ *
+ * Updates name / description / settings only. Board visibility (audience)
+ * is a policy change and must go through updateBoardAccessFn (admin-only,
+ * audited). Accepting audience here would let member-role callers silently
+ * override a segments or authenticated audience with a bare public/team one.
  */
 export const updateBoardFn = createServerFn({ method: 'POST' })
   .inputValidator(updateBoardSchema)
@@ -168,30 +172,11 @@ export const updateBoardFn = createServerFn({ method: 'POST' })
     console.log(`[fn:boards] updateBoardFn: id=${data.id}`)
     await requireAuth({ roles: ['admin', 'member'] })
 
-    // Update name/description/settings via the generic service.
-    // audience is intentionally excluded from updateBoard (G2 fix) — the
-    // service type enforces this.
     const board = await updateBoard(data.id as BoardId, {
       name: data.name,
       description: data.description,
       settings: data.settings as BoardSettings | undefined,
     })
-
-    // The binary isPublic toggle maps to a two-value audience. Members can
-    // use this path — it's the existing contract for the UI's simple
-    // public/private toggle. Granular audience (authenticated, segments) is
-    // admin-only via updateBoardAccessFn. We write audience directly here
-    // because updateBoard no longer accepts it.
-    if (data.isPublic !== undefined) {
-      const audience: BoardAudience = data.isPublic ? { kind: 'public' } : { kind: 'team' }
-      const [updatedWithAudience] = await db
-        .update(boards)
-        .set({ audience, updatedAt: new Date() })
-        .where(and(eq(boards.id, data.id as BoardId), isNull(boards.deletedAt)))
-        .returning()
-      console.log(`[fn:boards] updateBoardFn: updated id=${board.id}`)
-      return serializeBoard(updatedWithAudience)
-    }
 
     console.log(`[fn:boards] updateBoardFn: updated id=${board.id}`)
     return serializeBoard(board)

@@ -59,10 +59,6 @@ export function makeAuthConfig(
 }
 
 const PORTAL_FEATURES_DEFAULTS = {
-  publicView: true,
-  submissions: true,
-  comments: true,
-  voting: true,
   allowEditAfterEngagement: false,
   allowDeleteAfterEngagement: false,
   showPublicEditHistory: false,
