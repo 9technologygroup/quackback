@@ -100,17 +100,17 @@ function ModerationSettingsPage() {
       <PageHeader
         icon={ShieldCheckIcon}
         title="Moderation"
-        description="The default approval policy for new posts. Boards can override it on their Access tab."
+        description="Choose which new posts need approval before they appear. Individual boards can override this on their Access tab."
       />
       <SettingsCard
         title="Default approval policy"
-        description="Posts from the selected groups wait for review before publishing. Applied to every board set to inherit."
+        description="Applies to any board that hasn't set its own policy."
       >
         <div className="divide-y divide-border/50">
           <ModerationToggle
             id="moderate-anonymous"
-            label="Anonymous visitors"
-            description="Hold posts from people without an account for review."
+            label="Require approval for anonymous posts"
+            description="Posts from visitors without an account wait for review before they appear."
             checked={toggles.anonymous}
             saving={savingKey === 'anonymous'}
             onCheckedChange={(checked) => update('anonymous', checked)}
@@ -118,8 +118,8 @@ function ModerationSettingsPage() {
           />
           <ModerationToggle
             id="moderate-authenticated"
-            label="Signed-in portal users"
-            description="Hold posts from signed-in portal users for review."
+            label="Require approval for signed-in posts"
+            description="Posts from signed-in portal users wait for review before they appear."
             checked={toggles.authenticated}
             saving={savingKey === 'authenticated'}
             onCheckedChange={(checked) => update('authenticated', checked)}
