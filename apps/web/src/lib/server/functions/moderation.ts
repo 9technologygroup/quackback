@@ -13,11 +13,12 @@
  */
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
-import { db, posts, boards, principal, eq, and, isNull, desc } from '@/lib/server/db'
+import { db, posts, boards, principal, eq, and, isNull, desc, sql } from '@/lib/server/db'
 import { requireAuth } from '@/lib/server/functions/auth-helpers'
 import { recordAuditEvent, actorFromAuth } from '@/lib/server/audit/log'
 import { isTeamMember } from '@/lib/shared/roles'
 import { ForbiddenError, NotFoundError, ConflictError } from '@/lib/shared/errors'
+import { getPortalConfig } from '@/lib/server/domains/settings/settings.service'
 
 const ApproveInput = z.object({ postId: z.string() })
 const RejectInput = z.object({ postId: z.string(), reason: z.string().max(500).optional() })
@@ -105,3 +106,30 @@ export const rejectPostFn = createServerFn({ method: 'POST' })
     })
     return { ok: true }
   })
+
+export const getModerationStatus = createServerFn({ method: 'GET' }).handler(async () => {
+  const auth = await requireAuth()
+  if (!isTeamMember(auth.principal.role)) {
+    throw new ForbiddenError('FORBIDDEN', 'Team only')
+  }
+  const [{ count: pendingCount }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(posts)
+    .where(and(eq(posts.moderationState, 'pending'), isNull(posts.deletedAt)))
+
+  const portalConfig = await getPortalConfig()
+  const globalGates = portalConfig.moderationDefault.requireApproval !== 'none'
+
+  const [boardGate] = await db
+    .select({ exists: sql<boolean>`true` })
+    .from(boards)
+    .where(
+      and(
+        isNull(boards.deletedAt),
+        sql`${boards.moderation} ->> 'requireApproval' IN ('anonymous','authenticated','all')`
+      )
+    )
+    .limit(1)
+
+  return { enabled: globalGates || Boolean(boardGate), pendingCount }
+})

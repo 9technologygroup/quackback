@@ -15,7 +15,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // ----------------------------------------------------------------------
 
 type Handler = (args: { data: Record<string, unknown> }) => Promise<unknown>
-const hoisted = vi.hoisted(() => ({ handlersByIndex: [] as Handler[] }))
+const hoisted = vi.hoisted(() => ({
+  handlersByIndex: [] as Handler[],
+  mockGetPortalConfig: vi.fn(),
+}))
 
 vi.mock('@tanstack/react-start', () => ({
   createServerFn: () => {
@@ -172,6 +175,17 @@ function buildJoinChain(spec: ProjectionSpec, rows: JoinedRow[]) {
   }
 }
 
+vi.mock('@/lib/server/domains/settings/settings.service', () => ({
+  getPortalConfig: (...args: unknown[]) => hoisted.mockGetPortalConfig(...args),
+  updatePortalConfig: vi.fn(),
+  getPublicPortalConfig: vi.fn(),
+  getPublicAuthConfig: vi.fn(),
+  getDeveloperConfig: vi.fn(),
+  updateDeveloperConfig: vi.fn(),
+}))
+
+const mockGetPortalConfig = hoisted.mockGetPortalConfig
+
 vi.mock('@/lib/server/db', () => ({
   db: {
     select: vi.fn((spec: ProjectionSpec) => ({
@@ -229,6 +243,8 @@ vi.mock('@/lib/server/db', () => ({
   boards: {
     id: { __table: 'boards', __col: 'id' } satisfies ColRef,
     name: { __table: 'boards', __col: 'name' } satisfies ColRef,
+    deletedAt: { __table: 'boards', __col: 'deletedAt' } satisfies ColRef,
+    moderation: { __table: 'boards', __col: 'moderation' } satisfies ColRef,
   },
   principal: {
     id: { __table: 'principal', __col: 'id' } satisfies ColRef,
@@ -244,12 +260,13 @@ vi.mock('@/lib/server/db', () => ({
   and: vi.fn((...conditions: PostCondition[]): AndCondition => ({ kind: 'and', conditions })),
   isNull: vi.fn((col: ColRef): IsNullCondition => ({ kind: 'isNull', col })),
   desc: vi.fn((col: ColRef) => col),
+  sql: vi.fn(),
 }))
 
 import { ForbiddenError, NotFoundError, ConflictError } from '@/lib/shared/errors'
 
 // Indexes correspond to declaration order in moderation.ts:
-// 0=listPending, 1=approve, 2=reject
+// 0=listPending, 1=approve, 2=reject, 3=getModerationStatus
 function listPending(): Handler {
   return hoisted.handlersByIndex[0]
 }
@@ -258,6 +275,9 @@ function approve(): Handler {
 }
 function reject(): Handler {
   return hoisted.handlersByIndex[2]
+}
+function getModerationStatusHandler(): Handler {
+  return hoisted.handlersByIndex[3]
 }
 
 // Import after mocks so handlers are captured.
@@ -293,6 +313,7 @@ beforeEach(() => {
   dbState.principals = []
   dbState.auditEvents = []
   mockRequireAuth.mockReset()
+  mockGetPortalConfig.mockReset()
 })
 
 // ----------------------------------------------------------------------
@@ -509,5 +530,102 @@ describe('listPendingPostsFn — listPendingPosts exclusion + enrichment', () =>
       posts: Array<{ id: string; authorName: string | null }>
     }
     expect(result.posts[0].authorName).toBeNull()
+  })
+})
+
+// ----------------------------------------------------------------------
+// getModerationStatus
+// ----------------------------------------------------------------------
+
+// Helper: build a db.select mock that returns count on first call, board rows
+// on second call. Mirrors the two sequential selects inside getModerationStatus.
+import { db } from '@/lib/server/db'
+
+function stubSelectCalls(pendingCount: number, boardGateRow: boolean) {
+  const countChain = {
+    from: vi.fn(() => ({
+      where: vi.fn(() => Promise.resolve([{ count: pendingCount }])),
+    })),
+  }
+  const boardChain = {
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn(() => Promise.resolve(boardGateRow ? [{ exists: true }] : [])),
+      })),
+    })),
+  }
+  // First call → count query, second call → boards query
+  vi.mocked(db.select).mockImplementationOnce(() => countChain as never)
+  vi.mocked(db.select).mockImplementationOnce(() => boardChain as never)
+}
+
+describe('getModerationStatus', () => {
+  beforeEach(() => {
+    mockRequireAuth.mockResolvedValue(AUTH_ADMIN)
+  })
+
+  it('propagates requireAuth rejection (unauthenticated)', async () => {
+    const authError = new Error('UNAUTHORIZED')
+    mockRequireAuth.mockRejectedValue(authError)
+    await expect(getModerationStatusHandler()({ data: {} })).rejects.toBe(authError)
+  })
+
+  it('rejects role=user with ForbiddenError', async () => {
+    mockRequireAuth.mockResolvedValue(AUTH_USER)
+    await expect(getModerationStatusHandler()({ data: {} })).rejects.toBeInstanceOf(ForbiddenError)
+  })
+
+  it('pendingCount reflects count of pending + non-deleted posts', async () => {
+    stubSelectCalls(7, false)
+    mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'none' } })
+    const result = (await getModerationStatusHandler()({ data: {} })) as {
+      enabled: boolean
+      pendingCount: number
+    }
+    expect(result.pendingCount).toBe(7)
+  })
+
+  it('enabled=true when global default is not none (board gate is off)', async () => {
+    // Global gate on, no board gate → enabled
+    stubSelectCalls(0, false)
+    mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'all' } })
+    const result = (await getModerationStatusHandler()({ data: {} })) as {
+      enabled: boolean
+      pendingCount: number
+    }
+    expect(result.enabled).toBe(true)
+  })
+
+  it('enabled=true when a board has an explicit gating requireApproval (global is none)', async () => {
+    // Global gate off, board gate on → enabled
+    stubSelectCalls(0, true)
+    mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'none' } })
+    const result = (await getModerationStatusHandler()({ data: {} })) as {
+      enabled: boolean
+      pendingCount: number
+    }
+    expect(result.enabled).toBe(true)
+  })
+
+  it('enabled=false when neither global nor any board has a gate', async () => {
+    // Both off → disabled
+    stubSelectCalls(0, false)
+    mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'none' } })
+    const result = (await getModerationStatusHandler()({ data: {} })) as {
+      enabled: boolean
+      pendingCount: number
+    }
+    expect(result.enabled).toBe(false)
+  })
+
+  it('enabled=true when both global and board gate are on', async () => {
+    stubSelectCalls(3, true)
+    mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'anonymous' } })
+    const result = (await getModerationStatusHandler()({ data: {} })) as {
+      enabled: boolean
+      pendingCount: number
+    }
+    expect(result.enabled).toBe(true)
+    expect(result.pendingCount).toBe(3)
   })
 })
