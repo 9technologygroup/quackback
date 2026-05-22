@@ -50,7 +50,7 @@ export const Route = createFileRoute('/_portal')({
         themeStyles: hasThemeConfig ? generateThemeCSS(brandingConfig) : '',
         customCss: settings?.customCss ?? '',
         authConfig: {
-          found: true,
+          found: !!settings?.publicPortalConfig,
           oauth: settings?.publicPortalConfig?.oauth ?? DEFAULT_PORTAL_CONFIG.oauth,
           customProviderNames: settings?.publicPortalConfig?.customProviderNames,
         },
@@ -174,24 +174,41 @@ function PortalErrorBoundary({ error }: { error: unknown; reset?: () => void }) 
       />
     )
   }
-  // Unknown error — surface a minimal message.
-  const message = error instanceof Error ? error.message : 'An unexpected error occurred.'
+  // Unknown error — do not surface raw error.message (may contain internal detail).
   return (
     <div className="flex min-h-screen items-center justify-center p-8 text-center">
-      <p className="text-muted-foreground">{message}</p>
+      <p className="text-muted-foreground">Something went wrong. Please try again.</p>
     </div>
+  )
+}
+
+/** Validates all required fields of PortalAccessGateError are present and correct. */
+function isValidGateError(obj: unknown): obj is PortalAccessGateError {
+  if (!obj || typeof obj !== 'object') return false
+  const o = obj as Record<string, unknown>
+  return (
+    o['type'] === 'portal-access-gate' &&
+    (o['reason'] === 'unauthenticated' || o['reason'] === 'unauthorized') &&
+    typeof o['workspaceName'] === 'string' &&
+    (o['logoUrl'] === null || typeof o['logoUrl'] === 'string') &&
+    typeof o['themeStyles'] === 'string' &&
+    typeof o['customCss'] === 'string' &&
+    o['authConfig'] !== null &&
+    typeof o['authConfig'] === 'object' &&
+    typeof (o['authConfig'] as Record<string, unknown>)['found'] === 'boolean' &&
+    typeof (o['authConfig'] as Record<string, unknown>)['oauth'] === 'object'
   )
 }
 
 function parseGateError(error: unknown): PortalAccessGateError | null {
   if (!(error instanceof Error)) return null
   // Fast path: extra properties survive (dev / client-only execution).
-  const ext = error as unknown as Partial<PortalAccessGateError>
-  if (ext.type === 'portal-access-gate') return ext as PortalAccessGateError
+  const ext = error as unknown as Record<string, unknown>
+  if (isValidGateError(ext)) return ext as unknown as PortalAccessGateError
   // Fallback: parse from JSON message (SSR serialization strips extra props).
   try {
-    const parsed = JSON.parse(error.message) as Partial<PortalAccessGateError>
-    if (parsed.type === 'portal-access-gate') return parsed as PortalAccessGateError
+    const parsed: unknown = JSON.parse(error.message)
+    if (isValidGateError(parsed)) return parsed as PortalAccessGateError
   } catch {
     // not a gate error
   }

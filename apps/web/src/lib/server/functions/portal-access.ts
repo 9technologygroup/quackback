@@ -5,8 +5,6 @@
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
-import { ForbiddenError } from '@/lib/shared/errors'
-import { isAdmin } from '@/lib/shared/roles'
 import { requireAuth } from './auth-helpers'
 import { getPortalConfig, updatePortalConfig } from '@/lib/server/domains/settings/settings.service'
 import { actorFromAuth, recordAuditEvent } from '@/lib/server/audit/log'
@@ -193,13 +191,10 @@ export type UpdatePortalVisibilityInput = z.infer<typeof updatePortalVisibilityS
 export const updatePortalAccessFn = createServerFn({ method: 'POST' })
   .inputValidator(updatePortalVisibilitySchema.parse)
   .handler(async ({ data }) => {
+    const auth = await requireAuth({ roles: ['admin'] })
     console.log(
       `[fn:portal-access] updatePortalAccessFn: visibility=${data.visibility}, domainCount=${(data.allowedDomains ?? []).length}`
     )
-    const auth = await requireAuth()
-    if (!isAdmin(auth.principal.role)) {
-      throw new ForbiddenError('FORBIDDEN', 'Admin only')
-    }
 
     const headers = getRequestHeaders()
     const actor = actorFromAuth(auth)
@@ -245,6 +240,5 @@ export const updatePortalAccessFn = createServerFn({ method: 'POST' })
 
     return {
       visibility: updated.access?.visibility ?? 'public',
-      allowedDomains: updated.access?.allowedDomains ?? [],
     }
   })

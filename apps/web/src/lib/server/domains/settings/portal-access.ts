@@ -88,8 +88,9 @@ export function evaluatePortalAccess(ctx: PortalAccessContext): PortalAccessResu
     return { granted: true, reason: 'public' }
   }
 
-  // 2. Team members always have access.
-  if (ctx.role === 'admin' || ctx.role === 'member') {
+  // 2. Team members always have access — but only when actually authenticated.
+  //    An anonymous principal carrying a team role must not bypass the gate.
+  if (ctx.isAuthenticated && (ctx.role === 'admin' || ctx.role === 'member')) {
     return { granted: true, reason: 'team' }
   }
 

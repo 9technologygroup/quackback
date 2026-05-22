@@ -65,6 +65,24 @@ describe('evaluatePortalAccess — private portal, team members', () => {
       expect(result.reason).toBe('team')
     }
   })
+
+  it('does NOT grant via team branch for anonymous principal with a team role', () => {
+    // Defense-in-depth: an anonymous principal carrying a team role must NOT
+    // be granted access via the team branch. isAuthenticated=false ensures
+    // the evaluator does not treat this as a real team member.
+    const result = evaluatePortalAccess({
+      visibility: 'private',
+      role: 'admin',
+      isAuthenticated: false,
+      userEmail: null,
+      emailVerified: false,
+      allowedDomains: [],
+    })
+    expect(result.granted).toBe(false)
+    if (!result.granted) {
+      expect(result.reason).toBe('unauthenticated')
+    }
+  })
 })
 
 describe('evaluatePortalAccess — private portal, non-team', () => {

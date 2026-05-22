@@ -54,7 +54,7 @@ export const fetchBrandingConfig = createServerFn({ method: 'GET' }).handler(asy
 export const fetchPortalConfig = createServerFn({ method: 'GET' }).handler(async () => {
   console.log(`[fn:settings] fetchPortalConfig`)
   try {
-    await requireAuth({ roles: ['admin', 'member'] })
+    await requireAuth({ roles: ['admin'] })
     const config = await getPortalConfig()
     return config ?? DEFAULT_PORTAL_CONFIG
   } catch (error) {
