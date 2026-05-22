@@ -1,4 +1,4 @@
-import { useState, useTransition } from 'react'
+import { useState, useTransition, useRef, useCallback } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import {
   ArrowPathIcon,
@@ -7,9 +7,12 @@ import {
   KeyIcon,
   ShieldCheckIcon,
   LockClosedIcon,
+  PlusIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/solid'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { MethodRow } from '@/components/admin/settings/auth-shared/method-row'
 import { OAuthProviderGrid } from '@/components/admin/settings/auth-shared/oauth-provider-grid'
@@ -98,12 +101,71 @@ export function PortalAuthTab({
 
   const isVisibilityBusy = visibilitySaving || isPending
 
+  // --- Allowed email domains state ---
+  const [allowedDomains, setAllowedDomains] = useState<string[]>(
+    portalConfig.access?.allowedDomains ?? []
+  )
+  const [domainInput, setDomainInput] = useState('')
+  const [domainsSaving, setDomainsSaving] = useState(false)
+  const [domainInputError, setDomainInputError] = useState<string | null>(null)
+  const domainInputRef = useRef<HTMLInputElement>(null)
+
+  const saveDomains = useCallback(
+    async (nextDomains: string[]) => {
+      const prev = allowedDomains
+      setAllowedDomains(nextDomains)
+      setDomainsSaving(true)
+      try {
+        await updatePortalAccessFn({ data: { visibility, allowedDomains: nextDomains } })
+        startTransition(() => {
+          router.invalidate()
+        })
+      } catch {
+        setAllowedDomains(prev)
+      } finally {
+        setDomainsSaving(false)
+      }
+    },
+    [allowedDomains, visibility, router, startTransition]
+  )
+
+  function handleAddDomain() {
+    const raw = domainInput.trim().toLowerCase().replace(/^@/, '')
+    if (!raw) return
+
+    // Basic client-side validation matching server normalization rules
+    if (raw.includes('://') || raw.includes('@') || /\s/.test(raw) || !raw.includes('.')) {
+      setDomainInputError('Enter a valid domain, e.g. acme.com')
+      return
+    }
+
+    if (allowedDomains.includes(raw)) {
+      setDomainInputError('Domain already in the list')
+      return
+    }
+
+    setDomainInputError(null)
+    setDomainInput('')
+    void saveDomains([...allowedDomains, raw])
+  }
+
+  function handleRemoveDomain(domain: string) {
+    void saveDomains(allowedDomains.filter((d) => d !== domain))
+  }
+
+  function handleDomainKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      handleAddDomain()
+    }
+  }
+
   async function applyVisibility(next: 'public' | 'private') {
     const prev = visibility
     setVisibility(next)
     setVisibilitySaving(true)
     try {
-      await updatePortalAccessFn({ data: { visibility: next } })
+      await updatePortalAccessFn({ data: { visibility: next, allowedDomains } })
       startTransition(() => {
         router.invalidate()
       })
@@ -248,10 +310,79 @@ export function PortalAuthTab({
         </div>
       </SettingsCard>
 
-      {/*
-       * Phase 2 seam — allowed email domains section will be added here.
-       * It will only be visible when visibility === 'private'.
-       */}
+      {/* Allowed email domains — only meaningful for a private portal */}
+      {visibility === 'private' && (
+        <SettingsCard
+          title="Allowed email domains"
+          description="Signed-in users with a verified email on these domains can access the private portal."
+        >
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <Input
+                  ref={domainInputRef}
+                  value={domainInput}
+                  onChange={(e) => {
+                    setDomainInput(e.target.value)
+                    if (domainInputError) setDomainInputError(null)
+                  }}
+                  onKeyDown={handleDomainKeyDown}
+                  placeholder="acme.com"
+                  disabled={domainsSaving}
+                  aria-label="Add email domain"
+                  aria-invalid={!!domainInputError}
+                  className={cn(domainInputError && 'border-destructive')}
+                />
+                {domainInputError && (
+                  <p className="mt-1 text-xs text-destructive">{domainInputError}</p>
+                )}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleAddDomain}
+                disabled={!domainInput.trim() || domainsSaving}
+                className="h-9 shrink-0"
+              >
+                <PlusIcon className="mr-1 h-3.5 w-3.5" />
+                Add
+              </Button>
+              {domainsSaving && (
+                <div className="flex items-center">
+                  <ArrowPathIcon className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                </div>
+              )}
+            </div>
+
+            {allowedDomains.length > 0 ? (
+              <ul className="space-y-1.5" role="list" aria-label="Allowed domains">
+                {allowedDomains.map((domain) => (
+                  <li
+                    key={domain}
+                    className="flex items-center justify-between rounded-md border border-border/50 bg-muted/30 px-3 py-1.5"
+                  >
+                    <span className="text-sm font-mono">{domain}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveDomain(domain)}
+                      disabled={domainsSaving}
+                      className="ml-2 rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40 transition-colors"
+                      aria-label={`Remove ${domain}`}
+                    >
+                      <XMarkIcon className="h-3.5 w-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                No domains added yet. Anyone signed in must be a team member to access the portal.
+              </p>
+            )}
+          </div>
+        </SettingsCard>
+      )}
 
       <PortalPrivacyDialog
         open={dialogOpen}

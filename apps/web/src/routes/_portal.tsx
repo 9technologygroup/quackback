@@ -35,7 +35,14 @@ export const Route = createFileRoute('/_portal')({
     const isAnonymousPrincipal = session?.user?.principalType === 'anonymous'
     const isAuthenticated = !!session?.user && !isAnonymousPrincipal
     const role = (userRole ?? null) as 'admin' | 'member' | 'user' | null
-    const accessResult = evaluatePortalAccess({ visibility, role, isAuthenticated })
+    const accessResult = evaluatePortalAccess({
+      visibility,
+      role,
+      isAuthenticated,
+      userEmail: session?.user?.email ?? null,
+      emailVerified: session?.user?.emailVerified ?? false,
+      allowedDomains: portalConfig?.access?.allowedDomains ?? [],
+    })
 
     if (!accessResult.granted) {
       // Both denied cases (unauthenticated + unauthorized) render an in-place

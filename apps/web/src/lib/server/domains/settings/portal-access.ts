@@ -5,6 +5,7 @@
  * configured visibility and the visitor's authentication state.
  *
  * Phase 1: team-only gate (admin | member always pass).
+ * Phase 2: allowed email-domain grant (verified email required).
  * Extension points are marked below for later phases.
  */
 
@@ -28,12 +29,43 @@ export interface PortalAccessContext {
    * An anonymous Better Auth session counts as NOT authenticated.
    */
   isAuthenticated: boolean
+  /**
+   * Email address of the authenticated visitor. `null` when there is no
+   * real session. Used for Phase 2 domain-allowlist checks.
+   */
+  userEmail: string | null
+  /**
+   * Whether the visitor's email address has been verified. An unverified
+   * email must NOT match domain allowlists — anyone could claim an address
+   * they don't control without this guard.
+   */
+  emailVerified: boolean
+  /**
+   * Domains whose verified users are automatically granted access to a
+   * private portal. Resolved from portalConfig.access?.allowedDomains.
+   */
+  allowedDomains: string[]
 }
 
 /** Discriminated union — narrows cleanly in if/switch. */
 export type PortalAccessResult =
-  | { granted: true; reason: 'public' | 'team' }
+  | { granted: true; reason: 'public' | 'team' | 'domain' }
   | { granted: false; reason: 'unauthenticated' | 'unauthorized' }
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+/**
+ * Extracts the lowercased domain part of an email address.
+ * Returns `null` when the input is null or has no `@`.
+ */
+function emailDomain(email: string | null): string | null {
+  if (!email) return null
+  const at = email.lastIndexOf('@')
+  if (at === -1) return null
+  return email.slice(at + 1).toLowerCase()
+}
 
 // =============================================================================
 // Evaluator
@@ -45,9 +77,10 @@ export type PortalAccessResult =
  * Execution order:
  * 1. Public portal → always granted.
  * 2. Team member (admin | member) → granted.
- * --- EXTENSION POINT: Phase 2+ grant branches go here (domain, invite, widget) ---
- * 3. No real session → unauthenticated (redirect to login).
- * 4. Authenticated but not team → unauthorized (show access-denied screen).
+ * 3. Verified email on allowed-domain list → granted.
+ * --- EXTENSION POINT: Phase N grant branches go here (invite, widget) ---
+ * 4. No real session → unauthenticated (redirect to login).
+ * 5. Authenticated but not team/domain → unauthorized (show access-denied screen).
  */
 export function evaluatePortalAccess(ctx: PortalAccessContext): PortalAccessResult {
   // 1. Public portal — open to everyone.
@@ -60,17 +93,24 @@ export function evaluatePortalAccess(ctx: PortalAccessContext): PortalAccessResu
     return { granted: true, reason: 'team' }
   }
 
+  // 3. Verified email on the domain allowlist.
+  //    emailVerified MUST be true — an unverified claim must not unlock access.
+  if (ctx.isAuthenticated && ctx.emailVerified && ctx.allowedDomains.length > 0) {
+    const domain = emailDomain(ctx.userEmail)
+    if (domain && ctx.allowedDomains.includes(domain)) {
+      return { granted: true, reason: 'domain' }
+    }
+  }
+
   // --- EXTENSION POINT ---
-  // Phase 2: allowed email-domain check goes here, before the final denials.
-  //   if (ctx.email && isAllowedDomain(ctx.email, allowedDomains)) return { granted: true, reason: 'domain' }
   // Phase N: invite-token / widget-grant checks go here similarly.
   // -------------------------
 
-  // 3. No real authentication → redirect to login.
+  // 4. No real authentication → redirect to login.
   if (!ctx.isAuthenticated) {
     return { granted: false, reason: 'unauthenticated' }
   }
 
-  // 4. Authenticated but not a team member → show access-denied UI.
+  // 5. Authenticated but not a team member or allowed domain → show access-denied UI.
   return { granted: false, reason: 'unauthorized' }
 }

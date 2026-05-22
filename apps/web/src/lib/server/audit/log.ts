@@ -55,6 +55,7 @@ export type AuditEventType =
   | 'board.audience.changed'
   | 'moderation.default.changed'
   | 'portal.visibility.changed'
+  | 'portal.allowed_domains.changed'
   | 'post.moderation.approved'
   | 'post.moderation.rejected'
   | 'post.moderation.held'
