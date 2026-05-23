@@ -7,26 +7,28 @@ type RedactedAccess = Pick<PortalAccessConfig, 'visibility'>
 type RedactedPortalConfig = Omit<PortalConfig, 'access'> & { access?: RedactedAccess }
 
 /**
- * Strips the server-only access policy fields (allowedDomains, widgetSignIn)
- * from a parsed PortalConfig before returning it to a client-bound context.
- * Keeps access.visibility (already public via publicPortalConfig.portalAccess).
+ * Strips the server-only access policy fields (allowedDomains, widgetSignIn,
+ * allowedSegmentIds) from a parsed PortalConfig before returning it to a
+ * client-bound context. Keeps access.visibility (already public via
+ * publicPortalConfig.portalAccess).
  */
 function redactPortalConfig(portalConfig: PortalConfig): RedactedPortalConfig {
   if (!portalConfig.access) return portalConfig
   return {
     ...portalConfig,
     access: {
-      // Only expose visibility — allowedDomains and widgetSignIn are
-      // server-only policy enforced by evaluateMyPortalAccessFn.
+      // Only expose visibility — allowedDomains, widgetSignIn, and
+      // allowedSegmentIds are server-only policy enforced by evaluateMyPortalAccessFn.
       visibility: portalConfig.access.visibility,
     },
   }
 }
 
 /**
- * Strips the server-only access policy fields (allowedDomains, widgetSignIn)
- * from a settings row before returning it to a client-bound context. Keeps
- * access.visibility (it's already public via publicPortalConfig.portalAccess).
+ * Strips the server-only access policy fields (allowedDomains, widgetSignIn,
+ * allowedSegmentIds) from a settings row before returning it to a client-bound
+ * context. Keeps access.visibility (it's already public via
+ * publicPortalConfig.portalAccess).
  *
  * Accepts either a parsed PortalConfig object or a JSON-string column (raw DB
  * row). When the field is absent or carries no `access` key it is returned

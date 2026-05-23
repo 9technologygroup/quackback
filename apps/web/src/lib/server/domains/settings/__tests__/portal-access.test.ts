@@ -408,3 +408,39 @@ describe('evaluatePortalAccess — invite precedence (continued)', () => {
     }
   })
 })
+
+describe('evaluatePortalAccess — segment branch edge cases', () => {
+  it('grants via segment when the user is in an allowed segment regardless of emailVerified', () => {
+    const result = evaluatePortalAccess({
+      visibility: 'private',
+      role: 'user',
+      isAuthenticated: true,
+      emailVerified: false, // deliberately false
+      userEmail: 'user@external.com',
+      allowedDomains: [],
+      hasAcceptedPortalInvite: false,
+      widgetSignInEnabled: false,
+      hasViaWidgetMarker: false,
+      identifyVerificationEnabled: false,
+      isInAllowedSegment: true,
+    })
+    expect(result).toEqual({ granted: true, reason: 'segment' })
+  })
+
+  it('domain branch wins when both domain and segment would grant', () => {
+    const result = evaluatePortalAccess({
+      visibility: 'private',
+      role: 'user',
+      isAuthenticated: true,
+      emailVerified: true,
+      userEmail: 'user@acme.com',
+      allowedDomains: ['acme.com'],
+      hasAcceptedPortalInvite: false,
+      widgetSignInEnabled: false,
+      hasViaWidgetMarker: false,
+      identifyVerificationEnabled: false,
+      isInAllowedSegment: true,
+    })
+    expect(result).toEqual({ granted: true, reason: 'domain' })
+  })
+})

@@ -13,7 +13,7 @@ import {
   evaluatePortalAccess,
   type PortalAccessResult,
 } from '@/lib/server/domains/settings/portal-access'
-import type { UserId } from '@quackback/ids'
+import type { UserId, PrincipalId, SegmentId } from '@quackback/ids'
 
 // ---------------------------------------------------------------------------
 // Gate: evaluate the calling request's own access
@@ -179,8 +179,8 @@ export async function resolvePortalAccessForRequest(): Promise<PortalAccessDecis
       try {
         const { segmentIdsForPrincipal } =
           await import('@/lib/server/domains/segments/segment-membership.service')
-        const memberSet = await segmentIdsForPrincipal(resolvedPrincipalId as never)
-        isInAllowedSegment = allowedSegmentIds.some((id) => memberSet.has(id as never))
+        const memberSet = await segmentIdsForPrincipal(resolvedPrincipalId as PrincipalId)
+        isInAllowedSegment = allowedSegmentIds.some((id) => memberSet.has(id as SegmentId))
       } catch (err) {
         console.warn('[fn:portal-access] segment lookup failed, failing closed:', err)
         isInAllowedSegment = false
@@ -286,7 +286,7 @@ export const updatePortalAccessFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const auth = await requireAuth({ roles: ['admin'] })
     console.log(
-      `[fn:portal-access] updatePortalAccessFn: visibility=${data.visibility}, domainCount=${(data.allowedDomains ?? []).length}, widgetSignIn=${data.widgetSignIn}`
+      `[fn:portal-access] updatePortalAccessFn: visibility=${data.visibility}, domainCount=${(data.allowedDomains ?? []).length}, widgetSignIn=${data.widgetSignIn}, segmentCount=${(data.allowedSegmentIds ?? []).length}`
     )
 
     const headers = getRequestHeaders()
@@ -359,10 +359,11 @@ export const updatePortalAccessFn = createServerFn({ method: 'POST' })
     if (segmentsChanged) {
       await recordAuditEvent({
         event: 'portal.allowed_segments.changed',
+        outcome: 'success',
         actor,
         headers,
-        target: { type: 'settings', id: 'portal-config' },
-        metadata: { previous: prevSegmentIds, next: nextSegmentIds },
+        before: { allowedSegmentIds: prevSegmentIds },
+        after: { allowedSegmentIds: nextSegmentIds },
       })
     }
 

@@ -7,7 +7,8 @@
  * Phase 1: team-only gate (admin | member always pass).
  * Phase 2: allowed email-domain grant (verified email required).
  * Phase 3: accepted portal email-invite grant (verified email required).
- * Phase 4: widget sign-in grant (any portal-signed-in user when admin enables widgetSignIn).
+ * Phase 4: allowed segment grant (authenticated; no emailVerified requirement).
+ * Phase 5: widget sign-in grant (any portal-signed-in user when admin enables widgetSignIn).
  */
 
 // =============================================================================
@@ -125,12 +126,13 @@ function emailDomain(email: string | null): string | null {
  * 2. Team member (admin | member) → granted.
  * 3. Verified email on allowed-domain list → granted.
  * 4. Accepted portal invite (email match, verified) → granted.
- * 5. Widget sign-in: enabled + authenticated + via-widget marker + HMAC mode → granted.
- * 6. No real session → unauthenticated (redirect to login).
- * 7. Authenticated but no matching grant → unauthorized (show access-denied screen).
+ * 5. Allowed segment grant (authenticated member of an allowed segment) → granted.
+ * 6. Widget sign-in: enabled + authenticated + via-widget marker + HMAC mode → granted.
+ * 7. No real session → unauthenticated (redirect to login).
+ * 8. Authenticated but no matching grant → unauthorized (show access-denied screen).
  *
- * Ordering: team > domain > invite > widget. The widget branch is intentionally
- * last among grant paths so that a more-specific grant (team, domain, invite)
+ * Ordering: team > domain > invite > segment > widget. The widget branch is intentionally
+ * last among grant paths so that a more-specific grant (team, domain, invite, segment)
  * is preferred when the user qualifies for multiple paths.
  *
  * Widget branch requires THREE conditions beyond `isAuthenticated`:

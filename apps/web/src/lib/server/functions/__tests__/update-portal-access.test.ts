@@ -343,6 +343,11 @@ describe('updatePortalAccessFn allowedSegmentIds', () => {
       (c) => (c[0] as { event: string }).event === 'portal.allowed_segments.changed'
     )
     expect(auditCall).toBeDefined()
+    expect(auditCall![0]).toMatchObject({
+      event: 'portal.allowed_segments.changed',
+      before: { allowedSegmentIds: [] },
+      after: { allowedSegmentIds: ['seg_1', 'seg_2'] },
+    })
   })
 
   it('does NOT emit the audit event when allowedSegmentIds is unchanged', async () => {

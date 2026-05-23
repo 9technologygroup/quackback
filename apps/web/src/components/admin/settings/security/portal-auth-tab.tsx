@@ -1,4 +1,4 @@
-import { useState, useTransition, useRef, useEffect } from 'react'
+import { useState, useTransition, useRef } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import {
   ArrowPathIcon,
@@ -127,12 +127,10 @@ export function PortalAuthTab({
   widgetSignInRef.current = widgetSignIn
 
   const [allowedSegmentIds, setAllowedSegmentIds] = useState<string[]>(
-    (portalConfig.access as { allowedSegmentIds?: string[] } | undefined)?.allowedSegmentIds ?? []
+    portalConfig.access?.allowedSegmentIds ?? []
   )
   const allowedSegmentIdsRef = useRef(allowedSegmentIds)
-  useEffect(() => {
-    allowedSegmentIdsRef.current = allowedSegmentIds
-  }, [allowedSegmentIds])
+  allowedSegmentIdsRef.current = allowedSegmentIds
 
   const segmentsQuery = useQuery({
     queryKey: ['admin', 'segments'] as const,
@@ -461,6 +459,10 @@ export function PortalAuthTab({
 
                 {segmentsQuery.isLoading ? (
                   <p className="text-xs text-muted-foreground">Loading segments…</p>
+                ) : segmentsQuery.isError ? (
+                  <p className="text-xs text-destructive">
+                    Could not load segments. Reload the page to try again.
+                  </p>
                 ) : (segmentsQuery.data ?? []).length === 0 ? (
                   <p className="text-xs text-muted-foreground">
                     No segments defined yet. Create segments on the People page.
