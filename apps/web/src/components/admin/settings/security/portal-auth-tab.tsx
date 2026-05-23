@@ -10,6 +10,7 @@ import {
   PlusIcon,
   XMarkIcon,
 } from '@heroicons/react/24/solid'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -23,6 +24,12 @@ import { WarningBox } from '@/components/shared/warning-box'
 import { AUTH_PROVIDERS } from '@/lib/shared/auth-providers'
 import { updatePortalConfigFn } from '@/lib/server/functions/settings'
 import { updatePortalAccessFn } from '@/lib/server/functions/portal-access'
+import {
+  sendPortalInviteFn,
+  cancelPortalInviteFn,
+  resendPortalInviteFn,
+  fetchPortalInvitesFn,
+} from '@/lib/server/functions/portal-invites'
 import { isPathManagedFromBootstrap } from '@/lib/client/config-file'
 import { useRouteContext } from '@tanstack/react-router'
 import { cn } from '@/lib/shared/utils'
@@ -397,6 +404,9 @@ export function PortalAuthTab({
                 No domains added yet. Anyone signed in must be a team member to access the portal.
               </p>
             )}
+
+            {/* Email invites — below domains, same private-only block */}
+            <PortalInvitesSection />
           </div>
         )}
       </SettingsCard>
@@ -527,6 +537,301 @@ export function PortalAuthTab({
           open={!!configDialog}
           onOpenChange={(open) => !open && setConfigDialog(null)}
         />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// PortalInvitesSection
+// ---------------------------------------------------------------------------
+
+type PortalInvite = {
+  id: string
+  email: string
+  status: string | null
+  kind: string | null
+  createdAt: string
+  lastSentAt: string | null
+  expiresAt: string
+}
+
+function formatInviteDate(dateStr: string): string {
+  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
+}
+
+const PORTAL_INVITES_QUERY_KEY = ['portal', 'invites'] as const
+
+function InviteStatusBadge({ status }: { status: string | null }) {
+  switch (status) {
+    case 'pending':
+      return (
+        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+          Pending
+        </Badge>
+      )
+    case 'accepted':
+      return (
+        <Badge
+          variant="outline"
+          className="border-green-500/30 text-green-600 text-[10px] px-1.5 py-0"
+        >
+          Accepted
+        </Badge>
+      )
+    case 'canceled':
+      return (
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+          Revoked
+        </Badge>
+      )
+    case 'expired':
+      return (
+        <Badge variant="destructive" className="text-[10px] px-1.5 py-0">
+          Expired
+        </Badge>
+      )
+    default:
+      return (
+        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+          {status ?? 'Unknown'}
+        </Badge>
+      )
+  }
+}
+
+interface InviteRowProps {
+  invite: PortalInvite
+  onRevoke: (id: string) => Promise<void>
+  onResend: (id: string) => Promise<void>
+  revoking: boolean
+  resending: boolean
+}
+
+function InviteRow({ invite, onRevoke, onResend, revoking, resending }: InviteRowProps) {
+  const [confirmRevoke, setConfirmRevoke] = useState(false)
+  const sentDate = invite.lastSentAt ?? invite.createdAt
+
+  const handleRevokeClick = () => {
+    if (!confirmRevoke) {
+      setConfirmRevoke(true)
+      return
+    }
+    setConfirmRevoke(false)
+    void onRevoke(invite.id)
+  }
+
+  return (
+    <li className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm">{invite.email}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">Sent {formatInviteDate(sentDate)}</p>
+      </div>
+      <InviteStatusBadge status={invite.status} />
+      {invite.status === 'pending' && (
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void onResend(invite.id)}
+            disabled={resending || revoking}
+            className="h-7 px-2 text-xs"
+          >
+            {resending ? <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" /> : 'Resend'}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={handleRevokeClick}
+            disabled={resending || revoking}
+            className={cn(
+              'h-7 px-2 text-xs',
+              confirmRevoke
+                ? 'border border-destructive/40 text-destructive hover:bg-destructive/10'
+                : 'text-muted-foreground hover:text-destructive'
+            )}
+          >
+            {revoking ? (
+              <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
+            ) : confirmRevoke ? (
+              'Confirm revoke'
+            ) : (
+              'Revoke'
+            )}
+          </Button>
+        </div>
+      )}
+    </li>
+  )
+}
+
+/**
+ * Email-invite sub-section rendered inside the Portal Visibility card.
+ *
+ * Intentionally uses its own busy state(s) — invite mutations write to the
+ * `invitation` table, completely separate from the portal-config/access
+ * saves guarded by `accessBusy` in the parent. The two concerns do not
+ * race and should not share a lock.
+ */
+function PortalInvitesSection() {
+  const queryClient = useQueryClient()
+
+  const { data: invites, isLoading: invitesLoading } = useQuery<PortalInvite[]>({
+    queryKey: PORTAL_INVITES_QUERY_KEY,
+    queryFn: () => fetchPortalInvitesFn(),
+    staleTime: 30 * 1000,
+  })
+
+  const [emailInput, setEmailInput] = useState('')
+  const [emailError, setEmailError] = useState<string | null>(null)
+  const [sendBusy, setSendBusy] = useState(false)
+  const [resendingId, setResendingId] = useState<string | null>(null)
+  const [revokingId, setRevokingId] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [resendConfirm, setResendConfirm] = useState<string | null>(null)
+
+  const refetch = () => queryClient.invalidateQueries({ queryKey: PORTAL_INVITES_QUERY_KEY })
+
+  const handleSend = async () => {
+    const email = emailInput.trim()
+    if (!email) return
+
+    if (!isValidEmail(email)) {
+      setEmailError('Enter a valid email address.')
+      return
+    }
+    setEmailError(null)
+    setActionError(null)
+    setSendBusy(true)
+    try {
+      await sendPortalInviteFn({ data: { email } })
+      setEmailInput('')
+      void refetch()
+    } catch (err) {
+      setEmailError(err instanceof Error ? err.message : 'Failed to send invite.')
+    } finally {
+      setSendBusy(false)
+    }
+  }
+
+  const handleResend = async (id: string) => {
+    setActionError(null)
+    setResendingId(id)
+    setResendConfirm(null)
+    try {
+      await resendPortalInviteFn({ data: { inviteId: id } })
+      setResendConfirm(id)
+      void refetch()
+      // Clear the brief confirmation after 3 s
+      setTimeout(() => setResendConfirm((prev) => (prev === id ? null : prev)), 3000)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to resend invite.')
+    } finally {
+      setResendingId(null)
+    }
+  }
+
+  const handleRevoke = async (id: string) => {
+    setActionError(null)
+    setRevokingId(id)
+    try {
+      await cancelPortalInviteFn({ data: { inviteId: id } })
+      void refetch()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to revoke invite.')
+    } finally {
+      setRevokingId(null)
+    }
+  }
+
+  const handleEmailKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      void handleSend()
+    }
+  }
+
+  const anyBusy = sendBusy || resendingId !== null || revokingId !== null
+
+  return (
+    <div className="mt-6 border-t border-border/50 pt-6 space-y-4">
+      <div>
+        <p className="text-sm font-medium">Email invites</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Invite specific people by email. They&apos;ll get a magic link to sign in and access the
+          portal.
+        </p>
+      </div>
+
+      {/* Send form */}
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <Input
+            type="email"
+            value={emailInput}
+            onChange={(e) => {
+              setEmailInput(e.target.value)
+              if (emailError) setEmailError(null)
+            }}
+            onKeyDown={handleEmailKeyDown}
+            placeholder="user@example.com"
+            disabled={anyBusy}
+            aria-label="Email address to invite"
+            aria-invalid={!!emailError}
+            className={cn(emailError && 'border-destructive')}
+          />
+          {emailError && <p className="mt-1 text-xs text-destructive">{emailError}</p>}
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void handleSend()}
+          disabled={!emailInput.trim() || anyBusy}
+          className="h-9 shrink-0"
+        >
+          {sendBusy ? (
+            <ArrowPathIcon className="mr-1 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <PlusIcon className="mr-1 h-3.5 w-3.5" />
+          )}
+          Send invite
+        </Button>
+      </div>
+
+      {/* Action-level error (resend/revoke) */}
+      {actionError && <p className="text-xs text-destructive">{actionError}</p>}
+
+      {/* Invite list */}
+      {invitesLoading ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
+          <span>Loading invites…</span>
+        </div>
+      ) : invites && invites.length > 0 ? (
+        <>
+          {resendConfirm && <p className="text-xs text-muted-foreground">Invite resent.</p>}
+          <ul className="space-y-1.5" role="list" aria-label="Portal invites">
+            {invites.map((inv) => (
+              <InviteRow
+                key={inv.id}
+                invite={inv}
+                onRevoke={handleRevoke}
+                onResend={handleResend}
+                revoking={revokingId === inv.id}
+                resending={resendingId === inv.id}
+              />
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="text-xs text-muted-foreground">No invites sent yet.</p>
       )}
     </div>
   )
