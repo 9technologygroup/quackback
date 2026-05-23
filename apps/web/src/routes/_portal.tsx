@@ -12,6 +12,7 @@ import { resolveLocale } from '@/lib/shared/i18n'
 import { PortalIntlProvider } from '@/components/portal-intl-provider'
 import { evaluateMyPortalAccessFn } from '@/lib/server/functions/portal-access'
 import { redactSettingsForClient } from '@/lib/server/domains/settings/redact'
+import { recordAuditEvent } from '@/lib/server/audit/log'
 
 /** Resolve locale from Accept-Language header on the server. */
 const getPortalLocale = createServerFn({ method: 'GET' }).handler(async () => {
@@ -36,6 +37,27 @@ export const Route = createFileRoute('/_portal')({
     const accessResult = await evaluateMyPortalAccessFn()
 
     if (!accessResult.granted) {
+      // OWASP authz_fail — emit only for authenticated denials (anonymous denials
+      // are too noisy and lower-signal). Best-effort, never blocks the gate throw.
+      const session = context.session
+      const isAuthenticated = !!session?.user && session.user.principalType !== 'anonymous'
+      if (isAuthenticated) {
+        void recordAuditEvent({
+          event: 'portal.access.denied',
+          outcome: 'failure',
+          actor: {
+            userId: session!.user.id,
+            email: session!.user.email,
+            type: 'user',
+          },
+          headers: (await import('@tanstack/react-start/server').then((m) =>
+            m.getRequestHeaders()
+          )) as Headers,
+          target: { type: 'settings', id: 'portal_config' },
+          metadata: { reason: accessResult.reason },
+        }).catch(() => {})
+      }
+
       // Both denied cases (unauthenticated + unauthorized) render an in-place
       // overlay via the route's errorComponent. The gate payload is carried
       // two ways so it survives SSR serialization — see parseGateError below.

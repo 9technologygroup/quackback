@@ -75,6 +75,10 @@ export type AuditEventType =
   // v1 widget OTT handoff
   | 'portal.widget_handshake.consumed'
   | 'portal.widget_handshake.invalid'
+  // v1 audit-log observability
+  | 'portal.access.denied' // OWASP authz_fail — gate denied an authenticated visitor
+  | 'auth.signin.failed' // OWASP authn_login_fail — twin of auth.signin.success
+  | 'portal.invite.expired' // emitted by the daily sweep for pending invites past their expiry
 
 export type AuditEventOutcome = 'success' | 'failure'
 

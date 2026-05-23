@@ -1,0 +1,187 @@
+/**
+ * Tests for the portal.access.denied audit emission in _portal beforeLoad.
+ *
+ * The beforeLoad is not directly invokable from tests since it lives inside
+ * a TanStack file-route. We test it by importing the module in a controlled
+ * mock environment and verifying the audit logic via the extracted condition
+ * that determines when to emit: authenticated + !accessResult.granted.
+ *
+ * Strategy: the route calls evaluateMyPortalAccessFn() and recordAuditEvent()
+ * as module-scope imports. By mocking both via vi.mock before the module loads
+ * we can spy on emit behavior.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+// ---------------------------------------------------------------------------
+// Mocks — must be hoisted before any import of _portal.tsx
+// ---------------------------------------------------------------------------
+
+const mockEvaluateMyPortalAccessFn = vi.fn()
+vi.mock('@/lib/server/functions/portal-access', () => ({
+  evaluateMyPortalAccessFn: (...a: unknown[]) => mockEvaluateMyPortalAccessFn(...a),
+}))
+
+const mockRecordAuditEvent = vi.fn()
+vi.mock('@/lib/server/audit/log', () => ({
+  recordAuditEvent: (...a: unknown[]) => mockRecordAuditEvent(...a),
+}))
+
+const mockGetRequestHeaders = vi.fn(() => new Headers())
+vi.mock('@tanstack/react-start/server', () => ({
+  getRequestHeaders: () => mockGetRequestHeaders(),
+}))
+
+// Stub enough of the portal route's other dependencies to avoid import errors
+vi.mock('@/lib/server/functions/portal', () => ({ fetchUserAvatar: vi.fn() }))
+vi.mock('@/lib/server/domains/settings/redact', () => ({
+  redactSettingsForClient: vi.fn((x: unknown) => x),
+}))
+vi.mock('@/lib/shared/theme', () => ({
+  generateThemeCSS: vi.fn(() => ''),
+  getGoogleFontsUrl: vi.fn(() => null),
+}))
+vi.mock('@/lib/shared/i18n', () => ({ resolveLocale: vi.fn(async () => 'en') }))
+vi.mock('@/lib/shared/types/settings', () => ({ DEFAULT_PORTAL_CONFIG: { oauth: {}, access: {} } }))
+vi.mock('@/lib/shared/types/portal-gate-error', () => ({
+  parseGateError: vi.fn(() => null),
+}))
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a minimal RouterContext-shaped context with the given session
+ * for use by the _portal beforeLoad.
+ */
+function makeContext(sessionUser?: {
+  id: string
+  email: string
+  principalType: 'user' | 'anonymous' | 'service'
+}) {
+  return {
+    session: sessionUser
+      ? {
+          user: {
+            id: sessionUser.id,
+            email: sessionUser.email,
+            principalType: sessionUser.principalType,
+            name: 'Test',
+            emailVerified: true,
+            image: null,
+            createdAt: '',
+            updatedAt: '',
+          },
+          session: {
+            id: 'session_1',
+            expiresAt: '',
+            token: 't',
+            createdAt: '',
+            updatedAt: '',
+            userId: sessionUser.id,
+          },
+        }
+      : null,
+    settings: null,
+    userRole: null as 'admin' | 'member' | 'user' | null,
+    baseUrl: 'http://localhost:3000',
+    themeCookie: 'system' as const,
+    managedFieldPaths: [],
+    state: 'active' as const,
+    registeredAuthProviders: [],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Extract and invoke the beforeLoad logic directly.
+// The route file exports Route; we get its beforeLoad from the options.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let routeOptions: any
+
+beforeEach(async () => {
+  vi.clearAllMocks()
+  mockRecordAuditEvent.mockResolvedValue(undefined)
+
+  // Re-import the route module fresh for each test to pick up mock state.
+  // Use dynamic import with cache-busting to get the route options.
+  const mod = await import('../_portal')
+  routeOptions = mod.Route
+})
+
+async function runBeforeLoad(context: ReturnType<typeof makeContext>) {
+  // TanStack route stores the options; beforeLoad is accessible via
+  // the internal `options` property on the RouteApi object.
+  // If the import doesn't expose it directly, we call it from the module.
+  const beforeLoad = routeOptions.options?.beforeLoad ?? routeOptions.beforeLoad
+  if (typeof beforeLoad !== 'function') {
+    throw new Error('Could not find beforeLoad on route options')
+  }
+  return beforeLoad({ context } as never)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('_portal beforeLoad — portal.access.denied audit', () => {
+  it('emits portal.access.denied for an authenticated unauthorized visitor', async () => {
+    mockEvaluateMyPortalAccessFn.mockResolvedValueOnce({ granted: false, reason: 'unauthorized' })
+
+    const context = makeContext({ id: 'user_1', email: 'x@y.com', principalType: 'user' })
+    try {
+      await runBeforeLoad(context)
+    } catch {
+      // expected — gate throws after audit
+    }
+
+    // Wait for the fire-and-forget void promise to settle
+    await vi.waitFor(() => expect(mockRecordAuditEvent).toHaveBeenCalled())
+
+    expect(mockRecordAuditEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'portal.access.denied',
+        outcome: 'failure',
+        metadata: expect.objectContaining({ reason: 'unauthorized' }),
+      })
+    )
+  })
+
+  it('does NOT emit portal.access.denied for an anonymous visitor', async () => {
+    mockEvaluateMyPortalAccessFn.mockResolvedValueOnce({
+      granted: false,
+      reason: 'unauthenticated',
+    })
+
+    const context = makeContext({ id: 'user_anon', email: '', principalType: 'anonymous' })
+    try {
+      await runBeforeLoad(context)
+    } catch {
+      // expected
+    }
+
+    // Give any async operations time to complete
+    await new Promise((r) => setTimeout(r, 10))
+
+    const deniedCalls = mockRecordAuditEvent.mock.calls.filter(
+      (c) => c[0]?.event === 'portal.access.denied'
+    )
+    expect(deniedCalls).toHaveLength(0)
+  })
+
+  it('does NOT emit portal.access.denied when access is granted', async () => {
+    mockEvaluateMyPortalAccessFn.mockResolvedValueOnce({ granted: true, reason: 'team' })
+
+    const context = makeContext({ id: 'user_1', email: 'admin@y.com', principalType: 'user' })
+    // Should not throw when granted
+    await runBeforeLoad(context).catch(() => {})
+
+    await new Promise((r) => setTimeout(r, 10))
+
+    const deniedCalls = mockRecordAuditEvent.mock.calls.filter(
+      (c) => c[0]?.event === 'portal.access.denied'
+    )
+    expect(deniedCalls).toHaveLength(0)
+  })
+})
