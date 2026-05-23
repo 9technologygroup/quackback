@@ -94,31 +94,30 @@ function makeContext(sessionUser?: {
 
 // ---------------------------------------------------------------------------
 // Extract and invoke the beforeLoad logic directly.
-// The route file exports Route; we get its beforeLoad from the options.
+// Import the route module once at top level (mocks are already set up).
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let routeOptions: any
+const { Route: routeOptions } = await import('../_portal')
 
-beforeEach(async () => {
-  vi.clearAllMocks()
-  mockRecordAuditEvent.mockResolvedValue(undefined)
-
-  // Re-import the route module fresh for each test to pick up mock state.
-  // Use dynamic import with cache-busting to get the route options.
-  const mod = await import('../_portal')
-  routeOptions = mod.Route
-})
-
-async function runBeforeLoad(context: ReturnType<typeof makeContext>) {
+function getBeforeLoad() {
   // TanStack route stores the options; beforeLoad is accessible via
   // the internal `options` property on the RouteApi object.
-  // If the import doesn't expose it directly, we call it from the module.
-  const beforeLoad = routeOptions.options?.beforeLoad ?? routeOptions.beforeLoad
+  const beforeLoad =
+    (routeOptions as unknown as { options?: { beforeLoad?: unknown } }).options?.beforeLoad ??
+    (routeOptions as unknown as { beforeLoad?: unknown }).beforeLoad
   if (typeof beforeLoad !== 'function') {
     throw new Error('Could not find beforeLoad on route options')
   }
-  return beforeLoad({ context } as never)
+  return beforeLoad as (args: { context: unknown }) => Promise<void>
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockRecordAuditEvent.mockResolvedValue(undefined)
+})
+
+async function runBeforeLoad(context: ReturnType<typeof makeContext>) {
+  return getBeforeLoad()({ context } as never)
 }
 
 // ---------------------------------------------------------------------------
