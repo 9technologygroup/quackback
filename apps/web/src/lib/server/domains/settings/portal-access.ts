@@ -58,9 +58,8 @@ export interface PortalAccessContext {
   /**
    * True when the workspace admin has enabled widget sign-in on this
    * private portal. When set, any portal-signed-in user (role='user')
-   * gains access — the handshake mechanism is what enables widget-
-   * HMAC-verified users to become signed-in portal users in the first
-   * place. Defaults to `false`.
+   * gains access — the widget mints an OTT and the portal's OttHandler
+   * exchanges it for a session cookie. Defaults to `false`.
    */
   widgetSignInEnabled?: boolean
 }
@@ -104,8 +103,8 @@ function emailDomain(email: string | null): string | null {
  * Ordering: team > domain > invite > widget. The widget branch is intentionally
  * last among grant paths so that a more-specific grant (team, domain, invite)
  * is preferred when the user qualifies for multiple paths. The widget branch
- * admits any role='user' principal when widgetSignInEnabled — the handshake
- * mechanism is what gets a widget-verified user into a portal session.
+ * admits any role='user' principal when widgetSignInEnabled — sign-in happens
+ * via the one-time-token flow (widget mints OTT, portal OttHandler sets session).
  */
 export function evaluatePortalAccess(ctx: PortalAccessContext): PortalAccessResult {
   // 1. Public portal — open to everyone.
@@ -136,8 +135,7 @@ export function evaluatePortalAccess(ctx: PortalAccessContext): PortalAccessResu
 
   // 5. Widget sign-in grant.
   //    When the admin enables widgetSignIn, any portal-signed-in user (role='user')
-  //    gets in. The handshake route is what converts a widget-HMAC-verified visitor
-  //    into a signed-in portal user in the first place.
+  //    gets in. Sign-in happens via the one-time-token flow initiated from the widget.
   //    Anonymous principals do NOT qualify — isAuthenticated must be true.
   if ((ctx.widgetSignInEnabled ?? false) && ctx.isAuthenticated && ctx.role === 'user') {
     return { granted: true, reason: 'widget' }
