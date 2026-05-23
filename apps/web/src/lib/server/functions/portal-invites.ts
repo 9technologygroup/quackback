@@ -372,6 +372,16 @@ export const acceptPortalInviteFn = createServerFn({ method: 'POST' })
       throw new Error('PORTAL_INVITE_NOT_FOUND')
     }
 
+    // Email mismatch — check first, before any status short-circuit, so a
+    // caller signed in as the wrong account always gets `mismatch` regardless
+    // of whether the invite has already been accepted.
+    if (inv.email.toLowerCase() !== sessionEmail) {
+      console.warn(
+        `[fn:portal-invites] acceptPortalInviteFn: email mismatch invite=${inv.email} session=${sessionEmail}`
+      )
+      return { status: 'mismatch' }
+    }
+
     // Idempotent: already accepted — no second audit event.
     if (inv.status === 'accepted') {
       console.log(`[fn:portal-invites] acceptPortalInviteFn: already accepted`)
@@ -386,15 +396,6 @@ export const acceptPortalInviteFn = createServerFn({ method: 'POST' })
     if (new Date(inv.expiresAt) < new Date()) {
       console.log(`[fn:portal-invites] acceptPortalInviteFn: invite is expired`)
       return { status: 'expired' }
-    }
-
-    // Email mismatch — must be case-insensitive to prevent a signed-in-as-X
-    // user from accepting an invite meant for Y.
-    if (inv.email.toLowerCase() !== sessionEmail) {
-      console.warn(
-        `[fn:portal-invites] acceptPortalInviteFn: email mismatch invite=${inv.email} session=${sessionEmail}`
-      )
-      return { status: 'mismatch' }
     }
 
     // All checks passed — accept the invite.

@@ -279,6 +279,22 @@ describe('acceptPortalInviteFn — idempotent', () => {
     await acceptHandler({ data: { inviteId: 'invite_1' } })
     expect(hoisted.mockDbUpdate).not.toHaveBeenCalled()
   })
+
+  it('returns mismatch (not alreadyAccepted) when caller email differs on an already-accepted invite', async () => {
+    // Invite is accepted, but the calling session belongs to a different user.
+    // The email-mismatch guard must run before the alreadyAccepted short-circuit.
+    hoisted.mockDbQuery.invitation.findFirst.mockResolvedValue({
+      ...PENDING_INVITE,
+      status: 'accepted',
+    })
+    hoisted.mockGetSession.mockResolvedValue({
+      session: { id: 'sess_1', userId: 'user_other' },
+      user: { ...SESSION_USER, id: 'user_other', email: 'wrong@example.com' },
+    })
+
+    const result = await acceptHandler({ data: { inviteId: 'invite_1' } })
+    expect((result as { status: string }).status).toBe('mismatch')
+  })
 })
 
 // ---------------------------------------------------------------------------
