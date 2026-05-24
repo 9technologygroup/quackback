@@ -185,16 +185,13 @@ function BoardAccessFormInner({ board }: { board: Board }) {
               </div>
               <FormControl>
                 <RadioGroup
-                  onValueChange={(value) => {
-                    const next = value as RadioVisibility
-                    field.onChange(next)
-                    // Leaving segments — clear the selection so a later
-                    // re-entry starts fresh and a stale array can't
-                    // sneak back into the payload from a hidden field.
-                    if (next !== 'segments') {
-                      form.setValue('segmentIds', [])
-                    }
-                  }}
+                  // Keep segmentIds in form state when leaving 'segments' so
+                  // a return trip (segments → other → segments) preserves
+                  // the original selection. The submit path only includes
+                  // segmentIds when the active kind is 'segments' (see
+                  // formValuesToAudience), so a stale array can't sneak
+                  // into a non-segments payload.
+                  onValueChange={field.onChange}
                   value={field.value}
                   className="grid gap-3"
                 >

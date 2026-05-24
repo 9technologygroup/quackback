@@ -214,43 +214,41 @@ describe('<BoardAccessForm> save button', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Switching radio clears segmentIds
+// Switching radio preserves segmentIds across cycles
 // ---------------------------------------------------------------------------
 
 describe('<BoardAccessForm> radio switching', () => {
-  it('clears the multi-select when switching from segments to a non-segments radio', () => {
+  it('hides the multi-select when leaving segments but keeps the selection in form state', () => {
     renderForm({ kind: 'segments', segmentIds: ['seg_1', 'seg_2'] })
-    // Confirm initial state
     expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).checked).toBe(true)
-
-    // Switch to Public
+    // Switch to Public — multi-select hidden from the DOM
     fireEvent.click(screen.getAllByRole('radio')[0])
-
-    // Multi-select disappears entirely; switching back should start fresh.
     expect(screen.queryByRole('list', { name: /allowlist|allowed segments/i })).toBeNull()
-
-    // Switch back to Specific segments — boxes should be unchecked now.
-    fireEvent.click(screen.getAllByRole('radio')[3])
-    const boxesAfter = screen.getAllByRole('checkbox') as HTMLInputElement[]
-    expect(boxesAfter[0].checked).toBe(false)
-    expect(boxesAfter[1].checked).toBe(false)
   })
 
-  it('after radio cycle, submitting picks up the new (empty/fresh) segmentIds, not the prior list', async () => {
-    renderForm({ kind: 'segments', segmentIds: ['seg_1'] })
-    // Cycle: segments → public → segments
+  it('PRESERVES the original ticks when switching segments → other → segments', () => {
+    // Admin accidentally toggles to a different kind, realizes they
+    // meant to keep segments, switches back. The original selection
+    // must come with them — losing it would silently undo their work.
+    renderForm({ kind: 'segments', segmentIds: ['seg_1', 'seg_2'] })
     fireEvent.click(screen.getAllByRole('radio')[0]) // public
-    fireEvent.click(screen.getAllByRole('radio')[3]) // segments
-    // Save should be disabled now (empty + segments selected)
-    expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled()
+    fireEvent.click(screen.getAllByRole('radio')[3]) // back to segments
+    const boxesAfter = screen.getAllByRole('checkbox') as HTMLInputElement[]
+    expect(boxesAfter[0].checked).toBe(true) // seg_1 still ticked
+    expect(boxesAfter[1].checked).toBe(true) // seg_2 still ticked
+  })
 
-    // Tick a different segment, submit, verify payload
-    fireEvent.click(screen.getAllByRole('checkbox')[1]) // seg_2
+  it('submits the preserved selection after a switch cycle without further edits', async () => {
+    renderForm({ kind: 'segments', segmentIds: ['seg_1'] })
+    fireEvent.click(screen.getAllByRole('radio')[0]) // public
+    fireEvent.click(screen.getAllByRole('radio')[3]) // back to segments
+    // Save remains enabled because the original selection survived
+    expect(screen.getByRole('button', { name: /save changes/i })).not.toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => {
       expect(mutate).toHaveBeenCalledWith({
         boardId: BOARD_ID,
-        audience: { kind: 'segments', segmentIds: ['seg_2'] },
+        audience: { kind: 'segments', segmentIds: ['seg_1'] },
       })
     })
   })
