@@ -522,14 +522,24 @@ export const getPublicRoadmapPostsFn = createServerFn({ method: 'GET' })
         return { items: [], hasMore: false, total: 0 }
       }
 
-      // No auth needed - this is public data
+      // Resolve actor so per-board audience filters apply — a team
+      // member viewing the public roadmap should see posts from
+      // team-only boards (since they're entitled), while an anonymous
+      // viewer should not.
+      const auth = await getOptionalAuth()
+      const actor = await policyActorFromAuth(auth)
+
       const { roadmapId, statusId, limit, offset } = data
 
-      const result = await getPublicRoadmapPosts(roadmapId as RoadmapId, {
-        statusId: statusId as StatusId | undefined,
-        limit,
-        offset,
-      })
+      const result = await getPublicRoadmapPosts(
+        roadmapId as RoadmapId,
+        {
+          statusId: statusId as StatusId | undefined,
+          limit,
+          offset,
+        },
+        actor
+      )
       console.log(`[fn:public-posts] getPublicRoadmapPostsFn: count=${result.items.length}`)
 
       // Serialize branded types to plain strings for turbo-stream

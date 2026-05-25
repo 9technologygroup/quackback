@@ -23,6 +23,7 @@ import {
 import type { NotificationId, PrincipalId } from '@quackback/ids'
 import { createId } from '@quackback/ids'
 import { NotFoundError } from '@/lib/shared/errors'
+import { ANONYMOUS_ACTOR, boardViewFilter, type Actor } from '@/lib/server/policy'
 import type {
   CreateNotificationInput,
   NotificationType,
@@ -78,11 +79,18 @@ export async function createNotification(
 }
 
 /**
- * Get notifications for a member with pagination
+ * Get notifications for a member with pagination.
+ *
+ * The `actor` parameter drives per-board audience filtering on the
+ * post/board left-joins: if the user once subscribed to a post whose
+ * board has since become team-only or segment-restricted, the post
+ * preview (title + boardSlug) gets nulled out for that row instead
+ * of leaking. The notification row itself stays (preserves history).
  */
 export async function getNotificationsForMember(
   principalId: PrincipalId,
-  options: GetNotificationsOptions = {}
+  options: GetNotificationsOptions = {},
+  actor: Actor = ANONYMOUS_ACTOR
 ): Promise<NotificationListResult> {
   const { limit = 20, offset = 0, unreadOnly = false } = options
 
@@ -94,7 +102,9 @@ export async function getNotificationsForMember(
 
   const where = unreadOnly ? and(baseWhere, isNull(inAppNotifications.readAt)) : baseWhere
 
-  // Get notifications with post details
+  // Get notifications with post details. The boards join applies
+  // boardViewFilter so audience-restricted posts come back with
+  // null board fields — the mapper then hides the post preview.
   const rows = await db
     .select({
       id: inAppNotifications.id,
@@ -113,7 +123,7 @@ export async function getNotificationsForMember(
     })
     .from(inAppNotifications)
     .leftJoin(posts, eq(inAppNotifications.postId, posts.id))
-    .leftJoin(boards, eq(posts.boardId, boards.id))
+    .leftJoin(boards, and(eq(posts.boardId, boards.id), boardViewFilter(actor)))
     .where(where)
     .orderBy(desc(inAppNotifications.createdAt))
     .limit(limit)
@@ -145,13 +155,16 @@ export async function getNotificationsForMember(
     readAt: row.readAt,
     archivedAt: row.archivedAt,
     createdAt: row.createdAt,
-    post: row.postId
-      ? {
-          id: row.postId,
-          title: row.postTitle!,
-          boardSlug: row.boardSlug!,
-        }
-      : null,
+    // Audience denial: postId is set but the gated join produced null
+    // boardSlug. Treat that as "no longer visible" and surface no link.
+    post:
+      row.postId && row.boardSlug
+        ? {
+            id: row.postId,
+            title: row.postTitle!,
+            boardSlug: row.boardSlug,
+          }
+        : null,
   }))
 
   return {

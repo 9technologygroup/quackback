@@ -5,7 +5,7 @@
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import type { NotificationId } from '@quackback/ids'
-import { requireAuth } from './auth-helpers'
+import { requireAuth, policyActorFromAuth } from './auth-helpers'
 import {
   getNotificationsForMember,
   getUnreadCount,
@@ -43,12 +43,19 @@ export const getNotificationsFn = createServerFn({ method: 'GET' })
     )
     try {
       const auth = await requireAuth({ roles: ['admin', 'member', 'user'] })
+      // Resolve the actor so audience-denied posts get their preview
+      // hidden in the notification list.
+      const actor = await policyActorFromAuth(auth)
 
-      const result = await getNotificationsForMember(auth.principal.id, {
-        limit: data.limit,
-        offset: data.offset,
-        unreadOnly: data.unreadOnly,
-      })
+      const result = await getNotificationsForMember(
+        auth.principal.id,
+        {
+          limit: data.limit,
+          offset: data.offset,
+          unreadOnly: data.unreadOnly,
+        },
+        actor
+      )
 
       // Serialize dates for JSON transport
       return {

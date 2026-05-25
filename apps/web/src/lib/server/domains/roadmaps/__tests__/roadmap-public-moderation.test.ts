@@ -66,10 +66,16 @@ function chainReturning(rows: unknown[]): unknown {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  // First select → results, second select → count
+  // First select → results, second select → count.
+  // The count query now does two innerJoin calls (postRoadmaps→posts→boards)
+  // so the count branch needs nested innerJoin chains.
+  const countChain = { where: () => Promise.resolve([{ count: 0 }]) }
   mockSelect.mockReturnValueOnce(chainReturning([])).mockReturnValueOnce({
     from: () => ({
-      innerJoin: () => ({ where: () => Promise.resolve([{ count: 0 }]) }),
+      innerJoin: () => ({
+        innerJoin: () => countChain,
+        where: () => Promise.resolve([{ count: 0 }]),
+      }),
     }),
   })
   mockRoadmapFindFirst.mockResolvedValue({ id: 'rm_1' as RoadmapId, isPublic: true })

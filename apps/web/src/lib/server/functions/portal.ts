@@ -464,26 +464,33 @@ export const fetchPublicRoadmapPosts = createServerFn({ method: 'GET' })
         return { items: [], hasMore: false, total: 0 }
       }
 
+      // Resolve auth once — used for both the segment-filter gate and
+      // the per-board audience filter on getPublicRoadmapPosts.
+      const auth = hasAuthCredentials() ? await getOptionalAuth() : null
+
       // Segment filtering requires admin/member role
       let segmentIds: SegmentId[] | undefined
-      if (data.segmentIds?.length && hasAuthCredentials()) {
-        const auth = await getOptionalAuth()
-        if (auth && isTeamMember(auth.principal.role)) {
-          segmentIds = data.segmentIds as SegmentId[]
-        }
-        // Non-admin callers silently ignore segmentIds
+      if (data.segmentIds?.length && auth && isTeamMember(auth.principal.role)) {
+        segmentIds = data.segmentIds as SegmentId[]
+        // Non-team callers silently ignore segmentIds
       }
 
-      const result = await getPublicRoadmapPosts(data.roadmapId as RoadmapId, {
-        statusId: data.statusId as StatusId | undefined,
-        limit: data.limit ?? 20,
-        offset: data.offset ?? 0,
-        search: data.search,
-        boardIds: data.boardIds as BoardId[] | undefined,
-        tagIds: data.tagIds as TagId[] | undefined,
-        segmentIds,
-        sort: data.sort,
-      })
+      const actor = await policyActorFromAuth(auth)
+
+      const result = await getPublicRoadmapPosts(
+        data.roadmapId as RoadmapId,
+        {
+          statusId: data.statusId as StatusId | undefined,
+          limit: data.limit ?? 20,
+          offset: data.offset ?? 0,
+          search: data.search,
+          boardIds: data.boardIds as BoardId[] | undefined,
+          tagIds: data.tagIds as TagId[] | undefined,
+          segmentIds,
+          sort: data.sort,
+        },
+        actor
+      )
 
       return {
         ...result,
