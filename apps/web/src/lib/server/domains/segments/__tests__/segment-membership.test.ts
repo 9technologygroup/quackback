@@ -185,6 +185,7 @@ import {
   addMember,
   removeMember,
   reconcileSsoMemberships,
+  reconcileWidgetMemberships,
   segmentIdsForPrincipal,
   type MembershipSource,
 } from '../segment-membership.service'
@@ -399,6 +400,69 @@ describe('reconcileSsoMemberships — preserves stickier sources', () => {
       { principalId: P1, segmentId: S2, addedBy: 'sso' },
       { principalId: P1, segmentId: S3, addedBy: 'widget' },
     ])
+  })
+})
+
+// ----------------------------------------------------------------------
+// reconcileWidgetMemberships — mirrors the SSO reconcile contract on the
+// widget side. Before this helper existed, /api/widget/identify only
+// added members from the JWT segments claim with no removal path — a
+// canceled customer kept their `enterprise` membership forever and
+// retained private-portal access through allowedSegmentIds. This guard
+// is the same shape as the SSO one: only addedBy='widget' rows are
+// touched; manual / sso / api stay sticky.
+// ----------------------------------------------------------------------
+
+describe('reconcileWidgetMemberships — preserves stickier sources', () => {
+  it('does NOT delete manual rows when the JWT drops them', async () => {
+    state.rows.push({ principalId: P1, segmentId: S1, addedBy: 'manual' })
+    await reconcileWidgetMemberships({ principalId: P1, desiredSegmentIds: [] })
+    expect(state.rows).toEqual([{ principalId: P1, segmentId: S1, addedBy: 'manual' }])
+  })
+
+  it('does NOT delete sso/api rows when the JWT drops them', async () => {
+    state.rows.push(
+      { principalId: P1, segmentId: S1, addedBy: 'sso' },
+      { principalId: P1, segmentId: S2, addedBy: 'api' }
+    )
+    await reconcileWidgetMemberships({ principalId: P1, desiredSegmentIds: [] })
+    expect(state.rows).toHaveLength(2)
+  })
+
+  it('deletes widget rows that are no longer in the JWT', async () => {
+    state.rows.push(
+      { principalId: P1, segmentId: S1, addedBy: 'widget' },
+      { principalId: P1, segmentId: S2, addedBy: 'widget' }
+    )
+    await reconcileWidgetMemberships({ principalId: P1, desiredSegmentIds: [S1] })
+    expect(state.rows).toEqual([{ principalId: P1, segmentId: S1, addedBy: 'widget' }])
+  })
+
+  it('adds new widget memberships from the JWT', async () => {
+    await reconcileWidgetMemberships({ principalId: P1, desiredSegmentIds: [S1, S2] })
+    expect(state.rows).toEqual([
+      { principalId: P1, segmentId: S1, addedBy: 'widget' },
+      { principalId: P1, segmentId: S2, addedBy: 'widget' },
+    ])
+  })
+
+  it('canceled-customer scenario: JWT goes [enterprise] → [], membership is removed', async () => {
+    // The headline bug: a customer's auth server stops minting the
+    // `enterprise` segment in the JWT (subscription ended). On next
+    // identify the widget membership must be dropped so the user loses
+    // the corresponding portal-access grant.
+    state.rows.push({ principalId: P1, segmentId: S1, addedBy: 'widget' })
+    await reconcileWidgetMemberships({ principalId: P1, desiredSegmentIds: [] })
+    expect(state.rows).toEqual([])
+  })
+
+  it('does not cross-pollinate principals', async () => {
+    state.rows.push(
+      { principalId: P1, segmentId: S1, addedBy: 'widget' },
+      { principalId: P2, segmentId: S1, addedBy: 'widget' }
+    )
+    await reconcileWidgetMemberships({ principalId: P1, desiredSegmentIds: [] })
+    expect(state.rows).toEqual([{ principalId: P2, segmentId: S1, addedBy: 'widget' }])
   })
 })
 

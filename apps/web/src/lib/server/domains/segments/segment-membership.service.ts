@@ -167,6 +167,59 @@ export async function reconcileSsoMemberships(input: {
 }
 
 /**
+ * Reconcile widget-sourced memberships for a principal against the
+ * latest signed JWT.
+ *
+ * The widget identify route used to be additive-only — a customer's
+ * auth server could mint `segments: ['enterprise']` once and never
+ * revoke it; a canceled customer kept their portal-access grant via
+ * `allowedSegmentIds` indefinitely. This helper mirrors the SSO
+ * reconcile contract:
+ *
+ * - Removes rows where addedBy='widget' AND the segment is no longer in
+ *   the JWT. The addedBy='widget' guard keeps manual / sso / api
+ *   memberships safe even if the JWT drops them.
+ * - For each segment in the JWT, calls addMember(..., 'widget'). The
+ *   source-priority guard makes that a no-op when a stickier
+ *   (manual / api / sso) membership already exists.
+ */
+export async function reconcileWidgetMemberships(input: {
+  principalId: PrincipalId
+  desiredSegmentIds: SegmentId[]
+}): Promise<void> {
+  const existing = await db
+    .select()
+    .from(userSegments)
+    .where(and(eq(userSegments.principalId, input.principalId), eq(userSegments.addedBy, 'widget')))
+
+  const existingIds = new Set(existing.map((r) => r.segmentId))
+  const desiredIds = new Set(input.desiredSegmentIds)
+
+  const toRemove = [...existingIds].filter((id) => !desiredIds.has(id as SegmentId))
+  const toAdd = [...desiredIds].filter((id) => !existingIds.has(id))
+
+  if (toRemove.length > 0) {
+    await db
+      .delete(userSegments)
+      .where(
+        and(
+          eq(userSegments.principalId, input.principalId),
+          eq(userSegments.addedBy, 'widget'),
+          inArray(userSegments.segmentId, toRemove as never[])
+        )
+      )
+  }
+  for (const segmentId of toAdd) {
+    await addMember({
+      principalId: input.principalId,
+      segmentId: segmentId as SegmentId,
+      source: 'widget',
+      actor: null,
+    })
+  }
+}
+
+/**
  * Resolve a principal's segment memberships for use in policy decisions.
  * Cache at the request level — do not call once per row.
  */

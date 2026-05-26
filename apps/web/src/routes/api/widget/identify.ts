@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { generateId } from '@quackback/ids'
-import type { UserId, PrincipalId } from '@quackback/ids'
+import type { UserId, PrincipalId, SegmentId } from '@quackback/ids'
 import {
   db,
   user,
@@ -24,7 +24,7 @@ import {
   validateAndCoerceAttributes,
   mergeMetadata,
 } from '@/lib/server/domains/users/user.attributes'
-import { addMember } from '@/lib/server/domains/segments/segment-membership.service'
+import { reconcileWidgetMemberships } from '@/lib/server/domains/segments/segment-membership.service'
 import { captureCountryFromHeaders } from '@/lib/server/auth/country-capture'
 
 const identifySchema = z
@@ -322,22 +322,29 @@ export const Route = createFileRoute('/api/widget/identify')({
         // verified-token path; the unverified body's `segments` was stripped
         // above (else any visitor could self-assign to 'enterprise'). Unknown
         // slugs are silently skipped. Lookup by slug (unique), not name.
-        const rawSegments = claimsAreVerified ? claims.segments : undefined
-        if (Array.isArray(rawSegments)) {
+        //
+        // The reconcile is what makes the claim authoritative on every
+        // identify: adding NEW slugs grants membership, dropping a slug
+        // from the JWT REMOVES the corresponding widget-sourced
+        // membership. Without this, a canceled customer would keep their
+        // `enterprise` membership forever and retain portal-access via
+        // allowedSegmentIds. Manual / sso / api memberships are sticky
+        // (addedBy='widget' filter inside reconcileWidgetMemberships).
+        if (claimsAreVerified) {
+          const rawSegments = Array.isArray(claims.segments) ? claims.segments : []
+          const resolvedSegmentIds: SegmentId[] = []
           for (const slug of rawSegments) {
             if (typeof slug !== 'string') continue
             const segment = await db.query.segments.findFirst({
               where: and(eq(segments.slug, slug), isNull(segments.deletedAt)),
               columns: { id: true },
             })
-            if (!segment) continue
-            await addMember({
-              principalId,
-              segmentId: segment.id,
-              source: 'widget',
-              actor: null,
-            })
+            if (segment) resolvedSegmentIds.push(segment.id)
           }
+          await reconcileWidgetMemberships({
+            principalId,
+            desiredSegmentIds: resolvedSegmentIds,
+          })
         }
 
         // If the widget had a previous anonymous session, merge its activity.

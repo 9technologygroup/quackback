@@ -147,7 +147,14 @@ export const listPublicPostsFn = createServerFn({ method: 'GET' })
         return { items: [], hasMore: false, total: 0 }
       }
 
-      // No auth needed - this is public data
+      // Resolve the actor so per-board audience + per-post moderation
+      // filters apply from the caller's perspective. Without this,
+      // listPublicPosts defaulted to ANONYMOUS_ACTOR and authenticated /
+      // segment members saw only public-audience boards even when they
+      // were entitled to more.
+      const auth = await getOptionalAuth()
+      const actor = await policyActorFromAuth(auth)
+
       const result = await listPublicPosts({
         boardSlug: data.boardSlug,
         search: data.search,
@@ -160,6 +167,7 @@ export const listPublicPostsFn = createServerFn({ method: 'GET' })
         minVotes: data.minVotes,
         dateFrom: data.dateFrom,
         responded: data.responded,
+        actor,
       })
 
       console.log(`[fn:public-posts] listPublicPostsFn: count=${result.items.length}`)
@@ -314,6 +322,15 @@ export const toggleVoteFn = createServerFn({ method: 'POST' })
     async ({ data }: { data: ToggleVoteInput }): Promise<{ voted: boolean; voteCount: number }> => {
       console.log(`[fn:public-posts] toggleVoteFn: postId=${data.postId}`)
       try {
+        // Portal-visibility gate: a denied caller (signed-in but not on
+        // the allowlist of a private portal) must not be able to vote.
+        // Read-side gating happens at list / detail; write paths need
+        // the same check or the caller could mutate state from inside a
+        // portal they're not entitled to view.
+        const access = await resolvePortalAccessForRequest()
+        if (!access.granted) {
+          throw new Error('Portal access required')
+        }
         const ctx = await requireAuth()
 
         // Block anonymous users unless anonymousVoting is enabled
@@ -355,6 +372,14 @@ export const createPublicPostFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }: { data: CreatePublicPostInput }) => {
     console.log(`[fn:public-posts] createPublicPostFn: boardId=${data.boardId}`)
     try {
+      // Portal-visibility gate: a denied caller must not be able to
+      // create posts inside a portal they're not entitled to view. The
+      // per-board audience check inside getPublicBoardById still runs
+      // as the inner layer for granted callers.
+      const access = await resolvePortalAccessForRequest()
+      if (!access.granted) {
+        throw new Error('Portal access required')
+      }
       const ctx = await requireAuth()
       const { boardId: boardIdRaw, title, content, contentJson, metadata } = data
       const boardId = boardIdRaw as BoardId
@@ -588,13 +613,20 @@ export const getRoadmapPostsByStatusFn = createServerFn({ method: 'GET' })
         return { items: [], hasMore: false, total: 0 }
       }
 
-      // No auth needed - this is public data
+      // Resolve the actor so per-board audience + per-post moderation
+      // filters apply. The legacy roadmap-by-status view used to default
+      // to ANONYMOUS_ACTOR even for authenticated team members, hiding
+      // posts on non-public boards they were entitled to see.
+      const auth = await getOptionalAuth()
+      const actor = await policyActorFromAuth(auth)
+
       const { statusId, page, limit } = data
 
       const result = await getPublicRoadmapPostsPaginated({
         statusId: statusId as StatusId,
         page,
         limit,
+        actor,
       })
       console.log(`[fn:public-posts] getRoadmapPostsByStatusFn: count=${result.items.length}`)
 

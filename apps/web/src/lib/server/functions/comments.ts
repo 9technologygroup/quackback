@@ -75,6 +75,18 @@ export const createCommentFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     console.log(`[fn:comments] createCommentFn: postId=${data.postId}`)
     try {
+      // Portal-visibility gate: a denied caller (signed-in but not on
+      // the allowlist of a private portal) must not be able to comment.
+      // Matches createPublicPostFn / toggleVoteFn — read-side gating
+      // already runs at list / detail, the write surface needs it too
+      // or the caller could mutate from inside a portal they're not
+      // entitled to view. Dynamic import keeps the cycle out of static
+      // analysis (comments.ts ↔ portal-access.ts both pull from db).
+      const { resolvePortalAccessForRequest } = await import('./portal-access')
+      const access = await resolvePortalAccessForRequest()
+      if (!access.granted) {
+        throw new Error('Portal access required')
+      }
       const auth = await requireAuth({ roles: ['admin', 'member', 'user'] })
 
       // Block anonymous users unless anonymousCommenting is enabled

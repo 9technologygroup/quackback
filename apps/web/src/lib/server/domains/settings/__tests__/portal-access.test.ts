@@ -410,12 +410,37 @@ describe('evaluatePortalAccess — invite precedence (continued)', () => {
 })
 
 describe('evaluatePortalAccess — segment branch edge cases', () => {
-  it('grants via segment when the user is in an allowed segment regardless of emailVerified', () => {
+  it('REFUSES to grant via segment when emailVerified=false (G9)', () => {
+    // Regression: the segment grant previously fired without checking
+    // emailVerified, on the rationale that segments are admin-curated.
+    // But a dynamic segment can predicate on email (e.g. `email
+    // ends_with @acme.com`) and the evaluator joined users on `u.email`
+    // with no verification predicate — so an attacker who signed up as
+    // `victim@acme.com` and never verified became a segment member and
+    // walked into the private portal. The branch now requires the same
+    // emailVerified guard as the domain and invite branches.
     const result = evaluatePortalAccess({
       visibility: 'private',
       role: 'user',
       isAuthenticated: true,
-      emailVerified: false, // deliberately false
+      emailVerified: false,
+      userEmail: 'user@external.com',
+      allowedDomains: [],
+      hasAcceptedPortalInvite: false,
+      widgetSignInEnabled: false,
+      hasViaWidgetMarker: false,
+      identifyVerificationEnabled: false,
+      isInAllowedSegment: true,
+    })
+    expect(result).toEqual({ granted: false, reason: 'unauthorized' })
+  })
+
+  it('grants via segment when emailVerified=true and the user is in an allowed segment', () => {
+    const result = evaluatePortalAccess({
+      visibility: 'private',
+      role: 'user',
+      isAuthenticated: true,
+      emailVerified: true,
       userEmail: 'user@external.com',
       allowedDomains: [],
       hasAcceptedPortalInvite: false,

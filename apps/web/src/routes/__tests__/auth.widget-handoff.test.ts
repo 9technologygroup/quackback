@@ -122,14 +122,15 @@ async function runHandoffLoader(search: string) {
     return { status }
   }
 
-  // Forward Set-Cookie
+  // Collect the Set-Cookie payload but DO NOT forward it yet — the
+  // provenance check below must succeed first. A generic BA OTT (from
+  // any non-widget flow) can pass the verify step; if we forwarded the
+  // cookie eagerly, that OTT would install the session in the browser
+  // even when the handoff is rejected.
   const setCookieValues = verifyResponse.headers.getSetCookie?.() ?? []
   if (setCookieValues.length === 0) {
     const single = verifyResponse.headers.get('set-cookie')
     if (single) setCookieValues.push(single)
-  }
-  for (const cookie of setCookieValues) {
-    setResponseHeader('Set-Cookie', cookie)
   }
 
   let sessionId: string | null = null
@@ -169,6 +170,11 @@ async function runHandoffLoader(search: string) {
       metadata: { reason: 'unverified_provenance' },
     })
     return { status: 'invalid' as const }
+  }
+
+  // Provenance passed — safe to install the session cookie now.
+  for (const cookie of setCookieValues) {
+    setResponseHeader('Set-Cookie', cookie)
   }
 
   try {
@@ -322,6 +328,33 @@ describe('widget handoff loader — valid OTT', () => {
           outcome: 'failure',
           metadata: expect.objectContaining({ reason: 'unverified_provenance' }),
         })
+      )
+    })
+
+    it('does NOT forward Set-Cookie when provenance fails (G7)', async () => {
+      // Regression: the route used to call setResponseHeader('Set-Cookie',
+      // …) immediately after the OTT verify succeeded, BEFORE running the
+      // provenance check. Any valid BA OTT (even one minted by a
+      // non-widget flow) would then install the session cookie in the
+      // browser even though the handoff was refused. The cookie must be
+      // forwarded only AFTER provenance is confirmed.
+      mockFetch.mockResolvedValue(makeOkResponse({ id: 'sess_capture', userId: 'user_xyz' }))
+      mockWidgetIdentifiedFindFirst.mockResolvedValueOnce({ hmacVerified: false })
+
+      await runHandoffLoader('?ott=valid-token')
+
+      expect(mockSetResponseHeader).not.toHaveBeenCalledWith('Set-Cookie', expect.anything())
+    })
+
+    it('does forward Set-Cookie when provenance passes (success-path parity)', async () => {
+      mockFetch.mockResolvedValue(makeOkResponse({ id: 'sess_ok', userId: 'user_ok' }))
+      mockWidgetIdentifiedFindFirst.mockResolvedValueOnce({ hmacVerified: true })
+
+      await runHandoffLoader('?ott=valid-token')
+
+      expect(mockSetResponseHeader).toHaveBeenCalledWith(
+        'Set-Cookie',
+        expect.stringContaining('better-auth.session_token')
       )
     })
   })

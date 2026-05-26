@@ -320,26 +320,21 @@ export const resendPortalInviteFn = createServerFn({ method: 'POST' })
       throw new Error('This invitation has expired. Please cancel it and send a new one.')
     }
 
-    const portalUrl = getBaseUrl()
-    const inviteLink = await mintPortalInviteMagicLink(inv.email, inviteId, portalUrl)
-
-    const { getEmailSafeUrl } = await import('@/lib/server/storage/s3')
-    const logoUrl = getEmailSafeUrl(auth.settings.logoKey) ?? undefined
-    const result = await sendPortalInviteEmail({
-      to: inv.email,
-      workspaceName: auth.settings.name,
-      inviteLink,
-      logoUrl,
-    })
-
+    // Claim the slot FIRST, then mint + send. The previous ordering sent
+    // the email before the UPDATE — if a concurrent accept/cancel/sweep
+    // landed during the SMTP window, the admin saw an error while the
+    // invitee already had a usable magic-link email pointing at a row
+    // the server now considers terminal. Claiming first means the email
+    // only ever goes out for an invite we've successfully extended.
+    //
+    // The UPDATE WHERE pins status='pending' AND expiresAt > now() so
+    // neither a concurrent terminal-state flip nor an expiry that
+    // landed between SELECT and UPDATE can be silently rescued by the
+    // expiry-extension. `.returning()` surfaces the zero-row race; we
+    // treat it as a terminal-state collision and abort BEFORE any
+    // user-visible side effects.
     const resendNow = new Date()
     const freshExpiresAt = new Date(resendNow.getTime() + PORTAL_INVITE_EXPIRY_MS)
-    // Mirror the acceptPortalInviteFn TOCTOU fix: pin status='pending'
-    // AND expires_at > now() in the WHERE clause so neither a concurrent
-    // accept/cancel nor an expiry that landed during the email-send window
-    // can be silently rescued by this expiry-extension. .returning()
-    // surfaces the zero-row race; we treat it as a terminal state
-    // collision and skip the audit event.
     const updated = await db
       .update(invitation)
       .set({ lastSentAt: resendNow, expiresAt: freshExpiresAt })
@@ -354,14 +349,26 @@ export const resendPortalInviteFn = createServerFn({ method: 'POST' })
       .returning()
 
     if (updated.length === 0) {
-      // Concurrent state change — invite is no longer pending. Don't
-      // record a misleading 'resent' audit event for a row that's
-      // since been accepted, canceled, or swept-expired.
+      // Concurrent state change — invite is no longer pending. Abort
+      // before minting a magic link or sending an email — those side
+      // effects would otherwise leak a live link for a terminal row.
       console.warn(
         `[fn:portal-invites] resendPortalInviteFn: TOCTOU lost — invite ${inviteId} no longer pending`
       )
       throw new Error('Portal invitation is no longer pending.')
     }
+
+    const portalUrl = getBaseUrl()
+    const inviteLink = await mintPortalInviteMagicLink(inv.email, inviteId, portalUrl)
+
+    const { getEmailSafeUrl } = await import('@/lib/server/storage/s3')
+    const logoUrl = getEmailSafeUrl(auth.settings.logoKey) ?? undefined
+    const result = await sendPortalInviteEmail({
+      to: inv.email,
+      workspaceName: auth.settings.name,
+      inviteLink,
+      logoUrl,
+    })
 
     await recordAuditEvent({
       event: 'portal.invite.resent',

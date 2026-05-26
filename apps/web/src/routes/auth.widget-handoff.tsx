@@ -170,23 +170,18 @@ const consumeWidgetHandoffFn = createServerFn({ method: 'POST' })
       return { kind: 'error', status }
     }
 
-    // Forward all Set-Cookie headers from the BA response to the user's browser.
-    // This is what establishes the session cookie server-side before the redirect.
+    // Collect Set-Cookie payload from the BA verify response, but DO NOT
+    // forward it to the browser yet. A generic BA OTT minted by any other
+    // flow (portal email signup, email-capture widget identify, etc.)
+    // would pass the verify step here; if we forwarded the cookie eagerly
+    // the visitor would end up signed in as that account even though the
+    // handoff's provenance check below rejects the upgrade. Deferring the
+    // header until after provenance closes that session-poisoning vector.
     const setCookieValues = verifyResponse.headers.getSetCookie?.() ?? []
     if (setCookieValues.length === 0) {
       // Fallback for environments where getSetCookie isn't available
       const single = verifyResponse.headers.get('set-cookie')
       if (single) setCookieValues.push(single)
-    }
-    // Pass the array so h3/Node emits a separate Set-Cookie line per cookie.
-    // Calling setResponseHeader in a loop would overwrite (set, not append),
-    // losing all but the last. The array form is multi-value-safe at runtime
-    // even though the TS signature only types it as string.
-    if (setCookieValues.length > 0) {
-      ;(setResponseHeader as (name: string, value: string | string[]) => void)(
-        'Set-Cookie',
-        setCookieValues
-      )
     }
 
     // Parse the session info from the BA response body.
@@ -200,7 +195,7 @@ const consumeWidgetHandoffFn = createServerFn({ method: 'POST' })
       sessionId = body?.session?.id ?? null
       userId = body?.user?.id ?? body?.session?.userId ?? null
     } catch {
-      // Response body unreadable — still proceed; the cookie is set.
+      // Response body unreadable — refuse safely.
       console.warn('[route:widget-handoff] could not parse verify response body')
     }
 
@@ -226,6 +221,10 @@ const consumeWidgetHandoffFn = createServerFn({ method: 'POST' })
     if (!provenanceOk) {
       // The OTT was valid, but the session was not produced by an
       // HMAC-verified widget identify. Refuse the upgrade and audit.
+      // Critically: we have NOT forwarded the Set-Cookie header yet, so
+      // the visitor's browser ends up with no new session — they're
+      // either still anonymous or still on whatever session they had
+      // before. Anything else would constitute a login-confusion bug.
       await recordAuditEvent({
         event: 'portal.widget_handshake.invalid',
         outcome: 'failure',
@@ -234,6 +233,19 @@ const consumeWidgetHandoffFn = createServerFn({ method: 'POST' })
         metadata: { reason: 'unverified_provenance' },
       })
       return { kind: 'error', status: 'invalid' }
+    }
+
+    // Provenance passed — safe to install the BA session cookie now.
+    // Pass the array so h3/Node emits a separate Set-Cookie line per
+    // cookie. Calling setResponseHeader in a loop would overwrite (set,
+    // not append), losing all but the last. The array form is
+    // multi-value-safe at runtime even though the TS signature only
+    // types it as string.
+    if (setCookieValues.length > 0) {
+      ;(setResponseHeader as (name: string, value: string | string[]) => void)(
+        'Set-Cookie',
+        setCookieValues
+      )
     }
 
     // Insert the widget origin marker — best-effort (non-fatal on failure).

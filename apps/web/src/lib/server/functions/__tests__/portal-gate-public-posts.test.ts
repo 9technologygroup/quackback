@@ -88,16 +88,18 @@ vi.mock('@/lib/server/domains/posts/post.public.utils', () => ({
 // Remaining imports needed for public-posts.ts to load
 // ---------------------------------------------------------------------------
 
+const mockListPublicPosts = vi.fn()
 vi.mock('@/lib/server/domains/posts/post.public', () => ({
-  listPublicPosts: vi.fn(),
+  listPublicPosts: (...a: unknown[]) => mockListPublicPosts(...a),
   getAllUserVotedPostIds: vi.fn(),
 }))
 
+const mockPolicyActor = vi.fn()
 vi.mock('@/lib/server/functions/auth-helpers', () => ({
-  getOptionalAuth: vi.fn(),
+  getOptionalAuth: vi.fn().mockResolvedValue(null),
   requireAuth: vi.fn(),
   hasAuthCredentials: vi.fn().mockReturnValue(false),
-  policyActorFromAuth: vi.fn(),
+  policyActorFromAuth: (...a: unknown[]) => mockPolicyActor(...a),
 }))
 
 vi.mock('@/lib/server/functions/workspace', () => ({ getSettings: vi.fn() }))
@@ -166,6 +168,9 @@ vi.mock('@/lib/server/domains/embeddings/embedding.service', () => ({
 // Handler indices
 // ---------------------------------------------------------------------------
 
+const LIST_PUBLIC_POSTS = 0
+const TOGGLE_VOTE = 4
+const CREATE_PUBLIC_POST = 5
 const LIST_PUBLIC_ROADMAPS = 7
 const GET_PUBLIC_ROADMAP_POSTS = 8
 const GET_ROADMAP_POSTS_BY_STATUS = 9
@@ -421,6 +426,58 @@ describe('findSimilarPostsFn — portal-visibility gate', () => {
     expect(Array.isArray(result)).toBe(true)
   })
 
+  // Regression: the wrapper functions used to forward no actor, so the
+  // inner readers defaulted to ANONYMOUS_ACTOR. Authenticated and
+  // segment-member users saw only public-audience boards on the post list
+  // and the legacy roadmap-by-status view. Fix: resolve the actor on the
+  // server fn and pass it through.
+
+  it('listPublicPostsFn passes the resolved actor to listPublicPosts (G5)', async () => {
+    mockResolvePortalAccess.mockResolvedValue({ granted: true, reason: 'public' })
+    mockPolicyActor.mockResolvedValueOnce({
+      principalId: 'prn_user_x',
+      role: 'user',
+      principalType: 'user',
+      segmentIds: new Set(['seg_pro']),
+    })
+    mockListPublicPosts.mockResolvedValueOnce({ items: [], total: 0, hasMore: false })
+
+    await publicPostsHandlers[LIST_PUBLIC_POSTS]({
+      data: { sort: 'top', page: 1, limit: 10 },
+    })
+
+    expect(mockListPublicPosts).toHaveBeenCalledTimes(1)
+    const args = mockListPublicPosts.mock.calls[0][0] as { actor?: { role: string } }
+    expect(args.actor).toBeDefined()
+    expect(args.actor?.role).toBe('user')
+  })
+
+  it('getRoadmapPostsByStatusFn passes the resolved actor to getPublicRoadmapPostsPaginated (G5)', async () => {
+    mockResolvePortalAccess.mockResolvedValue({ granted: true, reason: 'public' })
+    mockPolicyActor.mockResolvedValueOnce({
+      principalId: 'prn_member',
+      role: 'member',
+      principalType: 'user',
+      segmentIds: new Set(),
+    })
+    mockGetPublicRoadmapPostsPaginated.mockResolvedValueOnce({
+      items: [],
+      total: 0,
+      hasMore: false,
+    })
+
+    await publicPostsHandlers[GET_ROADMAP_POSTS_BY_STATUS]({
+      data: { statusId: 'sta_x', page: 1, limit: 10 },
+    })
+
+    expect(mockGetPublicRoadmapPostsPaginated).toHaveBeenCalledTimes(1)
+    const args = mockGetPublicRoadmapPostsPaginated.mock.calls[0][0] as {
+      actor?: { role: string }
+    }
+    expect(args.actor).toBeDefined()
+    expect(args.actor?.role).toBe('member')
+  })
+
   it('joins boards on the FTS search so postViewFilter can resolve audience (G4)', async () => {
     // Regression: similar-search previously filtered only on
     // `isNull(deletedAt) AND isNull(canonicalPostId)`, leaking titles
@@ -438,5 +495,43 @@ describe('findSimilarPostsFn — portal-visibility gate', () => {
     // generateEmbedding returns null in this mock, so only the FTS chain
     // runs end-to-end here.)
     expect(mockInnerJoin).toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Write-path portal-visibility gates (G6)
+// ---------------------------------------------------------------------------
+//
+// Regression: createPublicPostFn, createCommentFn, and toggleVoteFn checked
+// per-board audience but never asked the portal-access resolver whether the
+// caller is allowed on the portal at all. On a private portal, any
+// authenticated principal with knowledge of a public-audience board id
+// could post / vote / comment without ever being granted portal access.
+// The fix calls resolvePortalAccessForRequest() at the top of each write
+// handler; denials short-circuit with an Unauthorized error.
+
+describe('write-path portal-visibility gates (G6)', () => {
+  it('createPublicPostFn calls the portal-access resolver before any side effects', async () => {
+    mockResolvePortalAccess.mockClear()
+    mockResolvePortalAccess.mockResolvedValue({ granted: false, reason: 'unauthorized' })
+
+    // The handler may throw downstream for unrelated reasons (no auth in
+    // mock state, etc.). We don't care: the assertion is solely that the
+    // portal resolver was consulted, since a denial there short-circuits
+    // every side effect that follows.
+    await publicPostsHandlers[CREATE_PUBLIC_POST]({
+      data: { boardId: 'brd_x', title: 'New post', content: '' },
+    }).catch(() => {})
+
+    expect(mockResolvePortalAccess).toHaveBeenCalled()
+  })
+
+  it('toggleVoteFn calls the portal-access resolver before any side effects', async () => {
+    mockResolvePortalAccess.mockClear()
+    mockResolvePortalAccess.mockResolvedValue({ granted: false, reason: 'unauthorized' })
+
+    await publicPostsHandlers[TOGGLE_VOTE]({ data: { postId: 'pst_x' } }).catch(() => {})
+
+    expect(mockResolvePortalAccess).toHaveBeenCalled()
   })
 })

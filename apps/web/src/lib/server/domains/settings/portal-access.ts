@@ -7,7 +7,8 @@
  * Phase 1: team-only gate (admin | member always pass).
  * Phase 2: allowed email-domain grant (verified email required).
  * Phase 3: accepted portal email-invite grant (verified email required).
- * Phase 4: allowed segment grant (authenticated; no emailVerified requirement).
+ * Phase 4: allowed segment grant (authenticated; emailVerified required to
+ *          prevent unverified email-rule matches from granting access).
  * Phase 5: widget sign-in grant (any portal-signed-in user when admin enables widgetSignIn).
  */
 
@@ -87,9 +88,10 @@ export interface PortalAccessContext {
    * Defaults to `false` so callers that don't consult the segment table
    * (e.g. legacy code) remain valid without changes.
    *
-   * Does NOT require emailVerified — segment membership is admin-curated
-   * (rule-based on user attributes the admin controls), and the segment
-   * evaluator is the trust anchor here.
+   * Requires `emailVerified=true` at the evaluator — dynamic segments
+   * can predicate on `email` without a verification guard, so an
+   * unverified attacker could otherwise enter via an admin-built
+   * email-based segment.
    */
   isInAllowedSegment?: boolean
 }
@@ -172,10 +174,15 @@ export function evaluatePortalAccess(ctx: PortalAccessContext): PortalAccessResu
 
   // 5. Allowed segment grant.
   //    An authenticated user who is a member of any segment the admin has
-  //    marked as portal-allowed is granted. Does NOT require emailVerified —
-  //    segment membership is admin-curated (rule-based on user attributes the
-  //    admin controls), and the segment evaluator is the trust anchor here.
-  if (ctx.isAuthenticated && (ctx.isInAllowedSegment ?? false)) {
+  //    marked as portal-allowed is granted. emailVerified MUST be true —
+  //    dynamic segments can predicate on `email` (eq/contains/ends_with/…)
+  //    and the evaluator joins users on `u.email` with no verification
+  //    guard. Without this check an attacker who signs up as
+  //    `victim@acme.com` and never verifies would walk into a private
+  //    portal whose admin configured an `email ends_with @acme.com`
+  //    segment in the allowlist. Same rationale as the domain and
+  //    invite branches above.
+  if (ctx.isAuthenticated && ctx.emailVerified && (ctx.isInAllowedSegment ?? false)) {
     return { granted: true, reason: 'segment' }
   }
 

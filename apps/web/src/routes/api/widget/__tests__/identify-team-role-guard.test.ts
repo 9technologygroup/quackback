@@ -86,6 +86,7 @@ vi.mock('@/lib/server/domains/users/user.attributes', () => ({
 
 vi.mock('@/lib/server/domains/segments/segment-membership.service', () => ({
   addMember: vi.fn(async () => undefined),
+  reconcileWidgetMemberships: vi.fn(async () => undefined),
 }))
 
 vi.mock('@quackback/ids', () => ({

@@ -631,6 +631,32 @@ describe('resendPortalInviteFn — TOCTOU resilience', () => {
     )
     expect(resentEvent).toBeUndefined()
   })
+
+  it('does NOT send a new email when the UPDATE loses the race (G8)', async () => {
+    // Regression: the resend path used to mint+send the magic link BEFORE
+    // running its TOCTOU-guarded UPDATE. A concurrent accept/cancel
+    // during the SMTP window meant the admin saw an error while the
+    // invitee already had a working magic link in their inbox — pointing
+    // at a row the server now considers terminal. The fix flips the
+    // ordering: claim the slot (UPDATE with status=pending + expiresAt
+    // guards) FIRST; mint+send only on a successful claim.
+    const futureDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
+    hoisted.mockDbQuery.invitation.findFirst.mockResolvedValue({
+      id: 'invite_1',
+      kind: 'portal',
+      status: 'pending',
+      email: 'user@example.com',
+      expiresAt: futureDate,
+    })
+    hoisted.mockSendPortalInviteEmail.mockResolvedValue({ sent: true })
+    // Lost the race — UPDATE matches no rows.
+    hoisted.mockDbReturning.mockResolvedValueOnce([])
+
+    await expect(resendHandler({ data: { inviteId: 'invite_1' } })).rejects.toThrow()
+
+    // The invitee must not receive a stale magic-link email.
+    expect(hoisted.mockSendPortalInviteEmail).not.toHaveBeenCalled()
+  })
 })
 
 // ---------------------------------------------------------------------------
