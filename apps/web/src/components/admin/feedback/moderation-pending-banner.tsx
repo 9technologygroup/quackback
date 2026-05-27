@@ -9,7 +9,7 @@ export function ModerationPendingBanner() {
   const pendingCount = data?.pendingCount ?? 0
   if (pendingCount <= 0) return null
 
-  const label = `${pendingCount} ${pendingCount === 1 ? 'post is' : 'posts are'} pending moderation`
+  const label = `${pendingCount} ${pendingCount === 1 ? 'item is' : 'items are'} pending moderation`
 
   return (
     <div className="max-w-5xl mx-auto w-full px-3 pt-3">
