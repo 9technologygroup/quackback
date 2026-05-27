@@ -138,6 +138,12 @@ vi.mock('@/lib/server/db', () => ({
       val,
     })
   ),
+  // T15 introduced boardAccessSchema at module-evaluation time; its tier
+  // enum reads these constants from the db barrel. Keep in sync with the
+  // real export — order matters for z.enum's error messages but not for
+  // validity since we only assert tier membership.
+  ACCESS_TIERS: ['anonymous', 'authenticated', 'segments', 'team'] as const,
+  ACCESS_TIER_RANK: { anonymous: 0, authenticated: 1, segments: 2, team: 3 } as const,
 }))
 
 vi.mock('@/lib/server/audit/log', () => ({

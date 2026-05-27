@@ -364,14 +364,26 @@ import { recordAuditEvent, actorFromAuth } from '@/lib/server/audit/log'
 
 const updateBoardAccessSchema = z.object({
   boardId: z.string(),
+  // Transitional: both `audience` and `access` are accepted while clients
+  // migrate. If both are present, `access` wins. After the UI rewrite (T21)
+  // the form sends `access` only; `audience` here is purely back-compat for
+  // legacy callers and gets dropped at T24 alongside the column itself.
   audience: audienceSchema.optional(),
+  access: boardAccessSchema.optional(),
 })
 
 /**
- * Update board.audience.
+ * Update board access policy.
  *
  * isAdmin-gated — granting/revoking access is policy-level work. Members can
  * moderate posts (approve/reject) but not change who sees the board.
+ *
+ * Two accepted input shapes during the audience → access transition:
+ *   - `access` (preferred, post-T16): per-action tier matrix written directly
+ *   - `audience` (legacy): old discriminated union; dual-writes into both
+ *     columns via audienceToAccess so canViewBoard stays consistent
+ * When both are supplied `access` wins and we DO NOT touch audience — the
+ * caller didn't ask to change it, and silently overwriting would lose state.
  */
 export const updateBoardAccessFn = createServerFn({ method: 'POST' })
   .inputValidator(updateBoardAccessSchema.parse)
@@ -386,10 +398,14 @@ export const updateBoardAccessFn = createServerFn({ method: 'POST' })
     if (!before) throw new NotFoundError('BOARD_NOT_FOUND', `Board ${data.boardId} not found`)
 
     const updates: Record<string, unknown> = {}
-    if (data.audience) {
-      // Dual-write until T16: keep the additive `access` column in lockstep
-      // with the legacy `audience` so canViewBoard (post-Phase 2) doesn't
-      // read stale tier data on every audience change.
+    if (data.access) {
+      // `access` is the authoritative input post-Phase 4. When provided
+      // directly it wins over an `audience` derivation and we leave the
+      // legacy audience column alone (T24 drops it entirely).
+      updates.access = data.access
+    } else if (data.audience) {
+      // Dual-write back-compat path (PR1): keep audience and the derived
+      // access matrix in lockstep so canViewBoard never reads stale tiers.
       updates.audience = data.audience
       updates.access = audienceToAccess(data.audience)
     }
@@ -400,7 +416,18 @@ export const updateBoardAccessFn = createServerFn({ method: 'POST' })
       .set(updates)
       .where(eq(boards.id, data.boardId as BoardId))
 
-    if (data.audience) {
+    // Prefer the more specific 'board.access.changed' when access was the
+    // input; fall back to the audience event for the legacy path so audit
+    // reviewers can tell which API surface the change came from.
+    if (data.access) {
+      await recordAuditEvent({
+        event: 'board.access.changed',
+        actor: actorFromAuth(auth),
+        target: { type: 'board', id: data.boardId },
+        before: { access: before.access },
+        after: { access: data.access },
+      })
+    } else if (data.audience) {
       await recordAuditEvent({
         event: 'board.audience.changed',
         actor: actorFromAuth(auth),

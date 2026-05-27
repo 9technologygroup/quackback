@@ -71,6 +71,9 @@ vi.mock('@/lib/server/db', () => ({
   eq: vi.fn((col: { __col: string }, val: unknown) => ({ kind: 'eq', col: col.__col, val })),
   and: vi.fn((...conds: unknown[]) => ({ kind: 'and', conds })),
   isNull: vi.fn((col: { __col: string }) => ({ kind: 'isNull', col: col.__col })),
+  // T15's boardAccessSchema in boards.ts reads these at module-eval time.
+  ACCESS_TIERS: ['anonymous', 'authenticated', 'segments', 'team'] as const,
+  ACCESS_TIER_RANK: { anonymous: 0, authenticated: 1, segments: 2, team: 3 } as const,
 }))
 
 vi.mock('@/lib/shared/roles', () => ({
