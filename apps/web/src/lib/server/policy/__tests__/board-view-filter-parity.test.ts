@@ -163,6 +163,9 @@ interface SeededBoard {
 let activeDb: Database | null = null
 let closeDb: (() => Promise<void>) | null = null
 const seeded: SeededBoard[] = []
+// Soft-deleted board — every actor (including team) should see it filtered out
+// by boardViewFilter, since each branch now ANDs isNull(boards.deletedAt).
+let deletedBoardId: BoardId | null = null
 const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 // Resolve DB availability synchronously-ish via a top-level await
@@ -188,6 +191,18 @@ describe.skipIf(!dbAvailable)('boardViewFilter ↔ canViewBoard parity (executio
       })
       seeded.push({ id, name, access })
     }
+    // Seed a soft-deleted board so we can prove boardViewFilter excludes
+    // it regardless of actor. Access tier doesn't matter — anonymous is
+    // the most permissive, so if even that branch filters it, all do.
+    const deletedId = createId('board') as BoardId
+    await activeDb.insert(boards).values({
+      id: deletedId,
+      slug: `parity-${runSuffix}-deleted`,
+      name: 'parity:deleted',
+      access: mkAccess('anonymous'),
+      deletedAt: new Date(),
+    })
+    deletedBoardId = deletedId
   })
 
   afterAll(async () => {
@@ -195,6 +210,9 @@ describe.skipIf(!dbAvailable)('boardViewFilter ↔ canViewBoard parity (executio
     try {
       for (const b of seeded) {
         await activeDb.delete(boards).where(eq(boards.id, b.id))
+      }
+      if (deletedBoardId) {
+        await activeDb.delete(boards).where(eq(boards.id, deletedBoardId))
       }
     } finally {
       await closeDb?.()
@@ -233,4 +251,20 @@ describe.skipIf(!dbAvailable)('boardViewFilter ↔ canViewBoard parity (executio
       })
     }
   }
+
+  describe('boardViewFilter excludes soft-deleted boards', () => {
+    for (const [actorName, actor] of Object.entries(actors)) {
+      it(`actor=${actorName} sees 0 rows for a soft-deleted board`, async () => {
+        if (!activeDb) return
+        expect(deletedBoardId, 'deleted board not seeded').not.toBeNull()
+        if (!deletedBoardId) return
+
+        const matchedRows = await activeDb
+          .select({ id: boards.id })
+          .from(boards)
+          .where(and(eq(boards.id, deletedBoardId), boardViewFilter(actor)))
+        expect(matchedRows.length).toBe(0)
+      })
+    }
+  })
 })

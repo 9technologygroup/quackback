@@ -71,7 +71,10 @@ export async function listPublicBoardsWithStats(
         posts,
         and(eq(posts.boardId, boards.id), isNull(posts.deletedAt), postViewFilter(actor))
       )
-      .where(and(boardViewFilter(actor), isNull(boards.deletedAt)))
+      // boardViewFilter embeds isNull(boards.deletedAt) in every branch — no
+      // outer guard needed here. Callers of postViewFilter still need their
+      // own guard because postViewFilter's team branch skips boardViewFilter.
+      .where(boardViewFilter(actor))
       .groupBy(boards.id)
       .orderBy(boards.name)
 
