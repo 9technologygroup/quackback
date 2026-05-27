@@ -14,7 +14,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { z } from 'zod'
-import { db, posts, boards, principal, eq, and, isNull, desc, sql } from '@/lib/server/db'
+import { db, posts, comments, boards, principal, eq, and, isNull, desc, sql } from '@/lib/server/db'
 import { requireAuth } from '@/lib/server/functions/auth-helpers'
 import { recordAuditEvent, actorFromAuth } from '@/lib/server/audit/log'
 import { isTeamMember } from '@/lib/shared/roles'
@@ -46,6 +46,31 @@ export const listPendingPostsFn = createServerFn({ method: 'GET' }).handler(asyn
     .where(and(eq(posts.moderationState, 'pending'), isNull(posts.deletedAt)))
     .orderBy(desc(posts.createdAt))
   return { posts: rows }
+})
+
+export const listPendingCommentsFn = createServerFn({ method: 'GET' }).handler(async () => {
+  const auth = await requireAuth()
+  if (!isTeamMember(auth.principal.role)) {
+    throw new ForbiddenError('FORBIDDEN', 'Team only')
+  }
+  const rows = await db
+    .select({
+      id: comments.id,
+      content: comments.content,
+      createdAt: comments.createdAt,
+      postId: comments.postId,
+      postTitle: posts.title,
+      boardName: boards.name,
+      boardSlug: boards.slug,
+      authorName: principal.displayName,
+    })
+    .from(comments)
+    .innerJoin(posts, eq(comments.postId, posts.id))
+    .innerJoin(boards, eq(posts.boardId, boards.id))
+    .leftJoin(principal, eq(comments.principalId, principal.id))
+    .where(and(eq(comments.moderationState, 'pending'), isNull(comments.deletedAt)))
+    .orderBy(desc(comments.createdAt))
+  return { comments: rows }
 })
 
 export const approvePostFn = createServerFn({ method: 'POST' })
