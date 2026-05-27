@@ -79,9 +79,9 @@ async function collectUrls(baseUrl: string): Promise<SitemapUrl[]> {
   }
 
   // Published, non-merged posts on public, non-deleted boards.
-  // Sitemap is anonymous-public by definition — only audience.kind='public'
-  // boards belong here. Other audiences require auth and should not be
-  // discoverable via Google.
+  // Sitemap is anonymous-public by definition — only boards whose view
+  // tier is 'anonymous' belong here. Stricter tiers require auth and
+  // should not be discoverable via Google.
   const publicPosts = await db.query.posts.findMany({
     where: (table, { and, isNull }) =>
       and(
@@ -92,13 +92,13 @@ async function collectUrls(baseUrl: string): Promise<SitemapUrl[]> {
     columns: { id: true, updatedAt: true },
     with: {
       board: {
-        columns: { slug: true, audience: true, deletedAt: true },
+        columns: { slug: true, access: true, deletedAt: true },
       },
     },
   })
 
   for (const post of publicPosts) {
-    if (post.board?.slug && post.board.audience?.kind === 'public' && !post.board.deletedAt) {
+    if (post.board?.slug && post.board.access?.view === 'anonymous' && !post.board.deletedAt) {
       urls.push({
         loc: `${baseUrl}/b/${post.board.slug}/posts/${post.id}`,
         lastmod: toIsoDateOnly(post.updatedAt),

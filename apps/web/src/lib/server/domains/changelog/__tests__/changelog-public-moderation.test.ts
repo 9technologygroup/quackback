@@ -47,16 +47,35 @@ vi.mock('@/lib/server/db', () => ({
   inArray: vi.fn((col, vals) => ({ kind: 'inArray', col, vals })),
 }))
 
+type LinkedPostAudience =
+  | { kind: 'public' }
+  | { kind: 'authenticated' }
+  | { kind: 'team' }
+  | { kind: 'segments'; segmentIds: string[] }
+
+function audienceToView(
+  audience: LinkedPostAudience
+): 'anonymous' | 'authenticated' | 'team' | 'segments' {
+  switch (audience.kind) {
+    case 'public':
+      return 'anonymous'
+    case 'authenticated':
+      return 'authenticated'
+    case 'team':
+      return 'team'
+    case 'segments':
+      return 'segments'
+  }
+}
+
 function linkedPost(opts: {
   id: string
   moderationState: 'published' | 'pending' | 'spam' | 'archived' | 'closed'
   deletedAt?: Date | null
-  audience?:
-    | { kind: 'public' }
-    | { kind: 'authenticated' }
-    | { kind: 'team' }
-    | { kind: 'segments'; segmentIds: string[] }
+  audience?: LinkedPostAudience
 }) {
+  const audience = opts.audience ?? { kind: 'public' }
+  const view = audienceToView(audience)
   return {
     changelogEntryId: 'cl_1' as ChangelogId,
     post: {
@@ -67,7 +86,16 @@ function linkedPost(opts: {
       statusId: null,
       deletedAt: opts.deletedAt ?? null,
       moderationState: opts.moderationState,
-      board: { slug: 'feedback', audience: opts.audience ?? { kind: 'public' } },
+      board: {
+        slug: 'feedback',
+        access: {
+          view,
+          comment: view,
+          submit: view,
+          segmentIds: audience.kind === 'segments' ? audience.segmentIds : [],
+          approval: { posts: false, comments: false },
+        },
+      },
     },
   }
 }
