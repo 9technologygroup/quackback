@@ -65,15 +65,28 @@ type Post = {
 }
 type Board = { id: string; name: string; deletedAt?: Date | null }
 type Principal = { id: string; displayName: string | null }
+// Comment rows for the comment-moderation mutation paths. Optional so existing
+// post-only tests don't have to initialize the comments slot.
+type Comment = {
+  id: string
+  postId: string
+  moderationState: string
+  deletedAt: Date | null
+  principalId: string
+  content: string
+  createdAt: Date
+}
 const dbState: {
   posts: Post[]
   boards: Board[]
   principals: Principal[]
+  comments: Comment[]
   auditEvents: Array<Record<string, unknown>>
 } = {
   posts: [],
   boards: [],
   principals: [],
+  comments: [],
   auditEvents: [],
 }
 
@@ -98,32 +111,72 @@ interface ColRef {
 
 // Conditions supported by the mock query engine.
 type EqCondition = { kind: 'eq'; col: ColRef; val: unknown }
+// eq can also be a column-to-column comparison (used inside EXISTS subqueries
+// to correlate outer/inner rows, e.g. eq(boards.id, posts.boardId)).
+type EqColCondition = { kind: 'eqCol'; left: ColRef; right: ColRef }
 type IsNullCondition = { kind: 'isNull'; col: ColRef }
 type AndCondition = { kind: 'and'; conditions: PostCondition[] }
-type PostCondition = EqCondition | IsNullCondition | AndCondition
+type ExistsCondition = { kind: 'exists'; subquery: SubqueryDescriptor }
+type PostCondition = EqCondition | EqColCondition | IsNullCondition | AndCondition | ExistsCondition
 
-// Resolve a ColRef against a joined row (posts + boards + principal)
-type JoinedRow = Post & { __board: Board; __principal: Principal | undefined }
+// A subquery captured by the mocked select chain — carries the source table
+// and the WHERE condition so EXISTS can evaluate it against the outer row.
+type SubqueryDescriptor = { __subquery: true; from: string; cond: PostCondition | null }
 
-function getVal(row: JoinedRow, col: ColRef): unknown {
-  if (col.__table === 'posts') return (row as unknown as Record<string, unknown>)[col.__col]
-  if (col.__table === 'boards')
-    return (row.__board as unknown as Record<string, unknown>)[col.__col]
-  if (col.__table === 'principal')
-    return row.__principal
-      ? (row.__principal as unknown as Record<string, unknown>)[col.__col]
-      : undefined
-  return undefined
+// A row context is a merged map of table-name → row data. EXISTS subqueries
+// extend the outer context with inner rows so correlated column refs resolve.
+type RowContext = {
+  posts?: Post
+  boards?: Board
+  principal?: Principal
+  comments?: Comment
 }
 
-function matchRow(row: JoinedRow, c: PostCondition): boolean {
-  if (c.kind === 'eq') return getVal(row, c.col) === c.val
+// Resolve a ColRef against a row context (any subset of tables present).
+function getVal(ctx: RowContext, col: ColRef): unknown {
+  const table = ctx[col.__table as keyof RowContext] as Record<string, unknown> | undefined
+  return table ? table[col.__col] : undefined
+}
+
+// Pick from in-memory state by table name. Used by EXISTS to iterate rows.
+function rowsFor(table: string): Array<Record<string, unknown>> {
+  if (table === 'posts') return dbState.posts as unknown as Array<Record<string, unknown>>
+  if (table === 'boards') return dbState.boards as unknown as Array<Record<string, unknown>>
+  if (table === 'comments') return dbState.comments as unknown as Array<Record<string, unknown>>
+  if (table === 'principal') return dbState.principals as unknown as Array<Record<string, unknown>>
+  return []
+}
+
+function matchRow(ctx: RowContext, c: PostCondition): boolean {
+  if (c.kind === 'eq') return getVal(ctx, c.col) === c.val
+  if (c.kind === 'eqCol') return getVal(ctx, c.left) === getVal(ctx, c.right)
   if (c.kind === 'isNull') {
-    const v = getVal(row, c.col)
+    const v = getVal(ctx, c.col)
     return v === null || v === undefined
   }
-  if (c.kind === 'and') return c.conditions.every((sub) => matchRow(row, sub))
+  if (c.kind === 'and') return c.conditions.every((sub) => matchRow(ctx, sub))
+  if (c.kind === 'exists') {
+    const inner = rowsFor(c.subquery.from)
+    return inner.some((row) => {
+      const innerCtx: RowContext = {
+        ...ctx,
+        [c.subquery.from]: row,
+      } as RowContext
+      return c.subquery.cond === null ? true : matchRow(innerCtx, c.subquery.cond)
+    })
+  }
   return false
+}
+
+// Legacy adapter — older tests pass JoinedRow shapes to the mock's update path.
+// Translate the joined-row into a RowContext.
+type JoinedRow = Post & { __board: Board; __principal: Principal | undefined }
+function ctxFromJoined(row: JoinedRow): RowContext {
+  return {
+    posts: row as unknown as Post,
+    boards: row.__board,
+    principal: row.__principal,
+  }
 }
 
 // The select query mock builds a fluent chain:
@@ -134,26 +187,33 @@ type ProjectionSpec = Record<string, ColRef>
 function buildSelectChain(
   spec: ProjectionSpec,
   joinedRows: JoinedRow[] | null,
-  cond: PostCondition | null
+  cond: PostCondition | null,
+  fromTable: string | null
 ) {
   const resolve = () => {
     const rows = joinedRows ?? []
-    const filtered = cond ? rows.filter((r) => matchRow(r, cond)) : rows
+    const filtered = cond ? rows.filter((r) => matchRow(ctxFromJoined(r), cond)) : rows
     return filtered.map((r) => {
       const out: Record<string, unknown> = {}
       for (const [key, col] of Object.entries(spec)) {
-        out[key] = getVal(r, col)
+        out[key] = getVal(ctxFromJoined(r), col)
       }
       return out
     })
   }
+  // Carry __subquery metadata so exists() can lift this chain into an
+  // ExistsCondition without needing the inner cond evaluated yet.
+  const subqueryMarker: SubqueryDescriptor | null = fromTable
+    ? { __subquery: true, from: fromTable, cond }
+    : null
   return {
     orderBy: vi.fn(() => Promise.resolve(resolve())),
-    where: vi.fn((c: PostCondition) => buildSelectChain(spec, joinedRows, c)),
+    where: vi.fn((c: PostCondition) => buildSelectChain(spec, joinedRows, c, fromTable)),
+    __subquery: subqueryMarker,
   }
 }
 
-function buildJoinChain(spec: ProjectionSpec, rows: JoinedRow[]) {
+function buildJoinChain(spec: ProjectionSpec, rows: JoinedRow[], fromTable: string | null) {
   const chain: Record<string, unknown> = {}
 
   chain.innerJoin = vi.fn((_table: unknown, _on: unknown) => {
@@ -162,7 +222,7 @@ function buildJoinChain(spec: ProjectionSpec, rows: JoinedRow[]) {
       const board = dbState.boards.find((b) => b.id === r.boardId)
       return board ? [{ ...r, __board: board }] : []
     })
-    return buildJoinChain(spec, withBoards)
+    return buildJoinChain(spec, withBoards, fromTable)
   })
 
   chain.leftJoin = vi.fn((_table: unknown, _on: unknown) => {
@@ -171,10 +231,10 @@ function buildJoinChain(spec: ProjectionSpec, rows: JoinedRow[]) {
       ...r,
       __principal: dbState.principals.find((p) => p.id === r.principalId),
     }))
-    return buildJoinChain(spec, enriched)
+    return buildJoinChain(spec, enriched, fromTable)
   })
 
-  chain.where = vi.fn((c: PostCondition) => buildSelectChain(spec, rows, c))
+  chain.where = vi.fn((c: PostCondition) => buildSelectChain(spec, rows, c, fromTable))
 
   return chain as {
     innerJoin: ReturnType<typeof vi.fn>
@@ -199,51 +259,114 @@ vi.mock('@/lib/server/domains/posts/post.announce', () => ({
 
 const mockGetPortalConfig = hoisted.mockGetPortalConfig
 
+// Production code passes the ColRef containers (`posts`/`comments`/`boards`)
+// to `.from()` and `.update()`. Each container is tagged with a __tableName
+// (see the table mocks below) so the mock can dispatch on identity.
+function tableNameOf(t: unknown): string {
+  if (t && typeof t === 'object' && '__tableName' in t) {
+    return (t as { __tableName: string }).__tableName
+  }
+  return ''
+}
+
 vi.mock('@/lib/server/db', () => ({
   db: {
     select: vi.fn((spec: ProjectionSpec) => ({
-      from: vi.fn((_table: unknown) => {
-        const baseRows: JoinedRow[] = dbState.posts.map((p) => ({
-          ...p,
-          __board: dbState.boards.find((b) => b.id === p.boardId) ?? { id: '', name: '' },
-          __principal: dbState.principals.find((pr) => pr.id === p.principalId),
-        }))
-        return buildJoinChain(spec, baseRows)
+      from: vi.fn((table: unknown) => {
+        const fromName = tableNameOf(table)
+        // The listPending* queries always start from posts (or comments) and
+        // join through boards. For the post path we materialise post-joined
+        // rows for backward compatibility with the existing list-query tests.
+        // For subqueries used inside EXISTS, .from(boards) / .from(posts)
+        // returns a chain that resolves via the __subquery descriptor — the
+        // joined rows are unused (no enrichment needed for an EXISTS check).
+        if (fromName === 'posts') {
+          const baseRows: JoinedRow[] = dbState.posts.map((p) => ({
+            ...p,
+            __board: dbState.boards.find((b) => b.id === p.boardId) ?? { id: '', name: '' },
+            __principal: dbState.principals.find((pr) => pr.id === p.principalId),
+          }))
+          return buildJoinChain(spec, baseRows, fromName)
+        }
+        if (fromName === 'comments') {
+          // For the comments list path we synthesise joined rows where the
+          // outer Post fields are filled from the comment's parent post so
+          // the projection spec (which references posts.title / boards.name)
+          // resolves cleanly.
+          const baseRows: JoinedRow[] = dbState.comments.map((c) => {
+            const parentPost = dbState.posts.find((p) => p.id === c.postId)
+            const parentBoard = parentPost
+              ? dbState.boards.find((b) => b.id === parentPost.boardId)
+              : undefined
+            // The list-comments tests aren't part of this fix, so a minimal
+            // synthesis here is fine — what matters for EXISTS evaluation is
+            // that dbState.comments is the source of truth.
+            return {
+              ...(parentPost ?? ({} as Post)),
+              ...c,
+              __board: parentBoard ?? { id: '', name: '' },
+              __principal: dbState.principals.find((pr) => pr.id === c.principalId),
+            } as JoinedRow
+          })
+          return buildJoinChain(spec, baseRows, fromName)
+        }
+        // Default fallback for `from(boards)` subqueries etc — no joined
+        // rows needed; the chain only carries the __subquery descriptor.
+        return buildJoinChain(spec, [], fromName)
       }),
     })),
     query: {
       posts: {
         findFirst: vi.fn(async (args: { where: PostCondition }) => {
-          const rows: JoinedRow[] = dbState.posts.map((p) => ({
-            ...p,
-            __board: { id: '', name: '' },
-            __principal: undefined,
-          }))
-          return rows.find((r) => matchRow(r, args.where))
+          return dbState.posts.find((p) => matchRow({ posts: p }, args.where))
+        }),
+      },
+      comments: {
+        findFirst: vi.fn(async (args: { where: PostCondition }) => {
+          return dbState.comments.find((c) => matchRow({ comments: c }, args.where))
         }),
       },
     },
-    update: vi.fn(() => ({
-      set: vi.fn((patch: Partial<Post>) => ({
-        where: vi.fn((cond: PostCondition) => ({
-          returning: vi.fn(() => {
-            const rows: JoinedRow[] = dbState.posts.map((p) => ({
-              ...p,
-              __board: { id: '', name: '' },
-              __principal: undefined,
-            }))
-            const matched = rows.filter((r) => matchRow(r, cond))
-            dbState.posts = dbState.posts.map((p) => {
-              const r: JoinedRow = { ...p, __board: { id: '', name: '' }, __principal: undefined }
-              return matchRow(r, cond) ? { ...p, ...patch } : p
-            })
-            return Promise.resolve(matched.map((p) => ({ id: p.id })))
-          }),
+    update: vi.fn((table: unknown) => {
+      const targetName = tableNameOf(table)
+      return {
+        set: vi.fn((patch: Partial<Post> | Partial<Comment>) => ({
+          where: vi.fn((cond: PostCondition) => ({
+            returning: vi.fn(() => {
+              if (targetName === 'comments') {
+                const matched: Comment[] = []
+                dbState.comments = dbState.comments.map((c) => {
+                  if (matchRow({ comments: c }, cond)) {
+                    matched.push(c)
+                    return { ...c, ...(patch as Partial<Comment>) }
+                  }
+                  return c
+                })
+                return Promise.resolve(matched.map((c) => ({ id: c.id })))
+              }
+              // Default: posts. Build a minimal context that carries the
+              // post row so the EXISTS subqueries can correlate on
+              // posts.boardId etc.
+              const matched: Post[] = []
+              dbState.posts = dbState.posts.map((p) => {
+                if (matchRow({ posts: p }, cond)) {
+                  matched.push(p)
+                  return { ...p, ...(patch as Partial<Post>) }
+                }
+                return p
+              })
+              return Promise.resolve(matched.map((p) => ({ id: p.id })))
+            }),
+          })),
         })),
-      })),
-    })),
+      }
+    }),
   },
+  // Table mocks: carry the column refs PLUS a __tableName tag so the
+  // production code's `.from(posts)` / `.update(posts)` can resolve table
+  // identity without inspecting Drizzle internals.
   posts: {
+    __tableName: 'posts',
     id: { __table: 'posts', __col: 'id' } satisfies ColRef,
     moderationState: { __table: 'posts', __col: 'moderationState' } satisfies ColRef,
     deletedAt: { __table: 'posts', __col: 'deletedAt' } satisfies ColRef,
@@ -254,12 +377,14 @@ vi.mock('@/lib/server/db', () => ({
     createdAt: { __table: 'posts', __col: 'createdAt' } satisfies ColRef,
   },
   boards: {
+    __tableName: 'boards',
     id: { __table: 'boards', __col: 'id' } satisfies ColRef,
     name: { __table: 'boards', __col: 'name' } satisfies ColRef,
     slug: { __table: 'boards', __col: 'slug' } satisfies ColRef,
     deletedAt: { __table: 'boards', __col: 'deletedAt' } satisfies ColRef,
   },
   comments: {
+    __tableName: 'comments',
     id: { __table: 'comments', __col: 'id' } satisfies ColRef,
     moderationState: { __table: 'comments', __col: 'moderationState' } satisfies ColRef,
     deletedAt: { __table: 'comments', __col: 'deletedAt' } satisfies ColRef,
@@ -269,18 +394,31 @@ vi.mock('@/lib/server/db', () => ({
     createdAt: { __table: 'comments', __col: 'createdAt' } satisfies ColRef,
   },
   principal: {
+    __tableName: 'principal',
     id: { __table: 'principal', __col: 'id' } satisfies ColRef,
     displayName: { __table: 'principal', __col: 'displayName' } satisfies ColRef,
   },
-  eq: vi.fn(
-    (col: ColRef, val: unknown): EqCondition => ({
-      kind: 'eq',
-      col,
-      val,
-    })
-  ),
+  // eq: supports both column-to-literal (the common case) and
+  // column-to-column (correlated EXISTS subqueries).
+  eq: vi.fn((col: ColRef, val: unknown): EqCondition | EqColCondition => {
+    if (val && typeof val === 'object' && '__table' in val && '__col' in val) {
+      return { kind: 'eqCol', left: col, right: val as ColRef }
+    }
+    return { kind: 'eq', col, val }
+  }),
   and: vi.fn((...conditions: PostCondition[]): AndCondition => ({ kind: 'and', conditions })),
   isNull: vi.fn((col: ColRef): IsNullCondition => ({ kind: 'isNull', col })),
+  exists: vi.fn((subqueryChain: { __subquery: SubqueryDescriptor | null }): ExistsCondition => {
+    // The select chain stashes its from-table + final WHERE on
+    // __subquery; if absent (e.g. a bare select without .from().where())
+    // the EXISTS check is vacuously true (matches PostgreSQL semantics
+    // for an empty subquery shape — though we'd never hit this in this
+    // codebase).
+    if (!subqueryChain.__subquery) {
+      throw new Error('exists() called without a subquery descriptor')
+    }
+    return { kind: 'exists', subquery: subqueryChain.__subquery }
+  }),
   desc: vi.fn((col: ColRef) => col),
   sql: vi.fn(),
 }))
@@ -299,11 +437,9 @@ function listPendingComments(): Handler {
 function approve(): Handler {
   return hoisted.handlersByIndex[2]
 }
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- accessor reserved for forthcoming comment-moderation tests; index slot must stay correct
 function approveComment(): Handler {
   return hoisted.handlersByIndex[3]
 }
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- accessor reserved for forthcoming comment-moderation tests; index slot must stay correct
 function rejectComment(): Handler {
   return hoisted.handlersByIndex[4]
 }
@@ -343,8 +479,13 @@ const POST_DEFAULTS = {
 
 beforeEach(() => {
   dbState.posts = []
-  dbState.boards = []
+  // Seed the default board referenced by POST_DEFAULTS.boardId so the
+  // approve/reject TOCTOU EXISTS subqueries (which require an undeleted
+  // parent board) succeed for the bulk of tests. Tests that need a
+  // soft-deleted board override dbState.boards explicitly.
+  dbState.boards = [{ id: 'b1', name: 'Default', deletedAt: null }]
   dbState.principals = []
+  dbState.comments = []
   dbState.auditEvents = []
   mockRequireAuth.mockReset()
   mockGetPortalConfig.mockReset()
@@ -550,6 +691,108 @@ describe('rejectPostFn', () => {
     mockRequireAuth.mockResolvedValue(AUTH_MEMBER)
     await reject()({ data: { postId: 'p1' } })
     expect(dbState.posts[0].deletedAt).toBeInstanceOf(Date)
+  })
+})
+
+// ----------------------------------------------------------------------
+// TOCTOU guards on the four mutation handlers
+//
+// The list/count queries filter through parent .deletedAt (board for posts,
+// post+board for comments). The guarded UPDATE WHERE clauses must apply
+// the same filter, otherwise a stale moderation queue can mutate items
+// whose parent has been soft-deleted between display and click.
+// ----------------------------------------------------------------------
+
+describe('mutation TOCTOU guards — parent-deletedAt in the UPDATE WHERE', () => {
+  const COMMENT_DEFAULTS = {
+    postId: 'p1',
+    principalId: 'pr1',
+    content: 'C',
+    createdAt: new Date('2024-01-01'),
+  }
+
+  it('approvePostFn refuses to publish when the parent board is soft-deleted', async () => {
+    dbState.boards = [{ id: 'b1', name: 'Archived', deletedAt: new Date('2024-06-01') }]
+    dbState.posts = [{ ...POST_DEFAULTS, id: 'p1', moderationState: 'pending', deletedAt: null }]
+    mockRequireAuth.mockResolvedValue(AUTH_ADMIN)
+    await expect(approve()({ data: { postId: 'p1' } })).rejects.toBeInstanceOf(ConflictError)
+    // The post must NOT have flipped to published — the EXISTS guard fires
+    // the same POST_NOT_PENDING semantic the moderator's queue uses.
+    expect(dbState.posts[0].moderationState).toBe('pending')
+  })
+
+  it('rejectPostFn refuses to soft-delete when the parent board is soft-deleted', async () => {
+    dbState.boards = [{ id: 'b1', name: 'Archived', deletedAt: new Date('2024-06-01') }]
+    dbState.posts = [{ ...POST_DEFAULTS, id: 'p1', moderationState: 'pending', deletedAt: null }]
+    mockRequireAuth.mockResolvedValue(AUTH_ADMIN)
+    await expect(reject()({ data: { postId: 'p1' } })).rejects.toBeInstanceOf(ConflictError)
+    expect(dbState.posts[0].deletedAt).toBeNull()
+  })
+
+  it('approveCommentFn refuses to publish when the parent post is soft-deleted', async () => {
+    dbState.boards = [{ id: 'b1', name: 'Active', deletedAt: null }]
+    dbState.posts = [
+      {
+        ...POST_DEFAULTS,
+        id: 'p1',
+        moderationState: 'published',
+        deletedAt: new Date('2024-06-01'),
+      },
+    ]
+    dbState.comments = [
+      { ...COMMENT_DEFAULTS, id: 'c1', moderationState: 'pending', deletedAt: null },
+    ]
+    mockRequireAuth.mockResolvedValue(AUTH_ADMIN)
+    await expect(approveComment()({ data: { commentId: 'c1' } })).rejects.toBeInstanceOf(
+      ConflictError
+    )
+    expect(dbState.comments[0].moderationState).toBe('pending')
+  })
+
+  it('approveCommentFn refuses to publish when the grandparent board is soft-deleted', async () => {
+    dbState.boards = [{ id: 'b1', name: 'Archived', deletedAt: new Date('2024-06-01') }]
+    dbState.posts = [{ ...POST_DEFAULTS, id: 'p1', moderationState: 'published', deletedAt: null }]
+    dbState.comments = [
+      { ...COMMENT_DEFAULTS, id: 'c1', moderationState: 'pending', deletedAt: null },
+    ]
+    mockRequireAuth.mockResolvedValue(AUTH_ADMIN)
+    await expect(approveComment()({ data: { commentId: 'c1' } })).rejects.toBeInstanceOf(
+      ConflictError
+    )
+    expect(dbState.comments[0].moderationState).toBe('pending')
+  })
+
+  it('rejectCommentFn refuses to soft-delete when the parent post is soft-deleted', async () => {
+    dbState.boards = [{ id: 'b1', name: 'Active', deletedAt: null }]
+    dbState.posts = [
+      {
+        ...POST_DEFAULTS,
+        id: 'p1',
+        moderationState: 'published',
+        deletedAt: new Date('2024-06-01'),
+      },
+    ]
+    dbState.comments = [
+      { ...COMMENT_DEFAULTS, id: 'c1', moderationState: 'pending', deletedAt: null },
+    ]
+    mockRequireAuth.mockResolvedValue(AUTH_ADMIN)
+    await expect(rejectComment()({ data: { commentId: 'c1' } })).rejects.toBeInstanceOf(
+      ConflictError
+    )
+    expect(dbState.comments[0].deletedAt).toBeNull()
+  })
+
+  it('approveCommentFn succeeds when parent post and board are both live', async () => {
+    // Sanity: with valid parents the guarded UPDATE matches and the
+    // comment flips to published.
+    dbState.boards = [{ id: 'b1', name: 'Active', deletedAt: null }]
+    dbState.posts = [{ ...POST_DEFAULTS, id: 'p1', moderationState: 'published', deletedAt: null }]
+    dbState.comments = [
+      { ...COMMENT_DEFAULTS, id: 'c1', moderationState: 'pending', deletedAt: null },
+    ]
+    mockRequireAuth.mockResolvedValue(AUTH_ADMIN)
+    await approveComment()({ data: { commentId: 'c1' } })
+    expect(dbState.comments[0].moderationState).toBe('published')
   })
 })
 

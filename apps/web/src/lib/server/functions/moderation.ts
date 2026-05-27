@@ -14,7 +14,19 @@
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { z } from 'zod'
-import { db, posts, comments, boards, principal, eq, and, isNull, desc, sql } from '@/lib/server/db'
+import {
+  db,
+  posts,
+  comments,
+  boards,
+  principal,
+  eq,
+  and,
+  isNull,
+  desc,
+  sql,
+  exists,
+} from '@/lib/server/db'
 import { requireAuth } from '@/lib/server/functions/auth-helpers'
 import { recordAuditEvent, actorFromAuth } from '@/lib/server/audit/log'
 import { isTeamMember } from '@/lib/shared/roles'
@@ -103,7 +115,16 @@ export const approvePostFn = createServerFn({ method: 'POST' })
         and(
           eq(posts.id, data.postId as never),
           eq(posts.moderationState, 'pending'),
-          isNull(posts.deletedAt)
+          isNull(posts.deletedAt),
+          // Block ghost-publishing into a soft-deleted board. The LIST/COUNT
+          // queries already filter through boards.deletedAt; this closes the
+          // TOCTOU window between queue display and the guarded UPDATE.
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(boards)
+              .where(and(eq(boards.id, posts.boardId), isNull(boards.deletedAt)))
+          )
         )
       )
       .returning({ id: posts.id })
@@ -151,7 +172,27 @@ export const approveCommentFn = createServerFn({ method: 'POST' })
         and(
           eq(comments.id, data.commentId as never),
           eq(comments.moderationState, 'pending'),
-          isNull(comments.deletedAt)
+          isNull(comments.deletedAt),
+          // Block approval when the parent post or its board is soft-deleted.
+          // Matches the parent-deletedAt filter already applied to the
+          // LIST/COUNT queries; closes the TOCTOU window in the guarded UPDATE.
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(posts)
+              .where(
+                and(
+                  eq(posts.id, comments.postId),
+                  isNull(posts.deletedAt),
+                  exists(
+                    db
+                      .select({ one: sql`1` })
+                      .from(boards)
+                      .where(and(eq(boards.id, posts.boardId), isNull(boards.deletedAt)))
+                  )
+                )
+              )
+          )
         )
       )
       .returning({ id: comments.id })
@@ -188,7 +229,26 @@ export const rejectCommentFn = createServerFn({ method: 'POST' })
         and(
           eq(comments.id, data.commentId as never),
           eq(comments.moderationState, 'pending'),
-          isNull(comments.deletedAt)
+          isNull(comments.deletedAt),
+          // Match the LIST/COUNT parent-deletedAt filter so reject can't write
+          // to a comment whose parent post or board has been soft-deleted.
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(posts)
+              .where(
+                and(
+                  eq(posts.id, comments.postId),
+                  isNull(posts.deletedAt),
+                  exists(
+                    db
+                      .select({ one: sql`1` })
+                      .from(boards)
+                      .where(and(eq(boards.id, posts.boardId), isNull(boards.deletedAt)))
+                  )
+                )
+              )
+          )
         )
       )
       .returning({ id: comments.id })
@@ -224,7 +284,15 @@ export const rejectPostFn = createServerFn({ method: 'POST' })
         and(
           eq(posts.id, data.postId as never),
           eq(posts.moderationState, 'pending'),
-          isNull(posts.deletedAt)
+          isNull(posts.deletedAt),
+          // Match the LIST/COUNT board-deletedAt filter so reject can't write
+          // to a post whose board has been soft-deleted out from under us.
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(boards)
+              .where(and(eq(boards.id, posts.boardId), isNull(boards.deletedAt)))
+          )
         )
       )
       .returning({ id: posts.id })
