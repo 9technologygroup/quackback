@@ -256,7 +256,17 @@ vi.mock('@/lib/server/db', () => ({
   boards: {
     id: { __table: 'boards', __col: 'id' } satisfies ColRef,
     name: { __table: 'boards', __col: 'name' } satisfies ColRef,
+    slug: { __table: 'boards', __col: 'slug' } satisfies ColRef,
     deletedAt: { __table: 'boards', __col: 'deletedAt' } satisfies ColRef,
+  },
+  comments: {
+    id: { __table: 'comments', __col: 'id' } satisfies ColRef,
+    moderationState: { __table: 'comments', __col: 'moderationState' } satisfies ColRef,
+    deletedAt: { __table: 'comments', __col: 'deletedAt' } satisfies ColRef,
+    postId: { __table: 'comments', __col: 'postId' } satisfies ColRef,
+    principalId: { __table: 'comments', __col: 'principalId' } satisfies ColRef,
+    content: { __table: 'comments', __col: 'content' } satisfies ColRef,
+    createdAt: { __table: 'comments', __col: 'createdAt' } satisfies ColRef,
   },
   principal: {
     id: { __table: 'principal', __col: 'id' } satisfies ColRef,
@@ -597,18 +607,22 @@ describe('listPendingPostsFn — listPendingPosts exclusion + enrichment', () =>
 // getModerationStatus
 // ----------------------------------------------------------------------
 
-// Helper: build a db.select mock that returns the pending count. This is the
-// only select getModerationStatus runs — `enabled` derives purely from the
-// workspace moderation policy.
+// Helper: build a db.select mock that returns the pending counts.
+// getModerationStatus issues TWO count queries (posts + comments) in parallel,
+// so stub both calls. Pass a single number to treat it as the posts count and
+// default comments to 0 (preserves the original single-table semantics for
+// existing tests). `enabled` derives purely from the workspace moderation policy.
 import { db } from '@/lib/server/db'
 
-function stubSelectCalls(pendingCount: number) {
-  const countChain = {
+function stubSelectCalls(postsCount: number, commentsCount = 0) {
+  const makeCountChain = (n: number) => ({
     from: vi.fn(() => ({
-      where: vi.fn(() => Promise.resolve([{ count: pendingCount }])),
+      where: vi.fn(() => Promise.resolve([{ count: n }])),
     })),
-  }
-  vi.mocked(db.select).mockImplementationOnce(() => countChain as never)
+  })
+  vi.mocked(db.select)
+    .mockImplementationOnce(() => makeCountChain(postsCount) as never)
+    .mockImplementationOnce(() => makeCountChain(commentsCount) as never)
 }
 
 describe('getModerationStatus', () => {
@@ -666,5 +680,19 @@ describe('getModerationStatus', () => {
     }
     expect(result.enabled).toBe(true)
     expect(result.pendingCount).toBe(3)
+  })
+
+  it('pendingCount sums pending posts AND pending comments', async () => {
+    // The moderation status badge in the admin sidebar must reflect total
+    // moderator workload — both pending posts and pending comments. Without
+    // this sum, a workspace with comment-only approval would show zero
+    // pending even when the comments queue is non-empty.
+    stubSelectCalls(3, 2)
+    mockGetPortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'all' } })
+    const result = (await getModerationStatusHandler()({ data: {} })) as {
+      enabled: boolean
+      pendingCount: number
+    }
+    expect(result.pendingCount).toBe(5)
   })
 })

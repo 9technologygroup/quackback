@@ -239,13 +239,22 @@ export const getModerationStatus = createServerFn({ method: 'GET' }).handler(asy
   if (!isTeamMember(auth.principal.role)) {
     throw new ForbiddenError('FORBIDDEN', 'Team only')
   }
-  const [{ count: pendingCount }] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(posts)
-    .where(and(eq(posts.moderationState, 'pending'), isNull(posts.deletedAt)))
+  const [postsResult, commentsResult] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(posts)
+      .where(and(eq(posts.moderationState, 'pending'), isNull(posts.deletedAt))),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(comments)
+      .where(and(eq(comments.moderationState, 'pending'), isNull(comments.deletedAt))),
+  ])
+  const pendingCount = (postsResult[0]?.count ?? 0) + (commentsResult[0]?.count ?? 0)
 
   const portalConfig = await getPortalConfig()
   const enabled = portalConfig.moderationDefault.requireApproval !== 'none'
+  // NB: `enabled` is widened in Task 22 to also check per-board approval.comments
+  // once the BoardAccess type is in place.
 
   return { enabled, pendingCount }
 })
