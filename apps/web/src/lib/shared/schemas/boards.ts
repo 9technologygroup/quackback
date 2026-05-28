@@ -1,10 +1,54 @@
 import { z } from 'zod'
-import { ACCESS_TIERS, ACCESS_TIER_RANK, MODERATION_RULE_VALUES } from '@/lib/shared/db-types'
+import {
+  ACCESS_TIERS,
+  ACCESS_TIER_RANK,
+  MODERATION_RULE_VALUES,
+  type BoardAccess,
+} from '@/lib/shared/db-types'
+
+/**
+ * Create-board preset. Maps to a BoardAccess matrix on the server:
+ *   - 'public'  → view=anonymous, vote/comment/submit=authenticated
+ *   - 'private' → view/vote/comment/submit=team
+ *
+ * Finer-grained access (segments, asymmetric tiers) is set after create
+ * via the Access tab — admin-only and audited.
+ */
+export const boardPresetSchema = z.enum(['public', 'private'])
+export type BoardPreset = z.infer<typeof boardPresetSchema>
+
+/**
+ * Translate the create-modal preset into the explicit BoardAccess
+ * matrix the column stores. Shared between the create server-fn (real
+ * insert) and the client mutation hook (optimistic row) so both sides
+ * agree on the shape — drift here would surface as a flicker on create.
+ */
+export function accessForPreset(preset: BoardPreset): BoardAccess {
+  if (preset === 'private') {
+    return {
+      view: 'team',
+      vote: 'team',
+      comment: 'team',
+      submit: 'team',
+      segments: { view: [], vote: [], comment: [], submit: [] },
+      moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+    }
+  }
+  // 'public' — asymmetric: anyone views, sign-in required for vote/comment/submit.
+  return {
+    view: 'anonymous',
+    vote: 'authenticated',
+    comment: 'authenticated',
+    submit: 'authenticated',
+    segments: { view: [], vote: [], comment: [], submit: [] },
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  }
+}
 
 export const createBoardSchema = z.object({
   name: z.string().min(1, 'Board name is required').max(100),
   description: z.string().max(500).optional(),
-  isPublic: z.boolean().default(true),
+  preset: boardPresetSchema.default('public'),
 })
 
 export const updateBoardSchema = z.object({

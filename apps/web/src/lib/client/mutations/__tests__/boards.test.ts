@@ -86,7 +86,11 @@ describe('board mutations cache invalidation', () => {
   it('useCreateBoard.onMutate generates correct optimistic slug', async () => {
     const { useCreateBoard } = await import('../boards')
     const mutation = useCreateBoard() as {
-      onMutate?: (input: { name: string; description?: string; isPublic?: boolean }) => void
+      onMutate?: (input: {
+        name: string
+        description?: string
+        preset?: 'public' | 'private'
+      }) => void
     }
 
     await mutation.onMutate?.({ name: 'Feature Requests' })
@@ -110,7 +114,11 @@ describe('board mutations cache invalidation', () => {
   it('useCreateBoard.onMutate handles Cyrillic names in optimistic slug', async () => {
     const { useCreateBoard } = await import('../boards')
     const mutation = useCreateBoard() as {
-      onMutate?: (input: { name: string; description?: string; isPublic?: boolean }) => void
+      onMutate?: (input: {
+        name: string
+        description?: string
+        preset?: 'public' | 'private'
+      }) => void
     }
 
     await mutation.onMutate?.({ name: 'Кириллица' })

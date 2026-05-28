@@ -8,7 +8,7 @@ import type { BoardId } from '@quackback/ids'
 import type { BoardSettings, SetupState } from '@/lib/server/db'
 import { requireAuth } from './auth-helpers'
 import { getSettings } from './workspace'
-import { db, settings, boards, eq, type AccessTier } from '@/lib/server/db'
+import { db, settings, boards, eq } from '@/lib/server/db'
 import {
   listBoards,
   getBoardById,
@@ -17,7 +17,7 @@ import {
   deleteBoard,
 } from '@/lib/server/domains/boards/board.service'
 import { invalidateSettingsCache } from '@/lib/server/domains/settings/settings.helpers'
-import { boardAccessSchema } from '@/lib/shared/schemas/boards'
+import { boardAccessSchema, boardPresetSchema, accessForPreset } from '@/lib/shared/schemas/boards'
 
 // Re-export for back-compat: existing test imports `boardAccessSchema`
 // from '../boards'. The actual definition lives in @/lib/shared/schemas/boards
@@ -35,11 +35,11 @@ const createBoardSchema = z.object({
     .min(1, 'Board name is required')
     .max(100, 'Board name must be 100 characters or less'),
   description: z.string().max(500, 'Description must be 500 characters or less').optional(),
-  // Back-compat with the existing admin create dialog which submits a binary
-  // public/private toggle. Internally mapped to a BoardAccess matrix. Richer
-  // tier choices (authenticated, segments[]) land via updateBoardAccessFn
-  // after the board exists.
-  isPublic: z.boolean().default(true),
+  // Two-preset selector the admin create dialog renders as tiles. Mapped
+  // to a BoardAccess matrix via accessForPreset(). Richer tier choices
+  // (authenticated, segments[], asymmetric matrices) land via
+  // updateBoardAccessFn after the board exists — admin-only, audited.
+  preset: boardPresetSchema.default('public'),
 })
 
 const getBoardSchema = z.object({
@@ -140,26 +140,17 @@ export const fetchBoardFn = createServerFn({ method: 'GET' })
 export const createBoardFn = createServerFn({ method: 'POST' })
   .inputValidator(createBoardSchema)
   .handler(async ({ data }) => {
-    console.log(`[fn:boards] createBoardFn: name=${data.name}`)
+    console.log(`[fn:boards] createBoardFn: name=${data.name} preset=${data.preset}`)
     await requireAuth({ roles: ['admin', 'member'] })
 
-    // Map the binary toggle into a BoardAccess matrix. Default to all-
-    // anonymous when public (the existing UI contract); flip every tier
-    // to 'team' when the toggle is off. For finer-grained access
-    // (authenticated, segments), the admin sets it via updateBoardAccessFn
-    // after create — that path is admin-only and audited.
-    const tier: AccessTier = data.isPublic === false ? 'team' : 'anonymous'
+    // Map the binary preset choice (Public/Private) into a BoardAccess
+    // matrix via the shared helper. For finer-grained access (segments,
+    // asymmetric tiers) the admin uses updateBoardAccessFn after create —
+    // that path is admin-only and audited.
     const board = await createBoard({
       name: data.name,
       description: data.description,
-      access: {
-        view: tier,
-        vote: tier,
-        comment: tier,
-        submit: tier,
-        segments: { view: [], vote: [], comment: [], submit: [] },
-        moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
-      },
+      access: accessForPreset(data.preset),
     })
     console.log(`[fn:boards] createBoardFn: id=${board.id}`)
     return serializeBoard(board)

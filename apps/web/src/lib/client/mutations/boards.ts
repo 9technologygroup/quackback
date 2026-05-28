@@ -14,6 +14,7 @@ import {
   type UpdateBoardInput,
   type DeleteBoardInput,
 } from '@/lib/server/functions/boards'
+import { accessForPreset } from '@/lib/shared/schemas/boards'
 import type { Board, BoardAccess } from '@/lib/shared/db-types'
 import type { BoardId } from '@quackback/ids'
 import { boardKeys } from '@/lib/client/hooks/use-boards-query'
@@ -36,22 +37,15 @@ export function useCreateBoard() {
       await queryClient.cancelQueries({ queryKey: boardKeys.lists() })
       const previous = queryClient.getQueryData<Board[]>(boardKeys.lists())
 
-      // Mirror the server's createBoardFn isPublic→tier mapping so the
-      // optimistic row matches what the server will actually insert.
-      const tier = input.isPublic === false ? 'team' : 'anonymous'
+      // Mirror the server's createBoardFn preset→access mapping so the
+      // optimistic row matches what the server will actually insert. The
+      // shared helper is the single source of truth.
       const optimisticBoard: Board = {
         id: `board_temp_${Date.now()}` as Board['id'],
         name: input.name,
         slug: slugify(input.name),
         description: input.description ?? null,
-        access: {
-          view: tier,
-          vote: tier,
-          comment: tier,
-          submit: tier,
-          segments: { view: [], vote: [], comment: [], submit: [] },
-          moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
-        },
+        access: accessForPreset(input.preset ?? 'public'),
         settings: {},
         createdAt: new Date(),
         updatedAt: new Date(),
