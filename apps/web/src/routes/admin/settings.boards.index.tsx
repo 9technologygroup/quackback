@@ -14,6 +14,7 @@ import { BoardSettingsHeader } from '@/components/admin/settings/boards/board-se
 import { BoardSettingsNav } from '@/components/admin/settings/boards/board-settings-nav'
 import { BoardGeneralForm } from '@/components/admin/settings/boards/board-general-form'
 import { BoardAccessForm } from '@/components/admin/settings/boards/board-access-form'
+import { BoardModerationForm } from '@/components/admin/settings/boards/board-moderation-form'
 import { BoardImportSection } from '@/components/admin/settings/boards/board-import-section'
 import { BoardExportSection } from '@/components/admin/settings/boards/board-export-section'
 import { DeleteBoardForm } from '@/components/admin/settings/boards/delete-board-form'
@@ -34,7 +35,7 @@ interface BoardForSettings {
 
 const searchSchema = z.object({
   board: z.string().optional(),
-  tab: z.enum(['general', 'access', 'import', 'export']).optional(),
+  tab: z.enum(['general', 'access', 'moderation', 'import', 'export']).optional(),
 })
 
 export const Route = createFileRoute('/admin/settings/boards/')({
@@ -112,6 +113,13 @@ function BoardTabContent({ board, tab }: BoardTabContentProps): ReactNode {
       return (
         <SettingsCard title="Access Control">
           <BoardAccessForm key={board.id} board={board} />
+        </SettingsCard>
+      )
+
+    case 'moderation':
+      return (
+        <SettingsCard title="Moderation">
+          <BoardModerationForm key={board.id} board={board} />
         </SettingsCard>
       )
 

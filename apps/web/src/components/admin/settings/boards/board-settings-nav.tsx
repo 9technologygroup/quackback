@@ -1,6 +1,7 @@
 import {
   Cog6ToothIcon,
   LockClosedIcon,
+  ShieldCheckIcon,
   ArrowUpTrayIcon,
   ArrowDownTrayIcon,
 } from '@heroicons/react/24/solid'
@@ -10,6 +11,7 @@ import { useBoardSelection, type BoardTab } from './use-board-selection'
 const navItems: { label: string; tab: BoardTab; icon: typeof Cog6ToothIcon }[] = [
   { label: 'General', tab: 'general', icon: Cog6ToothIcon },
   { label: 'Access', tab: 'access', icon: LockClosedIcon },
+  { label: 'Moderation', tab: 'moderation', icon: ShieldCheckIcon },
   { label: 'Import Data', tab: 'import', icon: ArrowUpTrayIcon },
   { label: 'Export Data', tab: 'export', icon: ArrowDownTrayIcon },
 ]

@@ -11,7 +11,8 @@
  *   - Tier hierarchy: raising View auto-clamps Vote/Comment/Submit
  *   - Workspace anonymous-* feature flags block the Anyone cell + banner
  *   - Auto-bump when workspace flips off while a cell sits on Anonymous
- *   - Save payload preserves `moderation` round-trip
+ *   - Save payload preserves `moderation` round-trip (passthrough only —
+ *     editing moderation lives in `<BoardModerationForm>`)
  *
  * The mutation, segments, and portalConfig queries are mocked. The
  * portalConfig mock is mutable so tests can flip workspace flags between
@@ -437,122 +438,5 @@ describe('<BoardAccessForm> save', () => {
         })
       )
     )
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Moderation sub-tab (R4)
-// ---------------------------------------------------------------------------
-
-const MOD_RULE_LABELS = {
-  anonPosts: 'Require approval for anonymous posts',
-  signedPosts: 'Require approval for signed-in posts',
-  comments: 'Require approval for new comments',
-} as const
-
-/** Switch sub-tabs. Radix Tabs activates on mouseDown, not click. */
-function gotoTab(label: 'access' | 'moderation') {
-  fireEvent.mouseDown(screen.getByRole('tab', { name: new RegExp(label, 'i') }))
-}
-
-describe('<BoardAccessForm> moderation tab', () => {
-  it('switching to the Moderation tab renders the three rule rows', () => {
-    renderForm(PUBLIC_ACCESS)
-    gotoTab('moderation')
-    expect(screen.getByText(MOD_RULE_LABELS.anonPosts)).toBeInTheDocument()
-    expect(screen.getByText(MOD_RULE_LABELS.signedPosts)).toBeInTheDocument()
-    expect(screen.getByText(MOD_RULE_LABELS.comments)).toBeInTheDocument()
-  })
-
-  it('renders the "inheriting" banner when every rule is inherit', () => {
-    renderForm(PUBLIC_ACCESS)
-    gotoTab('moderation')
-    expect(screen.getByText(/inheriting all workspace defaults/i)).toBeInTheDocument()
-    expect(screen.queryByText(/overrides/i)).not.toBeInTheDocument()
-  })
-
-  it('selecting "On" for anonPosts dirties the form and shows the Override badge', () => {
-    renderForm(PUBLIC_ACCESS)
-    gotoTab('moderation')
-    fireEvent.click(screen.getByRole('radio', { name: `${MOD_RULE_LABELS.anonPosts}: On` }))
-    expect(screen.getByText('Override')).toBeInTheDocument()
-    // Banner switches to the "overrides" copy. Text is split across spans
-    // — match the leaf banner div by its full textContent.
-    const banners = screen.getAllByText(
-      (_, el) =>
-        el?.tagName === 'DIV' &&
-        !!el.textContent &&
-        /overrides some workspace defaults/i.test(el.textContent)
-    )
-    expect(banners.length).toBeGreaterThan(0)
-    const region = screen.getByRole('region', { name: /save changes/i })
-    expect(region.getAttribute('data-dirty')).toBe('true')
-  })
-
-  it('Inherit sub-pill reflects the workspace default ("none" → all Off)', async () => {
-    setWsFlags({ requireApproval: 'none' })
-    renderForm(PUBLIC_ACCESS)
-    gotoTab('moderation')
-    await waitFor(() => {
-      const anonInherit = screen.getByRole('radio', {
-        name: `${MOD_RULE_LABELS.anonPosts}: Inherit`,
-      })
-      expect(anonInherit.textContent).toMatch(/Off/)
-    })
-    const signedInherit = screen.getByRole('radio', {
-      name: `${MOD_RULE_LABELS.signedPosts}: Inherit`,
-    })
-    expect(signedInherit.textContent).toMatch(/Off/)
-    const commentsInherit = screen.getByRole('radio', {
-      name: `${MOD_RULE_LABELS.comments}: Inherit`,
-    })
-    expect(commentsInherit.textContent).toMatch(/Off/)
-  })
-
-  it('Inherit sub-pill reflects the workspace default ("all" → all On)', async () => {
-    setWsFlags({ requireApproval: 'all' })
-    renderForm(PUBLIC_ACCESS)
-    gotoTab('moderation')
-    await waitFor(() => {
-      const anonInherit = screen.getByRole('radio', {
-        name: `${MOD_RULE_LABELS.anonPosts}: Inherit`,
-      })
-      expect(anonInherit.textContent).toMatch(/On/)
-    })
-    const signedInherit = screen.getByRole('radio', {
-      name: `${MOD_RULE_LABELS.signedPosts}: Inherit`,
-    })
-    expect(signedInherit.textContent).toMatch(/On/)
-    const commentsInherit = screen.getByRole('radio', {
-      name: `${MOD_RULE_LABELS.comments}: Inherit`,
-    })
-    expect(commentsInherit.textContent).toMatch(/On/)
-  })
-
-  it('save payload includes moderation tri-state choices', async () => {
-    renderForm(PUBLIC_ACCESS)
-    gotoTab('moderation')
-    fireEvent.click(screen.getByRole('radio', { name: `${MOD_RULE_LABELS.anonPosts}: On` }))
-    fireEvent.click(screen.getByRole('radio', { name: `${MOD_RULE_LABELS.comments}: Off` }))
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    await waitFor(() =>
-      expect(mutate).toHaveBeenCalledWith({
-        boardId: BOARD_ID,
-        access: expect.objectContaining({
-          moderation: { anonPosts: 'on', signedPosts: 'inherit', comments: 'off' },
-        }),
-      })
-    )
-  })
-
-  it('preserves access-tab edits when switching back from Moderation', () => {
-    renderForm(PUBLIC_ACCESS)
-    // Make an Access-tab edit
-    clickTierCell('Comment', 'Team only')
-    expect(isCellSelected('Comment', 'Team only')).toBe(true)
-    // Switch tabs and back — edit should still be there
-    gotoTab('moderation')
-    gotoTab('access')
-    expect(isCellSelected('Comment', 'Team only')).toBe(true)
   })
 })

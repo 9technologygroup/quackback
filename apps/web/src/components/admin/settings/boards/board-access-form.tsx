@@ -26,12 +26,10 @@ import {
   PlusIcon,
   ShieldCheckIcon,
   TagIcon,
-  UserIcon,
   UsersIcon,
 } from '@heroicons/react/24/solid'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { FormError } from '@/components/shared/form-error'
 import { useUpdateBoardAccess } from '@/lib/client/mutations'
 import { useSegments } from '@/lib/client/hooks/use-segments-queries'
@@ -43,34 +41,25 @@ import {
   type AccessTier,
   type BoardAccess,
   DEFAULT_BOARD_ACCESS,
-  type ModerationRuleValue,
 } from '@/lib/shared/db-types'
 
 /**
- * Per-board access + moderation form (R3 + R4 design).
+ * Per-board access form (R3 design).
  *
- * The form hosts two sub-tabs — Access and Moderation — sharing a single
- * `react-hook-form` instance so one save dock spans both. Switching tabs
- * preserves form state.
+ * Standalone — Moderation now lives on its own settings page
+ * (`board-moderation-form.tsx`). This form only edits the access slice
+ * of `BoardAccess`; moderation is passed through unchanged on save.
  *
- *   Access tab (R3):
- *     - Permanent 4 × 4 grid (action × tier). Presets are *derived* from
- *       the grid — editing any cell drops you into Custom; restoring all
- *       cells to a preset's tiers flips Custom back. No sticky preset.
- *     - The matrix is always visible — the preset row is a header
- *       summarising the current grid, not a mode switch.
- *     - Workspace anonymous-* feature flags act as a per-cell ceiling:
- *       when a workspace flag is off, the `anonymous` cell in that
- *       action's row is disabled (striped + globe icon) and an effect
- *       auto-bumps any cell currently on `anonymous` up to `authenticated`.
- *
- *   Moderation tab (R4):
- *     - Three tri-state rules (`inherit | on | off`) for anonPosts,
- *       signedPosts, comments. Each row has a SegmentedTri picker whose
- *       Inherit button advertises the resolved workspace default ("On" /
- *       "Off") so admins know what they'd fall back to.
- *     - An inheritance banner summarises whether any rule is overriding
- *       the workspace and deep-links to the workspace moderation page.
+ * Behaviour:
+ *   - Permanent 4 × 4 grid (action × tier). Presets are *derived* from
+ *     the grid — editing any cell drops you into Custom; restoring all
+ *     cells to a preset's tiers flips Custom back. No sticky preset.
+ *   - The matrix is always visible — the preset row is a header
+ *     summarising the current grid, not a mode switch.
+ *   - Workspace `allowAnonymous` master switch acts as a per-cell
+ *     ceiling: when off, the `anonymous` cell on vote/comment/submit is
+ *     disabled (striped + globe icon) and an effect auto-bumps any cell
+ *     currently on `anonymous` up to `authenticated`.
  *
  * The persisted shape is `BoardAccess` (see @/lib/shared/db-types).
  */
@@ -209,35 +198,7 @@ function deriveActivePreset(values: FormShape): PresetName {
   return 'custom'
 }
 
-// ─── Workspace moderation defaults ────────────────────────────────────
-
-/** Mirrors the policy-side `RequireApproval` type. Kept private to this
- *  module so the UI doesn't drag the server policy import. */
-type RequireApproval = 'none' | 'anonymous' | 'authenticated' | 'all'
-type ModerationAxis = 'anonPosts' | 'signedPosts' | 'comments'
-
-/**
- * UI mirror of `resolveModerationRule` from policy/posts.ts — same axis
- * mapping, restricted to the `'inherit'` case since the SegmentedTri's
- * sub-pill only ever needs to render the resolved workspace default.
- *
- * Keep this in sync with the policy helper: any change to the workspace
- * default → per-axis mapping has to land in both places.
- */
-function resolveWorkspaceDefault(
-  axis: ModerationAxis,
-  workspaceApproval: RequireApproval | undefined
-): 'on' | 'off' {
-  const ws = workspaceApproval ?? 'none'
-  if (axis === 'comments') return ws === 'all' ? 'on' : 'off'
-  if (axis === 'anonPosts') return ws === 'all' || ws === 'anonymous' ? 'on' : 'off'
-  // signedPosts
-  return ws === 'all' || ws === 'authenticated' ? 'on' : 'off'
-}
-
 // ─── Main form ────────────────────────────────────────────────────────
-
-type SubTab = 'access' | 'moderation'
 
 export function BoardAccessForm({ board }: BoardAccessFormProps) {
   const mutation = useUpdateBoardAccess()
@@ -259,15 +220,12 @@ export function BoardAccessForm({ board }: BoardAccessFormProps) {
   // accidentally disable cells before we know better.
   const portalConfigQuery = useQuery({ ...settingsQueries.portalConfig(), retry: false })
   const wsAllowAnonymous: boolean = portalConfigQuery.data?.features?.allowAnonymous ?? true
-  const workspaceApproval: RequireApproval =
-    portalConfigQuery.data?.moderationDefault?.requireApproval ?? 'none'
 
   const form = useForm<FormShape>({
     defaultValues: board.access ?? DEFAULT_BOARD_ACCESS,
   })
 
   const [openPicker, setOpenPicker] = useState<ActionId | null>(null)
-  const [activeTab, setActiveTab] = useState<SubTab>('access')
 
   // Sync form state when the server-side board.access changes (e.g. after a
   // successful save invalidates the boards query).
@@ -393,13 +351,6 @@ export function BoardAccessForm({ board }: BoardAccessFormProps) {
     [form]
   )
 
-  const handleModerationChange = useCallback(
-    (axis: ModerationAxis, value: ModerationRuleValue) => {
-      form.setValue(`moderation.${axis}`, value, { shouldDirty: true })
-    },
-    [form]
-  )
-
   const onSubmit = useCallback(
     (next: FormShape) => {
       if (segsError) return
@@ -418,47 +369,67 @@ export function BoardAccessForm({ board }: BoardAccessFormProps) {
     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 pb-24">
       {mutation.isError && <FormError message={mutation.error?.message ?? 'An error occurred'} />}
 
-      <Tabs
-        value={activeTab}
-        onValueChange={(v) => setActiveTab(v as SubTab)}
-        className="space-y-4"
-      >
-        <TabsList>
-          <TabsTrigger value="access">
-            <LockClosedIcon />
-            Access
-          </TabsTrigger>
-          <TabsTrigger value="moderation">
-            <ShieldCheckIcon />
-            Moderation
-          </TabsTrigger>
-        </TabsList>
+      <div className="space-y-4">
+        <p className="text-xs text-muted-foreground max-w-xl">
+          Pick a preset, or tweak any cell to fine-tune. Custom is set automatically when your
+          configuration doesn&apos;t match a preset.
+        </p>
 
-        <TabsContent value="access" className="space-y-4">
-          <AccessTab
-            values={values}
-            wsAllowAnonymous={wsAllowAnonymous}
-            wsBlockedActions={wsBlockedActions}
-            activePreset={activePreset}
-            segments={segments}
-            segmentsLoading={segmentsQuery.isLoading}
-            openPicker={openPicker}
-            onPresetClick={handlePresetClick}
-            onCellClick={handleTierClick}
-            onOpenPicker={(id) => setOpenPicker((p) => (p === id ? null : id))}
-            onClosePicker={() => setOpenPicker(null)}
-            onSegsChange={handleSegsChange}
-          />
-        </TabsContent>
+        <PresetGrid active={activePreset} onSelect={handlePresetClick} />
+      </div>
 
-        <TabsContent value="moderation" className="space-y-4">
-          <ModerationTab
-            values={values.moderation}
-            workspaceApproval={workspaceApproval}
-            onChange={handleModerationChange}
-          />
-        </TabsContent>
-      </Tabs>
+      <div className="space-y-3 pt-2">
+        <div className="flex items-baseline justify-between">
+          <span className="text-sm font-semibold">Per-action permissions</span>
+          <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1.5">
+            <span
+              className="inline-block h-1 w-5 rounded-sm"
+              style={{
+                background:
+                  'linear-gradient(to right, rgb(74 222 128), rgb(250 204 21), rgb(248 113 113))',
+              }}
+            />
+            More open <span className="opacity-60">→</span> More restrictive
+          </span>
+        </div>
+
+        <Matrix
+          values={values}
+          wsAllowAnonymous={wsAllowAnonymous}
+          segments={segments}
+          segmentsLoading={segmentsQuery.isLoading}
+          openPicker={openPicker}
+          onCellClick={handleTierClick}
+          onOpenPicker={(id) => setOpenPicker((p) => (p === id ? null : id))}
+          onClosePicker={() => setOpenPicker(null)}
+          onSegsChange={handleSegsChange}
+        />
+
+        {!wsAllowAnonymous && (
+          <div className="mt-2.5 flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-[11.5px] text-muted-foreground">
+            <GlobeAltIcon className="h-3 w-3 shrink-0" />
+            <span>
+              Workspace policy disables the <span className="text-foreground">Anyone</span> tier
+              for:{' '}
+              <span className="text-foreground">
+                {wsBlockedActions.map((a) => a.label).join(', ')}
+              </span>
+              .
+            </span>
+            <Link
+              to="/admin/settings/moderation"
+              className="ml-auto whitespace-nowrap text-primary hover:underline"
+            >
+              Workspace access →
+            </Link>
+          </div>
+        )}
+      </div>
+
+      <p className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <ShieldCheckIcon className="h-3 w-3" />
+        Team members and admins always have full access — they bypass these rules.
+      </p>
 
       <SaveDock
         dirty={dirty}
@@ -467,307 +438,6 @@ export function BoardAccessForm({ board }: BoardAccessFormProps) {
         onDiscard={handleDiscard}
       />
     </form>
-  )
-}
-
-// ─── Access tab ───────────────────────────────────────────────────────
-
-interface AccessTabProps {
-  values: FormShape
-  wsAllowAnonymous: boolean
-  wsBlockedActions: ReadonlyArray<ActionMeta>
-  activePreset: PresetName
-  segments: ReadonlyArray<SegmentItem>
-  segmentsLoading: boolean
-  openPicker: ActionId | null
-  onPresetClick: (id: Exclude<PresetName, 'custom'>) => void
-  onCellClick: (actionId: ActionId, tierId: AccessTier) => void
-  onOpenPicker: (id: ActionId) => void
-  onClosePicker: () => void
-  onSegsChange: (actionId: ActionId, ids: string[]) => void
-}
-
-function AccessTab({
-  values,
-  wsAllowAnonymous,
-  wsBlockedActions,
-  activePreset,
-  segments,
-  segmentsLoading,
-  openPicker,
-  onPresetClick,
-  onCellClick,
-  onOpenPicker,
-  onClosePicker,
-  onSegsChange,
-}: AccessTabProps) {
-  return (
-    <>
-      <div className="rounded-xl border bg-card">
-        <div className="p-5 space-y-4">
-          <div>
-            <h2 className="text-base font-semibold">Access Control</h2>
-            <p className="mt-1 text-xs text-muted-foreground max-w-xl">
-              Pick a preset, or tweak any cell to fine-tune. Custom is set automatically when your
-              configuration doesn&apos;t match a preset.
-            </p>
-          </div>
-
-          <PresetGrid active={activePreset} onSelect={onPresetClick} />
-        </div>
-
-        <div className="h-px bg-border" />
-
-        <div className="p-5 space-y-3">
-          <div className="flex items-baseline justify-between">
-            <span className="text-sm font-semibold">Per-action permissions</span>
-            <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1.5">
-              <span
-                className="inline-block h-1 w-5 rounded-sm"
-                style={{
-                  background:
-                    'linear-gradient(to right, rgb(74 222 128), rgb(250 204 21), rgb(248 113 113))',
-                }}
-              />
-              More open <span className="opacity-60">→</span> More restrictive
-            </span>
-          </div>
-
-          <Matrix
-            values={values}
-            wsAllowAnonymous={wsAllowAnonymous}
-            segments={segments}
-            segmentsLoading={segmentsLoading}
-            openPicker={openPicker}
-            onCellClick={onCellClick}
-            onOpenPicker={onOpenPicker}
-            onClosePicker={onClosePicker}
-            onSegsChange={onSegsChange}
-          />
-
-          {!wsAllowAnonymous && (
-            <div className="mt-2.5 flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-[11.5px] text-muted-foreground">
-              <GlobeAltIcon className="h-3 w-3 shrink-0" />
-              <span>
-                Workspace policy disables the <span className="text-foreground">Anyone</span> tier
-                for:{' '}
-                <span className="text-foreground">
-                  {wsBlockedActions.map((a) => a.label).join(', ')}
-                </span>
-                .
-              </span>
-              <Link
-                to="/admin/settings/moderation"
-                className="ml-auto whitespace-nowrap text-primary hover:underline"
-              >
-                Workspace access →
-              </Link>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <p className="flex items-center gap-2 text-[11px] text-muted-foreground">
-        <ShieldCheckIcon className="h-3 w-3" />
-        Team members and admins always have full access — they bypass these rules.
-      </p>
-    </>
-  )
-}
-
-// ─── Moderation tab ───────────────────────────────────────────────────
-
-interface ModerationRuleMeta {
-  id: ModerationAxis
-  label: string
-  sub: string
-  icon: React.ComponentType<{ className?: string }>
-}
-
-const MOD_RULES: readonly ModerationRuleMeta[] = [
-  {
-    id: 'anonPosts',
-    label: 'Require approval for anonymous posts',
-    sub: 'Posts from visitors without an account wait for review before they appear.',
-    icon: UserIcon,
-  },
-  {
-    id: 'signedPosts',
-    label: 'Require approval for signed-in posts',
-    sub: 'Posts from signed-in portal users wait for review before they appear.',
-    icon: UserIcon,
-  },
-  {
-    id: 'comments',
-    label: 'Require approval for new comments',
-    sub: 'Comments wait for review before they appear under a post.',
-    icon: ChatBubbleLeftIcon,
-  },
-] as const
-
-interface ModerationTabProps {
-  values: FormShape['moderation']
-  workspaceApproval: RequireApproval
-  onChange: (axis: ModerationAxis, value: ModerationRuleValue) => void
-}
-
-function ModerationTab({ values, workspaceApproval, onChange }: ModerationTabProps) {
-  const anyOverridden = MOD_RULES.some((r) => values[r.id] !== 'inherit')
-
-  return (
-    <>
-      <div className="rounded-xl border bg-card overflow-hidden">
-        <div className="px-5 pt-5 pb-1.5">
-          <h2 className="text-base font-semibold">Moderation</h2>
-          <p className="mt-1 text-xs text-muted-foreground max-w-xl">
-            Override workspace approval rules for this board. Each rule inherits from the workspace
-            unless overridden below.
-          </p>
-        </div>
-
-        {/* Inheritance banner */}
-        <div className="mx-5 mt-3.5 flex items-center gap-2.5 rounded-lg border bg-muted/30 px-3 py-2.5">
-          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
-            <ShieldCheckIcon className="h-2.5 w-2.5" />
-          </span>
-          <div className="flex-1 text-xs text-foreground/90">
-            {anyOverridden ? (
-              <>
-                This board <span className="font-medium text-primary">overrides</span> some
-                workspace defaults.
-              </>
-            ) : (
-              <>Inheriting all workspace defaults.</>
-            )}
-          </div>
-          <Link
-            to="/admin/settings/moderation"
-            className="text-[11.5px] text-primary hover:underline whitespace-nowrap"
-          >
-            Workspace moderation →
-          </Link>
-        </div>
-
-        {/* Rules */}
-        <div className="px-5 pt-3.5 pb-5 flex flex-col">
-          {MOD_RULES.map((r, idx) => (
-            <ModerationRuleRow
-              key={r.id}
-              rule={r}
-              value={values[r.id]}
-              workspaceDefault={resolveWorkspaceDefault(r.id, workspaceApproval)}
-              onChange={(v) => onChange(r.id, v)}
-              isLast={idx === MOD_RULES.length - 1}
-            />
-          ))}
-        </div>
-      </div>
-
-      <p className="flex items-center gap-2 text-[11px] text-muted-foreground">
-        <InformationCircleIcon className="h-3 w-3" />
-        Held posts and comments appear in the <span className="text-foreground">review queue</span>.
-      </p>
-    </>
-  )
-}
-
-interface ModerationRuleRowProps {
-  rule: ModerationRuleMeta
-  value: ModerationRuleValue
-  workspaceDefault: 'on' | 'off'
-  onChange: (value: ModerationRuleValue) => void
-  isLast: boolean
-}
-
-function ModerationRuleRow({
-  rule,
-  value,
-  workspaceDefault,
-  onChange,
-  isLast,
-}: ModerationRuleRowProps) {
-  const overridden = value !== 'inherit'
-  return (
-    <div className={cn('flex items-center gap-3.5 py-3.5', !isLast && 'border-b border-border')}>
-      <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground">
-        <rule.icon className="h-3.5 w-3.5" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{rule.label}</span>
-          {overridden && (
-            <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
-              Override
-            </span>
-          )}
-        </div>
-        <div className="mt-0.5 text-[11.5px] leading-snug text-muted-foreground">{rule.sub}</div>
-      </div>
-      <SegmentedTri
-        value={value}
-        onChange={onChange}
-        workspaceDefault={workspaceDefault}
-        ruleLabel={rule.label}
-      />
-    </div>
-  )
-}
-
-interface SegmentedTriProps {
-  value: ModerationRuleValue
-  onChange: (value: ModerationRuleValue) => void
-  workspaceDefault: 'on' | 'off'
-  ruleLabel: string
-}
-
-function SegmentedTri({ value, onChange, workspaceDefault, ruleLabel }: SegmentedTriProps) {
-  const opts: ReadonlyArray<{
-    id: ModerationRuleValue
-    label: string
-    sub: string | null
-  }> = [
-    { id: 'inherit', label: 'Inherit', sub: workspaceDefault === 'on' ? 'On' : 'Off' },
-    { id: 'on', label: 'On', sub: null },
-    { id: 'off', label: 'Off', sub: null },
-  ]
-  return (
-    <div
-      role="radiogroup"
-      aria-label={ruleLabel}
-      className="inline-flex shrink-0 rounded-md border bg-muted/30 p-0.5"
-    >
-      {opts.map((o) => {
-        const on = o.id === value
-        return (
-          <button
-            key={o.id}
-            type="button"
-            role="radio"
-            aria-checked={on}
-            aria-label={`${ruleLabel}: ${o.label}`}
-            onClick={() => onChange(o.id)}
-            className={cn(
-              'inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-colors',
-              on
-                ? 'border border-primary/40 bg-primary/10 font-medium text-foreground'
-                : 'border border-transparent text-muted-foreground hover:text-foreground'
-            )}
-          >
-            {o.label}
-            {o.sub && (
-              <span
-                className={cn(
-                  'rounded px-1 py-px text-[10px]',
-                  on ? 'bg-muted text-muted-foreground' : 'text-muted-foreground/70'
-                )}
-              >
-                {o.sub}
-              </span>
-            )}
-          </button>
-        )
-      })}
-    </div>
   )
 }
 
