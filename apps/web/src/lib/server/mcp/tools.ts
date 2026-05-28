@@ -1133,12 +1133,15 @@ Examples:
       const denied = requireScope(auth, 'write:feedback')
       if (denied) return denied
       try {
-        // MCP auth is admin-scoped; build a team-shaped actor so the policy
-        // gate inside createPost bypasses moderation (admin posts are trusted).
+        // Build a team-shaped actor from the caller's REAL role so the
+        // policy gate inside createPost (submit tier + moderation axis)
+        // reflects who is writing. Team API keys (role 'admin'/'member')
+        // keep their legitimate bypass; portal users (role 'user') are
+        // gated exactly as the portal create path gates them.
         const callerSegmentIds = await segmentIdsForPrincipal(auth.principalId)
         const actor = {
           principalId: auth.principalId,
-          role: 'admin' as const,
+          role: auth.role,
           principalType: auth.userId ? ('user' as const) : ('service' as const),
           segmentIds: callerSegmentIds,
         }

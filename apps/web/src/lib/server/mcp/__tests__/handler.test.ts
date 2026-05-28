@@ -1870,6 +1870,42 @@ describe('MCP HTTP Handler', () => {
       // Should succeed (not isError) since API keys get all scopes
       expect(JSON.parse(body.result.content[0].text).id).toBe('changelog_new')
     })
+
+    it('create_post builds the policy actor from the caller real role (not forced admin)', async () => {
+      // Arrange: a portal user (role 'user') reaching create_post via MCP
+      // portal access with the freely-consentable write:feedback scope. The
+      // actor handed to createPost must carry the caller's REAL role so the
+      // policy gate inside createPost (submit tier + moderation axis) applies
+      // — forcing 'admin' would early-return tierAllows for every tier and
+      // set requiresApproval:false, bypassing both gates.
+      const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
+        mcpEnabled: true,
+        mcpPortalAccessEnabled: true,
+      })
+      const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
+      await setupValidOAuth({ role: 'user', scopes: ['write:feedback'] })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
+        mcpEnabled: true,
+        mcpPortalAccessEnabled: true,
+      })
+
+      const { createPost } = await import('@/lib/server/domains/posts/post.service')
+
+      await handleMcpRequest(
+        oauthRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'create_post',
+            arguments: { boardId: 'board_test', title: 'X' },
+          })
+        )
+      )
+
+      // The second arg to createPost carries `actor`; its role must be the
+      // caller's, so canCreatePost can apply the submit tier + moderation.
+      const actor = vi.mocked(createPost).mock.calls[0][1].actor
+      expect(actor?.role).toBe('user')
+    })
   })
 
   // ===========================================================================
