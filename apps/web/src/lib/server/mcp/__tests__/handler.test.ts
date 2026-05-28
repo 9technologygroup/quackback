@@ -964,6 +964,41 @@ describe('MCP HTTP Handler', () => {
       expect(text.voteCount).toBe(7)
     })
 
+    it('proxy_vote does NOT enforce the target principal vote tier (intentional team-attributed bypass)', async () => {
+      // proxy_vote is a team-authority tool (requireTeamRole) for recording a
+      // vote on behalf of a customer (e.g. from a Zendesk ticket). It routes
+      // straight to addVoteOnBehalf and deliberately skips assertPostVotable —
+      // the per-board vote-tier gate applies to a user voting for THEMSELVES,
+      // not to a trusted teammate attributing signal gathered elsewhere.
+      // This pins that design: adding assertPostVotable here (which would
+      // reject a target outside the board's vote tier) breaks this test on
+      // purpose, forcing a conscious decision rather than a silent change.
+      const { addVoteOnBehalf } = await import('@/lib/server/domains/posts/post.voting')
+      const { assertPostVotable } = await import('@/lib/server/domains/posts/post.access')
+      const handleMcpRequest = await initializeSession()
+
+      const response = await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'proxy_vote',
+            arguments: { postId: 'post_test', voterPrincipalId: 'principal_voter' },
+          })
+        )
+      )
+
+      expect(response.status).toBe(200)
+      // The vote is recorded for the target...
+      expect(vi.mocked(addVoteOnBehalf)).toHaveBeenCalledWith(
+        'post_test',
+        'principal_voter',
+        expect.any(Object),
+        null,
+        expect.any(String)
+      )
+      // ...without running the per-target vote-tier chokepoint.
+      expect(vi.mocked(assertPostVotable)).not.toHaveBeenCalled()
+    })
+
     // ── add_comment tool ────────────────────────────────────────────────
 
     it('should handle tools/call for add_comment', async () => {

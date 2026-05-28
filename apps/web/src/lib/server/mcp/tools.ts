@@ -1009,6 +1009,13 @@ Examples:
       if (scopeDenied) return scopeDenied
       const roleDenied = requireTeamRole(auth)
       if (roleDenied) return roleDenied
+      // Team-authority tool: records a vote on behalf of `voterPrincipalId`
+      // (e.g. from a support ticket). It routes to addVoteOnBehalf and
+      // deliberately does NOT run assertPostVotable — the per-board vote
+      // tier gates a user voting for THEMSELVES, not a teammate attributing
+      // signal gathered off-portal. Enforcing the target's tier would defeat
+      // the feature (e.g. logging customer demand on a vote='team' roadmap).
+      // Pinned by handler.test.ts "intentional team-attributed bypass".
       try {
         if (args.action === 'remove') {
           const result = await removeVote(

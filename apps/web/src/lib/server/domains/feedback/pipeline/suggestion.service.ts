@@ -313,6 +313,11 @@ export async function acceptVoteSuggestion(
   const externalUrl = suggestion.rawItem?.externalUrl ?? undefined
   const voterName = (suggestion.rawItem?.author as { name?: string } | null)?.name ?? null
 
+  // Accepting a vote suggestion is a team-authority action that attributes a
+  // vote to the feedback author. Like proxy_vote, it routes to addVoteOnBehalf
+  // and intentionally does NOT enforce the board's per-action vote tier on the
+  // target — the tier gates a user self-voting, not a teammate recording
+  // off-portal signal.
   await addVoteOnBehalf(
     targetPostId,
     voterPrincipalId,
