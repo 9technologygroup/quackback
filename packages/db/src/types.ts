@@ -90,9 +90,6 @@ export interface BoardAccess {
     signedPosts: ModerationRuleValue
     comments: ModerationRuleValue
   }
-  /** @deprecated kept for transition only; mirrors moderation on save.
-   *  Will be dropped once all callers consume `moderation`. */
-  approval?: { posts: boolean; comments: boolean }
 }
 
 export const DEFAULT_BOARD_ACCESS: BoardAccess = {
