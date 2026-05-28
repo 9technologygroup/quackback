@@ -28,14 +28,19 @@
 -- casts back to `::text`. `boards.access` is native `jsonb`.
 --
 -- The CTE materialises the old flags from the single-tenant settings
--- row, defaulting absent keys to `true` to match the in-app fallback
--- (`?? true`) — so a workspace that never explicitly set a flag also
--- never has its boards bumped.
+-- row. Absent keys are defaulted to MATCH the pre-0084
+-- DEFAULT_PORTAL_CONFIG.features and the in-app deep-merge fallback:
+--   anonymousVoting     -> true  (base default true; read as `?? true`)
+--   anonymousCommenting -> false (base default false; deep-merge fallback)
+--   anonymousPosting    -> false (base default false; read as `!...` => blocked)
+-- Defaulting commenting/posting to `true` here would silently re-open
+-- anonymous interaction on upgrade for any tenant whose stored config
+-- predates these keys.
 WITH old_features AS (
   SELECT
     COALESCE(((portal_config::jsonb)->'features'->>'anonymousVoting')::boolean, true) AS allow_vote,
-    COALESCE(((portal_config::jsonb)->'features'->>'anonymousCommenting')::boolean, true) AS allow_comment,
-    COALESCE(((portal_config::jsonb)->'features'->>'anonymousPosting')::boolean, true) AS allow_submit
+    COALESCE(((portal_config::jsonb)->'features'->>'anonymousCommenting')::boolean, false) AS allow_comment,
+    COALESCE(((portal_config::jsonb)->'features'->>'anonymousPosting')::boolean, false) AS allow_submit
   FROM "settings"
   WHERE portal_config IS NOT NULL
   LIMIT 1
