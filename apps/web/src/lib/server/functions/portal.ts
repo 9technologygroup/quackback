@@ -283,22 +283,48 @@ export const fetchPublicPostDetail = createServerFn({ method: 'GET' })
     // Fetch merge info for this post. Pass the same actor used to gate
     // the post detail above so the canonical's audience check runs from
     // the caller's perspective — without it, the canonical's title and
-    // board slug could leak through the merge banner.
+    // board slug could leak through the merge banner. The workspace anonymous
+    // switch (only needed to ceiling a non-user actor) is fetched alongside so
+    // its DB read overlaps the merge queries instead of running in series.
     const postId = data.postId as PostId
-    const [mergeInfo, mergedPostsList] = await Promise.all([
+    const needsAnonCeiling = actor.principalType !== 'user'
+    const [mergeInfo, mergedPostsList, portalConfig] = await Promise.all([
       getPostMergeInfo(postId, actor).then((info) =>
         info ? { ...info, mergedAt: toISOString(info.mergedAt) } : null
       ),
       getMergedPosts(postId),
+      needsAnonCeiling
+        ? import('@/lib/server/domains/settings/settings.service').then((m) => m.getPortalConfig())
+        : Promise.resolve(null),
     ])
 
+    // Per-board vote/comment capability for THIS viewer. The widget passes its
+    // Bearer identity to this fn and refetches on identify, so `actor` reflects
+    // the real (possibly just-identified) viewer — unlike the home feed, which
+    // only has the anonymous SSR baseline. boardCapabilitiesForActor applies the
+    // per-board tier + the workspace anonymous ceiling (non-user actors only),
+    // so the UI never advertises a vote/comment CTA the board's tier rejects
+    // (#191). canSubmit is unused on the detail view.
+    const { boardCapabilitiesForActor } = await import('@/lib/server/policy')
+    const allowAnonymous = portalConfig?.features.allowAnonymous ?? false
+    const { canVote, canComment } = boardCapabilitiesForActor(
+      actor,
+      result.boardAccess,
+      allowAnonymous
+    )
+
+    // Drop boardAccess (server-only — used above to compute the booleans) so
+    // the board's segment ids never reach the client.
+    const { boardAccess: _boardAccess, ...serializable } = result
     return {
-      ...result,
+      ...serializable,
       contentJson: result.contentJson ?? {},
       createdAt: toISOString(result.createdAt),
       comments: result.comments.map(serializeComment),
       mergeInfo,
       mergedPostCount: mergedPostsList.length > 0 ? mergedPostsList.length : undefined,
+      canVote,
+      canComment,
     }
   })
 

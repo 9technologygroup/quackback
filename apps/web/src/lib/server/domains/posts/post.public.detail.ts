@@ -493,6 +493,9 @@ export async function getPublicPostDetail(
     authorAvatarUrl,
     createdAt: postResult.createdAt,
     board: { id: postResult.boardId, name: postResult.boardName, slug: postResult.boardSlug },
+    // Server-only: fetchPublicPostDetail derives canVote/canComment from this
+    // and strips it before the response reaches the client.
+    boardAccess: postResult.boardAccess,
     tags: tagsResult,
     roadmaps: roadmapsResult,
     comments: hydratedRootComments,

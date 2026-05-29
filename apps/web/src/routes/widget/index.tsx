@@ -68,12 +68,12 @@ export const Route = createFileRoute('/widget/')({
         slug: b.slug,
       })),
       orgSlug: settings?.slug ?? '',
-      features: {
-        // Single workspace-wide master switch (migration 0084 collapsed
-        // the legacy per-action trio into one). Per-board access tiers
-        // are read separately by the widget's downstream components.
-        allowAnonymous: settings?.publicPortalConfig?.features?.allowAnonymous ?? true,
-      },
+      // Per-board submit/vote capability for the request actor, server-computed
+      // (boardCapabilitiesForActor composes each board's access tier with the
+      // workspace anonymous switch). The widget gates its submit/vote CTAs per
+      // board off this map instead of a workspace-wide flag, so it never
+      // advertises an action the board's tier rejects (#191). Keyed by board id.
+      boardPermissions: portalData.boardPermissions,
       tabs: {
         feedback: settings?.publicWidgetConfig?.tabs?.feedback ?? true,
         changelog: settings?.publicWidgetConfig?.tabs?.changelog ?? false,
@@ -122,7 +122,7 @@ function WidgetPage() {
     statuses,
     boards,
     orgSlug,
-    features,
+    boardPermissions,
     tabs,
     imageUploadsInWidget,
     defaultBoard,
@@ -130,7 +130,6 @@ function WidgetPage() {
     portalOrigin,
   } = Route.useLoaderData()
   const { isIdentified, ensureSession } = useWidgetAuth()
-  const canVote = isIdentified || features.allowAnonymous
 
   const initialTab: WidgetTab = tabs.feedback ? 'feedback' : tabs.changelog ? 'changelog' : 'help'
   const [view, setView] = useState<WidgetView>(
@@ -310,22 +309,16 @@ function WidgetPage() {
           initialHasMore={postsHasMore}
           statuses={statuses}
           boards={boards}
+          boardPermissions={boardPermissions}
           defaultBoard={defaultBoard}
           onPostSelect={handlePostSelect}
           onPostCreated={handlePostCreated}
-          anonymousVotingEnabled={features.allowAnonymous}
-          anonymousPostingEnabled={features.allowAnonymous}
           imageUploadsInWidget={imageUploadsInWidget}
         />
       </div>
 
       {view === 'post-detail' && selectedPostId && (
-        <WidgetPostDetail
-          postId={selectedPostId}
-          statuses={statuses}
-          anonymousVotingEnabled={features.allowAnonymous}
-          anonymousCommentingEnabled={features.allowAnonymous}
-        />
+        <WidgetPostDetail postId={selectedPostId} statuses={statuses} />
       )}
 
       {view === 'success' &&
@@ -336,6 +329,9 @@ function WidgetPage() {
                 (s: { id: string; name: string; color: string }) => s.id === successPost.statusId
               ) ?? null)
             : null
+          // Vote gate follows the created post's board, not a workspace flag.
+          const canVote =
+            isIdentified || (boardPermissions?.[successPost.board.id]?.canVote ?? false)
 
           return (
             <div className="flex flex-col h-full">

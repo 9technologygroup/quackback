@@ -29,16 +29,9 @@ interface StatusInfo {
 interface WidgetPostDetailProps {
   postId: string
   statuses: StatusInfo[]
-  anonymousVotingEnabled?: boolean
-  anonymousCommentingEnabled?: boolean
 }
 
-export function WidgetPostDetail({
-  postId,
-  statuses,
-  anonymousVotingEnabled = true,
-  anonymousCommentingEnabled = false,
-}: WidgetPostDetailProps) {
+export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
   const intl = useIntl()
   const {
     isIdentified,
@@ -112,9 +105,13 @@ export function WidgetPostDetail({
     [submitComment]
   )
 
-  // Identified users can always vote/comment; anonymous users only if the setting is enabled
-  const canVote = isIdentified || anonymousVotingEnabled
-  const canComment = isIdentified || anonymousCommentingEnabled
+  // Per-board vote/comment capability, computed server-side for the real actor
+  // (fetchPublicPostDetail runs with the widget's Bearer identity and the query
+  // re-keys on sessionVersion, so this refetches after identify). Replaces the
+  // old workspace-wide anonymous flags, which advertised CTAs on boards whose
+  // per-action tier requires sign-in (#191). Undefined (legacy/cached) → false.
+  const canVote = post?.canVote ?? false
+  const canComment = post?.canComment ?? false
 
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   useEffect(() => {

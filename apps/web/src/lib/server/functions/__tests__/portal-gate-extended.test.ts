@@ -396,14 +396,33 @@ describe('portal.ts fetchPublicPostDetail — portal-visibility gate', () => {
       statusId: null,
       voteCount: 0,
       boardId: 'board_1',
+      // fetchPublicPostDetail reads boardAccess to derive canVote/canComment
+      // (then strips it from the response). A public-anonymous matrix keeps the
+      // gate-only test focused — the capability math is covered in policy tests.
+      boardAccess: {
+        view: 'anonymous',
+        vote: 'anonymous',
+        comment: 'anonymous',
+        submit: 'anonymous',
+        segments: { view: [], vote: [], comment: [], submit: [] },
+        moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+      },
     })
     mockGetPostMergeInfo.mockResolvedValue(null)
     mockGetMergedPosts.mockResolvedValue([])
     const h = await loadModule(PORTAL)
     const result = (await h[FETCH_PUBLIC_POST_DETAIL]({ data: { postId: 'post_1' } })) as {
       id: string
+      canVote?: boolean
+      canComment?: boolean
+      boardAccess?: unknown
     } | null
     expect(result?.id).toBe('post_1')
+    // Per-board capability is computed and exposed; raw boardAccess is stripped
+    // so the board's segment ids never reach the client.
+    expect(result?.canVote).toBe(true)
+    expect(result?.canComment).toBe(true)
+    expect(result?.boardAccess).toBeUndefined()
   })
 })
 

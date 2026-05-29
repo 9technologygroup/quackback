@@ -55,6 +55,15 @@ export interface WidgetHomeProps {
   initialHasMore?: boolean
   statuses: StatusInfo[]
   boards: BoardInfo[]
+  /**
+   * Server-computed per-board submit/vote capability for the request actor,
+   * keyed by board id (boardCapabilitiesForActor: each board's access tier
+   * composed with the workspace anonymous switch). The submit CTA follows the
+   * selected board's `canSubmit`; each feed card's vote follows its board's
+   * `canVote` — instead of a workspace-wide flag that advertises actions the
+   * board's tier rejects (#191).
+   */
+  boardPermissions?: Record<string, { canSubmit: boolean; canVote: boolean }>
   defaultBoard?: string
   onPostSelect?: (postId: string) => void
   onPostCreated?: (post: {
@@ -64,8 +73,6 @@ export interface WidgetHomeProps {
     statusId: string | null
     board: { id: string; name: string; slug: string }
   }) => void
-  anonymousVotingEnabled?: boolean
-  anonymousPostingEnabled?: boolean
   imageUploadsInWidget?: boolean
 }
 
@@ -167,11 +174,10 @@ export function WidgetHomeAnimated({
   initialHasMore = false,
   statuses,
   boards,
+  boardPermissions,
   defaultBoard,
   onPostSelect,
   onPostCreated,
-  anonymousVotingEnabled = true,
-  anonymousPostingEnabled = false,
   imageUploadsInWidget = true,
 }: WidgetHomeProps) {
   const intl = useIntl()
@@ -188,9 +194,6 @@ export function WidgetHomeAnimated({
   const { upload: uploadImage } = useWidgetImageUpload()
   const canUploadImages = isIdentified && imageUploadsInWidget
   const inputRef = useRef<HTMLInputElement>(null)
-  const canVote = isIdentified || anonymousVotingEnabled
-  const canPost = isIdentified || anonymousPostingEnabled
-  const needsEmail = !isIdentified && !hmacRequired && !anonymousPostingEnabled
 
   const [title, setTitle] = useState('')
   const [expanded, setExpanded] = useState(false)
@@ -210,6 +213,21 @@ export function WidgetHomeAnimated({
     setContentJson(json)
     setContentHtml(html)
   }, [])
+
+  // Per-board capability (server-computed for the request actor; for a not-yet-
+  // identified visitor it's the anonymous baseline). Submit follows the selected
+  // board; each feed card's vote follows its own board — replacing the old
+  // workspace-wide flag that advertised actions the board's tier rejects (#191).
+  // Identified users (incl. those who email-identify in the form below, becoming
+  // a real user) pass via isIdentified and are enforced server-side.
+  const rowCanVote = useCallback(
+    (boardId: string | undefined) =>
+      isIdentified || (!!boardId && (boardPermissions?.[boardId]?.canVote ?? false)),
+    [isIdentified, boardPermissions]
+  )
+  const selectedBoardAllowsAnonSubmit = boardPermissions?.[selectedBoardId]?.canSubmit ?? false
+  const canPost = isIdentified || selectedBoardAllowsAnonSubmit
+  const needsEmail = !isIdentified && !hmacRequired && !selectedBoardAllowsAnonSubmit
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -622,7 +640,7 @@ export function WidgetHomeAnimated({
                                   post={post}
                                   statusMap={statusMap}
                                   compact
-                                  canVote={canVote}
+                                  canVote={rowCanVote(post.board?.id)}
                                   ensureSessionThen={ensureSessionThen}
                                   onAuthRequired={() => handleAuthRequired(post.id)}
                                   onSelect={() => onPostSelect?.(post.id)}
@@ -890,7 +908,7 @@ export function WidgetHomeAnimated({
                           post={post}
                           statusMap={statusMap}
                           showBoard
-                          canVote={canVote}
+                          canVote={rowCanVote(post.board?.id)}
                           ensureSessionThen={ensureSessionThen}
                           onAuthRequired={() => handleAuthRequired(post.id)}
                           onSelect={() => onPostSelect?.(post.id)}
@@ -947,7 +965,7 @@ export function WidgetHomeAnimated({
                         post={post}
                         statusMap={statusMap}
                         showBoard
-                        canVote={canVote}
+                        canVote={rowCanVote(post.board?.id)}
                         ensureSessionThen={ensureSessionThen}
                         onAuthRequired={() => handleAuthRequired(post.id)}
                         onSelect={() => onPostSelect?.(post.id)}
