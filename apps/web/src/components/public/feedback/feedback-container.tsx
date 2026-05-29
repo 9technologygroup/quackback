@@ -40,8 +40,12 @@ interface FeedbackContainerProps {
   defaultBoardId?: string
   /** User info if authenticated */
   user?: { name: string | null; email: string } | null
-  /** Whether anonymous voting is enabled (visitors can vote without signing in) */
-  anonymousVotingEnabled?: boolean
+  /**
+   * Per-board submit/vote capability for the current viewer, keyed by board id
+   * (server-computed). Vote permission is per-board, so this one map gates
+   * every card — including infinite-scroll pages — and the submit CTA.
+   */
+  boardPermissions?: Record<string, { canSubmit: boolean; canVote: boolean }>
   /** Welcome card to render above the post list. Undefined / disabled = hidden. */
   welcomeCard?: PortalWelcomeCardData
 }
@@ -60,7 +64,7 @@ export function FeedbackContainer({
   currentSort = 'trending',
   defaultBoardId,
   user,
-  anonymousVotingEnabled = false,
+  boardPermissions,
   welcomeCard,
 }: FeedbackContainerProps): React.ReactElement {
   const intl = useIntl()
@@ -220,6 +224,7 @@ export function FeedbackContainer({
             boards={boards}
             defaultBoardId={boardIdForCreate}
             user={effectiveUser}
+            boardPermissions={boardPermissions}
             onPostCreated={handlePostCreated}
           />
 
@@ -291,7 +296,9 @@ export function FeedbackContainer({
                         boardSlug={post.board?.slug || ''}
                         tags={post.tags}
                         isAuthenticated={!!effectiveUser}
-                        canVote={!!effectiveUser || anonymousVotingEnabled}
+                        canVote={
+                          post.board ? (boardPermissions?.[post.board.id]?.canVote ?? false) : false
+                        }
                         showAvatar={false}
                       />
                     </div>

@@ -239,3 +239,41 @@ export function canCreatePost(
   )
   return { allowed: true, requiresApproval: resolved === 'on' }
 }
+
+export interface BoardCapabilities {
+  canSubmit: boolean
+  canVote: boolean
+}
+
+/**
+ * Per-board submit/vote capability for a viewer, composed with the workspace
+ * anonymous master switch. This is the single source of truth the portal UI
+ * uses to decide whether to advertise the submit/vote CTAs — the server sends
+ * the booleans so the client never re-derives them from the workspace flag and
+ * advertises an action the board's per-action tier would reject (Codex #191).
+ *
+ * `allowAnonymous` is the workspace switch (collapsed from the legacy
+ * anonymousVoting/anonymousPosting flags in migration 0084). It is the outer
+ * ceiling for non-user (anonymous / no-session) actors only — a real portal
+ * user or team member is gated purely by the per-board tier.
+ */
+export function boardCapabilitiesForActor(
+  actor: Actor,
+  access: BoardAccess,
+  allowAnonymous: boolean
+): BoardCapabilities {
+  const board: BoardShape = { access }
+  const canSubmit = canCreatePost(actor, board, undefined).allowed
+  // canVotePost composes canViewPost; pass a published, unauthored post so the
+  // decision reflects the vote tier (the feed already filtered to viewable).
+  const canVote = canVotePost(
+    actor,
+    { moderationState: 'published', principalId: null },
+    board
+  ).allowed
+  // Compose the workspace anonymous ceiling for non-user actors only.
+  if (actor.principalType !== 'user') {
+    return { canSubmit: canSubmit && allowAnonymous, canVote: canVote && allowAnonymous }
+  }
+  return { canSubmit, canVote }
+}

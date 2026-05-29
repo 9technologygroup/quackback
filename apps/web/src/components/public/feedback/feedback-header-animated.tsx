@@ -23,6 +23,7 @@ import { useSimilarPosts } from '@/lib/client/hooks/use-similar-posts'
 import { useEnsureAnonSession } from '@/lib/client/hooks/use-ensure-anon-session'
 import { SimilarPostsCard } from '@/components/public/similar-posts-card'
 import { signOut } from '@/lib/client/auth-client'
+import { resolveSubmitState } from '@/components/public/feedback/submit-permission'
 import type { JSONContent } from '@tiptap/react'
 
 interface BoardOption {
@@ -36,6 +37,13 @@ export interface FeedbackHeaderProps {
   boards: BoardOption[]
   defaultBoardId?: string
   user?: { name: string | null; email: string } | null
+  /**
+   * Per-board submit/vote capability for the current viewer, keyed by board id
+   * (server-computed; composes the board's access.submit tier with the
+   * workspace anonymous switch). The submit CTA follows the selected board's
+   * `canSubmit` instead of the workspace-wide flag.
+   */
+  boardPermissions?: Record<string, { canSubmit: boolean; canVote: boolean }>
   onPostCreated?: (postId: string, boardSlug: string) => void
 }
 
@@ -43,21 +51,18 @@ export function FeedbackHeaderAnimated({
   boards,
   defaultBoardId,
   user,
+  boardPermissions,
   onPostCreated,
 }: FeedbackHeaderProps) {
   const intl = useIntl()
   const router = useRouter()
-  const { session, settings } = useRouteContext({ from: '__root__' })
+  const { session } = useRouteContext({ from: '__root__' })
   const [expanded, setExpanded] = useState(false)
   const [error, setError] = useState('')
   const { openAuthPopover } = useAuthPopover()
 
   const createPost = useCreatePublicPost()
   const ensureAnonSession = useEnsureAnonSession()
-  // Workspace master switch for anonymous interaction (migration 0084
-  // collapsed `anonymousPosting` into `allowAnonymous`). The per-board
-  // submit tier still gates the create endpoint server-side.
-  const anonymousPostingEnabled = settings?.publicPortalConfig?.features?.allowAnonymous ?? false
   const richMediaEnabled = true
 
   // Identified users post as themselves; anonymous posting is handled separately.
@@ -66,8 +71,6 @@ export function FeedbackHeaderAnimated({
     session?.user && !isAnonymousSession
       ? { name: session.user.name, email: session.user.email }
       : user
-  const canPostAnonymously = anonymousPostingEnabled && (!session?.user || isAnonymousSession)
-  const canSubmit = !!effectiveUser || anonymousPostingEnabled
   const canUploadImages = !isAnonymousSession && !!session?.user && richMediaEnabled
 
   const { upload: uploadImage } = usePortalImageUpload()
@@ -89,6 +92,13 @@ export function FeedbackHeaderAnimated({
       setSelectedBoardId(defaultBoardId)
     }
   }, [defaultBoardId])
+
+  // Submit CTA follows the SELECTED board's server-computed capability (which
+  // composes its access.submit tier with the workspace anonymous switch for
+  // this viewer) — not the workspace-wide flag, which would advertise submit
+  // on a board whose tier requires sign-in (Codex #191).
+  const boardCanSubmit = boardPermissions?.[selectedBoardId]?.canSubmit ?? false
+  const { canSubmit, canPostAnonymously } = resolveSubmitState(boardCanSubmit, session)
 
   const [title, setTitle] = useState('')
   const [contentJson, setContentJson] = useState<JSONContent | null>(null)
@@ -143,7 +153,7 @@ export function FeedbackHeaderAnimated({
       return
     }
 
-    if (!effectiveUser && !anonymousPostingEnabled) {
+    if (!canSubmit) {
       setError(
         intl.formatMessage({
           id: 'portal.feedback.header.errorSignIn',
@@ -154,7 +164,7 @@ export function FeedbackHeaderAnimated({
     }
 
     try {
-      if (!effectiveUser && anonymousPostingEnabled) {
+      if (!effectiveUser && canPostAnonymously) {
         const ok = await ensureAnonSession()
         if (!ok) {
           setError(

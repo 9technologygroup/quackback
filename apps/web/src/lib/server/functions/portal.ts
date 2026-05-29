@@ -143,6 +143,21 @@ export const fetchPortalData = createServerFn({ method: 'GET' })
     )
     const principalId = memberResult?.id ?? null
 
+    // Per-board submit/vote capability for THIS viewer, composed with the
+    // workspace anonymous switch. The UI uses these booleans to decide whether
+    // to advertise the submit/vote CTAs instead of re-deriving from the
+    // workspace flag and showing an action the per-board tier rejects (#191).
+    // Keyed by board id: vote permission is per-board, so this one map also
+    // covers infinite-scroll feed pages (every post belongs to one of these
+    // boards). Computed in-memory from boardsRaw.access — no extra query.
+    const { boardCapabilitiesForActor } = await import('@/lib/server/policy')
+    const { getPortalConfig } = await import('@/lib/server/domains/settings/settings.service')
+    const allowAnonymous = (await getPortalConfig()).features.allowAnonymous ?? false
+    const boardPermissions: Record<string, { canSubmit: boolean; canVote: boolean }> = {}
+    for (const b of boardsRaw) {
+      boardPermissions[b.id] = boardCapabilitiesForActor(actor, b.access, allowAnonymous)
+    }
+
     // Return ALL voted post IDs (not just page 1) so infinite scroll pages show correct vote state
     const votedPostIds = Array.from(allVotedPosts)
 
@@ -171,6 +186,7 @@ export const fetchPortalData = createServerFn({ method: 'GET' })
       tags,
       votedPostIds,
       principalId,
+      boardPermissions,
     }
   })
 

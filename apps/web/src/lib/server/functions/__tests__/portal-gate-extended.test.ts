@@ -166,6 +166,12 @@ vi.mock('@/lib/server/db', () => ({
 
 vi.mock('@/lib/shared/roles', () => ({ isTeamMember: vi.fn().mockReturnValue(false) }))
 
+// fetchPortalData + getCommentsSectionDataFn read the workspace anonymous
+// switch via getPortalConfig to compose per-board submit/vote capability.
+vi.mock('@/lib/server/domains/settings/settings.service', () => ({
+  getPortalConfig: vi.fn().mockResolvedValue({ features: { allowAnonymous: true } }),
+}))
+
 // ---------------------------------------------------------------------------
 // changelog.ts mocks
 // ---------------------------------------------------------------------------
