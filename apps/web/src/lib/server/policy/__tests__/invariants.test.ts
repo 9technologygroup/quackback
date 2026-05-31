@@ -14,7 +14,7 @@ import { canViewBoard, boardViewFilter } from '../boards'
 import { postViewFilter } from '../posts'
 import { ANONYMOUS_ACTOR, type Actor } from '../types'
 import { createId, type SegmentId, type PrincipalId } from '@quackback/ids'
-import type { BoardAudience } from '@/lib/server/db'
+import type { BoardAccess, AccessTier } from '@/lib/server/db'
 import { PgDialect } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 
@@ -66,55 +66,73 @@ const actors: Record<string, Actor> = {
   admin: buildActor({ principalId: PRINCIPAL_ADMIN, role: 'admin', principalType: 'user' }),
 }
 
-const audiences: BoardAudience[] = [
-  { kind: 'public' },
-  { kind: 'authenticated' },
-  { kind: 'team' },
-  { kind: 'segments', segmentIds: [SEGMENT_ALPHA] },
-  { kind: 'segments', segmentIds: [SEGMENT_BETA] },
-  { kind: 'segments', segmentIds: [] },
+// Equivalent BoardAccess shapes for each historical audience kind. Same
+// tier on every action and approval off so the matrix mirrors the pre-T24
+// `audienceToAccess` derivation. Useful for exercising canViewBoard /
+// boardViewFilter across the full tier space.
+function mkAccess(view: AccessTier, segmentIds: string[] = []): BoardAccess {
+  return {
+    view,
+    vote: view,
+    comment: view,
+    submit: view,
+    segments: {
+      view: segmentIds,
+      vote: segmentIds,
+      comment: segmentIds,
+      submit: segmentIds,
+    },
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  }
+}
+
+const accesses: BoardAccess[] = [
+  mkAccess('anonymous'),
+  mkAccess('authenticated'),
+  mkAccess('team'),
+  mkAccess('segments', [SEGMENT_ALPHA]),
+  mkAccess('segments', [SEGMENT_BETA]),
+  mkAccess('segments', []),
 ]
 
 describe('policy invariants — boards', () => {
   it('canViewBoard is deterministic across calls', () => {
     for (const actor of Object.values(actors)) {
-      for (const audience of audiences) {
-        const a = canViewBoard(actor, { audience })
-        const b = canViewBoard(actor, { audience })
+      for (const access of accesses) {
+        const a = canViewBoard(actor, { access })
+        const b = canViewBoard(actor, { access })
         expect(a.allowed).toBe(b.allowed)
       }
     }
   })
 
-  it('team (member/admin) always passes regardless of audience', () => {
+  it('team (member/admin) always passes regardless of access tier', () => {
     for (const actor of [actors.member, actors.admin]) {
-      for (const audience of audiences) {
-        expect(canViewBoard(actor, { audience }).allowed).toBe(true)
+      for (const access of accesses) {
+        expect(canViewBoard(actor, { access }).allowed).toBe(true)
       }
     }
   })
 
-  it('anonymous only passes audience.kind === "public"', () => {
-    for (const audience of audiences) {
-      expect(canViewBoard(ANONYMOUS_ACTOR, { audience }).allowed).toBe(audience.kind === 'public')
+  it('anonymous only passes access.view === "anonymous"', () => {
+    for (const access of accesses) {
+      expect(canViewBoard(ANONYMOUS_ACTOR, { access }).allowed).toBe(access.view === 'anonymous')
     }
   })
 
-  it('service principalType is denied by audience="authenticated"', () => {
-    expect(canViewBoard(actors.service, { audience: { kind: 'authenticated' } }).allowed).toBe(
-      false
-    )
+  it('service principalType is denied by view="authenticated"', () => {
+    expect(canViewBoard(actors.service, { access: mkAccess('authenticated') }).allowed).toBe(false)
   })
 
-  it('segment audience never admits a non-member non-team actor', () => {
-    for (const audience of audiences.filter((a) => a.kind === 'segments')) {
-      expect(canViewBoard(actors.user, { audience }).allowed).toBe(false)
+  it('segment view tier never admits a non-member non-team actor', () => {
+    for (const access of accesses.filter((a) => a.view === 'segments')) {
+      expect(canViewBoard(actors.user, { access }).allowed).toBe(false)
     }
   })
 
-  it('audience denials always carry a non-empty reason', () => {
-    for (const audience of audiences) {
-      const decision = canViewBoard(ANONYMOUS_ACTOR, { audience })
+  it('access denials always carry a non-empty reason', () => {
+    for (const access of accesses) {
+      const decision = canViewBoard(ANONYMOUS_ACTOR, { access })
       if (!decision.allowed) {
         expect(decision.reason.length).toBeGreaterThan(0)
       }
@@ -177,23 +195,28 @@ describe('assertValidFilterSql helper', () => {
 })
 
 describe('boardViewFilter — SQL shape', () => {
-  it('team actor produces a constant-true predicate', () => {
+  it('team actor predicate filters soft-deleted boards', () => {
+    // Team actors bypass the access-tier checks but must still see
+    // `is null` on deletedAt — soft-deleted boards never surface
+    // through the portal-facing reader paths.
     const { sql, params } = toQueryShape(boardViewFilter(actors.admin))
-    expect(sql.trim().toLowerCase()).toBe('true')
+    expect(sql).toMatch(/deleted_at.*is null/i)
     expect(params).toEqual([])
   })
 
-  it('anonymous actor predicate references audience->>kind and excludes the authenticated branch', () => {
+  it('anonymous actor predicate references access->>view and excludes the authenticated branch', () => {
     const { sql } = toQueryShape(boardViewFilter(ANONYMOUS_ACTOR))
-    // Must check the public kind
-    expect(sql).toMatch(/audience.*'public'/)
+    // Must check the anonymous view tier
+    expect(sql).toMatch(/access.*'anonymous'/)
+    // Must filter soft-deleted boards regardless of actor
+    expect(sql).toMatch(/deleted_at.*is null/i)
     // The authenticated branch is gated by `isUser` (false for anon) — drizzle inlines the
-    // literal false alongside the kind check, so the branch is structurally present but
-    // never satisfied. The important property is that the JSON kind comparison is present.
+    // literal false alongside the tier check, so the branch is structurally present but
+    // never satisfied. The important property is that the JSON tier comparison is present.
     expect(sql).toMatch(/'authenticated'/)
     // The segments branch collapses to a constant `false` for an actor with
     // no memberships (anonymous always qualifies) — it can never match, so
-    // the `'segments'` kind comparison is correctly absent.
+    // the `'segments'` tier comparison is correctly absent.
     expect(sql).not.toMatch(/'segments'/)
   })
 
@@ -265,9 +288,9 @@ describe('postViewFilter — SQL shape', () => {
     expect(params).toEqual([])
   })
 
-  it('non-team predicate references audience AND moderation_state', () => {
+  it('non-team predicate references access AND moderation_state', () => {
     const { sql } = toQueryShape(postViewFilter(actors.user))
-    expect(sql).toMatch(/audience/)
+    expect(sql).toMatch(/access/)
     expect(sql).toMatch(/moderation_state/)
     // Both 'published' and 'pending' are bound as parameters (next test).
   })

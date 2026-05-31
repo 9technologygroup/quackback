@@ -297,9 +297,7 @@ const updatePortalConfigSchema = z.object({
   oauth: z.record(z.string(), z.boolean().optional()).optional(),
   features: z
     .object({
-      anonymousVoting: z.boolean().optional(),
-      anonymousCommenting: z.boolean().optional(),
-      anonymousPosting: z.boolean().optional(),
+      allowAnonymous: z.boolean().optional(),
     })
     .optional(),
   welcomeCard: z

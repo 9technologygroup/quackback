@@ -103,9 +103,11 @@ vi.mock('@/lib/server/functions/auth-helpers', () => ({
 }))
 
 vi.mock('@/lib/server/functions/workspace', () => ({ getSettings: vi.fn() }))
+const mockCanVotePost = vi.fn(() => ({ allowed: true }) as { allowed: boolean; reason?: string })
 vi.mock('@/lib/server/policy', () => ({
   canViewBoard: vi.fn(),
   postViewFilter: vi.fn(() => 'POST_VIEW_FILTER_SQL'),
+  canVotePost: (...a: unknown[]) => mockCanVotePost(...(a as [])),
 }))
 vi.mock('@/lib/server/domains/posts/post.service', () => ({ createPost: vi.fn() }))
 vi.mock('@/lib/server/domains/posts/post.voting', () => ({ voteOnPost: vi.fn() }))
@@ -125,9 +127,15 @@ vi.mock('@/lib/server/sanitize-tiptap', () => ({ sanitizeTiptapContent: (v: unkn
 // `innerJoin` is included so the audience-filter JOIN can be exercised
 // (G4 regression: similar-search must JOIN boards to apply postViewFilter).
 const mockInnerJoin = vi.fn()
+// getVoteSidebarDataFn's per-board vote query terminates at .limit(1);
+// the FTS similar-search path uses .orderBy().limit(). Both shapes
+// resolve to an empty array by default — individual tests override the
+// resolution where they care.
+const mockBoardRowLimit = vi.fn().mockResolvedValue([])
 mockInnerJoin.mockReturnValue({
   where: vi.fn().mockReturnValue({
     orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+    limit: mockBoardRowLimit,
   }),
 })
 vi.mock('@/lib/server/db', () => ({
@@ -164,10 +172,17 @@ vi.mock('@/lib/server/domains/embeddings/embedding.service', () => ({
   generateEmbedding: vi.fn().mockResolvedValue(null),
 }))
 
-vi.mock('@/lib/server/domains/posts/post.access', () => ({
-  assertPostViewable: vi.fn().mockResolvedValue(undefined),
-  assertCommentViewable: vi.fn().mockResolvedValue(undefined),
-}))
+// Partial mock: stub the assert chokepoints but keep the real
+// loadBoardAccessForPost, whose query chain resolves through the db mock's
+// .innerJoin().where().limit() (mockBoardRowLimit) like the inlined query did.
+vi.mock('@/lib/server/domains/posts/post.access', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/server/domains/posts/post.access')>()
+  return {
+    ...actual,
+    assertPostViewable: vi.fn().mockResolvedValue(undefined),
+    assertCommentViewable: vi.fn().mockResolvedValue(undefined),
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Handler indices
@@ -547,6 +562,145 @@ describe('getVoteSidebarDataFn — portal-visibility gate', () => {
 
     expect(result.canVote).toBe(false)
     expect(result.hasVoted).toBe(false)
+  })
+
+  // Regression: getVoteSidebarDataFn used to decide canVote from the
+  // workspace allowAnonymous flag alone, ignoring board.access.vote.
+  // On the modern "Public" preset (view=anonymous, vote=authenticated)
+  // an anonymous caller would see canVote=true and only learn the truth
+  // on click. Fix: compose canVotePost as a per-board ceiling — and
+  // keep the workspace master switch as a separate ceiling on top.
+
+  it('returns canVote=false when board.vote denies even though workspace allowAnonymous is ON', async () => {
+    mockResolvePortalAccess.mockResolvedValue({ granted: true, reason: 'public' })
+    // No session cookie → handler resolves canVote without ctx.
+    const { hasAuthCredentials } = await import('../auth-helpers')
+    vi.mocked(hasAuthCredentials).mockReturnValueOnce(false)
+    // Board row is fetched and returns an access object — content is
+    // opaque to this test (canVotePost is mocked); the fact that a row
+    // exists is what gates the canVote computation.
+    mockBoardRowLimit.mockResolvedValueOnce([{ access: { vote: 'authenticated' } }])
+    // allowAnonymous flag returns true (workspace ON)
+    const { getSettings } = await import('../workspace')
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      portalConfig: { features: { allowAnonymous: true } },
+    } as never)
+    // Vote tier denies anonymous
+    mockCanVotePost.mockReturnValueOnce({ allowed: false, reason: 'Sign in to vote on this board' })
+
+    const result = (await publicPostsHandlers[GET_VOTE_SIDEBAR_DATA]({
+      data: { postId: 'pst_x' },
+    })) as { isMember: boolean; canVote: boolean; hasVoted: boolean }
+
+    expect(result.canVote).toBe(false)
+  })
+
+  it('returns canVote=true when both workspace allowAnonymous and board.vote allow', async () => {
+    mockResolvePortalAccess.mockResolvedValue({ granted: true, reason: 'public' })
+    const { hasAuthCredentials } = await import('../auth-helpers')
+    vi.mocked(hasAuthCredentials).mockReturnValueOnce(false)
+    mockBoardRowLimit.mockResolvedValueOnce([{ access: { vote: 'anonymous' } }])
+    const { getSettings } = await import('../workspace')
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      portalConfig: { features: { allowAnonymous: true } },
+    } as never)
+    mockCanVotePost.mockReturnValueOnce({ allowed: true })
+
+    const result = (await publicPostsHandlers[GET_VOTE_SIDEBAR_DATA]({
+      data: { postId: 'pst_x' },
+    })) as { canVote: boolean }
+
+    expect(result.canVote).toBe(true)
+  })
+
+  it('returns canVote=false when workspace allowAnonymous is OFF even on board.vote=anonymous', async () => {
+    // The workspace master switch is the ceiling — a board can't override it.
+    mockResolvePortalAccess.mockResolvedValue({ granted: true, reason: 'public' })
+    const { hasAuthCredentials } = await import('../auth-helpers')
+    vi.mocked(hasAuthCredentials).mockReturnValueOnce(false)
+    mockBoardRowLimit.mockResolvedValueOnce([{ access: { vote: 'anonymous' } }])
+    const { getSettings } = await import('../workspace')
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      portalConfig: { features: { allowAnonymous: false } },
+    } as never)
+    mockCanVotePost.mockReturnValueOnce({ allowed: true })
+
+    const result = (await publicPostsHandlers[GET_VOTE_SIDEBAR_DATA]({
+      data: { postId: 'pst_x' },
+    })) as { canVote: boolean }
+
+    expect(result.canVote).toBe(false)
+  })
+
+  // Regression: the no-session path is covered above, but the EXISTING
+  // anonymous-session re-check (cookie present, principal.type='anonymous',
+  // public-posts.ts:791-802) had no test — a cookie-bearing anon would slip
+  // past the workspace master switch even when it is OFF.
+
+  it('existing anonymous session: canVote=false when allowAnonymous is OFF even though board.vote allows', async () => {
+    mockResolvePortalAccess.mockResolvedValue({ granted: true, reason: 'public' })
+    const { hasAuthCredentials, getOptionalAuth } = await import('../auth-helpers')
+    vi.mocked(hasAuthCredentials).mockReturnValueOnce(true)
+    // getOptionalAuth is called twice — once to build the probe actor, once
+    // for the session check — so the session must be returned for both.
+    const anonSession = {
+      user: { id: 'user_anon' },
+      principal: { id: 'principal_anon', type: 'anonymous' },
+    }
+    vi.mocked(getOptionalAuth)
+      .mockResolvedValueOnce(anonSession as never)
+      .mockResolvedValueOnce(anonSession as never)
+    mockBoardRowLimit.mockResolvedValueOnce([{ access: { vote: 'anonymous' } }])
+    mockCanVotePost.mockReturnValueOnce({ allowed: true })
+    const { getSettings } = await import('../workspace')
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      portalConfig: { features: { allowAnonymous: false } },
+    } as never)
+    const { getVoteAndSubscriptionStatus } =
+      await import('@/lib/server/domains/posts/post.public.utils')
+    vi.mocked(getVoteAndSubscriptionStatus).mockResolvedValueOnce({
+      hasVoted: false,
+      subscription: { subscribed: false, level: 'none', reason: null },
+    } as never)
+
+    const result = (await publicPostsHandlers[GET_VOTE_SIDEBAR_DATA]({
+      data: { postId: 'pst_x' },
+    })) as { isMember: boolean; canVote: boolean }
+
+    expect(result.isMember).toBe(false)
+    expect(result.canVote).toBe(false)
+  })
+
+  it('signed-in member: canVote follows board.vote only, not the anonymous master switch', async () => {
+    mockResolvePortalAccess.mockResolvedValue({ granted: true, reason: 'public' })
+    const { hasAuthCredentials, getOptionalAuth } = await import('../auth-helpers')
+    vi.mocked(hasAuthCredentials).mockReturnValueOnce(true)
+    // getOptionalAuth is called twice (probe actor + session check).
+    const memberSession = {
+      user: { id: 'user_x' },
+      principal: { id: 'principal_user', type: 'user' },
+    }
+    vi.mocked(getOptionalAuth)
+      .mockResolvedValueOnce(memberSession as never)
+      .mockResolvedValueOnce(memberSession as never)
+    mockBoardRowLimit.mockResolvedValueOnce([{ access: { vote: 'authenticated' } }])
+    mockCanVotePost.mockReturnValueOnce({ allowed: true })
+    const { getVoteAndSubscriptionStatus } =
+      await import('@/lib/server/domains/posts/post.public.utils')
+    vi.mocked(getVoteAndSubscriptionStatus).mockResolvedValueOnce({
+      hasVoted: false,
+      subscription: { subscribed: false, level: 'none', reason: null },
+    } as never)
+    const { getSettings } = await import('../workspace')
+
+    const result = (await publicPostsHandlers[GET_VOTE_SIDEBAR_DATA]({
+      data: { postId: 'pst_x' },
+    })) as { isMember: boolean; canVote: boolean }
+
+    expect(result.isMember).toBe(true)
+    expect(result.canVote).toBe(true)
+    // The anonymous master switch is not consulted for a non-anonymous principal.
+    expect(vi.mocked(getSettings)).not.toHaveBeenCalled()
   })
 })
 

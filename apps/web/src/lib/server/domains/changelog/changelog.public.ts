@@ -3,6 +3,8 @@ import {
   changelogEntries,
   changelogEntryPosts,
   postStatuses,
+  posts,
+  boards,
   eq,
   and,
   isNull,
@@ -12,6 +14,7 @@ import {
   or,
   desc,
   inArray,
+  sql,
 } from '@/lib/server/db'
 import type { ChangelogId, StatusId } from '@quackback/ids'
 import { NotFoundError } from '@/lib/shared/errors'
@@ -51,53 +54,44 @@ export async function getPublicChangelogById(id: ChangelogId): Promise<PublicCha
     )
   }
 
-  // Get linked posts with board slugs, board audience, and status.
-  // `board.audience` is needed for the public-audience filter below.
-  const allLinkedPostRecords = await db.query.changelogEntryPosts.findMany({
-    where: eq(changelogEntryPosts.changelogEntryId, id),
-    with: {
-      post: {
-        columns: {
-          id: true,
-          title: true,
-          voteCount: true,
-          boardId: true,
-          statusId: true,
-          deletedAt: true,
-          moderationState: true,
-        },
-        with: {
-          board: {
-            columns: {
-              slug: true,
-              audience: true,
-            },
-          },
-        },
-      },
-    },
-  })
-
-  // Only published, non-deleted posts from public-audience boards may be
-  // exposed through the public changelog. Three independent guards:
+  // Get linked posts with board slugs and status. Visibility predicates
+  // run in SQL, not in JS, so we never fetch rows we'd just throw away.
+  // Four independent guards, all on the WHERE clause:
   //   1. moderationState='published' — a team member can link a post in
   //      any moderation state, but pending/spam/archived/closed posts
   //      are not for public consumption.
-  //   2. !deletedAt — a soft-deleted post must not leak.
-  //   3. board.audience.kind='public' — linking a team-only or
+  //   2. posts.deletedAt IS NULL — a soft-deleted post must not leak.
+  //   3. boards.deletedAt IS NULL — a soft-deleted board must not leak
+  //      any of its posts via the changelog.
+  //   4. boards.access->>'view' = 'anonymous' — linking a team-only or
   //      segment-restricted post must not promote it into the public
-  //      changelog feed.
-  const linkedPostRecords = allLinkedPostRecords.filter(
-    (lp) =>
-      !lp.post.deletedAt &&
-      lp.post.moderationState === 'published' &&
-      lp.post.board?.audience?.kind === 'public'
-  )
+  //      changelog feed. The JSON path lookup matches the pattern in
+  //      apps/web/src/lib/server/policy/boards.ts.
+  const linkedPostRows = await db
+    .select({
+      postId: posts.id,
+      postTitle: posts.title,
+      postVoteCount: posts.voteCount,
+      postStatusId: posts.statusId,
+      boardSlug: boards.slug,
+    })
+    .from(changelogEntryPosts)
+    .innerJoin(posts, eq(changelogEntryPosts.postId, posts.id))
+    .innerJoin(boards, eq(posts.boardId, boards.id))
+    .where(
+      and(
+        eq(changelogEntryPosts.changelogEntryId, id),
+        isNull(posts.deletedAt),
+        eq(posts.moderationState, 'published'),
+        isNull(boards.deletedAt),
+        sql`${boards.access}->>'view' = 'anonymous'`
+      )
+    )
 
   // Get status info for linked posts
   const statusIds = new Set<StatusId>()
-  linkedPostRecords.forEach((lp) => {
-    if (lp.post.statusId) statusIds.add(lp.post.statusId)
+  linkedPostRows.forEach((lp) => {
+    if (lp.postStatusId) statusIds.add(lp.postStatusId)
   })
 
   const statusMap = new Map<StatusId, { name: string; color: string }>()
@@ -115,12 +109,12 @@ export async function getPublicChangelogById(id: ChangelogId): Promise<PublicCha
     content: entry.content,
     contentJson: entry.contentJson,
     publishedAt: entry.publishedAt,
-    linkedPosts: linkedPostRecords.map((lp) => ({
-      id: lp.post.id,
-      title: lp.post.title,
-      voteCount: lp.post.voteCount,
-      boardSlug: lp.post.board?.slug ?? '',
-      status: lp.post.statusId ? (statusMap.get(lp.post.statusId) ?? null) : null,
+    linkedPosts: linkedPostRows.map((lp) => ({
+      id: lp.postId,
+      title: lp.postTitle,
+      voteCount: lp.postVoteCount,
+      boardSlug: lp.boardSlug,
+      status: lp.postStatusId ? (statusMap.get(lp.postStatusId) ?? null) : null,
     })),
   }
 }
@@ -174,44 +168,34 @@ export async function listPublicChangelogs(params: {
   const hasMore = entries.length > limit
   const items = hasMore ? entries.slice(0, limit) : entries
 
-  // Get linked posts for all entries
+  // Get linked posts for all entries. Same four-guard filter as
+  // `getPublicChangelogById` — see the comment there. Filtering happens
+  // in SQL so we never materialize rows we'd just throw away.
   const entryIds = items.map((e) => e.id)
-  const allLinkedPosts = (
+  const allLinkedPosts =
     entryIds.length > 0
-      ? await db.query.changelogEntryPosts.findMany({
-          where: inArray(changelogEntryPosts.changelogEntryId, entryIds),
-          with: {
-            post: {
-              columns: {
-                id: true,
-                title: true,
-                voteCount: true,
-                boardId: true,
-                statusId: true,
-                deletedAt: true,
-                moderationState: true,
-              },
-              with: {
-                board: {
-                  columns: {
-                    slug: true,
-                    audience: true,
-                  },
-                },
-              },
-            },
-          },
-        })
+      ? await db
+          .select({
+            changelogEntryId: changelogEntryPosts.changelogEntryId,
+            postId: posts.id,
+            postTitle: posts.title,
+            postVoteCount: posts.voteCount,
+            postStatusId: posts.statusId,
+            boardSlug: boards.slug,
+          })
+          .from(changelogEntryPosts)
+          .innerJoin(posts, eq(changelogEntryPosts.postId, posts.id))
+          .innerJoin(boards, eq(posts.boardId, boards.id))
+          .where(
+            and(
+              inArray(changelogEntryPosts.changelogEntryId, entryIds),
+              isNull(posts.deletedAt),
+              eq(posts.moderationState, 'published'),
+              isNull(boards.deletedAt),
+              sql`${boards.access}->>'view' = 'anonymous'`
+            )
+          )
       : []
-  ).filter(
-    // Same three-guard filter as getPublicChangelogById — see the comment
-    // there. The audience check keeps team-only / segment-restricted
-    // posts out of the public changelog feed.
-    (lp) =>
-      !lp.post.deletedAt &&
-      lp.post.moderationState === 'published' &&
-      lp.post.board?.audience?.kind === 'public'
-  )
 
   // Group linked posts by changelog entry
   const linkedPostsMap = new Map<ChangelogId, typeof allLinkedPosts>()
@@ -224,7 +208,7 @@ export async function listPublicChangelogs(params: {
   // Get status info for all linked posts
   const publicStatusIds = new Set<StatusId>()
   allLinkedPosts.forEach((lp) => {
-    if (lp.post.statusId) publicStatusIds.add(lp.post.statusId)
+    if (lp.postStatusId) publicStatusIds.add(lp.postStatusId)
   })
 
   const publicStatusMap = new Map<StatusId, { name: string; color: string }>()
@@ -248,11 +232,11 @@ export async function listPublicChangelogs(params: {
         contentJson: entry.contentJson,
         publishedAt: entry.publishedAt!,
         linkedPosts: entryLinkedPosts.map((lp) => ({
-          id: lp.post.id,
-          title: lp.post.title,
-          voteCount: lp.post.voteCount,
-          boardSlug: lp.post.board?.slug ?? '',
-          status: lp.post.statusId ? (publicStatusMap.get(lp.post.statusId) ?? null) : null,
+          id: lp.postId,
+          title: lp.postTitle,
+          voteCount: lp.postVoteCount,
+          boardSlug: lp.boardSlug,
+          status: lp.postStatusId ? (publicStatusMap.get(lp.postStatusId) ?? null) : null,
         })),
       }
     })

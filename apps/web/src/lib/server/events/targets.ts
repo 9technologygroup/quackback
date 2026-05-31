@@ -58,7 +58,7 @@ async function filterSubscribersByPostAudience(
     .select({
       moderationState: posts.moderationState,
       principalId: posts.principalId,
-      audience: boards.audience,
+      access: boards.access,
     })
     .from(posts)
     .innerJoin(boards, eq(posts.boardId, boards.id))
@@ -72,8 +72,10 @@ async function filterSubscribersByPostAudience(
     return []
   }
 
-  // Fast path: public board + published post — everyone is in.
-  if (post.audience?.kind === 'public' && post.moderationState === 'published') {
+  // Fast path: anonymous-tier view + published post — everyone is in.
+  // (anonymous view tier is the access-matrix equivalent of the legacy
+  // 'public' audience kind.)
+  if (post.access?.view === 'anonymous' && post.moderationState === 'published') {
     return subscribers
   }
 
@@ -116,7 +118,7 @@ async function filterSubscribersByPostAudience(
     return canViewPost(
       actor,
       { moderationState: post.moderationState, principalId: post.principalId },
-      { audience: post.audience }
+      { access: post.access }
     ).allowed
   })
 }

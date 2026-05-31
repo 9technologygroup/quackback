@@ -17,9 +17,7 @@ const ACCESS_POLICY = {
 const FULL_PORTAL_CONFIG: PortalConfig = {
   oauth: { password: true },
   features: {
-    anonymousVoting: true,
-    anonymousCommenting: false,
-    anonymousPosting: false,
+    allowAnonymous: true,
     allowEditAfterEngagement: false,
     allowDeleteAfterEngagement: false,
     showPublicEditHistory: false,

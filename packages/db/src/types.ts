@@ -40,15 +40,67 @@ export interface BoardSettings {
   roadmapStatusIds?: StatusId[] // Status IDs to show on roadmap
 }
 
-// Stored in boards.audience jsonb. Team members retain access at every kind
-// — kind='team' is the *non-team excluded* tier, not a team-only allowlist.
-export type BoardAudience =
-  | { kind: 'public' }
-  | { kind: 'authenticated' }
-  | { kind: 'team' }
-  | { kind: 'segments'; segmentIds: string[] }
+// ----------------------------------------------------------------------
+// Per-action access tiers (View+Vote / Comment / Submit) and per-board
+// approval overrides. The legacy `BoardAudience` discriminated union was
+// removed in migration 0080 — every reader now consults `BoardAccess`.
+// ----------------------------------------------------------------------
 
-export const DEFAULT_BOARD_AUDIENCE: BoardAudience = { kind: 'public' }
+export const ACCESS_TIERS = ['anonymous', 'authenticated', 'segments', 'team'] as const
+export type AccessTier = (typeof ACCESS_TIERS)[number]
+
+/** Restriction rank — higher number is stricter. Used for tier-invariant
+ *  checks: a derived action (comment / submit) cannot be more permissive
+ *  than view. */
+export const ACCESS_TIER_RANK: Record<AccessTier, number> = {
+  anonymous: 0,
+  authenticated: 1,
+  segments: 2,
+  team: 3,
+}
+
+/** Per-board moderation rule values. A board can either:
+ *   - `inherit`: resolve from the workspace's portalConfig.moderationDefault.requireApproval
+ *   - `on`:      force-hold matching submissions for review (override on)
+ *   - `off`:     force-allow matching submissions without review (override off)
+ *  The three axes (anonPosts / signedPosts / comments) match the design's
+ *  Moderation tab and the workspace requireApproval shape. */
+export const MODERATION_RULE_VALUES = ['inherit', 'on', 'off'] as const
+export type ModerationRuleValue = (typeof MODERATION_RULE_VALUES)[number]
+
+export interface BoardAccess {
+  view: AccessTier
+  vote: AccessTier
+  comment: AccessTier
+  submit: AccessTier
+  /** Per-action segment allowlists — used wherever the matching tier is
+   *  'segments'. A board can say "Active Users can view & comment, but
+   *  only Beta testers can submit." Invalid (and rejected on save) when
+   *  an action's tier is 'segments' but that action's list is empty. */
+  segments: {
+    view: string[]
+    vote: string[]
+    comment: string[]
+    submit: string[]
+  }
+  /** Tri-state per-board moderation overrides for posts (split by author
+   *  type) and comments. `inherit` defers to the workspace default; `on`
+   *  and `off` are explicit per-board overrides. */
+  moderation: {
+    anonPosts: ModerationRuleValue
+    signedPosts: ModerationRuleValue
+    comments: ModerationRuleValue
+  }
+}
+
+export const DEFAULT_BOARD_ACCESS: BoardAccess = {
+  view: 'anonymous',
+  vote: 'anonymous',
+  comment: 'anonymous',
+  submit: 'anonymous',
+  segments: { view: [], vote: [], comment: [], submit: [] },
+  moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+}
 
 // Integration config (stored in integrations.config JSONB column)
 // Each integration defines its own typed config at the integration layer.

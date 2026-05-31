@@ -14,7 +14,8 @@ import {
   type UpdateBoardInput,
   type DeleteBoardInput,
 } from '@/lib/server/functions/boards'
-import { type Board, type BoardAudience, DEFAULT_BOARD_AUDIENCE } from '@/lib/shared/db-types'
+import { accessForPreset } from '@/lib/shared/schemas/boards'
+import type { Board, BoardAccess } from '@/lib/shared/db-types'
 import type { BoardId } from '@quackback/ids'
 import { boardKeys } from '@/lib/client/hooks/use-boards-query'
 import { adminQueries } from '@/lib/client/queries/admin'
@@ -36,12 +37,15 @@ export function useCreateBoard() {
       await queryClient.cancelQueries({ queryKey: boardKeys.lists() })
       const previous = queryClient.getQueryData<Board[]>(boardKeys.lists())
 
+      // Mirror the server's createBoardFn preset→access mapping so the
+      // optimistic row matches what the server will actually insert. The
+      // shared helper is the single source of truth.
       const optimisticBoard: Board = {
         id: `board_temp_${Date.now()}` as Board['id'],
         name: input.name,
         slug: slugify(input.name),
         description: input.description ?? null,
-        audience: input.isPublic === false ? { kind: 'team' as const } : DEFAULT_BOARD_AUDIENCE,
+        access: accessForPreset(input.preset ?? 'public'),
         settings: {},
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -125,7 +129,7 @@ export function useUpdateBoard() {
 }
 
 /**
- * Hook to update board audience.
+ * Hook to update board access policy.
  *
  * Admin-only server-side. Use this from the Access tab; never from the
  * general-update path, which mustn't carry visibility changes.
@@ -133,7 +137,7 @@ export function useUpdateBoard() {
 export function useUpdateBoardAccess() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (input: { boardId: BoardId; audience?: BoardAudience }) =>
+    mutationFn: (input: { boardId: BoardId; access: BoardAccess }) =>
       updateBoardAccessFn({ data: input }),
     onMutate: async (input) => {
       await queryClient.cancelQueries({ queryKey: boardKeys.lists() })
@@ -141,13 +145,15 @@ export function useUpdateBoardAccess() {
       const previousList = queryClient.getQueryData<Board[]>(boardKeys.lists())
       const previousDetail = queryClient.getQueryData<Board>(boardKeys.detail(input.boardId))
 
+      const accessPatch: Partial<Pick<Board, 'access'>> = { access: input.access }
+
       queryClient.setQueryData<Board[]>(boardKeys.lists(), (old) =>
         old?.map((board) =>
           board.id !== input.boardId
             ? board
             : {
                 ...board,
-                ...(input.audience !== undefined && { audience: input.audience }),
+                ...accessPatch,
                 updatedAt: new Date(),
               }
         )
@@ -156,7 +162,7 @@ export function useUpdateBoardAccess() {
       if (previousDetail) {
         queryClient.setQueryData<Board>(boardKeys.detail(input.boardId), {
           ...previousDetail,
-          ...(input.audience !== undefined && { audience: input.audience }),
+          ...accessPatch,
           updatedAt: new Date(),
         })
       }

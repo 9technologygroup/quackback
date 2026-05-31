@@ -98,7 +98,18 @@ function buildPostFilterConditions(params: PostListParams, actor: Actor) {
   // moderationState gate (e.g. hide 'pending' from non-authors). Compose
   // alongside the existing soft-delete + canonical-post filters — never
   // replace them.
-  const conditions = [postViewFilter(actor), isNull(posts.canonicalPostId), isNull(posts.deletedAt)]
+  //
+  // `isNull(boards.deletedAt)` is explicit here (rather than relying on
+  // boardViewFilter) because postViewFilter's team-actor branch skips
+  // boardViewFilter to grant admins visibility into team-only boards.
+  // Soft-deleted boards must still be filtered for everyone — admins
+  // never want stale tombstoned posts in the public portal feed.
+  const conditions = [
+    postViewFilter(actor),
+    isNull(boards.deletedAt),
+    isNull(posts.canonicalPostId),
+    isNull(posts.deletedAt),
+  ]
 
   if (boardSlug) {
     conditions.push(eq(boards.slug, boardSlug))

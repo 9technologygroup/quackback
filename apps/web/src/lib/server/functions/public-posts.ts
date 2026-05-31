@@ -23,6 +23,7 @@ import {
   policyActorFromAuth,
 } from './auth-helpers'
 import { getSettings } from './workspace'
+import { workspaceAllowsAnonymous } from '@/lib/server/domains/settings/settings.types'
 import { listPublicPosts, getAllUserVotedPostIds } from '@/lib/server/domains/posts/post.public'
 import {
   getPublicRoadmapPostsPaginated,
@@ -359,17 +360,26 @@ export const toggleVoteFn = createServerFn({ method: 'POST' })
         const ctx = await requireAuth()
         // Per-post audience gate: portal-access alone is not enough — an
         // authenticated caller could still vote on a team-only / segment-
-        // restricted post if they knew the id. Treat denials as 404.
-        const { assertPostViewable } = await import('@/lib/server/domains/posts/post.access')
+        // restricted post if they knew the id. `assertPostVotable`
+        // composes view (404 on deny) + the per-board vote tier
+        // (403 on "viewable but not votable").
+        const { assertPostVotable } = await import('@/lib/server/domains/posts/post.access')
         const actor = await policyActorFromAuth(ctx)
-        await assertPostViewable(data.postId as PostId, actor)
+        await assertPostVotable(data.postId as PostId, actor)
 
-        // Block anonymous users unless anonymousVoting is enabled
+        // Block anonymous users unless the workspace allows anonymous
+        // interaction. The per-board vote tier was already enforced
+        // above by assertPostVotable; this is the workspace-wide
+        // master switch (collapsed in migration 0084 from the legacy
+        // anonymousVoting/Commenting/Posting trio).
         if (ctx.principal.type === 'anonymous') {
-          const { getPortalConfig } = await import('@/lib/server/domains/settings/settings.service')
-          const config = await getPortalConfig()
-          if (!config.features.anonymousVoting) {
-            throw new Error('Anonymous voting is not enabled')
+          // Fail closed on a missing flag — read the raw config, not
+          // getPortalConfig's permissive merged default (matches
+          // createPublicPostFn / the vote-sidebar gate). The per-board vote
+          // tier was already enforced above by assertPostVotable.
+          const settings = await getSettings()
+          if (!workspaceAllowsAnonymous(settings?.portalConfig)) {
+            throw new Error('Anonymous interaction is not enabled')
           }
 
           // Rate limit anonymous voters by IP
@@ -438,14 +448,16 @@ export const createPublicPostFn = createServerFn({ method: 'POST' })
         throw new Error('Organization settings not found')
       }
 
-      // Block anonymous users unless anonymousPosting is enabled
+      // Block anonymous users unless the workspace master switch allows
+      // anonymous interaction. Per-board submit tiers are checked
+      // downstream inside createPost via canCreatePost; this is the
+      // workspace-wide ceiling (collapsed in migration 0084).
       if (ctx.principal.type === 'anonymous') {
-        const parsed =
-          typeof settings.portalConfig === 'string'
-            ? JSON.parse(settings.portalConfig)
-            : settings.portalConfig
-        if (!parsed?.features?.anonymousPosting) {
-          throw new Error('Anonymous posting is not enabled')
+        // Fail closed on a missing flag (single source of truth; the per-board
+        // submit tier is the inner gate, existing tenants carry an explicit
+        // value from migration 0084).
+        if (!workspaceAllowsAnonymous(settings.portalConfig)) {
+          throw new Error('Anonymous interaction is not enabled')
         }
       } else if (!principalRecord) {
         throw new Error('You must be a member to submit feedback.')
@@ -704,10 +716,10 @@ export const getVoteSidebarDataFn = createServerFn({ method: 'GET' })
       // probing a post on a team-only / segment-restricted board. Treat
       // a NotFound from assertPostViewable as denial (same shape — the
       // sidebar UI degrades to the read-only state).
+      const probeAuth = await getOptionalAuth()
+      const probeActor = await policyActorFromAuth(probeAuth)
       try {
         const { assertPostViewable } = await import('@/lib/server/domains/posts/post.access')
-        const probeAuth = await getOptionalAuth()
-        const probeActor = await policyActorFromAuth(probeAuth)
         await assertPostViewable(postId, probeActor)
       } catch (err) {
         if (err instanceof Error && err.name === 'NotFoundError') {
@@ -717,18 +729,44 @@ export const getVoteSidebarDataFn = createServerFn({ method: 'GET' })
         throw err
       }
 
-      // No session cookie — check if anonymous voting is enabled
+      // Per-board vote tier gate: a board can be public-to-view but
+      // authenticated-only-to-vote (modern "Public" preset). Resolve the
+      // board.access alongside the post and run canVotePost so the UI
+      // can render the right CTA (sign-in prompt vs. enabled button)
+      // instead of letting an anonymous click learn the truth on submit.
+      // The workspace anonymousVoting flag is composed below as a ceiling.
+      const { loadBoardAccessForPost } = await import('@/lib/server/domains/posts/post.access')
+      const { canVotePost } = await import('@/lib/server/policy')
+      const boardAccess = await loadBoardAccessForPost(postId)
+      if (!boardAccess) {
+        // Race: post or board deleted between assertPostViewable and now.
+        console.log(`[fn:public-posts] getVoteSidebarDataFn: post/board vanished mid-call`)
+        return denied
+      }
+
+      // canVotePost composes canViewPost internally, but assertPostViewable
+      // already proved view-allowed for this actor; pass moderationState=
+      // 'published' here so the inner view check is a no-op and the
+      // decision reflects the vote tier specifically.
+      const voteDecision = canVotePost(
+        probeActor,
+        { moderationState: 'published', principalId: null },
+        { access: boardAccess }
+      )
+
+      // No session cookie — fall back to the workspace anonymous master
+      // switch (collapsed from the legacy anonymousVoting flag in
+      // migration 0084). The per-board vote tier is the inner ceiling.
       if (!hasAuthCredentials()) {
         const settings = await getSettings()
-        const parsed =
-          typeof settings?.portalConfig === 'string'
-            ? JSON.parse(settings.portalConfig)
-            : settings?.portalConfig
-        const anonEnabled = parsed?.features?.anonymousVoting ?? true
-        console.log(`[fn:public-posts] getVoteSidebarDataFn: no session, canVote=${anonEnabled}`)
+        const anonEnabled = workspaceAllowsAnonymous(settings?.portalConfig)
+        const canVote = anonEnabled && voteDecision.allowed
+        console.log(
+          `[fn:public-posts] getVoteSidebarDataFn: no session, canVote=${canVote} (anonEnabled=${anonEnabled}, voteAllowed=${voteDecision.allowed})`
+        )
         return {
           isMember: false,
-          canVote: anonEnabled,
+          canVote,
           hasVoted: false,
           subscriptionStatus: noSub,
         }
@@ -743,15 +781,13 @@ export const getVoteSidebarDataFn = createServerFn({ method: 'GET' })
 
       const isAnonymous = ctx.principal.type === 'anonymous'
 
-      // Re-check anonymousVoting setting for existing anonymous sessions
-      let canVote = true
+      // Re-check the workspace allowAnonymous master switch for existing
+      // anonymous sessions (sign-in cookie present but principal is anon).
+      let canVote = voteDecision.allowed
       if (isAnonymous) {
         const settings = await getSettings()
-        const parsed =
-          typeof settings?.portalConfig === 'string'
-            ? JSON.parse(settings.portalConfig)
-            : settings?.portalConfig
-        canVote = parsed?.features?.anonymousVoting ?? true
+        const anonEnabled = workspaceAllowsAnonymous(settings?.portalConfig)
+        canVote = anonEnabled && voteDecision.allowed
       }
 
       const { hasVoted, subscription } = await getVoteAndSubscriptionStatus(
@@ -760,7 +796,7 @@ export const getVoteSidebarDataFn = createServerFn({ method: 'GET' })
       )
 
       console.log(
-        `[fn:public-posts] getVoteSidebarDataFn: isMember=${!isAnonymous}, hasVoted=${hasVoted}`
+        `[fn:public-posts] getVoteSidebarDataFn: isMember=${!isAnonymous}, hasVoted=${hasVoted}, canVote=${canVote}`
       )
       return {
         isMember: !isAnonymous,

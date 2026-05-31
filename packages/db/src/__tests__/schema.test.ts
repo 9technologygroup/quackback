@@ -19,7 +19,7 @@ describe('Schema definitions', () => {
       expect(columns).toContain('slug')
       expect(columns).toContain('name')
       expect(columns).toContain('description')
-      expect(columns).toContain('audience')
+      expect(columns).toContain('access')
       expect(columns).toContain('settings')
       expect(columns).toContain('createdAt')
       expect(columns).toContain('updatedAt')
@@ -28,6 +28,8 @@ describe('Schema definitions', () => {
 
     it('has correct column count', () => {
       const columns = Object.keys(getTableColumns(boards))
+      // 9 columns after T24 (migration 0080) dropped the legacy `audience`
+      // column; `access` is now the sole source of truth.
       expect(columns.length).toBe(9)
     })
 

@@ -965,6 +965,21 @@ Examples:
       const denied = requireScope(auth, 'write:feedback')
       if (denied) return denied
       try {
+        // Chokepoint: resolves the post + board, then runs canVotePost
+        // (which composes canViewPost). Team API keys always pass the
+        // tier check; this primarily enforces post.deletedAt /
+        // board.deletedAt + per-board vote tier — protections that
+        // voteOnPost alone skipped.
+        const { assertPostVotable } = await import('@/lib/server/domains/posts/post.access')
+        const { segmentIdsForPrincipal: resolveSegments } =
+          await import('@/lib/server/domains/segments/segment-membership.service')
+        const votingActor = {
+          principalId: auth.principalId,
+          role: auth.role,
+          principalType: 'user' as const,
+          segmentIds: await resolveSegments(auth.principalId),
+        }
+        await assertPostVotable(args.postId as PostId, votingActor)
         const result = await voteOnPost(args.postId as PostId, auth.principalId)
 
         return jsonResult({
@@ -994,6 +1009,13 @@ Examples:
       if (scopeDenied) return scopeDenied
       const roleDenied = requireTeamRole(auth)
       if (roleDenied) return roleDenied
+      // Team-authority tool: records a vote on behalf of `voterPrincipalId`
+      // (e.g. from a support ticket). It routes to addVoteOnBehalf and
+      // deliberately does NOT run assertPostVotable — the per-board vote
+      // tier gates a user voting for THEMSELVES, not a teammate attributing
+      // signal gathered off-portal. Enforcing the target's tier would defeat
+      // the feature (e.g. logging customer demand on a vote='team' roadmap).
+      // Pinned by handler.test.ts "intentional team-attributed bypass".
       try {
         if (args.action === 'remove') {
           const result = await removeVote(
@@ -1118,12 +1140,15 @@ Examples:
       const denied = requireScope(auth, 'write:feedback')
       if (denied) return denied
       try {
-        // MCP auth is admin-scoped; build a team-shaped actor so the policy
-        // gate inside createPost bypasses moderation (admin posts are trusted).
+        // Build a team-shaped actor from the caller's REAL role so the
+        // policy gate inside createPost (submit tier + moderation axis)
+        // reflects who is writing. Team API keys (role 'admin'/'member')
+        // keep their legitimate bypass; portal users (role 'user') are
+        // gated exactly as the portal create path gates them.
         const callerSegmentIds = await segmentIdsForPrincipal(auth.principalId)
         const actor = {
           principalId: auth.principalId,
-          role: 'admin' as const,
+          role: auth.role,
           principalType: auth.userId ? ('user' as const) : ('service' as const),
           segmentIds: callerSegmentIds,
         }
@@ -1286,6 +1311,17 @@ Examples:
       if (scopeDenied) return scopeDenied
       // No team role gate — the service layer allows comment authors OR team members
       try {
+        // View-gate first: an author who can no longer view the comment's
+        // board (tightened to team / dropped from a segment) must not edit
+        // it via MCP, matching the portal path (functions/comments.ts).
+        const { assertCommentViewable } = await import('@/lib/server/domains/posts/post.access')
+        const callerSegmentIds = await segmentIdsForPrincipal(auth.principalId)
+        await assertCommentViewable(args.commentId as CommentId, {
+          principalId: auth.principalId,
+          role: auth.role,
+          principalType: auth.userId ? ('user' as const) : ('service' as const),
+          segmentIds: callerSegmentIds,
+        })
         const result = await userEditComment(args.commentId as CommentId, args.content, {
           principalId: auth.principalId,
           role: auth.role,
@@ -1317,6 +1353,16 @@ Examples:
       if (scopeDenied) return scopeDenied
       // No team role gate — the service layer allows comment authors OR team members
       try {
+        // View-gate before the irreversible cascade delete — same as the
+        // portal path and react_to_comment.
+        const { assertCommentViewable } = await import('@/lib/server/domains/posts/post.access')
+        const callerSegmentIds = await segmentIdsForPrincipal(auth.principalId)
+        await assertCommentViewable(args.commentId as CommentId, {
+          principalId: auth.principalId,
+          role: auth.role,
+          principalType: auth.userId ? ('user' as const) : ('service' as const),
+          segmentIds: callerSegmentIds,
+        })
         await deleteComment(args.commentId as CommentId, {
           principalId: auth.principalId,
           role: auth.role,

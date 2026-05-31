@@ -33,3 +33,31 @@ export function togglesToRequireApproval(toggles: ApprovalToggles): RequireAppro
   if (toggles.authenticated) return 'authenticated'
   return 'none'
 }
+
+/** The three per-board moderation axes, matching BoardAccess.moderation. */
+export type ModerationAxis = 'anonPosts' | 'signedPosts' | 'comments'
+
+/**
+ * Resolve a workspace `requireApproval` level to whether a given moderation
+ * axis should HOLD submissions for review, for the `'inherit'` case.
+ *
+ *   none          -> all axes off
+ *   anonymous     -> anonPosts on; signedPosts/comments off
+ *   authenticated -> signedPosts on; anonPosts/comments off
+ *   all           -> all axes on
+ *
+ * Comments inherit-resolve to `on` only at `'all'`, since today's workspace
+ * setting doesn't separate post- from comment-moderation.
+ *
+ * Single source of truth: both the server policy (canCreatePost/Comment) and
+ * the board Moderation UI pill import this — do not re-implement it.
+ */
+export function resolveWorkspaceModeration(
+  axis: ModerationAxis,
+  level: RequireApprovalLevel | undefined
+): 'on' | 'off' {
+  const ws = level ?? 'none'
+  if (axis === 'comments') return ws === 'all' ? 'on' : 'off'
+  if (axis === 'anonPosts') return ws === 'all' || ws === 'anonymous' ? 'on' : 'off'
+  return ws === 'all' || ws === 'authenticated' ? 'on' : 'off'
+}

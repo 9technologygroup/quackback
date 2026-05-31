@@ -62,9 +62,7 @@ const PORTAL_FEATURES_DEFAULTS = {
   allowEditAfterEngagement: false,
   allowDeleteAfterEngagement: false,
   showPublicEditHistory: false,
-  anonymousVoting: true,
-  anonymousCommenting: false,
-  anonymousPosting: false,
+  allowAnonymous: true,
 }
 
 export function makeTenant(overrides: Partial<TenantSettings> = {}): TenantSettings {

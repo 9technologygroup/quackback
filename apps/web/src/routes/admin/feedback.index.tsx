@@ -68,6 +68,9 @@ export const Route = createFileRoute('/admin/feedback/')({
       queryClient.ensureQueryData(adminQueries.statuses()),
       queryClient.ensureQueryData(adminQueries.teamMembers()),
       queryClient.ensureQueryData(mergeSuggestionQueries.summary()),
+      // Warm the moderation count so the pending-moderation banner renders on
+      // first paint instead of popping in once the query resolves.
+      queryClient.ensureQueryData(adminQueries.moderationStatus()),
     ])
 
     return {

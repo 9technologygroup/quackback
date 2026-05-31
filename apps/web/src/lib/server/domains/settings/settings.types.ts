@@ -178,12 +178,18 @@ export interface PortalAuthMethods {
  * Portal feature toggles
  */
 export interface PortalFeatures {
-  /** Whether unauthenticated visitors can vote without signing in */
-  anonymousVoting: boolean
-  /** Whether unauthenticated visitors can comment without signing in */
-  anonymousCommenting: boolean
-  /** Whether unauthenticated visitors can create posts without signing in */
-  anonymousPosting: boolean
+  /**
+   * Workspace-wide master switch for anonymous interaction. When `false`,
+   * every board's vote/comment/submit action requires sign-in regardless
+   * of its per-board `access` tier — the BoardAccessForm renders the
+   * "Anyone" cells as disabled and the server's vote/comment/post
+   * handlers refuse anonymous principals up-front. The previous trio of
+   * per-action toggles (`anonymousVoting`/`anonymousCommenting`/
+   * `anonymousPosting`) was collapsed into this single flag by migration
+   * 0084; per-board tiers carry whatever finer-grained restrictions the
+   * admin had set under the old shape.
+   */
+  allowAnonymous: boolean
   /** Allow users to edit posts even after receiving votes/comments */
   allowEditAfterEngagement: boolean
   /** Allow users to delete posts even after receiving votes/comments */
@@ -269,9 +275,7 @@ export const DEFAULT_PORTAL_CONFIG: PortalConfig = {
     allowEditAfterEngagement: false,
     allowDeleteAfterEngagement: false,
     showPublicEditHistory: false,
-    anonymousVoting: true,
-    anonymousCommenting: false,
-    anonymousPosting: false,
+    allowAnonymous: true,
   },
   welcomeCard: {
     enabled: false,
@@ -280,6 +284,35 @@ export const DEFAULT_PORTAL_CONFIG: PortalConfig = {
   },
   moderationDefault: { requireApproval: 'none' },
   access: { visibility: 'public', allowedDomains: [], widgetSignIn: false, allowedSegmentIds: [] },
+}
+
+/**
+ * Fail-closed read of the workspace anonymous-interaction ceiling from a raw
+ * (un-merged) `settings.portalConfig`. Only an explicitly-enabled flag permits
+ * anonymous vote / comment / submit; a missing flag DENIES — the security gate
+ * must not inherit `getPortalConfig`'s permissive merged default. Existing
+ * tenants carry an explicit value from migration 0084, and the per-board tier
+ * is the inner gate. This is the single source of truth for every anonymous
+ * write/read gate so they cannot drift.
+ */
+export function workspaceAllowsAnonymous(
+  portalConfig: string | Record<string, unknown> | null | undefined
+): boolean {
+  let parsed: unknown = portalConfig
+  if (typeof portalConfig === 'string') {
+    // A corrupt / empty-string portal_config (a live pre-0084 state — see the
+    // migration) must DENY, not throw a 500. Mirrors parseJsonOrNull; the gate
+    // stays fail-closed on unparseable config.
+    try {
+      parsed = JSON.parse(portalConfig)
+    } catch {
+      return false
+    }
+  }
+  return (
+    (parsed as { features?: { allowAnonymous?: boolean } } | null | undefined)?.features
+      ?.allowAnonymous === true
+  )
 }
 
 // =============================================================================

@@ -16,6 +16,16 @@ const setCalls: unknown[] = []
 const deleteCalls: unknown[] = []
 let transactionUsed = false
 
+// State the soft-delete UPDATE / hard-delete DELETE returning row reflects. The
+// decrement decision reads moderationState/isPrivate from the LOCKED returning
+// row (race-correct vs a stale pre-transaction snapshot), so the held-comment
+// tests set this to 'pending'. Default 'published' → the decrement runs.
+const returnedComment: { moderationState: string; isPrivate: boolean; deletedAt: Date | null } = {
+  moderationState: 'published',
+  isPrivate: false,
+  deletedAt: null,
+}
+
 // Chainable mock builder for Drizzle query builder
 function createChainMock() {
   const chain: Record<string, unknown> = {}
@@ -25,7 +35,7 @@ function createChainMock() {
     return chain
   })
   chain.where = vi.fn().mockReturnValue(chain)
-  chain.returning = vi.fn().mockResolvedValue([
+  chain.returning = vi.fn(async () => [
     {
       id: 'comment_mock' as CommentId,
       postId: 'post_mock' as PostId,
@@ -33,8 +43,10 @@ function createChainMock() {
       parentId: null,
       principalId: 'principal_mock' as PrincipalId,
       isTeamMember: false,
+      isPrivate: returnedComment.isPrivate,
+      moderationState: returnedComment.moderationState,
       createdAt: new Date(),
-      deletedAt: null,
+      deletedAt: returnedComment.deletedAt,
       statusChangeFromId: null,
       statusChangeToId: null,
     },
@@ -93,7 +105,14 @@ vi.mock('@/lib/server/db', async () => {
           board: {
             id: 'board_mock',
             slug: 'test',
-            audience: { kind: 'public' },
+            access: {
+              view: 'anonymous',
+              vote: 'anonymous',
+              comment: 'anonymous',
+              submit: 'anonymous',
+              segments: { view: [], vote: [], comment: [], submit: [] },
+              moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+            },
           },
         }),
       },
@@ -157,6 +176,15 @@ vi.mock('@/lib/shared', () => ({
   toStatusChange: vi.fn(),
 }))
 
+// canCreateComment loads the workspace requireApproval default for
+// resolving board-level `inherit`. None for these tests — explicit
+// `'on'` overrides exercise the held-comment paths directly.
+vi.mock('@/lib/server/domains/settings/settings.service', () => ({
+  getPortalConfig: vi.fn().mockResolvedValue({
+    moderationDefault: { requireApproval: 'none' },
+  }),
+}))
+
 const portalActor: Actor = {
   principalId: 'principal_mock' as unknown as PrincipalId,
   role: 'user',
@@ -176,6 +204,9 @@ describe('Comment count maintenance', () => {
     setCalls.length = 0
     deleteCalls.length = 0
     transactionUsed = false
+    returnedComment.moderationState = 'published'
+    returnedComment.isPrivate = false
+    returnedComment.deletedAt = null
     vi.clearAllMocks()
   })
 
@@ -236,6 +267,54 @@ describe('Comment count maintenance', () => {
       })
       expect(hasCommentCountUpdate).toBe(true)
     })
+
+    it('does NOT increment commentCount when holding a pending comment', async () => {
+      // Switch the board fixture to moderation.comments='on' so a portal
+      // commenter lands as moderationState='pending'. The insert path
+      // must skip the commentCount bump — approveCommentFn re-increments
+      // when the comment becomes publicly visible.
+      const { db } = await import('@/lib/server/db')
+      vi.mocked(db.query.posts.findFirst).mockResolvedValueOnce({
+        id: 'post_mock',
+        title: 'Test Post',
+        boardId: 'board_mock',
+        statusId: 'status_mock',
+        isCommentsLocked: false,
+        moderationState: 'published',
+        principalId: null,
+        board: {
+          id: 'board_mock',
+          slug: 'test',
+          access: {
+            view: 'anonymous',
+            vote: 'anonymous',
+            comment: 'anonymous',
+            submit: 'anonymous',
+            segments: { view: [], vote: [], comment: [], submit: [] },
+            moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'on' },
+          },
+        },
+      } as never)
+
+      const { createComment } = await import('../comment.service')
+      await createComment(
+        { postId: 'post_mock' as PostId, content: 'Held' },
+        {
+          principalId: 'principal_mock' as PrincipalId,
+          role: 'user',
+        },
+        portalActor,
+        { skipDispatch: true }
+      )
+
+      // No set() call should have included commentCount — the only
+      // post-side write a held comment performs is the (skipped) bump.
+      const hasCommentCountUpdate = setCalls.some((args) => {
+        const setArg = (args as unknown[])[0] as Record<string, unknown>
+        return 'commentCount' in setArg
+      })
+      expect(hasCommentCountUpdate).toBe(false)
+    })
   })
 
   describe('softDeleteComment', () => {
@@ -264,6 +343,54 @@ describe('Comment count maintenance', () => {
         return 'commentCount' in setArg
       })
       expect(hasCommentCountUpdate).toBe(true)
+    })
+
+    it('does NOT decrement comment_count when deleting a held (pending) comment', async () => {
+      // A held comment was never added to the public count on insert (the
+      // pending path skips the bump). Deleting it before approval must NOT
+      // decrement, or it underflows the count of already-published comments.
+      // Two findFirst calls: canDeleteComment, then softDeleteComment itself.
+      const { db } = await import('@/lib/server/db')
+      const heldComment = {
+        id: 'comment_mock',
+        postId: 'post_mock',
+        content: 'held comment',
+        parentId: null,
+        principalId: 'principal_mock',
+        isTeamMember: false,
+        isPrivate: false,
+        moderationState: 'pending',
+        createdAt: new Date(),
+        deletedAt: null,
+        post: {
+          id: 'post_mock',
+          title: 'Test Post',
+          boardId: 'board_mock',
+          statusId: 'status_mock',
+          pinnedCommentId: null,
+          board: { id: 'board_mock', slug: 'test' },
+        },
+      }
+      vi.mocked(db.query.comments.findFirst)
+        .mockResolvedValueOnce(heldComment as never)
+        .mockResolvedValueOnce(heldComment as never)
+      // The decrement decision reads the LOCKED returning row, so the held
+      // state must be reflected there (not just on the findFirst snapshot).
+      returnedComment.moderationState = 'pending'
+
+      const { softDeleteComment } = await import('../comment.permissions')
+      setCalls.length = 0
+
+      await softDeleteComment('comment_mock' as CommentId, {
+        principalId: 'principal_mock' as PrincipalId,
+        role: 'admin',
+      })
+
+      const hasCommentCountUpdate = setCalls.some((args) => {
+        const setArg = (args as unknown[])[0] as Record<string, unknown>
+        return 'commentCount' in setArg
+      })
+      expect(hasCommentCountUpdate).toBe(false)
     })
   })
 
@@ -315,6 +442,9 @@ describe('Comment count maintenance', () => {
           board: { id: 'board_mock', slug: 'test' },
         },
       } as never)
+      // The decrement decision reads the deleted (locked) returning row, which
+      // for an already-soft-deleted comment carries its deletedAt timestamp.
+      returnedComment.deletedAt = new Date('2026-01-01')
 
       const { deleteComment } = await import('../comment.service')
       setCalls.length = 0
@@ -325,6 +455,48 @@ describe('Comment count maintenance', () => {
       })
 
       // Should NOT have any set() call with commentCount
+      const hasCommentCountUpdate = setCalls.some((args) => {
+        const setArg = (args as unknown[])[0] as Record<string, unknown>
+        return 'commentCount' in setArg
+      })
+      expect(hasCommentCountUpdate).toBe(false)
+    })
+
+    it('should NOT decrement comment_count when deleting a held (pending) comment', async () => {
+      // Same invariant as softDeleteComment: a pending comment was never
+      // counted on insert, so the hard-delete path must not decrement either.
+      const { db } = await import('@/lib/server/db')
+      vi.mocked(db.query.comments.findFirst).mockResolvedValueOnce({
+        id: 'comment_mock',
+        postId: 'post_mock',
+        content: 'held comment',
+        parentId: null,
+        principalId: 'principal_mock',
+        isTeamMember: false,
+        isPrivate: false,
+        moderationState: 'pending',
+        createdAt: new Date(),
+        deletedAt: null,
+        post: {
+          id: 'post_mock',
+          title: 'Test Post',
+          boardId: 'board_mock',
+          statusId: 'status_mock',
+          pinnedCommentId: null,
+          board: { id: 'board_mock', slug: 'test' },
+        },
+      } as never)
+      // The decrement decision reads the deleted (locked) returning row.
+      returnedComment.moderationState = 'pending'
+
+      const { deleteComment } = await import('../comment.service')
+      setCalls.length = 0
+
+      await deleteComment('comment_mock' as CommentId, {
+        principalId: 'principal_mock' as PrincipalId,
+        role: 'admin',
+      })
+
       const hasCommentCountUpdate = setCalls.some((args) => {
         const setArg = (args as unknown[])[0] as Record<string, unknown>
         return 'commentCount' in setArg

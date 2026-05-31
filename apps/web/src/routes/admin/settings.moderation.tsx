@@ -68,10 +68,11 @@ function ModerationPage() {
 
   const features = portalConfigQuery.data.features
 
-  // Anonymous access toggles
-  const [anonPosting, setAnonPosting] = useState(features?.anonymousPosting ?? false)
-  const [anonCommenting, setAnonCommenting] = useState(features?.anonymousCommenting ?? false)
-  const [anonVoting, setAnonVoting] = useState(features?.anonymousVoting ?? true)
+  // Workspace-wide master switch for anonymous interaction. Collapsed
+  // in migration 0084 from the legacy anonymousVoting / Commenting /
+  // Posting trio — per-board access tiers carry the finer-grained
+  // restrictions now (see BoardAccessForm).
+  const [allowAnonymous, setAllowAnonymous] = useState(features?.allowAnonymous ?? true)
 
   // Moderation toggles
   const [moderationToggles, setModerationToggles] = useState<ApprovalToggles>(() =>
@@ -126,42 +127,18 @@ function ModerationPage() {
 
       <SettingsCard
         title="Anonymous access"
-        description="Control what visitors without an account can do on your portal."
+        description="Control whether visitors without an account can interact with your portal."
       >
         <div className="divide-y divide-border/50">
           <PermissionToggle
-            id="anon-posting"
-            label="Anonymous users can submit posts"
-            description="Let visitors submit without an account."
-            checked={anonPosting}
-            saving={savingField === 'anonymousPosting'}
+            id="allow-anonymous"
+            label="Allow anonymous interaction"
+            description="When off, all boards require sign-in for voting, commenting, and submitting posts."
+            checked={allowAnonymous}
+            saving={savingField === 'allowAnonymous'}
             onCheckedChange={(checked) => {
-              setAnonPosting(checked)
-              updateFeature('anonymousPosting', checked, () => setAnonPosting(!checked))
-            }}
-            disabled={isBusy}
-          />
-          <PermissionToggle
-            id="anon-commenting"
-            label="Anonymous users can comment"
-            description="Let visitors comment without an account."
-            checked={anonCommenting}
-            saving={savingField === 'anonymousCommenting'}
-            onCheckedChange={(checked) => {
-              setAnonCommenting(checked)
-              updateFeature('anonymousCommenting', checked, () => setAnonCommenting(!checked))
-            }}
-            disabled={isBusy}
-          />
-          <PermissionToggle
-            id="anon-voting"
-            label="Anonymous users can vote"
-            description="Let visitors upvote without an account."
-            checked={anonVoting}
-            saving={savingField === 'anonymousVoting'}
-            onCheckedChange={(checked) => {
-              setAnonVoting(checked)
-              updateFeature('anonymousVoting', checked, () => setAnonVoting(!checked))
+              setAllowAnonymous(checked)
+              updateFeature('allowAnonymous', checked, () => setAllowAnonymous(!checked))
             }}
             disabled={isBusy}
           />

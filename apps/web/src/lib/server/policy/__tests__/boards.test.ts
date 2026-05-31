@@ -1,7 +1,7 @@
 /**
  * Exhaustive matrix for canViewBoard.
  *
- * Every audience kind × every meaningful actor shape. The goal is to make
+ * Every access.view tier × every meaningful actor shape. The goal is to make
  * any future regression in board-visibility logic detectable from a single
  * test failure with an unambiguous diagnostic message.
  *
@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest'
 import { canViewBoard } from '../boards'
 import { ANONYMOUS_ACTOR, type Actor } from '../types'
 import type { SegmentId, PrincipalId } from '@quackback/ids'
-import type { BoardAudience } from '@/lib/server/db'
+import type { BoardAccess } from '@/lib/server/db'
 
 // ----------------------------------------------------------------------
 // Actor fixtures — one per meaningful shape
@@ -68,17 +68,76 @@ const serviceInAlpha: Actor = {
 }
 
 // ----------------------------------------------------------------------
-// Audience fixtures
+// Access fixtures — one per meaningful (view tier, segments) shape.
+// For these fixtures the same allowlist is mirrored across all three
+// actions, matching the historical single-list semantics so the matrix
+// below keeps its meaning post-migration.
 // ----------------------------------------------------------------------
 
-const A: Record<string, BoardAudience> = {
-  public: { kind: 'public' },
-  authenticated: { kind: 'authenticated' },
-  team: { kind: 'team' },
-  segmentAlpha: { kind: 'segments', segmentIds: ['segment_alpha'] },
-  segmentBeta: { kind: 'segments', segmentIds: ['segment_beta'] },
-  segmentAlphaBeta: { kind: 'segments', segmentIds: ['segment_alpha', 'segment_beta'] },
-  segmentEmpty: { kind: 'segments', segmentIds: [] },
+const sharedSegments = (ids: string[]) => ({
+  view: ids,
+  vote: ids,
+  comment: ids,
+  submit: ids,
+})
+
+const A: Record<string, BoardAccess> = {
+  public: {
+    view: 'anonymous',
+    vote: 'anonymous',
+    comment: 'anonymous',
+    submit: 'anonymous',
+    segments: sharedSegments([]),
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  },
+  authenticated: {
+    view: 'authenticated',
+    vote: 'authenticated',
+    comment: 'authenticated',
+    submit: 'authenticated',
+    segments: sharedSegments([]),
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  },
+  team: {
+    view: 'team',
+    vote: 'team',
+    comment: 'team',
+    submit: 'team',
+    segments: sharedSegments([]),
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  },
+  segmentAlpha: {
+    view: 'segments',
+    vote: 'segments',
+    comment: 'segments',
+    submit: 'segments',
+    segments: sharedSegments(['segment_alpha']),
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  },
+  segmentBeta: {
+    view: 'segments',
+    vote: 'segments',
+    comment: 'segments',
+    submit: 'segments',
+    segments: sharedSegments(['segment_beta']),
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  },
+  segmentAlphaBeta: {
+    view: 'segments',
+    vote: 'segments',
+    comment: 'segments',
+    submit: 'segments',
+    segments: sharedSegments(['segment_alpha', 'segment_beta']),
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  },
+  segmentEmpty: {
+    view: 'segments',
+    vote: 'segments',
+    comment: 'segments',
+    submit: 'segments',
+    segments: sharedSegments([]),
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  },
 }
 
 // ----------------------------------------------------------------------
@@ -88,50 +147,50 @@ const A: Record<string, BoardAudience> = {
 interface Row {
   name: string
   actor: Actor
-  audience: BoardAudience
+  access: BoardAccess
   expected: boolean
   reason?: string // substring expected in deny reason
 }
 
 const matrix: Row[] = [
   // ---------- public ----------
-  { name: 'public + anonymous', actor: ANONYMOUS_ACTOR, audience: A.public, expected: true },
-  { name: 'public + portal user', actor: portalUserNoSegments, audience: A.public, expected: true },
-  { name: 'public + service', actor: servicePrincipal, audience: A.public, expected: true },
-  { name: 'public + member', actor: memberActor, audience: A.public, expected: true },
-  { name: 'public + admin', actor: adminActor, audience: A.public, expected: true },
+  { name: 'public + anonymous', actor: ANONYMOUS_ACTOR, access: A.public, expected: true },
+  { name: 'public + portal user', actor: portalUserNoSegments, access: A.public, expected: true },
+  { name: 'public + service', actor: servicePrincipal, access: A.public, expected: true },
+  { name: 'public + member', actor: memberActor, access: A.public, expected: true },
+  { name: 'public + admin', actor: adminActor, access: A.public, expected: true },
 
   // ---------- authenticated ----------
   {
     name: 'authenticated + anonymous',
     actor: ANONYMOUS_ACTOR,
-    audience: A.authenticated,
+    access: A.authenticated,
     expected: false,
     reason: 'Sign in',
   },
   {
     name: 'authenticated + portal user',
     actor: portalUserNoSegments,
-    audience: A.authenticated,
+    access: A.authenticated,
     expected: true,
   },
   {
     name: 'authenticated + service principal (NOT a user)',
     actor: servicePrincipal,
-    audience: A.authenticated,
+    access: A.authenticated,
     expected: false,
     reason: 'Sign in',
   },
   {
     name: 'authenticated + member always passes',
     actor: memberActor,
-    audience: A.authenticated,
+    access: A.authenticated,
     expected: true,
   },
   {
     name: 'authenticated + admin always passes',
     actor: adminActor,
-    audience: A.authenticated,
+    access: A.authenticated,
     expected: true,
   },
 
@@ -139,77 +198,83 @@ const matrix: Row[] = [
   {
     name: 'team + anonymous',
     actor: ANONYMOUS_ACTOR,
-    audience: A.team,
+    access: A.team,
     expected: false,
     reason: 'internal',
   },
   {
     name: 'team + portal user',
     actor: portalUserNoSegments,
-    audience: A.team,
+    access: A.team,
     expected: false,
     reason: 'internal',
   },
   {
     name: 'team + segment-member portal user (still excluded)',
     actor: portalUserInAlpha,
-    audience: A.team,
+    access: A.team,
     expected: false,
     reason: 'internal',
   },
   {
     name: 'team + service (non-team service is excluded)',
     actor: servicePrincipal,
-    audience: A.team,
+    access: A.team,
     expected: false,
     reason: 'internal',
   },
-  { name: 'team + member', actor: memberActor, audience: A.team, expected: true },
-  { name: 'team + admin', actor: adminActor, audience: A.team, expected: true },
+  { name: 'team + member', actor: memberActor, access: A.team, expected: true },
+  { name: 'team + admin', actor: adminActor, access: A.team, expected: true },
 
   // ---------- segments[alpha] ----------
   {
     name: 'segments[alpha] + anonymous',
     actor: ANONYMOUS_ACTOR,
-    audience: A.segmentAlpha,
+    access: A.segmentAlpha,
     expected: false,
     reason: 'restricted',
   },
   {
     name: 'segments[alpha] + portal user not in segment',
     actor: portalUserNoSegments,
-    audience: A.segmentAlpha,
+    access: A.segmentAlpha,
     expected: false,
     reason: 'restricted',
   },
   {
     name: 'segments[alpha] + portal user in alpha',
     actor: portalUserInAlpha,
-    audience: A.segmentAlpha,
+    access: A.segmentAlpha,
     expected: true,
   },
   {
     name: 'segments[alpha] + portal user in alpha+beta (any-match)',
     actor: portalUserInAlphaBeta,
-    audience: A.segmentAlpha,
+    access: A.segmentAlpha,
     expected: true,
   },
   {
-    name: 'segments[alpha] + service in alpha (non-team segment members admitted)',
+    // Tier-model behaviour: the 'segments' tier requires principalType==='user'
+    // (see tierAllows). A service principal that happens to share a segment id
+    // is intentionally rejected — service callers should be treated as a
+    // separate, non-portal class. Pinned by access.test.ts "rejects service
+    // even if in segment".
+    name: 'segments[alpha] + service in alpha (service is non-user, rejected by tier)',
     actor: serviceInAlpha,
-    audience: A.segmentAlpha,
-    expected: true,
+    access: A.segmentAlpha,
+    expected: false,
+    reason: 'restricted',
   },
   {
     name: 'segments[alpha] + member (team always)',
     actor: memberActor,
-    audience: A.segmentAlpha,
+    access: A.segmentAlpha,
     expected: true,
   },
   {
     name: 'segments[alpha] + admin (team always)',
     actor: adminActor,
-    audience: A.segmentAlpha,
+    access: A.segmentAlpha,
     expected: true,
   },
 
@@ -217,7 +282,7 @@ const matrix: Row[] = [
   {
     name: 'segments[beta] + portal user in alpha (wrong segment)',
     actor: portalUserInAlpha,
-    audience: A.segmentBeta,
+    access: A.segmentBeta,
     expected: false,
     reason: 'restricted',
   },
@@ -226,13 +291,13 @@ const matrix: Row[] = [
   {
     name: 'segments[alpha,beta] + portal user in alpha only',
     actor: portalUserInAlpha,
-    audience: A.segmentAlphaBeta,
+    access: A.segmentAlphaBeta,
     expected: true,
   },
   {
     name: 'segments[alpha,beta] + portal user not in either',
     actor: portalUserNoSegments,
-    audience: A.segmentAlphaBeta,
+    access: A.segmentAlphaBeta,
     expected: false,
     reason: 'restricted',
   },
@@ -241,29 +306,29 @@ const matrix: Row[] = [
   {
     name: 'segments[] empty + anonymous',
     actor: ANONYMOUS_ACTOR,
-    audience: A.segmentEmpty,
+    access: A.segmentEmpty,
     expected: false,
     reason: 'restricted',
   },
   {
     name: 'segments[] empty + portal user in alpha (no listed segment matches)',
     actor: portalUserInAlpha,
-    audience: A.segmentEmpty,
+    access: A.segmentEmpty,
     expected: false,
     reason: 'restricted',
   },
   {
     name: 'segments[] empty + admin (team always)',
     actor: adminActor,
-    audience: A.segmentEmpty,
+    access: A.segmentEmpty,
     expected: true,
   },
 ]
 
-describe('canViewBoard — full audience × actor matrix', () => {
+describe('canViewBoard — full access × actor matrix', () => {
   for (const row of matrix) {
     it(row.name, () => {
-      const decision = canViewBoard(row.actor, { audience: row.audience })
+      const decision = canViewBoard(row.actor, { access: row.access })
       if (row.expected) {
         expect(decision).toEqual({ allowed: true })
       } else {
@@ -278,25 +343,25 @@ describe('canViewBoard — full audience × actor matrix', () => {
 
 describe('canViewBoard — idempotence + freshness', () => {
   it('returns a fresh decision object each call (no shared state)', () => {
-    const a = canViewBoard(ANONYMOUS_ACTOR, { audience: { kind: 'public' } })
-    const b = canViewBoard(ANONYMOUS_ACTOR, { audience: { kind: 'public' } })
+    const a = canViewBoard(ANONYMOUS_ACTOR, { access: A.public })
+    const b = canViewBoard(ANONYMOUS_ACTOR, { access: A.public })
     expect(a).not.toBe(b) // different references
     expect(a).toEqual(b) // structurally equal
   })
 
-  it('a board with extra fields beyond audience still works (structural typing)', () => {
-    // canViewBoard's input type is `{ audience: BoardAudience }`. By
+  it('a board with extra fields beyond access still works (structural typing)', () => {
+    // canViewBoard's input type is `{ access: BoardAccess }`. By
     // structural typing, a richer board record (with settings, timestamps,
     // …) is accepted without casts. This guards against any future refactor
     // that tightens the input shape and breaks list-query callers that pass
     // the full row.
     interface FatBoard {
-      audience: BoardAudience
+      access: BoardAccess
       settings: Record<string, unknown>
       label: string
     }
     const board: FatBoard = {
-      audience: { kind: 'public' },
+      access: A.public,
       settings: {},
       label: 'noise',
     }

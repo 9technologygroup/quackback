@@ -18,6 +18,7 @@
 
 import {
   db,
+  and,
   boards,
   eq,
   inArray,
@@ -113,10 +114,16 @@ export async function createPost(
     },
   })
 
-  // Validate board exists and get status in parallel
+  // Validate board exists and get status in parallel.
+  // The deletedAt filter here is load-bearing: rehostExternalImages (below) uploads
+  // to S3 before the locked recheck inside the transaction. Without this filter, a
+  // soft-deleted board would only be rejected AFTER the S3 write, orphaning the
+  // uploaded objects.
   const needsDefaultStatus = !input.statusId
   const [board, statusResult] = await Promise.all([
-    db.query.boards.findFirst({ where: eq(boards.id, input.boardId) }),
+    db.query.boards.findFirst({
+      where: and(eq(boards.id, input.boardId), isNull(boards.deletedAt)),
+    }),
     needsDefaultStatus
       ? db
           .select()
@@ -137,13 +144,15 @@ export async function createPost(
   const portalConfig = await getPortalConfig()
   const createDecision = canCreatePost(
     author.actor ?? ANONYMOUS_ACTOR,
-    { audience: board.audience },
+    { access: board.access },
     portalConfig.moderationDefault.requireApproval
   )
   if (!createDecision.allowed) {
     throw new ValidationError('POST_CREATE_DENIED', createDecision.reason)
   }
-  const moderationState: 'published' | 'pending' = createDecision.requiresApproval
+  // Provisional — recomputed authoritatively under the board row lock inside
+  // the transaction below (closes the TOCTOU across the image-rehost window).
+  let moderationState: 'published' | 'pending' = createDecision.requiresApproval
     ? 'pending'
     : 'published'
 
@@ -172,6 +181,33 @@ export async function createPost(
   })
 
   const post = await db.transaction(async (tx) => {
+    // Re-fetch the board (with its access matrix) under a row lock to close the
+    // TOCTOU between the precheck above and the insert. Two races are covered:
+    // (1) an admin soft-deletes the board — the insert would otherwise land the
+    // post under a deleted board (no FK violation; only deletedAt is set); and
+    // (2) an admin tightens the submit tier or flips moderation while the
+    // network-bound rehostExternalImages call above runs. SELECT ... FOR UPDATE
+    // serializes board writes for the transaction, so re-running canCreatePost
+    // against the locked access is decisive, and moderationState is derived
+    // from it rather than the stale precheck.
+    const [lockedBoard] = await tx
+      .select({ access: boards.access })
+      .from(boards)
+      .where(and(eq(boards.id, input.boardId), isNull(boards.deletedAt)))
+      .for('update')
+    if (!lockedBoard) {
+      throw new NotFoundError('BOARD_NOT_FOUND', `Board with ID ${input.boardId} not found`)
+    }
+    const lockedDecision = canCreatePost(
+      author.actor ?? ANONYMOUS_ACTOR,
+      { access: lockedBoard.access },
+      portalConfig.moderationDefault.requireApproval
+    )
+    if (!lockedDecision.allowed) {
+      throw new ValidationError('POST_CREATE_DENIED', lockedDecision.reason)
+    }
+    moderationState = lockedDecision.requiresApproval ? 'pending' : 'published'
+
     const [newPost] = await tx
       .insert(posts)
       .values({

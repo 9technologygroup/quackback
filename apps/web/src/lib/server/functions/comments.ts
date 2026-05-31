@@ -4,6 +4,7 @@
 
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
+import { getRequestHeaders } from '@tanstack/react-start/server'
 import { type CommentId, type PostId, type StatusId, type UserId } from '@quackback/ids'
 import { isTeamMember } from '@/lib/shared/roles'
 import { createActivity } from '@/lib/server/domains/activity/activity.service'
@@ -89,12 +90,20 @@ export const createCommentFn = createServerFn({ method: 'POST' })
       }
       const auth = await requireAuth({ roles: ['admin', 'member', 'user'] })
 
-      // Block anonymous users unless anonymousCommenting is enabled
+      // Block anonymous users unless the workspace master switch allows
+      // anonymous interaction. Per-board comment tiers are still checked
+      // downstream; this is the workspace-wide ceiling collapsed in
+      // migration 0084 from the legacy anonymousCommenting flag.
       if (auth.principal.type === 'anonymous') {
-        const { getPortalConfig } = await import('@/lib/server/domains/settings/settings.service')
-        const config = await getPortalConfig()
-        if (!config.features.anonymousCommenting) {
-          throw new Error('Anonymous commenting is not enabled')
+        // Fail closed on a missing flag — read the raw config, not
+        // getPortalConfig's permissive merged default (matches the vote/post
+        // gates). The per-board comment tier is enforced downstream.
+        const { getSettings } = await import('./workspace')
+        const { workspaceAllowsAnonymous } =
+          await import('@/lib/server/domains/settings/settings.types')
+        const settings = await getSettings()
+        if (!workspaceAllowsAnonymous(settings?.portalConfig)) {
+          throw new Error('Anonymous interaction is not enabled')
         }
       }
 
@@ -118,7 +127,8 @@ export const createCommentFn = createServerFn({ method: 'POST' })
           email: auth.user.email,
           role: auth.principal.role,
         },
-        actor
+        actor,
+        { headers: getRequestHeaders() }
       )
 
       // Events are dispatched by the service layer

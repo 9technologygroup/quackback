@@ -76,6 +76,7 @@ vi.mock('@/lib/server/domains/posts/post.voting', () => ({
 // anonymous-feature-flag tests stay focused on what they assert.
 vi.mock('@/lib/server/domains/posts/post.access', () => ({
   assertPostViewable: vi.fn().mockResolvedValue(undefined),
+  assertPostVotable: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/server/utils/anon-rate-limit', () => ({
@@ -236,11 +237,9 @@ const USER_AUTH = {
 // ============================================
 
 describe('toggleVoteFn anonymous feature flag', () => {
-  it('allows anonymous vote when anonymousVoting is enabled', async () => {
+  it('allows anonymous vote when allowAnonymous is enabled', async () => {
     mockRequireAuth.mockResolvedValue(ANON_AUTH)
-    mockGetPortalConfig.mockResolvedValue({
-      features: { anonymousVoting: true, anonymousPosting: false, anonymousCommenting: false },
-    })
+    mockGetSettings.mockResolvedValue({ portalConfig: { features: { allowAnonymous: true } } })
     mockVoteOnPost.mockResolvedValue({ voted: true, voteCount: 5 })
 
     const result = await toggleVoteHandler({ data: { postId: 'post_123' } })
@@ -249,14 +248,22 @@ describe('toggleVoteFn anonymous feature flag', () => {
     expect(mockVoteOnPost).toHaveBeenCalledWith('post_123', ANON_PRINCIPAL.id)
   })
 
-  it('blocks anonymous vote when anonymousVoting is disabled', async () => {
+  it('blocks anonymous vote when allowAnonymous is disabled', async () => {
     mockRequireAuth.mockResolvedValue(ANON_AUTH)
-    mockGetPortalConfig.mockResolvedValue({
-      features: { anonymousVoting: false, anonymousPosting: false, anonymousCommenting: false },
-    })
+    mockGetSettings.mockResolvedValue({ portalConfig: { features: { allowAnonymous: false } } })
 
     await expect(toggleVoteHandler({ data: { postId: 'post_123' } })).rejects.toThrow(
-      'Anonymous voting is not enabled'
+      'Anonymous interaction is not enabled'
+    )
+    expect(mockVoteOnPost).not.toHaveBeenCalled()
+  })
+
+  it('blocks anonymous vote when features config is missing (fail closed)', async () => {
+    mockRequireAuth.mockResolvedValue(ANON_AUTH)
+    mockGetSettings.mockResolvedValue({ portalConfig: {} })
+
+    await expect(toggleVoteHandler({ data: { postId: 'post_123' } })).rejects.toThrow(
+      'Anonymous interaction is not enabled'
     )
     expect(mockVoteOnPost).not.toHaveBeenCalled()
   })
@@ -268,7 +275,7 @@ describe('toggleVoteFn anonymous feature flag', () => {
     const result = await toggleVoteHandler({ data: { postId: 'post_123' } })
 
     expect(result).toEqual({ voted: true, voteCount: 3 })
-    expect(mockGetPortalConfig).not.toHaveBeenCalled()
+    expect(mockGetSettings).not.toHaveBeenCalled()
   })
 })
 
@@ -287,7 +294,6 @@ describe('createPublicPostFn anonymous feature flag', () => {
     id: 'board_123',
     name: 'General',
     slug: 'general',
-    audience: { kind: 'public' as const },
   }
   const MOCK_STATUS = { id: 'status_123' }
   const MOCK_POST = {
@@ -312,9 +318,9 @@ describe('createPublicPostFn anonymous feature flag', () => {
     mockCreatePost.mockResolvedValue(MOCK_POST)
   }
 
-  it('allows anonymous post when anonymousPosting is enabled', async () => {
+  it('allows anonymous post when allowAnonymous is enabled', async () => {
     mockRequireAuth.mockResolvedValue(ANON_AUTH)
-    setupPostMocks({ features: { anonymousPosting: true } })
+    setupPostMocks({ features: { allowAnonymous: true } })
 
     const result = (await createPublicPostHandler({ data: POST_DATA })) as Record<string, unknown>
 
@@ -322,12 +328,12 @@ describe('createPublicPostFn anonymous feature flag', () => {
     expect(mockCreatePost).toHaveBeenCalled()
   })
 
-  it('blocks anonymous post when anonymousPosting is disabled', async () => {
+  it('blocks anonymous post when allowAnonymous is disabled', async () => {
     mockRequireAuth.mockResolvedValue(ANON_AUTH)
-    setupPostMocks({ features: { anonymousPosting: false } })
+    setupPostMocks({ features: { allowAnonymous: false } })
 
     await expect(createPublicPostHandler({ data: POST_DATA })).rejects.toThrow(
-      'Anonymous posting is not enabled'
+      'Anonymous interaction is not enabled'
     )
     expect(mockCreatePost).not.toHaveBeenCalled()
   })
@@ -337,14 +343,14 @@ describe('createPublicPostFn anonymous feature flag', () => {
     setupPostMocks({})
 
     await expect(createPublicPostHandler({ data: POST_DATA })).rejects.toThrow(
-      'Anonymous posting is not enabled'
+      'Anonymous interaction is not enabled'
     )
     expect(mockCreatePost).not.toHaveBeenCalled()
   })
 
   it('allows non-anonymous users to post regardless of feature flag', async () => {
     mockRequireAuth.mockResolvedValue(USER_AUTH)
-    setupPostMocks({ features: { anonymousPosting: false } })
+    setupPostMocks({ features: { allowAnonymous: false } })
     mockGetMemberByUser.mockResolvedValue({ id: USER_PRINCIPAL.id })
 
     const result = (await createPublicPostHandler({ data: POST_DATA })) as Record<string, unknown>
@@ -363,11 +369,9 @@ describe('createCommentFn anonymous feature flag', () => {
     content: 'Great idea!',
   }
 
-  it('allows anonymous comment when anonymousCommenting is enabled', async () => {
+  it('allows anonymous comment when allowAnonymous is enabled', async () => {
     mockRequireAuth.mockResolvedValue(ANON_AUTH)
-    mockGetPortalConfig.mockResolvedValue({
-      features: { anonymousVoting: false, anonymousPosting: false, anonymousCommenting: true },
-    })
+    mockGetSettings.mockResolvedValue({ portalConfig: { features: { allowAnonymous: true } } })
     mockCreateComment.mockResolvedValue({
       comment: { id: 'comment_new', content: 'Great idea!' },
     })
@@ -378,14 +382,22 @@ describe('createCommentFn anonymous feature flag', () => {
     expect(mockCreateComment).toHaveBeenCalled()
   })
 
-  it('blocks anonymous comment when anonymousCommenting is disabled', async () => {
+  it('blocks anonymous comment when allowAnonymous is disabled', async () => {
     mockRequireAuth.mockResolvedValue(ANON_AUTH)
-    mockGetPortalConfig.mockResolvedValue({
-      features: { anonymousVoting: false, anonymousPosting: false, anonymousCommenting: false },
-    })
+    mockGetSettings.mockResolvedValue({ portalConfig: { features: { allowAnonymous: false } } })
 
     await expect(createCommentHandler({ data: COMMENT_DATA })).rejects.toThrow(
-      'Anonymous commenting is not enabled'
+      'Anonymous interaction is not enabled'
+    )
+    expect(mockCreateComment).not.toHaveBeenCalled()
+  })
+
+  it('blocks anonymous comment when features config is missing (fail closed)', async () => {
+    mockRequireAuth.mockResolvedValue(ANON_AUTH)
+    mockGetSettings.mockResolvedValue({ portalConfig: {} })
+
+    await expect(createCommentHandler({ data: COMMENT_DATA })).rejects.toThrow(
+      'Anonymous interaction is not enabled'
     )
     expect(mockCreateComment).not.toHaveBeenCalled()
   })
@@ -399,6 +411,6 @@ describe('createCommentFn anonymous feature flag', () => {
     const result = await createCommentHandler({ data: COMMENT_DATA })
 
     expect(result).toHaveProperty('comment')
-    expect(mockGetPortalConfig).not.toHaveBeenCalled()
+    expect(mockGetSettings).not.toHaveBeenCalled()
   })
 })

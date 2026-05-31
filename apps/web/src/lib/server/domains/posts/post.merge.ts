@@ -389,7 +389,7 @@ export async function getPostMergeInfo(
       moderationState: posts.moderationState,
       principalId: posts.principalId,
       boardSlug: boards.slug,
-      boardAudience: boards.audience,
+      boardAccess: boards.access,
     })
     .from(posts)
     .innerJoin(boards, eq(posts.boardId, boards.id))
@@ -411,7 +411,7 @@ export async function getPostMergeInfo(
       moderationState: canonicalPost[0].moderationState,
       principalId: canonicalPost[0].principalId,
     },
-    { audience: canonicalPost[0].boardAudience }
+    { access: canonicalPost[0].boardAccess }
   )
   if (!decision.allowed) {
     return null

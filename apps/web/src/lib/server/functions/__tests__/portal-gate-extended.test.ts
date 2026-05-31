@@ -166,6 +166,16 @@ vi.mock('@/lib/server/db', () => ({
 
 vi.mock('@/lib/shared/roles', () => ({ isTeamMember: vi.fn().mockReturnValue(false) }))
 
+// The capability gates read the workspace anonymous switch fail-closed from the
+// RAW settings (workspaceAllowsAnonymous), so drive it via getSettings here.
+// getPortalConfig is still mocked for any merged-config consumers.
+vi.mock('@/lib/server/functions/workspace', () => ({
+  getSettings: vi.fn().mockResolvedValue({ portalConfig: { features: { allowAnonymous: true } } }),
+}))
+vi.mock('@/lib/server/domains/settings/settings.service', () => ({
+  getPortalConfig: vi.fn().mockResolvedValue({ features: { allowAnonymous: true } }),
+}))
+
 // ---------------------------------------------------------------------------
 // changelog.ts mocks
 // ---------------------------------------------------------------------------
@@ -252,6 +262,8 @@ const FETCH_PUBLIC_STATUSES = 6
 const FETCH_PUBLIC_TAGS = 7
 const FETCH_PUBLIC_ROADMAPS = 11
 const FETCH_PUBLIC_ROADMAP_POSTS = 12
+// Declared last in portal.ts (appended to preserve the indices above).
+const FETCH_BOARD_CAPABILITIES = 14
 
 // Changelog handler indices
 const CHANGELOG = '@/lib/server/functions/changelog' as const
@@ -302,6 +314,49 @@ describe('portal.ts fetchPortalData — portal-visibility gate', () => {
     const h = await loadModule(PORTAL)
     await h[FETCH_PORTAL_DATA]({ data: { sort: 'top' } })
     expect(mockListPublicBoardsWithStats).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// portal.ts — fetchBoardCapabilitiesFn
+// ---------------------------------------------------------------------------
+
+describe('portal.ts fetchBoardCapabilitiesFn — per-board capability map', () => {
+  const anonAccess = {
+    view: 'anonymous',
+    vote: 'anonymous',
+    comment: 'anonymous',
+    submit: 'anonymous',
+    segments: { view: [], vote: [], comment: [], submit: [] },
+    moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+  }
+  const authAccess = { ...anonAccess, vote: 'authenticated', submit: 'authenticated' }
+
+  it('returns an empty map when the private portal blocks the caller', async () => {
+    mockResolvePortalAccess.mockResolvedValue({ granted: false, reason: 'unauthorized' })
+    const h = await loadModule(PORTAL)
+    const result = await h[FETCH_BOARD_CAPABILITIES]({ data: {} })
+    expect(result).toEqual({})
+    expect(mockListPublicBoardsWithStats).not.toHaveBeenCalled()
+  })
+
+  it('maps each visible board to its submit/vote capability for the actor', async () => {
+    mockResolvePortalAccess.mockResolvedValue({ granted: true, reason: 'public' })
+    mockListPublicBoardsWithStats.mockResolvedValue([
+      { id: 'board_pub', access: anonAccess },
+      { id: 'board_auth', access: authAccess },
+    ])
+    const h = await loadModule(PORTAL)
+    const result = (await h[FETCH_BOARD_CAPABILITIES]({ data: {} })) as Record<
+      string,
+      { canSubmit: boolean; canVote: boolean }
+    >
+    // Anonymous actor (mocked) + workspace allowAnonymous=true: the all-anonymous
+    // board is actionable, the sign-in-required board is not.
+    expect(result).toEqual({
+      board_pub: { canSubmit: true, canVote: true },
+      board_auth: { canSubmit: false, canVote: false },
+    })
   })
 })
 
@@ -390,14 +445,33 @@ describe('portal.ts fetchPublicPostDetail — portal-visibility gate', () => {
       statusId: null,
       voteCount: 0,
       boardId: 'board_1',
+      // fetchPublicPostDetail reads boardAccess to derive canVote/canComment
+      // (then strips it from the response). A public-anonymous matrix keeps the
+      // gate-only test focused — the capability math is covered in policy tests.
+      boardAccess: {
+        view: 'anonymous',
+        vote: 'anonymous',
+        comment: 'anonymous',
+        submit: 'anonymous',
+        segments: { view: [], vote: [], comment: [], submit: [] },
+        moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+      },
     })
     mockGetPostMergeInfo.mockResolvedValue(null)
     mockGetMergedPosts.mockResolvedValue([])
     const h = await loadModule(PORTAL)
     const result = (await h[FETCH_PUBLIC_POST_DETAIL]({ data: { postId: 'post_1' } })) as {
       id: string
+      canVote?: boolean
+      canComment?: boolean
+      boardAccess?: unknown
     } | null
     expect(result?.id).toBe('post_1')
+    // Per-board capability is computed and exposed; raw boardAccess is stripped
+    // so the board's segment ids never reach the client.
+    expect(result?.canVote).toBe(true)
+    expect(result?.canComment).toBe(true)
+    expect(result?.boardAccess).toBeUndefined()
   })
 })
 

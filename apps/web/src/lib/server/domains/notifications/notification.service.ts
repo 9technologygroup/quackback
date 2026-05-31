@@ -130,7 +130,7 @@ export async function getNotificationsForMember(
       postModerationState: posts.moderationState,
       postPrincipalId: posts.principalId,
       boardSlug: boards.slug,
-      boardAudience: boards.audience,
+      boardAccess: boards.access,
     })
     .from(inAppNotifications)
     .leftJoin(posts, and(eq(inAppNotifications.postId, posts.id), isNull(posts.deletedAt)))
@@ -171,7 +171,7 @@ export async function getNotificationsForMember(
     // comment preview embedded at notification creation time.
     let denied = false
     if (row.postId !== null) {
-      if (!row.postTitle || !row.boardSlug || !row.boardAudience) {
+      if (!row.postTitle || !row.boardSlug || !row.boardAccess) {
         // The post was deleted, the board was deleted, or the
         // board-audience join was filtered out.
         denied = true
@@ -182,7 +182,7 @@ export async function getNotificationsForMember(
             moderationState: row.postModerationState ?? 'published',
             principalId: row.postPrincipalId,
           },
-          { audience: row.boardAudience }
+          { access: row.boardAccess }
         )
         if (!decision.allowed) denied = true
       }

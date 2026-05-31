@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { z } from 'zod'
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { CheckCircleIcon } from '@heroicons/react/24/solid'
@@ -16,6 +17,8 @@ import { WidgetHelpDetail } from '@/components/widget/widget-help-detail'
 import { WidgetLiveChat } from '@/components/widget/widget-live-chat'
 import { useWidgetAuth } from '@/components/widget/widget-auth-provider'
 import { portalQueries } from '@/lib/client/queries/portal'
+import { fetchBoardCapabilitiesFn } from '@/lib/server/functions/portal'
+import { getWidgetAuthHeaders } from '@/lib/client/widget-auth'
 import { widgetQueryKeys, INITIAL_SESSION_VERSION } from '@/lib/client/hooks/use-widget-vote'
 
 const searchSchema = z.object({
@@ -69,11 +72,12 @@ export const Route = createFileRoute('/widget/')({
         slug: b.slug,
       })),
       orgSlug: settings?.slug ?? '',
-      features: {
-        anonymousVoting: settings?.publicPortalConfig?.features?.anonymousVoting ?? true,
-        anonymousCommenting: settings?.publicPortalConfig?.features?.anonymousCommenting ?? false,
-        anonymousPosting: settings?.publicPortalConfig?.features?.anonymousPosting ?? false,
-      },
+      // Per-board submit/vote capability for the request actor, server-computed
+      // (boardCapabilitiesForActor composes each board's access tier with the
+      // workspace anonymous switch). The widget gates its submit/vote CTAs per
+      // board off this map instead of a workspace-wide flag, so it never
+      // advertises an action the board's tier rejects (#191). Keyed by board id.
+      boardPermissions: portalData.boardPermissions,
       tabs: {
         feedback: settings?.publicWidgetConfig?.tabs?.feedback ?? true,
         changelog: settings?.publicWidgetConfig?.tabs?.changelog ?? false,
@@ -128,15 +132,34 @@ function WidgetPage() {
     statuses,
     boards,
     orgSlug,
-    features,
+    boardPermissions,
     tabs,
     imageUploadsInWidget,
     defaultBoard,
     portalAccess,
     portalOrigin,
   } = Route.useLoaderData()
-  const { isIdentified, ensureSession } = useWidgetAuth()
-  const canVote = isIdentified || features.anonymousVoting
+  const { ensureSession, sessionVersion } = useWidgetAuth()
+
+  // The loader seeds boardPermissions for the anonymous SSR baseline (no Bearer
+  // at loader time). Refetch it for the REAL actor with the widget's Bearer
+  // token, re-keyed on sessionVersion so it updates after identify — then the
+  // feed gates votes/submission per the actual actor instead of OR-ing in a
+  // blanket isIdentified (which advertised CTAs on segments/team boards the
+  // actor cannot act on). Seeded with the loader map so SSR + first paint match.
+  const { data: livePermissions } = useQuery({
+    queryKey: ['widget', 'boardPermissions', sessionVersion],
+    queryFn: () => fetchBoardCapabilitiesFn({ headers: getWidgetAuthHeaders() }),
+    // Seed ONLY the initial (anonymous, SSR) key from the loader. initialData
+    // stamps an entry fresh as of now, so seeding it on every key would also
+    // mark the post-identify key fresh and suppress the Bearer refetch within
+    // staleTime — leaving an identified viewer stuck on the anonymous baseline.
+    // After identify the key changes, carries no initialData, and refetches with
+    // the Bearer while keepPreviousData shows the prior map meanwhile.
+    initialData: sessionVersion === INITIAL_SESSION_VERSION ? boardPermissions : undefined,
+    placeholderData: keepPreviousData,
+    staleTime: 30 * 1000,
+  })
 
   const initialTab: WidgetTab = tabs.feedback
     ? 'feedback'
@@ -339,22 +362,16 @@ function WidgetPage() {
           initialHasMore={postsHasMore}
           statuses={statuses}
           boards={boards}
+          boardPermissions={livePermissions}
           defaultBoard={defaultBoard}
           onPostSelect={handlePostSelect}
           onPostCreated={handlePostCreated}
-          anonymousVotingEnabled={features.anonymousVoting}
-          anonymousPostingEnabled={features.anonymousPosting}
           imageUploadsInWidget={imageUploadsInWidget}
         />
       </div>
 
       {view === 'post-detail' && selectedPostId && (
-        <WidgetPostDetail
-          postId={selectedPostId}
-          statuses={statuses}
-          anonymousVotingEnabled={features.anonymousVoting}
-          anonymousCommentingEnabled={features.anonymousCommenting}
-        />
+        <WidgetPostDetail postId={selectedPostId} statuses={statuses} />
       )}
 
       {view === 'success' &&
@@ -365,6 +382,9 @@ function WidgetPage() {
                 (s: { id: string; name: string; color: string }) => s.id === successPost.statusId
               ) ?? null)
             : null
+          // Vote gate follows the created post's board for the real actor
+          // (livePermissions is refetched with the widget's Bearer identity).
+          const canVote = livePermissions?.[successPost.board.id]?.canVote ?? false
 
           return (
             <div className="flex flex-col h-full">
@@ -391,6 +411,9 @@ function WidgetPage() {
                       postId={successPost.id as PostId}
                       voteCount={successPost.voteCount}
                       onBeforeVote={canVote ? ensureSession : undefined}
+                      noAccessReason={
+                        canVote ? undefined : "You don't have access to vote on this board"
+                      }
                     />
                   </div>
                   <div className="flex-1 min-w-0">

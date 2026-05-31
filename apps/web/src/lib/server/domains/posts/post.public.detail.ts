@@ -90,6 +90,23 @@ export async function getPublicPostDetail(
   const principalId = (actor.principalId ?? undefined) as PrincipalId | undefined
   const includePrivateComments = isTeamActor(actor)
 
+  // Comment moderation visibility:
+  //   - team actors see every moderation state (queue + published)
+  //   - non-team actors only see 'published' comments, PLUS their own
+  //     'pending' comments (mirrors policy.posts.canViewPost's
+  //     own-pending escape hatch — authors can see their held content).
+  //   - anonymous viewers (no principalId) see only 'published'.
+  //
+  // Built as raw SQL fragments so they can be interpolated into the two
+  // execute() blocks below. The principalId is passed as a uuid param to
+  // match the comments.principal_id column type.
+  const ownPendingPrincipalUuid = principalId ? toUuid(principalId) : null
+  const moderationFilterSql = includePrivateComments
+    ? sql``
+    : ownPendingPrincipalUuid
+      ? sql`AND (c.moderation_state = 'published' OR (c.moderation_state = 'pending' AND c.principal_id = ${ownPendingPrincipalUuid}::uuid))`
+      : sql`AND c.moderation_state = 'published'`
+
   // Pre-compute which merged-source posts the actor is entitled to see.
   // Runs in parallel with the post + comments fetch so we don't pay an
   // extra round-trip. Team actors trivially get every id. Without this
@@ -112,7 +129,7 @@ export async function getPublicPostDetail(
         boardId: boards.id,
         boardName: boards.name,
         boardSlug: boards.slug,
-        boardAudience: boards.audience,
+        boardAccess: boards.access,
         postModerationState: posts.moderationState,
         postPrincipalId: posts.principalId,
         tagsJson: sql<string>`COALESCE(
@@ -208,6 +225,7 @@ export async function getPublicPostDetail(
       LEFT JOIN ${postStatuses} sct ON sct.id = c.status_change_to_id
       WHERE c.post_id = ${postUuid}::uuid
       ${includePrivateComments ? sql`` : sql`AND c.is_private = false`}
+      ${moderationFilterSql}
       GROUP BY c.id, m.display_name, m.avatar_key, m.avatar_url, scf.name, scf.color, sct.name, sct.color
       ORDER BY c.created_at ASC
     `),
@@ -272,6 +290,7 @@ export async function getPublicPostDetail(
         sql`, `
       )})
       ${includePrivateComments ? sql`` : sql`AND c.is_private = false`}
+      ${moderationFilterSql}
       GROUP BY c.id, m.display_name, m.avatar_key, m.avatar_url, scf.name, scf.color, sct.name, sct.color
       ORDER BY c.created_at ASC
     `)
@@ -290,7 +309,7 @@ export async function getPublicPostDetail(
   const viewDecision = canViewPost(
     actor,
     { moderationState: postResult.postModerationState, principalId: postResult.postPrincipalId },
-    { audience: postResult.boardAudience }
+    { access: postResult.boardAccess }
   )
   if (!viewDecision.allowed) {
     return null
@@ -474,6 +493,9 @@ export async function getPublicPostDetail(
     authorAvatarUrl,
     createdAt: postResult.createdAt,
     board: { id: postResult.boardId, name: postResult.boardName, slug: postResult.boardSlug },
+    // Server-only: fetchPublicPostDetail derives canVote/canComment from this
+    // and strips it before the response reaches the client.
+    boardAccess: postResult.boardAccess,
     tags: tagsResult,
     roadmaps: roadmapsResult,
     comments: hydratedRootComments,

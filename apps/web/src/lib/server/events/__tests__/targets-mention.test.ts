@@ -89,7 +89,7 @@ vi.mock('@/lib/server/db', () => ({
   },
   boards: {
     id: 'boards.id',
-    audience: 'boards.audience',
+    access: 'boards.access',
     deletedAt: 'boards.deletedAt',
   },
   userSegments: {
@@ -170,7 +170,14 @@ function setupMentionDbChain(rows: unknown[]) {
     {
       moderationState: 'published',
       principalId: 'prn_author',
-      audience: { kind: 'public' },
+      access: {
+        view: 'anonymous',
+        vote: 'anonymous',
+        comment: 'anonymous',
+        submit: 'anonymous',
+        segments: { view: [], vote: [], comment: [], submit: [] },
+        moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+      },
     },
   ])
   mockDbWhere.mockReturnValue({ limit: mockLimit })
