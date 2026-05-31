@@ -3,10 +3,17 @@
  * the SSE transport. No server-only imports here — this module is bundled into
  * the browser.
  */
-import type { ConversationId, ChatMessageId, PrincipalId } from '@quackback/ids'
+import type { ConversationId, ChatMessageId, PrincipalId, TagId } from '@quackback/ids'
 
 export type ConversationStatus = 'open' | 'snoozed' | 'closed'
 export type ChatSenderType = 'visitor' | 'agent'
+
+/** A label applied to a conversation (drawn from the shared tag vocabulary). */
+export interface ChatTagDTO {
+  id: TagId
+  name: string
+  color: string
+}
 
 /** Author identity attached to a rendered message. */
 export interface ChatAuthorDTO {
@@ -53,6 +60,8 @@ export interface ConversationDTO {
   agentLastReadAt: string | null
   /** Post-conversation CSAT rating (1-5), or null if not yet rated. */
   csatRating: number | null
+  /** Agent-only labels for inbox triage; never sent to the visitor. */
+  tags: ChatTagDTO[]
 }
 
 /**

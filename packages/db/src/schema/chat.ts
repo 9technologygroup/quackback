@@ -1,7 +1,17 @@
-import { pgTable, text, timestamp, index, jsonb, integer, boolean } from 'drizzle-orm/pg-core'
+import {
+  pgTable,
+  text,
+  timestamp,
+  index,
+  uniqueIndex,
+  jsonb,
+  integer,
+  boolean,
+} from 'drizzle-orm/pg-core'
 import { relations } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
 import { principal } from './auth'
+import { tags } from './boards'
 import { CONVERSATION_STATUSES, CHAT_SENDER_TYPES } from '../types'
 import type { ChatAttachment } from '../types'
 
@@ -96,8 +106,42 @@ export const chatMessages = pgTable(
   ]
 )
 
+/**
+ * Conversation labels. Reuses the shared `tags` table so the chat inbox and
+ * feedback posts draw from one tag vocabulary. Agent-only; never exposed to the
+ * visitor. Both sides cascade so deleting a tag or conversation cleans up here.
+ */
+export const conversationTags = pgTable(
+  'conversation_tags',
+  {
+    conversationId: typeIdColumn('conversation')('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    tagId: typeIdColumn('tag')('tag_id')
+      .notNull()
+      .references(() => tags.id, { onDelete: 'cascade' }),
+  },
+  (table) => [
+    uniqueIndex('conversation_tags_pk').on(table.conversationId, table.tagId),
+    index('conversation_tags_conversation_id_idx').on(table.conversationId),
+    index('conversation_tags_tag_id_idx').on(table.tagId),
+  ]
+)
+
 export const conversationsRelations = relations(conversations, ({ many }) => ({
   messages: many(chatMessages),
+  tags: many(conversationTags),
+}))
+
+export const conversationTagsRelations = relations(conversationTags, ({ one }) => ({
+  conversation: one(conversations, {
+    fields: [conversationTags.conversationId],
+    references: [conversations.id],
+  }),
+  tag: one(tags, {
+    fields: [conversationTags.tagId],
+    references: [tags.id],
+  }),
 }))
 
 export const chatMessagesRelations = relations(chatMessages, ({ one }) => ({

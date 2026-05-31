@@ -9,7 +9,14 @@
  */
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
-import type { ConversationId, ChatMessageId, PrincipalId, PostId, BoardId } from '@quackback/ids'
+import type {
+  ConversationId,
+  ChatMessageId,
+  PrincipalId,
+  PostId,
+  BoardId,
+  TagId,
+} from '@quackback/ids'
 import {
   MAX_CHAT_MESSAGE_LENGTH,
   MAX_CHAT_ATTACHMENTS,
@@ -50,7 +57,13 @@ const listConversationsSchema = z.object({
   status: z.enum(['open', 'snoozed', 'closed']).optional(),
   assignedToMe: z.boolean().optional(),
   search: z.string().max(200).optional(),
+  tagId: z.string().optional(),
   before: z.string().optional(),
+})
+
+const setTagsSchema = z.object({
+  conversationId: z.string(),
+  tagIds: z.array(z.string()).max(20),
 })
 
 const messageIdSchema = z.object({ messageId: z.string() })
@@ -298,6 +311,7 @@ export const listConversationsFn = createServerFn({ method: 'GET' })
         status: data.status,
         assignedAgentPrincipalId: data.assignedToMe ? ctx.principal.id : undefined,
         search: data.search,
+        tagId: data.tagId as TagId | undefined,
         before: data.before,
       })
     } catch (error) {
@@ -440,6 +454,25 @@ export const assignConversationFn = createServerFn({ method: 'POST' })
       return { ok: true }
     } catch (error) {
       console.error('[fn:chat] assignConversationFn failed:', error)
+      throw error
+    }
+  })
+
+/** Replace a conversation's labels (agent-only). */
+export const setConversationTagsFn = createServerFn({ method: 'POST' })
+  .inputValidator(setTagsSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ roles: ['admin', 'member'] })
+      const actor = await policyActorFromAuth(ctx)
+      const { setConversationTags } = await import('@/lib/server/domains/chat/chat.service')
+      return await setConversationTags(
+        data.conversationId as ConversationId,
+        data.tagIds as TagId[],
+        actor
+      )
+    } catch (error) {
+      console.error('[fn:chat] setConversationTagsFn failed:', error)
       throw error
     }
   })

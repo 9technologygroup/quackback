@@ -9,7 +9,7 @@
  * agent's inbox update at once. Clients dedupe by message id.
  */
 import type { ConversationId } from '@quackback/ids'
-import type { ChatStreamEvent } from '@/lib/shared/chat/types'
+import type { ChatStreamEvent, ConversationDTO } from '@/lib/shared/chat/types'
 import { publish } from './pubsub'
 
 export function conversationChannel(conversationId: ConversationId): string {
@@ -31,4 +31,21 @@ export function publishChatEvent(conversationId: ConversationId, event: ChatStre
  */
 export function publishAgentChatEvent(event: ChatStreamEvent): void {
   publish(CHAT_INBOX_CHANNEL, event)
+}
+
+/**
+ * Publish a conversation update to both channels with audience-appropriate
+ * payloads: agents get the full DTO (incl. agent-only tags) on the inbox
+ * channel, while the visitor's conversation channel receives a tag-stripped
+ * copy. Tags are an agent triage concern and must never reach the visitor.
+ */
+export function publishConversationUpdate(
+  conversationId: ConversationId,
+  agentDto: ConversationDTO
+): void {
+  publish(CHAT_INBOX_CHANNEL, { kind: 'conversation', conversation: agentDto })
+  publish(conversationChannel(conversationId), {
+    kind: 'conversation',
+    conversation: { ...agentDto, tags: [] },
+  })
 }

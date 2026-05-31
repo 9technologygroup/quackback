@@ -12,13 +12,16 @@ import {
   db,
   eq,
   and,
+  inArray,
   isNull,
   conversations,
+  conversationTags,
   chatMessages,
+  tags,
   type Conversation,
 } from '@/lib/server/db'
 import type { ChatAttachment } from '@/lib/server/db'
-import type { ConversationId, ChatMessageId, PrincipalId } from '@quackback/ids'
+import type { ConversationId, ChatMessageId, PrincipalId, TagId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
 import { config } from '@/lib/server/config'
 import {
@@ -33,8 +36,13 @@ import {
   MAX_CHAT_MESSAGE_LENGTH,
   MAX_CHAT_ATTACHMENTS,
   type ChatSenderType,
+  type ConversationDTO,
 } from '@/lib/shared/chat/types'
-import { publishChatEvent, publishAgentChatEvent } from '@/lib/server/realtime/chat-channels'
+import {
+  publishChatEvent,
+  publishAgentChatEvent,
+  publishConversationUpdate,
+} from '@/lib/server/realtime/chat-channels'
 import { truncate } from '@/lib/shared/utils/string'
 import { notifyVisitorMessage, notifyAgentReply, notifyNoteMentions } from './chat.notify'
 import { conversationToDTO, toMessageDTO, authorFromInput } from './chat.query'
@@ -381,7 +389,7 @@ export async function setConversationStatus(
     .where(eq(conversations.id, conversationId))
     .returning()
   const dto = await conversationToDTO(updated, 'agent')
-  publishChatEvent(conversationId, { kind: 'conversation', conversation: dto })
+  publishConversationUpdate(conversationId, dto)
   return updated
 }
 
@@ -400,8 +408,48 @@ export async function assignConversation(
     .where(eq(conversations.id, conversationId))
     .returning()
   const dto = await conversationToDTO(updated, 'agent')
-  publishChatEvent(conversationId, { kind: 'conversation', conversation: dto })
+  publishConversationUpdate(conversationId, dto)
   return updated
+}
+
+/**
+ * Agent action: replace a conversation's labels with the given tag set. Tags
+ * are agent-only (drawn from the shared tag vocabulary) and never reach the
+ * visitor. Unknown or soft-deleted tag ids are silently dropped. Returns the
+ * agent-facing conversation DTO with the resolved tags.
+ */
+export async function setConversationTags(
+  conversationId: ConversationId,
+  tagIds: TagId[],
+  actor: Actor
+): Promise<ConversationDTO> {
+  const decision = canActAsAgent(actor)
+  if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
+  const conversation = await loadConversationOr404(conversationId)
+
+  // Resolve to the subset of ids that name a real, non-deleted tag so a stale
+  // client can't write dangling join rows.
+  const requested = [...new Set(tagIds)]
+  const valid = requested.length
+    ? await db
+        .select({ id: tags.id })
+        .from(tags)
+        .where(and(inArray(tags.id, requested), isNull(tags.deletedAt)))
+    : []
+  const validIds = valid.map((t) => t.id)
+
+  await db.transaction(async (tx) => {
+    await tx.delete(conversationTags).where(eq(conversationTags.conversationId, conversationId))
+    if (validIds.length) {
+      await tx.insert(conversationTags).values(validIds.map((tagId) => ({ conversationId, tagId })))
+    }
+  })
+
+  const dto = await conversationToDTO(conversation, 'agent')
+  // Inbox-only: a tag change is an agent triage concern, never sent to the
+  // visitor channel.
+  publishAgentChatEvent({ kind: 'conversation', conversation: dto })
+  return dto
 }
 
 /** Soft-delete a message. Team members may delete any message; a visitor may

@@ -13,9 +13,11 @@ import {
   TrashIcon,
   ChatBubbleBottomCenterTextIcon,
   PencilSquareIcon,
+  TagIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline'
 import { toast } from 'sonner'
-import type { ConversationId, ChatMessageId } from '@quackback/ids'
+import type { ConversationId, ChatMessageId, TagId } from '@quackback/ids'
 import {
   listConversationsFn,
   getConversationFn,
@@ -23,13 +25,20 @@ import {
   addChatNoteFn,
   setConversationStatusFn,
   assignConversationFn,
+  setConversationTagsFn,
   markChatReadFn,
   sendChatTypingFn,
   getCannedRepliesFn,
   deleteChatMessageFn,
 } from '@/lib/server/functions/chat'
+import { fetchTags } from '@/lib/server/functions/tags'
 import { getPortalUserFn } from '@/lib/server/functions/admin'
-import type { ChatAttachment, ChatMessageDTO, ConversationDTO } from '@/lib/shared/chat/types'
+import type {
+  ChatAttachment,
+  ChatMessageDTO,
+  ChatTagDTO,
+  ConversationDTO,
+} from '@/lib/shared/chat/types'
 import { useChatStream } from '@/lib/client/hooks/use-chat-stream'
 import { useChatTyping } from '@/lib/client/hooks/use-chat-typing'
 import { useImageUpload } from '@/lib/client/hooks/use-image-upload'
@@ -76,17 +85,28 @@ function ChatInboxPage() {
   const [status, setStatus] = useState<StatusFilter>('open')
   const [selectedId, setSelectedId] = useState<ConversationId | null>(null)
   const [searchInput, setSearchInput] = useState('')
+  const [tagFilter, setTagFilter] = useState<TagId | null>(null)
   // Debounce the search box so we don't refetch on every keystroke.
   const search = useDebouncedValue(searchInput.trim(), 300)
 
+  // Shared tag vocabulary (also used by the thread's tag picker); cached.
+  const { data: availableTags = [] } = useQuery({
+    queryKey: ['admin', 'tags'],
+    queryFn: () => fetchTags(),
+    staleTime: 60_000,
+  })
+
   const listKey = useMemo(
-    () => ['admin', 'chat', 'conversations', status, search] as const,
-    [status, search]
+    () => ['admin', 'chat', 'conversations', status, search, tagFilter] as const,
+    [status, search, tagFilter]
   )
 
   const { data: listData, isLoading: listLoading } = useQuery({
     queryKey: listKey,
-    queryFn: () => listConversationsFn({ data: { status, search: search || undefined } }),
+    queryFn: () =>
+      listConversationsFn({
+        data: { status, search: search || undefined, tagId: tagFilter ?? undefined },
+      }),
     refetchInterval: 30_000, // polling fallback if the stream drops
   })
 
@@ -144,6 +164,14 @@ function ChatInboxPage() {
           (prev: { conversation: ConversationDTO; messages: ChatMessageDTO[] } | undefined) =>
             prev ? { ...prev, messages: prev.messages.filter((m) => m.id !== evt.messageId) } : prev
         )
+      } else if (evt.kind === 'conversation' && evt.conversation.id === selectedId) {
+        // Keep the open thread's status/assignment/tags in sync with changes
+        // made by another agent.
+        queryClient.setQueryData(
+          ['admin', 'chat', 'thread', selectedId],
+          (prev: { conversation: ConversationDTO; messages: ChatMessageDTO[] } | undefined) =>
+            prev ? { ...prev, conversation: evt.conversation } : prev
+        )
       }
     },
   })
@@ -170,7 +198,7 @@ function ChatInboxPage() {
             className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:ring-2 focus:ring-primary/20"
           />
         </div>
-        <div className="flex gap-1 px-3 py-2 border-b border-border/40">
+        <div className="flex gap-1 px-3 py-2">
           {(['open', 'snoozed', 'closed'] as const).map((s) => (
             <button
               key={s}
@@ -185,6 +213,33 @@ function ChatInboxPage() {
             </button>
           ))}
         </div>
+        {availableTags.length > 0 && (
+          <div className="flex flex-wrap gap-1 px-3 pb-2 border-b border-border/40">
+            {availableTags.map((t) => {
+              const active = tagFilter === t.id
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTagFilter(active ? null : t.id)}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors',
+                    active
+                      ? 'border-transparent text-white'
+                      : 'border-border/60 text-muted-foreground hover:bg-muted'
+                  )}
+                  style={active ? { backgroundColor: t.color } : undefined}
+                >
+                  <span
+                    className="size-1.5 rounded-full"
+                    style={{ backgroundColor: active ? '#fff' : t.color }}
+                  />
+                  {t.name}
+                </button>
+              )
+            })}
+          </div>
+        )}
         <div className="flex-1 overflow-y-auto">
           {listLoading ? (
             <div className="flex justify-center py-10">
@@ -222,6 +277,7 @@ function ChatInboxPage() {
                   <p className="truncate text-xs text-muted-foreground mt-0.5">
                     {c.lastMessagePreview ?? c.subject ?? 'No messages yet'}
                   </p>
+                  {c.tags.length > 0 && <ChatTagChips tags={c.tags} className="mt-1" />}
                 </div>
                 {c.unreadCount > 0 && (
                   <span className="shrink-0 mt-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
@@ -391,6 +447,23 @@ function ChatThread({
   })
   const cannedReplies = cannedData?.cannedReplies ?? []
 
+  // Shared tag vocabulary for the label picker (cached across inbox + thread).
+  const { data: availableTags = [] } = useQuery({
+    queryKey: ['admin', 'tags'],
+    queryFn: () => fetchTags(),
+    staleTime: 60_000,
+  })
+
+  // Reflect a tag change locally + refresh the inbox so list chips update.
+  const onTagsChanged = (tags: ChatTagDTO[]) => {
+    queryClient.setQueryData(
+      threadKey,
+      (prev: { conversation: ConversationDTO; messages: ChatMessageDTO[] } | undefined) =>
+        prev ? { ...prev, conversation: { ...prev.conversation, tags } } : prev
+    )
+    onChanged()
+  }
+
   // Visitor context (email + past feedback); null for anonymous visitors.
   const visitorPrincipalId = conversation?.visitor.principalId
   const { data: visitorDetail } = useQuery({
@@ -465,9 +538,18 @@ function ChatThread({
                   </span>
                 )}
               </p>
+              {conversation && conversation.tags.length > 0 && (
+                <ChatTagChips tags={conversation.tags} className="mt-1" />
+              )}
             </div>
           </div>
           <div className="flex items-center gap-1.5">
+            <TagPicker
+              conversationId={conversationId}
+              selected={conversation?.tags ?? []}
+              available={availableTags}
+              onChanged={onTagsChanged}
+            />
             <ConvertToPostDialog
               conversationId={conversationId}
               defaultTitle={convertTitle}
@@ -772,6 +854,92 @@ function AdminBubble({ message, onDelete }: { message: ChatMessageDTO; onDelete:
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
+  )
+}
+
+/** Read-only colored label chips. */
+function ChatTagChips({ tags, className }: { tags: ChatTagDTO[]; className?: string }) {
+  return (
+    <div className={cn('flex flex-wrap gap-1', className)}>
+      {tags.map((t) => (
+        <span
+          key={t.id}
+          className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+          // 1a = ~10% alpha on the 6-digit hex, for a tinted background.
+          style={{ backgroundColor: `${t.color}1a`, color: t.color }}
+        >
+          <span className="size-1.5 rounded-full" style={{ backgroundColor: t.color }} />
+          {t.name}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+/** Popover to toggle a conversation's labels. Each toggle persists the full set. */
+function TagPicker({
+  conversationId,
+  selected,
+  available,
+  onChanged,
+}: {
+  conversationId: ConversationId
+  selected: ChatTagDTO[]
+  available: ChatTagDTO[]
+  onChanged: (tags: ChatTagDTO[]) => void
+}) {
+  const selectedIds = new Set(selected.map((t) => t.id))
+  const mutation = useMutation({
+    mutationFn: (tagIds: TagId[]) => setConversationTagsFn({ data: { conversationId, tagIds } }),
+    onSuccess: (dto) => onChanged(dto.tags),
+    onError: () => toast.error('Failed to update tags'),
+  })
+  const toggle = (id: TagId) => {
+    const next = selectedIds.has(id)
+      ? [...selectedIds].filter((x) => x !== id)
+      : [...selectedIds, id]
+    mutation.mutate(next)
+  }
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors"
+        >
+          <TagIcon className="h-3.5 w-3.5" /> Tags
+          {selected.length > 0 && (
+            <span className="ml-0.5 rounded-full bg-muted px-1 text-[10px]">{selected.length}</span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-56 p-1">
+        {available.length === 0 ? (
+          <p className="px-2 py-2 text-xs text-muted-foreground">
+            No tags yet. Create tags in settings.
+          </p>
+        ) : (
+          <div className="max-h-64 overflow-y-auto">
+            {available.map((t) => {
+              const isOn = selectedIds.has(t.id)
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => toggle(t.id)}
+                  disabled={mutation.isPending}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50"
+                >
+                  <span className="size-2 rounded-full" style={{ backgroundColor: t.color }} />
+                  <span className="flex-1 truncate">{t.name}</span>
+                  {isOn && <CheckIcon className="h-3.5 w-3.5 text-primary" />}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }
 
