@@ -166,12 +166,12 @@ export const getMyChatFn = createServerFn({ method: 'GET' }).handler(async () =>
     }
 
     if (!enabled || !hasAuthCredentials()) {
-      return { ...base, conversation: null, messages: [], agentsOnline: false }
+      return { ...base, conversation: null, messages: [], hasMore: false, agentsOnline: false }
     }
 
     const ctx = await getOptionalAuth()
     if (!ctx?.principal) {
-      return { ...base, conversation: null, messages: [], agentsOnline: false }
+      return { ...base, conversation: null, messages: [], hasMore: false, agentsOnline: false }
     }
 
     const { getActiveConversationForVisitor, conversationToDTO, listMessages } =
@@ -184,14 +184,28 @@ export const getMyChatFn = createServerFn({ method: 'GET' }).handler(async () =>
     ])
     const visitorHasEmail = Boolean(ctx.user?.email) || Boolean(conversation?.visitorEmail)
     if (!conversation) {
-      return { ...base, visitorHasEmail, conversation: null, messages: [], agentsOnline }
+      return {
+        ...base,
+        visitorHasEmail,
+        conversation: null,
+        messages: [],
+        hasMore: false,
+        agentsOnline,
+      }
     }
 
     const [dto, page] = await Promise.all([
       conversationToDTO(conversation, 'visitor'),
       listMessages(conversation.id),
     ])
-    return { ...base, visitorHasEmail, conversation: dto, messages: page.messages, agentsOnline }
+    return {
+      ...base,
+      visitorHasEmail,
+      conversation: dto,
+      messages: page.messages,
+      hasMore: page.hasMore,
+      agentsOnline,
+    }
   } catch (error) {
     console.error('[fn:chat] getMyChatFn failed:', error)
     throw error

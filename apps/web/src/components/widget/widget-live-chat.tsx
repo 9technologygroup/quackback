@@ -11,6 +11,7 @@ import type { ConversationId } from '@quackback/ids'
 import { Avatar } from '@/components/ui/avatar'
 import { TypingDots } from '@/components/shared/typing-dots'
 import { ChatAttachmentList } from '@/components/shared/chat-attachments'
+import { EmojiPicker } from '@/components/shared/emoji-picker'
 import { cn } from '@/lib/shared/utils'
 import { useWidgetAuth } from './widget-auth-provider'
 import { getWidgetAuthHeaders } from '@/lib/client/widget-auth'
@@ -58,6 +59,9 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
   const [preChatMode, setPreChatMode] = useState<'off' | 'optional' | 'required'>('off')
   const [emailKnown, setEmailKnown] = useState(false)
   const [emailInput, setEmailInput] = useState('')
+  // Older-message pagination.
+  const [hasMoreOlder, setHasMoreOlder] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
   const [conversationStatus, setConversationStatus] = useState<string | null>(null)
   const [csatRating, setCsatRating] = useState<number | null>(null)
   const [csatSubmitted, setCsatSubmitted] = useState(false)
@@ -107,6 +111,7 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
         setWithinOfficeHours(res.withinOfficeHours)
         setPreChatMode(res.preChatEmail)
         setEmailKnown(res.visitorHasEmail)
+        setHasMoreOlder(res.hasMore)
         setConversationId((res.conversation?.id as ConversationId | undefined) ?? null)
         setAgentReadAt(res.conversation?.agentLastReadAt ?? null)
         setConversationStatus(res.conversation?.status ?? null)
@@ -132,10 +137,32 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
         headers: getWidgetAuthHeaders(),
       })
       setMessages(page.messages)
+      setHasMoreOlder(page.hasMore)
     } catch {
       /* keep current messages */
     }
   }, [conversationId])
+
+  // Prepend an older page (keyset cursor = oldest loaded message id).
+  const loadOlder = useCallback(async () => {
+    if (!conversationId || loadingOlder || messages.length === 0) return
+    setLoadingOlder(true)
+    try {
+      const page = await listChatMessagesFn({
+        data: { conversationId, before: messages[0].id },
+        headers: getWidgetAuthHeaders(),
+      })
+      setMessages((prev) => {
+        const known = new Set(prev.map((m) => m.id))
+        return [...page.messages.filter((m) => !known.has(m.id)), ...prev]
+      })
+      setHasMoreOlder(page.hasMore)
+    } catch {
+      /* keep current messages */
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [conversationId, loadingOlder, messages])
 
   useChatStream({
     enabled: conversationId != null,
@@ -247,11 +274,12 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
     preChatMode !== 'off' && !emailKnown && !conversationId && messages.length === 0
   const emailBlocksSend = preChatMode === 'required' && needsEmail && !emailValid
 
-  // Auto-scroll to the newest message.
+  // Auto-scroll to the newest message. Keyed on the newest id (not length) so
+  // prepending older messages doesn't yank the view to the bottom.
   useEffect(() => {
     const el = scrollViewportRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [messages.length, loading])
+  }, [messages.at(-1)?.id, loading])
 
   // Clear unread on the visitor side only when the newest message is from an
   // agent — skip the visitor's own outbound sends (avoids a write + 'read'
@@ -346,8 +374,28 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
 
       <div ref={scrollViewportRef} className="flex-1 min-h-0 overflow-y-auto">
         <div className="flex flex-col gap-3 px-3 py-4">
-          {/* Greeting — rendered from settings, not stored as a message. */}
-          {welcomeMessage && (
+          {/* Load older messages — shown until the start of the thread is reached. */}
+          {hasMoreOlder && (
+            <button
+              type="button"
+              onClick={() => void loadOlder()}
+              disabled={loadingOlder}
+              className="mx-auto rounded-full border border-border/60 px-3 py-1 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
+            >
+              {loadingOlder ? (
+                <FormattedMessage id="widget.chat.loadingOlder" defaultMessage="Loading…" />
+              ) : (
+                <FormattedMessage
+                  id="widget.chat.loadOlder"
+                  defaultMessage="Load earlier messages"
+                />
+              )}
+            </button>
+          )}
+
+          {/* Greeting — rendered from settings, not stored as a message. Hidden
+              until the visitor has paged back to the start of the thread. */}
+          {!hasMoreOlder && welcomeMessage && (
             <ChatBubble side="agent" authorName={teamName ?? undefined} content={welcomeMessage} />
           )}
 
@@ -547,6 +595,7 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
           >
             <PaperClipIcon className="w-4 h-4" />
           </button>
+          <EmojiPicker onSelect={(emoji) => setInput((prev) => prev + emoji)} />
           <textarea
             value={input}
             onChange={(e) => {

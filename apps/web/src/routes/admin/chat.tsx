@@ -21,6 +21,7 @@ import type { ConversationId, ChatMessageId, TagId } from '@quackback/ids'
 import {
   listConversationsFn,
   getConversationFn,
+  listChatMessagesFn,
   sendAgentMessageFn,
   addChatNoteFn,
   setConversationStatusFn,
@@ -46,6 +47,7 @@ import { useChatComposerAttachments } from '@/lib/client/hooks/use-chat-composer
 import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
 import { TypingDots } from '@/components/shared/typing-dots'
 import { ChatAttachmentList } from '@/components/shared/chat-attachments'
+import { EmojiPicker } from '@/components/shared/emoji-picker'
 import { ConvertToPostDialog } from '@/components/admin/chat/convert-to-post-dialog'
 import { Avatar } from '@/components/ui/avatar'
 import { Spinner } from '@/components/shared/spinner'
@@ -351,6 +353,37 @@ function ChatThread({
 
   const messages = data?.messages ?? []
   const conversation = data?.conversation
+  const hasMoreOlder = data?.hasMore ?? false
+  const [loadingOlder, setLoadingOlder] = useState(false)
+
+  // Prepend an older page (keyset cursor = oldest loaded message id). Agents see
+  // internal notes here too (listChatMessagesFn includes them by role).
+  const loadOlder = async () => {
+    if (loadingOlder || messages.length === 0) return
+    setLoadingOlder(true)
+    try {
+      const page = await listChatMessagesFn({
+        data: { conversationId, before: messages[0].id },
+      })
+      queryClient.setQueryData(
+        threadKey,
+        (
+          prev:
+            | { conversation: ConversationDTO; messages: ChatMessageDTO[]; hasMore: boolean }
+            | undefined
+        ) => {
+          if (!prev) return prev
+          const known = new Set(prev.messages.map((m) => m.id))
+          const older = page.messages.filter((m) => !known.has(m.id))
+          return { ...prev, messages: [...older, ...prev.messages], hasMore: page.hasMore }
+        }
+      )
+    } catch {
+      toast.error('Failed to load older messages')
+    } finally {
+      setLoadingOlder(false)
+    }
+  }
 
   // The agent's latest message is "Seen" once the visitor read watermark
   // reaches it.
@@ -361,10 +394,12 @@ function ChatThread({
     new Date(conversation.visitorLastReadAt).getTime() >=
       new Date(lastAgentMessage.createdAt).getTime()
 
+  // Keyed on the newest id (not length) so prepending older messages doesn't
+  // yank the view to the bottom.
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [messages.length, isLoading, isVisitorTyping])
+  }, [messages.at(-1)?.id, isLoading, isVisitorTyping])
 
   // Clear the agent-side unread badge when a thread is open and new visitor
   // messages arrive — opening + reading should mark read, not only replying.
@@ -597,6 +632,16 @@ function ChatThread({
         {/* Messages */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4">
           <div className="flex flex-col gap-3">
+            {hasMoreOlder && (
+              <button
+                type="button"
+                onClick={() => void loadOlder()}
+                disabled={loadingOlder}
+                className="mx-auto rounded-full border border-border/60 px-3 py-1 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
+              >
+                {loadingOlder ? 'Loading…' : 'Load earlier messages'}
+              </button>
+            )}
             {messages.map((m) => (
               <AdminBubble key={m.id} message={m} onDelete={() => deleteMutation.mutate(m.id)} />
             ))}
@@ -695,6 +740,7 @@ function ChatThread({
                 <PaperClipIcon className="h-4 w-4" />
               </button>
             )}
+            <EmojiPicker onSelect={(emoji) => setReply((prev) => prev + emoji)} />
             {cannedReplies.length > 0 && (
               <Popover>
                 <PopoverTrigger asChild>
