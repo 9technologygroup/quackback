@@ -1,5 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { getRequestHeaders } from '@tanstack/react-start/server'
 import { getWidgetSession } from '@/lib/server/functions/widget-auth'
+import {
+  isWidgetAnonCookieEnabled,
+  buildWidgetAnonCookie,
+} from '@/lib/server/functions/widget-anon-cookie'
+import { WIDGET_SESSION_TTL_MS } from '@/lib/server/functions/widget-session-roll'
 
 export const Route = createFileRoute('/api/widget/session')({
   server: {
@@ -19,6 +25,23 @@ export const Route = createFileRoute('/api/widget/session')({
           }
 
           const isAnonymous = session.principal.type === 'anonymous'
+
+          const headers: Record<string, string> = { 'Cache-Control': 'no-store' }
+          // P2.7: mirror the anonymous localStorage token into a first-party
+          // HttpOnly cookie so it survives a same-origin reload that clears
+          // localStorage. Only for anon sessions, only when enabled, and only
+          // when a Bearer was actually presented (so we never widen scope).
+          if (isAnonymous && isWidgetAnonCookieEnabled()) {
+            const auth = getRequestHeaders().get('authorization')
+            const token = auth?.startsWith('Bearer ') ? auth.slice(7) : null
+            if (token) {
+              headers['Set-Cookie'] = buildWidgetAnonCookie(
+                token,
+                Math.floor(WIDGET_SESSION_TTL_MS / 1000)
+              )
+            }
+          }
+
           return Response.json(
             {
               data: {
@@ -32,7 +55,7 @@ export const Route = createFileRoute('/api/widget/session')({
                     },
               },
             },
-            { headers: noStoreHeaders() }
+            { headers }
           )
         } catch (error) {
           console.error('[widget:session] Error:', error)

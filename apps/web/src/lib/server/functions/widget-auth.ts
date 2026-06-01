@@ -5,6 +5,7 @@ import type { Role } from '@/lib/server/auth'
 import { auth } from '@/lib/server/auth'
 import { db, session, principal, eq, and, gt } from '@/lib/server/db'
 import { shouldRollSession, WIDGET_SESSION_TTL_MS } from './widget-session-roll'
+import { isWidgetAnonCookieEnabled, readWidgetAnonCookie } from './widget-anon-cookie'
 
 export interface WidgetAuthContext {
   settings: {
@@ -42,9 +43,18 @@ export async function getWidgetSession(opts?: {
   try {
     const headers = getRequestHeaders()
     const authHeader = headers.get('authorization')
-    if (!authHeader?.startsWith('Bearer ')) return null
-
-    const token = authHeader.slice(7)
+    // Bearer is the primary credential and always takes precedence. Only when
+    // NO Bearer is present do we consider the gated first-party anon cookie
+    // (P2.7) — and a cookie can only ever resolve an ANONYMOUS session (enforced
+    // after lookup), so it can't elevate or poison an identified one.
+    let token: string | null = null
+    let viaCookie = false
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.slice(7) || null
+    } else if (isWidgetAnonCookieEnabled()) {
+      token = readWidgetAnonCookie(headers.get('cookie'))
+      viaCookie = true
+    }
     if (!token) return null
 
     const sessionRecord = await db.query.session.findFirst({
@@ -89,6 +99,10 @@ export async function getWidgetSession(opts?: {
         .returning()
       principalRecord = created
     }
+
+    // A cookie-resolved session may ONLY be anonymous — never let a first-party
+    // cookie stand in for an identified/elevated session.
+    if (viaCookie && (principalRecord.type ?? 'user') !== 'anonymous') return null
 
     return {
       settings: {
