@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { FormattedMessage, useIntl } from 'react-intl'
 import { buildChatRows, type ChatRow } from './widget-chat-rows'
+import { chatAvailable } from '@/lib/shared/chat/presence'
 import { PaperAirplaneIcon } from '@heroicons/react/24/solid'
 import {
   ChatBubbleLeftRightIcon,
@@ -267,7 +268,7 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
 
   // Availability shown to the visitor: a live agent always counts as online;
   // when office hours are configured, the schedule also marks us available.
-  const available = withinOfficeHours === null ? agentsOnline : withinOfficeHours || agentsOnline
+  const available = chatAvailable(agentsOnline, withinOfficeHours)
 
   // Pre-chat email: prompt only before the conversation starts, for anonymous
   // visitors, when configured. 'required' blocks sending until a valid address.

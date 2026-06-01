@@ -328,6 +328,10 @@ function WidgetPage() {
           tabs={tabs}
           onLeaveFeedback={() => handleTabChange('feedback')}
           onGetHelp={() => handleTabChange('help')}
+          onResumeChat={() => {
+            setActiveTab('help')
+            setView('chat')
+          }}
           onSeeChangelog={() => handleTabChange('changelog')}
         />
       )}

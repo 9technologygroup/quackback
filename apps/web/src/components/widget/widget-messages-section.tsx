@@ -1,10 +1,6 @@
-import { useEffect, useState } from 'react'
 import { FormattedMessage } from 'react-intl'
 import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline'
-import { useWidgetAuth } from './widget-auth-provider'
-import { getWidgetAuthHeaders } from '@/lib/client/widget-auth'
-import { getMyChatFn } from '@/lib/server/functions/chat'
-import type { ConversationDTO } from '@/lib/shared/chat/types'
+import { useChatSummary } from './use-chat-summary'
 import { WidgetResumeCard } from './widget-resume-card'
 
 interface WidgetMessagesSectionProps {
@@ -15,34 +11,10 @@ interface WidgetMessagesSectionProps {
 /**
  * The "Messages" half of the combined support surface: a resume card for any
  * in-flight conversation plus a primary CTA into the chat thread. Rendered
- * below the help articles when live chat is part of the support surface. Reads
- * only the conversation summary from getMyChatFn (the thread itself loads when
- * the visitor opens chat); re-keyed on sessionVersion like the rest of the
- * widget so it refreshes after identify.
+ * below the help articles when live chat is part of the support surface.
  */
 export function WidgetMessagesSection({ onOpenChat }: WidgetMessagesSectionProps) {
-  const { sessionVersion } = useWidgetAuth()
-  const [conversation, setConversation] = useState<ConversationDTO | null>(null)
-  const [teamName, setTeamName] = useState<string | null>(null)
-  const [agentsOnline, setAgentsOnline] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const res = await getMyChatFn({ headers: getWidgetAuthHeaders() })
-        if (cancelled) return
-        setConversation(res.conversation ?? null)
-        setTeamName(res.teamName)
-        setAgentsOnline(res.agentsOnline)
-      } catch {
-        /* no conversation / not signed in — show the start CTA only */
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [sessionVersion])
+  const { conversation, teamName, agentsOnline } = useChatSummary(true)
 
   return (
     <div className="mt-4 border-t border-border/40 pt-3">

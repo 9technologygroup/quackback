@@ -8,7 +8,10 @@ import {
 } from '@heroicons/react/24/solid'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/shared/utils'
+import { useChatSummary } from './use-chat-summary'
+import { chatAvailable } from '@/lib/shared/chat/presence'
 import { useWidgetAuth } from './widget-auth-provider'
+import { WidgetResumeCard } from './widget-resume-card'
 import { type EnabledTabs, supportEnabled } from './widget-nav'
 
 interface WidgetOverviewProps {
@@ -17,6 +20,8 @@ interface WidgetOverviewProps {
   onLeaveFeedback: () => void
   /** Open the support surface (help articles + messages). */
   onGetHelp: () => void
+  /** Resume an in-flight conversation (opens the chat thread directly). */
+  onResumeChat: () => void
   /** Open the changelog. */
   onSeeChangelog: () => void
 }
@@ -32,10 +37,16 @@ export function WidgetOverview({
   tabs,
   onLeaveFeedback,
   onGetHelp,
+  onResumeChat,
   onSeeChangelog,
 }: WidgetOverviewProps) {
   const { user } = useWidgetAuth()
   const firstName = user?.name?.trim().split(/\s+/)[0]
+
+  // Presence + a recent-conversation resume card are chat concepts — only
+  // fetched/shown when chat is part of the support surface.
+  const { conversation, teamName, agentsOnline, withinOfficeHours } = useChatSummary(!!tabs.chat)
+  const available = chatAvailable(agentsOnline, withinOfficeHours)
 
   return (
     <div className="flex flex-col h-full">
@@ -56,7 +67,35 @@ export function WidgetOverview({
             <p className="text-sm text-muted-foreground">
               <FormattedMessage id="widget.launcher.subtitle" defaultMessage="How can we help?" />
             </p>
+            {tabs.chat && (
+              <p className="flex items-center gap-1.5 pt-0.5 text-xs text-muted-foreground">
+                <span
+                  className={cn(
+                    'size-2 rounded-full',
+                    available ? 'bg-emerald-500' : 'bg-muted-foreground/40'
+                  )}
+                  aria-hidden
+                />
+                {available ? (
+                  <FormattedMessage id="widget.chat.online" defaultMessage="We're online" />
+                ) : (
+                  <FormattedMessage
+                    id="widget.chat.offline"
+                    defaultMessage="We'll reply by email"
+                  />
+                )}
+              </p>
+            )}
           </header>
+
+          {conversation && (
+            <WidgetResumeCard
+              conversation={conversation}
+              teamName={teamName}
+              agentsOnline={agentsOnline}
+              onClick={onResumeChat}
+            />
+          )}
 
           <div className="flex flex-col gap-2">
             {tabs.feedback && (
