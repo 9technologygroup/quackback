@@ -187,7 +187,7 @@ function ChatInboxPage() {
             <ChatBubbleLeftRightIcon className="h-4 w-4 text-primary" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold leading-tight">Chat</h1>
+            <h1 className="text-lg font-semibold leading-tight">Support</h1>
             <p className="text-xs text-muted-foreground">Live conversations</p>
           </div>
         </div>
