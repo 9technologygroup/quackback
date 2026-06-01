@@ -6,11 +6,18 @@
  *
  * Only TRULY EMPTY anon principals are deleted — created beyond the retention
  * window, no live session, and no content anywhere (posts/votes/comments/
- * conversations/messages/subscriptions/notifications). A principal that authored
- * anything is left untouched: deleting it would orphan or cascade real content,
- * and chat FKs are onDelete:restrict so the delete would fail regardless. Each
- * principal is removed in its own transaction so an unexpected reference skips
- * just that row rather than failing the batch.
+ * comment_reactions/conversations/messages/subscriptions/notifications). A
+ * principal that authored anything is left untouched.
+ *
+ * The NOT EXISTS list must cover every table where an anon actor can author
+ * content, because the FKs are a mix: chat FKs are onDelete:restrict (a missed
+ * one would throw and be caught), but content like comment_reactions is
+ * onDelete:CASCADE — a missing guard there would NOT throw; it would silently
+ * cascade-delete real content. So the guard, not the catch block, is the
+ * safety net for cascade tables. (notification_preferences / unsubscribe_tokens
+ * also cascade but are derived preference state, so sweeping them is intended.)
+ * Each principal is still removed in its own transaction so an unexpected
+ * restrict reference skips just that row rather than failing the batch.
  */
 import { db, eq, sql, principal, session, user } from '@/lib/server/db'
 
@@ -39,6 +46,7 @@ export async function sweepAnonymousPrincipals(opts?: {
       AND NOT EXISTS (SELECT 1 FROM posts WHERE principal_id = pr.id)
       AND NOT EXISTS (SELECT 1 FROM votes WHERE principal_id = pr.id)
       AND NOT EXISTS (SELECT 1 FROM comments WHERE principal_id = pr.id)
+      AND NOT EXISTS (SELECT 1 FROM comment_reactions WHERE principal_id = pr.id)
       AND NOT EXISTS (SELECT 1 FROM conversations WHERE visitor_principal_id = pr.id)
       AND NOT EXISTS (SELECT 1 FROM chat_messages WHERE principal_id = pr.id)
       AND NOT EXISTS (SELECT 1 FROM post_subscriptions WHERE principal_id = pr.id)

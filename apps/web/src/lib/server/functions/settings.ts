@@ -763,7 +763,8 @@ const updateWidgetConfigSchema = z.object({
         )
         .max(100)
         .optional(),
-      firstResponseTargetMinutes: z.number().int().min(1).max(10080).optional(),
+      // null clears a previously-set target (deepMerge passes null through).
+      firstResponseTargetMinutes: z.number().int().min(1).max(10080).nullable().optional(),
     })
     .optional(),
 })

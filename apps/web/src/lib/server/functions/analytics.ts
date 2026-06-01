@@ -278,7 +278,7 @@ export const getAnalyticsData = createServerFn({ method: 'GET' })
         firstVisitorAt: r.first_visitor_at as string,
         firstAgentAt: r.first_agent_at,
       }))
-    const targetMinutes = (await getLiveChatConfig()).firstResponseTargetMinutes
+    const targetMinutes = (await getLiveChatConfig()).firstResponseTargetMinutes ?? undefined
     const firstResponse = {
       ...summarizeFirstResponse(frPairs, targetMinutes),
       targetMinutes: targetMinutes ?? null,

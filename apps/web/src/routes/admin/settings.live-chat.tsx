@@ -1,6 +1,7 @@
 import { useMemo, useState, useTransition } from 'react'
 import { createFileRoute, useRouter } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { ChatBubbleLeftRightIcon, ArrowPathIcon } from '@heroicons/react/24/solid'
 import { PlusIcon, TrashIcon } from '@heroicons/react/24/outline'
 import type { CannedReply, ChatMacro } from '@/lib/server/domains/settings/settings.types'
@@ -258,11 +259,23 @@ function LiveChatSettingsPage() {
               placeholder="e.g. 60"
               onChange={(e) => setFirstResponseTarget(e.target.value)}
               onBlur={() => {
-                const parsed = Number.parseInt(firstResponseTarget, 10)
-                if (Number.isInteger(parsed) && parsed >= 1) {
+                const trimmed = firstResponseTarget.trim()
+                if (trimmed === '') {
+                  // Empty clears a previously-set target.
+                  void persist('firstResponseTarget', {
+                    chat: { firstResponseTargetMinutes: null },
+                  })
+                  return
+                }
+                const parsed = Number.parseInt(trimmed, 10)
+                if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 10080) {
                   void persist('firstResponseTarget', {
                     chat: { firstResponseTargetMinutes: parsed },
                   })
+                } else {
+                  // Mirror the server bound so an out-of-range value isn't
+                  // silently rejected — give the admin feedback instead.
+                  toast.error('Enter a target between 1 and 10080 minutes')
                 }
               }}
               disabled={isBusy || !enabled}
