@@ -333,6 +333,10 @@ function WidgetPage() {
             setView('chat')
           }}
           onSeeChangelog={() => handleTabChange('changelog')}
+          onOpenChangelogEntry={(id) => {
+            setActiveTab('changelog')
+            handleChangelogEntrySelect(id)
+          }}
         />
       )}
 

@@ -38,6 +38,10 @@ export function WidgetResumeCard({
     <button
       type="button"
       onClick={onClick}
+      aria-label={intl.formatMessage(
+        { id: 'widget.messages.resumeAria', defaultMessage: 'Open conversation with {name}' },
+        { name }
+      )}
       className={cn(
         'group w-full flex items-center gap-3 rounded-xl border border-border/60 bg-card px-3 py-2.5 text-start hover:bg-muted/40 transition-colors',
         isClosed && 'opacity-70'

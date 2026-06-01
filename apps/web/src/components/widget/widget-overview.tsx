@@ -1,17 +1,13 @@
 import type { ComponentType } from 'react'
 import { FormattedMessage } from 'react-intl'
-import {
-  LightBulbIcon,
-  ChatBubbleLeftRightIcon,
-  NewspaperIcon,
-  ChevronRightIcon,
-} from '@heroicons/react/24/solid'
+import { LightBulbIcon, ChatBubbleLeftRightIcon, ChevronRightIcon } from '@heroicons/react/24/solid'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/shared/utils'
 import { useChatSummary } from './use-chat-summary'
 import { chatAvailable } from '@/lib/shared/chat/presence'
 import { useWidgetAuth } from './widget-auth-provider'
 import { WidgetResumeCard } from './widget-resume-card'
+import { WidgetChangelogTeaser } from './widget-changelog-teaser'
 import { type EnabledTabs, supportEnabled } from './widget-nav'
 
 interface WidgetOverviewProps {
@@ -22,16 +18,18 @@ interface WidgetOverviewProps {
   onGetHelp: () => void
   /** Resume an in-flight conversation (opens the chat thread directly). */
   onResumeChat: () => void
-  /** Open the changelog. */
+  /** Open the full changelog. */
   onSeeChangelog: () => void
+  /** Open a single changelog entry from the teaser. */
+  onOpenChangelogEntry: (entryId: string) => void
 }
 
 /**
- * Aggregated Home — greets the visitor and routes them to whichever surfaces
- * the workspace has enabled. Rendered only when 2+ content surfaces exist (see
- * homeEnabled in widget-nav), so it never shows a single redundant card. Static
- * for now: the recent-conversation resume card, presence, and content teasers
- * layer on in later phases.
+ * Aggregated Home — greets the visitor (with live-chat presence), surfaces a
+ * recent-conversation resume card, routes to each enabled surface via action
+ * cards, and shows an ambient latest-changelog teaser at the bottom. Rendered
+ * only when 2+ content surfaces exist (see homeEnabled in widget-nav), so it
+ * never shows a single redundant card.
  */
 export function WidgetOverview({
   tabs,
@@ -39,6 +37,7 @@ export function WidgetOverview({
   onGetHelp,
   onResumeChat,
   onSeeChangelog,
+  onOpenChangelogEntry,
 }: WidgetOverviewProps) {
   const { user } = useWidgetAuth()
   const firstName = user?.name?.trim().split(/\s+/)[0]
@@ -133,26 +132,11 @@ export function WidgetOverview({
                 }
               />
             )}
-
-            {tabs.changelog && (
-              <ActionCard
-                icon={NewspaperIcon}
-                onClick={onSeeChangelog}
-                title={
-                  <FormattedMessage
-                    id="widget.launcher.action.changelog"
-                    defaultMessage="What's new"
-                  />
-                }
-                subtitle={
-                  <FormattedMessage
-                    id="widget.launcher.action.changelog.sub"
-                    defaultMessage="See our latest updates"
-                  />
-                }
-              />
-            )}
           </div>
+
+          {tabs.changelog && (
+            <WidgetChangelogTeaser onOpenEntry={onOpenChangelogEntry} onSeeAll={onSeeChangelog} />
+          )}
         </div>
       </ScrollArea>
     </div>
