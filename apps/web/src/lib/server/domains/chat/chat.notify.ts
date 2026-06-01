@@ -15,6 +15,7 @@ import { isAnyAgentOnline, isPrincipalOnline } from '@/lib/server/realtime/prese
 import { createNotificationsBatch } from '@/lib/server/domains/notifications/notification.service'
 import { buildHookContext } from '@/lib/server/events/hook-context'
 import { truncate } from '@/lib/shared/utils/string'
+import { resolveReplyRecipient } from './chat.recipient'
 
 const previewOf = (content: string) => truncate(content, 140)
 
@@ -132,6 +133,7 @@ export async function notifyNoteMentions(opts: {
  * pre-chat email they captured on the conversation.
  */
 export async function notifyAgentReply(opts: {
+  conversationId: ConversationId
   visitorPrincipalId: PrincipalId
   content: string
   agentName: string
@@ -148,24 +150,36 @@ export async function notifyAgentReply(opts: {
       .where(eq(principal.id, opts.visitorPrincipalId))
       .limit(1)
 
-    // Prefer the account email; fall back to the captured pre-chat email so we
-    // can still reach an anonymous visitor who left one.
-    const recipient =
-      (visitor && visitor.type !== 'anonymous' && visitor.email) || opts.capturedEmail
-    if (!recipient) return
+    const recipient = resolveReplyRecipient(visitor, opts.capturedEmail)
+    if (!recipient) {
+      // The visitor is offline and unreachable — surface it instead of dropping
+      // silently (the inbox can flag conversations with no reply-to address).
+      console.warn(
+        `[chat:notify] agent reply undeliverable (no email) for conversation ${opts.conversationId}`
+      )
+      return
+    }
 
     const ctx = await buildHookContext()
     if (!ctx) return
     const { sendChatMessageEmail } = await import('@quackback/email')
-    await sendChatMessageEmail({
+    // Deep-link the visitor back to their conversation (the widget restores it
+    // from the persisted anon session), not just the portal root.
+    const ctaUrl = `${ctx.portalBaseUrl.replace(/\/$/, '')}/?openChat=1`
+    const result = await sendChatMessageEmail({
       to: recipient,
       direction: 'agent_reply',
       senderName: opts.agentName,
       messagePreview: previewOf(opts.content),
-      ctaUrl: ctx.portalBaseUrl,
+      ctaUrl,
       workspaceName: ctx.workspaceName,
       logoUrl: ctx.logoUrl ?? undefined,
     })
+    if (result && result.sent === false) {
+      console.warn(
+        `[chat:notify] agent-reply email not sent (provider returned sent:false) for conversation ${opts.conversationId}`
+      )
+    }
   } catch (err) {
     console.warn('[chat:notify] notifyAgentReply failed:', (err as Error).message)
   }

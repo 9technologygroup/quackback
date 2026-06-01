@@ -347,6 +347,7 @@ export async function sendAgentMessage(
   })
 
   void notifyAgentReply({
+    conversationId: txResult.conversation.id,
     visitorPrincipalId: txResult.conversation.visitorPrincipalId,
     content: preview(content, attachments),
     agentName: agent.displayName ?? 'Support',

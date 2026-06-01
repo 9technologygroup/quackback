@@ -73,8 +73,10 @@ export async function isPrincipalOnline(principalId: PrincipalId): Promise<boole
     return value !== null
   } catch (err) {
     console.warn('[presence] isPrincipalOnline failed:', (err as Error).message)
-    // Fail "online" so we don't spam offline emails when Redis is flaky.
-    return true
+    // Fail CLOSED (treat as offline) so a Redis outage doesn't silently swallow
+    // offline reply notifications — a possibly-redundant email beats a reply the
+    // visitor never sees.
+    return false
   }
 }
 

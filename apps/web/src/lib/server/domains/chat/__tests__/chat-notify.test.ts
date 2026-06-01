@@ -298,6 +298,7 @@ describe('notifyAgentReply', () => {
     visitorRows = [{ type: 'user', email: 'v@x.com' }]
 
     await notifyAgentReply({
+      conversationId,
       visitorPrincipalId,
       content: 'thanks for waiting',
       agentName: 'Agent',
@@ -311,6 +312,7 @@ describe('notifyAgentReply', () => {
     visitorRows = [{ type: 'user', email: 'account@x.com' }]
 
     await notifyAgentReply({
+      conversationId,
       visitorPrincipalId,
       content: 'here is your answer',
       agentName: 'Agent',
@@ -322,7 +324,8 @@ describe('notifyAgentReply', () => {
       to: 'account@x.com',
       direction: 'agent_reply',
       senderName: 'Agent',
-      ctaUrl: 'https://acme.example.com',
+      // Deep-links the visitor back into their conversation (P1.3).
+      ctaUrl: 'https://acme.example.com/?openChat=1',
       workspaceName: 'Acme',
     })
   })
@@ -333,6 +336,7 @@ describe('notifyAgentReply', () => {
     visitorRows = [{ type: 'anonymous', email: null }]
 
     await notifyAgentReply({
+      conversationId,
       visitorPrincipalId,
       content: 'answer',
       agentName: 'Agent',
@@ -348,6 +352,7 @@ describe('notifyAgentReply', () => {
     visitorRows = [{ type: 'anonymous', email: null }]
 
     await notifyAgentReply({
+      conversationId,
       visitorPrincipalId,
       content: 'answer',
       agentName: 'Agent',
@@ -362,6 +367,7 @@ describe('notifyAgentReply', () => {
 
     await expect(
       notifyAgentReply({
+        conversationId,
         visitorPrincipalId,
         content: 'answer',
         agentName: 'Agent',
