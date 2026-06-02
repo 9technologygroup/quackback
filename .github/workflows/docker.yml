@@ -4,6 +4,15 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA or ref to build (e.g. a release tag's commit). Lets you re-release a signed image from an exact source commit without moving the git tag."
+        required: true
+      image_tag:
+        description: 'Image tag to publish as (e.g. 0.10.5). Leave blank to tag sha-<short>.'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -11,8 +20,14 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # keyless cosign signing via GitHub OIDC
     steps:
       - uses: actions/checkout@v6
+        with:
+          # On workflow_dispatch, build the requested sha/ref (re-release of an
+          # exact source commit); otherwise build the pushed ref as usual.
+          ref: ${{ github.event.inputs.sha || github.ref }}
+
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
@@ -26,11 +41,14 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=ref,event=branch
+            type=ref,event=branch,enable=${{ github.event_name != 'workflow_dispatch' }}
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ github.event.inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag != '' }}
+            type=sha,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag == '' }}
 
       - uses: docker/build-push-action@v7
+        id: build
         with:
           context: .
           file: ./apps/web/Dockerfile
@@ -39,3 +57,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Keyless cosign signature over the pushed digest, required by the
+      # cluster's Kyverno verify-images ClusterPolicy (keyless, GitHub OIDC
+      # issuer + QuackbackIO workflow subject). github.repository is a
+      # trusted GitHub-set slug; lowercased because OCI refs must be lower.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPO: ${{ github.repository }}
+        run: |
+          IMAGE="ghcr.io/$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+          cosign sign --yes "${IMAGE}@${DIGEST}"
