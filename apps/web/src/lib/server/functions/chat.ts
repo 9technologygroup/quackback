@@ -193,9 +193,14 @@ export const getMyChatFn = createServerFn({ method: 'GET' }).handler(async () =>
   try {
     const { getLiveChatConfig, isLiveChatEnabled } =
       await import('@/lib/server/domains/settings/settings.widget')
+    const { getSettings } = await import('./workspace')
     const { isEmailConfigured } = await import('@quackback/email')
     const { canEmailVisitor } = await import('@/lib/shared/chat/reply-capability')
-    const [enabled, liveChatConfig] = await Promise.all([isLiveChatEnabled(), getLiveChatConfig()])
+    const [enabled, liveChatConfig, appSettings] = await Promise.all([
+      isLiveChatEnabled(),
+      getLiveChatConfig(),
+      getSettings(),
+    ])
     const officeHours = liveChatConfig.officeHours
     const preChatEmail = liveChatConfig.preChatEmail ?? 'off'
     const emailConfigured = isEmailConfigured()
@@ -203,7 +208,9 @@ export const getMyChatFn = createServerFn({ method: 'GET' }).handler(async () =>
       enabled,
       welcomeMessage: liveChatConfig.welcomeMessage ?? null,
       offlineMessage: liveChatConfig.offlineMessage ?? null,
-      teamName: liveChatConfig.teamName ?? null,
+      // Falls back to the workspace name (as the settings help text promises)
+      // when no team name is set.
+      teamName: liveChatConfig.teamName?.trim() || appSettings?.name || null,
       preChatEmail,
       // null = no office-hours schedule configured; the widget falls back to
       // live agent presence. true/false = the schedule's current verdict.
