@@ -6,7 +6,6 @@ import {
   ChatBubbleLeftRightIcon,
   MapIcon,
   UsersIcon,
-  ArrowRightOnRectangleIcon,
   Cog6ToothIcon,
   Bars3Icon,
   GlobeAltIcon,
@@ -34,8 +33,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import type { LatestVersionResult } from '@/lib/server/functions/version'
 import { setAgentAvailabilityFn } from '@/lib/server/functions/chat'
 
-/** Slack-style availability toggle for the account menu (chat routing). The dot
- *  + label preview the state you'll switch to; the avatar dot shows the current one. */
+/** Availability toggle for the account menu (chat routing). The label shows the
+ *  state you'll switch to; the avatar dot shows the current one. */
 function AvailabilityMenuItems({
   availability,
   onSet,
@@ -45,15 +44,9 @@ function AvailabilityMenuItems({
 }) {
   const goingAway = availability === 'online'
   return (
-    <>
-      <DropdownMenuItem onClick={() => onSet(goingAway ? 'away' : 'online')}>
-        <span
-          className={cn('mr-2 h-2 w-2 rounded-full', goingAway ? 'bg-yellow-400' : 'bg-green-500')}
-        />
-        {goingAway ? 'Set yourself as away' : 'Set yourself as active'}
-      </DropdownMenuItem>
-      <DropdownMenuSeparator />
-    </>
+    <DropdownMenuItem onClick={() => onSet(goingAway ? 'away' : 'online')}>
+      {goingAway ? 'Set yourself as away' : 'Set yourself as active'}
+    </DropdownMenuItem>
   )
 }
 
@@ -312,16 +305,9 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
                     <AvailabilityMenuItems availability={availability} onSet={setAvail} />
                   )}
                   <DropdownMenuItem asChild>
-                    <Link to="/settings">
-                      <Cog6ToothIcon className="mr-2 h-4 w-4" />
-                      Settings
-                    </Link>
+                    <Link to="/settings">Settings</Link>
                   </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleSignOut}>
-                    <ArrowRightOnRectangleIcon className="mr-2 h-4 w-4" />
-                    Sign out
-                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleSignOut}>Sign out</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -461,16 +447,9 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
                 <AvailabilityMenuItems availability={availability} onSet={setAvail} />
               )}
               <DropdownMenuItem asChild>
-                <Link to="/settings">
-                  <Cog6ToothIcon className="mr-2 h-4 w-4" />
-                  Settings
-                </Link>
+                <Link to="/settings">Settings</Link>
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleSignOut}>
-                <ArrowRightOnRectangleIcon className="mr-2 h-4 w-4" />
-                Sign out
-              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleSignOut}>Sign out</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
