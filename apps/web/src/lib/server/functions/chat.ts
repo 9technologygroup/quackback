@@ -367,13 +367,21 @@ export const listChatMessagesFn = createServerFn({ method: 'GET' })
       await assertVisitorChatAccess(ctx.principal.role)
       const actor = await policyActorFromAuth(ctx)
       const { assertConversationViewable } = await import('@/lib/server/domains/chat/chat.service')
-      const { listMessages } = await import('@/lib/server/domains/chat/chat.query')
+      const { listMessages, enrichMessagesForAgent } =
+        await import('@/lib/server/domains/chat/chat.query')
       await assertConversationViewable(data.conversationId as ConversationId, actor)
+      const isTeam = isTeamMember(ctx.principal.role)
       // Agents keep seeing internal notes when paging older messages; visitors never do.
-      return await listMessages(data.conversationId as ConversationId, {
+      const page = await listMessages(data.conversationId as ConversationId, {
         before: data.before,
-        includeInternal: isTeamMember(ctx.principal.role),
+        includeInternal: isTeam,
       })
+      // Team members get the agent-only reaction/flag enrichment on older
+      // messages too; the visitor path returns the clean base DTOs.
+      if (isTeam) {
+        return { ...page, messages: await enrichMessagesForAgent(page.messages, ctx.principal.id) }
+      }
+      return page
     } catch (error) {
       console.error('[fn:chat] listChatMessagesFn failed:', error)
       throw error
