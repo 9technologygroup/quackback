@@ -471,7 +471,13 @@ export async function listConversationsForAgent(
               db
                 .selectDistinct({ id: conversationTags.conversationId })
                 .from(conversationTags)
-                .where(inArray(conversationTags.chatTagId, filter.tagIds))
+                .innerJoin(chatTags, eq(conversationTags.chatTagId, chatTags.id))
+                .where(
+                  and(
+                    inArray(conversationTags.chatTagId, filter.tagIds),
+                    isNull(chatTags.deletedAt)
+                  )
+                )
             )
           : undefined,
         beforeDate ? lt(conversations.lastMessageAt, beforeDate) : undefined

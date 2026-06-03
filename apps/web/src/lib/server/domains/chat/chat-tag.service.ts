@@ -58,10 +58,20 @@ const toDTO = (t: { id: ChatTagId; name: string; color: string }): ChatTagDTO =>
  */
 export async function createChatTag(input: { name: string; color?: string }): Promise<ChatTag> {
   const { name, color } = normalizeChatTagInput(input)
+  // Reuse a LIVE label with the same name (case-insensitive) so inline creation
+  // is idempotent.
   const existing = await db.query.chatTags.findMany({ where: isNull(chatTags.deletedAt) })
   const dup = existing.find((t) => t.name.toLowerCase() === name.toLowerCase())
   if (dup) return dup
-  const [created] = await db.insert(chatTags).values({ name, color }).returning()
+  // The name unique constraint spans soft-deleted rows, and a concurrent create
+  // could race the find above. onConflictDoUpdate resurrects a soft-deleted
+  // same-name row (clearing deletedAt) and resolves the race to one winning row,
+  // so this never surfaces a raw unique-violation.
+  const [created] = await db
+    .insert(chatTags)
+    .values({ name, color })
+    .onConflictDoUpdate({ target: chatTags.name, set: { deletedAt: null } })
+    .returning()
   return created
 }
 

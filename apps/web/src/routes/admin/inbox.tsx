@@ -45,6 +45,8 @@ import {
 } from '@/components/admin/chat/priority-control'
 import { AssigneeControl } from '@/components/admin/chat/assignee-control'
 import { ChannelBadge, NoEmailBadge } from '@/components/admin/chat/channel-badge'
+import { ConversationTagsEditor } from '@/components/admin/chat/conversation-tags-editor'
+import { TagChip } from '@/components/shared/tag-chip'
 import { useChatStream } from '@/lib/client/hooks/use-chat-stream'
 import { useChatTyping } from '@/lib/client/hooks/use-chat-typing'
 import { useImageUpload } from '@/lib/client/hooks/use-image-upload'
@@ -352,9 +354,17 @@ function InboxPage() {
                   <p className="truncate text-xs text-muted-foreground mt-0.5">
                     {c.lastMessagePreview ?? c.subject ?? 'No messages yet'}
                   </p>
-                  {c.channel !== 'live_chat' && (
+                  {(c.channel !== 'live_chat' || c.tags.length > 0) && (
                     <div className="mt-1 flex flex-wrap items-center gap-1">
-                      <ChannelBadge channel={c.channel} />
+                      {c.channel !== 'live_chat' && <ChannelBadge channel={c.channel} />}
+                      {c.tags.map((t) => (
+                        <TagChip
+                          key={t.id}
+                          name={t.name}
+                          color={t.color}
+                          className="px-1.5 py-0 text-[10px]"
+                        />
+                      ))}
                     </div>
                   )}
                 </div>
@@ -682,6 +692,13 @@ function ChatThread({
             </button>
           </div>
         </div>
+
+        {/* Conversation labels */}
+        {conversation && (
+          <div className="flex items-center gap-1.5 border-b border-border/50 px-4 py-2 sm:px-5">
+            <ConversationTagsEditor conversationId={conversationId} tags={conversation.tags} />
+          </div>
+        )}
 
         {/* Messages — min-h-0 so this scrolls and the composer stays pinned. */}
         <ScrollArea className="min-h-0 flex-1" viewportRef={scrollRef}>

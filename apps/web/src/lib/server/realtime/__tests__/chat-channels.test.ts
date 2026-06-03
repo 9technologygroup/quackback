@@ -38,6 +38,8 @@ const agentDto = {
   agentLastReadAt: null,
   csatRating: null,
   visitorEmail: 'visitor@example.com',
+  resolvedAt: null,
+  tags: [{ id: 'chat_tag_1', name: 'VIP', color: '#ff0000' }],
 } as unknown as ConversationDTO
 
 beforeEach(() => vi.clearAllMocks())
@@ -71,10 +73,12 @@ describe('publishConversationUpdate', () => {
     // Agents keep agent-only fields...
     const inboxConv = (inbox![1] as { conversation: ConversationDTO }).conversation
     expect(inboxConv.visitorEmail).toBe('visitor@example.com')
+    expect(inboxConv.tags).toHaveLength(1)
 
     // ...the visitor copy must have every agent-only field stripped.
     const visitorConv = (visitor![1] as { conversation: ConversationDTO }).conversation
     expect(visitorConv.visitorEmail).toBeNull()
+    expect(visitorConv.tags).toEqual([])
   })
 })
 
