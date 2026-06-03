@@ -6,8 +6,6 @@ import {
   PaperAirplaneIcon,
   PaperClipIcon,
   XMarkIcon,
-  CheckCircleIcon,
-  ArrowUturnLeftIcon,
   EllipsisVerticalIcon,
   TrashIcon,
   ChatBubbleBottomCenterTextIcon,
@@ -24,7 +22,6 @@ import {
   listChatMessagesFn,
   sendAgentMessageFn,
   addChatNoteFn,
-  setConversationStatusFn,
   markChatReadFn,
   sendChatTypingFn,
   getCannedRepliesFn,
@@ -41,6 +38,7 @@ import { PriorityControl } from '@/components/admin/chat/priority-control'
 import { AssigneeControl } from '@/components/admin/chat/assignee-control'
 import { ChannelBadge } from '@/components/admin/chat/channel-badge'
 import { ConversationTagsEditor } from '@/components/admin/chat/conversation-tags-editor'
+import { StatusControl } from '@/components/admin/chat/status-control'
 import { ConversationDetailPanel } from '@/components/admin/chat/conversation-detail-panel'
 import { ConversationListColumn } from '@/components/admin/chat/conversation-list-column'
 import { ChatNoteEditor } from '@/components/admin/chat/chat-note-editor'
@@ -480,20 +478,13 @@ function ChatThread({
     onError: () => toast.error('Failed to add note'),
   })
 
-  const statusMutation = useMutation({
-    mutationFn: (next: 'open' | 'closed') =>
-      setConversationStatusFn({ data: { conversationId, status: next } }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: threadKey })
-      onChanged()
-    },
-    onError: () => toast.error('Failed to update conversation'),
-  })
-
   // Re-fetch the thread (priority/assignee/tags live on the conversation row)
   // and the inbox after a metadata mutation handled by a child control.
   const refreshThread = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['admin', 'inbox', 'thread', conversationId] })
+    // The detail panel's "Previous conversations" list has its own cache key —
+    // keep it fresh after a status/assignment/label change.
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'inbox', 'user-conversations'] })
     onChanged()
   }, [queryClient, conversationId, onChanged])
 
@@ -550,8 +541,6 @@ function ChatThread({
     )
   }
 
-  const isClosed = conversation?.status === 'closed'
-
   return (
     <div className="flex h-full">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -597,40 +586,25 @@ function ChatThread({
           </div>
           {/* Triage controls live in the detail panel at xl+; below that
               (panel hidden) they stay in the header. */}
-          <div className="flex shrink-0 items-center gap-1.5 xl:hidden">
-            {conversation && (
-              <>
-                <PriorityControl
-                  conversationId={conversationId}
-                  value={conversation.priority}
-                  onChanged={refreshThread}
-                />
-                <AssigneeControl
-                  conversationId={conversationId}
-                  assignedAgent={conversation.assignedAgent}
-                  onChanged={refreshThread}
-                />
-              </>
-            )}
-            <button
-              type="button"
-              onClick={() => statusMutation.mutate(isClosed ? 'open' : 'closed')}
-              disabled={statusMutation.isPending}
-              className="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted transition-colors"
-            >
-              {isClosed ? (
-                <>
-                  <ArrowUturnLeftIcon className="h-3.5 w-3.5" />
-                  <span className="hidden lg:inline">Reopen</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircleIcon className="h-3.5 w-3.5" />
-                  <span className="hidden lg:inline">End chat</span>
-                </>
-              )}
-            </button>
-          </div>
+          {conversation && (
+            <div className="flex shrink-0 items-center gap-1.5 xl:hidden">
+              <PriorityControl
+                conversationId={conversationId}
+                value={conversation.priority}
+                onChanged={refreshThread}
+              />
+              <AssigneeControl
+                conversationId={conversationId}
+                assignedAgent={conversation.assignedAgent}
+                onChanged={refreshThread}
+              />
+              <StatusControl
+                conversationId={conversationId}
+                status={conversation.status}
+                onChanged={refreshThread}
+              />
+            </div>
+          )}
         </div>
 
         {/* Conversation labels — xl+ shows them in the detail panel. */}

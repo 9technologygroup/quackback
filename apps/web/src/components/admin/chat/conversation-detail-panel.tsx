@@ -1,26 +1,19 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { formatDistanceToNow } from 'date-fns'
-import { ChevronDownIcon } from '@heroicons/react/24/outline'
-import { toast } from 'sonner'
 import type { ConversationId } from '@quackback/ids'
-import type { Channel, ConversationDTO, ConversationStatus } from '@/lib/shared/chat/types'
-import { listConversationsForUserFn, setConversationStatusFn } from '@/lib/server/functions/chat'
+import type { Channel, ConversationDTO } from '@/lib/shared/chat/types'
+import { listConversationsForUserFn } from '@/lib/server/functions/chat'
 import { getPortalUserFn } from '@/lib/server/functions/admin'
+import { useMediaQuery } from '@/lib/client/hooks/use-media-query'
 import { PriorityControl } from './priority-control'
 import { AssigneeControl } from './assignee-control'
 import { ConversationTagsEditor } from './conversation-tags-editor'
+import { StatusControl } from './status-control'
 import { NoEmailBadge } from './channel-badge'
 import { Avatar } from '@/components/ui/avatar'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/shared/utils'
 
-const STATUSES: ConversationStatus[] = ['open', 'pending', 'closed']
 const CHANNEL_LABEL: Record<Channel, string> = {
   live_chat: 'Live chat',
   email: 'Email',
@@ -58,48 +51,6 @@ function Row({
   )
 }
 
-function StatusControl({
-  conversationId,
-  status,
-  onChanged,
-}: {
-  conversationId: ConversationId
-  status: ConversationStatus
-  onChanged: () => void
-}) {
-  const queryClient = useQueryClient()
-  const mut = useMutation({
-    mutationFn: (next: ConversationStatus) =>
-      setConversationStatusFn({ data: { conversationId, status: next } }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['admin', 'inbox', 'thread', conversationId] })
-      onChanged()
-    },
-    onError: () => toast.error('Failed to update status'),
-  })
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          disabled={mut.isPending}
-          className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium capitalize text-foreground hover:bg-muted disabled:opacity-50"
-        >
-          {status}
-          <ChevronDownIcon className="h-3 w-3 text-muted-foreground" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        {STATUSES.map((s) => (
-          <DropdownMenuItem key={s} onClick={() => mut.mutate(s)} className="text-xs capitalize">
-            {s}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
 /**
  * The conversation detail / "Manage" panel — the inbox's right column. Adopts
  * the feedback post-detail metadata-sidebar card pattern (label/control rows)
@@ -117,17 +68,20 @@ export function ConversationDetailPanel({
 }) {
   const visitorPrincipalId = conversation.visitor.principalId
   const name = conversation.visitor.displayName ?? 'Visitor'
+  // The panel is `hidden xl:flex`; only fetch its data when it's actually shown
+  // so smaller viewports don't pay for an invisible sidebar.
+  const isVisible = useMediaQuery('(min-width: 1280px)')
 
   const { data: detail } = useQuery({
     queryKey: ['admin', 'inbox', 'visitor', visitorPrincipalId],
     queryFn: () => getPortalUserFn({ data: { principalId: visitorPrincipalId } }),
-    enabled: !!visitorPrincipalId,
+    enabled: isVisible && !!visitorPrincipalId,
     staleTime: 60_000,
   })
   const { data: history } = useQuery({
     queryKey: ['admin', 'inbox', 'user-conversations', visitorPrincipalId],
     queryFn: () => listConversationsForUserFn({ data: { principalId: visitorPrincipalId } }),
-    enabled: !!visitorPrincipalId,
+    enabled: isVisible && !!visitorPrincipalId,
     staleTime: 30_000,
   })
 
