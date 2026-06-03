@@ -82,7 +82,7 @@ export function AnalyticsPage() {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="px-5 pb-5">
-            <FilterSection title="Sections">
+            <FilterSection title="Sections" collapsible={false}>
               <div className="space-y-1">
                 {sections.map(({ key, label, icon: Icon }) => (
                   <button

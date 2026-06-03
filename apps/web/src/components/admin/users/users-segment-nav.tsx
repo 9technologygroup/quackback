@@ -11,6 +11,7 @@ import {
   EnvelopeIcon,
 } from '@heroicons/react/24/solid'
 import { Link, useNavigate } from '@tanstack/react-router'
+import { FilterSection } from '@/components/shared/filter-section'
 import { cn } from '@/lib/shared/utils'
 import type { SegmentListItem } from '@/lib/client/hooks/use-segments-queries'
 
@@ -127,54 +128,56 @@ export function UsersSegmentNav({
           </Link>
         </div>
 
-        {/* Segments group — its own labelled section. The +-button now
-            lives next to the SEGMENTS header where it belongs (the
-            previous placement under USERS implied 'create user'). */}
-        <div className="mt-5 flex w-full items-center justify-between py-1">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Segments
-          </span>
-          <button
-            type="button"
-            onClick={onCreateSegment}
-            title="Create segment"
-            className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        {/* Segments group — its own labelled section via the shared
+            FilterSection. The +-button lives in the header's action slot
+            where it belongs (the previous placement under USERS implied
+            'create user'). */}
+        <div className="mt-5">
+          <FilterSection
+            title="Segments"
+            collapsible={false}
+            action={
+              <button
+                type="button"
+                onClick={onCreateSegment}
+                title="Create segment"
+                className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              >
+                <PlusIcon className="h-3 w-3" />
+              </button>
+            }
           >
-            <PlusIcon className="h-3 w-3" />
-          </button>
-        </div>
-
-        <div className="mt-2 space-y-1">
-          {isLoading ? (
-            <div className="space-y-1">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="h-7 bg-muted/30 rounded-md animate-pulse" />
-              ))}
-            </div>
-          ) : !segments || segments.length === 0 ? (
-            <p className="text-xs text-muted-foreground px-2.5 py-1.5">
-              No segments yet. Click + to create one.
-            </p>
-          ) : (
-            <div className="space-y-0.5">
-              {segments.map((seg) => (
-                <SegmentNavItem
-                  key={seg.id}
-                  segment={seg}
-                  isSelected={selectedSegmentIds.includes(seg.id)}
-                  onSelect={(shiftKey) => onSelectSegment(seg.id, shiftKey)}
-                  onEdit={() => onEditSegment(seg)}
-                  onDelete={() => onDeleteSegment(seg)}
-                  onEvaluate={
-                    seg.type === 'dynamic' && onEvaluateSegment
-                      ? () => onEvaluateSegment(seg.id)
-                      : undefined
-                  }
-                  isEvaluating={isEvaluating === seg.id}
-                />
-              ))}
-            </div>
-          )}
+            {isLoading ? (
+              <div className="space-y-1">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="h-7 bg-muted/30 rounded-md animate-pulse" />
+                ))}
+              </div>
+            ) : !segments || segments.length === 0 ? (
+              <p className="text-xs text-muted-foreground px-2.5 py-1.5">
+                No segments yet. Click + to create one.
+              </p>
+            ) : (
+              <div className="space-y-0.5">
+                {segments.map((seg) => (
+                  <SegmentNavItem
+                    key={seg.id}
+                    segment={seg}
+                    isSelected={selectedSegmentIds.includes(seg.id)}
+                    onSelect={(shiftKey) => onSelectSegment(seg.id, shiftKey)}
+                    onEdit={() => onEditSegment(seg)}
+                    onDelete={() => onDeleteSegment(seg)}
+                    onEvaluate={
+                      seg.type === 'dynamic' && onEvaluateSegment
+                        ? () => onEvaluateSegment(seg.id)
+                        : undefined
+                    }
+                    isEvaluating={isEvaluating === seg.id}
+                  />
+                ))}
+              </div>
+            )}
+          </FilterSection>
         </div>
       </div>
     </div>

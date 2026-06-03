@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { ChevronDownIcon, ChevronUpIcon } from '@heroicons/react/24/solid'
+import { FilterSection } from '@/components/shared/filter-section'
 import { cn } from '@/lib/shared/utils'
 import type { ChangelogStatusFilter } from './use-changelog-filters'
 
@@ -14,32 +13,6 @@ const CHANGELOG_STATUSES = [
   { id: 'scheduled', name: 'Scheduled', color: '#3b82f6' }, // blue
   { id: 'published', name: 'Published', color: '#22c55e' }, // green
 ] as const
-
-function FilterSection({
-  title,
-  children,
-  defaultOpen = true,
-}: {
-  title: string
-  children: React.ReactNode
-  defaultOpen?: boolean
-}) {
-  const [isOpen, setIsOpen] = useState(defaultOpen)
-
-  return (
-    <div className="pb-4 last:pb-0">
-      <button
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex w-full items-center justify-between py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
-      >
-        {title}
-        {isOpen ? <ChevronUpIcon className="h-3 w-3" /> : <ChevronDownIcon className="h-3 w-3" />}
-      </button>
-      {isOpen && <div className="mt-2">{children}</div>}
-    </div>
-  )
-}
 
 export function ChangelogFiltersPanel({ status, onStatusChange }: ChangelogFiltersProps) {
   return (

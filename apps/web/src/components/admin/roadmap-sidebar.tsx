@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { PageHeader } from '@/components/shared/page-header'
+import { FilterSection } from '@/components/shared/filter-section'
 import {
   Dialog,
   DialogContent,
@@ -129,133 +130,134 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
       <div className="shrink-0 px-4 py-3.5">
         <PageHeader icon={MapIcon} title="Roadmap" />
       </div>
-      {/* Roadmap selector — matches the FilterSection subheading style. */}
-      <div className="px-5 pt-1 pb-2">
-        <div className="flex items-center justify-between">
-          <span className="py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Roadmaps
-          </span>
-          <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-            <DialogTrigger asChild>
-              <button
-                type="button"
-                className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              >
-                <PlusIcon className="h-3 w-3" />
-              </button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-lg">
-              <DialogHeader>
-                <DialogTitle>Create Roadmap</DialogTitle>
-                <DialogDescription>
-                  Create a new roadmap to organize your posts into a public timeline.
-                </DialogDescription>
-              </DialogHeader>
-              <form onSubmit={handleCreateSubmit} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="name">Name</Label>
-                  <Input id="name" name="name" placeholder="Product Roadmap" required />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="description">Description (optional)</Label>
-                  <Input
-                    id="description"
-                    name="description"
-                    placeholder="Our upcoming features and improvements"
-                  />
-                </div>
-                <div className="flex items-center space-x-2">
-                  <Switch id="isPublic" name="isPublic" defaultChecked />
-                  <Label htmlFor="isPublic">Public</Label>
-                </div>
-                <div className="flex justify-end gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setIsCreateDialogOpen(false)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={createRoadmap.isPending}>
-                    {createRoadmap.isPending && (
-                      <ArrowPathIcon className="h-4 w-4 mr-2 animate-spin" />
-                    )}
-                    Create
-                  </Button>
-                </div>
-              </form>
-            </DialogContent>
-          </Dialog>
-        </div>
-      </div>
 
-      {/* List */}
+      {/* Selector + list — the "Roadmaps" subheading routes through the shared
+          FilterSection (static label + create button in the action slot) so it
+          matches every other admin left pane. */}
       <ScrollArea className="flex-1">
         <div className="px-5 pb-5">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <ArrowPathIcon className="h-5 w-5 animate-spin text-muted-foreground" />
-            </div>
-          ) : roadmaps?.length === 0 ? (
-            <EmptyState
-              icon={MapIcon}
-              title="No roadmaps yet"
-              description="Create your first roadmap to get started"
-              className="py-12"
-            />
-          ) : (
-            <div className="space-y-1">
-              {roadmaps?.map((roadmap) => (
-                <div
-                  key={roadmap.id}
-                  className={cn(
-                    'group flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer font-medium transition-colors',
-                    selectedRoadmapId === roadmap.id
-                      ? 'bg-muted text-foreground'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                  )}
-                  onClick={() => onSelectRoadmap(roadmap.id)}
-                >
-                  <MapIcon
-                    className={cn(
-                      'h-3.5 w-3.5 shrink-0',
-                      selectedRoadmapId === roadmap.id ? 'text-primary' : ''
-                    )}
-                  />
-                  <span className="flex-1 text-xs truncate">{roadmap.name}</span>
-                  {!roadmap.isPublic && (
-                    <LockClosedIcon className="h-3 w-3 text-muted-foreground/60 shrink-0" />
-                  )}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
+          <FilterSection
+            title="Roadmaps"
+            collapsible={false}
+            action={
+              <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+                <DialogTrigger asChild>
+                  <button
+                    type="button"
+                    className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  >
+                    <PlusIcon className="h-3 w-3" />
+                  </button>
+                </DialogTrigger>
+                <DialogContent className="sm:max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>Create Roadmap</DialogTitle>
+                    <DialogDescription>
+                      Create a new roadmap to organize your posts into a public timeline.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <form onSubmit={handleCreateSubmit} className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="name">Name</Label>
+                      <Input id="name" name="name" placeholder="Product Roadmap" required />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="description">Description (optional)</Label>
+                      <Input
+                        id="description"
+                        name="description"
+                        placeholder="Our upcoming features and improvements"
+                      />
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <Switch id="isPublic" name="isPublic" defaultChecked />
+                      <Label htmlFor="isPublic">Public</Label>
+                    </div>
+                    <div className="flex justify-end gap-2">
                       <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 opacity-0 group-hover:opacity-100 -mr-1"
-                        onClick={(e) => e.stopPropagation()}
+                        type="button"
+                        variant="outline"
+                        onClick={() => setIsCreateDialogOpen(false)}
                       >
-                        <EllipsisVerticalIcon className="h-4 w-4" />
+                        Cancel
                       </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEditDialog(roadmap)}>
-                        <PencilIcon className="h-4 w-4 mr-2" />
-                        Edit
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        className="text-destructive focus:text-destructive"
-                        onClick={() => openDeleteDialog(roadmap)}
-                      >
-                        <TrashIcon className="h-4 w-4 mr-2" />
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              ))}
-            </div>
-          )}
+                      <Button type="submit" disabled={createRoadmap.isPending}>
+                        {createRoadmap.isPending && (
+                          <ArrowPathIcon className="h-4 w-4 mr-2 animate-spin" />
+                        )}
+                        Create
+                      </Button>
+                    </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            }
+          >
+            {isLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <ArrowPathIcon className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : roadmaps?.length === 0 ? (
+              <EmptyState
+                icon={MapIcon}
+                title="No roadmaps yet"
+                description="Create your first roadmap to get started"
+                className="py-12"
+              />
+            ) : (
+              <div className="space-y-1">
+                {roadmaps?.map((roadmap) => (
+                  <div
+                    key={roadmap.id}
+                    className={cn(
+                      'group flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer font-medium transition-colors',
+                      selectedRoadmapId === roadmap.id
+                        ? 'bg-muted text-foreground'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                    )}
+                    onClick={() => onSelectRoadmap(roadmap.id)}
+                  >
+                    <MapIcon
+                      className={cn(
+                        'h-3.5 w-3.5 shrink-0',
+                        selectedRoadmapId === roadmap.id ? 'text-primary' : ''
+                      )}
+                    />
+                    <span className="flex-1 text-xs truncate">{roadmap.name}</span>
+                    {!roadmap.isPublic && (
+                      <LockClosedIcon className="h-3 w-3 text-muted-foreground/60 shrink-0" />
+                    )}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 opacity-0 group-hover:opacity-100 -mr-1"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <EllipsisVerticalIcon className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => openEditDialog(roadmap)}>
+                          <PencilIcon className="h-4 w-4 mr-2" />
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          className="text-destructive focus:text-destructive"
+                          onClick={() => openDeleteDialog(roadmap)}
+                        >
+                          <TrashIcon className="h-4 w-4 mr-2" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                ))}
+              </div>
+            )}
+          </FilterSection>
         </div>
       </ScrollArea>
 

@@ -18,7 +18,7 @@ import { changelogQueries } from '@/lib/client/queries/changelog'
 import { useDeleteChangelog } from '@/lib/client/mutations/changelog'
 import { Route } from '@/routes/admin/changelog'
 import type { ChangelogId } from '@quackback/ids'
-import { DocumentTextIcon } from '@heroicons/react/24/outline'
+import { DocumentTextIcon } from '@heroicons/react/24/solid'
 
 function ChangelogSkeleton() {
   return (
