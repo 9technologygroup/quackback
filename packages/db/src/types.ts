@@ -12,7 +12,14 @@ import type {
 } from './schema/posts'
 import type { integrations } from './schema/integrations'
 import type { changelogEntries, changelogEntryPosts } from './schema/changelog'
-import type { conversations, chatMessages, chatTags, chatMessageMentions } from './schema/chat'
+import type {
+  conversations,
+  chatMessages,
+  chatTags,
+  chatMessageMentions,
+  chatMessageReactions,
+  chatMessageFlags,
+} from './schema/chat'
 import type { principal } from './schema/auth'
 
 // Status categories (defined here to avoid circular imports in tests)
@@ -353,6 +360,10 @@ export type ChatTag = InferSelectModel<typeof chatTags>
 export type NewChatTag = InferInsertModel<typeof chatTags>
 export type ChatMessageMention = InferSelectModel<typeof chatMessageMentions>
 export type NewChatMessageMention = InferInsertModel<typeof chatMessageMentions>
+export type ChatMessageReaction = InferSelectModel<typeof chatMessageReactions>
+export type NewChatMessageReaction = InferInsertModel<typeof chatMessageReactions>
+export type ChatMessageFlag = InferSelectModel<typeof chatMessageFlags>
+export type NewChatMessageFlag = InferInsertModel<typeof chatMessageFlags>
 
 // Reaction emoji constants (client-safe)
 export const REACTION_EMOJIS = ['👍', '❤️', '🎉', '😄', '🤔', '👀'] as const

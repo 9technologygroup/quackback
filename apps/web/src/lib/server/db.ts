@@ -190,6 +190,10 @@ export {
   conversationTagsRelations,
   chatMessageMentions,
   chatMessageMentionsRelations,
+  chatMessageReactions,
+  chatMessageReactionsRelations,
+  chatMessageFlags,
+  chatMessageFlagsRelations,
   // Schema tables - notifications
   inAppNotifications,
   inAppNotificationsRelations,

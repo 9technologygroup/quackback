@@ -200,6 +200,55 @@ export const chatMessageMentions = pgTable(
   ]
 )
 
+/**
+ * Emoji reactions on a chat message — agent-only, mirroring comment_reactions.
+ * One row per (message, principal, emoji); the unique index makes a repeat
+ * reaction idempotent. Both FKs cascade. Never exposed to the visitor: loaded
+ * only on the agent enrichment path and broadcast only on the inbox channel.
+ */
+export const chatMessageReactions = pgTable(
+  'chat_message_reactions',
+  {
+    id: typeIdWithDefault('reaction')('id').primaryKey(),
+    chatMessageId: typeIdColumn('chat_msg')('chat_message_id')
+      .notNull()
+      .references(() => chatMessages.id, { onDelete: 'cascade' }),
+    // Required — only authenticated team members can react.
+    principalId: typeIdColumn('principal')('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    emoji: text('emoji').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('chat_message_reactions_message_idx').on(table.chatMessageId),
+    index('chat_message_reactions_principal_idx').on(table.principalId),
+    uniqueIndex('chat_message_reactions_unique_idx').on(
+      table.chatMessageId,
+      table.principalId,
+      table.emoji
+    ),
+  ]
+)
+
+/**
+ * Team-wide "flag" on a chat message — a shared triage marker shown to every
+ * agent. `chatMessageId` is the PK, so there is exactly one flag state per
+ * message: flagging is idempotent and team-wide, not per-agent. The message FK
+ * cascades; `flaggedByPrincipalId` is set-null so the flag survives the flagging
+ * agent's deletion as an anonymous team signal. Agent-only.
+ */
+export const chatMessageFlags = pgTable('chat_message_flags', {
+  chatMessageId: typeIdColumn('chat_msg')('chat_message_id')
+    .primaryKey()
+    .references(() => chatMessages.id, { onDelete: 'cascade' }),
+  flaggedByPrincipalId: typeIdColumnNullable('principal')('flagged_by_principal_id').references(
+    () => principal.id,
+    { onDelete: 'set null' }
+  ),
+  flaggedAt: timestamp('flagged_at', { withTimezone: true }).defaultNow().notNull(),
+})
+
 export const conversationsRelations = relations(conversations, ({ many }) => ({
   messages: many(chatMessages),
   tags: many(conversationTags),
@@ -231,10 +280,34 @@ export const chatMessageMentionsRelations = relations(chatMessageMentions, ({ on
   }),
 }))
 
+export const chatMessageReactionsRelations = relations(chatMessageReactions, ({ one }) => ({
+  message: one(chatMessages, {
+    fields: [chatMessageReactions.chatMessageId],
+    references: [chatMessages.id],
+  }),
+  principal: one(principal, {
+    fields: [chatMessageReactions.principalId],
+    references: [principal.id],
+  }),
+}))
+
+export const chatMessageFlagsRelations = relations(chatMessageFlags, ({ one }) => ({
+  message: one(chatMessages, {
+    fields: [chatMessageFlags.chatMessageId],
+    references: [chatMessages.id],
+  }),
+  flaggedBy: one(principal, {
+    fields: [chatMessageFlags.flaggedByPrincipalId],
+    references: [principal.id],
+  }),
+}))
+
 export const chatMessagesRelations = relations(chatMessages, ({ one, many }) => ({
   conversation: one(conversations, {
     fields: [chatMessages.conversationId],
     references: [conversations.id],
   }),
   mentions: many(chatMessageMentions),
+  reactions: many(chatMessageReactions),
+  flag: one(chatMessageFlags),
 }))

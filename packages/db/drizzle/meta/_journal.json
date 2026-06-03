@@ -715,6 +715,20 @@
       "when": 1781395200000,
       "tag": "0101_chat_message_content_json",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1781481600000,
+      "tag": "0102_chat_message_reactions",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1781568000000,
+      "tag": "0103_chat_message_flags",
+      "breakpoints": true
     }
   ]
 }
