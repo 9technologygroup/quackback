@@ -68,6 +68,9 @@ const listConversationsSchema = z.object({
   search: z.string().max(200).optional(),
   // Filter to conversations carrying ANY of these labels.
   tagIds: z.array(z.string()).optional(),
+  // 'mentions' = only conversations whose internal notes @-mention the
+  // requesting agent (the principal is resolved server-side from auth).
+  view: z.enum(['all', 'mentions']).optional(),
   before: z.string().optional(),
 })
 
@@ -88,6 +91,9 @@ const agentSendSchema = z.object({
 const agentNoteSchema = z.object({
   conversationId: z.string(),
   content: z.string().min(1).max(MAX_CHAT_MESSAGE_LENGTH),
+  // TipTap doc from the note editor (carries @-mention nodes). Validated +
+  // mention-extracted server-side; omitted for a plain-text note.
+  contentJson: z.unknown().nullable().optional(),
 })
 
 const setStatusSchema = z.object({
@@ -484,6 +490,8 @@ export const listConversationsFn = createServerFn({ method: 'GET' })
         unassignedOnly: data.assignee === 'unassigned',
         search: data.search,
         tagIds: data.tagIds as ChatTagId[] | undefined,
+        // Always the requesting agent — never trust a client-supplied id here.
+        mentionedPrincipalId: data.view === 'mentions' ? ctx.principal.id : undefined,
         before: data.before,
       })
     } catch (error) {
@@ -577,7 +585,8 @@ export const addChatNoteFn = createServerFn({ method: 'POST' })
           displayName: ctx.user.name,
           avatarUrl: ctx.user.image,
         },
-        actor
+        actor,
+        (data.contentJson ?? null) as import('@/lib/shared/db-types').TiptapContent | null
       )
     } catch (error) {
       console.error('[fn:chat] addChatNoteFn failed:', error)

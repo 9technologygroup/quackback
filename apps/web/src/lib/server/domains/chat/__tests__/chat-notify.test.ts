@@ -8,9 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PrincipalId, ConversationId } from '@quackback/ids'
 import type { Conversation } from '@/lib/server/db'
 
-// Drives the team/visitor SELECT result. notifyVisitorMessage & notifyNoteMentions
-// resolve the `.where(...)` thenable to a team array; notifyAgentReply resolves
-// `.limit(1)` to a single-row visitor array.
+// Drives the team/visitor SELECT result. notifyVisitorMessage resolves the
+// `.where(...)` thenable to a team array; notifyAgentReply resolves `.limit(1)`
+// to a single-row visitor array.
 let teamRows: Array<Record<string, unknown>> = []
 let visitorRows: Array<Record<string, unknown>> = []
 
@@ -63,7 +63,7 @@ vi.mock('@/lib/server/db', () => {
   }
 })
 
-import { notifyVisitorMessage, notifyNoteMentions, notifyAgentReply } from '../chat.notify'
+import { notifyVisitorMessage, notifyAgentReply } from '../chat.notify'
 
 const conversationId = 'conversation_1' as ConversationId
 const conversation = { id: conversationId } as unknown as Conversation
@@ -181,112 +181,6 @@ describe('notifyVisitorMessage', () => {
       })
     ).resolves.toBeUndefined()
     expect(createNotificationsBatch).not.toHaveBeenCalled()
-  })
-})
-
-describe('notifyNoteMentions', () => {
-  it('is a no-op when the content has no @tokens', async () => {
-    teamRows = [{ principalId: 'principal_jane', email: 'jane.doe@x.com' }]
-
-    await notifyNoteMentions({
-      conversationId,
-      content: 'just a plain note with no mentions',
-      authorPrincipalId: 'principal_author' as PrincipalId,
-      authorName: 'Author',
-    })
-
-    expect(createNotificationsBatch).not.toHaveBeenCalled()
-  })
-
-  it('notifies teammates whose email local-part matches an @token, case-insensitively', async () => {
-    teamRows = [
-      { principalId: 'principal_jane', email: 'Jane.Doe@example.com' },
-      { principalId: 'principal_bob', email: 'bob@example.com' },
-    ]
-
-    await notifyNoteMentions({
-      conversationId,
-      content: 'hey @jane.doe can you take this one',
-      authorPrincipalId: 'principal_author' as PrincipalId,
-      authorName: 'Author',
-    })
-
-    expect(createNotificationsBatch).toHaveBeenCalledTimes(1)
-    const batch = createNotificationsBatch.mock.calls[0][0] as Array<Record<string, unknown>>
-    expect(batch).toHaveLength(1)
-    expect(batch[0]).toMatchObject({
-      principalId: 'principal_jane',
-      type: 'chat_mention',
-      title: 'Author mentioned you in a chat',
-      metadata: { conversationId },
-    })
-  })
-
-  it('never notifies the author even when their own local-part is mentioned', async () => {
-    teamRows = [{ principalId: 'principal_author', email: 'author@example.com' }]
-
-    await notifyNoteMentions({
-      conversationId,
-      content: 'note to self @author',
-      authorPrincipalId: 'principal_author' as PrincipalId,
-      authorName: 'Author',
-    })
-
-    expect(createNotificationsBatch).not.toHaveBeenCalled()
-  })
-
-  it('treats a non-matching @token as plain text (no notification)', async () => {
-    teamRows = [{ principalId: 'principal_jane', email: 'jane.doe@example.com' }]
-
-    await notifyNoteMentions({
-      conversationId,
-      content: 'ping @nobody about the @ thing',
-      authorPrincipalId: 'principal_author' as PrincipalId,
-      authorName: 'Author',
-    })
-
-    expect(createNotificationsBatch).not.toHaveBeenCalled()
-  })
-
-  it('does not treat the domain of a pasted email as a mention', async () => {
-    teamRows = [{ principalId: 'principal_jane', email: 'jane.doe@example.com' }]
-
-    await notifyNoteMentions({
-      conversationId,
-      // The @ here belongs to an email address, not a mention.
-      content: 'forward this to billing@jane.doe please',
-      authorPrincipalId: 'principal_author' as PrincipalId,
-      authorName: 'Author',
-    })
-
-    expect(createNotificationsBatch).not.toHaveBeenCalled()
-  })
-
-  it('matches a real @mention at the start of the note', async () => {
-    teamRows = [{ principalId: 'principal_jane', email: 'jane.doe@example.com' }]
-
-    await notifyNoteMentions({
-      conversationId,
-      content: '@jane.doe can you take this?',
-      authorPrincipalId: 'principal_author' as PrincipalId,
-      authorName: 'Author',
-    })
-
-    expect(createNotificationsBatch).toHaveBeenCalledTimes(1)
-  })
-
-  it('swallows a thrown dependency (does not reject)', async () => {
-    teamRows = [{ principalId: 'principal_jane', email: 'jane.doe@example.com' }]
-    createNotificationsBatch.mockRejectedValue(new Error('db down'))
-
-    await expect(
-      notifyNoteMentions({
-        conversationId,
-        content: 'hey @jane.doe',
-        authorPrincipalId: 'principal_author' as PrincipalId,
-        authorName: 'Author',
-      })
-    ).resolves.toBeUndefined()
   })
 })
 

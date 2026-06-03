@@ -26,7 +26,6 @@ vi.mock('@/lib/server/config', () => ({
 vi.mock('../chat.notify', () => ({
   notifyVisitorMessage: vi.fn(),
   notifyAgentReply: vi.fn(),
-  notifyNoteMentions: vi.fn(),
 }))
 
 vi.mock('../chat.query', () => ({

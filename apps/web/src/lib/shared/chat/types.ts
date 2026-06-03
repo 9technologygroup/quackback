@@ -8,7 +8,7 @@ import type { ConversationId, ChatMessageId, ChatTagId, PrincipalId } from '@qua
 // Sourced from the DB enum (CONVERSATION_STATUSES) via the browser-safe bridge,
 // so the client type can never drift from the column's allowed values. Imported
 // locally (used below) and re-exported for the module's consumers.
-import type { ConversationStatus, ChatSystemEvent } from '@/lib/shared/db-types'
+import type { ConversationStatus, ChatSystemEvent, TiptapContent } from '@/lib/shared/db-types'
 export type { ConversationStatus, ChatSystemEvent }
 export type ConversationPriority = 'none' | 'low' | 'medium' | 'high' | 'urgent'
 // 'system' = a status event (e.g. assignment) shown to both sides, rendered as
@@ -73,6 +73,11 @@ export interface ChatMessageDTO {
   attachments: ChatAttachment[]
   /** Agent-only internal note — only ever present on agent-facing payloads. */
   isInternal: boolean
+  /** Rich TipTap doc for messages that carry structured content (agent notes
+   *  with @-mention chips). Null for plain live-chat/email messages, which
+   *  render from `content`. Only ever populated on internal notes, which never
+   *  reach the visitor. */
+  contentJson: TiptapContent | null
   /** True when this message arrived via the email channel (inbound reply). */
   viaEmail: boolean
   /** Structured event for a 'system' message, so clients can localize it; null

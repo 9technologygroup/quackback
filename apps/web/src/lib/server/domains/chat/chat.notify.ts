@@ -82,53 +82,6 @@ export async function notifyVisitorMessage(opts: {
 }
 
 /**
- * Notify mentioned teammates of an internal note. Mentions are matched
- * deterministically against the email local-part (`@jane.doe` → jane.doe@…),
- * so a non-matching `@token` is just plain text and never mis-notifies.
- */
-export async function notifyNoteMentions(opts: {
-  conversationId: ConversationId
-  content: string
-  authorPrincipalId: PrincipalId
-  authorName: string
-}): Promise<void> {
-  try {
-    // Require the @ to start a token (line start or whitespace) so a pasted
-    // email like "billing@jane.doe" doesn't read its domain as a mention.
-    const tokens = [...opts.content.matchAll(/(?:^|\s)@([\w.+-]{2,})/g)].map((m) =>
-      m[1].toLowerCase()
-    )
-    if (tokens.length === 0) return
-    const wanted = new Set(tokens)
-
-    const team = await db
-      .select({ principalId: principal.id, email: user.email })
-      .from(principal)
-      .leftJoin(user, eq(principal.userId, user.id))
-      .where(inArray(principal.role, ['admin', 'member']))
-
-    const recipients = team.filter((t) => {
-      if (!t.email || t.principalId === opts.authorPrincipalId) return false
-      const localPart = t.email.split('@')[0]?.toLowerCase()
-      return localPart ? wanted.has(localPart) : false
-    })
-    if (recipients.length === 0) return
-
-    await createNotificationsBatch(
-      recipients.map((r) => ({
-        principalId: r.principalId,
-        type: 'chat_mention' as const,
-        title: `${opts.authorName} mentioned you in a chat`,
-        body: previewOf(opts.content),
-        metadata: { conversationId: opts.conversationId },
-      }))
-    )
-  } catch (err) {
-    console.warn('[chat:notify] notifyNoteMentions failed:', (err as Error).message)
-  }
-}
-
-/**
  * Email an offline visitor when an agent replies. An identified visitor's
  * account email is preferred; an anonymous visitor is reachable only via the
  * pre-chat email they captured on the conversation.

@@ -45,11 +45,13 @@ vi.mock('@/lib/server/db', () => {
   return {
     db: {
       select: () => makeChain(),
+      selectDistinct: () => makeChain(),
     },
     // Tables — only __name matters for routing the chain.
     principal: { __name: 'principal' },
     conversations: { __name: 'conversations' },
     chatMessages: { __name: 'chat_messages' },
+    chatMessageMentions: { __name: 'chat_message_mentions' },
     // SQL helpers — no-op stubs; inArray records its second arg for assertions.
     eq: vi.fn(),
     and: vi.fn(),
@@ -73,7 +75,7 @@ import {
   loadAuthors,
   listConversationsForAgent,
 } from '../chat.query'
-import { isNull } from '@/lib/server/db'
+import { isNull, eq } from '@/lib/server/db'
 
 const visitorId = 'principal_visitor' as PrincipalId
 const agentId = 'principal_agent' as PrincipalId
@@ -145,6 +147,18 @@ describe('toMessageDTO', () => {
     expect(dto.attachments).toBe(attachments)
     expect(dto.isInternal).toBe(true)
     expect(dto.senderType).toBe('agent')
+  })
+
+  it('carries a note rich doc through as contentJson, defaulting null for plain messages', () => {
+    const doc = { type: 'doc', content: [{ type: 'paragraph' }] }
+    const noteDto = toMessageDTO(
+      makeMessage({ isInternal: true, senderType: 'agent', contentJson: doc }),
+      visitorAuthor
+    )
+    expect(noteDto.contentJson).toEqual(doc)
+    // A plain visitor/agent message has no rich doc.
+    const plainDto = toMessageDTO(makeMessage({ contentJson: null }), visitorAuthor)
+    expect(plainDto.contentJson).toBeNull()
   })
 })
 
@@ -261,5 +275,23 @@ describe('listConversationsForAgent assignee filter', () => {
   it('does not constrain the assignee by default', async () => {
     await listConversationsForAgent({})
     expect(isNull).not.toHaveBeenCalled()
+  })
+})
+
+describe('listConversationsForAgent mentions view', () => {
+  // The mock's table stubs carry no column props, so eq's first arg is
+  // undefined; assert on the principal id flowing into the subquery's WHERE.
+  const eqCalledWithPrincipal = () => vi.mocked(eq).mock.calls.some((c) => c[1] === agentId)
+
+  it('restricts to conversations whose notes mention the given principal', async () => {
+    const page = await listConversationsForAgent({ mentionedPrincipalId: agentId })
+    expect(page).toEqual({ conversations: [], hasMore: false, nextCursor: null })
+    // The mentions subquery pins the mention recipient to this principal.
+    expect(eqCalledWithPrincipal()).toBe(true)
+  })
+
+  it('does not add the mentions condition by default', async () => {
+    await listConversationsForAgent({})
+    expect(eqCalledWithPrincipal()).toBe(false)
   })
 })

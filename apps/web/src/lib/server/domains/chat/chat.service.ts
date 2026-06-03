@@ -53,8 +53,11 @@ import {
   publishAgentTyping,
 } from '@/lib/server/realtime/chat-channels'
 import { truncate } from '@/lib/shared/utils/string'
-import { notifyVisitorMessage, notifyAgentReply, notifyNoteMentions } from './chat.notify'
+import { notifyVisitorMessage, notifyAgentReply } from './chat.notify'
 import { conversationToDTO, toMessageDTO, authorFromInput } from './chat.query'
+import { extractMentions } from '@/lib/server/domains/posts/extract-mentions'
+import { syncChatMessageMentions } from './sync-chat-mentions'
+import type { TiptapContent } from '@/lib/shared/db-types'
 import type {
   ChatAuthorInput,
   SendVisitorMessageInput,
@@ -387,7 +390,8 @@ export async function addAgentNote(
   conversationId: ConversationId,
   rawContent: string,
   agent: ChatAuthorInput,
-  actor: Actor
+  actor: Actor,
+  contentJson?: TiptapContent | null
 ): Promise<SendAgentMessageResult> {
   const decision = canActAsAgent(actor)
   if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
@@ -405,6 +409,8 @@ export async function addAgentNote(
         senderType: 'agent',
         isInternal: true,
         content,
+        // Rich doc (mention chips etc.); null for a plain-text note.
+        contentJson: contentJson ?? null,
       })
       .returning()
     // Touch updatedAt only — internal notes don't change the visitor-facing
@@ -420,11 +426,16 @@ export async function addAgentNote(
   // Agent inbox only — the visitor's conversation channel never receives it.
   publishAgentChatEvent({ kind: 'message', conversationId, message: messageDTO })
 
-  void notifyNoteMentions({
+  // Persist @-mentions from the note doc + alert the mentioned teammates. The
+  // doc is the single source of truth for who was mentioned (the picker writes
+  // principal ids into mention nodes), validated server-side in the sync.
+  void syncChatMessageMentions({
+    chatMessageId: message.id,
     conversationId,
-    content,
+    mentionedIds: extractMentions(contentJson),
     authorPrincipalId: agent.principalId,
     authorName: agent.displayName ?? 'A teammate',
+    content,
   })
 
   // Reload so the published DTO reflects current status/assignment rather

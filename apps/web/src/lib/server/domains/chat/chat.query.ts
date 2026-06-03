@@ -22,6 +22,7 @@ import {
   postExternalLinks,
   chatTags,
   conversationTags,
+  chatMessageMentions,
   type Conversation,
   type ChatMessage,
 } from '@/lib/server/db'
@@ -90,6 +91,7 @@ export function toMessageDTO(message: ChatMessage, author: ChatAuthorDTO | null)
     author,
     attachments: message.attachments ?? [],
     isInternal: message.isInternal,
+    contentJson: message.contentJson ?? null,
     viaEmail: message.metadata?.source === 'email',
     systemEvent: message.metadata?.systemEvent ?? null,
   }
@@ -413,6 +415,10 @@ export interface ConversationListFilter {
   search?: string
   /** Filter to conversations carrying ANY of these labels (OR semantics). */
   tagIds?: ChatTagId[]
+  /** "Mentions" view: only conversations whose internal notes @-mention this
+   *  principal. Always the requesting agent — resolved server-side from auth,
+   *  never client-supplied (it would leak who-mentioned-whom). */
+  mentionedPrincipalId?: PrincipalId
   /** Cursor: lastMessageAt ISO string — fetch conversations older than it. */
   before?: string
   limit?: number
@@ -478,6 +484,19 @@ export async function listConversationsForAgent(
                     isNull(chatTags.deletedAt)
                   )
                 )
+            )
+          : undefined,
+        // Mentions view: conversations carrying an internal note that @-mentions
+        // this principal. A DISTINCT subquery over chat_message_mentions →
+        // chat_messages keeps the outer select shape (conversations only).
+        filter.mentionedPrincipalId
+          ? inArray(
+              conversations.id,
+              db
+                .selectDistinct({ id: chatMessages.conversationId })
+                .from(chatMessageMentions)
+                .innerJoin(chatMessages, eq(chatMessageMentions.chatMessageId, chatMessages.id))
+                .where(eq(chatMessageMentions.principalId, filter.mentionedPrincipalId))
             )
           : undefined,
         beforeDate ? lt(conversations.lastMessageAt, beforeDate) : undefined

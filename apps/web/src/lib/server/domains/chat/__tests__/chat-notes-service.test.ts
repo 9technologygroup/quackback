@@ -12,7 +12,7 @@ import { ForbiddenError, ValidationError } from '@/lib/shared/errors'
 const insertedMessages: Record<string, unknown>[] = []
 const publishChatEvent = vi.fn()
 const publishAgentChatEvent = vi.fn()
-const notifyNoteMentions = vi.fn()
+const syncChatMessageMentions = vi.fn()
 
 vi.mock('@/lib/server/realtime/chat-channels', () => ({
   publishChatEvent: (...args: unknown[]) => publishChatEvent(...args),
@@ -27,7 +27,10 @@ vi.mock('@/lib/server/config', () => ({
 vi.mock('../chat.notify', () => ({
   notifyVisitorMessage: vi.fn(),
   notifyAgentReply: vi.fn(),
-  notifyNoteMentions: (...args: unknown[]) => notifyNoteMentions(...args),
+}))
+
+vi.mock('../sync-chat-mentions', () => ({
+  syncChatMessageMentions: (...args: unknown[]) => syncChatMessageMentions(...args),
 }))
 
 vi.mock('../chat.query', () => ({
@@ -152,9 +155,37 @@ describe('addAgentNote', () => {
     expect(publishChatEvent).not.toHaveBeenCalled()
   })
 
-  it('notifies mentioned teammates', async () => {
-    await addAgentNote(conversationId, 'ping @jane.doe', agent, agentActor)
-    expect(notifyNoteMentions).toHaveBeenCalledTimes(1)
+  it('extracts @mentions from the note doc and hands the principal ids to the sync', async () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'ping ' },
+            { type: 'mention', attrs: { id: 'principal_p1', label: 'Pat' } },
+          ],
+        },
+      ],
+    }
+    await addAgentNote(conversationId, 'ping @Pat', agent, agentActor, doc)
+    expect(syncChatMessageMentions).toHaveBeenCalledTimes(1)
+    const arg = syncChatMessageMentions.mock.calls[0][0] as {
+      chatMessageId: string
+      conversationId: string
+      mentionedIds: Set<string>
+      authorPrincipalId: string
+    }
+    expect(arg.mentionedIds).toEqual(new Set(['principal_p1']))
+    expect(arg.chatMessageId).toBe('chat_msg_new')
+    expect(arg.conversationId).toBe(conversationId)
+    expect(arg.authorPrincipalId).toBe(agent.principalId)
+  })
+
+  it('persists the note rich doc as contentJson', async () => {
+    const doc = { type: 'doc', content: [{ type: 'paragraph' }] }
+    await addAgentNote(conversationId, 'hi', agent, agentActor, doc)
+    expect(insertedMessages[0]).toMatchObject({ isInternal: true, contentJson: doc })
   })
 
   it('refuses a non-agent actor before any write', async () => {
