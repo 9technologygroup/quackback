@@ -12,10 +12,8 @@ import {
 } from '@heroicons/react/24/solid'
 import { toast } from 'sonner'
 import { isValidTypeId } from '@quackback/ids'
-import type { ConversationId, ChatMessageId, ChatTagId, SegmentId } from '@quackback/ids'
+import type { ConversationId, ChatMessageId } from '@quackback/ids'
 import {
-  listConversationsFn,
-  getConversationFn,
   listChatMessagesFn,
   sendAgentMessageFn,
   addChatNoteFn,
@@ -35,7 +33,6 @@ import type {
   MessageReactionCount,
   ConversationDTO,
   ConversationPriority,
-  ConversationStatus,
 } from '@/lib/shared/chat/types'
 import { AdminBubble, UnreadDivider } from '@/components/admin/chat/admin-bubble'
 import { PriorityControl } from '@/components/admin/chat/priority-control'
@@ -49,14 +46,20 @@ import { SavedMessagesColumn } from '@/components/admin/chat/saved-messages-colu
 import { ChatNoteEditor, type ChatNoteEditorHandle } from '@/components/admin/chat/chat-note-editor'
 import {
   InboxNavSidebar,
-  inboxNavKey,
   isInboxView,
   scopeLabelFor,
   useChatTagsWithCounts,
   useInboxSegmentsWithCounts,
-  type InboxNavItem,
-  type InboxView,
 } from '@/components/admin/chat/inbox-nav-sidebar'
+import {
+  inboxNavKey,
+  navFromSearch,
+  PRIORITY_VALUES,
+  type InboxNavItem,
+  type InboxSearch,
+  type StatusFilter,
+} from '@/lib/client/chat/inbox-scope'
+import { chatInboxQueries } from '@/lib/client/queries/chat-inbox'
 import type { JSONContent } from '@tiptap/core'
 import { useChatStream } from '@/lib/client/hooks/use-chat-stream'
 import { useChatTyping } from '@/lib/client/hooks/use-chat-typing'
@@ -72,24 +75,6 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
-
-/** A real conversation status, or 'all' = no status filter. */
-type StatusFilter = ConversationStatus | 'all'
-
-const PRIORITY_VALUES = ['all', 'none', 'low', 'medium', 'high', 'urgent'] as const
-
-/** Inbox URL search params — the source of truth for the open chat + filters. */
-export interface InboxSearch {
-  c?: string
-  /** Deep-link target message within `c` — scrolled to + flashed on open. */
-  m?: string
-  view?: InboxView
-  tag?: string
-  segment?: string
-  status?: StatusFilter
-  priority?: ConversationPriority | 'all'
-  q?: string
-}
 
 export const Route = createFileRoute('/admin/inbox')({
   // `?c=<conversationId>` deep-links a conversation open (e.g. from a user
@@ -129,9 +114,48 @@ export const Route = createFileRoute('/admin/inbox')({
       : undefined,
     q: typeof search.q === 'string' && search.q ? search.q : undefined,
   }),
-  loader: async () => {
+  // Re-run the prefetch when the scope / filters / open conversation change, so
+  // a client-side navigation re-warms the cache too. ensureQueryData is a no-op
+  // when the data is still fresh, so this doesn't double-fetch.
+  loaderDeps: ({ search }) => ({
+    view: search.view,
+    tag: search.tag,
+    segment: search.segment,
+    status: search.status,
+    priority: search.priority,
+    q: search.q,
+    c: search.c,
+  }),
+  loader: async ({ deps, context }) => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
     await requireWorkspaceRole({ data: { allowedRoles: ['admin', 'member'] } })
+    const flags = context.settings?.featureFlags as FeatureFlags | undefined
+    // The component redirects when the flag is off — don't pay for a prefetch.
+    if (!flags?.supportInbox) return {}
+    const { queryClient } = context
+    const nav = navFromSearch(deps)
+    const status = deps.status ?? 'open'
+    const priority = deps.priority ?? 'all'
+    const search = (deps.q ?? '').trim()
+    const isSaved = nav.kind === 'view' && nav.view === 'saved'
+    // Best-effort: a failed prefetch (e.g. a stale `?c=`) must never break the
+    // page — each is caught independently and the component's useQuery still
+    // fetches client-side, degrading to today's behavior.
+    const warm = (p: Promise<unknown>) => p.catch(() => undefined)
+    await Promise.all([
+      isSaved
+        ? undefined
+        : warm(
+            queryClient.ensureQueryData(
+              chatInboxQueries.conversationList(nav, status, priority, search)
+            )
+          ),
+      warm(queryClient.ensureQueryData(chatInboxQueries.tagCounts())),
+      warm(queryClient.ensureQueryData(chatInboxQueries.segmentCounts())),
+      deps.c
+        ? warm(queryClient.ensureQueryData(chatInboxQueries.thread(deps.c as ConversationId)))
+        : undefined,
+    ])
     return {}
   },
   component: InboxRoute,
@@ -149,34 +173,6 @@ function InboxRoute() {
     return <Navigate to="/admin/feedback" />
   }
   return <InboxPage />
-}
-
-/**
- * Map the active nav scope + filter chips to the list-query params. The primary
- * views ARE the assignee queue (Mine / Unassigned / All); Mentions is a personal
- * feed; a Label scope refines by tag. Status + priority are optional chips
- * ('all' = unset), applied within any non-Mentions scope.
- */
-function buildListParams(
-  nav: InboxNavItem,
-  status: StatusFilter,
-  priorityFilter: ConversationPriority | 'all',
-  search: string
-) {
-  const priority = priorityFilter === 'all' ? undefined : priorityFilter
-  const statusParam = status === 'all' ? undefined : status
-  const q = search || undefined
-  if (nav.kind === 'tag') return { tagIds: [nav.tagId], status: statusParam, priority, search: q }
-  if (nav.kind === 'segment')
-    return { segmentIds: [nav.segmentId], status: statusParam, priority, search: q }
-  if (nav.view === 'mentions') return { view: 'mentions' as const, search: q }
-  const assignee =
-    nav.view === 'mine'
-      ? ('mine' as const)
-      : nav.view === 'unassigned'
-        ? ('unassigned' as const)
-        : ('all' as const)
-  return { status: statusParam, priority, assignee, search: q }
 }
 
 function InboxPage() {
@@ -214,12 +210,7 @@ function InboxPage() {
   // one. Status/priority chips refine WITHIN it; Mentions is a self-contained
   // feed so those chips are hidden.
   const nav = useMemo<InboxNavItem>(
-    () =>
-      urlTag
-        ? { kind: 'tag', tagId: urlTag as ChatTagId }
-        : urlSegment
-          ? { kind: 'segment', segmentId: urlSegment as SegmentId }
-          : { kind: 'view', view: urlView ?? 'all' },
+    () => navFromSearch({ tag: urlTag, segment: urlSegment, view: urlView }),
     [urlTag, urlSegment, urlView]
   )
   // Per-scope memory: each scope (view / tag / segment, keyed by inboxNavKey)
@@ -285,29 +276,12 @@ function InboxPage() {
     updateSearch({ q: search || undefined })
   }, [search, updateSearch])
 
-  const listKey = useMemo(
-    () =>
-      [
-        'admin',
-        'inbox',
-        'conversations',
-        inboxNavKey(nav),
-        status,
-        priorityFilter,
-        search,
-      ] as const,
-    [nav, status, priorityFilter, search]
-  )
-
   // The "Saved for later" view shows flagged MESSAGES, not conversations, so the
-  // conversation-list query is idle there.
+  // conversation-list query is idle there. The query options come from the shared
+  // factory so the route loader's SSR prefetch (same key) hydrates this read.
   const isSaved = nav.kind === 'view' && nav.view === 'saved'
   const { data: listData, isLoading: listLoading } = useQuery({
-    queryKey: listKey,
-    queryFn: () =>
-      listConversationsFn({
-        data: buildListParams(nav, status, priorityFilter, search),
-      }),
+    ...chatInboxQueries.conversationList(nav, status, priorityFilter, search),
     refetchInterval: 30_000, // polling fallback if the stream drops
     enabled: !isSaved,
   })
@@ -641,10 +615,9 @@ function ChatThread({
   const replyComposerRef = useRef<HTMLTextAreaElement>(null)
   const noteEditorRef = useRef<ChatNoteEditorHandle>(null)
 
-  const { data, isLoading } = useQuery({
-    queryKey: threadKey,
-    queryFn: () => getConversationFn({ data: { conversationId } }),
-  })
+  // Shared factory (same key as `threadKey`) so a `?c=` deep-link prefetched by
+  // the route loader hydrates this thread on first paint.
+  const { data, isLoading } = useQuery(chatInboxQueries.thread(conversationId))
 
   const messages = data?.messages ?? []
   const conversation = data?.conversation

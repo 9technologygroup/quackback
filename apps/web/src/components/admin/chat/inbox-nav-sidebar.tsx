@@ -24,24 +24,12 @@ import { PageHeader } from '@/components/shared/page-header'
 import { FilterSection } from '@/components/shared/filter-section'
 import { cn } from '@/lib/shared/utils'
 
-/**
- * The active left-nav selection. A single item is highlighted at a time: one of
- * the Conversations views, or one Label. Assignee/status/search in the list
- * header refine WITHIN the selected scope. Carries only ids so it round-trips
- * through the URL; the label is resolved from the fetched tag list.
- */
-export type InboxView = 'mine' | 'unassigned' | 'all' | 'mentions' | 'saved'
-export type InboxNavItem =
-  | { kind: 'view'; view: InboxView }
-  | { kind: 'tag'; tagId: ChatTagId }
-  | { kind: 'segment'; segmentId: SegmentId }
-
-/** Stable identity for query keys + active-state comparison. */
-export function inboxNavKey(nav: InboxNavItem): string {
-  if (nav.kind === 'tag') return `tag:${nav.tagId}`
-  if (nav.kind === 'segment') return `segment:${nav.segmentId}`
-  return `view:${nav.view}`
-}
+// The active left-nav selection (one view / label / segment at a time) and its
+// key live in lib/ so the route loader + query factory can share them without
+// importing this component. Re-exported here so existing nav consumers are
+// unaffected.
+export { inboxNavKey, type InboxView, type InboxNavItem } from '@/lib/client/chat/inbox-scope'
+import { inboxNavKey, type InboxView, type InboxNavItem } from '@/lib/client/chat/inbox-scope'
 
 // Primary views are assignee-based queues — Mine / Unassigned / All — then the
 // @-mentions feed and the personal "Saved for later" feed of flagged messages.
