@@ -141,8 +141,8 @@ function DraftStatusChip({ status }: { status: DraftStatus }) {
 
 /**
  * Footer shown only while a draft is still proposed: the draft's age plus a
- * manual "Nudge by email" button. Disabled when the visitor has no deliverable
- * address (an automatic reminder also fires a day after the agent proposes).
+ * manual "Nudge by email" button. An automatic reminder also fires a day after
+ * the agent proposes, so this is just the manual override.
  */
 function DraftNudgeFooter({
   createdAt,
