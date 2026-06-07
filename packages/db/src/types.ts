@@ -341,6 +341,22 @@ export interface ChatSystemEvent {
   agentName?: string
 }
 
+// A rich card carried on a chat message. Discriminated union so more card
+// types can be added without new columns.
+export interface DraftPostCard {
+  type: 'draft_post'
+  status: 'proposed' | 'published' | 'dismissed'
+  boardId: string
+  title: string
+  content: string
+  postId?: string // set only once published
+}
+export interface PostRefCard {
+  type: 'post_ref'
+  postId: string
+}
+export type ChatCard = DraftPostCard | PostRefCard
+
 export interface ChatMessageMetadata {
   /** The channel this message arrived through, when not in-app live chat. */
   source?: 'email'
@@ -349,6 +365,7 @@ export interface ChatMessageMetadata {
   /** For 'system' messages: the structured event, so clients can localize the
    *  notice instead of rendering the stored (English) content. */
   systemEvent?: ChatSystemEvent
+  card?: ChatCard // draft-post suggestion or embedded existing post
 }
 
 // Support-inbox conversation row types
