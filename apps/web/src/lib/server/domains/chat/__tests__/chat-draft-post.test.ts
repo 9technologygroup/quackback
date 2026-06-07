@@ -29,6 +29,26 @@ const emit = vi.hoisted(() => ({
 }))
 vi.mock('../chat.webhooks', () => emit)
 
+// Hoisted bag for the publish path: the dedupe primitive, createPostFromConversation,
+// and mutable db state (card status + the duplicate's vote count) the db mock reads.
+const mocks = vi.hoisted(() => ({
+  findSimilarPostsByText: vi.fn(),
+  createPostFromConversation: vi.fn(),
+  state: {
+    cardType: 'draft_post' as 'draft_post' | 'post_ref',
+    cardStatus: 'proposed' as 'proposed' | 'published' | 'dismissed',
+    dupVoteCount: 0,
+  },
+}))
+
+vi.mock('@/lib/server/domains/embeddings/embedding.service', () => ({
+  findSimilarPostsByText: mocks.findSimilarPostsByText,
+}))
+
+vi.mock('../chat.convert', () => ({
+  createPostFromConversation: mocks.createPostFromConversation,
+}))
+
 vi.mock('@/lib/server/realtime/chat-channels', () => ({
   publishChatEvent: (...args: unknown[]) => publishChatEvent(...args),
   publishAgentChatEvent: vi.fn(),
@@ -88,23 +108,34 @@ vi.mock('@/lib/server/db', () => {
     updatedAt: null,
   }
 
-  // A chat message carrying a proposed draft_post card, owned by the visitor.
-  const messageRow = {
-    id: 'chat_msg_card' as unknown as ChatMessageId,
-    conversationId: 'conversation_1' as unknown as ConversationId,
-    principalId: 'principal_agent',
-    senderType: 'agent' as const,
-    content: '📝 Draft feedback: Dark mode',
-    metadata: {
-      card: {
-        type: 'draft_post',
-        status: 'proposed',
-        boardId: 'board_1',
-        title: 'Dark mode',
-        content: 'A dark theme…',
+  // The proposing agent's principal row, loaded by actorForPrincipal so the
+  // publish path can act with the agent's (team) authority.
+  const principalRow = { id: 'principal_agent', role: 'admin', type: 'user' }
+
+  // A chat message carrying a card, owned by the visitor. The card type/status
+  // are read from mocks.state so a single mock serves the proposed/published
+  // cases (the published case exercises the idempotent no-op).
+  function buildMessageRow() {
+    return {
+      id: 'chat_msg_card' as unknown as ChatMessageId,
+      conversationId: 'conversation_1' as unknown as ConversationId,
+      principalId: 'principal_agent',
+      senderType: 'agent' as const,
+      content: '📝 Draft feedback: Dark mode',
+      metadata: {
+        card:
+          mocks.state.cardType === 'draft_post'
+            ? {
+                type: 'draft_post',
+                status: mocks.state.cardStatus,
+                boardId: 'board_1',
+                title: 'Dark mode',
+                content: 'A dark theme…',
+              }
+            : { type: 'post_ref', postId: 'post_1' },
       },
-    },
-    createdAt: new Date(),
+      createdAt: new Date(),
+    }
   }
 
   function chain(label: string) {
@@ -125,7 +156,12 @@ vi.mock('@/lib/server/db', () => {
     c.where = vi.fn(() => c)
     // A direct select resolves to the table-appropriate row; the in-transaction
     // conversation lookup still resolves to an existing conversation.
-    c.limit = vi.fn(async () => (fromTable === 'chat_messages' ? [messageRow] : [conversationRow]))
+    c.limit = vi.fn(async () => {
+      if (fromTable === 'chat_messages') return [buildMessageRow()]
+      if (fromTable === 'principal') return [principalRow]
+      if (fromTable === 'posts') return [{ voteCount: mocks.state.dupVoteCount }]
+      return [conversationRow]
+    })
     c.orderBy = vi.fn(() => c)
     c.returning = vi.fn(async () => {
       if (label === 'chat_messages') {
@@ -156,11 +192,19 @@ vi.mock('@/lib/server/db', () => {
     eq: vi.fn(),
     conversations: { __name: 'conversations', id: 'id' },
     chatMessages: { __name: 'chat_messages', id: 'id' },
+    principal: { __name: 'principal', id: 'id', role: 'role', type: 'type' },
+    posts: { __name: 'posts', id: 'id', voteCount: 'vote_count' },
   }
 })
 
 import { addVoteOnBehalf } from '@/lib/server/domains/posts/post.voting'
-import { dismissProposedPost, proposePost, sharePost, upvotePostFromChat } from '../chat.draft-post'
+import {
+  dismissProposedPost,
+  proposePost,
+  publishProposedPost,
+  sharePost,
+  upvotePostFromChat,
+} from '../chat.draft-post'
 
 const conversationId = 'conversation_1' as ConversationId
 const boardId = 'board_1' as BoardId
@@ -196,6 +240,15 @@ beforeEach(() => {
   insertedMessages.length = 0
   updatedMessageSets.length = 0
   vi.clearAllMocks()
+  mocks.state.cardType = 'draft_post'
+  mocks.state.cardStatus = 'proposed'
+  mocks.state.dupVoteCount = 0
+  mocks.findSimilarPostsByText.mockResolvedValue([])
+  mocks.createPostFromConversation.mockResolvedValue({
+    postId: 'post_new',
+    created: true,
+    boardSlug: 'feature-requests',
+  })
 })
 
 describe('proposePost', () => {
@@ -291,5 +344,88 @@ describe('upvotePostFromChat', () => {
       ForbiddenError
     )
     expect(addVoteOnBehalf).not.toHaveBeenCalled()
+  })
+})
+
+describe('publishProposedPost', () => {
+  it('creates a visitor-attributed post and flips the card to published when no strong duplicate', async () => {
+    mocks.findSimilarPostsByText.mockResolvedValue([])
+
+    const res = await publishProposedPost(
+      { messageId, title: 'New idea', content: 'details', boardId },
+      visitorActor
+    )
+
+    expect(res.postId).toBe('post_new')
+    expect(res.created).toBe(true)
+    expect(res.boardSlug).toBe('feature-requests')
+
+    // Dedupe ran with the STRONG cosine threshold (0.5) — weaker matches must
+    // not block publishing.
+    expect(mocks.findSimilarPostsByText).toHaveBeenCalledWith('New idea', boardId, 1, 0.5)
+
+    // The post was created with the PROPOSING AGENT's authority (reconstructed
+    // from the card message's principal), not the visitor's.
+    expect(mocks.createPostFromConversation).toHaveBeenCalledTimes(1)
+    const [convInput, ctx] = mocks.createPostFromConversation.mock.calls[0]
+    expect(convInput).toMatchObject({
+      conversationId: 'conversation_1',
+      boardId,
+      title: 'New idea',
+      content: 'details',
+    })
+    expect(ctx.agentPrincipalId).toBe('principal_agent')
+    expect(ctx.agentActor).toMatchObject({ principalId: 'principal_agent', role: 'admin' })
+
+    // The card row is flipped to published (with the new postId) and broadcast.
+    expect(updatedMessageSets).toHaveLength(1)
+    expect(updatedMessageSets[0]).toMatchObject({
+      metadata: { card: { type: 'draft_post', status: 'published', postId: 'post_new' } },
+    })
+    expect(publishCardUpdated).toHaveBeenCalledTimes(1)
+    const [, , card] = publishCardUpdated.mock.calls[0]
+    expect(card).toMatchObject({ type: 'draft_post', status: 'published', postId: 'post_new' })
+  })
+
+  it('returns a duplicate (no post created) when a strong match exists', async () => {
+    mocks.findSimilarPostsByText.mockResolvedValue([
+      { id: 'post_existing', title: 'existing', similarity: 0.92 },
+    ])
+    mocks.state.dupVoteCount = 7
+
+    const res = await publishProposedPost(
+      { messageId, title: 'existing', content: 'x', boardId },
+      visitorActor
+    )
+
+    expect(res.duplicate).toEqual({ id: 'post_existing', title: 'existing', voteCount: 7 })
+    expect(res.postId).toBeUndefined()
+    // No post created, card untouched, nothing broadcast.
+    expect(mocks.createPostFromConversation).not.toHaveBeenCalled()
+    expect(updatedMessageSets).toHaveLength(0)
+    expect(publishCardUpdated).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op when the card is not a proposed draft', async () => {
+    mocks.state.cardStatus = 'published'
+
+    const res = await publishProposedPost(
+      { messageId, title: 't', content: 'c', boardId },
+      visitorActor
+    )
+
+    expect(res).toEqual({})
+    expect(mocks.findSimilarPostsByText).not.toHaveBeenCalled()
+    expect(mocks.createPostFromConversation).not.toHaveBeenCalled()
+    expect(updatedMessageSets).toHaveLength(0)
+    expect(publishCardUpdated).not.toHaveBeenCalled()
+  })
+
+  it('rejects a caller who does not own the conversation', async () => {
+    await expect(
+      publishProposedPost({ messageId, title: 't', content: 'c', boardId }, strangerActor)
+    ).rejects.toBeInstanceOf(ForbiddenError)
+    expect(mocks.createPostFromConversation).not.toHaveBeenCalled()
+    expect(updatedMessageSets).toHaveLength(0)
   })
 })
