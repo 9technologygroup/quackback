@@ -19,6 +19,7 @@ import { WelcomeEmail } from './templates/welcome'
 import { StatusChangeEmail } from './templates/status-change'
 import { NewCommentEmail } from './templates/new-comment'
 import { ChatMessageEmail } from './templates/chat-message'
+import { DraftNudgeEmail } from './templates/draft-nudge'
 import { PostMentionEmail } from './templates/post-mention'
 import { ChangelogPublishedEmail } from './templates/changelog-published'
 import { FeedbackLinkedEmail } from './templates/feedback-linked'
@@ -628,6 +629,46 @@ export async function sendChatMessageEmail(
 }
 
 // ============================================================================
+// Draft Nudge Email
+// ============================================================================
+
+interface SendDraftNudgeParams {
+  to: string
+  workspaceName: string
+  logoUrl?: string
+  draftTitle: string
+  /** Link back to the conversation/widget where the draft is waiting. */
+  ctaUrl: string
+}
+
+/**
+ * Remind an offline visitor about a draft feedback post they never finished
+ * sharing. Sent once, a day after the agent proposed it, only if it's still
+ * pending and the visitor has a real address.
+ */
+export async function sendDraftNudgeEmail(params: SendDraftNudgeParams): Promise<EmailResult> {
+  const { to, workspaceName, logoUrl, draftTitle, ctaUrl } = params
+
+  if (getProvider() === 'console') {
+    console.log('\n┌────────────────────────────────────────────────────────────')
+    console.log('│ [DEV] Draft Nudge Email')
+    console.log('├────────────────────────────────────────────────────────────')
+    console.log(`│ To: ${to}`)
+    console.log(`│ Workspace: ${workspaceName}`)
+    console.log(`│ Draft: ${draftTitle}`)
+    console.log(`│ URL: ${ctaUrl}`)
+    console.log('└────────────────────────────────────────────────────────────\n')
+    return { sent: false }
+  }
+
+  return sendEmail({
+    to,
+    subject: 'Finish sharing your idea',
+    react: DraftNudgeEmail({ workspaceName, logoUrl, draftTitle, ctaUrl }),
+  })
+}
+
+// ============================================================================
 // Post Mention Email
 // ============================================================================
 
@@ -801,6 +842,7 @@ export { WelcomeEmail } from './templates/welcome'
 export { MagicLinkEmail } from './templates/magic-link'
 export { StatusChangeEmail } from './templates/status-change'
 export { NewCommentEmail } from './templates/new-comment'
+export { DraftNudgeEmail } from './templates/draft-nudge'
 export { PostMentionEmail } from './templates/post-mention'
 export { ChangelogPublishedEmail } from './templates/changelog-published'
 export { FeedbackLinkedEmail } from './templates/feedback-linked'
