@@ -733,6 +733,76 @@ export const createPostFromConversationFn = createServerFn({ method: 'POST' })
     }
   })
 
+const proposePostSchema = z.object({
+  conversationId: z.string(),
+  boardId: z.string(),
+  title: z.string().min(3).max(200),
+  content: z.string().max(10000).default(''),
+})
+
+/** Agent action: drop a draft feedback post card into the conversation (visitor can publish it). */
+export const proposePostFn = createServerFn({ method: 'POST' })
+  .inputValidator(proposePostSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ roles: ['admin', 'member'] })
+      const actor = await policyActorFromAuth(ctx)
+      const { proposePost } = await import('@/lib/server/domains/chat/chat.draft-post')
+      const agent = {
+        principalId: ctx.principal.id,
+        displayName: ctx.user.name,
+        avatarUrl: ctx.user.image,
+        email: ctx.user.email,
+      }
+      const r = await proposePost(
+        {
+          conversationId: data.conversationId as ConversationId,
+          boardId: data.boardId as BoardId,
+          title: data.title,
+          content: data.content,
+        },
+        { agentActor: actor, agentPrincipalId: ctx.principal.id, agent }
+      )
+      return { messageId: r.message.id }
+    } catch (error) {
+      console.error('[fn:chat] proposePostFn failed:', error)
+      throw error
+    }
+  })
+
+const sharePostSchema = z.object({
+  conversationId: z.string(),
+  postId: z.string(),
+})
+
+/** Agent action: embed an existing feedback post into the conversation (visitor can upvote it). */
+export const sharePostFn = createServerFn({ method: 'POST' })
+  .inputValidator(sharePostSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ roles: ['admin', 'member'] })
+      const actor = await policyActorFromAuth(ctx)
+      const { sharePost } = await import('@/lib/server/domains/chat/chat.draft-post')
+      const agent = {
+        principalId: ctx.principal.id,
+        displayName: ctx.user.name,
+        avatarUrl: ctx.user.image,
+        email: ctx.user.email,
+      }
+      const r = await sharePost(
+        {
+          conversationId: data.conversationId as ConversationId,
+          postId: data.postId as PostId,
+        },
+        { agentActor: actor, agentPrincipalId: ctx.principal.id, agent }
+      )
+      return { messageId: r.message.id }
+    } catch (error) {
+      console.error('[fn:chat] sharePostFn failed:', error)
+      throw error
+    }
+  })
+
 export const setConversationStatusFn = createServerFn({ method: 'POST' })
   .inputValidator(setStatusSchema)
   .handler(async ({ data }) => {

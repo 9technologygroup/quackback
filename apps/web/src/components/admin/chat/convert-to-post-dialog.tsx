@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ArrowTopRightOnSquareIcon, ChevronUpIcon } from '@heroicons/react/24/solid'
+import {
+  ArrowTopRightOnSquareIcon,
+  ChatBubbleLeftRightIcon,
+  ChevronUpIcon,
+} from '@heroicons/react/24/solid'
 import type { BoardId, ConversationId, PostId } from '@quackback/ids'
-import { createPostFromConversationFn } from '@/lib/server/functions/chat'
+import {
+  createPostFromConversationFn,
+  proposePostFn,
+  sharePostFn,
+} from '@/lib/server/functions/chat'
 import { findSimilarPostsFn } from '@/lib/server/functions/public-posts'
 import { adminQueries } from '@/lib/client/queries/admin'
 import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
@@ -88,7 +96,39 @@ export function ConvertToPostDialog({
     onError: () => toast.error('Failed to convert conversation'),
   })
 
-  const canCreate = useMemo(() => title.trim().length > 0 && boardId, [title, boardId])
+  const propose = useMutation({
+    mutationFn: () =>
+      proposePostFn({
+        data: {
+          conversationId,
+          boardId: boardId as BoardId,
+          title: title.trim(),
+          content: content.trim(),
+        },
+      }),
+    onSuccess: () => {
+      toast.success('Draft sent to the visitor')
+      setOpen(false)
+      onConverted?.()
+    },
+    onError: () => toast.error('Failed to send draft'),
+  })
+
+  const share = useMutation({
+    mutationFn: (postId: PostId) => sharePostFn({ data: { conversationId, postId } }),
+    onSuccess: () => {
+      toast.success('Post shared in chat')
+      setOpen(false)
+      onConverted?.()
+    },
+    onError: () => toast.error('Failed to share post'),
+  })
+
+  const busy = convert.isPending || propose.isPending || share.isPending
+  // Min length matches proposePostSchema's title.min(3) so "Send as draft" never
+  // enables for input the server will reject. >= 3 is a sensible floor for "Create
+  // post" too.
+  const canCreate = useMemo(() => title.trim().length >= 3 && boardId, [title, boardId])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -160,10 +200,19 @@ export function ConvertToPostDialog({
                       type="button"
                       size="sm"
                       variant="outline"
-                      disabled={convert.isPending}
+                      disabled={busy}
                       onClick={() => convert.mutate({ asUpvoteOfPostId: p.id as PostId })}
                     >
                       <ChevronUpIcon className="h-3.5 w-3.5" /> Upvote
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => share.mutate(p.id as PostId)}
+                    >
+                      <ChatBubbleLeftRightIcon className="h-3.5 w-3.5" /> Share
                     </Button>
                   </div>
                 ))}
@@ -178,9 +227,13 @@ export function ConvertToPostDialog({
           </Button>
           <Button
             type="button"
-            disabled={!canCreate || convert.isPending}
-            onClick={() => convert.mutate({})}
+            variant="outline"
+            disabled={!canCreate || busy}
+            onClick={() => propose.mutate()}
           >
+            Send as draft
+          </Button>
+          <Button type="button" disabled={!canCreate || busy} onClick={() => convert.mutate({})}>
             Create post
           </Button>
         </DialogFooter>

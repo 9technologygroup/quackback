@@ -41,6 +41,7 @@ import { ChannelBadge } from '@/components/admin/chat/channel-badge'
 import { ConversationTagsEditor } from '@/components/admin/chat/conversation-tags-editor'
 import { StatusControl } from '@/components/admin/chat/status-control'
 import { ConversationDetailPanel } from '@/components/admin/chat/conversation-detail-panel'
+import { ConvertToPostDialog } from '@/components/admin/chat/convert-to-post-dialog'
 import { ConversationListColumn } from '@/components/admin/chat/conversation-list-column'
 import { SavedMessagesColumn } from '@/components/admin/chat/saved-messages-column'
 import { ChatNoteEditor, type ChatNoteEditorHandle } from '@/components/admin/chat/chat-note-editor'
@@ -675,9 +676,17 @@ function ChatThread({
     }
   }
 
+  // Newest-first view of the thread, reused by the lookups below.
+  const reversedMessages = [...messages].reverse()
+
+  // Default the convert/draft dialog to the conversation subject + the last thing the visitor said.
+  const lastVisitorMessage = reversedMessages.find((m) => m.senderType === 'visitor')
+  const convertDefaultTitle = conversation?.subject ?? ''
+  const convertDefaultContent = lastVisitorMessage?.content ?? ''
+
   // The agent's latest message is "Seen" once the visitor read watermark
   // reaches it.
-  const lastAgentMessage = [...messages].reverse().find((m) => m.senderType === 'agent')
+  const lastAgentMessage = reversedMessages.find((m) => m.senderType === 'agent')
   const lastAgentSeen =
     !!conversation?.visitorLastReadAt &&
     !!lastAgentMessage &&
@@ -992,6 +1001,18 @@ function ChatThread({
               </p>
             </div>
           </div>
+          {/* Convert/draft dialog has a single always-visible mount (not
+              duplicated into the detail panel like the triage controls). */}
+          {conversation && (
+            <div className="flex shrink-0 items-center gap-1.5">
+              <ConvertToPostDialog
+                conversationId={conversationId}
+                defaultTitle={convertDefaultTitle}
+                defaultContent={convertDefaultContent}
+                onConverted={refreshThread}
+              />
+            </div>
+          )}
           {/* Triage controls live in the detail panel at xl+; below that
               (panel hidden) they stay in the header. */}
           {conversation && (
