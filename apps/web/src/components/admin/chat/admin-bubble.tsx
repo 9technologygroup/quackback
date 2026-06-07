@@ -278,15 +278,21 @@ export function AdminBubble({
             {showSuggestActions && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={onSendAsDraft}>
-                  <ArrowTopRightOnSquareIcon className="h-4 w-4" /> Send as draft
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onSharePost}>
-                  <ChatBubbleLeftRightIcon className="h-4 w-4" /> Share a post…
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={onSuggestWithOptions}>
-                  <AdjustmentsHorizontalIcon className="h-4 w-4" /> Suggest with options…
-                </DropdownMenuItem>
+                {onSendAsDraft && (
+                  <DropdownMenuItem onClick={onSendAsDraft}>
+                    <ArrowTopRightOnSquareIcon className="h-4 w-4" /> Send as draft
+                  </DropdownMenuItem>
+                )}
+                {onSharePost && (
+                  <DropdownMenuItem onClick={onSharePost}>
+                    <ChatBubbleLeftRightIcon className="h-4 w-4" /> Share a post…
+                  </DropdownMenuItem>
+                )}
+                {onSuggestWithOptions && (
+                  <DropdownMenuItem onClick={onSuggestWithOptions}>
+                    <AdjustmentsHorizontalIcon className="h-4 w-4" /> Suggest with options…
+                  </DropdownMenuItem>
+                )}
               </>
             )}
           </DropdownMenuContent>

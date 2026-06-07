@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/solid'
@@ -32,6 +32,11 @@ export function SharePostDialog({
 }: SharePostDialogProps) {
   const [search, setSearch] = useState('')
   const debounced = useDebouncedValue(search.trim(), 350)
+
+  // Clear the query when the dialog closes so a fresh open starts empty.
+  useEffect(() => {
+    if (!open) setSearch('')
+  }, [open])
 
   const { data: results = [] } = useQuery({
     queryKey: ['admin', 'inbox', 'share-search', debounced],

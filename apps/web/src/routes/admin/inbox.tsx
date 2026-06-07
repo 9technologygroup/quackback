@@ -1046,7 +1046,7 @@ function ChatThread({
               if (!o) setSuggestMsg(null)
             }}
             conversationId={conversationId}
-            defaultTitle={suggestMsg?.content.slice(0, 200) ?? ''}
+            defaultTitle={suggestMsg?.content.trim().slice(0, 200) ?? ''}
             defaultContent={suggestMsg?.content ?? ''}
             onConverted={refreshThread}
           />
