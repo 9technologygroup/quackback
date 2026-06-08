@@ -39,6 +39,7 @@ const ALLOWED_NODE_TYPES = new Set([
   'emoji',
   'mention',
   'quackbackEmbed',
+  'chatImage',
 ])
 
 // Mark types that match the TipTap editor extensions
@@ -129,6 +130,15 @@ function sanitizeAttrs(
       if (result.width === 0) delete result.width
       if (result.height === 0) delete result.height
       return result
+    }
+
+    case 'chatImage': {
+      // Inline chat image. Mirrors `image` but carries only `{ src, alt }` (no
+      // dimensions). An empty/unsafe src clears both attrs so the serializer
+      // renders nothing — a neutralized node can never display.
+      const src = sanitizeImageUrl(String(attrs.src ?? ''))
+      if (!src) return { src: '', alt: '' }
+      return { src, alt: String(attrs.alt ?? '').slice(0, 500) }
     }
 
     case 'taskItem':

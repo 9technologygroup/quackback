@@ -631,4 +631,85 @@ describe('sanitizeTiptapContent', () => {
     const node = result.content?.find((n) => n.type === 'quackbackEmbed')
     expect(node?.attrs).toBeUndefined()
   })
+
+  // ============================================
+  // Inline chat image sanitization
+  // ============================================
+
+  it('preserves a chatImage with a same-origin upload src', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        {
+          type: 'chatImage',
+          attrs: { src: '/uploads/chat-images/photo.png', alt: 'A screenshot' },
+        },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    expect(node).toBeDefined()
+    expect(node!.attrs!.src).toBe('/uploads/chat-images/photo.png')
+    expect(node!.attrs!.alt).toBe('A screenshot')
+  })
+
+  it('strips a javascript: src on a chatImage (node neutralized)', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'chatImage', attrs: { src: 'javascript:alert(1)', alt: 'x' } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    expect(node!.attrs!.src).toBe('')
+  })
+
+  it('strips a data:image/svg+xml src on a chatImage', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        {
+          type: 'chatImage',
+          attrs: { src: 'data:image/svg+xml,<svg onload="alert(1)"/>' },
+        },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    expect(node!.attrs!.src).toBe('')
+  })
+
+  it('neutralizes a chatImage with an empty src', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'chatImage', attrs: { src: '', alt: 'orphan' } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    // Empty src → src/alt cleared so the serializer renders nothing.
+    expect(node!.attrs!.src).toBe('')
+    expect(node!.attrs!.alt).toBe('')
+  })
+
+  it('caps a hostile chatImage alt and drops unknown attrs', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        {
+          type: 'chatImage',
+          attrs: {
+            src: 'https://example.com/photo.jpg',
+            alt: 'a'.repeat(1000),
+            onerror: 'alert(1)',
+            class: 'evil',
+          },
+        },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    expect(node!.attrs!.src).toBe('https://example.com/photo.jpg')
+    expect((node!.attrs!.alt as string).length).toBe(500)
+    expect(node!.attrs!.onerror).toBeUndefined()
+    expect(node!.attrs!.class).toBeUndefined()
+  })
 })

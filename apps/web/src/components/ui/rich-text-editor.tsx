@@ -2299,6 +2299,15 @@ export function generateContentHTML(content: JSONContent): string {
         return `<img src="${src}" alt="${alt}" class="max-w-full h-auto rounded-lg" ${style} />`
       }
 
+      case 'chatImage': {
+        // Inline chat image. Bounded (max-w-xs) so it sits inside a chat bubble.
+        // Renders nothing if the src is empty after sanitization.
+        const src = escapeHtmlAttr(sanitizeImageUrl(String(node.attrs?.src ?? '')))
+        const alt = escapeHtmlAttr(String(node.attrs?.alt ?? ''))
+        if (!src) return ''
+        return `<img src="${src}" alt="${alt}" class="max-w-xs rounded-md" />`
+      }
+
       case 'youtube': {
         const src = node.attrs?.src ?? ''
         const width = safePositiveInt(node.attrs?.width, 640)
