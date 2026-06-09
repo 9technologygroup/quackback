@@ -564,18 +564,24 @@ export const listConversationsFn = createServerFn({ method: 'GET' })
     }
   })
 
-const userConversationsSchema = z.object({ principalId: z.string() })
+const userConversationsSchema = z.object({
+  principalId: z.string(),
+  status: z.enum(CONVERSATION_STATUSES).optional(),
+  before: z.string().optional(),
+})
 
-/** A single visitor's full chat history — for the admin user profile. */
+/** A single visitor's chat history (status-filterable, paginated) — admin user profile. */
 export const listConversationsForUserFn = createServerFn({ method: 'GET' })
   .inputValidator(userConversationsSchema)
   .handler(async ({ data }) => {
     try {
       await requireAuth({ roles: ['admin', 'member'] })
-      const { listConversationsForVisitor } = await import('@/lib/server/domains/chat/chat.query')
-      return {
-        conversations: await listConversationsForVisitor(data.principalId as PrincipalId),
-      }
+      const { listConversationsForAgent } = await import('@/lib/server/domains/chat/chat.query')
+      return await listConversationsForAgent({
+        visitorPrincipalId: data.principalId as PrincipalId,
+        status: data.status,
+        before: data.before,
+      })
     } catch (error) {
       console.error('[fn:chat] listConversationsForUserFn failed:', error)
       throw error
