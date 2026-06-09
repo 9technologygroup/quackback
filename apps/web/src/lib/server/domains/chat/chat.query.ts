@@ -628,6 +628,8 @@ export interface ConversationListFilter {
    *  (OR semantics). Exclusive-scope today sends a single id, but the array keeps
    *  it symmetric with tagIds. */
   segmentIds?: SegmentId[]
+  /** Restrict to a single visitor's conversations (the admin user profile). */
+  visitorPrincipalId?: PrincipalId
   /** "Mentions" view: only conversations whose internal notes @-mention this
    *  principal. Always the requesting agent — resolved server-side from auth,
    *  never client-supplied (it would leak who-mentioned-whom). */
@@ -688,6 +690,9 @@ export async function listConversationsForAgent(
     .where(
       and(
         filter.status ? eq(conversations.status, filter.status) : undefined,
+        filter.visitorPrincipalId
+          ? eq(conversations.visitorPrincipalId, filter.visitorPrincipalId)
+          : undefined,
         filter.priority ? eq(conversations.priority, filter.priority) : undefined,
         filter.assignedAgentPrincipalId
           ? eq(conversations.assignedAgentPrincipalId, filter.assignedAgentPrincipalId)

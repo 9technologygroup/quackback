@@ -340,6 +340,18 @@ describe('listConversationsForAgent mentions view', () => {
   })
 })
 
+describe('listConversationsForAgent visitor filter', () => {
+  it('restricts to the given visitor', async () => {
+    await listConversationsForAgent({ visitorPrincipalId: visitorId })
+    expect(vi.mocked(eq).mock.calls.some((c) => c[1] === visitorId)).toBe(true)
+  })
+
+  it('does not constrain by visitor by default', async () => {
+    await listConversationsForAgent({})
+    expect(vi.mocked(eq).mock.calls.some((c) => c[1] === visitorId)).toBe(false)
+  })
+})
+
 describe('resolveVisitorConversation', () => {
   it('returns the thread for its owner, read-only only when closed', () => {
     const open = makeConversation({ status: 'open' })
