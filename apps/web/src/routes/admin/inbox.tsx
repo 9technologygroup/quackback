@@ -747,6 +747,31 @@ function ChatThread({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages.at(-1)?.id, isLoading, isVisitorTyping])
 
+  // Keep the thread pinned to the bottom as late-loading content (image
+  // attachments that decode after the message renders) grows it — the one-shot
+  // scroll above fires before images have height. A ResizeObserver re-pins on
+  // any content-height change while the viewer is already at the bottom, so an
+  // image never lands below the fold; a scrolled-up reader and message-jumps are
+  // left alone.
+  useEffect(() => {
+    const viewport = scrollRef.current
+    const content = viewport?.firstElementChild
+    if (!viewport || !content) return
+    let pinned = true
+    const onScroll = () => {
+      pinned = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80
+    }
+    viewport.addEventListener('scroll', onScroll, { passive: true })
+    const ro = new ResizeObserver(() => {
+      if (pinned && !pendingTargetRef.current) viewport.scrollTop = viewport.scrollHeight
+    })
+    ro.observe(content)
+    return () => {
+      viewport.removeEventListener('scroll', onScroll)
+      ro.disconnect()
+    }
+  }, [conversationId])
+
   // Re-arm the jump whenever the URL target changes (e.g. clicking another
   // "Saved for later" message while this conversation is already open).
   useEffect(() => {
