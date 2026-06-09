@@ -122,7 +122,10 @@ export function ConversationDetailPanel({
 
   return (
     <aside className="hidden w-72 shrink-0 flex-col xl:flex">
-      <ScrollArea className="min-h-0 flex-1">
+      {/* Force Radix's inner viewport wrapper (display:table by default, which
+          grows to content width and defeats truncate) to block so children are
+          constrained to the panel width and long text clips with an ellipsis. */}
+      <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
         <div className="m-3 space-y-5 rounded-xl border border-border/20 bg-card p-4 shadow-sm">
           {/* Contact — surfaced first so an agent sees who they're talking to
               before the management controls. Links into the admin user profile
@@ -277,12 +280,12 @@ export function ConversationDetailPanel({
                   key={c.id}
                   type="button"
                   onClick={() => onSelectConversation(c.id)}
-                  className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/60"
+                  className="flex w-full min-w-0 flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/60"
                 >
-                  <span className="w-full truncate text-xs text-foreground/90">
+                  <span className="block w-full min-w-0 truncate text-xs text-foreground/90">
                     {c.subject ?? c.lastMessagePreview ?? 'Conversation'}
                   </span>
-                  <span className="text-[10px] capitalize text-muted-foreground">
+                  <span className="block w-full min-w-0 truncate text-[10px] capitalize text-muted-foreground">
                     {c.status} ·{' '}
                     {formatDistanceToNow(new Date(c.lastMessageAt), { addSuffix: true })}
                   </span>
