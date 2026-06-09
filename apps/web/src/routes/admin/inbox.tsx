@@ -46,6 +46,7 @@ import { ConversationListColumn } from '@/components/admin/chat/conversation-lis
 import { SavedMessagesColumn } from '@/components/admin/chat/saved-messages-column'
 import { ChatNoteEditor, type ChatNoteEditorHandle } from '@/components/admin/chat/chat-note-editor'
 import { ComposerAttachmentTray } from '@/components/admin/chat/composer-attachment-tray'
+import { LinkPreviews } from '@/components/shared/link-preview-card'
 import {
   ChatRichComposer,
   type ChatRichComposerHandle,
@@ -626,6 +627,9 @@ function ChatThread({
   const noteDocRef = useRef<JSONContent | null>(null)
   const [noteResetSignal, setNoteResetSignal] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Live link-unfurl in the composer (the "preview tray"), debounced so it fires
+  // on a settled URL rather than every keystroke.
+  const debouncedComposerText = useDebouncedValue(noteMode ? noteText : replyText, 500)
 
   // Per-message "Track as post" quick actions: the message driving the
   // (controlled) track dialog and the share-post picker, respectively.
@@ -1265,6 +1269,9 @@ function ChatThread({
               />
             )}
             <ComposerAttachmentTray attachments={pendingAttachments} onRemove={removeAttachment} />
+            {/* Live link unfurl while composing (Slack-style) — part of the
+                preview tray, gated by the flag. */}
+            {linkPreviewsEnabled && <LinkPreviews content={debouncedComposerText} />}
             <div className="flex items-center gap-0.5 pt-1">
               {/* Attach is available in both reply and note mode. */}
               <button
