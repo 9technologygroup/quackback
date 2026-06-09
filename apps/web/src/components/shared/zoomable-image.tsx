@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 
 /**
  * An image thumbnail that opens a near-full-size preview in a modal on click.
@@ -31,14 +31,14 @@ export function ZoomableImage({
         <img src={src} alt={alt ?? ''} loading="lazy" className={thumbClassName} />
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle className="truncate text-sm font-normal">{alt || 'Image'}</DialogTitle>
-          </DialogHeader>
+        {/* No visible header — just the image with the built-in corner X. The
+            title stays for screen readers only. */}
+        <DialogContent className="max-w-3xl p-2">
+          <DialogTitle className="sr-only">{alt || 'Image preview'}</DialogTitle>
           <img
             src={src}
             alt={alt ?? ''}
-            className="max-h-[80vh] w-full rounded-md object-contain"
+            className="max-h-[85vh] w-full rounded-md object-contain"
           />
         </DialogContent>
       </Dialog>
