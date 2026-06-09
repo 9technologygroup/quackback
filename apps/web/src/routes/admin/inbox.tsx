@@ -47,7 +47,7 @@ import { SharePostDialog } from '@/components/admin/chat/share-post-dialog'
 import { ConversationListColumn } from '@/components/admin/chat/conversation-list-column'
 import { SavedMessagesColumn } from '@/components/admin/chat/saved-messages-column'
 import { ChatNoteEditor, type ChatNoteEditorHandle } from '@/components/admin/chat/chat-note-editor'
-import { ComposerAttachmentTray } from '@/components/admin/chat/composer-attachment-tray'
+import { ComposerAttachmentTray } from '@/components/shared/composer-attachment-tray'
 import { LinkPreviews } from '@/components/shared/link-preview-card'
 import {
   ChatRichComposer,

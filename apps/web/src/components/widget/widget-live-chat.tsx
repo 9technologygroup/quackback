@@ -20,6 +20,9 @@ import { getWidgetAuthHeaders } from '@/lib/client/widget-auth'
 import { useChatStream } from '@/lib/client/hooks/use-chat-stream'
 import { useChatTyping } from '@/lib/client/hooks/use-chat-typing'
 import { useWidgetImageUpload } from '@/lib/client/hooks/use-image-upload'
+import { useChatComposerAttachments } from '@/lib/client/hooks/use-chat-composer-attachments'
+import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
+import { ComposerAttachmentTray } from '@/components/shared/composer-attachment-tray'
 import {
   ChatRichComposer,
   type ChatRichComposerHandle,
@@ -135,6 +138,16 @@ export function WidgetLiveChat({
     useChatTyping(sendTyping)
 
   const { upload } = useWidgetImageUpload()
+  // Image attachments use the shared tray (thumbnails + zoom) — same as admin.
+  const {
+    pending: pendingAttachments,
+    addFiles,
+    remove: removeAttachment,
+    clear: clearAttachments,
+    uploading,
+  } = useChatComposerAttachments(upload)
+  // Live link unfurl while composing (debounced), matching admin.
+  const debouncedMessageText = useDebouncedValue(messageText, 500)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const composerRef = useRef<ChatRichComposerHandle>(null)
 
@@ -424,8 +437,15 @@ export function WidgetLiveChat({
   const send = useCallback(async () => {
     const text = messageText.trim()
     const doc = messageDocRef.current
-    // Sendable when there's typed text OR the doc carries an inline image/embed.
-    if ((!text && !docHasContentNode(doc)) || sending || emailBlocksSend) return
+    const hasAttachments = pendingAttachments.length > 0
+    // Sendable when there's typed text, an inline embed, or a tray attachment.
+    if (
+      (!text && !docHasContentNode(doc) && !hasAttachments) ||
+      sending ||
+      uploading ||
+      emailBlocksSend
+    )
+      return
     setSending(true)
 
     const ready = await ensureSession()
@@ -439,8 +459,10 @@ export function WidgetLiveChat({
         data: {
           conversationId: conversationId ?? undefined,
           content: text,
-          // Inline images/embeds ride along as the (server-sanitized) TipTap doc.
+          // Embeds ride along as the (server-sanitized) TipTap doc; images go as
+          // attachments (the tray) — matching admin.
           contentJson: doc,
+          attachments: hasAttachments ? pendingAttachments : undefined,
           // Attach the captured email on the first message only.
           visitorEmail: needsEmail && emailValid ? emailInput.trim() : undefined,
         },
@@ -457,6 +479,7 @@ export function WidgetLiveChat({
       messageDocRef.current = null
       setMessageHasContentNode(false)
       setComposerResetSignal((n) => n + 1)
+      clearAttachments()
     } catch {
       // Leave the composer content intact for a retry.
     } finally {
@@ -472,6 +495,9 @@ export function WidgetLiveChat({
     conversationId,
     ensureSession,
     appendMessage,
+    pendingAttachments,
+    uploading,
+    clearAttachments,
   ])
 
   const renderRow = (row: ChatRow) => {
@@ -818,16 +844,9 @@ export function WidgetLiveChat({
             multiple
             className="hidden"
             onChange={(e) => {
+              // Attach via the shared tray (thumbnails + zoom), same as admin.
               const files = e.target.files
-              if (files && files.length > 0) {
-                // Inline the image: upload, then insert a chatImage node —
-                // matching paste/drop in the composer.
-                Array.from(files).forEach((file) => {
-                  void upload(file)
-                    .then((url) => composerRef.current?.insertImage(url))
-                    .catch(() => {})
-                })
-              }
+              if (files && files.length > 0) void addFiles(files)
               e.target.value = ''
             }}
           />
@@ -846,8 +865,13 @@ export function WidgetLiveChat({
             }}
             onSubmit={() => void send()}
             onLocalInput={onLocalInput}
-            uploadImage={upload}
+            onImageFiles={(files) => void addFiles(files)}
           />
+          <ComposerAttachmentTray attachments={pendingAttachments} onRemove={removeAttachment} />
+          {/* Live link unfurl while composing (Slack-style), gated by the flag. */}
+          {linkPreviews && (
+            <LinkPreviews content={debouncedMessageText} getAuthHeaders={getWidgetAuthHeaders} />
+          )}
           <div className="flex items-center gap-0.5 pt-1">
             <button
               type="button"
@@ -869,7 +893,12 @@ export function WidgetLiveChat({
               type="button"
               onClick={() => void send()}
               disabled={
-                (!messageText.trim() && !messageHasContentNode) || sending || emailBlocksSend
+                (!messageText.trim() &&
+                  !messageHasContentNode &&
+                  pendingAttachments.length === 0) ||
+                sending ||
+                uploading ||
+                emailBlocksSend
               }
               className="shrink-0 flex items-center justify-center size-8 rounded-md bg-primary text-primary-foreground disabled:opacity-40 transition-opacity"
               aria-label={intl.formatMessage({ id: 'widget.chat.send', defaultMessage: 'Send' })}
