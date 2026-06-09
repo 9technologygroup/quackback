@@ -394,8 +394,8 @@ export async function conversationToDTO(
 /** The visitor's most-recent conversation, if any (so the widget can resume). */
 export interface ActiveConversationResult {
   conversation: Conversation | null
-  /** True when the surfaced thread is closed — the widget shows it read-only
-   *  and offers to start a new conversation instead of a composer. */
+  /** True when the surfaced thread is closed. The widget keeps the composer and
+   *  hints that replying reopens the conversation (Intercom-style). */
   isReadOnly: boolean
 }
 

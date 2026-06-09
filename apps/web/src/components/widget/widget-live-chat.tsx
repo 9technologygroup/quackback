@@ -53,9 +53,16 @@ interface WidgetLiveChatProps {
   helpEnabled?: boolean
   /** Open a help article by slug (switches the widget to the article view). */
   onArticleSelect?: (slug: string) => void
+  /** Which thread to open: an id opens that thread, 'new' starts a fresh one,
+   *  undefined resumes the visitor's active/most-recent thread. */
+  conversationTarget?: ConversationId | 'new'
 }
 
-export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatProps = {}) {
+export function WidgetLiveChat({
+  helpEnabled,
+  onArticleSelect,
+  conversationTarget,
+}: WidgetLiveChatProps = {}) {
   const intl = useIntl()
   const queryClient = useQueryClient()
   const { user, ensureSession, sessionVersion } = useWidgetAuth()
@@ -82,8 +89,6 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
   const [hasMoreOlder, setHasMoreOlder] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [conversationStatus, setConversationStatus] = useState<string | null>(null)
-  // The surfaced thread is closed: show it read-only + offer to start fresh (P1.9).
-  const [isReadOnly, setIsReadOnly] = useState(false)
   const [csatRating, setCsatRating] = useState<number | null>(null)
   // Whether the visitor rated in THIS session — enables the optional comment
   // follow-up. A returning, already-rated visitor goes straight to "thanks".
@@ -100,21 +105,6 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
 
   const appendMessage = useCallback((msg: ChatMessageDTO) => {
     setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]))
-  }, [])
-
-  // Clear the closed thread from view so the next message opens a fresh
-  // conversation (sendVisitorMessage with no conversationId creates one).
-  const startNewConversation = useCallback(() => {
-    setConversationId(null)
-    setMessages([])
-    setConversationStatus(null)
-    setIsReadOnly(false)
-    setCsatRating(null)
-    setCsatJustRated(false)
-    setCsatCommentDone(false)
-    setCsatComment('')
-    setHasMoreOlder(false)
-    setAgentReadAt(null)
   }, [])
 
   const sendTyping = useCallback(() => {
@@ -147,7 +137,13 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
     let cancelled = false
     void (async () => {
       try {
-        const res = await getMyChatFn({ headers: getWidgetAuthHeaders() })
+        const res = await getMyChatFn({
+          // 'new' → null (blank greeting); an id → that thread; undefined → active.
+          data: {
+            conversationId: conversationTarget === 'new' ? null : (conversationTarget ?? undefined),
+          },
+          headers: getWidgetAuthHeaders(),
+        })
         if (cancelled) return
         setWelcomeMessage(res.welcomeMessage)
         setOfflineMessage(res.offlineMessage)
@@ -159,7 +155,6 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
         setConversationId((res.conversation?.id as ConversationId | undefined) ?? null)
         setAgentReadAt(res.conversation?.agentLastReadAt ?? null)
         setConversationStatus(res.conversation?.status ?? null)
-        setIsReadOnly(res.isReadOnly)
         setCsatRating(res.conversation?.csatRating ?? null)
         setMessages(res.messages)
       } catch {
@@ -171,7 +166,7 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
     return () => {
       cancelled = true
     }
-  }, [sessionVersion])
+  }, [sessionVersion, conversationTarget])
 
   // Refetch the authoritative thread after a reconnect to catch anything missed.
   const refreshMessages = useCallback(async () => {
@@ -753,157 +748,152 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
         </div>
       )}
 
-      {/* Composer — or a "start new" prompt when the surfaced thread is closed (P1.9). */}
-      {isReadOnly ? (
-        <div className="border-t border-border/40 p-3 shrink-0 text-center">
-          <p className="mb-2 text-[11px] text-muted-foreground/70">
+      {/* Composer is always available. A closed thread reopens on the next send
+          (Intercom-style), so we keep the composer and only hint at the state. */}
+      {conversationStatus === 'closed' && (
+        <div className="flex items-center gap-2 px-3 pt-2" role="status">
+          <span className="h-px flex-1 bg-border/50" />
+          <span className="text-center text-[11px] text-muted-foreground">
             <FormattedMessage
-              id="widget.chat.closed"
-              defaultMessage="This conversation is closed."
+              id="widget.chat.closedReopen"
+              defaultMessage="This conversation was closed. Reply to reopen it."
             />
-          </p>
-          <button
-            type="button"
-            onClick={startNewConversation}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
-          >
-            <FormattedMessage id="widget.chat.startNew" defaultMessage="Start a new conversation" />
-          </button>
-        </div>
-      ) : (
-        <div className="border-t border-border/40 p-2 shrink-0">
-          {/* Pre-chat email capture (anonymous visitors). */}
-          {needsEmail && (
-            <div className="px-1 pb-2">
-              <label
-                htmlFor="widget-chat-email"
-                className="mb-1 block text-[11px] font-medium text-muted-foreground"
-              >
-                {preChatMode === 'required' ? (
-                  <FormattedMessage
-                    id="widget.chat.email.required"
-                    defaultMessage="Your email so we can reply"
-                  />
-                ) : (
-                  <FormattedMessage
-                    id="widget.chat.email.optional"
-                    defaultMessage="Your email (optional)"
-                  />
-                )}
-              </label>
-              <input
-                id="widget-chat-email"
-                type="email"
-                value={emailInput}
-                onChange={(e) => setEmailInput(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/20"
-              />
-              {/* Optional mode: an explicit skip so blank-and-send is a choice,
-                not a silent fallthrough. */}
-              {preChatMode === 'optional' && (
-                <button
-                  type="button"
-                  onClick={() => setEmailKnown(true)}
-                  className="mt-1 text-[11px] text-muted-foreground/70 underline hover:text-foreground"
-                >
-                  <FormattedMessage
-                    id="widget.chat.email.skip"
-                    defaultMessage="Continue without email"
-                  />
-                </button>
-              )}
-            </div>
-          )}
-          {/* Pending attachment previews */}
-          {pendingAttachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-1 pb-1.5">
-              {pendingAttachments.map((a, i) => (
-                <div
-                  key={i}
-                  className="group relative flex items-center gap-1 rounded-md border border-border/50 bg-muted/30 px-1.5 py-1 text-[11px]"
-                >
-                  <PaperClipIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  <span className="max-w-[120px] truncate">{a.name || 'file'}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeAttachment(i)}
-                    className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                    aria-label="Remove attachment"
-                  >
-                    <XMarkIcon className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {/* Composer: full-width textarea on top, actions (attach / emoji /
-              send) on the row below. Enter sends; Shift+Enter inserts a newline
-              and the textarea auto-grows to fit. */}
-          <div className="rounded-lg border border-border bg-background px-2.5 py-2 focus-within:ring-2 focus-within:ring-primary/20">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) void addFiles(e.target.files)
-                e.target.value = ''
-              }}
-            />
-            <textarea
-              ref={composerRef}
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value)
-                onLocalInput()
-                autoGrowComposer(e.target)
-              }}
-              onKeyDown={onKeyDown}
-              rows={1}
-              placeholder={intl.formatMessage({
-                id: 'widget.chat.placeholder',
-                defaultMessage: 'Type your message…',
-              })}
-              className="w-full resize-none bg-transparent px-1 py-1 text-sm text-foreground placeholder:text-muted-foreground/60 outline-none max-h-32"
-            />
-            <div className="flex items-center gap-0.5 pt-1">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                className="shrink-0 flex items-center justify-center size-8 rounded-md text-muted-foreground hover:bg-muted disabled:opacity-40 transition-colors"
-                aria-label={intl.formatMessage({
-                  id: 'widget.chat.attach',
-                  defaultMessage: 'Attach image',
-                })}
-              >
-                <PaperClipIcon className="w-5 h-5" />
-              </button>
-              <EmojiPicker
-                className="size-8"
-                onSelect={(emoji) => setInput((prev) => prev + emoji)}
-              />
-              <div className="flex-1" />
-              <button
-                type="button"
-                onClick={() => void send()}
-                disabled={
-                  (!input.trim() && pendingAttachments.length === 0) ||
-                  sending ||
-                  uploading ||
-                  emailBlocksSend
-                }
-                className="shrink-0 flex items-center justify-center size-8 rounded-md bg-primary text-primary-foreground disabled:opacity-40 transition-opacity"
-                aria-label={intl.formatMessage({ id: 'widget.chat.send', defaultMessage: 'Send' })}
-              >
-                <PaperAirplaneIcon className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+          </span>
+          <span className="h-px flex-1 bg-border/50" />
         </div>
       )}
+      <div className="border-t border-border/40 p-2 shrink-0">
+        {/* Pre-chat email capture (anonymous visitors). */}
+        {needsEmail && (
+          <div className="px-1 pb-2">
+            <label
+              htmlFor="widget-chat-email"
+              className="mb-1 block text-[11px] font-medium text-muted-foreground"
+            >
+              {preChatMode === 'required' ? (
+                <FormattedMessage
+                  id="widget.chat.email.required"
+                  defaultMessage="Your email so we can reply"
+                />
+              ) : (
+                <FormattedMessage
+                  id="widget.chat.email.optional"
+                  defaultMessage="Your email (optional)"
+                />
+              )}
+            </label>
+            <input
+              id="widget-chat-email"
+              type="email"
+              value={emailInput}
+              onChange={(e) => setEmailInput(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+            />
+            {/* Optional mode: an explicit skip so blank-and-send is a choice,
+                not a silent fallthrough. */}
+            {preChatMode === 'optional' && (
+              <button
+                type="button"
+                onClick={() => setEmailKnown(true)}
+                className="mt-1 text-[11px] text-muted-foreground/70 underline hover:text-foreground"
+              >
+                <FormattedMessage
+                  id="widget.chat.email.skip"
+                  defaultMessage="Continue without email"
+                />
+              </button>
+            )}
+          </div>
+        )}
+        {/* Pending attachment previews */}
+        {pendingAttachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-1 pb-1.5">
+            {pendingAttachments.map((a, i) => (
+              <div
+                key={i}
+                className="group relative flex items-center gap-1 rounded-md border border-border/50 bg-muted/30 px-1.5 py-1 text-[11px]"
+              >
+                <PaperClipIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="max-w-[120px] truncate">{a.name || 'file'}</span>
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(i)}
+                  className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  aria-label="Remove attachment"
+                >
+                  <XMarkIcon className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Composer: full-width textarea on top, actions (attach / emoji /
+              send) on the row below. Enter sends; Shift+Enter inserts a newline
+              and the textarea auto-grows to fit. */}
+        <div className="rounded-lg border border-border bg-background px-2.5 py-2 focus-within:ring-2 focus-within:ring-primary/20">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files) void addFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <textarea
+            ref={composerRef}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value)
+              onLocalInput()
+              autoGrowComposer(e.target)
+            }}
+            onKeyDown={onKeyDown}
+            rows={1}
+            placeholder={intl.formatMessage({
+              id: 'widget.chat.placeholder',
+              defaultMessage: 'Type your message…',
+            })}
+            className="w-full resize-none bg-transparent px-1 py-1 text-sm text-foreground placeholder:text-muted-foreground/60 outline-none max-h-32"
+          />
+          <div className="flex items-center gap-0.5 pt-1">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="shrink-0 flex items-center justify-center size-8 rounded-md text-muted-foreground hover:bg-muted disabled:opacity-40 transition-colors"
+              aria-label={intl.formatMessage({
+                id: 'widget.chat.attach',
+                defaultMessage: 'Attach image',
+              })}
+            >
+              <PaperClipIcon className="w-5 h-5" />
+            </button>
+            <EmojiPicker
+              className="size-8"
+              onSelect={(emoji) => setInput((prev) => prev + emoji)}
+            />
+            <div className="flex-1" />
+            <button
+              type="button"
+              onClick={() => void send()}
+              disabled={
+                (!input.trim() && pendingAttachments.length === 0) ||
+                sending ||
+                uploading ||
+                emailBlocksSend
+              }
+              className="shrink-0 flex items-center justify-center size-8 rounded-md bg-primary text-primary-foreground disabled:opacity-40 transition-opacity"
+              aria-label={intl.formatMessage({ id: 'widget.chat.send', defaultMessage: 'Send' })}
+            >
+              <PaperAirplaneIcon className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
