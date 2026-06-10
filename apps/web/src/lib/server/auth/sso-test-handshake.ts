@@ -160,10 +160,10 @@ export async function runHandshake(input: HandshakeInput): Promise<HandshakeResu
   }
   steps.push({ ok: true, stage: 'discovery-fetch', label: 'Discovery doc fetched' })
 
-  // Mirror production: Better-Auth's genericOAuth plugin does NOT enable
-  // PKCE in our config, so the test flow must not send code_verifier
-  // either. Adding PKCE here would test a slightly-different protocol
-  // and produce false positives.
+  // Mirror production: Better-Auth's genericOAuth plugin runs with
+  // pkce: true in our config, so the test flow sends code_verifier
+  // too. Diverging here would test a slightly-different protocol and
+  // produce false positives.
   const tokenBody = new URLSearchParams({
     grant_type: 'authorization_code',
     code_verifier: input.codeVerifier,

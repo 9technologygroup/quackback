@@ -5,9 +5,9 @@
  *    secret exists, fetches the IdP discovery document with an SSRF
  *    check + 5s timeout, persists a `TestSession` to Redis under
  *    `sso-test:<state>` (10-min TTL), and returns the authorize URL
- *    the admin UI opens in a popup. NO PKCE — production genericOAuth
- *    doesn't send `code_verifier` on the token request, so the test
- *    flow has to mirror that exactly or it'd diagnose a non-issue.
+ *    the admin UI opens in a popup. PKCE (S256) — production
+ *    genericOAuth runs with `pkce: true`, so the test flow mints a
+ *    verifier/challenge pair to mirror that exactly.
  *
  *    The redirect_uri matches the production Better-Auth SSO callback
  *    so admins only register one URL with their IdP. The auth catch-all

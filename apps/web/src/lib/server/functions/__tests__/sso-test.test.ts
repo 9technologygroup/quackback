@@ -3,7 +3,8 @@
  *
  *  - startSsoTestFn returns a typed error union when SSO is not yet
  *    configured or the client secret is missing, and otherwise builds
- *    an OIDC authorize URL (no PKCE — mirrors prod genericOAuth) using
+ *    an OIDC authorize URL (S256 PKCE — mirrors prod genericOAuth's
+ *    pkce: true) using
  *    the SAME redirect_uri as production SSO sign-in, and persists a
  *    TestSession to Redis. The auth catch-all discriminates test from
  *    production by looking up the state in Redis — see
