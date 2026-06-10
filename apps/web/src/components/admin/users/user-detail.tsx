@@ -35,6 +35,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ChannelBadge } from '@/components/admin/chat/channel-badge'
+import { NewConversationDialog } from '@/components/admin/chat/new-conversation-dialog'
+import { realEmail } from '@/lib/shared/anonymous-email'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { TimeAgo } from '@/components/ui/time-ago'
 import type { PortalUserDetail, EngagedPost } from '@/lib/shared/types'
@@ -415,10 +417,14 @@ export function UserDetail({
   currentMemberRole,
 }: UserDetailProps) {
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false)
+  const [composeOpen, setComposeOpen] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editName, setEditName] = useState('')
   const [editEmail, setEditEmail] = useState('')
   const updateUser = useUpdatePortalUser()
+  const { settings } = useRouteContext({ from: '__root__' })
+  const supportInboxEnabled =
+    (settings?.featureFlags as FeatureFlags | undefined)?.supportInbox ?? false
   // Check if current user can manage portal users
   const canManageUsers = currentMemberRole === 'admin'
 
@@ -559,7 +565,35 @@ export function UserDetail({
               </>
             )}
           </div>
+          {supportInboxEnabled && !isEditing && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setComposeOpen(true)}
+              disabled={!realEmail(user.email)}
+              title={
+                realEmail(user.email)
+                  ? undefined
+                  : 'This user has no email address to deliver a message to'
+              }
+            >
+              <ChatBubbleLeftIcon className="me-1.5 h-4 w-4" />
+              Send message
+            </Button>
+          )}
         </div>
+        {supportInboxEnabled && (
+          <NewConversationDialog
+            open={composeOpen}
+            onOpenChange={setComposeOpen}
+            initialTarget={{
+              principalId: user.principalId,
+              name: user.name,
+              email: user.email,
+              image: user.image,
+            }}
+          />
+        )}
 
         {/* Activity Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

@@ -102,6 +102,11 @@ const agentSendSchema = z.object({
   attachments: z.array(attachmentSchema).max(MAX_CHAT_ATTACHMENTS).optional(),
 })
 
+const startConversationSchema = z.object({
+  targetPrincipalId: z.string(),
+  content: z.string().min(1).max(MAX_CHAT_MESSAGE_LENGTH),
+})
+
 const agentNoteSchema = z.object({
   conversationId: z.string(),
   content: z.string().min(1).max(MAX_CHAT_MESSAGE_LENGTH),
@@ -681,6 +686,40 @@ export const sendAgentMessageFn = createServerFn({ method: 'POST' })
       )
     } catch (error) {
       console.error('[fn:chat] sendAgentMessageFn failed:', error)
+      throw error
+    }
+  })
+
+/**
+ * Start a new conversation with a portal user (outbound compose). Gated on the
+ * supportInbox flag only — the recipient can reply by email alone, so neither
+ * visitor surface needs to be on. The first message is always emailed.
+ */
+export const startAgentConversationFn = createServerFn({ method: 'POST' })
+  .inputValidator(startConversationSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ roles: ['admin', 'member'] })
+      const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
+      if (!(await isFeatureEnabled('supportInbox'))) {
+        throw new Error('Support inbox is not enabled')
+      }
+      const actor = await policyActorFromAuth(ctx)
+      const { startAgentConversation } = await import('@/lib/server/domains/chat/chat.service')
+      return await startAgentConversation(
+        {
+          targetPrincipalId: data.targetPrincipalId as PrincipalId,
+          content: data.content,
+        },
+        {
+          principalId: ctx.principal.id,
+          displayName: ctx.user.name,
+          avatarUrl: ctx.user.image,
+        },
+        actor
+      )
+    } catch (error) {
+      console.error('[fn:chat] startAgentConversationFn failed:', error)
       throw error
     }
   })

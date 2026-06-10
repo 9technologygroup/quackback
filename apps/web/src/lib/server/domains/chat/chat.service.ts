@@ -17,6 +17,7 @@ import {
   conversations,
   chatMessages,
   principal,
+  user,
   type Conversation,
   type ChatSystemEvent,
 } from '@/lib/server/db'
@@ -56,7 +57,8 @@ import {
   publishAgentTyping,
 } from '@/lib/server/realtime/chat-channels'
 import { truncate } from '@/lib/shared/utils/string'
-import { notifyVisitorMessage, notifyAgentReply } from './chat.notify'
+import { notifyVisitorMessage, notifyAgentReply, notifyConversationStarted } from './chat.notify'
+import { resolveReplyRecipient } from './chat.recipient'
 import { conversationToDTO, toMessageDTO, authorFromInput, resolveAuthor } from './chat.query'
 import {
   emitConversationCreated,
@@ -365,6 +367,121 @@ function richMessageFallbackLabel(doc: TiptapContent | null | undefined): string
     }
   }
   return ''
+}
+
+export interface StartAgentConversationInput {
+  targetPrincipalId: PrincipalId
+  content: string
+}
+
+/**
+ * Agent-initiated conversation with a portal user. The target becomes the
+ * conversation's visitor side; the composing agent is auto-assigned and the
+ * first message is agent-typed. The first message is ALWAYS emailed (the
+ * recipient is by definition not in the thread), so the target must be an
+ * identified portal user with a deliverable email — validated before any
+ * write. Each compose creates a new conversation (no dedupe against open
+ * threads).
+ */
+export async function startAgentConversation(
+  input: StartAgentConversationInput,
+  agent: ChatAuthorInput,
+  actor: Actor
+): Promise<SendVisitorMessageResult> {
+  const decision = canActAsAgent(actor)
+  if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
+
+  const content = validateContent(input.content, false)
+
+  const [target] = await db
+    .select({
+      type: principal.type,
+      role: principal.role,
+      email: user.email,
+      contactEmail: principal.contactEmail,
+    })
+    .from(principal)
+    .leftJoin(user, eq(principal.userId, user.id))
+    .where(eq(principal.id, input.targetPrincipalId))
+    .limit(1)
+
+  if (!target) {
+    throw new NotFoundError('USER_NOT_FOUND', 'User not found')
+  }
+  if (isTeamMember(target.role)) {
+    throw new ValidationError(
+      'CANNOT_MESSAGE_TEAM',
+      'Conversations can only be started with portal users, not team members'
+    )
+  }
+  if (!resolveReplyRecipient(target, target.contactEmail, null)) {
+    throw new ValidationError(
+      'NO_DELIVERABLE_EMAIL',
+      'This user has no email address to deliver the message to'
+    )
+  }
+
+  const txResult = await db.transaction(async (tx) => {
+    const [createdConv] = await tx
+      .insert(conversations)
+      .values({
+        visitorPrincipalId: input.targetPrincipalId,
+        // The composer owns the thread from the start — it lands in "Mine".
+        assignedAgentPrincipalId: agent.principalId,
+        status: 'open',
+        subject: preview(content, []),
+      })
+      .returning()
+
+    const [message] = await tx
+      .insert(chatMessages)
+      .values({
+        conversationId: createdConv.id,
+        principalId: agent.principalId,
+        senderType: 'agent',
+        content,
+      })
+      .returning()
+
+    const [updated] = await tx
+      .update(conversations)
+      .set({
+        lastMessageAt: message.createdAt,
+        lastMessagePreview: preview(content, []),
+        // Composing counts as reading on the agent side.
+        agentLastReadAt: message.createdAt,
+        updatedAt: message.createdAt,
+      })
+      .where(eq(conversations.id, createdConv.id))
+      .returning()
+
+    return { conversation: updated, message }
+  })
+
+  const messageDTO = toMessageDTO(txResult.message, await resolveAuthor(agent))
+  // Agent-side DTO for the inbox stream; publishConversationUpdate strips
+  // agent-only fields from the visitor's copy.
+  const agentDTO = await conversationToDTO(txResult.conversation, 'agent')
+  publishConversationUpdate(agentDTO.id, agentDTO)
+  publishChatEvent(messageDTO.conversationId, {
+    kind: 'message',
+    conversationId: messageDTO.conversationId,
+    message: messageDTO,
+  })
+
+  // Always email the first message — fire-and-forget; a delivery failure never
+  // rolls back the conversation (it logs inside notifyConversationStarted).
+  void notifyConversationStarted({
+    conversationId: txResult.conversation.id,
+    visitorPrincipalId: txResult.conversation.visitorPrincipalId,
+    content: preview(content, []),
+    agentName: agent.displayName ?? 'Support',
+  })
+
+  void emitConversationCreated(actor, agent, txResult.conversation)
+  void emitMessageCreated(actor, agent, txResult.message, txResult.conversation)
+
+  return { conversation: agentDTO, message: messageDTO, created: true }
 }
 
 /** Agent reply. Auto-assigns the conversation to the replying agent if unowned. */

@@ -1,10 +1,12 @@
+import { useState } from 'react'
 import type { ConversationId } from '@quackback/ids'
 import type {
   ConversationDTO,
   ConversationPriority,
   ConversationStatus,
 } from '@/lib/shared/chat/types'
-import { ChevronDownIcon } from '@heroicons/react/24/solid'
+import { ChevronDownIcon, PencilSquareIcon } from '@heroicons/react/24/solid'
+import { NewConversationDialog } from '@/components/admin/chat/new-conversation-dialog'
 import { priorityMeta } from '@/lib/shared/chat/priority-meta'
 import { PriorityDot, PriorityMenuItems } from '@/components/admin/chat/priority-control'
 import { ChannelBadge } from '@/components/admin/chat/channel-badge'
@@ -89,6 +91,7 @@ export function ConversationListColumn({
   selectedId,
   onSelect,
 }: ConversationListColumnProps) {
+  const [composeOpen, setComposeOpen] = useState(false)
   return (
     <div
       className={cn(
@@ -98,16 +101,26 @@ export function ConversationListColumn({
         selectedId && 'hidden md:flex'
       )}
     >
-      <div className="border-b border-border/50 px-4 py-[1.1rem]">
+      <div className="flex items-center justify-between gap-2 border-b border-border/50 px-4 py-[0.85rem]">
         {/* At lg+ the nav sidebar owns scope selection, so the header is a
             plain label. Below lg the sidebar is hidden, so offer a dropdown. */}
-        <h2 className="hidden truncate text-sm font-semibold leading-tight lg:block">
+        <h2 className="hidden min-w-0 truncate text-sm font-semibold leading-tight lg:block">
           {scopeLabel}
         </h2>
-        <div className="lg:hidden">
+        <div className="min-w-0 lg:hidden">
           <InboxScopeMenu nav={nav} onSelect={onSelectNav} />
         </div>
+        <button
+          type="button"
+          onClick={() => setComposeOpen(true)}
+          title="New conversation"
+          aria-label="New conversation"
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <PencilSquareIcon className="size-4" />
+        </button>
       </div>
+      <NewConversationDialog open={composeOpen} onOpenChange={setComposeOpen} />
       {/* Search is owned by the nav pane at lg+; the list keeps a copy for the
           sub-lg layout where that pane is hidden. */}
       <div className="px-3 pt-2 lg:hidden">

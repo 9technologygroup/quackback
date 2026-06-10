@@ -41,6 +41,13 @@ vi.mock('@quackback/email', () => ({
   sendChatMessageEmail: (...a: [Record<string, unknown>]) => sendChatMessageEmail(...a),
 }))
 
+// Visitor deep links consult the portal-support gate; default to the widget
+// link (portal support off) so existing expectations hold.
+const isPortalSupportEnabled = vi.fn<() => Promise<boolean>>(async () => false)
+vi.mock('@/lib/server/domains/settings/settings.support', () => ({
+  isPortalSupportEnabled: () => isPortalSupportEnabled(),
+}))
+
 vi.mock('@/lib/server/db', () => {
   // A thenable chain. `.where()` resolves to the team rows (so a bare await on
   // the where() builder yields the array); `.limit()` resolves to the single
