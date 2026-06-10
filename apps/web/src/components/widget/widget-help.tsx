@@ -25,7 +25,7 @@ interface WidgetHelpProps {
    * thread. Surfaced as a Messages entry above the articles. Omit when chat is
    * disabled — the support surface is then help articles only.
    */
-  onOpenChat?: () => void
+  onOpenChat?: (target?: import('@quackback/ids').ConversationId | 'new') => void
 }
 
 export function WidgetHelp({ onArticleSelect, onCategorySelect, onOpenChat }: WidgetHelpProps) {

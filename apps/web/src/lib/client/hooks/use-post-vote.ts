@@ -21,6 +21,19 @@ interface UsePostVoteOptions {
   voteCount: number // Initial vote count (seeds cache)
   /** Set to false to disable queries (e.g. readonly mode) */
   enabled?: boolean
+  /**
+   * Called at request time to supply auth headers. Used by surfaces where
+   * cookie-based session is unavailable (e.g. the widget iframe, which
+   * authenticates with a Bearer token). Portal/admin callers omit this;
+   * cookie auth continues to work unchanged.
+   *
+   * Note: the voted-state query (`fetchVotedPosts`) is a globally-keyed
+   * cache shared across all call sites and cannot accept per-call headers
+   * without a broader refactor. Widget visitors will see `hasVoted: false`
+   * on load (the toggle mutation still carries their token, so the vote
+   * lands correctly and the optimistic update reflects immediately).
+   */
+  getAuthHeaders?: () => Record<string, string>
 }
 
 interface UsePostVoteReturn {
@@ -45,6 +58,7 @@ export function usePostVote({
   postId,
   voteCount,
   enabled = true,
+  getAuthHeaders,
 }: UsePostVoteOptions): UsePostVoteReturn {
   const queryClient = useQueryClient()
 
@@ -70,7 +84,7 @@ export function usePostVote({
   })
 
   const hasVoted = votedPosts?.has(postId) ?? false
-  const voteMutation = useVoteMutation()
+  const voteMutation = useVoteMutation(getAuthHeaders ? { getAuthHeaders } : undefined)
 
   function handleVote(e?: React.MouseEvent): void {
     if (e) {

@@ -12,7 +12,6 @@ interface ServerTheme {
 interface ServerConfig {
   theme?: ServerTheme
   tabs?: { feedback?: boolean; changelog?: boolean; help?: boolean; chat?: boolean; home?: boolean }
-  imageUploadsInWidget?: boolean
   hmacRequired?: boolean
 }
 
@@ -120,7 +119,6 @@ export const Route = createFileRoute('/api/widget/config.json')({
         const config: ServerConfig = {
           theme: Object.keys(theme).length > 0 ? theme : undefined,
           tabs: widgetConfig.tabs,
-          imageUploadsInWidget: widgetConfig.imageUploadsInWidget,
           hmacRequired: widgetConfig.hmacRequired,
         }
 

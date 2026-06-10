@@ -1,14 +1,15 @@
 import { createFileRoute, Navigate, useRouteContext } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   ChatBubbleLeftRightIcon,
   PaperAirplaneIcon,
   PaperClipIcon,
-  XMarkIcon,
   ChatBubbleBottomCenterTextIcon,
   PencilSquareIcon,
   ChevronLeftIcon,
+  ChevronDownIcon,
 } from '@heroicons/react/24/solid'
 import { toast } from 'sonner'
 import { isValidTypeId } from '@quackback/ids'
@@ -41,9 +42,18 @@ import { ChannelBadge } from '@/components/admin/chat/channel-badge'
 import { ConversationTagsEditor } from '@/components/admin/chat/conversation-tags-editor'
 import { StatusControl } from '@/components/admin/chat/status-control'
 import { ConversationDetailPanel } from '@/components/admin/chat/conversation-detail-panel'
+import { ConvertToPostDialog } from '@/components/admin/chat/convert-to-post-dialog'
+import { EndConversationDialog } from '@/components/admin/chat/end-conversation-dialog'
+import { SharePostDialog } from '@/components/admin/chat/share-post-dialog'
 import { ConversationListColumn } from '@/components/admin/chat/conversation-list-column'
 import { SavedMessagesColumn } from '@/components/admin/chat/saved-messages-column'
 import { ChatNoteEditor, type ChatNoteEditorHandle } from '@/components/admin/chat/chat-note-editor'
+import { ComposerAttachmentTray } from '@/components/shared/composer-attachment-tray'
+import { LinkPreviews } from '@/components/shared/link-preview-card'
+import {
+  ChatRichComposer,
+  type ChatRichComposerHandle,
+} from '@/components/admin/chat/chat-rich-composer'
 import {
   InboxNavSidebar,
   isInboxView,
@@ -60,6 +70,7 @@ import {
   type StatusFilter,
 } from '@/lib/client/chat/inbox-scope'
 import { chatInboxQueries } from '@/lib/client/queries/chat-inbox'
+import { buildAdminChatRows, type AdminChatRow } from '@/lib/client/chat/admin-chat-rows'
 import type { JSONContent } from '@tiptap/core'
 import { useChatStream } from '@/lib/client/hooks/use-chat-stream'
 import { useChatTyping } from '@/lib/client/hooks/use-chat-typing'
@@ -113,6 +124,13 @@ export const Route = createFileRoute('/admin/inbox')({
       ? (search.priority as ConversationPriority | 'all')
       : undefined,
     q: typeof search.q === 'string' && search.q ? search.q : undefined,
+    // Carries the shared `?post=` modal target (the admin layout mounts the
+    // modal) so clicking an embedded post in a chat opens it without leaving the
+    // inbox. Validated to a real post id; a junk value is dropped.
+    post:
+      typeof search.post === 'string' && isValidTypeId(search.post, 'post')
+        ? search.post
+        : undefined,
   }),
   // Re-run the prefetch when the scope / filters / open conversation change, so
   // a client-side navigation re-warms the cache too. ensureQueryData is a no-op
@@ -485,6 +503,7 @@ function asAgentMessage(m: ChatMessageDTO | AgentChatMessageDTO): AgentChatMessa
     ...m,
     reactions: 'reactions' in m ? m.reactions : [],
     flaggedAt: 'flaggedAt' in m ? m.flaggedAt : null,
+    postSuggestion: 'postSuggestion' in m ? m.postSuggestion : null,
   }
 }
 
@@ -504,11 +523,14 @@ function mergeAgentMessage(
   }
 }
 
-/** Grow a composer textarea to fit its content, up to a max height (px). */
-const COMPOSER_MAX_HEIGHT = 128
-function autoGrowTextarea(el: HTMLTextAreaElement): void {
-  el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`
+/** True when the composer doc carries an inline image or post embed, which makes
+ *  a message worth sending even with no typed text. Walks the doc since these are
+ *  block atoms at the top level (and defensively, any nesting). */
+function replyDocHasContentNode(doc: JSONContent | null): boolean {
+  if (!doc) return false
+  const walk = (nodes: JSONContent[] | undefined): boolean =>
+    !!nodes?.some((n) => n.type === 'chatImage' || n.type === 'quackbackEmbed' || walk(n.content))
+  return walk(doc.content)
 }
 
 /** Optimistically toggle the caller's reaction with `emoji` on a message,
@@ -573,11 +595,34 @@ function ChatThread({
   isOtherAgentTyping: boolean
 }) {
   const queryClient = useQueryClient()
+  const navigate = Route.useNavigate()
   const threadKey = ['admin', 'inbox', 'thread', conversationId] as const
   // The current agent's display name, for attributing optimistic reactions.
-  const { session } = useRouteContext({ from: '__root__' })
+  const { session, settings } = useRouteContext({ from: '__root__' })
   const myName = session?.user?.name ?? 'You'
-  const [reply, setReply] = useState('')
+  const linkPreviewsEnabled =
+    (settings?.featureFlags as FeatureFlags | undefined)?.linkPreviews ?? false
+
+  // Open an embedded post (clicked in a chat message) in the in-place `?post=`
+  // modal the admin layout mounts — route-bound + search-only, so it stays on
+  // /admin/inbox with `?c=` intact, and closing returns to the exact chat.
+  // Mirrors how the roadmap board opens a card; NOT `replace`, so the browser
+  // back button closes the modal.
+  const openPost = useCallback(
+    (postId: string) => {
+      void navigate({ to: '/admin/inbox', search: (prev) => ({ ...prev, post: postId }) })
+    },
+    [navigate]
+  )
+  // Reply composer is a rich TipTap doc (inline images + post embeds). `replyText`
+  // is the doc's plain text (gates send + drives typing); `replyDocRef` holds the
+  // doc persisted as contentJson; `replyResetSignal` clears the editor after send.
+  const [replyText, setReplyText] = useState('')
+  const replyDocRef = useRef<JSONContent | null>(null)
+  // Reactive mirror of "doc carries an inline image/embed" so the send gate
+  // enables for a no-text, image-only message (a ref read wouldn't re-render).
+  const [replyHasContentNode, setReplyHasContentNode] = useState(false)
+  const [replyResetSignal, setReplyResetSignal] = useState(0)
   // Composer mode: a public reply to the visitor, or an internal team note.
   const [noteMode, setNoteMode] = useState(false)
   // Internal-note composer state (separate from the plain reply textarea): the
@@ -586,6 +631,27 @@ function ChatThread({
   const noteDocRef = useRef<JSONContent | null>(null)
   const [noteResetSignal, setNoteResetSignal] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Live link-unfurl in the composer (the "preview tray"), debounced so it fires
+  // on a settled URL rather than every keystroke.
+  const debouncedComposerText = useDebouncedValue(noteMode ? noteText : replyText, 500)
+
+  // Per-message "Track as feedback" quick actions: the message driving the
+  // (controlled) track dialog and the share-post picker, respectively.
+  const [suggestMsg, setSuggestMsg] = useState<AgentChatMessageDTO | null>(null)
+  const [shareMsg, setShareMsg] = useState<AgentChatMessageDTO | null>(null)
+  // Conversation-level "Track as feedback" (from the detail panel): opens the
+  // same convert dialog seeded with the conversation subject + first visitor
+  // message, alongside the per-message `suggestMsg` path.
+  const [trackConvo, setTrackConvo] = useState(false)
+  // The end-conversation reason dialog (opened from the detail panel).
+  const [endDialogOpen, setEndDialogOpen] = useState(false)
+  // An AI "Track as post" suggestion the agent accepted from a note chip: seeds
+  // the same (controlled) convert dialog with the suggested board/title/content.
+  const [suggestionSeed, setSuggestionSeed] = useState<{
+    boardId: string
+    title: string
+    content: string
+  } | null>(null)
 
   // "Jump to message" deep-link state. pendingTarget is the message we still
   // need to scroll to (null once resolved); highlightId is the one currently
@@ -612,7 +678,7 @@ function ChatThread({
     uploading,
   } = useChatComposerAttachments(upload)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const replyComposerRef = useRef<HTMLTextAreaElement>(null)
+  const replyComposerRef = useRef<ChatRichComposerHandle>(null)
   const noteEditorRef = useRef<ChatNoteEditorHandle>(null)
 
   // Shared factory (same key as `threadKey`) so a `?c=` deep-link prefetched by
@@ -659,23 +725,112 @@ function ChatThread({
     }
   }
 
+  // Newest-first view of the thread, reused by the lookups below.
+  const reversedMessages = [...messages].reverse()
+
+  // Default the convert/draft dialog to the conversation subject + the last thing the visitor said.
+  const lastVisitorMessage = reversedMessages.find((m) => m.senderType === 'visitor')
+  const convertDefaultTitle = conversation?.subject ?? ''
+  const convertDefaultContent = lastVisitorMessage?.content ?? ''
+  // Conversation-level "Track as feedback" seeds from the FIRST visitor message
+  // (the original ask) rather than the latest one — that's the request worth
+  // capturing as a post. Title falls back to a preview of it when there's no
+  // subject.
+  const firstVisitorMessage = messages.find((m) => m.senderType === 'visitor')
+  const trackConvoTitle =
+    conversation?.subject ?? firstVisitorMessage?.content.trim().slice(0, 200) ?? ''
+  const trackConvoContent = firstVisitorMessage?.content ?? ''
+
+  // The conversation DTO carries no principal type, so treat "no captured
+  // contact email on file" as the anonymous-visitor signal — exactly when the
+  // convert dialog should offer the optional email-capture field.
+  const visitorContactEmail = conversation?.visitorEmail ?? null
+  const visitorIsAnonymous = conversation != null && visitorContactEmail == null
+
   // The agent's latest message is "Seen" once the visitor read watermark
   // reaches it.
-  const lastAgentMessage = [...messages].reverse().find((m) => m.senderType === 'agent')
+  const lastAgentMessage = reversedMessages.find((m) => m.senderType === 'agent')
   const lastAgentSeen =
     !!conversation?.visitorLastReadAt &&
     !!lastAgentMessage &&
     new Date(conversation.visitorLastReadAt).getTime() >=
       new Date(lastAgentMessage.createdAt).getTime()
 
-  // Keyed on the newest id (not length) so prepending older messages doesn't
-  // yank the view to the bottom. Skipped while a jump is pending so it doesn't
-  // fight the scroll-to-target (the ref read avoids re-firing when it resolves).
-  useEffect(() => {
+  // Flatten the thread into virtualized rows (load-older → messages w/ unread
+  // divider → empty → seen → typing). anchorTo:'end' + followOnAppend keep the
+  // view pinned to the newest message and stick to the bottom as messages stream
+  // in; getItemKey (message id) lets the virtualizer hold the viewport when older
+  // history is prepended, and measureElement re-pins after late-loading images
+  // grow a row (replacing the old one-shot scroll + ResizeObserver pinning).
+  const rows = useMemo(
+    () =>
+      buildAdminChatRows({
+        messages,
+        hasMoreOlder,
+        firstUnreadId,
+        showSeen: lastAgentSeen && !isVisitorTyping,
+        showTyping: isVisitorTyping,
+      }),
+    [messages, hasMoreOlder, firstUnreadId, lastAgentSeen, isVisitorTyping]
+  )
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 72,
+    getItemKey: (index) => rows[index].key,
+    anchorTo: 'end',
+    followOnAppend: true,
+    overscan: 6,
+  })
+
+  // Land on the newest message once the thread has loaded. The component is keyed
+  // on conversationId, so this fires per thread. A pending `?m=` jump owns the
+  // scroll, so consume the one-shot without scrolling to the bottom in that case.
+  const didInitialScroll = useRef(false)
+  useLayoutEffect(() => {
+    if (isLoading || didInitialScroll.current || rows.length === 0) return
+    didInitialScroll.current = true
     if (pendingTargetRef.current) return
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messages.at(-1)?.id, isLoading, isVisitorTyping])
+    virtualizer.scrollToEnd()
+  }, [isLoading, rows.length, virtualizer])
+
+  // After our own send, jump to the freshly-appended message — followOnAppend
+  // only auto-follows when already at the bottom, so an agent who replied while
+  // scrolled up still lands on their message. Deferred to a layout effect so the
+  // new row exists in `rows` before we scroll (onSuccess appends it this tick,
+  // when rows.length is still stale).
+  const pendingOwnSendScroll = useRef(false)
+  useLayoutEffect(() => {
+    if (!pendingOwnSendScroll.current || rows.length === 0) return
+    pendingOwnSendScroll.current = false
+    virtualizer.scrollToIndex(rows.length - 1, { align: 'end' })
+  }, [rows.length, virtualizer])
+
+  // Scroll-to-bottom pill state. `atEnd` reads the live virtualizer offset, which
+  // lags one frame behind a programmatic/follow scroll — so to flag "new messages
+  // below" we compare against the PREVIOUS render's at-end state (wasAtEndRef),
+  // not the live value (which momentarily reads false right after any append).
+  const lastMessageId = messages.at(-1)?.id
+  const atEnd = virtualizer.isAtEnd()
+  const [hasNewBelow, setHasNewBelow] = useState(false)
+  const wasAtEndRef = useRef(true)
+  const prevLastIdRef = useRef(lastMessageId)
+  // Surface the "new messages" pill when a message lands while the agent was
+  // scrolled up. Declared BEFORE the at-end effect on purpose: React runs effects
+  // in declaration order, so this reads wasAtEndRef while it still holds the
+  // PREVIOUS render's value (before the at-end effect overwrites it) — which keeps
+  // the pill from flashing when followOnAppend re-pins us on a received message.
+  useEffect(() => {
+    if (lastMessageId && lastMessageId !== prevLastIdRef.current && !wasAtEndRef.current) {
+      setHasNewBelow(true)
+    }
+    prevLastIdRef.current = lastMessageId
+  }, [lastMessageId])
+  useEffect(() => {
+    if (atEnd) setHasNewBelow(false)
+    wasAtEndRef.current = atEnd
+  }, [atEnd])
 
   // Re-arm the jump whenever the URL target changes (e.g. clicking another
   // "Saved for later" message while this conversation is already open).
@@ -684,16 +839,15 @@ function ChatThread({
     jumpPagesRef.current = 0
   }, [targetMessageId])
 
-  // Resolve a pending jump: once the target message is loaded, scroll it to
-  // center and flash it; otherwise pull older pages (capped) until it appears
-  // or we run out. Giving up clears pendingTarget so normal scrolling resumes.
+  // Resolve a pending jump: once the target message is loaded, center it via the
+  // virtualizer and flash it (scrollToIndex self-corrects as off-screen rows are
+  // measured); otherwise pull older pages (capped) until it appears or we run
+  // out. Giving up clears pendingTarget so normal scrolling resumes.
   useEffect(() => {
     if (!pendingTarget || isLoading) return
-    if (messages.some((m) => m.id === pendingTarget)) {
-      const el = scrollRef.current?.querySelector(
-        `[data-message-id="${CSS.escape(pendingTarget)}"]`
-      )
-      el?.scrollIntoView({ block: 'center' })
+    const index = rows.findIndex((r) => r.type === 'message' && r.message.id === pendingTarget)
+    if (index >= 0) {
+      virtualizer.scrollToIndex(index, { align: 'center' })
       setHighlightId(pendingTarget)
       setPendingTarget(null)
       return
@@ -704,7 +858,7 @@ function ChatThread({
     } else if (!hasMoreOlder || jumpPagesRef.current >= MAX_JUMP_PAGES) {
       setPendingTarget(null)
     }
-  }, [pendingTarget, messages, isLoading, hasMoreOlder, loadingOlder])
+  }, [pendingTarget, rows, isLoading, hasMoreOlder, loadingOlder, virtualizer])
 
   // Clear the flash once it has played through.
   useEffect(() => {
@@ -716,7 +870,6 @@ function ChatThread({
   // Clear the agent-side unread badge when a thread is open and new visitor
   // messages arrive — opening + reading should mark read, not only replying.
   // Keyed on the last message id so array re-creation doesn't re-fire the write.
-  const lastMessageId = messages.at(-1)?.id
   useEffect(() => {
     if (isLoading || messages.length === 0) return
     if (messages.at(-1)?.senderType !== 'visitor') return
@@ -740,12 +893,24 @@ function ChatThread({
   }
 
   const sendMutation = useMutation({
-    mutationFn: (vars: { content: string; attachments?: ChatAttachment[] }) =>
+    mutationFn: (vars: {
+      content: string
+      contentJson: JSONContent | null
+      attachments?: ChatAttachment[]
+    }) =>
       sendAgentMessageFn({
-        data: { conversationId, content: vars.content, attachments: vars.attachments },
+        data: {
+          conversationId,
+          content: vars.content,
+          contentJson: vars.contentJson,
+          attachments: vars.attachments,
+        },
       }),
     onSuccess: (res) => {
       clearAttachments()
+      // Our own send always lands at the bottom (followOnAppend only follows
+      // when already at end); the layout effect scrolls once the row exists.
+      pendingOwnSendScroll.current = true
       appendToThread(res)
     },
     onError: () => toast.error('Failed to send message'),
@@ -767,6 +932,7 @@ function ChatThread({
       }),
     onSuccess: (res) => {
       clearAttachments()
+      pendingOwnSendScroll.current = true
       appendToThread(res)
     },
     onError: () => toast.error('Failed to add note'),
@@ -895,7 +1061,7 @@ function ChatThread({
   const cannedReplies = cannedData?.cannedReplies ?? []
 
   const insertCanned = useCallback((body: string) => {
-    setReply((r) => (r.trim() ? `${r}\n${body}` : body))
+    replyComposerRef.current?.insertText(body)
   }, [])
 
   const onSend = useCallback(() => {
@@ -914,16 +1080,81 @@ function ChatThread({
       setNoteResetSignal((n) => n + 1)
       return
     }
-    const text = reply.trim()
-    if ((!text && pendingAttachments.length === 0) || sendMutation.isPending || uploading) return
-    setReply('')
-    // Collapse the auto-grown composer back to a single row after sending.
-    if (replyComposerRef.current) replyComposerRef.current.style.height = 'auto'
+    // Reply is rich: send the plain text (preview/search) + the doc (inline
+    // images/embeds) + any tray attachments. A doc/attachment with no text is
+    // still valid (e.g. an image-only reply).
+    const text = replyText.trim()
+    const doc = replyDocRef.current
+    const hasAttachments = pendingAttachments.length > 0
+    if (
+      (!text && !replyDocHasContentNode(doc) && !hasAttachments) ||
+      sendMutation.isPending ||
+      uploading
+    )
+      return
     sendMutation.mutate({
       content: text,
-      attachments: pendingAttachments.length > 0 ? pendingAttachments : undefined,
+      contentJson: doc,
+      attachments: hasAttachments ? pendingAttachments : undefined,
     })
-  }, [reply, noteText, noteMode, noteMutation, pendingAttachments, uploading, sendMutation])
+    setReplyText('')
+    replyDocRef.current = null
+    setReplyHasContentNode(false)
+    setReplyResetSignal((n) => n + 1)
+  }, [replyText, noteText, noteMode, noteMutation, pendingAttachments, uploading, sendMutation])
+
+  // Render one virtualized row. AdminBubble keeps all its behaviors (and its
+  // data-message-id root); the affordance rows mirror the old inline markup.
+  const renderRow = (row: AdminChatRow) => {
+    switch (row.type) {
+      case 'load-older':
+        return (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => void loadOlder()}
+              disabled={loadingOlder}
+              className="rounded-full border border-border/60 px-3 py-1 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
+            >
+              {loadingOlder ? 'Loading…' : 'Load earlier messages'}
+            </button>
+          </div>
+        )
+      case 'unread':
+        return <UnreadDivider />
+      case 'message': {
+        const m = row.message
+        return (
+          <AdminBubble
+            message={m}
+            highlighted={m.id === highlightId}
+            onOpenPost={openPost}
+            onDelete={() => deleteMutation.mutate(m.id)}
+            onToggleReaction={(emoji, hasReacted) =>
+              reactionMutation.mutate({ messageId: m.id, emoji, hasReacted })
+            }
+            onToggleFlag={(next) => flagMutation.mutate({ messageId: m.id, flagged: next })}
+            onMarkUnread={() => markUnreadMutation.mutate(m.id)}
+            onSharePost={() => setShareMsg(m)}
+            onTrackAsPost={() => setSuggestMsg(m)}
+            onTrackSuggestion={(s) => setSuggestionSeed(s)}
+            linkPreviews={linkPreviewsEnabled}
+          />
+        )
+      }
+      case 'empty':
+        return <p className="py-8 text-center text-sm text-muted-foreground">No messages yet</p>
+      case 'seen':
+        return <p className="pe-1 text-end text-[10px] text-muted-foreground/50">Seen</p>
+      case 'typing':
+        return (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
+            <TypingDots />
+            <span>{conversation?.visitor.displayName ?? 'Visitor'} is typing…</span>
+          </div>
+        )
+    }
+  }
 
   if (isLoading) {
     return (
@@ -976,6 +1207,59 @@ function ChatThread({
               </p>
             </div>
           </div>
+          {/* Conversation-level track entry for narrow viewports: at xl+ the
+              detail panel's bottom "Track as feedback" button takes over, so this
+              header trigger mirrors the triage controls' xl:hidden fallback. */}
+          {conversation && (
+            <div className="flex shrink-0 items-center gap-1.5 xl:hidden">
+              <ConvertToPostDialog
+                conversationId={conversationId}
+                defaultTitle={convertDefaultTitle}
+                defaultContent={convertDefaultContent}
+                visitorIsAnonymous={visitorIsAnonymous}
+                visitorContactEmail={visitorContactEmail}
+                onConverted={refreshThread}
+              />
+            </div>
+          )}
+          {/* One controlled convert dialog, driven by: a per-message pick
+              (suggestMsg), an AI suggestion accepted from a note chip
+              (suggestionSeed), or the conversation-level "Track as feedback"
+              button in the detail panel (trackConvo). The conversation-level path
+              seeds the subject + first visitor message. */}
+          <ConvertToPostDialog
+            open={!!suggestMsg || !!suggestionSeed || trackConvo}
+            onOpenChange={(o) => {
+              if (!o) {
+                setSuggestMsg(null)
+                setSuggestionSeed(null)
+                setTrackConvo(false)
+              }
+            }}
+            conversationId={conversationId}
+            defaultTitle={
+              suggestionSeed?.title ?? suggestMsg?.content.trim().slice(0, 200) ?? trackConvoTitle
+            }
+            defaultContent={suggestionSeed?.content ?? suggestMsg?.content ?? trackConvoContent}
+            defaultBoardId={suggestionSeed?.boardId}
+            visitorIsAnonymous={visitorIsAnonymous}
+            visitorContactEmail={visitorContactEmail}
+            onConverted={refreshThread}
+          />
+          <SharePostDialog
+            open={!!shareMsg}
+            onOpenChange={(o) => {
+              if (!o) setShareMsg(null)
+            }}
+            conversationId={conversationId}
+            onShared={refreshThread}
+          />
+          <EndConversationDialog
+            open={endDialogOpen}
+            onOpenChange={setEndDialogOpen}
+            conversationId={conversationId}
+            onEnded={refreshThread}
+          />
           {/* Triage controls live in the detail panel at xl+; below that
               (panel hidden) they stay in the header. */}
           {conversation && (
@@ -1006,50 +1290,56 @@ function ChatThread({
           </div>
         )}
 
-        {/* Messages — min-h-0 so this scrolls and the composer stays pinned. */}
-        <ScrollArea className="min-h-0 flex-1" viewportRef={scrollRef}>
-          <div className="flex flex-col gap-3 px-5 py-4">
-            {hasMoreOlder && (
-              <button
-                type="button"
-                onClick={() => void loadOlder()}
-                disabled={loadingOlder}
-                className="mx-auto rounded-full border border-border/60 px-3 py-1 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
-              >
-                {loadingOlder ? 'Loading…' : 'Load earlier messages'}
-              </button>
-            )}
-            {messages.map((m) => (
-              <div key={m.id}>
-                {m.id === firstUnreadId && <UnreadDivider />}
-                <AdminBubble
-                  message={m}
-                  highlighted={m.id === highlightId}
-                  onDelete={() => deleteMutation.mutate(m.id)}
-                  onToggleReaction={(emoji, hasReacted) =>
-                    reactionMutation.mutate({ messageId: m.id, emoji, hasReacted })
-                  }
-                  onToggleFlag={(next) => flagMutation.mutate({ messageId: m.id, flagged: next })}
-                  onMarkUnread={() => markUnreadMutation.mutate(m.id)}
-                />
-              </div>
-            ))}
-            {messages.length === 0 && (
-              <p className="py-8 text-center text-sm text-muted-foreground">No messages yet</p>
-            )}
+        {/* Messages — min-h-0 so this scrolls and the composer stays pinned. The
+            thread is virtualized (TanStack Virtual chat pattern): each row is
+            absolutely positioned at its measured offset within a spacer sized to
+            the total height. The wrapper is `relative` so the scroll-to-bottom
+            pill can float over the thread. */}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <ScrollArea className="min-h-0 flex-1" viewportRef={scrollRef}>
+            <div className="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+              {virtualizer.getVirtualItems().map((vi) => (
+                <div
+                  key={vi.key}
+                  data-index={vi.index}
+                  ref={virtualizer.measureElement}
+                  className="absolute inset-x-0 top-0"
+                  style={{ transform: `translateY(${vi.start}px)` }}
+                >
+                  <div className="px-5 py-1.5">{renderRow(rows[vi.index])}</div>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
 
-            {lastAgentSeen && !isVisitorTyping && (
-              <p className="-mt-1.5 pe-1 text-end text-[10px] text-muted-foreground/50">Seen</p>
-            )}
-
-            {isVisitorTyping && (
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
-                <TypingDots />
-                <span>{conversation?.visitor.displayName ?? 'Visitor'} is typing…</span>
-              </div>
-            )}
-          </div>
-        </ScrollArea>
+          {/* Scroll-to-bottom pill: shown when scrolled up off the newest
+              message; highlighted (primary + dot) when a message arrived while
+              the agent was away from the bottom. */}
+          {!atEnd && (
+            <button
+              type="button"
+              onClick={() => {
+                setHasNewBelow(false)
+                virtualizer.scrollToIndex(rows.length - 1, { align: 'end', behavior: 'smooth' })
+              }}
+              className={cn(
+                'absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium shadow-md transition-colors',
+                hasNewBelow
+                  ? 'border-primary bg-primary text-primary-foreground hover:bg-primary/90'
+                  : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+              aria-label={hasNewBelow ? 'New messages — jump to latest' : 'Jump to latest'}
+            >
+              {hasNewBelow && (
+                <>
+                  <span className="size-1.5 rounded-full bg-primary-foreground" />
+                  <span>New messages</span>
+                </>
+              )}
+              <ChevronDownIcon className="h-4 w-4" />
+            </button>
+          )}
+        </div>
 
         {/* Composer */}
         <div className="border-t border-border/50 p-3">
@@ -1078,43 +1368,9 @@ function ChatThread({
               </button>
             ))}
           </div>
-          {pendingAttachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-1 pb-2">
-              {pendingAttachments.map((a, i) => {
-                const isImage = a.contentType?.startsWith('image/') && a.url
-                return (
-                  <div
-                    key={i}
-                    className="group relative flex items-center gap-1 rounded-md border border-border/50 bg-muted/30 px-1.5 py-1 text-[11px]"
-                  >
-                    <PaperClipIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
-                    <span className="max-w-[140px] truncate">{a.name || 'file'}</span>
-                    <button
-                      type="button"
-                      onClick={() => removeAttachment(i)}
-                      className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      aria-label="Remove attachment"
-                    >
-                      <XMarkIcon className="h-3 w-3" />
-                    </button>
-                    {/* Hover preview for images — a popover above the chip. */}
-                    {isImage && (
-                      <div className="pointer-events-none absolute bottom-full left-0 z-50 mb-2 rounded-lg border border-border bg-popover p-1 opacity-0 shadow-md transition-opacity duration-150 group-hover:opacity-100">
-                        <img
-                          src={a.url}
-                          alt={a.name}
-                          className="max-h-40 max-w-[220px] rounded object-contain"
-                        />
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-          {/* Composer: the editor/textarea spans the full width on top, with the
-              actions (attach / emoji / saved replies) and send on the row below.
-              Enter sends; Shift+Enter inserts a newline and the textarea grows. */}
+          {/* Composer: the editor spans the full width on top, then the pending
+              attachment tray, then the actions (attach / emoji / saved replies)
+              and send. Enter sends; Shift+Enter inserts a newline. */}
           <div
             className={cn(
               'rounded-lg border px-3 py-2 focus-within:ring-2',
@@ -1130,7 +1386,10 @@ function ChatThread({
               multiple
               className="hidden"
               onChange={(e) => {
-                if (e.target.files) void addFiles(e.target.files)
+                const files = e.target.files
+                // Reply and note both attach via the shared tray — uploaded and
+                // sent as `attachments`, then rendered below the bubble.
+                if (files && files.length > 0) void addFiles(files)
                 e.target.value = ''
               }}
             />
@@ -1144,27 +1403,28 @@ function ChatThread({
                   noteDocRef.current = doc
                 }}
                 onSubmit={onSend}
+                onImageFiles={(files) => void addFiles(files)}
               />
             ) : (
-              <textarea
+              <ChatRichComposer
                 ref={replyComposerRef}
-                value={reply}
-                onChange={(e) => {
-                  setReply(e.target.value)
-                  onLocalInput()
-                  autoGrowTextarea(e.target)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    onSend()
-                  }
-                }}
-                rows={1}
+                resetSignal={replyResetSignal}
+                disabled={sendMutation.isPending}
                 placeholder="Type your reply…"
-                className="w-full resize-none bg-transparent px-1 py-1 text-sm outline-none max-h-32"
+                onChange={(text, doc) => {
+                  setReplyText(text)
+                  replyDocRef.current = doc
+                  setReplyHasContentNode(replyDocHasContentNode(doc))
+                }}
+                onSubmit={onSend}
+                onLocalInput={onLocalInput}
+                onImageFiles={(files) => void addFiles(files)}
               />
             )}
+            <ComposerAttachmentTray attachments={pendingAttachments} onRemove={removeAttachment} />
+            {/* Live link unfurl while composing (Slack-style) — part of the
+                preview tray, gated by the flag. */}
+            {linkPreviewsEnabled && <LinkPreviews content={debouncedComposerText} />}
             <div className="flex items-center gap-0.5 pt-1">
               {/* Attach is available in both reply and note mode. */}
               <button
@@ -1180,7 +1440,7 @@ function ChatThread({
                 className="size-8"
                 onSelect={(emoji) => {
                   if (noteMode) noteEditorRef.current?.insertText(emoji)
-                  else setReply((prev) => prev + emoji)
+                  else replyComposerRef.current?.insertText(emoji)
                 }}
               />
               {!noteMode && cannedReplies.length > 0 && (
@@ -1222,8 +1482,10 @@ function ChatThread({
                 onClick={onSend}
                 disabled={
                   noteMode
-                    ? !noteText.trim() || noteMutation.isPending
-                    : (!reply.trim() && pendingAttachments.length === 0) ||
+                    ? !noteText.trim() || noteMutation.isPending || uploading
+                    : (!replyText.trim() &&
+                        !replyHasContentNode &&
+                        pendingAttachments.length === 0) ||
                       sendMutation.isPending ||
                       uploading
                 }
@@ -1249,6 +1511,8 @@ function ChatThread({
           conversation={conversation}
           onChanged={refreshThread}
           onSelectConversation={onSelectConversation}
+          onEndConversation={() => setEndDialogOpen(true)}
+          onTrackAsFeedback={() => setTrackConvo(true)}
         />
       )}
     </div>

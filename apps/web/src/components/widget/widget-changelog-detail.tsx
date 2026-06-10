@@ -4,6 +4,7 @@ import { FormattedMessage } from 'react-intl'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { publicChangelogQueries } from '@/lib/client/queries/changelog'
 import { RichTextContent, isRichTextContent } from '@/components/ui/rich-text-editor'
+import { EmbedHydration } from '@/components/shared/embed-hydration'
 import type { ChangelogId } from '@quackback/ids'
 import type { JSONContent } from '@tiptap/react'
 import { WidgetPortalTitle } from './widget-portal-title'
@@ -62,10 +63,12 @@ export function WidgetChangelogDetail({ entryId }: WidgetChangelogDetailProps) {
 
           <div className="mt-3">
             {entry.contentJson && isRichTextContent(entry.contentJson) ? (
-              <RichTextContent
-                content={entry.contentJson as JSONContent}
-                className="prose-sm [&_h1]:text-base [&_h2]:text-[15px] [&_h3]:text-sm [&_h4]:text-sm [&_p]:text-[13px] [&_li]:text-[13px]"
-              />
+              <EmbedHydration>
+                <RichTextContent
+                  content={entry.contentJson as JSONContent}
+                  className="prose-sm [&_h1]:text-base [&_h2]:text-[15px] [&_h3]:text-sm [&_h4]:text-sm [&_p]:text-[13px] [&_li]:text-[13px]"
+                />
+              </EmbedHydration>
             ) : (
               <p className="whitespace-pre-wrap text-[13px] text-muted-foreground">
                 {entry.content}

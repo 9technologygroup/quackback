@@ -60,7 +60,7 @@ export function buildNavSections(flags?: {
       items: [
         { label: 'Branding', to: '/admin/settings/branding', icon: PaintBrushIcon },
         { label: 'Portal', to: '/admin/settings/portal', icon: MegaphoneIcon },
-        { label: 'Widget', to: '/admin/settings/portal-widget', icon: ChatBubbleLeftRightIcon },
+        { label: 'Widget', to: '/admin/settings/widget', icon: ChatBubbleLeftRightIcon },
       ],
     },
     {

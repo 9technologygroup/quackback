@@ -19,6 +19,8 @@ export interface CreatePostInput {
   widgetMetadata?: Record<string, string>
   /** Override creation timestamp (admin-only, for imports) */
   createdAt?: Date
+  /** The team member who initiated this post on the customer's behalf. */
+  trackedByPrincipalId?: PrincipalId | null
 }
 
 /**

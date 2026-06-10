@@ -22,6 +22,7 @@ import TableHeader from '@tiptap/extension-table-header'
 import Youtube from '@tiptap/extension-youtube'
 import { Emoji, emojis as defaultEmojis, type EmojiItem } from '@tiptap/extension-emoji'
 import { MentionExtension } from './mention-extension'
+import { QuackbackEmbed } from './quackback-embed-extension'
 import { Markdown } from '@tiptap/markdown'
 import { Extension } from '@tiptap/core'
 import type { Range } from '@tiptap/core'
@@ -144,6 +145,9 @@ export function buildExtensions(
       },
       allowBase64: false,
     }),
+    // Always register so saved embed nodes round-trip in any editor; paste rules
+    // only fire when quackbackEmbeds is enabled for this editor.
+    QuackbackEmbed.configure({ enablePaste: !!features.quackbackEmbeds }),
     ...(features.codeBlocks
       ? [
           CodeBlockLowlight.configure({
@@ -250,6 +254,17 @@ export function hasActiveSuggestion(editor: Pick<Editor, 'state'>): boolean {
   return false
 }
 
+/**
+ * Run a command against the editor only when it's live — guards both the
+ * not-yet-created (null) and torn-down (isDestroyed) states. TipTap can recreate
+ * or destroy the editor out from under an imperative ref (e.g. React StrictMode's
+ * double-mount, or a call that lands after unmount during an async upload), and
+ * chaining off a destroyed editor hits a null commandManager and throws.
+ */
+export function withLiveEditor(editor: Editor | null, run: (editor: Editor) => void): void {
+  if (editor && !editor.isDestroyed) run(editor)
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -279,6 +294,10 @@ export interface EditorFeatures {
   dividers?: boolean
   /** Enable YouTube/Figma/Loom embeds */
   embeds?: boolean
+  /** Enable pasting Quackback post/changelog URLs as live embed cards.
+   * Independent of `embeds` — the embed node is always in the schema (so saved
+   * embeds render everywhere); this flag only turns on the paste-to-embed rule. */
+  quackbackEmbeds?: boolean
   /** Enable `:` emoji picker (default: true). Uses TipTap's Unicode emoji
    * set; emojis are inserted as nodes and serialize to native Unicode
    * characters in markdown. */
@@ -941,7 +960,9 @@ const EmojiSuggestionList = forwardRef<EmojiSuggestionListRef, EmojiSuggestionLi
 )
 EmojiSuggestionList.displayName = 'EmojiSuggestionList'
 
-function createEmojiExtension() {
+/** The `:`-triggered inline emoji picker, shared with the chat composers so
+ *  reply + note get the same emoji UX as posts. */
+export function createEmojiExtension() {
   return Emoji.configure({
     enableEmoticons: true,
     suggestion: {
@@ -1086,6 +1107,7 @@ function RichTextEditorBase({
       features.taskLists,
       features.tables,
       features.embeds,
+      features.quackbackEmbeds,
       features.slashMenu,
       features.emojiPicker,
       features.enterAsHardBreak,
@@ -1420,6 +1442,7 @@ export const RichTextEditor = memo(RichTextEditorBase, (prev, next) => {
     pf.taskLists === nf.taskLists &&
     pf.tables === nf.tables &&
     pf.embeds === nf.embeds &&
+    pf.quackbackEmbeds === nf.quackbackEmbeds &&
     pf.slashMenu === nf.slashMenu &&
     pf.emojiPicker === nf.emojiPicker &&
     pf.enterAsHardBreak === nf.enterAsHardBreak &&
@@ -2289,6 +2312,15 @@ export function generateContentHTML(content: JSONContent): string {
         return `<img src="${src}" alt="${alt}" class="max-w-full h-auto rounded-lg" ${style} />`
       }
 
+      case 'chatImage': {
+        // Inline chat image. Bounded (max-w-xs) so it sits inside a chat bubble.
+        // Renders nothing if the src is empty after sanitization.
+        const src = escapeHtmlAttr(sanitizeImageUrl(String(node.attrs?.src ?? '')))
+        const alt = escapeHtmlAttr(String(node.attrs?.alt ?? ''))
+        if (!src) return ''
+        return `<img src="${src}" alt="${alt}" class="max-w-xs rounded-md" />`
+      }
+
       case 'youtube': {
         const src = node.attrs?.src ?? ''
         const width = safePositiveInt(node.attrs?.width, 640)
@@ -2327,6 +2359,18 @@ export function generateContentHTML(content: JSONContent): string {
         const name = escapeHtmlAttr(rawName)
         const dataNameAttr = name ? ` data-name="${name}"` : ''
         return `<span data-type="emoji"${dataNameAttr}>${escaped}</span>`
+      }
+
+      case 'quackbackEmbed': {
+        // Atom block. Saved content isn't rendered through a live editor on
+        // display surfaces, so we emit a static placeholder div that survives
+        // DOMPurify; EmbedHydration portals a live card into it client-side.
+        // A missing/foreign kind or id renders nothing — the embed degrades to
+        // empty rather than breaking the page.
+        const kind = String(node.attrs?.kind ?? '')
+        const id = String(node.attrs?.id ?? '')
+        if ((kind !== 'post' && kind !== 'changelog') || !id) return ''
+        return `<div data-quackback-embed="1" data-kind="${escapeHtmlAttr(kind)}" data-id="${escapeHtmlAttr(id)}" class="quackback-embed-placeholder"></div>`
       }
 
       default:
@@ -2392,6 +2436,9 @@ const DOMPURIFY_CONFIG = {
     'data-name',
     'data-principal-id',
     'data-display-name',
+    'data-quackback-embed',
+    'data-kind',
+    'data-id',
   ],
   ALLOW_DATA_ATTR: false,
   ADD_TAGS: ['iframe'],

@@ -1,5 +1,5 @@
 /**
- * convertConversationToPost — turning a live-chat conversation into feedback.
+ * createPostFromConversation — turning a live-chat conversation into feedback.
  * Covers the agent authorization guard, the not-found conversation chokepoint,
  * the create-new-post path (seeded from the transcript + visitor attribution),
  * the upvote-existing path (records a vote, no post created), the title
@@ -13,8 +13,15 @@ import { ForbiddenError, ValidationError } from '@/lib/shared/errors'
 // Module-level handles so we can assert calls + drive return values per test.
 const canActAsAgent = vi.fn()
 const assertConversationViewable = vi.fn()
+const sendAgentMessage = vi.fn()
 const addVoteOnBehalf = vi.fn()
 const createPost = vi.fn()
+// Sentinel embed doc so assertions can match the post id that was embedded.
+const postEmbedDoc = vi.fn((...a: unknown[]) => ({
+  type: 'doc',
+  content: [{ type: 'quackbackEmbed', attrs: { kind: 'post', id: a[0] } }],
+}))
+const createComment = vi.fn()
 const insertedLinks: Record<string, unknown>[] = []
 let onConflictHit = false
 
@@ -25,6 +32,7 @@ vi.mock('@/lib/server/policy/chat', () => ({
 vi.mock('../chat.service', () => ({
   assertConversationViewable: (id: ConversationId, actor: Actor) =>
     assertConversationViewable(id, actor),
+  sendAgentMessage: (...args: unknown[]) => sendAgentMessage(...args),
 }))
 
 vi.mock('@/lib/server/config', () => ({
@@ -37,6 +45,16 @@ vi.mock('@/lib/server/domains/posts/post.voting', () => ({
 }))
 vi.mock('@/lib/server/domains/posts/post.service', () => ({
   createPost: (...args: unknown[]) => createPost(...args),
+}))
+
+// Mocked so the dynamic import inside createPostFromConversation is intercepted
+// without loading the real module (which carries its own heavy deps).
+vi.mock('../chat.cards', () => ({
+  postEmbedDoc: (...args: unknown[]) => postEmbedDoc(...args),
+}))
+
+vi.mock('@/lib/server/domains/comments/comment.service', () => ({
+  createComment: (...args: unknown[]) => createComment(...args),
 }))
 
 vi.mock('@/lib/server/db', () => {
@@ -58,7 +76,7 @@ vi.mock('@/lib/server/db', () => {
   }
 })
 
-import { convertConversationToPost } from '../chat.convert'
+import { createPostFromConversation } from '../chat.convert'
 
 const conversationId = 'conversation_1' as ConversationId
 const boardId = 'board_1' as BoardId
@@ -72,7 +90,14 @@ const agentActor: Actor = {
   segmentIds: new Set(),
 }
 
-const ctx = { agentActor, agentPrincipalId }
+const agent = {
+  principalId: agentPrincipalId,
+  displayName: 'Agent Smith',
+  avatarUrl: null,
+  email: 'agent@example.test',
+}
+
+const ctx = { agentActor, agentPrincipalId, agent }
 
 function freshConversation(extra: Record<string, unknown> = {}) {
   return {
@@ -92,9 +117,11 @@ beforeEach(() => {
   assertConversationViewable.mockResolvedValue(freshConversation())
   createPost.mockResolvedValue({ id: 'post_new' as PostId, boardSlug: 'feature-requests' })
   addVoteOnBehalf.mockResolvedValue(undefined)
+  sendAgentMessage.mockResolvedValue(undefined)
+  createComment.mockResolvedValue(undefined)
 })
 
-describe('convertConversationToPost authorization guard', () => {
+describe('createPostFromConversation authorization guard', () => {
   it('rejects a non-agent actor with ForbiddenError and never touches the conversation', async () => {
     canActAsAgent.mockReturnValue({
       allowed: false,
@@ -102,7 +129,7 @@ describe('convertConversationToPost authorization guard', () => {
     })
 
     await expect(
-      convertConversationToPost({ conversationId, boardId, title: 'x' }, ctx)
+      createPostFromConversation({ conversationId, boardId, title: 'x' }, ctx)
     ).rejects.toBeInstanceOf(ForbiddenError)
 
     expect(assertConversationViewable).not.toHaveBeenCalled()
@@ -113,17 +140,17 @@ describe('convertConversationToPost authorization guard', () => {
   it('surfaces the policy reason on the ForbiddenError', async () => {
     canActAsAgent.mockReturnValue({ allowed: false, reason: 'nope' })
     await expect(
-      convertConversationToPost({ conversationId, boardId, title: 'x' }, ctx)
+      createPostFromConversation({ conversationId, boardId, title: 'x' }, ctx)
     ).rejects.toThrow('nope')
   })
 })
 
-describe('convertConversationToPost conversation resolution', () => {
+describe('createPostFromConversation conversation resolution', () => {
   it('propagates a not-found conversation from the access chokepoint', async () => {
     assertConversationViewable.mockRejectedValue(new Error('Conversation not found'))
 
     await expect(
-      convertConversationToPost({ conversationId, boardId, title: 'x' }, ctx)
+      createPostFromConversation({ conversationId, boardId, title: 'x' }, ctx)
     ).rejects.toThrow('Conversation not found')
 
     expect(createPost).not.toHaveBeenCalled()
@@ -131,23 +158,23 @@ describe('convertConversationToPost conversation resolution', () => {
   })
 })
 
-describe('convertConversationToPost create-new path', () => {
+describe('createPostFromConversation create-new path', () => {
   it('requires a title, throwing ValidationError when absent', async () => {
     await expect(
-      convertConversationToPost({ conversationId, boardId }, ctx)
+      createPostFromConversation({ conversationId, boardId }, ctx)
     ).rejects.toBeInstanceOf(ValidationError)
     expect(createPost).not.toHaveBeenCalled()
   })
 
   it('treats a whitespace-only title as missing', async () => {
     await expect(
-      convertConversationToPost({ conversationId, boardId, title: '   ' }, ctx)
+      createPostFromConversation({ conversationId, boardId, title: '   ' }, ctx)
     ).rejects.toBeInstanceOf(ValidationError)
     expect(createPost).not.toHaveBeenCalled()
   })
 
   it('creates a post attributed to the visitor, seeded with the live_chat source metadata', async () => {
-    const result = await convertConversationToPost(
+    const result = await createPostFromConversation(
       { conversationId, boardId, title: '  Add dark mode  ', content: 'from the transcript' },
       ctx
     )
@@ -172,7 +199,7 @@ describe('convertConversationToPost create-new path', () => {
   })
 
   it('links the new post back to the conversation via post_external_links (idempotent)', async () => {
-    await convertConversationToPost({ conversationId, boardId, title: 'Add dark mode' }, ctx)
+    await createPostFromConversation({ conversationId, boardId, title: 'Add dark mode' }, ctx)
 
     expect(insertedLinks).toHaveLength(1)
     expect(insertedLinks[0]).toMatchObject({
@@ -187,16 +214,24 @@ describe('convertConversationToPost create-new path', () => {
 
   it('records a null externalDisplayId when the conversation has no subject', async () => {
     assertConversationViewable.mockResolvedValue(freshConversation({ subject: undefined }))
-    await convertConversationToPost({ conversationId, boardId, title: 'Add dark mode' }, ctx)
+    await createPostFromConversation({ conversationId, boardId, title: 'Add dark mode' }, ctx)
     expect(insertedLinks[0].externalDisplayId).toBeNull()
+  })
+
+  it('records the acting agent as trackedByPrincipalId on the created post', async () => {
+    await createPostFromConversation({ conversationId, boardId, title: 'Add dark mode' }, ctx)
+
+    expect(createPost).toHaveBeenCalledTimes(1)
+    const [postInput] = createPost.mock.calls[0]
+    expect(postInput).toMatchObject({ trackedByPrincipalId: agentPrincipalId })
   })
 })
 
-describe('convertConversationToPost upvote-existing path', () => {
+describe('createPostFromConversation upvote-existing path', () => {
   const existingPostId = 'post_existing' as PostId
 
   it('records a vote on behalf of the visitor instead of creating a post', async () => {
-    const result = await convertConversationToPost(
+    const result = await createPostFromConversation(
       { conversationId, boardId, asUpvoteOfPostId: existingPostId },
       ctx
     )
@@ -221,7 +256,7 @@ describe('convertConversationToPost upvote-existing path', () => {
   })
 
   it('still links the existing post to the conversation, ignoring any title', async () => {
-    await convertConversationToPost(
+    await createPostFromConversation(
       { conversationId, boardId, asUpvoteOfPostId: existingPostId, title: 'ignored' },
       ctx
     )
@@ -230,6 +265,77 @@ describe('convertConversationToPost upvote-existing path', () => {
       postId: existingPostId,
       integrationType: 'live_chat',
       externalId: conversationId,
+    })
+  })
+
+  it('posts a private comment on the upvoted post when sourceMessageContent is provided', async () => {
+    const sourceMessageContent = 'I really need this feature for my workflow.'
+    await createPostFromConversation(
+      { conversationId, boardId, asUpvoteOfPostId: existingPostId, sourceMessageContent },
+      ctx
+    )
+
+    expect(createComment).toHaveBeenCalledTimes(1)
+    const [commentInput, author, actor] = createComment.mock.calls[0]
+    expect(commentInput).toMatchObject({
+      postId: existingPostId,
+      isPrivate: true,
+    })
+    expect(commentInput.content).toContain(sourceMessageContent)
+    expect(author.role).toMatch(/^(admin|member)$/)
+    expect(actor).toBe(agentActor)
+  })
+
+  it('skips the private comment when sourceMessageContent is absent', async () => {
+    await createPostFromConversation(
+      { conversationId, boardId, asUpvoteOfPostId: existingPostId },
+      ctx
+    )
+    expect(createComment).not.toHaveBeenCalled()
+  })
+
+  it('skips the private comment when sourceMessageContent is whitespace-only', async () => {
+    await createPostFromConversation(
+      { conversationId, boardId, asUpvoteOfPostId: existingPostId, sourceMessageContent: '   ' },
+      ctx
+    )
+    expect(createComment).not.toHaveBeenCalled()
+  })
+})
+
+describe('createPostFromConversation confirmation embed', () => {
+  const existingPostId = 'post_existing' as PostId
+
+  it('sends a post embed message into the conversation after creating a new post', async () => {
+    await createPostFromConversation({ conversationId, boardId, title: 'Add dark mode' }, ctx)
+
+    expect(postEmbedDoc).toHaveBeenCalledWith('post_new')
+    expect(sendAgentMessage).toHaveBeenCalledTimes(1)
+    // sendAgentMessage(conversationId, '', agent, agentActor, undefined, embedDoc)
+    const [cidArg, contentArg, agentArg, actorArg, attachmentsArg, docArg] =
+      sendAgentMessage.mock.calls[0]
+    expect(cidArg).toBe(conversationId)
+    expect(contentArg).toBe('')
+    expect(agentArg).toBe(agent)
+    expect(actorArg).toBe(agentActor)
+    expect(attachmentsArg).toBeUndefined()
+    expect(docArg.content[0]).toMatchObject({ type: 'quackbackEmbed', attrs: { id: 'post_new' } })
+  })
+
+  it('sends a post embed message into the conversation after upvoting an existing post', async () => {
+    await createPostFromConversation(
+      { conversationId, boardId, asUpvoteOfPostId: existingPostId },
+      ctx
+    )
+
+    expect(postEmbedDoc).toHaveBeenCalledWith(existingPostId)
+    expect(sendAgentMessage).toHaveBeenCalledTimes(1)
+    const [cidArg, contentArg, , , , docArg] = sendAgentMessage.mock.calls[0]
+    expect(cidArg).toBe(conversationId)
+    expect(contentArg).toBe('')
+    expect(docArg.content[0]).toMatchObject({
+      type: 'quackbackEmbed',
+      attrs: { id: existingPostId },
     })
   })
 })

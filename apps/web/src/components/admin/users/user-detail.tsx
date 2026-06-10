@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useInfiniteQuery } from '@tanstack/react-query'
 import { Link, useRouteContext } from '@tanstack/react-router'
 import {
   ArrowLeftIcon,
@@ -12,6 +12,7 @@ import {
   UserIcon,
   TrashIcon,
   ChevronUpIcon,
+  ChevronDownIcon,
   PencilSquareIcon,
   Squares2X2Icon,
   PencilIcon,
@@ -26,13 +27,22 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { contentPreview } from '@/lib/shared/utils/string'
+import { cn } from '@/lib/shared/utils'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { ChannelBadge } from '@/components/admin/chat/channel-badge'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { TimeAgo } from '@/components/ui/time-ago'
 import type { PortalUserDetail, EngagedPost } from '@/lib/shared/types'
+import type { ConversationDTO, ConversationStatus } from '@/lib/shared/chat/types'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { UserSegmentBadges } from '@/components/admin/users/user-segments'
 import { useUpdatePortalUser } from '@/lib/client/mutations'
-import { listConversationsForUserFn } from '@/lib/server/functions/chat'
+import { listConversationsForUserFn, getConversationFn } from '@/lib/server/functions/chat'
 import type { PrincipalId } from '@quackback/ids'
 
 interface UserDetailProps {
@@ -176,46 +186,222 @@ function EngagedPostCard({ post }: { post: EngagedPost }) {
   )
 }
 
-/** A user's support conversation history, linking each conversation into the inbox. */
+type StatusFilter = ConversationStatus | 'all'
+
+const STATUS_STYLE: Record<ConversationStatus, string> = {
+  open: 'bg-emerald-500/10 text-emerald-600',
+  pending: 'bg-amber-500/10 text-amber-600',
+  closed: 'bg-muted text-muted-foreground',
+}
+
+/** Read-only preview of a conversation's most recent visitor/agent messages. */
+function ConversationPreview({ conversationId }: { conversationId: ConversationDTO['id'] }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['admin', 'conversation-preview', conversationId],
+    queryFn: () => getConversationFn({ data: { conversationId } }),
+  })
+  if (isLoading) {
+    return <Skeleton className="mt-2 h-16 w-full rounded-md" />
+  }
+  const messages = (data?.messages ?? []).filter((m) => !m.isInternal).slice(-4)
+  return (
+    <div className="mt-2 space-y-2 rounded-md border border-border/50 bg-muted/20 p-2.5">
+      {messages.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No messages yet</p>
+      ) : (
+        messages.map((m) => (
+          <div key={m.id} className="text-xs">
+            <span className="font-medium text-foreground">
+              {m.senderType === 'visitor' ? 'Visitor' : (m.author?.displayName ?? 'Agent')}
+            </span>{' '}
+            <span className="text-muted-foreground/60">
+              <TimeAgo date={m.createdAt} />
+            </span>
+            <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{m.content}</p>
+          </div>
+        ))
+      )}
+    </div>
+  )
+}
+
+/** A user's support conversation history: filterable, paginated, with inline preview. */
 function UserConversations({ principalId }: { principalId: PrincipalId }) {
   const { settings } = useRouteContext({ from: '__root__' })
-  // Gated by the experimental `chat` flag — when off, skip the fetch and render
-  // nothing, so the profile shows no support history for a disabled feature.
+  // Gated by the experimental supportInbox flag — when off, skip the fetch and
+  // render nothing, so the profile shows no support history for a disabled feature.
   const supportInboxEnabled =
     (settings?.featureFlags as FeatureFlags | undefined)?.supportInbox ?? false
-  const { data } = useQuery({
-    queryKey: ['admin', 'user-conversations', principalId],
-    queryFn: () => listConversationsForUserFn({ data: { principalId } }),
+  const [status, setStatus] = useState<StatusFilter>('all')
+  const [expandedId, setExpandedId] = useState<ConversationDTO['id'] | null>(null)
+
+  const query = useInfiniteQuery({
+    queryKey: ['admin', 'user-conversations', principalId, status],
     enabled: supportInboxEnabled,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      listConversationsForUserFn({
+        data: {
+          principalId,
+          status: status === 'all' ? undefined : status,
+          before: pageParam,
+        },
+      }),
+    getNextPageParam: (last) => (last.hasMore ? (last.nextCursor ?? undefined) : undefined),
   })
+
   if (!supportInboxEnabled) return null
-  const conversations = data?.conversations ?? []
-  if (conversations.length === 0) return null
+
+  const conversations: ConversationDTO[] = query.data?.pages.flatMap((p) => p.conversations) ?? []
 
   return (
     <div className="border-t border-border/50 pt-4">
-      <h3 className="text-sm font-medium mb-3">Support conversations</h3>
-      <div className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/50">
-        {conversations.map((c) => (
-          <Link
-            key={c.id}
-            to="/admin/inbox"
-            search={{ c: c.id }}
-            className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40"
-          >
-            <ChatBubbleLeftIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm text-foreground">
-                {c.lastMessagePreview ?? c.subject ?? 'Conversation'}
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                <span className="capitalize">{c.status}</span> · <TimeAgo date={c.lastMessageAt} />
-              </p>
-            </div>
-            {c.unreadCount > 0 && <Badge className="shrink-0">{c.unreadCount}</Badge>}
-          </Link>
-        ))}
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-sm font-medium">Support conversations</h3>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                status !== 'all'
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-muted-foreground hover:bg-muted'
+              )}
+            >
+              <span className="capitalize">{status === 'all' ? 'Status' : status}</span>
+              <ChevronDownIcon className="h-3 w-3" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onClick={() => {
+                setStatus('all')
+                setExpandedId(null)
+              }}
+              className="text-xs"
+            >
+              All statuses
+            </DropdownMenuItem>
+            {(['open', 'pending', 'closed'] as const).map((s) => (
+              <DropdownMenuItem
+                key={s}
+                onClick={() => {
+                  setStatus(s)
+                  setExpandedId(null)
+                }}
+                className="text-xs capitalize"
+              >
+                {s}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
+
+      {query.isPending ? (
+        <Skeleton className="h-16 w-full rounded-lg" />
+      ) : conversations.length === 0 ? (
+        <EmptyMessage
+          message={status === 'all' ? 'No conversations yet' : `No ${status} conversations`}
+        />
+      ) : (
+        <div className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/50">
+          {conversations.map((c) => {
+            const expanded = expandedId === c.id
+            return (
+              <div key={c.id}>
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  onClick={() => setExpandedId(expanded ? null : c.id)}
+                  className="flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm text-foreground">
+                        {c.subject ?? c.lastMessagePreview ?? 'Conversation'}
+                      </span>
+                      <span
+                        className={cn(
+                          'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium capitalize',
+                          STATUS_STYLE[c.status]
+                        )}
+                      >
+                        {c.status}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {c.lastMessagePreview ?? 'No messages yet'}
+                    </p>
+                    <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      {c.assignedAgent ? (
+                        <span className="flex items-center gap-1">
+                          <Avatar
+                            src={c.assignedAgent.avatarUrl}
+                            name={c.assignedAgent.displayName ?? 'Agent'}
+                            className="size-4 text-[8px]"
+                          />
+                          {c.assignedAgent.displayName ?? 'Agent'}
+                        </span>
+                      ) : (
+                        <span>Unassigned</span>
+                      )}
+                      {c.channel !== 'live_chat' ? (
+                        <ChannelBadge channel={c.channel} />
+                      ) : (
+                        <span>· live chat</span>
+                      )}
+                      {c.csatRating != null && <span>· ★ {c.csatRating}/5</span>}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <TimeAgo date={c.lastMessageAt} className="text-[11px] text-muted-foreground" />
+                    {c.unreadCount > 0 && <Badge className="shrink-0">{c.unreadCount}</Badge>}
+                    <ChevronDownIcon
+                      className={cn(
+                        'h-4 w-4 text-muted-foreground/50 transition-transform',
+                        expanded && 'rotate-180'
+                      )}
+                    />
+                  </div>
+                </button>
+                {expanded && (
+                  <div className="px-3 pb-3">
+                    <ConversationPreview conversationId={c.id} />
+                    <div className="mt-2 text-right">
+                      <Link
+                        to="/admin/inbox"
+                        search={{ c: c.id }}
+                        className="text-xs font-medium text-primary hover:underline"
+                      >
+                        Open in inbox →
+                      </Link>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {query.hasNextPage && (
+        <div className="mt-3 text-center">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => query.fetchNextPage()}
+            disabled={query.isFetchingNextPage}
+          >
+            {query.isFetchingNextPage ? (
+              <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              'Load more'
+            )}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

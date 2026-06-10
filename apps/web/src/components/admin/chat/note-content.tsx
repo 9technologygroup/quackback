@@ -1,5 +1,6 @@
 import { RichTextContent } from '@/components/ui/rich-text-editor'
 import { MentionHoverCardOverlay } from '@/components/ui/mention-hover-card-overlay'
+import { EmbedHydration } from '@/components/shared/embed-hydration'
 import { cn } from '@/lib/shared/utils'
 import type { TiptapContent } from '@/lib/shared/db-types'
 
@@ -21,7 +22,9 @@ export function NoteContent({ content, contentJson, className }: NoteContentProp
   if (contentJson) {
     return (
       <MentionHoverCardOverlay>
-        <RichTextContent content={contentJson} className={className} />
+        <EmbedHydration>
+          <RichTextContent content={contentJson} className={className} />
+        </EmbedHydration>
       </MentionHoverCardOverlay>
     )
   }

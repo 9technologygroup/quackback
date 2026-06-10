@@ -73,7 +73,6 @@ export interface WidgetHomeProps {
     statusId: string | null
     board: { id: string; name: string; slug: string }
   }) => void
-  imageUploadsInWidget?: boolean
 }
 
 interface SearchResult {
@@ -183,7 +182,6 @@ export function WidgetHomeAnimated({
   defaultBoard,
   onPostSelect,
   onPostCreated,
-  imageUploadsInWidget = true,
 }: WidgetHomeProps) {
   const intl = useIntl()
   const {
@@ -197,7 +195,6 @@ export function WidgetHomeAnimated({
     identifyWithEmail,
   } = useWidgetAuth()
   const { upload: uploadImage } = useWidgetImageUpload()
-  const canUploadImages = isIdentified && imageUploadsInWidget
   const inputRef = useRef<HTMLInputElement>(null)
 
   const [title, setTitle] = useState('')
@@ -659,12 +656,13 @@ export function WidgetHomeAnimated({
                         blockquotes: true,
                         dividers: true,
                         tables: true,
-                        images: canUploadImages,
+                        images: true,
                         embeds: true,
+                        quackbackEmbeds: true,
                         bubbleMenu: true,
                         slashMenu: true,
                       }}
-                      onImageUpload={canUploadImages ? uploadImage : undefined}
+                      onImageUpload={uploadImage}
                       className="text-sm"
                     />
                   </motion.div>

@@ -6,12 +6,10 @@
  */
 import type { auth } from '@/lib/server/auth'
 import type { db } from '@/lib/server/db'
-import type { WidgetConfig } from '@/lib/server/domains/settings/settings.types'
 
 // Derive types from the actual functions so tests stay in sync
 type SessionResult = NonNullable<Awaited<ReturnType<typeof auth.api.getSession>>>
 type PrincipalRecord = NonNullable<Awaited<ReturnType<typeof db.query.principal.findFirst>>>
-type SessionRecord = NonNullable<Awaited<ReturnType<typeof db.query.session.findFirst>>>
 
 /** Create a mock Better Auth session result */
 export function mockSession(
@@ -60,30 +58,4 @@ export function mockPrincipal(
     lastSsoSignInAt: null,
     ...overrides,
   } as PrincipalRecord
-}
-
-/** Create a mock DB session record (for widget Bearer token auth) */
-export function mockDbSession(
-  overrides: Partial<Pick<SessionRecord, 'token' | 'userId'>> = {}
-): SessionRecord {
-  return {
-    id: 'test-session-id',
-    token: 'valid-token',
-    userId: 'user_test1',
-    expiresAt: new Date(Date.now() + 3600_000),
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ipAddress: null,
-    userAgent: null,
-    ...overrides,
-  } as SessionRecord
-}
-
-/** Create a mock widget config */
-export function mockWidgetConfig(overrides: Partial<WidgetConfig> = {}): WidgetConfig {
-  return {
-    enabled: true,
-    imageUploadsInWidget: true,
-    ...overrides,
-  }
 }

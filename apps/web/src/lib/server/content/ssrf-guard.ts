@@ -280,7 +280,11 @@ export async function safeFetch(url: string, init: SafeFetchInit = {}): Promise<
         // validated against it, not the IP we dialled.
         servername: isHttps ? parsed.hostname : undefined,
         headers: { ...headers, host: parsed.host },
+        // `timeout` is a socket-inactivity timeout; `signal` adds a hard
+        // wall-clock deadline so a peer can't hold the connection open by
+        // dribbling bytes just under the inactivity window (slow-loris).
         timeout: timeoutMs,
+        signal: AbortSignal.timeout(timeoutMs),
         checkServerIdentity: isHttps
           ? (_host: string, cert: Parameters<typeof checkServerIdentity>[1]) =>
               checkServerIdentity(parsed.hostname, cert)

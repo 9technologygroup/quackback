@@ -297,6 +297,21 @@ export type NewCommentReaction = InferInsertModel<typeof commentReactions>
 export const CONVERSATION_STATUSES = ['open', 'pending', 'closed'] as const
 export type ConversationStatus = (typeof CONVERSATION_STATUSES)[number]
 
+// Why a conversation was ended (conversations.end_reason). A plain-text column
+// whose allowed values live here as the single source of truth for validation
+// + the end-conversation UI. Resolution-rate (for later analytics) =
+// count(end_reason IN ('resolved','tracked_as_feedback')) / count(all ended
+// EXCLUDING 'spam').
+export const CONVERSATION_END_REASONS = [
+  'resolved',
+  'tracked_as_feedback',
+  'duplicate',
+  'no_response',
+  'spam',
+  'other',
+] as const
+export type ConversationEndReason = (typeof CONVERSATION_END_REASONS)[number]
+
 // Per-agent manual availability (principal.chat_availability). 'online' = route
 // chats to me when connected; 'away' = connected but opted out of routing.
 export const AGENT_AVAILABILITY_VALUES = ['online', 'away'] as const
@@ -341,6 +356,15 @@ export interface ChatSystemEvent {
   agentName?: string
 }
 
+// An agent-only suggestion (carried on an internal note) to track a resolved
+// conversation as a feedback post. Surfaced exclusively via the agent DTO — it
+// never reaches the visitor.
+export interface PostSuggestion {
+  boardId: string
+  title: string
+  content: string
+}
+
 export interface ChatMessageMetadata {
   /** The channel this message arrived through, when not in-app live chat. */
   source?: 'email'
@@ -349,6 +373,9 @@ export interface ChatMessageMetadata {
   /** For 'system' messages: the structured event, so clients can localize the
    *  notice instead of rendering the stored (English) content. */
   systemEvent?: ChatSystemEvent
+  /** Agent-only suggestion (on an internal note) to track this conversation as a
+   *  feedback post. Surfaced only via the agent DTO, never to the visitor. */
+  postSuggestion?: PostSuggestion
 }
 
 // Support-inbox conversation row types

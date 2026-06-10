@@ -24,7 +24,7 @@ import { isTeamMember } from '@/lib/shared/roles'
 import type { ChatAttachment } from '@/lib/server/db'
 import type { ConversationId, ChatMessageId, PrincipalId, SegmentId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
-import { config } from '@/lib/server/config'
+import { isTrustedAttachmentUrl } from '@/lib/server/storage/trusted-url'
 import {
   canSendVisitorMessage,
   canStartConversation,
@@ -39,6 +39,8 @@ import {
   type ChatSenderType,
   type ConversationStatus,
   type ConversationPriority,
+  type ConversationEndReason,
+  type ConversationDTO,
 } from '@/lib/shared/chat/types'
 import {
   applyVisitorReopenStatus,
@@ -90,30 +92,6 @@ function systemActor(): Actor {
 const PREVIEW_LENGTH = 120
 // Matches the 5 MB cap enforced by the upload endpoints.
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
-
-/**
- * Only accept attachment URLs that came from our own upload pipeline. Parse the
- * URL and match scheme + host + path STRUCTURALLY — a substring check is
- * bypassable (e.g. `javascript:'/api/storage/'` or `https://evil/api/storage/`)
- * and would become stored XSS when rendered into an href/src.
- */
-function isTrustedAttachmentUrl(url: string): boolean {
-  if (typeof url !== 'string' || url.length === 0) return false
-  try {
-    // Resolve against the app base so relative paths are handled AND dot-segments
-    // are canonicalized (`/api/storage/../x` normalizes to `/x` and is rejected).
-    const appBase = new URL(config.baseUrl)
-    const u = new URL(url, appBase)
-    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false
-    if (config.s3PublicUrl) {
-      const base = new URL(config.s3PublicUrl)
-      if (u.hostname === base.hostname && u.pathname.startsWith(base.pathname)) return true
-    }
-    return u.hostname === appBase.hostname && u.pathname.startsWith('/api/storage/')
-  } catch {
-    return false
-  }
-}
 
 function validateAttachments(attachments?: ChatAttachment[]): ChatAttachment[] {
   if (!attachments || attachments.length === 0) return []
@@ -196,14 +174,57 @@ export async function assertConversationViewable(
   return conversation
 }
 
+/**
+ * Agent action: record a contact email for a conversation's (typically
+ * anonymous) visitor so status updates can reach them — e.g. captured inline
+ * when tracking the conversation as a post. Reuses the same reusable
+ * `principal.contact_email` slot as pre-chat capture and never overwrites an
+ * address already on file. A non-plausible email is a no-op (`captured: false`),
+ * so a stray value can't block the caller.
+ */
+export async function captureVisitorContactEmail(
+  conversationId: ConversationId,
+  rawEmail: string,
+  actor: Actor
+): Promise<{ captured: boolean }> {
+  const decision = canActAsAgent(actor)
+  if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
+  const email = normalizeEmail(rawEmail)
+  if (!email) return { captured: false }
+  const conversation = await assertConversationViewable(conversationId, actor)
+  await db.transaction(async (tx) => {
+    // Reusable contact on the visitor principal (survives across conversations).
+    await tx
+      .update(principal)
+      .set({ contactEmail: email })
+      .where(and(eq(principal.id, conversation.visitorPrincipalId), isNull(principal.contactEmail)))
+    // Mirror onto the conversation so the agent inbox surfaces the address too.
+    await tx
+      .update(conversations)
+      .set({ visitorEmail: email })
+      .where(and(eq(conversations.id, conversationId), isNull(conversations.visitorEmail)))
+  })
+  return { captured: true }
+}
+
 /** Visitor send. Starts a conversation when no conversationId is supplied. */
 export async function sendVisitorMessage(
   input: SendVisitorMessageInput,
   author: ChatAuthorInput,
-  actor: Actor
+  actor: Actor,
+  contentJson?: TiptapContent | null
 ): Promise<SendVisitorMessageResult> {
   const attachments = validateAttachments(input.attachments)
-  const content = validateContent(input.content, attachments.length > 0)
+  // Rich-composer doc (inline embeds/images): sanitized on write, like the agent
+  // path — but no mention extraction (a visitor carries no team @-mentions).
+  const safeContentJson = contentJson ? sanitizeTiptapContent(contentJson) : null
+  // A text-less rich message is valid only when it carries an inline image or a
+  // shared post; this label also backs the list preview + notification body. A
+  // doc with neither (an empty doc) yields '' → treated as no content below.
+  const fallbackLabel = richMessageFallbackLabel(safeContentJson)
+  // Empty content is valid when there are attachments OR a doc with a real
+  // content node (image/embed-only message).
+  const content = validateContent(input.content, attachments.length > 0 || !!fallbackLabel)
 
   let created = false
   const txResult = await db.transaction(async (tx) => {
@@ -234,7 +255,7 @@ export async function sendVisitorMessage(
         .values({
           visitorPrincipalId: author.principalId,
           status: 'open',
-          subject: preview(content, attachments),
+          subject: preview(content || fallbackLabel, attachments),
         })
         .returning()
       conversation = createdConv
@@ -248,6 +269,7 @@ export async function sendVisitorMessage(
         principalId: author.principalId,
         senderType: 'visitor',
         content,
+        contentJson: safeContentJson,
         attachments: attachments.length > 0 ? attachments : null,
         metadata: input.metadata ?? null,
       })
@@ -265,7 +287,7 @@ export async function sendVisitorMessage(
       .update(conversations)
       .set({
         lastMessageAt: message.createdAt,
-        lastMessagePreview: preview(content, attachments),
+        lastMessagePreview: preview(content || fallbackLabel, attachments),
         // Visitor is active, so their side is read; a reply surfaces the thread.
         visitorLastReadAt: message.createdAt,
         status: visitorNextStatus,
@@ -313,7 +335,7 @@ export async function sendVisitorMessage(
 
   void notifyVisitorMessage({
     conversation: txResult.conversation,
-    content: preview(content, attachments),
+    content: preview(content || fallbackLabel, attachments),
     authorName: author.displayName ?? 'A visitor',
     isFirstMessage: created,
   })
@@ -329,19 +351,45 @@ export async function sendVisitorMessage(
   return { conversation: conversationDTO, message: messageDTO, created }
 }
 
+/**
+ * A short preview label for a rich message that has no typed text — an inline
+ * image or shared post still needs a non-blank conversation-list snippet +
+ * notification body. Returns '' when the doc carries no such node (so a truly
+ * empty doc is treated as no content, not a sendable blank message).
+ */
+function richMessageFallbackLabel(doc: TiptapContent | null | undefined): string {
+  for (const node of doc?.content ?? []) {
+    if (node.type === 'chatImage') return '📷 Image'
+    if (node.type === 'quackbackEmbed') {
+      return node.attrs?.kind === 'changelog' ? '🔗 Shared an update' : '🔗 Shared a post'
+    }
+  }
+  return ''
+}
+
 /** Agent reply. Auto-assigns the conversation to the replying agent if unowned. */
 export async function sendAgentMessage(
   conversationId: ConversationId,
   rawContent: string,
   agent: ChatAuthorInput,
   actor: Actor,
-  rawAttachments?: ChatAttachment[]
+  rawAttachments?: ChatAttachment[],
+  contentJson?: TiptapContent | null
 ): Promise<SendAgentMessageResult> {
   const decision = canActAsAgent(actor)
   if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
 
   const attachments = validateAttachments(rawAttachments)
-  const content = validateContent(rawContent, attachments.length > 0)
+  // Rich-composer doc (inline embeds/images): sanitized on write like the note
+  // path, but no mention extraction — replies carry no team @-mentions.
+  const safeContentJson = contentJson ? sanitizeTiptapContent(contentJson) : null
+  // A text-less rich message is valid only when it carries an inline image or a
+  // shared post; this label also backs the list preview + notification body. A
+  // doc with neither (an empty doc) yields '' → treated as no content below.
+  const fallbackLabel = richMessageFallbackLabel(safeContentJson)
+  // A rich message can be embed/image-only (no text), so empty content is valid
+  // when there are attachments OR a doc with a real content node.
+  const content = validateContent(rawContent, attachments.length > 0 || !!fallbackLabel)
 
   const txResult = await db.transaction(async (tx) => {
     const [existing] = await tx
@@ -360,6 +408,7 @@ export async function sendAgentMessage(
         principalId: agent.principalId,
         senderType: 'agent',
         content,
+        contentJson: safeContentJson,
         attachments: attachments.length > 0 ? attachments : null,
       })
       .returning()
@@ -369,7 +418,7 @@ export async function sendAgentMessage(
       .update(conversations)
       .set({
         lastMessageAt: message.createdAt,
-        lastMessagePreview: preview(content, attachments),
+        lastMessagePreview: preview(content || fallbackLabel, attachments),
         // Replying counts as reading; claim the conversation if unassigned.
         agentLastReadAt: message.createdAt,
         assignedAgentPrincipalId: existing.assignedAgentPrincipalId ?? agent.principalId,
@@ -403,7 +452,7 @@ export async function sendAgentMessage(
   void notifyAgentReply({
     conversationId: txResult.conversation.id,
     visitorPrincipalId: txResult.conversation.visitorPrincipalId,
-    content: preview(content, attachments),
+    content: preview(content || fallbackLabel, attachments),
     agentName: agent.displayName ?? 'Support',
     capturedEmail: txResult.conversation.visitorEmail,
   })
@@ -533,6 +582,54 @@ export async function setConversationStatus(
     void emitConversationStatusChanged(actor, updated, previous)
   }
   return updated
+}
+
+/** Max length of the optional free-text end-note (mirrors csatComment). */
+const MAX_END_NOTE_LENGTH = 2000
+
+/**
+ * Agent action: end a conversation with a reason + optional note. Closes the
+ * thread (status='closed', stamps resolvedAt) and records WHY, so resolution-
+ * rate reporting has a real outcome to count. Mirrors the close path in
+ * setConversationStatus — posts the 'Chat ended' system notice (only on a real
+ * close, so re-ending an already-closed thread doesn't spam it) and publishes
+ * the conversation update so the widget reflects the close over SSE. Returns the
+ * updated agent-side DTO so the caller can show the outcome without a refetch.
+ */
+export async function endConversation(
+  conversationId: ConversationId,
+  reason: ConversationEndReason,
+  note: string | null | undefined,
+  actor: Actor
+): Promise<ConversationDTO> {
+  const decision = canActAsAgent(actor)
+  if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
+  const existing = await loadConversationOr404(conversationId)
+  const previous = existing.status
+  const now = new Date()
+  const endNote = note?.trim() ? note.trim().slice(0, MAX_END_NOTE_LENGTH) : null
+  const [updated] = await db
+    .update(conversations)
+    .set({
+      status: 'closed',
+      resolvedAt: now,
+      endReason: reason,
+      endNote,
+      updatedAt: now,
+    })
+    .where(eq(conversations.id, conversationId))
+    .returning()
+  // Mark the close in the transcript for both sides — but only on a real
+  // open/pending → closed transition, mirroring setConversationStatus.
+  if (previous !== 'closed') {
+    await emitSystemMessage(conversationId, 'Chat ended', { kind: 'chat_ended' })
+  }
+  const dto = await conversationToDTO(updated, 'agent')
+  publishConversationUpdate(conversationId, dto)
+  if (previous !== 'closed') {
+    void emitConversationStatusChanged(actor, updated, previous)
+  }
+  return dto
 }
 
 /**

@@ -7,7 +7,7 @@ import {
   ChevronDownIcon,
   UserIcon,
   MagnifyingGlassIcon,
-  FlagIcon,
+  BookmarkIcon,
 } from '@heroicons/react/24/solid'
 import type { ChatTagId, SegmentId } from '@quackback/ids'
 import { fetchChatTagsWithCountsFn } from '@/lib/server/functions/chat-tags'
@@ -39,7 +39,7 @@ export const CONVERSATION_VIEWS = [
   { view: 'unassigned', label: 'Unassigned', Icon: InboxArrowDownIcon },
   { view: 'all', label: 'All', Icon: InboxIcon },
   { view: 'mentions', label: 'Mentions', Icon: AtSymbolIcon },
-  { view: 'saved', label: 'Saved for later', Icon: FlagIcon },
+  { view: 'saved', label: 'Saved for later', Icon: BookmarkIcon },
 ] as const
 
 /**

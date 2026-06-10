@@ -12,6 +12,7 @@ import { config } from '@/lib/server/config'
 import type { Actor } from '@/lib/server/policy/types'
 import { canActAsAgent } from '@/lib/server/policy/chat'
 import { assertConversationViewable } from './chat.service'
+import type { ChatAuthorInput } from './chat.types'
 
 export interface ConvertChatToPostInput {
   conversationId: ConversationId
@@ -20,6 +21,9 @@ export interface ConvertChatToPostInput {
   content?: string
   /** When set, upvote this existing post on the visitor's behalf instead of creating one. */
   asUpvoteOfPostId?: PostId
+  /** Verbatim message text from the visitor — attached as a private team-only comment on the
+   *  upvoted post so the original context is never lost. Only used on the upvote path. */
+  sourceMessageContent?: string
 }
 
 export interface ConvertChatToPostResult {
@@ -28,9 +32,9 @@ export interface ConvertChatToPostResult {
   boardSlug: string | null
 }
 
-export async function convertConversationToPost(
+export async function createPostFromConversation(
   input: ConvertChatToPostInput,
-  ctx: { agentActor: Actor; agentPrincipalId: PrincipalId }
+  ctx: { agentActor: Actor; agentPrincipalId: PrincipalId; agent: ChatAuthorInput }
 ): Promise<ConvertChatToPostResult> {
   const decision = canActAsAgent(ctx.agentActor)
   if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
@@ -52,6 +56,23 @@ export async function convertConversationToPost(
       null,
       ctx.agentPrincipalId
     )
+    if (input.sourceMessageContent?.trim()) {
+      const { createComment } = await import('@/lib/server/domains/comments/comment.service')
+      await createComment(
+        {
+          postId: input.asUpvoteOfPostId,
+          content: `Tracked from a support conversation:\n\n${input.sourceMessageContent.trim()}`,
+          isPrivate: true,
+        },
+        {
+          principalId: ctx.agentPrincipalId,
+          role: ctx.agentActor.role as 'admin' | 'member',
+          name: ctx.agent.displayName ?? undefined,
+          email: ctx.agent.email ?? undefined,
+        },
+        ctx.agentActor
+      )
+    }
     postId = input.asUpvoteOfPostId
     created = false
   } else {
@@ -67,6 +88,7 @@ export async function convertConversationToPost(
         title,
         content: input.content,
         widgetMetadata: { source: 'live_chat', conversationId: input.conversationId },
+        trackedByPrincipalId: ctx.agentPrincipalId,
       },
       { principalId: visitorPrincipalId, actor: ctx.agentActor }
     )
@@ -86,6 +108,20 @@ export async function convertConversationToPost(
       externalDisplayId: conversation.subject ?? null,
     })
     .onConflictDoNothing()
+
+  // Confirmation embed to the customer thread so they can follow/upvote the post.
+  // The embed resolver viewer-scopes the card's content at render time, so a post
+  // the visitor can't see degrades to "unavailable" — no gated content leaks.
+  const { sendAgentMessage } = await import('./chat.service')
+  const { postEmbedDoc } = await import('./chat.cards')
+  await sendAgentMessage(
+    input.conversationId,
+    '',
+    ctx.agent,
+    ctx.agentActor,
+    undefined,
+    postEmbedDoc(postId)
+  )
 
   return { postId, created, boardSlug }
 }

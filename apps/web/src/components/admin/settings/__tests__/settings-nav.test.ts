@@ -75,7 +75,7 @@ describe('buildNavSections', () => {
     expect(branding).toBeDefined()
     expect(branding!.to).toBe('/admin/settings/branding')
     expect(widget).toBeDefined()
-    expect(widget!.to).toBe('/admin/settings/portal-widget')
+    expect(widget!.to).toBe('/admin/settings/widget')
   })
 
   it('does not place Widget under Feedback', () => {

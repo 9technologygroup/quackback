@@ -39,6 +39,10 @@ export interface InboxSearch {
   status?: StatusFilter
   priority?: ConversationPriority | 'all'
   q?: string
+  /** Open post for the shared `?post=` modal (the whole admin layout mounts it).
+   *  Set when an embedded post card in a chat message is clicked; must be carried
+   *  here or this route's validateSearch would strip it before the modal sees it. */
+  post?: string
 }
 
 /**

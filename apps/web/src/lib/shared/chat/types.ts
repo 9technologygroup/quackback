@@ -8,8 +8,15 @@ import type { ConversationId, ChatMessageId, ChatTagId, PrincipalId } from '@qua
 // Sourced from the DB enum (CONVERSATION_STATUSES) via the browser-safe bridge,
 // so the client type can never drift from the column's allowed values. Imported
 // locally (used below) and re-exported for the module's consumers.
-import type { ConversationStatus, ChatSystemEvent, TiptapContent } from '@/lib/shared/db-types'
-export type { ConversationStatus, ChatSystemEvent }
+import type {
+  ConversationStatus,
+  ChatSystemEvent,
+  TiptapContent,
+  ConversationEndReason,
+} from '@/lib/shared/db-types'
+import { CONVERSATION_END_REASONS } from '@/lib/shared/db-types'
+export type { ConversationStatus, ChatSystemEvent, ConversationEndReason }
+export { CONVERSATION_END_REASONS }
 export type ConversationPriority = 'none' | 'low' | 'medium' | 'high' | 'urgent'
 // 'system' = a status event (e.g. assignment) shown to both sides, rendered as
 // a centered notice rather than a chat bubble.
@@ -73,10 +80,10 @@ export interface ChatMessageDTO {
   attachments: ChatAttachment[]
   /** Agent-only internal note — only ever present on agent-facing payloads. */
   isInternal: boolean
-  /** Rich TipTap doc for messages that carry structured content (agent notes
-   *  with @-mention chips). Null for plain live-chat/email messages, which
-   *  render from `content`. Only ever populated on internal notes, which never
-   *  reach the visitor. */
+  /** Rich TipTap doc for messages that carry structured content: internal-note
+   *  @-mention chips, and rich agent replies / visitor messages from the rich
+   *  composer (inline embeds + images). Null for plain live-chat/email messages,
+   *  which render from `content`. Sanitized on write. */
   contentJson: TiptapContent | null
   /** True when this message arrived via the email channel (inbound reply). */
   viaEmail: boolean
@@ -97,7 +104,7 @@ export interface MessageReactionCount {
 }
 
 /**
- * A chat message as surfaced to an AGENT, extending the base DTO with two
+ * A chat message as surfaced to an AGENT, extending the base DTO with
  * agent-only fields. These MUST NOT reach the visitor: they are populated only
  * by `enrichMessagesForAgent` (never by the shared `toMessageDTO`), and the one
  * realtime event that carries them (`message_updated`) is published on the
@@ -110,6 +117,9 @@ export interface AgentChatMessageDTO extends ChatMessageDTO {
   reactions: MessageReactionCount[]
   /** ISO timestamp when this message was flagged for the team, or null. */
   flaggedAt: string | null
+  /** Agent-only AI suggestion to track this conversation as a post; null
+   *  otherwise. Never on the base DTO, so it never reaches the visitor. */
+  postSuggestion: { boardId: string; title: string; content: string } | null
 }
 
 /** A flagged ("Saved for later") message for the per-agent saved feed: enough
@@ -151,8 +161,26 @@ export interface ConversationDTO {
   visitorEmail: string | null
   /** When the conversation was resolved/closed (ISO), or null while still active. */
   resolvedAt: string | null
+  /** Why the conversation was ended (from CONVERSATION_END_REASONS), or null when
+   *  it was never ended (or ended before this was captured). Shown on both sides
+   *  so a closed thread can display its outcome. */
+  endReason: ConversationEndReason | null
+  /** Agent-only free-text note left when ending the conversation; null otherwise.
+   *  Stripped on visitor-facing payloads. */
+  endNote: string | null
   /** Conversation labels (agent-managed); empty when untagged. Agent-only. */
   tags: ChatTagDTO[]
+}
+
+/** Human labels for each end reason, for the end-conversation dialog + the
+ *  closed-thread summary. Kept beside the taxonomy so the two never drift. */
+export const CONVERSATION_END_REASON_LABELS: Record<ConversationEndReason, string> = {
+  resolved: 'Resolved',
+  tracked_as_feedback: 'Tracked as feedback',
+  duplicate: 'Duplicate / already handled',
+  no_response: 'No response from customer',
+  spam: 'Spam / not actionable',
+  other: 'Other',
 }
 
 /**

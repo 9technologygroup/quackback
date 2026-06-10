@@ -35,6 +35,25 @@ export function publicChangelogConditions(now: Date) {
 }
 
 /**
+ * Slim public lookup for link embeds: title + published date only, under the
+ * same published-only visibility filter, but WITHOUT the view-count increment
+ * or linked-post joins of {@link getPublicChangelogById}. An embed resolves on
+ * every page render, so it must neither inflate analytics nor over-fetch.
+ * Returns null (no throw) when the entry isn't publicly visible.
+ */
+export async function getPublicChangelogMetaById(
+  id: ChangelogId
+): Promise<{ id: ChangelogId; title: string; publishedAt: Date } | null> {
+  const now = new Date()
+  const entry = await db.query.changelogEntries.findFirst({
+    where: and(eq(changelogEntries.id, id), ...publicChangelogConditions(now)),
+    columns: { id: true, title: true, publishedAt: true },
+  })
+  if (!entry || !entry.publishedAt) return null
+  return { id: entry.id as ChangelogId, title: entry.title, publishedAt: entry.publishedAt }
+}
+
+/**
  * Get a published changelog entry by ID for public view
  *
  * @param id - Changelog entry ID

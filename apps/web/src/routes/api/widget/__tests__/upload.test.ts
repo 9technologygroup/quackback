@@ -1,18 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mockDbSession, mockPrincipal, mockWidgetConfig } from '../../__tests__/upload-fixtures'
+import { mockSession } from '../../__tests__/upload-fixtures'
 
-vi.mock('@/lib/server/db', () => ({
-  db: {
-    query: {
-      session: { findFirst: vi.fn() },
-      principal: { findFirst: vi.fn() },
-    },
-  },
-  session: {},
-  principal: {},
-  eq: vi.fn(),
-  and: vi.fn(),
-  gt: vi.fn(),
+vi.mock('@/lib/server/auth', () => ({
+  auth: { api: { getSession: vi.fn() } },
 }))
 
 vi.mock('@/lib/server/storage/s3', async () => {
@@ -20,19 +10,14 @@ vi.mock('@/lib/server/storage/s3', async () => {
   return createS3MockFactory()
 })
 
-vi.mock('@/lib/server/domains/settings/settings.widget', () => ({
-  getWidgetConfig: vi.fn(),
-}))
-
 // `ensureNotSuspended()` lazy-imports `getTenantSettings`; stub it as `null`
 // so the suspension guard treats the workspace as 'active' (the default).
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   getTenantSettings: vi.fn().mockResolvedValue(null),
 }))
 
-import { db } from '@/lib/server/db'
+import { auth } from '@/lib/server/auth'
 import { isS3Configured, uploadObject } from '@/lib/server/storage/s3'
-import { getWidgetConfig } from '@/lib/server/domains/settings/settings.widget'
 import { handleWidgetUpload } from '../upload'
 
 function makeRequest(file?: File, token?: string): Request {
@@ -45,67 +30,42 @@ function makeRequest(file?: File, token?: string): Request {
   })
 }
 
-const sessionRecord = mockDbSession({ token: 'valid-token', userId: 'user_test1' })
-const identifiedPrincipal = mockPrincipal({ type: 'user' })
-const anonymousPrincipal = mockPrincipal({ type: 'anonymous' })
+const validSession = mockSession()
+
+/** Stub the better-auth session resolution as a valid widget visitor. */
+function authAs() {
+  vi.mocked(auth.api.getSession).mockResolvedValueOnce(validSession)
+}
 
 describe('POST /api/widget/upload', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(isS3Configured).mockReturnValue(true)
-    vi.mocked(getWidgetConfig).mockResolvedValue(mockWidgetConfig({ imageUploadsInWidget: true }))
   })
 
-  it('returns 401 when no Authorization header', async () => {
+  it('returns 401 when there is no valid widget session', async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null)
     const res = await handleWidgetUpload({ request: makeRequest() })
     expect(res.status).toBe(401)
     expect(await res.json()).toMatchObject({ error: 'Unauthorized' })
   })
 
-  it('returns 401 when Bearer token not found in DB', async () => {
-    vi.mocked(db.query.session.findFirst).mockResolvedValueOnce(undefined)
-    const res = await handleWidgetUpload({ request: makeRequest(undefined, 'bad-token') })
-    expect(res.status).toBe(401)
-  })
-
-  it('returns 403 when principal is anonymous', async () => {
-    vi.mocked(db.query.session.findFirst).mockResolvedValueOnce(sessionRecord)
-    vi.mocked(db.query.principal.findFirst).mockResolvedValueOnce(anonymousPrincipal)
-    const res = await handleWidgetUpload({ request: makeRequest(undefined, 'valid-token') })
-    expect(res.status).toBe(403)
-    expect(await res.json()).toMatchObject({ error: expect.stringContaining('Authentication') })
-  })
-
-  it('returns 403 when imageUploadsInWidget is disabled', async () => {
-    vi.mocked(db.query.session.findFirst).mockResolvedValueOnce(sessionRecord)
-    vi.mocked(db.query.principal.findFirst).mockResolvedValueOnce(identifiedPrincipal)
-    vi.mocked(getWidgetConfig).mockResolvedValueOnce(
-      mockWidgetConfig({ imageUploadsInWidget: false })
-    )
-    const res = await handleWidgetUpload({ request: makeRequest(undefined, 'valid-token') })
-    expect(res.status).toBe(403)
-    expect(await res.json()).toMatchObject({ error: expect.stringContaining('disabled') })
-  })
-
   it('returns 503 when S3 is not configured', async () => {
-    vi.mocked(db.query.session.findFirst).mockResolvedValueOnce(sessionRecord)
-    vi.mocked(db.query.principal.findFirst).mockResolvedValueOnce(identifiedPrincipal)
+    authAs()
     vi.mocked(isS3Configured).mockReturnValue(false)
     const res = await handleWidgetUpload({ request: makeRequest(undefined, 'valid-token') })
     expect(res.status).toBe(503)
   })
 
   it('returns 400 when no file provided', async () => {
-    vi.mocked(db.query.session.findFirst).mockResolvedValueOnce(sessionRecord)
-    vi.mocked(db.query.principal.findFirst).mockResolvedValueOnce(identifiedPrincipal)
+    authAs()
     const res = await handleWidgetUpload({ request: makeRequest(undefined, 'valid-token') })
     expect(res.status).toBe(400)
     expect(await res.json()).toMatchObject({ error: 'No file provided' })
   })
 
   it('returns 400 for invalid file type', async () => {
-    vi.mocked(db.query.session.findFirst).mockResolvedValueOnce(sessionRecord)
-    vi.mocked(db.query.principal.findFirst).mockResolvedValueOnce(identifiedPrincipal)
+    authAs()
     const file = new File(['data'], 'doc.pdf', { type: 'application/pdf' })
     const res = await handleWidgetUpload({ request: makeRequest(file, 'valid-token') })
     expect(res.status).toBe(400)
@@ -113,8 +73,7 @@ describe('POST /api/widget/upload', () => {
   })
 
   it('returns 400 when file exceeds max size', async () => {
-    vi.mocked(db.query.session.findFirst).mockResolvedValueOnce(sessionRecord)
-    vi.mocked(db.query.principal.findFirst).mockResolvedValueOnce(identifiedPrincipal)
+    authAs()
     const oversized = new File([new Uint8Array(6 * 1024 * 1024)], 'big.png', {
       type: 'image/png',
     })
@@ -123,9 +82,10 @@ describe('POST /api/widget/upload', () => {
     expect(await res.json()).toMatchObject({ error: expect.stringContaining('too large') })
   })
 
-  it('uploads image and returns publicUrl for identified widget user', async () => {
-    vi.mocked(db.query.session.findFirst).mockResolvedValueOnce(sessionRecord)
-    vi.mocked(db.query.principal.findFirst).mockResolvedValueOnce(identifiedPrincipal)
+  it('uploads image and returns publicUrl for any valid widget session', async () => {
+    // Identified or anonymous — the route only requires a valid session, so a
+    // live-chat visitor without an account can attach images too.
+    authAs()
     vi.mocked(uploadObject).mockResolvedValueOnce('https://cdn.example.com/widget-images/shot.webp')
     const file = new File(['img'], 'shot.webp', { type: 'image/webp' })
     const res = await handleWidgetUpload({ request: makeRequest(file, 'valid-token') })

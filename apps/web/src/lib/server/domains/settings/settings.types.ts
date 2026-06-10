@@ -479,8 +479,6 @@ export interface WidgetConfig {
     /** Show the aggregated Home tab (defaults to on; only appears with 2+ sections) */
     home?: boolean
   }
-  /** Whether authenticated widget users can upload images in feedback submissions */
-  imageUploadsInWidget?: boolean
   /** Chat settings */
   chat?: LiveChatConfig
 }
@@ -491,7 +489,7 @@ export interface WidgetConfig {
  */
 export type PublicWidgetConfig = Pick<
   WidgetConfig,
-  'enabled' | 'defaultBoard' | 'position' | 'tabs' | 'imageUploadsInWidget'
+  'enabled' | 'defaultBoard' | 'position' | 'tabs'
 > & {
   /** Whether verified identity is required (derived from identifyVerification) */
   hmacRequired?: boolean
@@ -547,7 +545,6 @@ export interface UpdateWidgetConfigInput {
     chat?: boolean
     home?: boolean
   }
-  imageUploadsInWidget?: boolean
   chat?: Partial<LiveChatConfig>
 }
 
@@ -724,12 +721,15 @@ export interface FeatureFlags {
   aiFeedbackExtraction: boolean
   /** Support inbox: live-chat widget channel + unified admin inbox */
   supportInbox: boolean
+  /** External link preview cards in chat (OG unfurling) */
+  linkPreviews: boolean
 }
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   helpCenter: false,
   aiFeedbackExtraction: false,
   supportInbox: false,
+  linkPreviews: false,
 }
 
 /**
@@ -752,6 +752,10 @@ export const FEATURE_FLAG_REGISTRY: Record<
     description:
       'Let visitors start a live chat from the widget; messages land in a shared inbox your team works from.',
   },
+  linkPreviews: {
+    label: 'Link Previews',
+    description: 'Show Open Graph preview cards below external links shared in chat.',
+  },
 }
 
 /**
@@ -768,7 +772,7 @@ export const LAB_SECTIONS: Array<{
   {
     title: 'Support',
     description: 'Support your customers with live chat and a self-serve help center.',
-    flags: ['supportInbox', 'helpCenter'],
+    flags: ['supportInbox', 'helpCenter', 'linkPreviews'],
   },
   {
     title: 'Feedback',

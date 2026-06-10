@@ -1,4 +1,5 @@
 import { PaperClipIcon } from '@heroicons/react/24/outline'
+import { ZoomableImage } from '@/components/shared/zoomable-image'
 import type { ChatAttachment } from '@/lib/shared/chat/types'
 
 function humanSize(bytes: number): string {
@@ -29,14 +30,14 @@ export function ChatAttachmentList({ attachments }: { attachments: ChatAttachmen
     <div className="mt-1.5 flex flex-col gap-1.5">
       {safe.map((a, i) =>
         a.contentType.startsWith('image/') ? (
-          <a key={i} href={a.url} target="_blank" rel="noreferrer" className="block">
-            <img
-              src={a.url}
-              alt={a.name}
-              loading="lazy"
-              className="max-h-56 max-w-full rounded-lg border border-border/40 object-cover"
-            />
-          </a>
+          // Thumbnail under the message; click enlarges in a modal.
+          <ZoomableImage
+            key={i}
+            src={a.url}
+            alt={a.name}
+            className="block w-fit overflow-hidden rounded-lg border border-border/40"
+            thumbClassName="max-h-40 max-w-[14rem] object-cover"
+          />
         ) : (
           <a
             key={i}

@@ -1,5 +1,6 @@
 import { FormattedMessage } from 'react-intl'
 import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline'
+import type { ConversationId } from '@quackback/ids'
 import { chatAvailable } from '@/lib/shared/chat/presence'
 import { useChatSummary } from './use-chat-summary'
 import { WidgetResumeCard } from './widget-resume-card'
@@ -7,14 +8,15 @@ import { WidgetConversationHistory } from './widget-conversation-history'
 import { ChatPresenceBadge } from './chat-presence-badge'
 
 interface WidgetMessagesSectionProps {
-  /** Open the full-height chat thread. */
-  onOpenChat: () => void
+  /** Open a conversation: an id opens that thread, 'new' starts a fresh one,
+   *  undefined opens the visitor's active/most-recent thread. */
+  onOpenChat: (target?: ConversationId | 'new') => void
 }
 
 /**
- * The "Messages" half of the combined support surface: a resume card for any
- * in-flight conversation plus a primary CTA into the chat thread. Rendered
- * below the help articles when live chat is part of the support surface.
+ * The "Messages" half of the combined support surface: a resume card for the
+ * most-recent thread, the tappable list of previous threads, and an always-on
+ * "New conversation" entry so a visitor can start a thread even with one open.
  */
 export function WidgetMessagesSection({ onOpenChat }: WidgetMessagesSectionProps) {
   const { conversation, teamName, agentsOnline, withinOfficeHours } = useChatSummary(true)
@@ -32,31 +34,31 @@ export function WidgetMessagesSection({ onOpenChat }: WidgetMessagesSectionProps
             conversation={conversation}
             teamName={teamName}
             agentsOnline={agentsOnline}
-            onClick={onOpenChat}
+            onClick={() => onOpenChat(conversation.id)}
           />
         </div>
       )}
 
-      {/* Only offer the "start a message" entry point when there's no active
-          conversation — an in-flight thread already surfaces its own resume card
-          above, so a second "continue" button would just duplicate it. */}
-      {!conversation && (
-        <button
-          type="button"
-          onClick={onOpenChat}
-          className="w-full flex items-center gap-2.5 rounded-lg border border-border/60 bg-card px-3 py-2.5 text-start hover:bg-muted/40 transition-colors"
-        >
-          <ChatBubbleLeftRightIcon className="w-4 h-4 shrink-0 text-muted-foreground" />
-          <span className="flex-1 min-w-0">
-            <span className="block text-sm font-medium text-foreground">
-              <FormattedMessage id="widget.messages.start" defaultMessage="Send us a message" />
-            </span>
-            <ChatPresenceBadge available={available} className="mt-0.5" />
-          </span>
-        </button>
-      )}
+      <WidgetConversationHistory activeId={conversation?.id} onSelect={(id) => onOpenChat(id)} />
 
-      <WidgetConversationHistory activeId={conversation?.id} />
+      {/* Always available — Intercom-style: start a new thread anytime. */}
+      <button
+        type="button"
+        onClick={() => onOpenChat('new')}
+        className="mt-2 flex w-full items-center gap-2.5 rounded-lg border border-border/60 bg-card px-3 py-2.5 text-start transition-colors hover:bg-muted/40"
+      >
+        <ChatBubbleLeftRightIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium text-foreground">
+            {conversation ? (
+              <FormattedMessage id="widget.messages.new" defaultMessage="New conversation" />
+            ) : (
+              <FormattedMessage id="widget.messages.start" defaultMessage="Send us a message" />
+            )}
+          </span>
+          <ChatPresenceBadge available={available} className="mt-0.5" />
+        </span>
+      </button>
     </div>
   )
 }

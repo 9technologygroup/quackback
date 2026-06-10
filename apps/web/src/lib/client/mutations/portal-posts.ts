@@ -70,11 +70,16 @@ interface UseUserDeletePostOptions {
 // Vote Mutation
 // ============================================================================
 
-export function useVoteMutation() {
+export function useVoteMutation(options?: { getAuthHeaders?: () => Record<string, string> }) {
   const queryClient = useQueryClient()
+  const { getAuthHeaders } = options ?? {}
 
   return useMutation({
-    mutationFn: (postId: PostId): Promise<VoteResponse> => toggleVoteFn({ data: { postId } }),
+    mutationFn: (postId: PostId): Promise<VoteResponse> =>
+      toggleVoteFn({
+        data: { postId },
+        ...(getAuthHeaders ? { headers: getAuthHeaders() } : {}),
+      }),
     onMutate: async (postId): Promise<VoteMutationContext> => {
       // Cancel outgoing queries
       await queryClient.cancelQueries({ queryKey: publicPostsKeys.lists() })

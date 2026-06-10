@@ -1,5 +1,6 @@
 import { RichTextContent, isRichTextContent } from '@/components/ui/rich-text-editor'
 import { MentionHoverCardOverlay } from '@/components/ui/mention-hover-card-overlay'
+import { EmbedHydration } from '@/components/shared/embed-hydration'
 import type { JSONContent } from '@tiptap/react'
 
 interface PostContentProps {
@@ -15,7 +16,9 @@ export function PostContent({ content, contentJson, className }: PostContentProp
   if (contentJson && isRichTextContent(contentJson)) {
     return (
       <MentionHoverCardOverlay>
-        <RichTextContent content={contentJson as JSONContent} className={className} />
+        <EmbedHydration>
+          <RichTextContent content={contentJson as JSONContent} className={className} />
+        </EmbedHydration>
       </MentionHoverCardOverlay>
     )
   }

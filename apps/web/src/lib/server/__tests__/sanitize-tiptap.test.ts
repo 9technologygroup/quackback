@@ -1,4 +1,12 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+// The sanitizer now resolves `chatImage` src against the app base (trusted-upload
+// check), which reads `config` — provide a valid base (the full env isn't loaded
+// in unit tests). Mirrors the chat-send-service test's config mock.
+vi.mock('@/lib/server/config', () => ({
+  config: { s3PublicUrl: undefined, baseUrl: 'http://localhost:3000' },
+}))
+
 import { sanitizeTiptapContent } from '../sanitize-tiptap'
 import type { TiptapContent } from '@/lib/server/db'
 
@@ -552,5 +560,228 @@ describe('sanitizeTiptapContent', () => {
     const paragraph = result.content![0]
     const emojiNode = paragraph.content!.find((n) => n.type === 'emoji')
     expect(emojiNode!.attrs).toEqual({ emoji: '😄' })
+  })
+
+  // ============================================
+  // Quackback link embed sanitization
+  // ============================================
+
+  // Real, round-trip-valid TypeIDs (same fixtures as the parse-embed-url test).
+  const EMBED_POST_ID = 'post_01ktjwt5tyf6br9mw521h13n6n'
+  const EMBED_CHANGELOG_ID = 'changelog_01ktjwt5tyf6br9mwcz1vskk44'
+
+  it('preserves a valid post embed node with kind/id attrs', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'quackbackEmbed', attrs: { kind: 'post', id: EMBED_POST_ID } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'quackbackEmbed')
+    expect(node).toBeDefined()
+    expect(node!.attrs).toEqual({ kind: 'post', id: EMBED_POST_ID })
+  })
+
+  it('preserves a valid changelog embed node with kind/id attrs', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'quackbackEmbed', attrs: { kind: 'changelog', id: EMBED_CHANGELOG_ID } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'quackbackEmbed')
+    expect(node).toBeDefined()
+    expect(node!.attrs).toEqual({ kind: 'changelog', id: EMBED_CHANGELOG_ID })
+  })
+
+  it('drops unknown attrs from a valid embed node', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        {
+          type: 'quackbackEmbed',
+          attrs: { kind: 'post', id: EMBED_POST_ID, onclick: 'alert(1)', class: 'evil' },
+        },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'quackbackEmbed')
+    expect(node!.attrs).toEqual({ kind: 'post', id: EMBED_POST_ID })
+  })
+
+  it('neutralizes an embed with an invalid kind (strips attrs so it cannot render)', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'quackbackEmbed', attrs: { kind: 'board', id: EMBED_POST_ID } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content?.find((n) => n.type === 'quackbackEmbed')
+    // Atom node may survive in the schema, but with no attrs the serializer
+    // renders nothing — a malformed embed can never display.
+    expect(node?.attrs).toBeUndefined()
+  })
+
+  it('neutralizes an embed whose id is not a valid TypeID', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'quackbackEmbed', attrs: { kind: 'post', id: 'not-a-real-id' } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content?.find((n) => n.type === 'quackbackEmbed')
+    expect(node?.attrs).toBeUndefined()
+  })
+
+  it('neutralizes an embed whose id is a TypeID of the wrong kind', () => {
+    // A changelog id labelled kind:'post' must not survive.
+    const input = {
+      type: 'doc',
+      content: [{ type: 'quackbackEmbed', attrs: { kind: 'post', id: EMBED_CHANGELOG_ID } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content?.find((n) => n.type === 'quackbackEmbed')
+    expect(node?.attrs).toBeUndefined()
+  })
+
+  it('preserves a valid article embed node (slug as id)', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        { type: 'quackbackEmbed', attrs: { kind: 'article', id: 'how-to-reset-password' } },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'quackbackEmbed')
+    expect(node).toBeDefined()
+    expect(node!.attrs).toEqual({ kind: 'article', id: 'how-to-reset-password' })
+  })
+
+  it('neutralizes an article embed with an invalid slug (XSS attempt)', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        {
+          type: 'quackbackEmbed',
+          attrs: { kind: 'article', id: '"><script>alert(1)</script>' },
+        },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content?.find((n) => n.type === 'quackbackEmbed')
+    expect(node?.attrs).toBeUndefined()
+  })
+
+  it('neutralizes an article embed with an empty slug', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'quackbackEmbed', attrs: { kind: 'article', id: '' } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content?.find((n) => n.type === 'quackbackEmbed')
+    expect(node?.attrs).toBeUndefined()
+  })
+
+  // ============================================
+  // Inline chat image sanitization
+  // ============================================
+
+  it('preserves a chatImage with a same-origin upload src', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        {
+          type: 'chatImage',
+          attrs: { src: '/api/storage/chat-images/photo.png', alt: 'A screenshot' },
+        },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    expect(node).toBeDefined()
+    expect(node!.attrs!.src).toBe('/api/storage/chat-images/photo.png')
+    expect(node!.attrs!.alt).toBe('A screenshot')
+  })
+
+  it('strips an external (non-upload) chatImage src — no third-party tracking pixel', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        { type: 'chatImage', attrs: { src: 'https://evil.example.com/track.gif', alt: 'x' } },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    expect(node!.attrs!.src).toBe('')
+  })
+
+  it('strips a javascript: src on a chatImage (node neutralized)', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'chatImage', attrs: { src: 'javascript:alert(1)', alt: 'x' } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    expect(node!.attrs!.src).toBe('')
+  })
+
+  it('strips a data:image/svg+xml src on a chatImage', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        {
+          type: 'chatImage',
+          attrs: { src: 'data:image/svg+xml,<svg onload="alert(1)"/>' },
+        },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    expect(node!.attrs!.src).toBe('')
+  })
+
+  it('neutralizes a chatImage with an empty src', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'chatImage', attrs: { src: '', alt: 'orphan' } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    // Empty src → src/alt cleared so the serializer renders nothing.
+    expect(node!.attrs!.src).toBe('')
+    expect(node!.attrs!.alt).toBe('')
+  })
+
+  it('caps a hostile chatImage alt and drops unknown attrs', () => {
+    const input = {
+      type: 'doc',
+      content: [
+        {
+          type: 'chatImage',
+          attrs: {
+            src: '/api/storage/chat-images/photo.jpg',
+            alt: 'a'.repeat(1000),
+            onerror: 'alert(1)',
+            class: 'evil',
+          },
+        },
+      ],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'chatImage')
+    expect(node!.attrs!.src).toBe('/api/storage/chat-images/photo.jpg')
+    expect((node!.attrs!.alt as string).length).toBe(500)
+    expect(node!.attrs!.onerror).toBeUndefined()
+    expect(node!.attrs!.class).toBeUndefined()
+  })
+
+  it('caps total node count (doc-bomb protection)', () => {
+    const input = {
+      type: 'doc',
+      content: Array.from({ length: 6000 }, () => ({
+        type: 'paragraph',
+        content: [{ type: 'text', text: 'x' }],
+      })),
+    }
+    const result = sanitizeTiptapContent(input)
+    // The doc node + paragraphs + their text nodes are all counted; the tree is
+    // truncated well below the 6000 paragraphs once the 5000-node budget is hit.
+    expect(result.content!.length).toBeLessThan(6000)
   })
 })

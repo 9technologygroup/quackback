@@ -27,12 +27,17 @@ import {
 import { officeHoursSnapshot } from '@/lib/shared/chat/office-hours'
 import type { ChatPresence } from '@/lib/shared/chat/presence'
 import { realEmail } from '@/lib/shared/anonymous-email'
-import { CONVERSATION_STATUSES, REACTION_EMOJIS } from '@/lib/shared/db-types'
+import {
+  CONVERSATION_STATUSES,
+  CONVERSATION_END_REASONS,
+  REACTION_EMOJIS,
+} from '@/lib/shared/db-types'
 import {
   getOptionalAuth,
   requireAuth,
   policyActorFromAuth,
   hasAuthCredentials,
+  type AuthContext,
 } from './auth-helpers'
 import { isTeamMember } from '@/lib/shared/roles'
 
@@ -48,6 +53,9 @@ const attachmentSchema = z.object({
 const sendMessageSchema = z.object({
   conversationId: z.string().optional(),
   content: z.string().max(MAX_CHAT_MESSAGE_LENGTH).default(''),
+  // Rich-composer TipTap doc (inline embeds / images). Sanitized server-side;
+  // the plain `content` is the doc's text, kept for previews/notifications/search.
+  contentJson: z.unknown().nullable().optional(),
   attachments: z.array(attachmentSchema).max(MAX_CHAT_ATTACHMENTS).optional(),
   /** Optional pre-chat email capture (anonymous visitors). */
   visitorEmail: z.string().email().max(320).optional(),
@@ -88,6 +96,9 @@ const csatSchema = z.object({
 const agentSendSchema = z.object({
   conversationId: z.string(),
   content: z.string().max(MAX_CHAT_MESSAGE_LENGTH).default(''),
+  // Rich-composer TipTap doc (inline embeds / images). Sanitized server-side;
+  // the plain `content` is the doc's text, kept for previews/notifications/search.
+  contentJson: z.unknown().nullable().optional(),
   attachments: z.array(attachmentSchema).max(MAX_CHAT_ATTACHMENTS).optional(),
 })
 
@@ -104,6 +115,12 @@ const agentNoteSchema = z.object({
 const setStatusSchema = z.object({
   conversationId: z.string(),
   status: z.enum(CONVERSATION_STATUSES),
+})
+
+const endConversationSchema = z.object({
+  conversationId: z.string(),
+  reason: z.enum(CONVERSATION_END_REASONS),
+  note: z.string().max(2000).optional(),
 })
 
 const assignSchema = z.object({
@@ -202,7 +219,8 @@ export const sendChatMessageFn = createServerFn({ method: 'POST' })
           avatarUrl: ctx.user.image,
           email: ctx.user.email,
         },
-        actor
+        actor,
+        (data.contentJson ?? null) as import('@/lib/shared/db-types').TiptapContent | null
       )
     } catch (error) {
       console.error('[fn:chat] sendChatMessageFn failed:', error)
@@ -238,101 +256,132 @@ export const getChatPresenceFn = createServerFn({ method: 'GET' }).handler(
   }
 )
 
+// getMyChat optionally targets a specific conversation:
+//  - omitted        → the visitor's active/most-recent thread (default)
+//  - a conversation → that thread, if the caller owns it (else greeting state)
+//  - null           → "new": config + greeting with no thread
+const myChatSchema = z.object({ conversationId: z.string().nullish() }).optional()
+
 /** The current visitor's active conversation + first page of messages. */
-export const getMyChatFn = createServerFn({ method: 'GET' }).handler(async () => {
-  try {
-    const { getLiveChatConfig, isLiveChatEnabled } =
-      await import('@/lib/server/domains/settings/settings.widget')
-    const { getSettings } = await import('./workspace')
-    const { isEmailConfigured } = await import('@quackback/email')
-    const { canEmailVisitor } = await import('@/lib/shared/chat/reply-capability')
-    const [enabled, liveChatConfig, appSettings] = await Promise.all([
-      isLiveChatEnabled(),
-      getLiveChatConfig(),
-      getSettings(),
-    ])
-    const preChatEmail = liveChatConfig.preChatEmail ?? 'off'
-    const emailConfigured = isEmailConfigured()
-    // Note: team-availability presence is NOT returned here. The widget reads it
-    // from the shared useChatPresence query (getChatPresenceFn) so every surface
-    // agrees and only one poll runs — this fn is just the visitor's thread.
-    const base = {
-      enabled,
-      welcomeMessage: liveChatConfig.welcomeMessage ?? null,
-      offlineMessage: liveChatConfig.offlineMessage ?? null,
-      // Falls back to the workspace name (as the settings help text promises)
-      // when no team name is set.
-      teamName: liveChatConfig.teamName?.trim() || appSettings?.name || null,
-      preChatEmail,
-      // Whether we already have a contact email — the widget skips the pre-chat
-      // prompt when true.
-      visitorHasEmail: false,
-      // Whether an offline reply could actually reach this visitor by email —
-      // the widget shows a non-promising offline message when false.
-      canEmailVisitor: canEmailVisitor({ emailConfigured, preChatEmail, visitorHasEmail: false }),
-      // Whether the surfaced conversation is closed (read-only) — the widget
-      // then offers "start a new conversation" instead of a composer (P1.9).
-      isReadOnly: false,
-    }
+export const getMyChatFn = createServerFn({ method: 'GET' })
+  .inputValidator(myChatSchema)
+  .handler(async ({ data }) => {
+    try {
+      const { getLiveChatConfig, isLiveChatEnabled } =
+        await import('@/lib/server/domains/settings/settings.widget')
+      const { getSettings } = await import('./workspace')
+      const { isEmailConfigured } = await import('@quackback/email')
+      const { canEmailVisitor } = await import('@/lib/shared/chat/reply-capability')
+      const [enabled, liveChatConfig, appSettings] = await Promise.all([
+        isLiveChatEnabled(),
+        getLiveChatConfig(),
+        getSettings(),
+      ])
+      const preChatEmail = liveChatConfig.preChatEmail ?? 'off'
+      const emailConfigured = isEmailConfigured()
+      // Note: team-availability presence is NOT returned here. The widget reads it
+      // from the shared useChatPresence query (getChatPresenceFn) so every surface
+      // agrees and only one poll runs — this fn is just the visitor's thread.
+      const base = {
+        enabled,
+        welcomeMessage: liveChatConfig.welcomeMessage ?? null,
+        offlineMessage: liveChatConfig.offlineMessage ?? null,
+        // Falls back to the workspace name (as the settings help text promises)
+        // when no team name is set.
+        teamName: liveChatConfig.teamName?.trim() || appSettings?.name || null,
+        preChatEmail,
+        // Whether we already have a contact email — the widget skips the pre-chat
+        // prompt when true.
+        visitorHasEmail: false,
+        // Whether an offline reply could actually reach this visitor by email —
+        // the widget shows a non-promising offline message when false.
+        canEmailVisitor: canEmailVisitor({ emailConfigured, preChatEmail, visitorHasEmail: false }),
+        // Whether the surfaced conversation is closed (read-only) — the widget
+        // then offers "start a new conversation" instead of a composer (P1.9).
+        isReadOnly: false,
+      }
 
-    if (!enabled || !hasAuthCredentials()) {
-      return { ...base, conversation: null, messages: [], hasMore: false }
-    }
-
-    const ctx = await getOptionalAuth()
-    if (!ctx?.principal) {
-      return { ...base, conversation: null, messages: [], hasMore: false }
-    }
-
-    // Gate reads behind portal access for non-team callers (degrade gracefully
-    // to the greeting-only state rather than throwing on the bootstrap path).
-    if (!isTeamMember(ctx.principal.role)) {
-      const { resolvePortalAccessForRequest } = await import('./portal-access')
-      const access = await resolvePortalAccessForRequest()
-      if (!access.granted) {
+      if (!enabled || !hasAuthCredentials()) {
         return { ...base, conversation: null, messages: [], hasMore: false }
       }
-    }
 
-    const { getActiveConversationForVisitor, conversationToDTO, listMessages } =
-      await import('@/lib/server/domains/chat/chat.query')
+      const ctx = await getOptionalAuth()
+      if (!ctx?.principal) {
+        return { ...base, conversation: null, messages: [], hasMore: false }
+      }
 
-    const active = await getActiveConversationForVisitor(ctx.principal.id)
-    const conversation = active.conversation
-    // Anonymous visitors carry a synthetic placeholder email — it must not count
-    // as a real address (else the widget promises an email reply it can't send).
-    const visitorHasEmail =
-      Boolean(realEmail(ctx.user?.email)) || Boolean(realEmail(conversation?.visitorEmail))
-    const canEmail = canEmailVisitor({ emailConfigured, preChatEmail, visitorHasEmail })
-    if (!conversation) {
+      // Gate reads behind portal access for non-team callers (degrade gracefully
+      // to the greeting-only state rather than throwing on the bootstrap path).
+      if (!isTeamMember(ctx.principal.role)) {
+        const { resolvePortalAccessForRequest } = await import('./portal-access')
+        const access = await resolvePortalAccessForRequest()
+        if (!access.granted) {
+          return { ...base, conversation: null, messages: [], hasMore: false }
+        }
+      }
+
+      const target = data?.conversationId
+
+      // "New conversation": config + greeting, no thread. The first send creates
+      // it (sendVisitorMessage with no conversationId).
+      if (target === null) {
+        const visitorHasEmail = Boolean(realEmail(ctx.user?.email))
+        return {
+          ...base,
+          visitorHasEmail,
+          canEmailVisitor: canEmailVisitor({ emailConfigured, preChatEmail, visitorHasEmail }),
+          conversation: null,
+          messages: [],
+          hasMore: false,
+        }
+      }
+
+      const {
+        getActiveConversationForVisitor,
+        getConversationForVisitor,
+        conversationToDTO,
+        listMessages,
+      } = await import('@/lib/server/domains/chat/chat.query')
+
+      // A specific thread (history row / ?c= deep link) or the active one (default).
+      const active = target
+        ? await getConversationForVisitor(target as ConversationId, ctx.principal.id)
+        : await getActiveConversationForVisitor(ctx.principal.id)
+      const conversation = active.conversation
+      // Anonymous visitors carry a synthetic placeholder email — it must not count
+      // as a real address (else the widget promises an email reply it can't send).
+      const visitorHasEmail =
+        Boolean(realEmail(ctx.user?.email)) || Boolean(realEmail(conversation?.visitorEmail))
+      const canEmail = canEmailVisitor({ emailConfigured, preChatEmail, visitorHasEmail })
+      if (!conversation) {
+        return {
+          ...base,
+          visitorHasEmail,
+          canEmailVisitor: canEmail,
+          conversation: null,
+          messages: [],
+          hasMore: false,
+        }
+      }
+
+      const [dto, page] = await Promise.all([
+        conversationToDTO(conversation, 'visitor'),
+        listMessages(conversation.id),
+      ])
       return {
         ...base,
         visitorHasEmail,
         canEmailVisitor: canEmail,
-        conversation: null,
-        messages: [],
-        hasMore: false,
+        isReadOnly: active.isReadOnly,
+        conversation: dto,
+        messages: page.messages,
+        hasMore: page.hasMore,
       }
+    } catch (error) {
+      console.error('[fn:chat] getMyChatFn failed:', error)
+      throw error
     }
-
-    const [dto, page] = await Promise.all([
-      conversationToDTO(conversation, 'visitor'),
-      listMessages(conversation.id),
-    ])
-    return {
-      ...base,
-      visitorHasEmail,
-      canEmailVisitor: canEmail,
-      isReadOnly: active.isReadOnly,
-      conversation: dto,
-      messages: page.messages,
-      hasMore: page.hasMore,
-    }
-  } catch (error) {
-    console.error('[fn:chat] getMyChatFn failed:', error)
-    throw error
-  }
-})
+  })
 
 /**
  * The current visitor's own conversations (newest-first) so they can browse and
@@ -377,14 +426,19 @@ export const listChatMessagesFn = createServerFn({ method: 'GET' })
       await assertConversationViewable(data.conversationId as ConversationId, actor)
       const isTeam = isTeamMember(ctx.principal.role)
       // Agents keep seeing internal notes when paging older messages; visitors never do.
-      const page = await listMessages(data.conversationId as ConversationId, {
-        before: data.before,
-        includeInternal: isTeam,
-      })
-      // Team members get the agent-only reaction/flag enrichment on older
-      // messages too; the visitor path returns the clean base DTOs.
+      // The agent-only `postSuggestions` map is pulled out here so it's consumed by
+      // the enrichment and never serialized into the response.
+      const { postSuggestions, ...page } = await listMessages(
+        data.conversationId as ConversationId,
+        { before: data.before, includeInternal: isTeam }
+      )
+      // Team members get the agent-only reaction/flag/suggestion enrichment on
+      // older messages too; the visitor path returns the clean base DTOs.
       if (isTeam) {
-        return { ...page, messages: await enrichMessagesForAgent(page.messages, ctx.principal.id) }
+        return {
+          ...page,
+          messages: await enrichMessagesForAgent(page.messages, ctx.principal.id, postSuggestions),
+        }
       }
       return page
     } catch (error) {
@@ -493,6 +547,16 @@ export const deleteChatMessageFn = createServerFn({ method: 'POST' })
     }
   })
 
+/** Build the agent-author object used by chat convert/share operations. */
+function agentFromCtx(ctx: AuthContext) {
+  return {
+    principalId: ctx.principal.id,
+    displayName: ctx.user.name,
+    avatarUrl: ctx.user.image,
+    email: ctx.user.email,
+  }
+}
+
 // ── Agent functions ──────────────────────────────────────────────────────
 
 /** Saved replies for the agent composer (team-gated; agent-only, not public). */
@@ -533,18 +597,24 @@ export const listConversationsFn = createServerFn({ method: 'GET' })
     }
   })
 
-const userConversationsSchema = z.object({ principalId: z.string() })
+const userConversationsSchema = z.object({
+  principalId: z.string(),
+  status: z.enum(CONVERSATION_STATUSES).optional(),
+  before: z.string().optional(),
+})
 
-/** A single visitor's full chat history — for the admin user profile. */
+/** A single visitor's chat history (status-filterable, paginated) — admin user profile. */
 export const listConversationsForUserFn = createServerFn({ method: 'GET' })
   .inputValidator(userConversationsSchema)
   .handler(async ({ data }) => {
     try {
       await requireAuth({ roles: ['admin', 'member'] })
-      const { listConversationsForVisitor } = await import('@/lib/server/domains/chat/chat.query')
-      return {
-        conversations: await listConversationsForVisitor(data.principalId as PrincipalId),
-      }
+      const { listConversationsForAgent } = await import('@/lib/server/domains/chat/chat.query')
+      return await listConversationsForAgent({
+        visitorPrincipalId: data.principalId as PrincipalId,
+        status: data.status,
+        before: data.before,
+      })
     } catch (error) {
       console.error('[fn:chat] listConversationsForUserFn failed:', error)
       throw error
@@ -571,9 +641,14 @@ export const getConversationFn = createServerFn({ method: 'GET' })
         listMessages(conversation.id, { before: data.before, includeInternal: true }),
       ])
       // Upgrade to AgentChatMessageDTO[] by attaching the agent-only reaction +
-      // flag fields. This enrichment runs ONLY on the agent thread path; no
-      // visitor path calls it, so reactions/flags can't reach the widget.
-      const messages = await enrichMessagesForAgent(page.messages, ctx.principal.id)
+      // flag + post-suggestion fields. This enrichment runs ONLY on the agent
+      // thread path; no visitor path calls it, so those fields can't reach the
+      // widget. The suggestion map rides in-memory off `listMessages` (no re-read).
+      const messages = await enrichMessagesForAgent(
+        page.messages,
+        ctx.principal.id,
+        page.postSuggestions
+      )
       return { conversation: dto, messages, hasMore: page.hasMore }
     } catch (error) {
       console.error('[fn:chat] getConversationFn failed:', error)
@@ -598,7 +673,8 @@ export const sendAgentMessageFn = createServerFn({ method: 'POST' })
           avatarUrl: ctx.user.image,
         },
         actor,
-        data.attachments as ChatAttachment[] | undefined
+        data.attachments as ChatAttachment[] | undefined,
+        (data.contentJson ?? null) as import('@/lib/shared/db-types').TiptapContent | null
       )
     } catch (error) {
       console.error('[fn:chat] sendAgentMessageFn failed:', error)
@@ -638,28 +714,86 @@ const convertSchema = z.object({
   title: z.string().max(200).optional(),
   content: z.string().max(10000).optional(),
   asUpvoteOfPostId: z.string().optional(),
+  sourceMessageContent: z.string().max(10000).optional(),
 })
 
-/** Convert a conversation into a feedback post (create new, or upvote existing). */
-export const convertChatToPostFn = createServerFn({ method: 'POST' })
+/** Create a feedback post from a conversation (create new, or upvote existing). */
+export const createPostFromConversationFn = createServerFn({ method: 'POST' })
   .inputValidator(convertSchema)
   .handler(async ({ data }) => {
     try {
       const ctx = await requireAuth({ roles: ['admin', 'member'] })
       const actor = await policyActorFromAuth(ctx)
-      const { convertConversationToPost } = await import('@/lib/server/domains/chat/chat.convert')
-      return await convertConversationToPost(
+      const { createPostFromConversation } = await import('@/lib/server/domains/chat/chat.convert')
+      const agent = agentFromCtx(ctx)
+      return await createPostFromConversation(
         {
           conversationId: data.conversationId as ConversationId,
           boardId: data.boardId as BoardId,
           title: data.title,
           content: data.content,
           asUpvoteOfPostId: data.asUpvoteOfPostId as PostId | undefined,
+          sourceMessageContent: data.sourceMessageContent,
         },
-        { agentActor: actor, agentPrincipalId: ctx.principal.id }
+        { agentActor: actor, agentPrincipalId: ctx.principal.id, agent }
       )
     } catch (error) {
-      console.error('[fn:chat] convertChatToPostFn failed:', error)
+      console.error('[fn:chat] createPostFromConversationFn failed:', error)
+      throw error
+    }
+  })
+
+// Loose on the email (max-length only, not `.email()`): a malformed value must
+// be ignored server-side rather than rejected, so capturing an email can never
+// block the track action it rides alongside.
+const captureContactEmailSchema = z.object({
+  conversationId: z.string(),
+  email: z.string().max(320),
+})
+
+/** Agent action: store a contact email for a conversation's anonymous visitor. */
+export const captureVisitorContactEmailFn = createServerFn({ method: 'POST' })
+  .inputValidator(captureContactEmailSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ roles: ['admin', 'member'] })
+      const actor = await policyActorFromAuth(ctx)
+      const { captureVisitorContactEmail } = await import('@/lib/server/domains/chat/chat.service')
+      return await captureVisitorContactEmail(
+        data.conversationId as ConversationId,
+        data.email,
+        actor
+      )
+    } catch (error) {
+      console.error('[fn:chat] captureVisitorContactEmailFn failed:', error)
+      throw error
+    }
+  })
+
+const sharePostSchema = z.object({
+  conversationId: z.string(),
+  postId: z.string(),
+})
+
+/** Agent action: embed an existing feedback post into the conversation (visitor can upvote it). */
+export const sharePostFn = createServerFn({ method: 'POST' })
+  .inputValidator(sharePostSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ roles: ['admin', 'member'] })
+      const actor = await policyActorFromAuth(ctx)
+      const { sharePost } = await import('@/lib/server/domains/chat/chat.cards')
+      const agent = agentFromCtx(ctx)
+      const r = await sharePost(
+        {
+          conversationId: data.conversationId as ConversationId,
+          postId: data.postId as PostId,
+        },
+        { agentActor: actor, agentPrincipalId: ctx.principal.id, agent }
+      )
+      return { messageId: r.message.id }
+    } catch (error) {
+      console.error('[fn:chat] sharePostFn failed:', error)
       throw error
     }
   })
@@ -675,6 +809,26 @@ export const setConversationStatusFn = createServerFn({ method: 'POST' })
       return { ok: true }
     } catch (error) {
       console.error('[fn:chat] setConversationStatusFn failed:', error)
+      throw error
+    }
+  })
+
+/** Agent action: end a conversation with a reason (+ optional note). */
+export const endConversationFn = createServerFn({ method: 'POST' })
+  .inputValidator(endConversationSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ roles: ['admin', 'member'] })
+      const actor = await policyActorFromAuth(ctx)
+      const { endConversation } = await import('@/lib/server/domains/chat/chat.service')
+      return await endConversation(
+        data.conversationId as ConversationId,
+        data.reason,
+        data.note,
+        actor
+      )
+    } catch (error) {
+      console.error('[fn:chat] endConversationFn failed:', error)
       throw error
     }
   })

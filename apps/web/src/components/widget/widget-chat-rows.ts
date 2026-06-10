@@ -41,7 +41,8 @@ export function buildChatRows(input: ChatRowsInput): ChatRow[] {
   if (input.hasMoreOlder) rows.push({ type: 'load-older', key: 'load-older' })
   if (input.hasGreeting) rows.push({ type: 'greeting', key: 'greeting' })
   for (const message of input.messages) {
-    // System events (e.g. "assigned to …") render as a centered notice, not a bubble.
+    // System events (e.g. "assigned to …") render as a centered notice, not a
+    // bubble. An embedded post rides on contentJson and routes to a normal row.
     const type = message.senderType === 'system' ? 'system' : 'message'
     rows.push({ type, key: message.id, message })
   }

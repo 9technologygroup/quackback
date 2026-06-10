@@ -3,7 +3,10 @@ import { buildChatRows } from '../widget-chat-rows'
 import type { ChatMessageDTO } from '@/lib/shared/chat/types'
 
 // Only `id` matters for row keys; cast minimal stand-ins.
-const msg = (id: string): ChatMessageDTO => ({ id }) as unknown as ChatMessageDTO
+const msg = (idOrOpts: string | (Partial<ChatMessageDTO> & { id?: string })): ChatMessageDTO => {
+  if (typeof idOrOpts === 'string') return { id: idOrOpts } as unknown as ChatMessageDTO
+  return { id: 'msg-1', ...idOrOpts } as unknown as ChatMessageDTO
+}
 
 const base = {
   messages: [] as ChatMessageDTO[],
@@ -66,5 +69,16 @@ describe('buildChatRows', () => {
   it('uses fixed, stable keys for the non-message rows', () => {
     const rows = buildChatRows({ ...base, hasGreeting: true, showTyping: true })
     expect(rows.map((r) => r.key)).toEqual(['greeting', 'typing'])
+  })
+
+  it('routes an embed message (contentJson) to a normal message row', () => {
+    const m = msg({
+      contentJson: {
+        type: 'doc',
+        content: [{ type: 'quackbackEmbed', attrs: { kind: 'post', id: 'post_1' } }],
+      } as any,
+    })
+    const rows = buildChatRows({ ...base, messages: [m] })
+    expect(rows.filter((r) => r.type === 'message' && r.key === 'msg-1')).toHaveLength(1)
   })
 })

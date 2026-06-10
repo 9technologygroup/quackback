@@ -58,7 +58,13 @@ async function publishMessageUpdated(
     ? ((await loadAuthors([message.principalId])).get(message.principalId) ??
       fallbackAuthor(message.principalId))
     : null
-  const enriched = await enrichMessageForAgent(toMessageDTO(message, author), viewerPrincipalId)
+  // Thread the in-memory suggestion off the raw row so a reaction/flag toggle on a
+  // suggestion note keeps carrying it in the broadcast (no re-read of metadata).
+  const enriched = await enrichMessageForAgent(
+    toMessageDTO(message, author),
+    viewerPrincipalId,
+    message.metadata?.postSuggestion ?? null
+  )
   publishAgentChatEvent({
     kind: 'message_updated',
     conversationId: message.conversationId,

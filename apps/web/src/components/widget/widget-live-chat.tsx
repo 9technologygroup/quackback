@@ -7,12 +7,7 @@ import { ChatPresenceBadge } from './chat-presence-badge'
 import { chatAvailable } from '@/lib/shared/chat/presence'
 import { useChatPresence, markAgentPresentInCache } from './use-chat-presence'
 import { PaperAirplaneIcon, ChevronDownIcon } from '@heroicons/react/24/solid'
-import {
-  ChatBubbleLeftRightIcon,
-  PaperClipIcon,
-  XMarkIcon,
-  BookOpenIcon,
-} from '@heroicons/react/24/outline'
+import { ChatBubbleLeftRightIcon, PaperClipIcon, BookOpenIcon } from '@heroicons/react/24/outline'
 import type { ConversationId } from '@quackback/ids'
 import { Avatar } from '@/components/ui/avatar'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -26,7 +21,19 @@ import { useChatStream } from '@/lib/client/hooks/use-chat-stream'
 import { useChatTyping } from '@/lib/client/hooks/use-chat-typing'
 import { useWidgetImageUpload } from '@/lib/client/hooks/use-image-upload'
 import { useChatComposerAttachments } from '@/lib/client/hooks/use-chat-composer-attachments'
+import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
+import { ComposerAttachmentTray } from '@/components/shared/composer-attachment-tray'
+import {
+  ChatRichComposer,
+  type ChatRichComposerHandle,
+} from '@/components/admin/chat/chat-rich-composer'
+import { RichTextContent } from '@/components/ui/rich-text-editor'
+import { EmbedHydration } from '@/components/shared/embed-hydration'
+import { LinkPreviews } from '@/components/shared/link-preview-card'
+import type { JSONContent } from '@tiptap/core'
+import type { TiptapContent } from '@/lib/shared/db-types'
 import type { ChatAttachment, ChatMessageDTO } from '@/lib/shared/chat/types'
+import { isJumboEmojiMessage, JUMBO_EMOJI_CLASS } from '@/lib/shared/chat/jumbo-emoji'
 import {
   getMyChatFn,
   sendChatMessageFn,
@@ -41,11 +48,14 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
-/** Grow the composer textarea to fit its content, up to a max height (px). */
-const COMPOSER_MAX_HEIGHT = 128
-function autoGrowComposer(el: HTMLTextAreaElement): void {
-  el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`
+/** True when the composer doc carries an inline image or post embed, which makes
+ *  a message worth sending even with no typed text. Walks the doc since these are
+ *  block atoms at the top level (and defensively, any nesting). */
+function docHasContentNode(doc: JSONContent | null): boolean {
+  if (!doc) return false
+  const walk = (nodes: JSONContent[] | undefined): boolean =>
+    !!nodes?.some((n) => n.type === 'chatImage' || n.type === 'quackbackEmbed' || walk(n.content))
+  return walk(doc.content)
 }
 
 interface WidgetLiveChatProps {
@@ -53,9 +63,19 @@ interface WidgetLiveChatProps {
   helpEnabled?: boolean
   /** Open a help article by slug (switches the widget to the article view). */
   onArticleSelect?: (slug: string) => void
+  /** Which thread to open: an id opens that thread, 'new' starts a fresh one,
+   *  undefined resumes the visitor's active/most-recent thread. */
+  conversationTarget?: ConversationId | 'new'
+  /** When true, render link preview cards below message bubbles. */
+  linkPreviews?: boolean
 }
 
-export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatProps = {}) {
+export function WidgetLiveChat({
+  helpEnabled,
+  onArticleSelect,
+  conversationTarget,
+  linkPreviews = false,
+}: WidgetLiveChatProps = {}) {
   const intl = useIntl()
   const queryClient = useQueryClient()
   const { user, ensureSession, sessionVersion } = useWidgetAuth()
@@ -82,15 +102,20 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
   const [hasMoreOlder, setHasMoreOlder] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [conversationStatus, setConversationStatus] = useState<string | null>(null)
-  // The surfaced thread is closed: show it read-only + offer to start fresh (P1.9).
-  const [isReadOnly, setIsReadOnly] = useState(false)
   const [csatRating, setCsatRating] = useState<number | null>(null)
   // Whether the visitor rated in THIS session — enables the optional comment
   // follow-up. A returning, already-rated visitor goes straight to "thanks".
   const [csatJustRated, setCsatJustRated] = useState(false)
   const [csatCommentDone, setCsatCommentDone] = useState(false)
   const [csatComment, setCsatComment] = useState('')
-  const [input, setInput] = useState('')
+  // Composer is a rich TipTap doc (inline images + post embeds). `messageText` is
+  // the doc's plain text (gates send + drives help-search/typing); `messageDocRef`
+  // holds the doc persisted as contentJson; `composerResetSignal` clears the
+  // editor after a successful send.
+  const [messageText, setMessageText] = useState('')
+  const messageDocRef = useRef<JSONContent | null>(null)
+  const [messageHasContentNode, setMessageHasContentNode] = useState(false)
+  const [composerResetSignal, setComposerResetSignal] = useState(0)
   const [sending, setSending] = useState(false)
 
   const scrollViewportRef = useRef<HTMLDivElement>(null)
@@ -100,21 +125,6 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
 
   const appendMessage = useCallback((msg: ChatMessageDTO) => {
     setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]))
-  }, [])
-
-  // Clear the closed thread from view so the next message opens a fresh
-  // conversation (sendVisitorMessage with no conversationId creates one).
-  const startNewConversation = useCallback(() => {
-    setConversationId(null)
-    setMessages([])
-    setConversationStatus(null)
-    setIsReadOnly(false)
-    setCsatRating(null)
-    setCsatJustRated(false)
-    setCsatCommentDone(false)
-    setCsatComment('')
-    setHasMoreOlder(false)
-    setAgentReadAt(null)
   }, [])
 
   const sendTyping = useCallback(() => {
@@ -127,17 +137,48 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
   const { remoteTyping, onLocalInput, onRemoteTyping, clearRemoteTyping } =
     useChatTyping(sendTyping)
 
-  const { upload } = useWidgetImageUpload()
+  // The widget has no toast, so upload failures surface as inline composer text.
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const { upload } = useWidgetImageUpload({
+    onError: (err) => setUploadError(err.message),
+  })
+  // Image attachments use the shared tray (thumbnails + zoom) — same as admin.
   const {
     pending: pendingAttachments,
     addFiles,
     remove: removeAttachment,
     clear: clearAttachments,
-    restore: restoreAttachments,
     uploading,
   } = useChatComposerAttachments(upload)
+  // Attaching/pasting an image fires before the visitor has ever sent a message,
+  // so there may be no session yet — mint one first (anonymous is fine) or the
+  // upload goes out with no Bearer and 401s silently.
+  const handleAddFiles = useCallback(
+    async (files: FileList | File[]) => {
+      // Snapshot to a real array NOW: the file <input>'s live FileList is emptied
+      // by `e.target.value = ''` synchronously after this call, before the
+      // ensureSession() await below resolves — so reading it later loses the pick.
+      const list = Array.from(files)
+      if (list.length === 0) return
+      setUploadError(null)
+      const ready = await ensureSession()
+      if (!ready) {
+        setUploadError(
+          intl.formatMessage({
+            id: 'widget.chat.upload.failed',
+            defaultMessage: "Couldn't upload that image. Please try again.",
+          })
+        )
+        return
+      }
+      await addFiles(list)
+    },
+    [ensureSession, addFiles, intl]
+  )
+  // Live link unfurl while composing (debounced), matching admin.
+  const debouncedMessageText = useDebouncedValue(messageText, 500)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const composerRef = useRef<ChatRichComposerHandle>(null)
 
   // Initial load — resumes an existing conversation for the current principal
   // (works without forcing a session: getMyChat returns just the greeting when
@@ -147,7 +188,13 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
     let cancelled = false
     void (async () => {
       try {
-        const res = await getMyChatFn({ headers: getWidgetAuthHeaders() })
+        const res = await getMyChatFn({
+          // 'new' → null (blank greeting); an id → that thread; undefined → active.
+          data: {
+            conversationId: conversationTarget === 'new' ? null : (conversationTarget ?? undefined),
+          },
+          headers: getWidgetAuthHeaders(),
+        })
         if (cancelled) return
         setWelcomeMessage(res.welcomeMessage)
         setOfflineMessage(res.offlineMessage)
@@ -159,7 +206,6 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
         setConversationId((res.conversation?.id as ConversationId | undefined) ?? null)
         setAgentReadAt(res.conversation?.agentLastReadAt ?? null)
         setConversationStatus(res.conversation?.status ?? null)
-        setIsReadOnly(res.isReadOnly)
         setCsatRating(res.conversation?.csatRating ?? null)
         setMessages(res.messages)
       } catch {
@@ -171,7 +217,7 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
     return () => {
       cancelled = true
     }
-  }, [sessionVersion])
+  }, [sessionVersion, conversationTarget])
 
   // Refetch the authoritative thread after a reconnect to catch anything missed.
   const refreshMessages = useCallback(async () => {
@@ -293,7 +339,7 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
       setHelpResults([])
       return
     }
-    const q = input.trim()
+    const q = messageText.trim()
     if (q.length < 3) {
       setHelpResults([])
       return
@@ -317,7 +363,7 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
       clearTimeout(t)
       controller.abort()
     }
-  }, [input, helpEnabled, conversationId, messages.length])
+  }, [messageText, helpEnabled, conversationId, messages.length])
 
   // The newest visitor message is "Seen" once the agent's read watermark
   // reaches it.
@@ -418,21 +464,22 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
   }, [conversationId, lastMessageId])
 
   const send = useCallback(async () => {
-    const text = input.trim()
-    const attachments = pendingAttachments
-    if ((!text && attachments.length === 0) || sending || uploading || emailBlocksSend) return
+    const text = messageText.trim()
+    const doc = messageDocRef.current
+    const hasAttachments = pendingAttachments.length > 0
+    // Sendable when there's typed text, an inline embed, or a tray attachment.
+    if (
+      (!text && !docHasContentNode(doc) && !hasAttachments) ||
+      sending ||
+      uploading ||
+      emailBlocksSend
+    )
+      return
     setSending(true)
-    setInput('')
-    // Collapse the auto-grown composer back to a single row after sending.
-    if (composerRef.current) composerRef.current.style.height = 'auto'
-    clearAttachments()
 
     const ready = await ensureSession()
     if (!ready) {
-      // Restore the composer (text + already-uploaded files) so a failed send
-      // doesn't silently discard the visitor's attachments.
-      setInput(text)
-      restoreAttachments(attachments)
+      // Leave the composer content intact so a failed send doesn't discard it.
       setSending(false)
       return
     }
@@ -441,26 +488,36 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
         data: {
           conversationId: conversationId ?? undefined,
           content: text,
-          attachments: attachments.length > 0 ? attachments : undefined,
+          // Embeds ride along as the (server-sanitized) TipTap doc; images go as
+          // attachments (the tray) — matching admin.
+          contentJson: doc,
+          attachments: hasAttachments ? pendingAttachments : undefined,
           // Attach the captured email on the first message only.
           visitorEmail: needsEmail && emailValid ? emailInput.trim() : undefined,
         },
         headers: getWidgetAuthHeaders(),
       })
       setConversationId(res.conversation.id as ConversationId)
+      // Adopt the server's status so a reply that reopens a closed thread clears
+      // the "closed / reply to reopen" hint (and its CSAT prompt) immediately.
+      setConversationStatus(res.conversation.status)
       appendMessage(res.message)
       if (needsEmail && emailValid) setEmailKnown(true)
+      // Clear the composer only on success — the resetSignal bump empties the editor.
+      setMessageText('')
+      messageDocRef.current = null
+      setMessageHasContentNode(false)
+      setComposerResetSignal((n) => n + 1)
+      clearAttachments()
+      setUploadError(null)
     } catch {
-      setInput(text)
-      restoreAttachments(attachments)
+      // Leave the composer content intact for a retry.
     } finally {
       setSending(false)
     }
   }, [
-    input,
-    pendingAttachments,
+    messageText,
     sending,
-    uploading,
     emailBlocksSend,
     needsEmail,
     emailValid,
@@ -468,19 +525,10 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
     conversationId,
     ensureSession,
     appendMessage,
+    pendingAttachments,
+    uploading,
     clearAttachments,
-    restoreAttachments,
   ])
-
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault()
-        void send()
-      }
-    },
-    [send]
-  )
 
   const renderRow = (row: ChatRow) => {
     switch (row.type) {
@@ -524,8 +572,11 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
             }
             authorAvatar={isVisitor ? (user?.avatarUrl ?? null) : (m.author?.avatarUrl ?? null)}
             content={m.content}
+            contentJson={m.contentJson}
             attachments={m.attachments}
             time={formatTime(m.createdAt)}
+            linkPreviews={linkPreviews}
+            getAuthHeaders={getWidgetAuthHeaders}
           />
         )
       }
@@ -753,167 +804,156 @@ export function WidgetLiveChat({ helpEnabled, onArticleSelect }: WidgetLiveChatP
         </div>
       )}
 
-      {/* Composer — or a "start new" prompt when the surfaced thread is closed (P1.9). */}
-      {isReadOnly ? (
-        <div className="border-t border-border/40 p-3 shrink-0 text-center">
-          <p className="mb-2 text-[11px] text-muted-foreground/70">
+      {/* Composer is always available. A closed thread reopens on the next send
+          (Intercom-style), so we keep the composer and only hint at the state. */}
+      {conversationStatus === 'closed' && (
+        <div className="flex items-center gap-2 px-3 pt-2" role="status">
+          <span className="h-px flex-1 bg-border/50" />
+          <span className="text-center text-[11px] text-muted-foreground">
             <FormattedMessage
-              id="widget.chat.closed"
-              defaultMessage="This conversation is closed."
+              id="widget.chat.closedReopen"
+              defaultMessage="This conversation was closed. Reply to reopen it."
             />
-          </p>
-          <button
-            type="button"
-            onClick={startNewConversation}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
-          >
-            <FormattedMessage id="widget.chat.startNew" defaultMessage="Start a new conversation" />
-          </button>
-        </div>
-      ) : (
-        <div className="border-t border-border/40 p-2 shrink-0">
-          {/* Pre-chat email capture (anonymous visitors). */}
-          {needsEmail && (
-            <div className="px-1 pb-2">
-              <label
-                htmlFor="widget-chat-email"
-                className="mb-1 block text-[11px] font-medium text-muted-foreground"
-              >
-                {preChatMode === 'required' ? (
-                  <FormattedMessage
-                    id="widget.chat.email.required"
-                    defaultMessage="Your email so we can reply"
-                  />
-                ) : (
-                  <FormattedMessage
-                    id="widget.chat.email.optional"
-                    defaultMessage="Your email (optional)"
-                  />
-                )}
-              </label>
-              <input
-                id="widget-chat-email"
-                type="email"
-                value={emailInput}
-                onChange={(e) => setEmailInput(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/20"
-              />
-              {/* Optional mode: an explicit skip so blank-and-send is a choice,
-                not a silent fallthrough. */}
-              {preChatMode === 'optional' && (
-                <button
-                  type="button"
-                  onClick={() => setEmailKnown(true)}
-                  className="mt-1 text-[11px] text-muted-foreground/70 underline hover:text-foreground"
-                >
-                  <FormattedMessage
-                    id="widget.chat.email.skip"
-                    defaultMessage="Continue without email"
-                  />
-                </button>
-              )}
-            </div>
-          )}
-          {/* Pending attachment previews */}
-          {pendingAttachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-1 pb-1.5">
-              {pendingAttachments.map((a, i) => (
-                <div
-                  key={i}
-                  className="group relative flex items-center gap-1 rounded-md border border-border/50 bg-muted/30 px-1.5 py-1 text-[11px]"
-                >
-                  <PaperClipIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  <span className="max-w-[120px] truncate">{a.name || 'file'}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeAttachment(i)}
-                    className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                    aria-label="Remove attachment"
-                  >
-                    <XMarkIcon className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {/* Composer: full-width textarea on top, actions (attach / emoji /
-              send) on the row below. Enter sends; Shift+Enter inserts a newline
-              and the textarea auto-grows to fit. */}
-          <div className="rounded-lg border border-border bg-background px-2.5 py-2 focus-within:ring-2 focus-within:ring-primary/20">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) void addFiles(e.target.files)
-                e.target.value = ''
-              }}
-            />
-            <textarea
-              ref={composerRef}
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value)
-                onLocalInput()
-                autoGrowComposer(e.target)
-              }}
-              onKeyDown={onKeyDown}
-              rows={1}
-              placeholder={intl.formatMessage({
-                id: 'widget.chat.placeholder',
-                defaultMessage: 'Type your message…',
-              })}
-              className="w-full resize-none bg-transparent px-1 py-1 text-sm text-foreground placeholder:text-muted-foreground/60 outline-none max-h-32"
-            />
-            <div className="flex items-center gap-0.5 pt-1">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                className="shrink-0 flex items-center justify-center size-8 rounded-md text-muted-foreground hover:bg-muted disabled:opacity-40 transition-colors"
-                aria-label={intl.formatMessage({
-                  id: 'widget.chat.attach',
-                  defaultMessage: 'Attach image',
-                })}
-              >
-                <PaperClipIcon className="w-5 h-5" />
-              </button>
-              <EmojiPicker
-                className="size-8"
-                onSelect={(emoji) => setInput((prev) => prev + emoji)}
-              />
-              <div className="flex-1" />
-              <button
-                type="button"
-                onClick={() => void send()}
-                disabled={
-                  (!input.trim() && pendingAttachments.length === 0) ||
-                  sending ||
-                  uploading ||
-                  emailBlocksSend
-                }
-                className="shrink-0 flex items-center justify-center size-8 rounded-md bg-primary text-primary-foreground disabled:opacity-40 transition-opacity"
-                aria-label={intl.formatMessage({ id: 'widget.chat.send', defaultMessage: 'Send' })}
-              >
-                <PaperAirplaneIcon className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+          </span>
+          <span className="h-px flex-1 bg-border/50" />
         </div>
       )}
+      <div className="border-t border-border/40 p-2 shrink-0">
+        {/* Pre-chat email capture (anonymous visitors). */}
+        {needsEmail && (
+          <div className="px-1 pb-2">
+            <label
+              htmlFor="widget-chat-email"
+              className="mb-1 block text-[11px] font-medium text-muted-foreground"
+            >
+              {preChatMode === 'required' ? (
+                <FormattedMessage
+                  id="widget.chat.email.required"
+                  defaultMessage="Your email so we can reply"
+                />
+              ) : (
+                <FormattedMessage
+                  id="widget.chat.email.optional"
+                  defaultMessage="Your email (optional)"
+                />
+              )}
+            </label>
+            <input
+              id="widget-chat-email"
+              type="email"
+              value={emailInput}
+              onChange={(e) => setEmailInput(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+            />
+            {/* Optional mode: an explicit skip so blank-and-send is a choice,
+                not a silent fallthrough. */}
+            {preChatMode === 'optional' && (
+              <button
+                type="button"
+                onClick={() => setEmailKnown(true)}
+                className="mt-1 text-[11px] text-muted-foreground/70 underline hover:text-foreground"
+              >
+                <FormattedMessage
+                  id="widget.chat.email.skip"
+                  defaultMessage="Continue without email"
+                />
+              </button>
+            )}
+          </div>
+        )}
+        {/* Composer: a rich editor on top (inline images via paste/drop +
+              the attach button, and post links become embed cards), actions
+              (attach / emoji / send) on the row below. Enter sends; Shift+Enter
+              inserts a newline and the editor auto-grows to fit. */}
+        <div className="rounded-lg border border-border bg-background px-2.5 py-2 focus-within:ring-2 focus-within:ring-primary/20">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              // Attach via the shared tray (thumbnails + zoom), same as admin.
+              const files = e.target.files
+              if (files && files.length > 0) void handleAddFiles(files)
+              e.target.value = ''
+            }}
+          />
+          <ChatRichComposer
+            ref={composerRef}
+            resetSignal={composerResetSignal}
+            disabled={sending || emailBlocksSend}
+            placeholder={intl.formatMessage({
+              id: 'widget.chat.placeholder',
+              defaultMessage: 'Type your message…',
+            })}
+            onChange={(text, doc) => {
+              setMessageText(text)
+              messageDocRef.current = doc
+              setMessageHasContentNode(docHasContentNode(doc))
+            }}
+            onSubmit={() => void send()}
+            onLocalInput={onLocalInput}
+            onImageFiles={(files) => void handleAddFiles(files)}
+          />
+          <ComposerAttachmentTray attachments={pendingAttachments} onRemove={removeAttachment} />
+          {uploadError && <p className="px-1 pt-1 text-[11px] text-destructive">{uploadError}</p>}
+          {/* Live link unfurl while composing (Slack-style), gated by the flag. */}
+          {linkPreviews && (
+            <LinkPreviews content={debouncedMessageText} getAuthHeaders={getWidgetAuthHeaders} />
+          )}
+          <div className="flex items-center gap-0.5 pt-1">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="shrink-0 flex items-center justify-center size-8 rounded-md text-muted-foreground hover:bg-muted disabled:opacity-40 transition-colors"
+              aria-label={intl.formatMessage({
+                id: 'widget.chat.attach',
+                defaultMessage: 'Attach image',
+              })}
+            >
+              <PaperClipIcon className="w-5 h-5" />
+            </button>
+            <EmojiPicker
+              className="size-8"
+              onSelect={(emoji) => composerRef.current?.insertText(emoji)}
+            />
+            <div className="flex-1" />
+            <button
+              type="button"
+              onClick={() => void send()}
+              disabled={
+                (!messageText.trim() &&
+                  !messageHasContentNode &&
+                  pendingAttachments.length === 0) ||
+                sending ||
+                uploading ||
+                emailBlocksSend
+              }
+              className="shrink-0 flex items-center justify-center size-8 rounded-md bg-primary text-primary-foreground disabled:opacity-40 transition-opacity"
+              aria-label={intl.formatMessage({ id: 'widget.chat.send', defaultMessage: 'Send' })}
+            >
+              <PaperAirplaneIcon className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
 
 interface ChatBubbleProps {
   content: string
+  /** Rich TipTap doc (inline images / post embeds). When present it renders in
+   *  place of the plain-text `content`; messages without it keep the text path. */
+  contentJson?: TiptapContent | null
   authorName?: string
   authorAvatar?: string | null
   attachments?: ChatAttachment[]
   time?: string
+  linkPreviews?: boolean
+  getAuthHeaders?: () => Record<string, string>
 }
 
 /**
@@ -921,7 +961,16 @@ interface ChatBubbleProps {
  * their name (and time) on top, and the message content below. Visitor and
  * agent messages render identically — the avatar + name carry the "who".
  */
-function ChatBubble({ content, authorName, authorAvatar, attachments, time }: ChatBubbleProps) {
+function ChatBubble({
+  content,
+  contentJson,
+  authorName,
+  authorAvatar,
+  attachments,
+  time,
+  linkPreviews = false,
+  getAuthHeaders,
+}: ChatBubbleProps) {
   return (
     <div className="flex gap-2.5">
       <Avatar
@@ -936,12 +985,35 @@ function ChatBubble({ content, authorName, authorAvatar, attachments, time }: Ch
           )}
           {time && <span className="shrink-0 text-[10px] text-muted-foreground/50">{time}</span>}
         </div>
-        {content && (
-          <div className="mt-0.5 whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
-            {content}
-          </div>
+        {isJumboEmojiMessage(content, contentJson) ? (
+          // A lone-emoji message renders large (Slack/iMessage style).
+          <div className={JUMBO_EMOJI_CLASS}>{content}</div>
+        ) : contentJson ? (
+          // Rich message (inline images / post embeds): hydrate embed cards into
+          // the static rendered HTML, matching the changelog/inbox surfaces. The
+          // widget's iframe origin may differ from the portal's, so an embedded
+          // post opens its absolute URL in a new tab.
+          <EmbedHydration openMode="newTab" getAuthHeaders={getWidgetAuthHeaders}>
+            <RichTextContent
+              content={contentJson}
+              className="mt-0.5 text-sm leading-relaxed text-foreground/90"
+            />
+          </EmbedHydration>
+        ) : (
+          content && (
+            <div className="mt-0.5 whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
+              {content}
+            </div>
+          )
         )}
         {attachments && attachments.length > 0 && <ChatAttachmentList attachments={attachments} />}
+        {linkPreviews && (
+          <LinkPreviews
+            content={content}
+            contentJson={contentJson}
+            getAuthHeaders={getAuthHeaders}
+          />
+        )}
       </div>
     </div>
   )

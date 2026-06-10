@@ -54,6 +54,18 @@ vi.mock('@/lib/server/db', () => {
     conversations: { __name: 'conversations' },
     chatMessages: { __name: 'chat_messages' },
     chatMessageMentions: { __name: 'chat_message_mentions' },
+    chatMessageReactions: {
+      __name: 'chat_message_reactions',
+      chatMessageId: 'chat_message_id',
+      emoji: 'emoji',
+      principalId: 'principal_id',
+    },
+    chatMessageFlags: {
+      __name: 'chat_message_flags',
+      chatMessageId: 'chat_message_id',
+      principalId: 'principal_id',
+      flaggedAt: 'flagged_at',
+    },
     userSegments: { __name: 'user_segments' },
     segments: { __name: 'segments' },
     // SQL helpers — no-op stubs; inArray records its second arg for assertions.
@@ -78,6 +90,8 @@ import {
   fallbackAuthor,
   loadAuthors,
   listConversationsForAgent,
+  resolveVisitorConversation,
+  enrichMessagesForAgent,
 } from '../chat.query'
 import { isNull, eq } from '@/lib/server/db'
 
@@ -173,6 +187,36 @@ describe('toMessageDTO', () => {
     const dto = toMessageDTO(makeMessage({}), visitorAuthor)
     expect(dto).not.toHaveProperty('reactions')
     expect(dto).not.toHaveProperty('flaggedAt')
+  })
+})
+
+describe('enrichMessagesForAgent', () => {
+  // The agent-only postSuggestion is threaded in-memory (built by listMessages
+  // from rows it already loaded). enrichMessagesForAgent must read it straight
+  // off the provided map — there is no second metadata SELECT to re-read it.
+  it('surfaces postSuggestion from the in-memory map without a second metadata query', async () => {
+    const noteId = 'chat_note_1' as ChatMessageId
+    const note = toMessageDTO(
+      makeMessage({ id: noteId, isInternal: true, senderType: 'agent' }),
+      null
+    )
+    const suggestion = { boardId: 'board_1', title: 'Dark mode', content: 'wants a night theme' }
+    const [enriched] = await enrichMessagesForAgent(
+      [note],
+      agentId,
+      new Map([[noteId, suggestion]])
+    )
+    expect(enriched.postSuggestion).toEqual(suggestion)
+    // Reactions/flags resolve empty against the chain mock; the suggestion rode
+    // in on the provided map, so no extra query was issued to attach it.
+    expect(enriched.reactions).toEqual([])
+    expect(enriched.flaggedAt).toBeNull()
+  })
+
+  it('leaves postSuggestion null for messages absent from the map', async () => {
+    const plain = toMessageDTO(makeMessage({}), null)
+    const [enriched] = await enrichMessagesForAgent([plain], agentId, new Map())
+    expect(enriched.postSuggestion).toBeNull()
   })
 })
 
@@ -336,5 +380,52 @@ describe('listConversationsForAgent mentions view', () => {
     // note keeps the conversation in Mentions forever.
     await listConversationsForAgent({ mentionedPrincipalId: agentId })
     expect(isNull).toHaveBeenCalled()
+  })
+})
+
+describe('listConversationsForAgent visitor filter', () => {
+  it('restricts to the given visitor', async () => {
+    await listConversationsForAgent({ visitorPrincipalId: visitorId })
+    expect(vi.mocked(eq).mock.calls.some((c) => c[1] === visitorId)).toBe(true)
+  })
+
+  it('does not constrain by visitor by default', async () => {
+    await listConversationsForAgent({})
+    expect(vi.mocked(eq).mock.calls.some((c) => c[1] === visitorId)).toBe(false)
+  })
+})
+
+describe('resolveVisitorConversation', () => {
+  it('returns the thread for its owner, read-only only when closed', () => {
+    const open = makeConversation({ status: 'open' })
+    expect(resolveVisitorConversation(open, visitorId)).toEqual({
+      conversation: open,
+      isReadOnly: false,
+    })
+    const closed = makeConversation({ status: 'closed' })
+    expect(resolveVisitorConversation(closed, visitorId)).toEqual({
+      conversation: closed,
+      isReadOnly: true,
+    })
+    const pending = makeConversation({ status: 'pending' })
+    expect(resolveVisitorConversation(pending, visitorId)).toEqual({
+      conversation: pending,
+      isReadOnly: false,
+    })
+  })
+
+  it('hides a thread the visitor does not own', () => {
+    const other = makeConversation({ visitorPrincipalId: 'principal_other' as PrincipalId })
+    expect(resolveVisitorConversation(other, visitorId)).toEqual({
+      conversation: null,
+      isReadOnly: false,
+    })
+  })
+
+  it('returns no conversation for a missing row', () => {
+    expect(resolveVisitorConversation(null, visitorId)).toEqual({
+      conversation: null,
+      isReadOnly: false,
+    })
   })
 })

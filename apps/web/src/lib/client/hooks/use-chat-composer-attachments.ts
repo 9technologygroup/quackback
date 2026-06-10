@@ -35,7 +35,8 @@ export function useChatComposerAttachments(upload: (file: File) => Promise<strin
         )
         setPending((prev) => [...prev, ...uploaded].slice(0, MAX_CHAT_ATTACHMENTS))
       } catch {
-        // upload's onError handler surfaces the failure; drop the batch.
+        // The upload fn's onError handler (when the caller wires one) surfaces
+        // the failure to the user; either way, drop the failed batch.
       } finally {
         setUploading(false)
       }

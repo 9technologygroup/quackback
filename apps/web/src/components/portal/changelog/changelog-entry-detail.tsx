@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { RichTextContent, isRichTextContent } from '@/components/ui/rich-text-editor'
+import { EmbedHydration } from '@/components/shared/embed-hydration'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { BackLink } from '@/components/ui/back-link'
 import { ChevronUpIcon } from '@heroicons/react/24/outline'
@@ -73,7 +74,9 @@ export function ChangelogEntryDetail({
           {/* Rich content body */}
           <div className="mt-6">
             {contentJson && isRichTextContent(contentJson) ? (
-              <RichTextContent content={contentJson as JSONContent} />
+              <EmbedHydration>
+                <RichTextContent content={contentJson as JSONContent} />
+              </EmbedHydration>
             ) : (
               <p className="whitespace-pre-wrap">{content}</p>
             )}

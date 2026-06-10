@@ -30,6 +30,7 @@ export type WidgetView =
   | 'help-category'
   | 'help-detail'
   | 'chat'
+  | 'messages'
 
 /** Which surfaces the workspace has enabled for this widget (from the loader). */
 export interface EnabledTabs {
@@ -52,10 +53,10 @@ export function supportEnabled(tabs: EnabledTabs): boolean {
 
 /**
  * Root view for the support tab: the help articles when help is on, otherwise
- * the chat thread directly (a chat-only support surface has nothing to list).
+ * the messages list (a chat-only support surface opens the conversation list).
  */
-export function supportRootView(tabs: EnabledTabs): Extract<WidgetView, 'help' | 'chat'> {
-  return tabs.help ? 'help' : 'chat'
+export function supportRootView(tabs: EnabledTabs): Extract<WidgetView, 'help' | 'messages'> {
+  return tabs.help ? 'help' : 'messages'
 }
 
 /** Number of distinct content surfaces enabled (help + chat collapse to one). */

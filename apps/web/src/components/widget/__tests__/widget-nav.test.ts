@@ -32,8 +32,8 @@ describe('supportRootView', () => {
     expect(supportRootView({ help: true })).toBe('help')
     expect(supportRootView({ help: true, chat: true })).toBe('help')
   })
-  it('lands directly on the chat thread when only chat is on', () => {
-    expect(supportRootView({ chat: true })).toBe('chat')
+  it('lands on the messages list when only chat is on', () => {
+    expect(supportRootView({ chat: true })).toBe('messages')
   })
 })
 
@@ -120,7 +120,7 @@ describe('resolveInitialView', () => {
     expect(resolveInitialView({ changelog: true })).toBe('changelog')
     expect(resolveInitialView({ help: true })).toBe('help')
     expect(resolveInitialView({ help: true, chat: true })).toBe('help')
-    expect(resolveInitialView({ chat: true })).toBe('chat')
+    expect(resolveInitialView({ chat: true })).toBe('messages')
   })
   it('lands on the first surface root when the admin disables Home', () => {
     expect(resolveInitialView({ feedback: true, changelog: true, home: false })).toBe('feedback')

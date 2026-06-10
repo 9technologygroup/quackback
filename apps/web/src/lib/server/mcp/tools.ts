@@ -1,7 +1,7 @@
 /**
  * MCP Tools for Quackback
  *
- * 31 tools calling domain services directly (no HTTP self-loop):
+ * 33 tools calling domain services directly (no HTTP self-loop):
  * - search: Unified search across posts, changelogs, and articles
  * - get_details: Get full details for any entity by TypeID
  * - triage_post: Update post status, tags, and owner
@@ -32,6 +32,8 @@
  * - list_conversations: List support-inbox conversations
  * - get_conversation: Get a conversation and its messages
  * - reply_to_conversation: Send an agent reply in a conversation
+ * - suggest_post: Nudge the team (agent-only) to track a resolved conversation as a post
+ * - share_post: Embed an existing post as a card in the chat
  * - set_conversation_status: Change a conversation's status
  */
 
@@ -203,6 +205,11 @@ async function requireHelpCenterWrite(auth: McpAuthContext): Promise<CallToolRes
   return (
     (await requireHelpCenter()) ?? requireScope(auth, 'write:help-center') ?? requireTeamRole(auth)
   )
+}
+
+/** Build the agent-author object used by the chat write tools (reply, suggest, share). */
+function agentFromMcpAuth(auth: McpAuthContext) {
+  return { principalId: auth.principalId, displayName: auth.name, email: auth.email }
 }
 
 /** Format a help center article as a tool result. */
@@ -2151,7 +2158,7 @@ Example: reply_to_conversation({ conversationId: "conversation_01abc...", conten
           principalType: auth.userId ? ('user' as const) : ('service' as const),
           segmentIds: new Set<SegmentId>(),
         }
-        const agent = { principalId: auth.principalId, displayName: auth.name, email: auth.email }
+        const agent = agentFromMcpAuth(auth)
         const result = await sendAgentMessage(
           args.conversationId as ConversationId,
           args.content,
@@ -2164,6 +2171,90 @@ Example: reply_to_conversation({ conversationId: "conversation_01abc...", conten
           status: result.conversation.status,
           createdAt: result.message.createdAt,
         })
+      } catch (err) {
+        return errorResult(err)
+      }
+    }
+  )
+
+  // suggest_post — agent-only; nudges the team to track a RESOLVED conversation
+  // as a post. Never reaches the visitor. The agent confirms with one click.
+  server.tool(
+    'suggest_post',
+    `Suggest to the SUPPORT TEAM (not the visitor) that a RESOLVED conversation be tracked as a feedback post. Appears only in the agent inbox as an internal note; a team member confirms with one click. Rejected unless the conversation is resolved.
+
+Example: suggest_post({ conversationId: "conversation_01...", boardId: "board_01...", title: "Add dark mode", content: "Customer asked for a night theme." })`,
+    {
+      conversationId: z.string().describe('Conversation TypeID (must be resolved)'),
+      boardId: z.string().describe('Suggested board TypeID'),
+      title: z.string().min(3).max(200),
+      content: z.string().max(10000).default(''),
+    },
+    WRITE,
+    async (args: {
+      conversationId: string
+      boardId: string
+      title: string
+      content: string
+    }): Promise<CallToolResult> => {
+      const denied = requireScope(auth, 'write:chat') ?? requireTeamRole(auth)
+      if (denied) return denied
+      try {
+        const { suggestPost } = await import('@/lib/server/domains/chat/chat.cards')
+        // team-role API key: canActAsAgent short-circuits on role; segments unused
+        const actor = {
+          principalId: auth.principalId,
+          role: auth.role,
+          principalType: auth.userId ? ('user' as const) : ('service' as const),
+          segmentIds: new Set<SegmentId>(),
+        }
+        const agent = agentFromMcpAuth(auth)
+        const r = await suggestPost(
+          {
+            conversationId: args.conversationId as ConversationId,
+            boardId: args.boardId as BoardId,
+            title: args.title,
+            content: args.content,
+          },
+          { agentActor: actor, agentPrincipalId: auth.principalId, agent }
+        )
+        return jsonResult({ messageId: r.messageId, conversationId: args.conversationId })
+      } catch (err) {
+        return errorResult(err)
+      }
+    }
+  )
+
+  // share_post
+  server.tool(
+    'share_post',
+    `Embed an EXISTING feedback post as a card in the chat so the visitor can view and upvote it. Find
+candidates first with the search tool. Use to surface related ideas / avoid duplicates.
+
+Example: share_post({ conversationId: "conversation_01...", postId: "post_01..." })`,
+    {
+      conversationId: z.string().describe('Conversation TypeID'),
+      postId: z.string().describe('Post TypeID'),
+    },
+    WRITE,
+    async (args: { conversationId: string; postId: string }): Promise<CallToolResult> => {
+      const denied = requireScope(auth, 'write:chat') ?? requireTeamRole(auth)
+      if (denied) return denied
+      try {
+        const { sharePost } = await import('@/lib/server/domains/chat/chat.cards')
+        // team-role API key: canActAsAgent short-circuits on role; segments unused
+        const actor = {
+          principalId: auth.principalId,
+          role: auth.role,
+          principalType: auth.userId ? ('user' as const) : ('service' as const),
+          segmentIds: new Set<SegmentId>(),
+        }
+        const agent = agentFromMcpAuth(auth)
+        const r = await sharePost(
+          { conversationId: args.conversationId as ConversationId, postId: args.postId as PostId },
+          { agentActor: actor, agentPrincipalId: auth.principalId, agent }
+        )
+        return jsonResult({ messageId: r.message.id })
       } catch (err) {
         return errorResult(err)
       }

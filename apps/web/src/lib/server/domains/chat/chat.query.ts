@@ -30,6 +30,7 @@ import {
   segments,
   type Conversation,
   type ChatMessage,
+  type PostSuggestion,
 } from '@/lib/server/db'
 import type {
   ConversationId,
@@ -52,6 +53,7 @@ import type {
   ChatTagDTO,
   ChatSenderType,
   ConversationStatus,
+  ConversationEndReason,
 } from '@/lib/shared/chat/types'
 
 const MESSAGE_PAGE_SIZE = 30
@@ -205,15 +207,21 @@ async function loadFlagsForMessages(
 }
 
 /**
- * Attach the agent-only reaction + flag fields to a page of base message DTOs.
- * This is the ONLY place those fields are added — the shared `toMessageDTO`
- * stays clean, so no visitor-facing path can leak them (a visitor function
- * returning ChatMessageDTO[] simply never has them). Agent paths call this after
- * listMessages to upgrade to AgentChatMessageDTO[].
+ * Attach the agent-only reaction + flag + post-suggestion fields to a page of
+ * base message DTOs. This is the ONLY place those fields are added — the shared
+ * `toMessageDTO` stays clean, so no visitor-facing path can leak them (a visitor
+ * function returning ChatMessageDTO[] simply never has them). Agent paths call
+ * this after listMessages to upgrade to AgentChatMessageDTO[].
+ *
+ * The post suggestion is supplied in-memory via `postSuggestions` (built by
+ * `listMessages` from the rows it already loaded) — it is NOT re-read here, so
+ * there's no second `SELECT metadata` round-trip. The map is keyed by message id
+ * and only ever carries internal-note suggestions.
  */
 export async function enrichMessagesForAgent(
   messages: ChatMessageDTO[],
-  viewerPrincipalId: PrincipalId
+  viewerPrincipalId: PrincipalId,
+  postSuggestions: Map<ChatMessageId, PostSuggestion>
 ): Promise<AgentChatMessageDTO[]> {
   const ids = messages.map((m) => m.id)
   const [reactions, flags] = await Promise.all([
@@ -224,16 +232,22 @@ export async function enrichMessagesForAgent(
     ...m,
     reactions: reactions.get(m.id) ?? [],
     flaggedAt: flags.get(m.id) ?? null,
+    postSuggestion: postSuggestions.get(m.id) ?? null,
   }))
 }
 
-/** Single-message agent enrichment — used to build the realtime
- *  `message_updated` payload after a reaction or flag toggle. */
+/** Single-message agent enrichment — used to build the realtime `message_updated`
+ *  payload after a reaction or flag toggle, and the suggest-post broadcast. The
+ *  in-memory `postSuggestion` (already known to the caller) is threaded straight
+ *  through, never re-read from the DB. */
 export async function enrichMessageForAgent(
   message: ChatMessageDTO,
-  viewerPrincipalId: PrincipalId
+  viewerPrincipalId: PrincipalId,
+  postSuggestion: PostSuggestion | null = null
 ): Promise<AgentChatMessageDTO> {
-  const [one] = await enrichMessagesForAgent([message], viewerPrincipalId)
+  const suggestions = new Map<ChatMessageId, PostSuggestion>()
+  if (postSuggestion) suggestions.set(message.id, postSuggestion)
+  const [one] = await enrichMessagesForAgent([message], viewerPrincipalId, suggestions)
   return one
 }
 
@@ -285,7 +299,9 @@ export function toConversationDTO(
   // Agent-only field; callers pass null on visitor-facing paths.
   visitorEmail: string | null = null,
   // Conversation labels (agent-only); empty when untagged.
-  tags: ChatTagDTO[] = []
+  tags: ChatTagDTO[] = [],
+  // The end-conversation note (agent-only); callers pass null on visitor paths.
+  endNote: string | null = null
 ): ConversationDTO {
   return {
     id: conversation.id,
@@ -304,6 +320,11 @@ export function toConversationDTO(
     csatRating: conversation.csatRating ?? null,
     visitorEmail,
     resolvedAt: conversation.resolvedAt?.toISOString() ?? null,
+    // The reason is shown on both sides (so a closed thread displays its
+    // outcome); the free-text note is agent-only. The column is plain text but
+    // the app constrains writes to the taxonomy, so the cast is safe.
+    endReason: (conversation.endReason as ConversationEndReason | null) ?? null,
+    endNote,
     tags,
   }
 }
@@ -387,15 +408,16 @@ export async function conversationToDTO(
       : null,
     unread,
     side === 'agent' ? (conversation.visitorEmail ?? null) : null,
-    tagMap.get(conversation.id) ?? []
+    tagMap.get(conversation.id) ?? [],
+    side === 'agent' ? (conversation.endNote ?? null) : null
   )
 }
 
 /** The visitor's most-recent conversation, if any (so the widget can resume). */
 export interface ActiveConversationResult {
   conversation: Conversation | null
-  /** True when the surfaced thread is closed — the widget shows it read-only
-   *  and offers to start a new conversation instead of a composer. */
+  /** True when the surfaced thread is closed. The widget keeps the composer and
+   *  hints that replying reopens the conversation (Intercom-style). */
   isReadOnly: boolean
 }
 
@@ -491,6 +513,35 @@ export async function getActiveConversationForVisitor(
 }
 
 /**
+ * View result for a specific conversation a visitor asked for (history row /
+ * ?c= deep link). Returns no conversation when the row is missing or not owned
+ * by this visitor — existence is hidden, matching canViewConversation. A closed
+ * thread is surfaced read-only, exactly like the active-conversation path.
+ */
+export function resolveVisitorConversation(
+  row: Conversation | null,
+  visitorPrincipalId: PrincipalId
+): ActiveConversationResult {
+  if (!row || row.visitorPrincipalId !== visitorPrincipalId) {
+    return { conversation: null, isReadOnly: false }
+  }
+  return { conversation: row, isReadOnly: !RESUMABLE_STATUSES.has(row.status) }
+}
+
+/** Load one conversation by id, scoped to its owning visitor (see resolveVisitorConversation). */
+export async function getConversationForVisitor(
+  conversationId: ConversationId,
+  visitorPrincipalId: PrincipalId
+): Promise<ActiveConversationResult> {
+  const [row] = await db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.id, conversationId))
+    .limit(1)
+  return resolveVisitorConversation(row ?? null, visitorPrincipalId)
+}
+
+/**
  * All of a visitor's conversations, newest-first. `side` controls the DTO
  * audience: 'agent' for the admin user profile (default), 'visitor' for the
  * visitor browsing their own history in the widget (drops agent-only fields).
@@ -515,6 +566,12 @@ export interface MessagePage {
   hasMore: boolean
   /** Cursor for the next (older) page — the oldest message id returned. */
   nextCursor: string | null
+  /** Agent-only post suggestions carried on internal notes, keyed by message id,
+   *  built in-memory from the rows this page already loaded (no extra query). It
+   *  is consumed by `enrichMessagesForAgent` and MUST NOT be serialized to a
+   *  client response — the suggestion is agent-only. Empty whenever internal
+   *  notes aren't loaded (every visitor path). */
+  postSuggestions: Map<ChatMessageId, PostSuggestion>
 }
 
 /**
@@ -572,6 +629,15 @@ export async function listMessages(
   const page = hasMore ? rows.slice(0, limit) : rows
   const authors = await loadAuthors(page.map((m) => m.principalId))
   const ordered = [...page].reverse() // oldest-first for rendering
+  // Stash the agent-only suggestion off each internal note's metadata while we
+  // still have the raw rows, so the agent enrichment can attach it without a
+  // second `SELECT metadata` round-trip. `toMessageDTO` deliberately drops the
+  // metadata, so this map is the only carrier — and it never leaves the server.
+  const postSuggestions = new Map<ChatMessageId, PostSuggestion>()
+  for (const m of page) {
+    const suggestion = m.metadata?.postSuggestion
+    if (m.isInternal && suggestion) postSuggestions.set(m.id, suggestion)
+  }
   return {
     messages: ordered.map((m) =>
       // System events have a null principal and therefore no author.
@@ -582,6 +648,7 @@ export async function listMessages(
     ),
     hasMore,
     nextCursor: page.length > 0 ? page[page.length - 1].id : null,
+    postSuggestions,
   }
 }
 
@@ -599,6 +666,8 @@ export interface ConversationListFilter {
    *  (OR semantics). Exclusive-scope today sends a single id, but the array keeps
    *  it symmetric with tagIds. */
   segmentIds?: SegmentId[]
+  /** Restrict to a single visitor's conversations (the admin user profile). */
+  visitorPrincipalId?: PrincipalId
   /** "Mentions" view: only conversations whose internal notes @-mention this
    *  principal. Always the requesting agent — resolved server-side from auth,
    *  never client-supplied (it would leak who-mentioned-whom). */
@@ -659,6 +728,9 @@ export async function listConversationsForAgent(
     .where(
       and(
         filter.status ? eq(conversations.status, filter.status) : undefined,
+        filter.visitorPrincipalId
+          ? eq(conversations.visitorPrincipalId, filter.visitorPrincipalId)
+          : undefined,
         filter.priority ? eq(conversations.priority, filter.priority) : undefined,
         filter.assignedAgentPrincipalId
           ? eq(conversations.assignedAgentPrincipalId, filter.assignedAgentPrincipalId)
@@ -790,7 +862,8 @@ export async function listConversationsForAgent(
           : null,
         unreadMap.get(c.id) ?? 0,
         c.visitorEmail ?? null,
-        tagMap.get(c.id) ?? []
+        tagMap.get(c.id) ?? [],
+        c.endNote ?? null
       )
     ),
     hasMore,

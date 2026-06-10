@@ -5,18 +5,27 @@ import {
   PencilSquareIcon,
   EnvelopeIcon,
   FaceSmileIcon,
-  FlagIcon as FlagSolidIcon,
+  BookmarkIcon as BookmarkSolidIcon,
+  ChatBubbleLeftRightIcon,
+  AdjustmentsHorizontalIcon,
+  LightBulbIcon,
+  ArrowTopRightOnSquareIcon,
 } from '@heroicons/react/24/solid'
-import { FlagIcon } from '@heroicons/react/24/outline'
+import { BookmarkIcon } from '@heroicons/react/24/outline'
 import { Avatar } from '@/components/ui/avatar'
 import { ChatAttachmentList } from '@/components/shared/chat-attachments'
 import { ReactionChip } from '@/components/shared/reaction-chip'
 import { NoteContent } from './note-content'
+import { isJumboEmojiMessage, JUMBO_EMOJI_CLASS } from '@/lib/shared/chat/jumbo-emoji'
+import { RichTextContent } from '@/components/ui/rich-text-editor'
+import { EmbedHydration } from '@/components/shared/embed-hydration'
+import { LinkPreviews } from '@/components/shared/link-preview-card'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { REACTION_EMOJIS } from '@/lib/shared/db-types'
@@ -49,8 +58,20 @@ interface AdminBubbleProps {
   onToggleFlag: (next: boolean) => void
   /** Mark the conversation unread from this message. */
   onMarkUnread: () => void
+  /** Visitor-only: open the picker to share an existing post in the chat. */
+  onSharePost?: () => void
+  /** Visitor-only: open the full dialog prefilled from this message. */
+  onTrackAsPost?: () => void
+  /** Internal-note only: act on the AI's `suggest_post` suggestion — opens the
+   *  convert dialog seeded with the suggested board/title/content. */
+  onTrackSuggestion?: (s: { boardId: string; title: string; content: string }) => void
+  /** Open an embedded post in the inbox's in-place `?post=` modal (the host owns
+   *  the route-bound navigation so the agent never leaves the conversation). */
+  onOpenPost?: (postId: string) => void
   /** Briefly flash this row (deep-link / "Saved for later" jump target). */
   highlighted?: boolean
+  /** When true, render external link preview cards below non-note messages. */
+  linkPreviews?: boolean
 }
 
 export function AdminBubble({
@@ -59,7 +80,12 @@ export function AdminBubble({
   onToggleReaction,
   onToggleFlag,
   onMarkUnread,
+  onSharePost,
+  onTrackAsPost,
+  onTrackSuggestion,
+  onOpenPost,
   highlighted = false,
+  linkPreviews = false,
 }: AdminBubbleProps) {
   // Keep the hover toolbar visible while its emoji popover or overflow menu is
   // open (the pointer leaves the row to interact with the portal'd content).
@@ -89,6 +115,15 @@ export function AdminBubble({
   const authorName = message.author?.displayName ?? (isAgent ? 'Agent' : 'Visitor')
   const isFlagged = message.flaggedAt !== null
   const toolbarPinned = emojiOpen || menuOpen
+  // "Track as feedback" quick actions only apply to a visitor's own message (not
+  // agent replies or internal notes) and only when the host wired them up.
+  const showTrackActions =
+    message.senderType === 'visitor' && !isNote && !!(onTrackAsPost || onSharePost)
+  // Agent-only AI suggestion to track this note as a post (populated only on
+  // internal notes the AI wrote via `suggest_post`); the chip is the one-click
+  // entry into the convert dialog. Captured as a const so the click handler can
+  // safely pass the narrowed (non-null) value into `onTrackSuggestion`.
+  const suggestion = isNote ? message.postSuggestion : null
 
   return (
     <div
@@ -133,7 +168,7 @@ export function AdminBubble({
           </span>
           {/* Flag marker sits right after the time. */}
           {isFlagged && (
-            <FlagSolidIcon
+            <BookmarkSolidIcon
               className="h-3.5 w-3.5 shrink-0 text-amber-500"
               aria-label="Flagged"
               title="Flagged"
@@ -141,11 +176,40 @@ export function AdminBubble({
           )}
         </div>
         {isNote ? (
-          <NoteContent
-            content={message.content}
-            contentJson={message.contentJson}
-            className="mt-0.5 text-sm text-foreground/90"
-          />
+          <>
+            <NoteContent
+              content={message.content}
+              contentJson={message.contentJson}
+              className="mt-0.5 text-sm text-foreground/90"
+            />
+            {suggestion && onTrackSuggestion && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-2 py-1.5">
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                  <LightBulbIcon className="h-3.5 w-3.5" /> AI suggests tracking this as a post
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onTrackSuggestion(suggestion)}
+                  className="ml-auto inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" /> Track as feedback
+                </button>
+              </div>
+            )}
+          </>
+        ) : isJumboEmojiMessage(message.content, message.contentJson) ? (
+          // A lone-emoji message renders large (Slack/iMessage style).
+          <div className={JUMBO_EMOJI_CLASS}>{message.content}</div>
+        ) : message.contentJson ? (
+          // Rich reply (inline embeds / images). No mention overlay — replies
+          // carry no @-mentions, unlike internal notes. An embedded post opens
+          // in the admin `?post=` modal rather than navigating away.
+          <EmbedHydration openMode="modal" onOpenInModal={onOpenPost}>
+            <RichTextContent
+              content={message.contentJson}
+              className="mt-0.5 text-sm leading-relaxed text-foreground/90"
+            />
+          </EmbedHydration>
         ) : (
           message.content && (
             <div className="mt-0.5 whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
@@ -154,6 +218,9 @@ export function AdminBubble({
           )
         )}
         {message.attachments.length > 0 && <ChatAttachmentList attachments={message.attachments} />}
+        {linkPreviews && !isNote && (
+          <LinkPreviews content={message.content} contentJson={message.contentJson} />
+        )}
         {message.reactions.length > 0 && (
           <div className="mt-1 flex flex-wrap gap-1">
             {message.reactions.map((r) => (
@@ -224,7 +291,11 @@ export function AdminBubble({
           aria-label={isFlagged ? 'Remove flag' : 'Flag message'}
           aria-pressed={isFlagged}
         >
-          {isFlagged ? <FlagSolidIcon className="h-4 w-4" /> : <FlagIcon className="h-4 w-4" />}
+          {isFlagged ? (
+            <BookmarkSolidIcon className="h-4 w-4" />
+          ) : (
+            <BookmarkIcon className="h-4 w-4" />
+          )}
         </button>
 
         <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
@@ -244,6 +315,21 @@ export function AdminBubble({
             <DropdownMenuItem variant="destructive" onClick={onDelete}>
               <TrashIcon className="h-4 w-4" /> Delete
             </DropdownMenuItem>
+            {showTrackActions && (
+              <>
+                <DropdownMenuSeparator />
+                {onSharePost && (
+                  <DropdownMenuItem onClick={onSharePost}>
+                    <ChatBubbleLeftRightIcon className="h-4 w-4" /> Share a post…
+                  </DropdownMenuItem>
+                )}
+                {onTrackAsPost && (
+                  <DropdownMenuItem onClick={onTrackAsPost}>
+                    <AdjustmentsHorizontalIcon className="h-4 w-4" /> Track as feedback…
+                  </DropdownMenuItem>
+                )}
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

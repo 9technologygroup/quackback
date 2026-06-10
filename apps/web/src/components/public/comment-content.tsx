@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { commentMarkdownToTiptapJson } from '@/lib/server/markdown-tiptap'
 import { RichTextContent } from '@/components/ui/rich-text-editor'
 import { MentionHoverCardOverlay } from '@/components/ui/mention-hover-card-overlay'
+import { EmbedHydration } from '@/components/shared/embed-hydration'
 import { cn } from '@/lib/shared/utils'
 import type { TiptapContent } from '@/lib/shared/db-types'
 
@@ -47,18 +48,22 @@ export function CommentContent({ content, contentJson, className }: CommentConte
   if (contentJson) {
     return (
       <MentionHoverCardOverlay>
-        <RichTextContent content={contentJson} className={className} />
+        <EmbedHydration>
+          <RichTextContent content={contentJson} className={className} />
+        </EmbedHydration>
       </MentionHoverCardOverlay>
     )
   }
   if (!isMarkdown || !fallbackJson) {
     return <p className={cn('whitespace-pre-wrap', className)}>{content}</p>
   }
-  // Markdown fallback never contains mention chips, but wrap anyway so any
-  // future mention syntax routed through this path is covered.
+  // Markdown fallback never contains mention chips or embeds, but wrap anyway so
+  // any future syntax routed through this path is covered.
   return (
     <MentionHoverCardOverlay>
-      <RichTextContent content={fallbackJson} className={className} />
+      <EmbedHydration>
+        <RichTextContent content={fallbackJson} className={className} />
+      </EmbedHydration>
     </MentionHoverCardOverlay>
   )
 }
