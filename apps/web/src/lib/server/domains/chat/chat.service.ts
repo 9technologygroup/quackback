@@ -1070,15 +1070,24 @@ export async function recordCsat(
   void emitConversationCsatSubmitted(actor, updated)
 }
 
+/**
+ * Which side of a conversation the actor speaks for. Ownership beats role: a
+ * team member inside a thread THEY own (their own portal/widget conversation)
+ * is the visitor there — deriving from role alone would echo their typing back
+ * to them as "agent is typing" and stamp the wrong read watermark.
+ */
+function conversationSideFor(conversation: Conversation, actor: Actor): ChatSenderType {
+  return isTeamMember(actor.role) && conversation.visitorPrincipalId !== actor.principalId
+    ? 'agent'
+    : 'visitor'
+}
+
 /** Broadcast an ephemeral typing signal (never persisted). */
-export async function signalTyping(
-  conversationId: ConversationId,
-  side: ChatSenderType,
-  actor: Actor
-): Promise<void> {
+export async function signalTyping(conversationId: ConversationId, actor: Actor): Promise<void> {
   // Same access gate as reading the thread — prevents spoofing typing into a
   // conversation the actor can't see.
-  await assertConversationViewable(conversationId, actor)
+  const conversation = await assertConversationViewable(conversationId, actor)
+  const side = conversationSideFor(conversation, actor)
   const at = new Date().toISOString()
   // Agent typing carries the agent id on the inbox channel only (collision
   // detection) — never to the visitor. Visitor typing fans out as before.
@@ -1089,13 +1098,13 @@ export async function signalTyping(
   }
 }
 
-/** Mark a conversation read up to now for one side. */
+/** Mark a conversation read up to now for the actor's side of it. */
 export async function markConversationRead(
   conversationId: ConversationId,
-  side: ChatSenderType,
   actor: Actor
 ): Promise<void> {
   const conversation = await assertConversationViewable(conversationId, actor)
+  const side = conversationSideFor(conversation, actor)
   const now = new Date()
   await db
     .update(conversations)

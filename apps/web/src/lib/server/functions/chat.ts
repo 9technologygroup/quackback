@@ -21,7 +21,6 @@ import type {
 import {
   MAX_CHAT_MESSAGE_LENGTH,
   MAX_CHAT_ATTACHMENTS,
-  type ChatSenderType,
   type ChatAttachment,
 } from '@/lib/shared/chat/types'
 import { officeHoursSnapshot } from '@/lib/shared/chat/office-hours'
@@ -463,9 +462,10 @@ export const markChatReadFn = createServerFn({ method: 'POST' })
       const ctx = await requireAuth({ roles: ['admin', 'member', 'user'] })
       await assertVisitorChatAccess(ctx.principal.role)
       const actor = await policyActorFromAuth(ctx)
-      const side: ChatSenderType = isTeamMember(ctx.principal.role) ? 'agent' : 'visitor'
+      // The service derives the side from the actor's relationship to the
+      // conversation (a team member in a thread they own is the visitor).
       const { markConversationRead } = await import('@/lib/server/domains/chat/chat.service')
-      await markConversationRead(data.conversationId as ConversationId, side, actor)
+      await markConversationRead(data.conversationId as ConversationId, actor)
       return { ok: true }
     } catch (error) {
       console.error('[fn:chat] markChatReadFn failed:', error)
@@ -481,9 +481,9 @@ export const sendChatTypingFn = createServerFn({ method: 'POST' })
       const ctx = await requireAuth({ roles: ['admin', 'member', 'user'] })
       await assertVisitorChatAccess(ctx.principal.role)
       const actor = await policyActorFromAuth(ctx)
-      const side: ChatSenderType = isTeamMember(ctx.principal.role) ? 'agent' : 'visitor'
+      // Side derived in the service from conversation ownership, not role.
       const { signalTyping } = await import('@/lib/server/domains/chat/chat.service')
-      await signalTyping(data.conversationId as ConversationId, side, actor)
+      await signalTyping(data.conversationId as ConversationId, actor)
       return { ok: true }
     } catch (error) {
       console.error('[fn:chat] sendChatTypingFn failed:', error)
