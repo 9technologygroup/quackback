@@ -72,6 +72,9 @@ const configSchema = z.object({
 
   // Auth
   secretKey: z.string().min(32, 'SECRET_KEY must be at least 32 characters'),
+  // Rotation grace for OAuth refresh tokens (seconds). 0 disables healing
+  // and restores strict single-use rotation. See auth/refresh-grace.ts.
+  oauthRefreshGraceSeconds: envInt.default(7 * 24 * 60 * 60),
 
   // Redis (BullMQ background jobs)
   redisUrl: z.string().min(1),
@@ -132,6 +135,7 @@ function buildConfigFromEnv(): unknown {
 
     // Auth
     secretKey: process.env.SECRET_KEY,
+    oauthRefreshGraceSeconds: env('OAUTH_REFRESH_GRACE_SECONDS'),
 
     // Redis
     redisUrl: process.env.REDIS_URL,
@@ -232,6 +236,9 @@ export const config = {
   },
   get secretKey() {
     return loadConfig().secretKey
+  },
+  get oauthRefreshGraceSeconds() {
+    return loadConfig().oauthRefreshGraceSeconds
   },
 
   // Redis

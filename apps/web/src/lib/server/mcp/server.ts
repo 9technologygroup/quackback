@@ -131,7 +131,7 @@ function registerResources(server: McpServer, auth: McpAuthContext) {
     'help-center-categories',
     'quackback://help-center/categories',
     { description: 'List all help center categories with article counts' },
-    scopeGated(auth, 'read:help-center', async () => {
+    scopeGated(auth, 'read:article', async () => {
       const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
       if (!(await isFeatureEnabled('helpCenter'))) {
         return {

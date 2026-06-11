@@ -23,6 +23,7 @@
 
 import { APIError, createAuthMiddleware } from 'better-auth/api'
 import { AUTH_BLOCK_MESSAGES } from './redirect-errors'
+import { handleRefreshGraceHeal } from './refresh-grace'
 import { captureCountryFromHeaders } from './country-capture'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { getClientIp } from '@/lib/server/domains/api/rate-limit'
@@ -287,6 +288,9 @@ export async function handleSignInPreCheck(ctx: {
 }
 
 export const hooksBefore = createAuthMiddleware(async (ctx) => {
+  // Disjoint path matchers: grace heal only touches /oauth2/token,
+  // sign-in pre-check only touches sign-in/OTP paths. Order is irrelevant.
+  await handleRefreshGraceHeal(ctx)
   await handleSignInPreCheck(ctx as Parameters<typeof handleSignInPreCheck>[0])
 })
 

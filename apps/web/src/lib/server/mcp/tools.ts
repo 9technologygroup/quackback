@@ -202,9 +202,7 @@ async function requireHelpCenter(): Promise<CallToolResult | null> {
 
 /** Combined gate: feature flag + scope + team role for help center write tools. */
 async function requireHelpCenterWrite(auth: McpAuthContext): Promise<CallToolResult | null> {
-  return (
-    (await requireHelpCenter()) ?? requireScope(auth, 'write:help-center') ?? requireTeamRole(auth)
-  )
+  return (await requireHelpCenter()) ?? requireScope(auth, 'write:article') ?? requireTeamRole(auth)
 }
 
 /** Build the agent-author object used by the chat write tools (reply, suggest, share). */
@@ -803,7 +801,7 @@ Examples:
       if (args.entity === 'articles') {
         const flagDenied = await requireHelpCenter()
         if (flagDenied) return flagDenied
-        const denied = requireScope(auth, 'read:help-center')
+        const denied = requireScope(auth, 'read:article')
         if (denied) return denied
         // Help-center MCP read surfaces unpublished drafts and articles
         // under categories an admin marked private. The public help
@@ -886,7 +884,7 @@ Examples:
           case 'article': {
             const flagDenied = await requireHelpCenter()
             if (flagDenied) return flagDenied
-            const denied = requireScope(auth, 'read:help-center')
+            const denied = requireScope(auth, 'read:article')
             if (denied) return denied
             // getArticleById doesn't enforce publishedAt or
             // category.isPublic — so a portal user with the help-center
@@ -900,7 +898,7 @@ Examples:
           case 'category': {
             const flagDenied = await requireHelpCenter()
             if (flagDenied) return flagDenied
-            const denied = requireScope(auth, 'read:help-center')
+            const denied = requireScope(auth, 'read:article')
             if (denied) return denied
             // getCategoryById returns private categories too — keep
             // symmetric with the article path.

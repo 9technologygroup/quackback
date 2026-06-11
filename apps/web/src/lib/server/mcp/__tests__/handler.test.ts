@@ -506,6 +506,18 @@ describe('MCP HTTP Handler', () => {
       expect(response.status).toBe(200)
     })
 
+    it('should drop scopes the MCP server does not recognize', async () => {
+      // Tokens can carry scopes outside the MCP set (e.g. openid/profile, or
+      // names from older releases); only known scopes survive parsing.
+      await setupValidOAuth({ scopes: ['openid', 'read:everything', 'read:feedback'] })
+
+      const { resolveAuthContext } = await import('../handler')
+      const auth = await resolveAuthContext(oauthRequest(jsonRpcRequest('initialize')))
+
+      expect(auth).not.toBeInstanceOf(Response)
+      expect((auth as { scopes: string[] }).scopes).toEqual(['read:feedback'])
+    })
+
     it('should return 401 for expired OAuth token', async () => {
       const { verifyAccessToken } = await import('better-auth/oauth2')
       vi.mocked(verifyAccessToken).mockRejectedValue(new Error('token expired'))
@@ -1844,10 +1856,10 @@ describe('MCP HTTP Handler', () => {
         mcpEnabled: true,
         mcpPortalAccessEnabled: true,
       })
-      const handleMcpRequest = await initializeOAuthSession(['read:help-center'])
+      const handleMcpRequest = await initializeOAuthSession(['read:article'])
       await setupValidOAuth({
         role: 'user',
-        scopes: ['read:help-center'],
+        scopes: ['read:article'],
       })
       vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
         mcpEnabled: true,
@@ -1879,10 +1891,10 @@ describe('MCP HTTP Handler', () => {
         mcpEnabled: true,
         mcpPortalAccessEnabled: true,
       })
-      const handleMcpRequest = await initializeOAuthSession(['read:help-center'])
+      const handleMcpRequest = await initializeOAuthSession(['read:article'])
       await setupValidOAuth({
         role: 'user',
-        scopes: ['read:help-center'],
+        scopes: ['read:article'],
       })
       vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
         mcpEnabled: true,

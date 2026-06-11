@@ -538,23 +538,35 @@ export const oauthClient = pgTable('oauth_client', {
 /**
  * OAuth Refresh Token table - Long-lived tokens for token refresh
  */
-export const oauthRefreshToken = pgTable('oauth_refresh_token', {
-  id: text('id').primaryKey(),
-  token: text('token').notNull(),
-  clientId: text('client_id')
-    .notNull()
-    .references(() => oauthClient.clientId, { onDelete: 'cascade' }),
-  sessionId: text('session_id').references(() => session.id, { onDelete: 'set null' }),
-  userId: typeIdColumn('user')('user_id')
-    .notNull()
-    .references(() => user.id, { onDelete: 'cascade' }),
-  referenceId: text('reference_id'),
-  expiresAt: timestamp('expires_at', { withTimezone: true }),
-  createdAt: timestamp('created_at', { withTimezone: true }),
-  revoked: timestamp('revoked', { withTimezone: true }),
-  authTime: timestamp('auth_time', { withTimezone: true }),
-  scopes: text('scopes').array().notNull(),
-})
+export const oauthRefreshToken = pgTable(
+  'oauth_refresh_token',
+  {
+    id: text('id').primaryKey(),
+    token: text('token').notNull().unique(),
+    clientId: text('client_id')
+      .notNull()
+      .references(() => oauthClient.clientId, { onDelete: 'cascade' }),
+    sessionId: text('session_id').references(() => session.id, { onDelete: 'set null' }),
+    userId: typeIdColumn('user')('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    referenceId: text('reference_id'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }),
+    revoked: timestamp('revoked', { withTimezone: true }),
+    authTime: timestamp('auth_time', { withTimezone: true }),
+    scopes: text('scopes').array().notNull(),
+  },
+  (table) => [
+    // Serves the grace-heal successor lookup (auth/refresh-grace.ts) and
+    // better-auth's family revocation listing.
+    index('oauth_refresh_token_client_user_created_idx').on(
+      table.clientId,
+      table.userId,
+      table.createdAt
+    ),
+  ]
+)
 
 /**
  * OAuth Access Token table - Short-lived tokens for API access

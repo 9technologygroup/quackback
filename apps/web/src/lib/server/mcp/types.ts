@@ -5,8 +5,8 @@ export type McpScope =
   | 'read:feedback'
   | 'write:feedback'
   | 'write:changelog'
-  | 'read:help-center'
-  | 'write:help-center'
+  | 'read:article'
+  | 'write:article'
   | 'read:chat'
   | 'write:chat'
 
