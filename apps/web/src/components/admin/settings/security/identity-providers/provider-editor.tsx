@@ -764,9 +764,9 @@ function ConnectionTestRow({
 /**
  * Per-provider verified-domain list. Rewires `verified-domains-section` from
  * the workspace-wide single-SSO queries onto the provider's own `domains[]`
- * and the per-provider domain fns. No domains => the provider is a public
- * button; the precondition warning + enforce checkbox only matter once a
- * domain is verified.
+ * and the per-provider domain fns. A verified domain routes its users to this
+ * provider and can be enforced (SSO-only for that domain); the precondition
+ * warning + enforce checkbox only matter once a domain is verified.
  */
 function DomainsSection({
   provider,
@@ -808,11 +808,11 @@ function DomainsSection({
   return (
     <div className="space-y-3 border-t border-border/40 pt-5">
       <div>
-        <Label className="font-medium">Domains</Label>
+        <Label className="font-medium">Verified domains</Label>
         <p className="mt-1 text-xs text-muted-foreground">
           {hasVerified
-            ? 'Users at a verified domain are routed here by default.'
-            : 'Optional. With no domains this shows as a public "Sign in with…" button.'}
+            ? 'Users at a verified domain are routed to this provider. Enforce a domain to require its users to sign in with SSO.'
+            : 'Verify a domain to route its users to this provider, and enforce SSO so they can only sign in this way.'}
         </p>
       </div>
 
