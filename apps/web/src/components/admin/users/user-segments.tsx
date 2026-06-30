@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { toast } from 'sonner'
 import { XMarkIcon, BoltIcon, PlusIcon } from '@heroicons/react/24/solid'
 import { cn } from '@/lib/shared/utils'
 import type { UserSegmentSummary } from '@/lib/shared/types'
@@ -72,27 +73,45 @@ export function UserSegmentBadges({
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [removingId, setRemovingId] = useState<SegmentId | null>(null)
 
+  // Manual segments the user is not currently in
+  const currentSegmentIds = new Set(segments.map((s) => s.id))
+  const availableManualSegments = (allSegments ?? []).filter(
+    (s) => s.type === 'manual' && !currentSegmentIds.has(s.id as SegmentId)
+  )
+
   const handleRemove = async (segmentId: SegmentId) => {
+    const segment = segments.find((s) => s.id === segmentId)
     setRemovingId(segmentId)
     try {
       await removeUsers.mutateAsync({ segmentId, principalIds: [principalId] })
       onSegmentsChange?.()
+      toast.success(`Removed from ${segment?.name ?? 'segment'}`, {
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            assignUsers.mutate({ segmentId, principalIds: [principalId] })
+            onSegmentsChange?.()
+          },
+        },
+      })
+    } catch {
+      toast.error(`Failed to remove from ${segment?.name ?? 'segment'}`)
     } finally {
       setRemovingId(null)
     }
   }
 
   const handleAssign = async (segmentId: SegmentId) => {
-    await assignUsers.mutateAsync({ segmentId, principalIds: [principalId] })
-    onSegmentsChange?.()
-    setPopoverOpen(false)
+    const segment = availableManualSegments.find((s) => s.id === segmentId)
+    try {
+      await assignUsers.mutateAsync({ segmentId, principalIds: [principalId] })
+      onSegmentsChange?.()
+      setPopoverOpen(false)
+      toast.success(`Added to ${segment?.name ?? 'segment'}`)
+    } catch {
+      toast.error(`Failed to add to ${segment?.name ?? 'segment'}`)
+    }
   }
-
-  // Manual segments the user is not currently in
-  const currentSegmentIds = new Set(segments.map((s) => s.id))
-  const availableManualSegments = (allSegments ?? []).filter(
-    (s) => s.type === 'manual' && !currentSegmentIds.has(s.id as SegmentId)
-  )
 
   return (
     <div className="flex flex-wrap gap-1.5 items-center">
