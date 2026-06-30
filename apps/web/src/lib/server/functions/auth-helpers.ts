@@ -9,8 +9,9 @@ import type { Role } from '@/lib/server/auth'
 import { auth } from '@/lib/server/auth'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { getSettings } from './workspace'
-import { db, principal, eq } from '@/lib/server/db'
+import { db, principal, eq, type PermissionKey } from '@/lib/server/db'
 import { ensurePrincipalForUser } from '@/lib/server/domains/principals/principal.factory'
+import { permissionsForLegacyRole } from '@/lib/server/policy/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'auth-helpers' })
@@ -78,21 +79,29 @@ export interface AuthContext {
 }
 
 /**
- * Require authentication with optional role check.
- * Throws if user is not authenticated or doesn't have required role.
+ * Require authentication with an optional role OR permission check.
+ *
+ * `{ permission }` is the forward path: it checks the caller's resolved
+ * permission set (derived from their role's preset bundle via the compat shim),
+ * so call sites can migrate off role strings incrementally. `{ roles }` is the
+ * legacy path, kept unchanged and provably equivalent per role until the Phase C
+ * completion gate retires it. Passing both checks both.
  *
  * @example
- * // Require any team member
- * const auth = await requireAuth({ roles: ['admin', 'member'] })
+ * // Permission gate (preferred)
+ * const auth = await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
  *
- * // Require admin only
- * const auth = await requireAuth({ roles: ['admin'] })
+ * // Legacy role gate (being phased out)
+ * const auth = await requireAuth({ roles: ['admin', 'member'] })
  *
  * // Just require authentication (any role)
  * const auth = await requireAuth()
  */
-export async function requireAuth(options?: { roles?: Role[] }): Promise<AuthContext> {
-  log.debug({ roles: options?.roles }, 'require auth')
+export async function requireAuth(options?: {
+  roles?: Role[]
+  permission?: PermissionKey
+}): Promise<AuthContext> {
+  log.debug({ roles: options?.roles, permission: options?.permission }, 'require auth')
   try {
     const session = await getSessionDirect()
     if (!session?.user) {
@@ -113,9 +122,15 @@ export async function requireAuth(options?: { roles?: Role[] }): Promise<AuthCon
       throw new Error('Access denied: Not a team member')
     }
 
-    if (options?.roles && !options.roles.includes(principalRecord.role as Role)) {
+    const role = principalRecord.role as Role
+
+    if (options?.roles && !options.roles.includes(role)) {
+      throw new Error(`Access denied: Requires [${options.roles.join(', ')}], got ${role}`)
+    }
+
+    if (options?.permission && !permissionsForLegacyRole(role).has(options.permission)) {
       throw new Error(
-        `Access denied: Requires [${options.roles.join(', ')}], got ${principalRecord.role}`
+        `Access denied: Requires permission '${options.permission}', role ${role} lacks it`
       )
     }
 

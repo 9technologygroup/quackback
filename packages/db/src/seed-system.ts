@@ -11,9 +11,11 @@
 import { eq, inArray } from 'drizzle-orm'
 import type { Database } from './client'
 import { postStatuses, DEFAULT_STATUSES } from './schema/statuses'
-import { roles, permissions, rolePermissions } from './schema/rbac'
+import { principal } from './schema/auth'
+import { roles, permissions, rolePermissions, principalRoleAssignments } from './schema/rbac'
 import {
   PERMISSION_CATALOGUE,
+  SYSTEM_ROLES,
   SYSTEM_ROLE_DEFS,
   SYSTEM_ROLE_PERMISSIONS,
   type SystemRoleKey,
@@ -87,5 +89,28 @@ export async function seedSystemData(db: Executor): Promise<void> {
     if (toDelete.length > 0) {
       await db.delete(rolePermissions).where(inArray(rolePermissions.id, toDelete))
     }
+  }
+
+  // 5. Backfill principal_role_assignments from the legacy principal.role cache:
+  //    admin -> Owner, member -> Manager, user -> no assignment (service
+  //    principals map the same way). Ordered after the preset seed so the role
+  //    ids exist. Idempotent: the partial unique index (principal_id, role_id)
+  //    WHERE team_id IS NULL backstops onConflictDoNothing.
+  const legacyToPreset: Record<string, SystemRoleKey> = {
+    admin: SYSTEM_ROLES.OWNER,
+    member: SYSTEM_ROLES.MANAGER,
+  }
+  const legacyPrincipals = await db
+    .select({ id: principal.id, role: principal.role })
+    .from(principal)
+    .where(inArray(principal.role, Object.keys(legacyToPreset)))
+
+  const assignments: (typeof principalRoleAssignments.$inferInsert)[] = []
+  for (const p of legacyPrincipals) {
+    const roleId = roleIdByKey.get(legacyToPreset[p.role])
+    if (roleId) assignments.push({ principalId: p.id, roleId })
+  }
+  if (assignments.length > 0) {
+    await db.insert(principalRoleAssignments).values(assignments).onConflictDoNothing()
   }
 }
