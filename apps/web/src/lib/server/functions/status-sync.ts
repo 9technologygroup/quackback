@@ -14,6 +14,7 @@ import {
   clearWebhookConfig,
 } from '@/lib/server/integrations/webhook-registration'
 import type { IntegrationId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'status-sync' })
@@ -44,7 +45,7 @@ export const enableStatusSyncFn = createServerFn({ method: 'POST' })
       'enable status sync'
     )
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
       const integrationId = data.integrationId as IntegrationId
       const integration = await db.query.integrations.findFirst({
@@ -159,7 +160,7 @@ export const disableStatusSyncFn = createServerFn({ method: 'POST' })
       'disable status sync'
     )
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
       const integrationId = data.integrationId as IntegrationId
       const integration = await db.query.integrations.findFirst({
@@ -246,7 +247,7 @@ export const updateStatusMappingsFn = createServerFn({ method: 'POST' })
       'update status mappings'
     )
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
       const integrationId = data.integrationId as IntegrationId
       const integration = await db.query.integrations.findFirst({

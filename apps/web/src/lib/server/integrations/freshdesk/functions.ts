@@ -4,6 +4,7 @@
  */
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 /**
  * Save Freshdesk API key and subdomain.
@@ -22,7 +23,7 @@ export const saveFreshdeskKeyFn = createServerFn({ method: 'POST' })
     const { requireAuth } = await import('../../functions/auth-helpers')
     const { saveIntegration } = await import('../save')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     // Verify the credentials work
     const response = await fetch(

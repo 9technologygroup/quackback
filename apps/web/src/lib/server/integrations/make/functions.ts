@@ -5,6 +5,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { safeFetch } from '../../content/ssrf-guard'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 /**
  * Save a Make webhook URL as the integration connection.
@@ -15,7 +16,7 @@ export const saveMakeWebhookFn = createServerFn({ method: 'POST' })
     const { requireAuth } = await import('../../functions/auth-helpers')
     const { saveIntegration } = await import('../save')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const hostname = new URL(data.webhookUrl).hostname
     if (!hostname.endsWith('.make.com') && !hostname.endsWith('.integromat.com')) {

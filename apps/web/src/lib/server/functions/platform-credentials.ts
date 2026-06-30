@@ -13,6 +13,7 @@ import {
   arePlatformCredentialsManaged,
 } from '@/lib/server/domains/platform-credentials/platform-credential.service'
 import type { PlatformCredentialField } from '@/lib/server/integrations/types'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'platform-credentials' })
@@ -38,7 +39,7 @@ export const savePlatformCredentialsFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ integration_type: data.integrationType }, 'save platform credentials')
     try {
-      const auth = await requireAuth({ roles: ['admin'] })
+      const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
       const { assertTierFeature } = await import('@/lib/server/domains/settings/tier-enforce')
       await assertTierFeature('integrations', 'Integrations')
@@ -87,7 +88,7 @@ export const deletePlatformCredentialsFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ integration_type: data.integrationType }, 'delete platform credentials')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
       await deletePlatformCredentials(data.integrationType)
 
@@ -107,7 +108,7 @@ export const fetchPlatformCredentialsMaskedFn = createServerFn({ method: 'GET' }
   .handler(async ({ data }) => {
     log.debug({ integration_type: data.integrationType }, 'fetch masked platform credentials')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
       const { getIntegration } = await import('@/lib/server/integrations')
       const definition = getIntegration(data.integrationType)

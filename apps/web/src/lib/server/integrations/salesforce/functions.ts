@@ -3,6 +3,7 @@
  */
 import { createServerFn } from '@tanstack/react-start'
 import type { PrincipalId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export interface SalesforceOAuthState {
   type: 'salesforce_oauth'
@@ -23,7 +24,7 @@ export const getSalesforceConnectUrl = createServerFn({ method: 'GET' }).handler
     const { signOAuthState } = await import('@/lib/server/auth/oauth-state')
     const { config } = await import('@/lib/server/config')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
     const { hasPlatformCredentials } =
       await import('@/lib/server/domains/platform-credentials/platform-credential.service')
     if (!(await hasPlatformCredentials('salesforce'))) {

@@ -6,6 +6,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { listProjects, listWorkItemTypes } from './api'
 import type { AzureDevOpsProject, AzureDevOpsWorkItemType } from './api'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 const connectSchema = z.object({
   organizationUrl: z.string().url('Must be a valid URL'),
@@ -37,7 +38,7 @@ export const connectAzureDevOpsFn = createServerFn({ method: 'POST' })
     const { requireAuth } = await import('../../functions/auth-helpers')
     const { saveIntegration } = await import('../save')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
     const organizationName = parseOrganizationName(data.organizationUrl)
 
     // Validate by listing projects
@@ -61,7 +62,7 @@ export const fetchAzureDevOpsProjectsFn = createServerFn({ method: 'GET' }).hand
     const { db, integrations, eq } = await import('@/lib/server/db')
     const { decryptSecrets } = await import('../encryption')
 
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'azure_devops'),
@@ -92,7 +93,7 @@ export const fetchAzureDevOpsWorkItemTypesFn = createServerFn({ method: 'POST' }
     const { db, integrations, eq } = await import('@/lib/server/db')
     const { decryptSecrets } = await import('../encryption')
 
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'azure_devops'),

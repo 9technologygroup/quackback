@@ -4,6 +4,7 @@
  */
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 /**
  * Save a Stripe API key as the integration connection.
@@ -14,7 +15,7 @@ export const saveStripeKeyFn = createServerFn({ method: 'POST' })
     const { requireAuth } = await import('../../functions/auth-helpers')
     const { saveIntegration } = await import('../save')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     // Test the key
     const response = await fetch('https://api.stripe.com/v1/balance', {

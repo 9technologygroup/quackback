@@ -6,6 +6,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { safeFetch } from '../../content/ssrf-guard'
 import { parseNtfyUrl } from './url'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 /**
  * Save an ntfy topic URL (and optional access token) as the integration connection.
@@ -22,7 +23,7 @@ export const saveNtfyFn = createServerFn({ method: 'POST' })
     const { requireAuth } = await import('../../functions/auth-helpers')
     const { saveIntegration } = await import('../save')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const parsed = parseNtfyUrl(data.url)
     if (!parsed) {

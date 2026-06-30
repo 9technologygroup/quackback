@@ -5,6 +5,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { safeFetch } from '../../content/ssrf-guard'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 /**
  * Save a Zapier webhook URL as the integration connection.
@@ -15,7 +16,7 @@ export const saveZapierWebhookFn = createServerFn({ method: 'POST' })
     const { requireAuth } = await import('../../functions/auth-helpers')
     const { saveIntegration } = await import('../save')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     if (new URL(data.webhookUrl).hostname !== 'hooks.zapier.com') {
       throw new Error('Webhook URL must be a hooks.zapier.com URL')

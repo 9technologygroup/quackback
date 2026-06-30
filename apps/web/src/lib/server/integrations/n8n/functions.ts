@@ -5,6 +5,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { safeFetch } from '../../content/ssrf-guard'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 /**
  * Save an n8n webhook URL as the integration connection.
@@ -15,7 +16,7 @@ export const saveN8nWebhookFn = createServerFn({ method: 'POST' })
     const { requireAuth } = await import('../../functions/auth-helpers')
     const { saveIntegration } = await import('../save')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     // Test the webhook with a ping
     const testResponse = await safeFetch(data.webhookUrl, {

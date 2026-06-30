@@ -3,6 +3,7 @@
  */
 import { createServerFn } from '@tanstack/react-start'
 import type { PrincipalId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export interface GitLabOAuthState {
   type: 'gitlab_oauth'
@@ -28,7 +29,7 @@ export const getGitLabConnectUrl = createServerFn({ method: 'GET' }).handler(
     const { signOAuthState } = await import('@/lib/server/auth/oauth-state')
     const { config } = await import('@/lib/server/config')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
     const { hasPlatformCredentials } =
       await import('@/lib/server/domains/platform-credentials/platform-credential.service')
     if (!(await hasPlatformCredentials('gitlab'))) {
@@ -61,7 +62,7 @@ export const fetchGitLabProjectsFn = createServerFn({ method: 'GET' }).handler(
     const { decryptSecrets } = await import('../encryption')
     const { listGitLabProjects } = await import('./projects')
 
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'gitlab'),

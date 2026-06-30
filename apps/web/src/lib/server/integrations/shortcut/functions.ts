@@ -3,6 +3,7 @@
  */
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export interface ShortcutProject {
   id: string
@@ -15,7 +16,7 @@ export const saveShortcutTokenFn = createServerFn({ method: 'POST' })
     const { requireAuth } = await import('../../functions/auth-helpers')
     const { saveIntegration } = await import('../save')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     // Validate the token by calling Shortcut's member-info endpoint
     const response = await fetch('https://api.app.shortcut.com/api/v3/member', {
@@ -53,7 +54,7 @@ export const fetchShortcutProjectsFn = createServerFn({ method: 'GET' }).handler
     const { decryptSecrets } = await import('../encryption')
     const { listShortcutProjects } = await import('./projects')
 
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'shortcut'),

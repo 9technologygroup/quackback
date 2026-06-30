@@ -4,6 +4,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import type { PrincipalId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export interface TeamsOAuthState {
   type: 'teams_oauth'
@@ -37,7 +38,7 @@ export const getTeamsConnectUrl = createServerFn({ method: 'GET' }).handler(
     const { signOAuthState } = await import('@/lib/server/auth/oauth-state')
     const { config } = await import('@/lib/server/config')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
     const { hasPlatformCredentials } =
       await import('@/lib/server/domains/platform-credentials/platform-credential.service')
     if (!(await hasPlatformCredentials('teams'))) {
@@ -109,7 +110,7 @@ export const fetchTeamsTeamsFn = createServerFn({ method: 'GET' }).handler(
     const { db, integrations, eq } = await import('@/lib/server/db')
     const { listTeams } = await import('./channels')
 
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'teams'),
@@ -131,7 +132,7 @@ export const fetchTeamsChannelsFn = createServerFn({ method: 'GET' })
     const { db, integrations, eq } = await import('@/lib/server/db')
     const { listTeamsChannels } = await import('./channels')
 
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'teams'),

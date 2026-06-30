@@ -11,6 +11,7 @@ import {
   sql,
 } from '@/lib/server/db'
 import type { IntegrationId, BoardId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 // cacheDel/CACHE_KEYS are imported dynamically inside handlers to keep ioredis out of the client bundle
 
@@ -52,7 +53,7 @@ export const updateIntegrationFn = createServerFn({ method: 'POST' })
   .validator(updateIntegrationSchema)
   .handler(async ({ data }) => {
     log.debug({ integration_id: data.id }, 'update integration')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.id as IntegrationId
 
@@ -118,7 +119,7 @@ export const deleteIntegrationFn = createServerFn({ method: 'POST' })
   .validator(deleteIntegrationSchema)
   .handler(async ({ data }) => {
     log.debug({ integration_id: data.id }, 'delete integration')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.id as IntegrationId
 
@@ -201,7 +202,7 @@ export const addNotificationChannelFn = createServerFn({ method: 'POST' })
   .validator(addNotificationChannelSchema)
   .handler(async ({ data }) => {
     log.debug({ channel_id: data.channelId }, 'add notification channel')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.integrationId as IntegrationId
     const filters = data.boardIds?.length ? { boardIds: data.boardIds } : null
@@ -250,7 +251,7 @@ export const updateNotificationChannelFn = createServerFn({ method: 'POST' })
   .validator(updateNotificationChannelSchema)
   .handler(async ({ data }) => {
     log.debug({ channel_id: data.channelId }, 'update notification channel')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.integrationId as IntegrationId
     const filters = data.boardIds?.length ? { boardIds: data.boardIds } : null
@@ -307,7 +308,7 @@ export const removeNotificationChannelFn = createServerFn({ method: 'POST' })
   .validator(removeNotificationChannelSchema)
   .handler(async ({ data }) => {
     log.debug({ channel_id: data.channelId }, 'remove notification channel')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.integrationId as IntegrationId
 
@@ -361,7 +362,7 @@ export const addMonitoredChannelFn = createServerFn({ method: 'POST' })
   .validator(addMonitoredChannelSchema)
   .handler(async ({ data }) => {
     log.debug({ channel_id: data.channelId }, 'add monitored channel')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.integrationId as IntegrationId
 
@@ -414,7 +415,7 @@ export const updateMonitoredChannelFn = createServerFn({ method: 'POST' })
   .validator(updateMonitoredChannelSchema)
   .handler(async ({ data }) => {
     log.debug({ channel_id: data.channelId }, 'update monitored channel')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.integrationId as IntegrationId
     const updates: Partial<typeof slackChannelMonitors.$inferInsert> = {
@@ -444,7 +445,7 @@ export const removeMonitoredChannelFn = createServerFn({ method: 'POST' })
   .validator(removeMonitoredChannelSchema)
   .handler(async ({ data }) => {
     log.debug({ channel_id: data.channelId }, 'remove monitored channel')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.integrationId as IntegrationId
 

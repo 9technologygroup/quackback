@@ -3,6 +3,7 @@
  */
 import { createServerFn } from '@tanstack/react-start'
 import type { PrincipalId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export interface LinearOAuthState {
   type: 'linear_oauth'
@@ -31,7 +32,7 @@ export const getLinearConnectUrl = createServerFn({ method: 'GET' }).handler(
     const { signOAuthState } = await import('@/lib/server/auth/oauth-state')
     const { config } = await import('@/lib/server/config')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
     const { hasPlatformCredentials } =
       await import('@/lib/server/domains/platform-credentials/platform-credential.service')
     if (!(await hasPlatformCredentials('linear'))) {
@@ -63,7 +64,7 @@ export const fetchLinearTeamsFn = createServerFn({ method: 'GET' }).handler(
     const { logger } = await import('@/lib/server/logger')
     const log = logger.child({ component: 'linear' })
 
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'linear'),

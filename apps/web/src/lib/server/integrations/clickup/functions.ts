@@ -4,6 +4,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import type { PrincipalId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export interface ClickUpOAuthState {
   type: 'clickup_oauth'
@@ -36,7 +37,7 @@ export const getClickUpConnectUrl = createServerFn({ method: 'GET' }).handler(
     const { signOAuthState } = await import('@/lib/server/auth/oauth-state')
     const { config } = await import('@/lib/server/config')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
     const { hasPlatformCredentials } =
       await import('@/lib/server/domains/platform-credentials/platform-credential.service')
     if (!(await hasPlatformCredentials('clickup'))) {
@@ -66,7 +67,7 @@ export const fetchClickUpSpacesFn = createServerFn({ method: 'GET' }).handler(
     const { decryptSecrets } = await import('../encryption')
     const { listClickUpSpaces } = await import('./lists')
 
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'clickup'),
@@ -93,7 +94,7 @@ export const fetchClickUpListsFn = createServerFn({ method: 'POST' })
     const { decryptSecrets } = await import('../encryption')
     const { listClickUpLists } = await import('./lists')
 
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'clickup'),

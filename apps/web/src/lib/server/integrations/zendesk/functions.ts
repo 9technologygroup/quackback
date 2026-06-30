@@ -4,6 +4,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import type { PrincipalId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export interface ZendeskOAuthState {
   type: 'zendesk_oauth'
@@ -35,7 +36,7 @@ export const getZendeskConnectUrl = createServerFn({ method: 'POST' })
     const { signOAuthState } = await import('@/lib/server/auth/oauth-state')
     const { config } = await import('@/lib/server/config')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
     const { hasPlatformCredentials } =
       await import('@/lib/server/domains/platform-credentials/platform-credential.service')
     if (!(await hasPlatformCredentials('zendesk'))) {
@@ -66,7 +67,7 @@ export const searchZendeskUserFn = createServerFn({ method: 'POST' })
     const { decryptSecrets } = await import('../encryption')
     const { searchZendeskUser } = await import('./context')
 
-    await requireAuth({ roles: ['admin', 'member'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_VIEW })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'zendesk'),

@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { requireAuth } from './auth-helpers'
 import { db, integrations, eq } from '@/lib/server/db'
 import { decryptSecrets } from '@/lib/server/integrations/encryption'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'external-statuses' })
@@ -30,7 +31,7 @@ export const fetchExternalStatusesFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }): Promise<ExternalStatusItem[]> => {
     log.debug({ integration_type: data.integrationType }, 'fetch external statuses')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
       const integration = await db.query.integrations.findFirst({
         where: eq(integrations.integrationType, data.integrationType),

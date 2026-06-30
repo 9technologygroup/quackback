@@ -3,6 +3,7 @@
  */
 import { createServerFn } from '@tanstack/react-start'
 import type { PrincipalId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export interface MondayOAuthState {
   type: 'monday_oauth'
@@ -28,7 +29,7 @@ export const getMondayConnectUrl = createServerFn({ method: 'GET' }).handler(
     const { signOAuthState } = await import('@/lib/server/auth/oauth-state')
     const { config } = await import('@/lib/server/config')
 
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
     const { hasPlatformCredentials } =
       await import('@/lib/server/domains/platform-credentials/platform-credential.service')
     if (!(await hasPlatformCredentials('monday'))) {
@@ -64,7 +65,7 @@ export const fetchMondayBoardsFn = createServerFn({ method: 'GET' }).handler(
     const log = logger.child({ component: 'monday' })
 
     log.debug('fetch monday boards')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integration = await db.query.integrations.findFirst({
       where: eq(integrations.integrationType, 'monday'),
