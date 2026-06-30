@@ -26,6 +26,7 @@ import type { IdentityProviderId } from '@quackback/ids'
 import { ConflictError, ForbiddenError, ValidationError } from '@/lib/shared/errors'
 import { httpsUrl } from '@/lib/shared/schemas/auth'
 import { actorFromAuth, withAuditEvent } from '@/lib/server/audit/log'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { requireAuth } from './auth-helpers'
 
 const verifiedDomainId = z.string().regex(/^domain_/) as z.ZodType<`domain_${string}`>
@@ -36,7 +37,7 @@ const verifiedDomainId = z.string().regex(/^domain_/) as z.ZodType<`domain_${str
  * on the next request because no secret is available.
  */
 export const clearSsoClientSecretFn = createServerFn({ method: 'POST' }).handler(async () => {
-  const auth = await requireAuth({ roles: ['admin'] })
+  const auth = await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
   return withAuditEvent(
     {
@@ -121,7 +122,7 @@ const removeVerifiedDomainInput = z.object({ id: verifiedDomainId })
 export const removeVerifiedDomainFn = createServerFn({ method: 'POST' })
   .validator(removeVerifiedDomainInput)
   .handler(async ({ data }) => {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
     const { removeVerifiedDomain } = await import('@/lib/server/domains/settings/settings.service')
     await removeVerifiedDomain(data.id)
     return { success: true }
@@ -133,7 +134,7 @@ export type VerifyDomainResult =
 
 /** Read-only listing of the workspace's verified-domain rows. */
 export const getVerifiedDomainsFn = createServerFn({ method: 'GET' }).handler(async () => {
-  await requireAuth({ roles: ['admin'] })
+  await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
   const { getTenantSettings } = await import('@/lib/server/domains/settings/settings.service')
   const tenant = await getTenantSettings()
   return tenant?.verifiedDomains ?? []
@@ -200,7 +201,7 @@ const upsertIdentityProviderInput = z.object({
 
 /** Read-only listing of every identity provider with its linked domains. */
 export const listIdentityProvidersFn = createServerFn({ method: 'GET' }).handler(async () => {
-  await requireAuth({ roles: ['admin'] })
+  await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
   const { listIdentityProviders } =
     await import('@/lib/server/domains/settings/identity-providers.service')
   return listIdentityProviders()
@@ -215,7 +216,7 @@ export const listIdentityProvidersFn = createServerFn({ method: 'GET' }).handler
 export const upsertIdentityProviderFn = createServerFn({ method: 'POST' })
   .validator(upsertIdentityProviderInput)
   .handler(async ({ data }) => {
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
     const { listIdentityProviders, upsertIdentityProvider } =
       await import('@/lib/server/domains/settings/identity-providers.service')
@@ -264,7 +265,7 @@ const deleteIdentityProviderInput = z.object({ id: identityProviderId })
 export const deleteIdentityProviderFn = createServerFn({ method: 'POST' })
   .validator(deleteIdentityProviderInput)
   .handler(async ({ data }) => {
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
     // Refuse to remove the workspace's only working sign-in method — doing so
     // would lock everyone out. Mirrors the UI's disabled Remove button.
@@ -310,7 +311,7 @@ const setProviderCredentialsInput = z.object({
 export const setProviderCredentialsFn = createServerFn({ method: 'POST' })
   .validator(setProviderCredentialsInput)
   .handler(async ({ data }) => {
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
     const { listIdentityProviders, stampDetailsChanged } =
       await import('@/lib/server/domains/settings/identity-providers.service')
@@ -356,7 +357,7 @@ const addProviderDomainInput = z.object({
 export const addProviderDomainFn = createServerFn({ method: 'POST' })
   .validator(addProviderDomainInput)
   .handler(async ({ data }) => {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
     const { verifiableDomain } = await import('@/lib/server/auth/normalize-domain')
     const parsed = verifiableDomain.safeParse(data.name)
@@ -385,7 +386,7 @@ const verifyProviderDomainInput = z.object({
 export const verifyProviderDomainFn = createServerFn({ method: 'POST' })
   .validator(verifyProviderDomainInput)
   .handler(async ({ data }): Promise<VerifyDomainResult> => {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
     const { getTenantSettings, stampVerifiedDomain } =
       await import('@/lib/server/domains/settings/settings.service')
@@ -450,7 +451,7 @@ const setDomainEnforcedInput = z.object({
 export const setDomainEnforcedFn = createServerFn({ method: 'POST' })
   .validator(setDomainEnforcedInput)
   .handler(async ({ data }) => {
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
     const { listIdentityProviders } =
       await import('@/lib/server/domains/settings/identity-providers.service')

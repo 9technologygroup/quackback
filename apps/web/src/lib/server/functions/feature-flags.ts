@@ -1,6 +1,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { requireAuth } from './auth-helpers'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { updateFeatureFlags } from '@/lib/server/domains/settings/settings.service'
 import type { FeatureFlags } from '@/lib/server/domains/settings/settings.types'
 
@@ -18,6 +19,6 @@ export const updateFeatureFlagsFn = createServerFn({ method: 'POST' })
     })
   )
   .handler(async ({ data }): Promise<FeatureFlags> => {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     return updateFeatureFlags(data)
   })

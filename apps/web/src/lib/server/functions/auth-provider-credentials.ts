@@ -6,6 +6,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { requireAuth } from './auth-helpers'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   savePlatformCredentials,
   deletePlatformCredentials,
@@ -39,7 +40,7 @@ export const saveAuthProviderCredentialsFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ credential_type: data.credentialType }, 'save auth provider credentials')
     try {
-      const auth = await requireAuth({ roles: ['admin'] })
+      const auth = await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
       const { getAuthProvider } = await import('@/lib/server/auth/auth-providers')
       const provider = getAuthProvider(data.credentialType)
@@ -99,7 +100,7 @@ export const deleteAuthProviderCredentialsFn = createServerFn({ method: 'POST' }
   .handler(async ({ data }) => {
     log.debug({ credential_type: data.credentialType }, 'delete auth provider credentials')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
       const { getAuthProvider } = await import('@/lib/server/auth/auth-providers')
       const provider = getAuthProvider(data.credentialType)
@@ -154,7 +155,7 @@ export const fetchAuthProviderCredentialsMaskedFn = createServerFn({ method: 'GE
   .handler(async ({ data }) => {
     log.debug({ credential_type: data.credentialType }, 'fetch masked auth provider credentials')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
       const { getAuthProvider } = await import('@/lib/server/auth/auth-providers')
       const provider = getAuthProvider(data.credentialType)

@@ -112,7 +112,7 @@ vi.mock('@/lib/server/audit/log', () => ({
   ),
 }))
 
-import { ForbiddenError } from '@/lib/shared/errors'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import * as settingsModule from '../settings'
 
 function getUpdateModerationDefaultFn(): Handler {
@@ -149,21 +149,27 @@ beforeEach(() => {
   mockUpdatePortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'all' } })
 })
 
-describe('updateModerationDefaultFn — isAdmin gate', () => {
-  it('rejects role=user with ForbiddenError', async () => {
-    mockRequireAuth.mockResolvedValue(AUTH_USER)
+describe('updateModerationDefaultFn — settings.manage gate', () => {
+  it('rejects role=user (lacks settings.manage)', async () => {
+    mockRequireAuth.mockImplementation((opts?: { permission?: string }) => {
+      if (opts?.permission === PERMISSIONS.SETTINGS_MANAGE) throw new Error('Access denied')
+      return Promise.resolve(AUTH_USER)
+    })
     await expect(
       getUpdateModerationDefaultFn()({ data: { requireApproval: 'all' } })
-    ).rejects.toBeInstanceOf(ForbiddenError)
+    ).rejects.toThrow('Access denied')
     expect(mockUpdatePortalConfig).not.toHaveBeenCalled()
     expect(state.auditEvents).toHaveLength(0)
   })
 
-  it('rejects role=member with ForbiddenError', async () => {
-    mockRequireAuth.mockResolvedValue(AUTH_MEMBER)
+  it('rejects role=member (lacks settings.manage)', async () => {
+    mockRequireAuth.mockImplementation((opts?: { permission?: string }) => {
+      if (opts?.permission === PERMISSIONS.SETTINGS_MANAGE) throw new Error('Access denied')
+      return Promise.resolve(AUTH_MEMBER)
+    })
     await expect(
       getUpdateModerationDefaultFn()({ data: { requireApproval: 'all' } })
-    ).rejects.toBeInstanceOf(ForbiddenError)
+    ).rejects.toThrow('Access denied')
     expect(mockUpdatePortalConfig).not.toHaveBeenCalled()
     expect(state.auditEvents).toHaveLength(0)
   })

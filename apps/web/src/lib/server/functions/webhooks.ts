@@ -7,6 +7,7 @@
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { requireAuth } from './auth-helpers'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { WEBHOOK_EVENTS } from '@/lib/server/events/integrations/webhook/constants'
 import type { WebhookId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
@@ -58,7 +59,7 @@ export type RotateWebhookSecretInput = z.infer<typeof rotateWebhookSecretSchema>
 export const fetchWebhooks = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug({}, 'fetch webhooks')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.WEBHOOK_VIEW })
 
     const { listWebhooks } = await import('@/lib/server/domains/webhooks/webhook.service')
     const webhooks = await listWebhooks()
@@ -84,7 +85,7 @@ export const createWebhookFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ url: data.url }, 'create webhook')
     try {
-      const auth = await requireAuth({ roles: ['admin'] })
+      const auth = await requireAuth({ permission: PERMISSIONS.WEBHOOK_MANAGE })
 
       const { createWebhook } = await import('@/lib/server/domains/webhooks/webhook.service')
       const result = await createWebhook(
@@ -112,7 +113,7 @@ export const updateWebhookFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ webhook_id: data.webhookId }, 'update webhook')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.WEBHOOK_MANAGE })
 
       const { updateWebhook } = await import('@/lib/server/domains/webhooks/webhook.service')
       const webhook = await updateWebhook(data.webhookId as WebhookId, {
@@ -138,7 +139,7 @@ export const deleteWebhookFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ webhook_id: data.webhookId }, 'delete webhook')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.WEBHOOK_MANAGE })
 
       const { deleteWebhook } = await import('@/lib/server/domains/webhooks/webhook.service')
       await deleteWebhook(data.webhookId as WebhookId)
@@ -160,7 +161,7 @@ export const rotateWebhookSecretFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ webhook_id: data.webhookId }, 'rotate webhook secret')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.WEBHOOK_MANAGE })
 
       const { rotateWebhookSecret } = await import('@/lib/server/domains/webhooks/webhook.service')
       const result = await rotateWebhookSecret(data.webhookId as WebhookId)

@@ -5,6 +5,7 @@
  *   - Domain normalization via the fn's normalization pipeline.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 type AnyHandler = (args: { data: Record<string, unknown> }) => Promise<unknown>
 
@@ -145,13 +146,19 @@ describe('updatePortalAccessFn — auth gate', () => {
     expect(result).toEqual({ visibility: 'private' })
   })
 
-  it('member role is insufficient — requireAuth is called with roles: [admin]', async () => {
-    hoisted.mockRequireAuth.mockImplementation((opts?: { roles?: string[] }) => {
-      if (opts?.roles && !opts.roles.includes(MEMBER_AUTH.principal.role)) {
-        throw new Error(`Access denied: Requires [${opts.roles.join(', ')}], got member`)
+  it('member role is insufficient — requireAuth gates on settings.manage', async () => {
+    hoisted.mockRequireAuth.mockImplementation(
+      (opts?: { roles?: string[]; permission?: string }) => {
+        // Member lacks settings.manage (a workspace-admin permission).
+        if (opts?.permission === PERMISSIONS.SETTINGS_MANAGE) {
+          throw new Error(`Access denied: Requires permission '${opts.permission}'`)
+        }
+        if (opts?.roles && !opts.roles.includes(MEMBER_AUTH.principal.role)) {
+          throw new Error(`Access denied: Requires [${opts.roles.join(', ')}], got member`)
+        }
+        return Promise.resolve(MEMBER_AUTH)
       }
-      return Promise.resolve(MEMBER_AUTH)
-    })
+    )
 
     await expect(updatePortalAccessHandler({ data: { visibility: 'private' } })).rejects.toThrow(
       'Access denied'

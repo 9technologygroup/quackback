@@ -9,6 +9,7 @@
  * ['admin']}) is invoked before any write.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 const hoisted = vi.hoisted(() => ({
   mockRequireAuth: vi.fn(),
@@ -59,7 +60,7 @@ describe('updateFeatureFlagsFn — admin gate', () => {
     ).rejects.toThrow(/auth/i)
 
     expect(hoisted.mockRequireAuth).toHaveBeenCalledWith(
-      expect.objectContaining({ roles: expect.arrayContaining(['admin']) })
+      expect.objectContaining({ permission: PERMISSIONS.SETTINGS_MANAGE })
     )
     expect(hoisted.mockUpdateFeatureFlags).not.toHaveBeenCalled()
   })

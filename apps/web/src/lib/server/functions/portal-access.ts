@@ -6,6 +6,7 @@ import { z } from 'zod'
 import type { Role } from '@/lib/shared/roles'
 import { createServerFn, createServerOnlyFn } from '@tanstack/react-start'
 import type { UserId, PrincipalId, SegmentId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'portal-access' })
@@ -355,7 +356,7 @@ export const updatePortalAccessFn = createServerFn({ method: 'POST' })
         import('@tanstack/react-start/server'),
         import('@/lib/server/audit/log'),
       ])
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     log.debug(
       {
         visibility: data.visibility,

@@ -15,6 +15,7 @@ import { getRequestHeaders } from '@tanstack/react-start/server'
 import type { InviteId, UserId } from '@quackback/ids'
 import { generateId } from '@quackback/ids'
 import { db, invitation, principal, user, eq, and, gt, or, sql } from '@/lib/server/db'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { requireAuth } from './auth-helpers'
 import { appendInviteMagicLinkToken, removeInviteMagicLinkToken } from './invitation-magic-link'
 import { actorFromAuth, recordAuditEvent } from '@/lib/server/audit/log'
@@ -211,7 +212,7 @@ type SendPortalInviteResult = {
 export const sendPortalInviteFn = createServerFn({ method: 'POST' })
   .validator(sendPortalInviteSchema)
   .handler(async ({ data }): Promise<SendPortalInviteResult> => {
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const headers = getRequestHeaders()
     const actor = actorFromAuth(auth)
     const message = data.message?.trim() || undefined
@@ -257,7 +258,7 @@ export const sendPortalInviteFn = createServerFn({ method: 'POST' })
 export const cancelPortalInviteFn = createServerFn({ method: 'POST' })
   .validator(portalInviteByIdSchema)
   .handler(async ({ data }) => {
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const inviteId = data.inviteId as InviteId
     const headers = getRequestHeaders()
     const actor = actorFromAuth(auth)
@@ -330,7 +331,7 @@ export const cancelPortalInviteFn = createServerFn({ method: 'POST' })
 export const resendPortalInviteFn = createServerFn({ method: 'POST' })
   .validator(portalInviteByIdSchema)
   .handler(async ({ data }) => {
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const inviteId = data.inviteId as InviteId
     const headers = getRequestHeaders()
     const actor = actorFromAuth(auth)
@@ -448,7 +449,7 @@ export const resendPortalInviteFn = createServerFn({ method: 'POST' })
  * then recently-accepted/revoked — capped at 100 rows.
  */
 export const fetchPortalInvitesFn = createServerFn({ method: 'GET' }).handler(async () => {
-  await requireAuth({ roles: ['admin'] })
+  await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
 
   log.debug('fetching portal invites')
 
@@ -496,7 +497,7 @@ export const fetchPortalInvitesFn = createServerFn({ method: 'GET' }).handler(as
 export const getPortalInviteLinkFn = createServerFn({ method: 'POST' })
   .validator(portalInviteByIdSchema)
   .handler(async ({ data }) => {
-    const auth = await requireAuth({ roles: ['admin'] })
+    const auth = await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const headers = getRequestHeaders()
     const actor = actorFromAuth(auth)
 

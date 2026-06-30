@@ -5,6 +5,7 @@
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { requireAuth } from './auth-helpers'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { ApiKeyId } from '@/lib/server/domains/api-keys/api-key.service'
 import { logger } from '@/lib/server/logger'
 
@@ -57,7 +58,7 @@ export const fetchApiKeys = createServerFn({ method: 'GET' }).handler(async () =
   log.debug('list api keys')
   try {
     // Only admins can manage API keys
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.API_KEY_MANAGE })
 
     const { listApiKeys } = await import('@/lib/server/domains/api-keys/api-key.service')
     const keys = await listApiKeys()
@@ -77,7 +78,7 @@ export const fetchApiKey = createServerFn({ method: 'GET' })
   .handler(async ({ data }) => {
     log.debug({ api_key_id: data.id }, 'get api key')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.API_KEY_MANAGE })
 
       const { getApiKeyById } = await import('@/lib/server/domains/api-keys/api-key.service')
       const key = await getApiKeyById(data.id as ApiKeyId)
@@ -102,7 +103,7 @@ export const createApiKeyFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ name: data.name }, 'create api key')
     try {
-      const auth = await requireAuth({ roles: ['admin'] })
+      const auth = await requireAuth({ permission: PERMISSIONS.API_KEY_MANAGE })
 
       const { createApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
       const result = await createApiKey(
@@ -128,7 +129,7 @@ export const updateApiKeyFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ api_key_id: data.id }, 'update api key')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.API_KEY_MANAGE })
 
       const { updateApiKeyName } = await import('@/lib/server/domains/api-keys/api-key.service')
       const key = await updateApiKeyName(data.id as ApiKeyId, data.name)
@@ -149,7 +150,7 @@ export const rotateApiKeyFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ api_key_id: data.id }, 'rotate api key')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.API_KEY_MANAGE })
 
       const { rotateApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
       const result = await rotateApiKey(data.id as ApiKeyId)
@@ -169,7 +170,7 @@ export const revokeApiKeyFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.debug({ api_key_id: data.id }, 'revoke api key')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.API_KEY_MANAGE })
 
       const { revokeApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
       await revokeApiKey(data.id as ApiKeyId)

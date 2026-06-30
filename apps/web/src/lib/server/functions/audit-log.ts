@@ -14,6 +14,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import type { UserId } from '@quackback/ids'
 import { and, auditLog, db, desc, eq, gte, ilike, lte, notInArray } from '@/lib/server/db'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { SQL } from 'drizzle-orm'
 import type { AuditEventOutcome, JsonValue } from '@/lib/server/audit/log'
 import { requireAuth } from './auth-helpers'
@@ -74,7 +75,7 @@ export type AuditEventRow = {
 export const listAuditEventsFn = createServerFn({ method: 'GET' })
   .validator(listAuditEventsInput)
   .handler(async ({ data }) => {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.AUDIT_VIEW })
 
     const requested = Math.min(data.limit ?? DEFAULT_LIMIT, MAX_LIMIT)
     const lookahead = requested + 1

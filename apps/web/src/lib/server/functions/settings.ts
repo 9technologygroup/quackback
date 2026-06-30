@@ -7,8 +7,6 @@ import {
   type BrandingConfig,
   type UpdatePortalConfigInput,
 } from '@/lib/server/domains/settings'
-import { isAdmin } from '@/lib/shared/roles'
-import { ForbiddenError } from '@/lib/shared/errors'
 import { userIdSchema, type UserId } from '@quackback/ids'
 import {
   getPortalConfig,
@@ -36,6 +34,7 @@ import { actorFromAuth, recordAuditEvent, type AuditEventType } from '@/lib/serv
 import { requireAuth } from './auth-helpers'
 import { getSession } from '@/lib/server/auth/session'
 import { db, principal, user, invitation, account, eq, ne, and } from '@/lib/server/db'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'settings' })
@@ -57,7 +56,7 @@ export const fetchBrandingConfig = createServerFn({ method: 'GET' }).handler(asy
 export const fetchPortalConfig = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch portal config')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const config = await getPortalConfig()
     return config ?? DEFAULT_PORTAL_CONFIG
   } catch (error) {
@@ -95,7 +94,7 @@ export const fetchPublicAuthConfig = createServerFn({ method: 'GET' }).handler(a
 export const fetchAuthConfigFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch auth config')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
     const { getTenantSettings } = await import('@/lib/server/domains/settings/settings.service')
     const tenant = await getTenantSettings()
     return (
@@ -113,7 +112,7 @@ export const fetchAuthConfigFn = createServerFn({ method: 'GET' }).handler(async
 export const fetchDeveloperConfig = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch developer config')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     return await getDeveloperConfig()
   } catch (error) {
     log.error({ err: error }, 'fetch developer config failed')
@@ -132,7 +131,7 @@ export const fetchTeamMembersAndInvitations = createServerFn({ method: 'GET' }).
   async () => {
     log.debug('fetch team members and invitations')
     try {
-      await requireAuth({ roles: ['admin', 'member'] })
+      await requireAuth({ permission: PERMISSIONS.MEMBER_VIEW })
 
       // Subquery: latest session timestamp per user. Left-joined so
       // a team member with no sessions still appears (lastSignInAt
@@ -331,7 +330,7 @@ export const updateThemeFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info('update theme')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await updateBrandingConfig(data.brandingConfig as BrandingConfig)
     } catch (error) {
       log.error({ err: error }, 'update theme failed')
@@ -344,7 +343,7 @@ export const updatePortalConfigFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info('update portal config')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await updatePortalConfig(data as UpdatePortalConfigInput)
     } catch (error) {
       log.error({ err: error }, 'update portal config failed')
@@ -428,7 +427,7 @@ export const updateAuthConfigFn = createServerFn({ method: 'POST' })
     log.info('update auth config')
     try {
       const { getRequestHeaders } = await import('@tanstack/react-start/server')
-      const auth = await requireAuth({ roles: ['admin'] })
+      const auth = await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
       const actor = actorFromAuth(auth)
       const headers = getRequestHeaders()
 
@@ -549,7 +548,7 @@ export const saveLogoKeyFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ key: data.key }, 'save logo key')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await saveLogoKey(data.key)
     } catch (error) {
       log.error({ err: error }, 'save logo key failed')
@@ -560,7 +559,7 @@ export const saveLogoKeyFn = createServerFn({ method: 'POST' })
 export const deleteLogoFn = createServerFn({ method: 'POST' }).handler(async () => {
   log.info('delete logo')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     return await deleteLogoKey()
   } catch (error) {
     log.error({ err: error }, 'delete logo failed')
@@ -573,7 +572,7 @@ export const saveHeaderLogoKeyFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ key: data.key }, 'save header logo key')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await saveHeaderLogoKey(data.key)
     } catch (error) {
       log.error({ err: error }, 'save header logo key failed')
@@ -584,7 +583,7 @@ export const saveHeaderLogoKeyFn = createServerFn({ method: 'POST' })
 export const deleteHeaderLogoFn = createServerFn({ method: 'POST' }).handler(async () => {
   log.info('delete header logo')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     return await deleteHeaderLogoKey()
   } catch (error) {
     log.error({ err: error }, 'delete header logo failed')
@@ -597,7 +596,7 @@ export const updateHeaderDisplayModeFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ mode: data.mode }, 'update header display mode')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await updateHeaderDisplayMode(data.mode)
     } catch (error) {
       log.error({ err: error }, 'update header display mode failed')
@@ -610,7 +609,7 @@ export const updateHeaderDisplayNameFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ name: data.name }, 'update header display name')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await updateHeaderDisplayName(data.name)
     } catch (error) {
       log.error({ err: error }, 'update header display name failed')
@@ -629,7 +628,7 @@ export const updateWorkspaceNameFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ name: data.name }, 'update workspace name')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await updateWorkspaceName(data.name)
     } catch (error) {
       log.error({ err: error }, 'update workspace name failed')
@@ -664,7 +663,7 @@ export const updateCustomCssFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ css_length: data.customCss.length }, 'update custom css')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await updateCustomCss(data.customCss)
     } catch (error) {
       log.error({ err: error }, 'update custom css failed')
@@ -685,7 +684,7 @@ export const updateDeveloperConfigFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ mcp_enabled: data.mcpEnabled }, 'update developer config')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await updateDeveloperConfig(data)
     } catch (error) {
       log.error({ err: error }, 'update developer config failed')
@@ -700,7 +699,7 @@ export const updateDeveloperConfigFn = createServerFn({ method: 'POST' })
 export const fetchWidgetConfig = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch widget config')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const { getWidgetConfig } = await import('@/lib/server/domains/settings/settings.widget')
     return await getWidgetConfig()
   } catch (error) {
@@ -712,7 +711,7 @@ export const fetchWidgetConfig = createServerFn({ method: 'GET' }).handler(async
 export const fetchWidgetSecret = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch widget secret')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const { getWidgetSecret } = await import('@/lib/server/domains/settings/settings.widget')
     return await getWidgetSecret()
   } catch (error) {
@@ -782,7 +781,7 @@ export const updateWidgetConfigFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ enabled: data.enabled, position: data.position }, 'update widget config')
     try {
-      await requireAuth({ roles: ['admin'] })
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       const { updateWidgetConfig } = await import('@/lib/server/domains/settings/settings.widget')
       return await updateWidgetConfig(data)
     } catch (error) {
@@ -794,7 +793,7 @@ export const updateWidgetConfigFn = createServerFn({ method: 'POST' })
 export const regenerateWidgetSecretFn = createServerFn({ method: 'POST' }).handler(async () => {
   log.info('regenerate widget secret')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const { regenerateWidgetSecret } = await import('@/lib/server/domains/settings/settings.widget')
     return await regenerateWidgetSecret()
   } catch (error) {
@@ -819,7 +818,7 @@ const moderationDefaultSchema = z.object({
 export const getEmailChannelStatusFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('get email channel status')
   try {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const { getEmailProvider } = await import('@quackback/email')
     const { isEmailInboundConfigured } =
       await import('@/lib/server/domains/chat/chat.email-channel')
@@ -839,10 +838,7 @@ export const updateModerationDefaultFn = createServerFn({ method: 'POST' })
   .validator(moderationDefaultSchema.parse)
   .handler(async ({ data }) => {
     log.info({ require_approval: data.requireApproval }, 'update moderation default')
-    const auth = await requireAuth()
-    if (!isAdmin(auth.principal.role)) {
-      throw new ForbiddenError('FORBIDDEN', 'Admin only')
-    }
+    const auth = await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
     const before = await getPortalConfig()
     const updated = await updatePortalConfig({ moderationDefault: data })
     await recordAuditEvent({

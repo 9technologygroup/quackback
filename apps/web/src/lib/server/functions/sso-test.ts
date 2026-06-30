@@ -24,6 +24,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { requireAuth } from './auth-helpers'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { DiagnosticStep, HandshakeStage } from '@/lib/server/auth/sso-test-handshake'
 import type { JsonValue } from '@/lib/server/audit/log'
 import { DEFAULT_OIDC_SCOPES } from '@/lib/server/auth/build-oauth-configs'
@@ -63,7 +64,7 @@ export type StartSsoTestResult =
 export const startSsoTestFn = createServerFn({ method: 'POST' })
   .validator(z.object({ registrationId: z.string().min(1) }))
   .handler(async ({ data }): Promise<StartSsoTestResult> => {
-    const { user } = await requireAuth({ roles: ['admin'] })
+    const { user } = await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
 
     const { listIdentityProviders, getIdentityProviderCredentials } =
       await import('@/lib/server/domains/settings/identity-providers.service')
@@ -254,7 +255,7 @@ export type SsoTestDiagnostic = {
 export const getSsoTestResultFn = createServerFn({ method: 'POST' })
   .validator(z.object({ testId: z.string() }))
   .handler(async ({ data }): Promise<SsoTestDiagnostic | null> => {
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.AUTH_MANAGE })
     const { cacheGet } = await import('@/lib/server/redis')
     return (await cacheGet<SsoTestDiagnostic>(ssoTestResultKey(data.testId))) ?? null
   })
