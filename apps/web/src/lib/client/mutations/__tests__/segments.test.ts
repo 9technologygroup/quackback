@@ -33,4 +33,16 @@ describe('segment mutations cache invalidation', () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['admin', 'segments'] })
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['admin', 'users'] })
   })
+
+  it('also invalidates the live usersKeys queries that back the rendered list/detail', async () => {
+    // usersKeys.all (['users']) is a sibling of ['admin', 'users'], not a
+    // descendant — invalidating only ['admin', 'users'] leaves the
+    // usePortalUsers/useUserDetail queries (keyed ['users', ...]) stale.
+    const { useAssignUsersToSegment } = await import('../segments')
+    const mutation = useAssignUsersToSegment() as { onSuccess?: () => void }
+
+    mutation.onSuccess?.()
+
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['users'] })
+  })
 })

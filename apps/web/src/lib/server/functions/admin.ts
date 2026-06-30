@@ -1592,14 +1592,14 @@ export const removeUsersFromSegmentFn = createServerFn({ method: 'POST' })
     try {
       const auth = await requireAuth({ permission: PERMISSIONS.SEGMENT_MANAGE })
       const { actorFromAuth } = await import('@/lib/server/audit/log')
-      const { removed } = await removeUsersFromSegment(
+      const { removed, removedPrincipalIds } = await removeUsersFromSegment(
         data.segmentId as SegmentId,
         data.principalIds as PrincipalId[],
         actorFromAuth(auth),
         getRequestHeaders()
       )
       log.info({ segment_id: data.segmentId, removed }, 'users removed from segment')
-      return { segmentId: data.segmentId, removed }
+      return { segmentId: data.segmentId, removed, removedPrincipalIds }
     } catch (error) {
       log.error({ err: error }, 'remove users from segment failed')
       throw error

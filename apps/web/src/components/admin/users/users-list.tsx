@@ -41,6 +41,8 @@ interface UsersListProps {
   onClearSegments: () => void
   /** Opens the "New person" dialog; absent when the viewer can't manage people. */
   onNewPerson?: () => void
+  /** Gates bulk-selection checkboxes and the segment action bar, matching the per-user editor's admin-only gate. */
+  canManage: boolean
 }
 
 const SORT_OPTIONS = [
@@ -128,6 +130,7 @@ export function UsersList({
   onSelectSegment,
   onClearSegments,
   onNewPerson,
+  canManage,
 }: UsersListProps) {
   const intl = useIntl()
   const sort = filters.sort || 'newest'
@@ -150,15 +153,24 @@ export function UsersList({
 
   // Bulk segment selection — lets an admin add/remove many users to/from a
   // manual segment in one action instead of one navigate-open-popover cycle
-  // per person. Selection is scoped to currently loaded rows.
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // per person.
+  const [selectedIds, setSelectedIds] = useState<Set<PrincipalId>>(new Set())
   const assignUsers = useAssignUsersToSegment()
   const removeUsers = useRemoveUsersFromSegment()
   const manualSegments = (segments ?? []).filter((s) => s.type === 'manual')
-  const allLoadedSelected = users.length > 0 && users.every((u) => selectedIds.has(u.principalId))
-  const someLoadedSelected = users.some((u) => selectedIds.has(u.principalId))
 
-  const toggleSelect = (principalId: string) => {
+  // selectedIds can outlive the rows it was checked against (a filter/segment-nav
+  // change narrows `users` without clearing selection, since UsersList stays
+  // mounted across that). Re-deriving the effective selection from the
+  // currently-visible rows on every render keeps both the displayed count and
+  // any bulk action scoped to what the admin can actually see right now.
+  const visibleSelectedIds = users
+    .filter((u) => selectedIds.has(u.principalId))
+    .map((u) => u.principalId)
+  const allLoadedSelected = users.length > 0 && visibleSelectedIds.length === users.length
+  const someLoadedSelected = visibleSelectedIds.length > 0
+
+  const toggleSelect = (principalId: PrincipalId) => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
       if (next.has(principalId)) {
@@ -176,7 +188,7 @@ export function UsersList({
 
   const handleBulkAdd = async (segmentId: SegmentId) => {
     const segment = manualSegments.find((s) => s.id === segmentId)
-    const principalIds = Array.from(selectedIds) as PrincipalId[]
+    const principalIds = visibleSelectedIds
     try {
       const { assigned } = await assignUsers.mutateAsync({ segmentId, principalIds })
       setSelectedIds(new Set())
@@ -190,16 +202,29 @@ export function UsersList({
 
   const handleBulkRemove = async (segmentId: SegmentId) => {
     const segment = manualSegments.find((s) => s.id === segmentId)
-    const principalIds = Array.from(selectedIds) as PrincipalId[]
+    const principalIds = visibleSelectedIds
     try {
-      const { removed } = await removeUsers.mutateAsync({ segmentId, principalIds })
+      const { removed, removedPrincipalIds } = await removeUsers.mutateAsync({
+        segmentId,
+        principalIds,
+      })
       setSelectedIds(new Set())
       toast.success(
         `Removed ${removed} ${removed === 1 ? 'person' : 'people'} from ${segment?.name ?? 'segment'}`,
         {
           action: {
             label: 'Undo',
-            onClick: () => assignUsers.mutate({ segmentId, principalIds }),
+            onClick: () =>
+              // Re-assign only the ids the server actually removed — the
+              // original selection can include users who were never members
+              // of this segment, and undo must not add them to one.
+              assignUsers.mutate(
+                { segmentId, principalIds: removedPrincipalIds },
+                {
+                  onError: () =>
+                    toast.error(`Failed to undo — ${segment?.name ?? 'segment'} was not restored`),
+                }
+              ),
           },
         }
       )
@@ -316,7 +341,7 @@ export function UsersList({
 
       {/* Count + select all */}
       <div className="mt-2 flex items-center gap-2">
-        {!isLoading && users.length > 0 && (
+        {canManage && !isLoading && users.length > 0 && (
           <Checkbox
             checked={allLoadedSelected ? true : someLoadedSelected ? 'indeterminate' : false}
             onCheckedChange={toggleSelectAll}
@@ -328,11 +353,11 @@ export function UsersList({
         </span>
       </div>
 
-      {/* Bulk segment action bar — only when one or more rows are checked */}
-      {selectedIds.size > 0 && (
+      {/* Bulk segment action bar — only when one or more visible rows are checked */}
+      {canManage && visibleSelectedIds.length > 0 && (
         <div className="mt-2">
           <UsersBulkSegmentBar
-            selectedCount={selectedIds.size}
+            selectedCount={visibleSelectedIds.length}
             manualSegments={manualSegments}
             onAdd={handleBulkAdd}
             onRemove={handleBulkRemove}
@@ -379,6 +404,7 @@ export function UsersList({
                 user={user}
                 isSelected={user.principalId === selectedUserId}
                 onClick={() => onSelectUser(user.principalId)}
+                canManage={canManage}
                 checked={selectedIds.has(user.principalId)}
                 onToggleCheck={() => toggleSelect(user.principalId)}
               />

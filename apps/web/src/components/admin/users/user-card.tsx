@@ -15,11 +15,20 @@ interface UserCardProps {
   user: PortalUserListItemView
   isSelected: boolean
   onClick: () => void
+  /** Gates the bulk-selection checkbox, matching the per-user segment editor's admin-only gate. */
+  canManage: boolean
   checked: boolean
   onToggleCheck: () => void
 }
 
-export function UserCard({ user, isSelected, onClick, checked, onToggleCheck }: UserCardProps) {
+export function UserCard({
+  user,
+  isSelected,
+  onClick,
+  canManage,
+  checked,
+  onToggleCheck,
+}: UserCardProps) {
   const totalActivity = user.postCount + user.commentCount + user.voteCount
 
   return (
@@ -33,13 +42,15 @@ export function UserCard({ user, isSelected, onClick, checked, onToggleCheck }: 
       onClick={onClick}
     >
       {/* Bulk-selection checkbox */}
-      <div className="flex items-center pt-2.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-        <Checkbox
-          checked={checked}
-          onCheckedChange={onToggleCheck}
-          aria-label={`Select ${user.name || 'this user'}`}
-        />
-      </div>
+      {canManage && (
+        <div className="flex items-center pt-2.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+          <Checkbox
+            checked={checked}
+            onCheckedChange={onToggleCheck}
+            aria-label={`Select ${user.name || 'this user'}`}
+          />
+        </div>
+      )}
 
       {/* Avatar */}
       <Avatar src={user.image} name={user.name} className="h-10 w-10 shrink-0" />

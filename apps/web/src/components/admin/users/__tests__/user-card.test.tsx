@@ -5,6 +5,7 @@
  * Covers:
  *   - Clicking the row selects the user for the detail panel
  *   - The selection checkbox toggles bulk-selection without opening the detail panel
+ *   - The checkbox is gated behind canManage, matching the per-user segment editor's gate
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
@@ -35,6 +36,7 @@ describe('<UserCard>', () => {
         user={USER}
         isSelected={false}
         onClick={onClick}
+        canManage
         checked={false}
         onToggleCheck={vi.fn()}
       />
@@ -45,7 +47,14 @@ describe('<UserCard>', () => {
 
   it('reflects the checked prop on the selection checkbox', () => {
     render(
-      <UserCard user={USER} isSelected={false} onClick={vi.fn()} checked onToggleCheck={vi.fn()} />
+      <UserCard
+        user={USER}
+        isSelected={false}
+        onClick={vi.fn()}
+        canManage
+        checked
+        onToggleCheck={vi.fn()}
+      />
     )
     expect(screen.getByRole('checkbox')).toBeChecked()
   })
@@ -58,6 +67,7 @@ describe('<UserCard>', () => {
         user={USER}
         isSelected={false}
         onClick={onClick}
+        canManage
         checked={false}
         onToggleCheck={onToggleCheck}
       />
@@ -65,5 +75,19 @@ describe('<UserCard>', () => {
     fireEvent.click(screen.getByRole('checkbox'))
     expect(onToggleCheck).toHaveBeenCalledTimes(1)
     expect(onClick).not.toHaveBeenCalled()
+  })
+
+  it('hides the selection checkbox when canManage is false', () => {
+    render(
+      <UserCard
+        user={USER}
+        isSelected={false}
+        onClick={vi.fn()}
+        canManage={false}
+        checked={false}
+        onToggleCheck={vi.fn()}
+      />
+    )
+    expect(screen.queryByRole('checkbox')).toBeNull()
   })
 })

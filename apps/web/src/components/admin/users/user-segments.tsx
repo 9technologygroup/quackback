@@ -89,8 +89,14 @@ export function UserSegmentBadges({
         action: {
           label: 'Undo',
           onClick: () => {
-            assignUsers.mutate({ segmentId, principalIds: [principalId] })
-            onSegmentsChange?.()
+            assignUsers.mutate(
+              { segmentId, principalIds: [principalId] },
+              {
+                onSuccess: () => onSegmentsChange?.(),
+                onError: () =>
+                  toast.error(`Failed to undo — ${segment?.name ?? 'segment'} was not restored`),
+              }
+            )
           },
         },
       })

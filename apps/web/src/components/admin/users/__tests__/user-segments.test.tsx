@@ -162,10 +162,50 @@ describe('<UserSegmentBadges>', () => {
     const [, options] = toastSuccess.mock.calls[0] as [string, { action: { onClick: () => void } }]
     options.action.onClick()
 
-    expect(assignMutate).toHaveBeenCalledWith({
-      segmentId: MANUAL_SEGMENT.id,
-      principalIds: [PRINCIPAL_ID],
-    })
+    expect(assignMutate).toHaveBeenCalledWith(
+      { segmentId: MANUAL_SEGMENT.id, principalIds: [PRINCIPAL_ID] },
+      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) })
+    )
+  })
+
+  it('calls onSegmentsChange again once the Undo re-assign succeeds', async () => {
+    const onSegmentsChange = vi.fn()
+    render(
+      <UserSegmentBadges
+        principalId={PRINCIPAL_ID}
+        segments={[MANUAL_SEGMENT]}
+        canManage
+        onSegmentsChange={onSegmentsChange}
+      />
+    )
+    fireEvent.click(screen.getByLabelText('Remove from Beta Testers'))
+    await waitFor(() => expect(onSegmentsChange).toHaveBeenCalledTimes(1))
+
+    const [, toastOptions] = toastSuccess.mock.calls[0] as [
+      string,
+      { action: { onClick: () => void } },
+    ]
+    toastOptions.action.onClick()
+    const [, mutateOptions] = assignMutate.mock.calls[0] as [unknown, { onSuccess: () => void }]
+    mutateOptions.onSuccess()
+
+    expect(onSegmentsChange).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows an error toast if the Undo re-assign itself fails', async () => {
+    render(<UserSegmentBadges principalId={PRINCIPAL_ID} segments={[MANUAL_SEGMENT]} canManage />)
+    fireEvent.click(screen.getByLabelText('Remove from Beta Testers'))
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled())
+
+    const [, toastOptions] = toastSuccess.mock.calls[0] as [
+      string,
+      { action: { onClick: () => void } },
+    ]
+    toastOptions.action.onClick()
+    const [, mutateOptions] = assignMutate.mock.calls[0] as [unknown, { onError: () => void }]
+    mutateOptions.onError()
+
+    expect(toastError).toHaveBeenCalledWith('Failed to undo — Beta Testers was not restored')
   })
 
   it('shows an error toast when removal fails', async () => {

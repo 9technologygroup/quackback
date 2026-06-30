@@ -351,6 +351,7 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
             onSelectSegment={handleSelectSegment}
             onClearSegments={handleClearSegments}
             onNewPerson={currentMemberRole === 'admin' ? () => setNewPersonOpen(true) : undefined}
+            canManage={currentMemberRole === 'admin'}
           />
         )}
       </UsersLayout>

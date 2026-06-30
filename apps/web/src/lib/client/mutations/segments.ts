@@ -15,13 +15,21 @@ import {
   evaluateSegmentFn,
   evaluateAllSegmentsFn,
 } from '@/lib/server/functions/admin'
+import { usersKeys } from '@/lib/client/hooks/use-users-queries'
 
 const SEGMENTS_KEY = ['admin', 'segments']
-const USERS_KEY = ['admin', 'users']
+// The route-loader suspense query is keyed ['admin', 'users', filters], but
+// the infinite-query/detail-query hooks that actually back the rendered
+// Users list and detail panel (usePortalUsers/useUserDetail) are keyed off
+// usersKeys.all (['users', ...]) — a sibling key, not a child of
+// ['admin', 'users']. Both must be invalidated or a segment membership
+// change leaves the visible list/detail stale despite a "success" toast.
+const ADMIN_USERS_KEY = ['admin', 'users']
 
 function invalidateSegmentQueries(queryClient: ReturnType<typeof useQueryClient>) {
   void queryClient.invalidateQueries({ queryKey: SEGMENTS_KEY })
-  void queryClient.invalidateQueries({ queryKey: USERS_KEY })
+  void queryClient.invalidateQueries({ queryKey: ADMIN_USERS_KEY })
+  void queryClient.invalidateQueries({ queryKey: usersKeys.all })
 }
 
 /** Create a new segment. */
