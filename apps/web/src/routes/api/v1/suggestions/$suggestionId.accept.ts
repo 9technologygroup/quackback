@@ -7,7 +7,7 @@ import {
 } from '@/lib/server/domains/api/responses'
 import { isTypeId, isValidTypeId } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
-import type { FeedbackSuggestionId, MergeSuggestionId } from '@quackback/ids'
+import type { FeedbackSuggestionId, PostMergeSuggestionId } from '@quackback/ids'
 
 export const Route = createFileRoute('/api/v1/suggestions/$suggestionId/accept')({
   server: {
@@ -26,10 +26,10 @@ export const Route = createFileRoute('/api/v1/suggestions/$suggestionId/accept')
           // Validate suggestion ID format
           if (
             !isValidTypeId(suggestionId, 'feedback_suggestion') &&
-            !isValidTypeId(suggestionId, 'merge_sug')
+            !isValidTypeId(suggestionId, 'post_merge_sug')
           ) {
             return badRequestResponse(
-              'Invalid suggestion ID format. Expected feedback_suggestion_xxx or merge_sug_xxx'
+              'Invalid suggestion ID format. Expected feedback_suggestion_xxx or post_merge_sug_xxx'
             )
           }
 
@@ -45,10 +45,10 @@ export const Route = createFileRoute('/api/v1/suggestions/$suggestionId/accept')
           }
 
           // Route to merge suggestion handler
-          if (isTypeId(suggestionId, 'merge_sug')) {
+          if (isTypeId(suggestionId, 'post_merge_sug')) {
             const { acceptMergeSuggestion } =
               await import('@/lib/server/domains/merge-suggestions/merge-suggestion.service')
-            await acceptMergeSuggestion(suggestionId as MergeSuggestionId, principalId, {
+            await acceptMergeSuggestion(suggestionId as PostMergeSuggestionId, principalId, {
               swapDirection: body.swapDirection,
             })
             return successResponse({ accepted: true, id: suggestionId })

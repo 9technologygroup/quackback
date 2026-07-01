@@ -79,7 +79,7 @@ export const ID_PREFIXES = {
   feedback_suggestion: 'feedback_suggestion',
 
   user_mapping: 'user_mapping',
-  merge_suggestion: 'merge_sug',
+  post_merge_suggestion: 'post_merge_sug',
   post_activity: 'post_activity',
 
   // ============================================

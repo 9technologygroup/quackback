@@ -26,6 +26,7 @@ const REMOVED_TABLES = [
   'chat_message_flags',
   'chat_tags',
   'tags',
+  'merge_suggestions',
 ]
 
 // A SQL keyword immediately followed by a dropped table name (optionally

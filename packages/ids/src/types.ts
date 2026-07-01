@@ -155,8 +155,8 @@ export type FeedbackSuggestionId = TypeId<'feedback_suggestion'>
 /** External user mapping ID - e.g., user_mapping_01h455vb4pex5vsknk084sn02q */
 export type ExternalUserMappingId = TypeId<'user_mapping'>
 
-/** Merge suggestion ID - e.g., merge_sug_01h455vb4pex5vsknk084sn02q */
-export type MergeSuggestionId = TypeId<'merge_sug'>
+/** Merge suggestion ID - e.g., post_merge_sug_01h455vb4pex5vsknk084sn02q */
+export type PostMergeSuggestionId = TypeId<'post_merge_sug'>
 
 // ============================================
 // Help Center Entity IDs
@@ -270,7 +270,7 @@ export interface EntityIdMap {
   feedback_suggestion: FeedbackSuggestionId
 
   user_mapping: ExternalUserMappingId
-  merge_suggestion: MergeSuggestionId
+  post_merge_suggestion: PostMergeSuggestionId
   roadmap: RoadmapId
   changelog: ChangelogId
   conversation: ConversationId

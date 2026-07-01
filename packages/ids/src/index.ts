@@ -104,7 +104,7 @@ export type {
   FeedbackSignalId,
   FeedbackSuggestionId,
   ExternalUserMappingId,
-  MergeSuggestionId,
+  PostMergeSuggestionId,
   // Help center entities
   HelpCenterCategoryId,
   HelpCenterArticleId,

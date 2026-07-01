@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { PostId, PrincipalId, MergeSuggestionId } from '@quackback/ids'
+import type { PostId, PrincipalId, PostMergeSuggestionId } from '@quackback/ids'
 
 // --- Mock tracking ---
 const insertValuesCalls: unknown[][] = []
@@ -117,7 +117,7 @@ describe('merge-suggestion.service', () => {
   const sourcePostId = 'post_source1' as PostId
   const targetPostId = 'post_target1' as PostId
   const principalId = 'principal_admin1' as PrincipalId
-  const suggestionId = 'merge_sug_test1' as MergeSuggestionId
+  const suggestionId = 'post_merge_sug_test1' as PostMergeSuggestionId
 
   describe('createMergeSuggestion', () => {
     it('should insert a merge suggestion with onConflictDoNothing', async () => {

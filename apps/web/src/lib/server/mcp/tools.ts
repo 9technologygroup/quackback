@@ -108,7 +108,7 @@ import type {
   ChangelogId,
   RoadmapId,
   FeedbackSuggestionId,
-  MergeSuggestionId,
+  PostMergeSuggestionId,
   HelpCenterArticleId,
   HelpCenterCategoryId,
   ConversationId,
@@ -529,7 +529,7 @@ const listSuggestionsSchema = {
 }
 
 const acceptSuggestionSchema = {
-  id: z.string().describe('Suggestion TypeID (feedback_suggestion_xxx or merge_sug_xxx)'),
+  id: z.string().describe('Suggestion TypeID (feedback_suggestion_xxx or post_merge_sug_xxx)'),
   edits: z
     .object({
       title: z.string().optional(),
@@ -545,14 +545,14 @@ const acceptSuggestionSchema = {
 const dismissSuggestionSchema = {
   id: z
     .string()
-    .describe('Suggestion TypeID to dismiss (feedback_suggestion_xxx or merge_sug_xxx)'),
+    .describe('Suggestion TypeID to dismiss (feedback_suggestion_xxx or post_merge_sug_xxx)'),
 }
 
 const restoreSuggestionSchema = {
   id: z
     .string()
     .describe(
-      'Suggestion TypeID to restore from dismissed to pending (feedback_suggestion_xxx or merge_sug_xxx)'
+      'Suggestion TypeID to restore from dismissed to pending (feedback_suggestion_xxx or post_merge_sug_xxx)'
     ),
 }
 
@@ -1672,8 +1672,8 @@ Examples:
 Examples:
 - Accept as-is: accept_suggestion({ id: "feedback_suggestion_01abc..." })
 - Accept with edits: accept_suggestion({ id: "feedback_suggestion_01abc...", edits: { title: "Better title" } })
-- Accept merge: accept_suggestion({ id: "merge_sug_01abc..." })
-- Accept merge swapped: accept_suggestion({ id: "merge_sug_01abc...", swapDirection: true })`,
+- Accept merge: accept_suggestion({ id: "post_merge_sug_01abc..." })
+- Accept merge swapped: accept_suggestion({ id: "post_merge_sug_01abc...", swapDirection: true })`,
     acceptSuggestionSchema,
     WRITE,
     async (args: AcceptSuggestionArgs): Promise<CallToolResult> => {
@@ -1683,8 +1683,8 @@ Examples:
       if (roleDenied) return roleDenied
       try {
         // Route to merge suggestion handler
-        if (isTypeId(args.id, 'merge_sug')) {
-          await acceptMergeSuggestion(args.id as MergeSuggestionId, auth.principalId, {
+        if (isTypeId(args.id, 'post_merge_sug')) {
+          await acceptMergeSuggestion(args.id as PostMergeSuggestionId, auth.principalId, {
             swapDirection: args.swapDirection,
           })
           return jsonResult({ accepted: true, id: args.id })
@@ -1694,7 +1694,7 @@ Examples:
         if (!isValidTypeId(args.id, 'feedback_suggestion')) {
           return errorResult(
             new Error(
-              'Invalid suggestion ID. Expected feedback_suggestion_xxx or merge_sug_xxx format.'
+              'Invalid suggestion ID. Expected feedback_suggestion_xxx or post_merge_sug_xxx format.'
             )
           )
         }
@@ -1742,7 +1742,7 @@ Examples:
 
 Examples:
 - Dismiss: dismiss_suggestion({ id: "feedback_suggestion_01abc..." })
-- Dismiss merge: dismiss_suggestion({ id: "merge_sug_01abc..." })`,
+- Dismiss merge: dismiss_suggestion({ id: "post_merge_sug_01abc..." })`,
     dismissSuggestionSchema,
     WRITE,
     async (args: DismissSuggestionArgs): Promise<CallToolResult> => {
@@ -1751,15 +1751,15 @@ Examples:
       const roleDenied = requireTeamRole(auth)
       if (roleDenied) return roleDenied
       try {
-        if (isTypeId(args.id, 'merge_sug')) {
-          await dismissMergeSuggestion(args.id as MergeSuggestionId, auth.principalId)
+        if (isTypeId(args.id, 'post_merge_sug')) {
+          await dismissMergeSuggestion(args.id as PostMergeSuggestionId, auth.principalId)
           return jsonResult({ dismissed: true, id: args.id })
         }
 
         if (!isValidTypeId(args.id, 'feedback_suggestion')) {
           return errorResult(
             new Error(
-              'Invalid suggestion ID. Expected feedback_suggestion_xxx or merge_sug_xxx format.'
+              'Invalid suggestion ID. Expected feedback_suggestion_xxx or post_merge_sug_xxx format.'
             )
           )
         }
@@ -1779,7 +1779,7 @@ Examples:
 
 Examples:
 - Restore: restore_suggestion({ id: "feedback_suggestion_01abc..." })
-- Restore merge: restore_suggestion({ id: "merge_sug_01abc..." })`,
+- Restore merge: restore_suggestion({ id: "post_merge_sug_01abc..." })`,
     restoreSuggestionSchema,
     WRITE,
     async (args: RestoreSuggestionArgs): Promise<CallToolResult> => {
@@ -1788,15 +1788,15 @@ Examples:
       const roleDenied = requireTeamRole(auth)
       if (roleDenied) return roleDenied
       try {
-        if (isTypeId(args.id, 'merge_sug')) {
-          await restoreMergeSuggestion(args.id as MergeSuggestionId, auth.principalId)
+        if (isTypeId(args.id, 'post_merge_sug')) {
+          await restoreMergeSuggestion(args.id as PostMergeSuggestionId, auth.principalId)
           return jsonResult({ restored: true, id: args.id })
         }
 
         if (!isValidTypeId(args.id, 'feedback_suggestion')) {
           return errorResult(
             new Error(
-              'Invalid suggestion ID. Expected feedback_suggestion_xxx or merge_sug_xxx format.'
+              'Invalid suggestion ID. Expected feedback_suggestion_xxx or post_merge_sug_xxx format.'
             )
           )
         }

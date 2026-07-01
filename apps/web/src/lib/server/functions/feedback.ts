@@ -171,8 +171,8 @@ export const acceptSuggestionFn = createServerFn({ method: 'POST' })
     try {
       const auth = await requireAuth({ permission: PERMISSIONS.SUGGESTION_MANAGE })
 
-      // Handle post-to-post merge suggestions (TypeID prefix: merge_sug)
-      if (isTypeId(data.id, 'merge_sug')) {
+      // Handle post-to-post merge suggestions (TypeID prefix: post_merge_sug)
+      if (isTypeId(data.id, 'post_merge_sug')) {
         const { acceptMergeSuggestion: acceptPostMerge } =
           await import('@/lib/server/domains/merge-suggestions/merge-suggestion.service')
         await acceptPostMerge(data.id, auth.principal.id as PrincipalId, {
@@ -231,8 +231,8 @@ export const dismissSuggestionFn = createServerFn({ method: 'POST' })
     try {
       const auth = await requireAuth({ permission: PERMISSIONS.SUGGESTION_MANAGE })
 
-      // Handle post-to-post merge suggestions (TypeID prefix: merge_sug)
-      if (isTypeId(data.id, 'merge_sug')) {
+      // Handle post-to-post merge suggestions (TypeID prefix: post_merge_sug)
+      if (isTypeId(data.id, 'post_merge_sug')) {
         const { dismissMergeSuggestion } =
           await import('@/lib/server/domains/merge-suggestions/merge-suggestion.service')
         await dismissMergeSuggestion(data.id, auth.principal.id as PrincipalId)
@@ -258,8 +258,8 @@ export const restoreSuggestionFn = createServerFn({ method: 'POST' })
     try {
       const auth = await requireAuth({ permission: PERMISSIONS.SUGGESTION_MANAGE })
 
-      // Handle post-to-post merge suggestions (TypeID prefix: merge_sug)
-      if (isTypeId(data.id, 'merge_sug')) {
+      // Handle post-to-post merge suggestions (TypeID prefix: post_merge_sug)
+      if (isTypeId(data.id, 'post_merge_sug')) {
         const { restoreMergeSuggestion } =
           await import('@/lib/server/domains/merge-suggestions/merge-suggestion.service')
         await restoreMergeSuggestion(data.id, auth.principal.id as PrincipalId)
