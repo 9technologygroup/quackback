@@ -11,6 +11,7 @@ import { NotFoundError } from '@/lib/shared/errors'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
 import type { PrincipalId } from '@quackback/ids'
 import { isTeamMember } from '@/lib/shared/roles'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 // Input validation schema for updating member role
 const updateMemberSchema = z.object({
@@ -54,9 +55,13 @@ export const Route = createFileRoute('/api/v1/principals/$principalId')({
        */
       GET: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.MEMBER_VIEW })
 
-          const principalId = parseTypeId<PrincipalId>(params.principalId, 'principal', 'principal ID')
+          const principalId = parseTypeId<PrincipalId>(
+            params.principalId,
+            'principal',
+            'principal ID'
+          )
 
           const result = await fetchTeamMemberWithUser(principalId)
 
@@ -72,9 +77,15 @@ export const Route = createFileRoute('/api/v1/principals/$principalId')({
        */
       PATCH: async ({ request, params }) => {
         try {
-          const { principalId: actingPrincipalId } = await withApiKeyAuth(request, { role: 'admin' })
+          const { principalId: actingPrincipalId } = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.MEMBER_MANAGE,
+          })
 
-          const principalId = parseTypeId<PrincipalId>(params.principalId, 'principal', 'principal ID')
+          const principalId = parseTypeId<PrincipalId>(
+            params.principalId,
+            'principal',
+            'principal ID'
+          )
 
           const body = await request.json()
           const parsed = updateMemberSchema.safeParse(body)
@@ -104,9 +115,15 @@ export const Route = createFileRoute('/api/v1/principals/$principalId')({
        */
       DELETE: async ({ request, params }) => {
         try {
-          const { principalId: actingPrincipalId } = await withApiKeyAuth(request, { role: 'admin' })
+          const { principalId: actingPrincipalId } = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.MEMBER_MANAGE,
+          })
 
-          const principalId = parseTypeId<PrincipalId>(params.principalId, 'principal', 'principal ID')
+          const principalId = parseTypeId<PrincipalId>(
+            params.principalId,
+            'principal',
+            'principal ID'
+          )
 
           const { removeTeamMember } =
             await import('@/lib/server/domains/principals/principal.service')

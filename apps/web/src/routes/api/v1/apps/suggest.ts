@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
 import { badRequestResponse, handleDomainError } from '@/lib/server/domains/api/responses'
 import { fromUuid, type SegmentId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { db, posts, boards } from '@/lib/server/db'
 import { and, desc, eq, isNull, sql } from 'drizzle-orm'
 import { appJsonResponse, preflightResponse } from '@/lib/server/integrations/apps/cors'
@@ -14,7 +15,7 @@ export const Route = createFileRoute('/api/v1/apps/suggest')({
 
       GET: async ({ request }) => {
         try {
-          const auth = await withApiKeyAuth(request, { role: 'team' })
+          const auth = await withApiKeyAuth(request, { permission: PERMISSIONS.POST_VIEW_PRIVATE })
           const url = new URL(request.url)
           const text = url.searchParams.get('text')?.trim()
           const limit = Math.min(Number(url.searchParams.get('limit')) || 5, 20)

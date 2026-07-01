@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   successResponse,
   noContentResponse,
@@ -60,9 +61,13 @@ export const Route = createFileRoute('/api/v1/help-center/categories/$categoryId
         if (!(await isFeatureEnabled('helpCenter'))) return notFoundResponse('Knowledge base')
 
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request)
 
-          const categoryId = parseTypeId<HelpCenterCategoryId>(params.categoryId, 'category', 'category ID')
+          const categoryId = parseTypeId<HelpCenterCategoryId>(
+            params.categoryId,
+            'category',
+            'category ID'
+          )
 
           const category = await getCategoryById(categoryId)
           return successResponse(formatCategory(category))
@@ -75,9 +80,13 @@ export const Route = createFileRoute('/api/v1/help-center/categories/$categoryId
         if (!(await isFeatureEnabled('helpCenter'))) return notFoundResponse('Knowledge base')
 
         try {
-          await withApiKeyAuth(request, { role: 'admin' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.HELP_CENTER_MANAGE })
 
-          const categoryId = parseTypeId<HelpCenterCategoryId>(params.categoryId, 'category', 'category ID')
+          const categoryId = parseTypeId<HelpCenterCategoryId>(
+            params.categoryId,
+            'category',
+            'category ID'
+          )
 
           const body = await request.json()
           const parsed = updateCategoryBody.safeParse(body)
@@ -99,9 +108,13 @@ export const Route = createFileRoute('/api/v1/help-center/categories/$categoryId
         if (!(await isFeatureEnabled('helpCenter'))) return notFoundResponse('Knowledge base')
 
         try {
-          await withApiKeyAuth(request, { role: 'admin' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.HELP_CENTER_MANAGE })
 
-          const categoryId = parseTypeId<HelpCenterCategoryId>(params.categoryId, 'category', 'category ID')
+          const categoryId = parseTypeId<HelpCenterCategoryId>(
+            params.categoryId,
+            'category',
+            'category ID'
+          )
 
           await deleteCategory(categoryId)
           return noContentResponse()

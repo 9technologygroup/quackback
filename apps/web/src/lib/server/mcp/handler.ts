@@ -124,7 +124,10 @@ export async function resolveAuthContext(request: Request): Promise<McpAuthConte
   if (token?.startsWith(API_KEY_PREFIX)) {
     let authResult
     try {
-      authResult = await withApiKeyAuth(request, { role: 'team' })
+      // A valid key authenticates the MCP request; per-tool MCP scopes provide
+      // authorization. (Mapping the coarse MCP scopes onto catalogue permission
+      // bundles + intersecting them with the key's scopes is a follow-up.)
+      authResult = await withApiKeyAuth(request)
     } catch (err) {
       if (!(err instanceof DomainException)) throw err
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }

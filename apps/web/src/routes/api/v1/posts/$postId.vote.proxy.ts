@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   successResponse,
   noContentResponse,
@@ -24,7 +25,9 @@ export const Route = createFileRoute('/api/v1/posts/$postId/vote/proxy')({
        */
       POST: async ({ request, params }) => {
         try {
-          const auth = await withApiKeyAuth(request, { role: 'team' })
+          const auth = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.POST_VOTE_ON_BEHALF,
+          })
           const { principalId: addedByPrincipalId } = auth
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')
@@ -84,7 +87,9 @@ export const Route = createFileRoute('/api/v1/posts/$postId/vote/proxy')({
        */
       DELETE: async ({ request, params }) => {
         try {
-          const { principalId: removedByPrincipalId } = await withApiKeyAuth(request, { role: 'team' })
+          const { principalId: removedByPrincipalId } = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.POST_VOTE_ON_BEHALF,
+          })
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')
 

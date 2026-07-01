@@ -12,6 +12,8 @@ import { UnauthorizedError, ForbiddenError, RateLimitError } from '@/lib/shared/
 import { db, principal, eq } from '@/lib/server/db'
 import type { PrincipalId } from '@quackback/ids'
 import { isAdmin, isTeamMember, type Role } from '@/lib/shared/roles'
+import { resolveActorPermissions } from '@/lib/server/policy/permissions'
+import type { PermissionKey } from '@/lib/shared/permissions'
 
 export type MemberRole = Role
 
@@ -87,11 +89,11 @@ export type AuthLevel = 'team' | 'admin'
  * @param options.role - Required role level: 'team' (admin or member) or 'admin' (admin only)
  *
  * @example
- * const { principalId } = await withApiKeyAuth(request, { role: 'team' })
+ * const { principalId } = await withApiKeyAuth(request, { permission: PERMISSIONS.POST_CREATE })
  */
 export async function withApiKeyAuth(
   request: Request,
-  options: { role: AuthLevel }
+  options?: { role: AuthLevel } | { permission: PermissionKey }
 ): Promise<ApiAuthContext> {
   const clientIp = getClientIp(request)
   const wantsImportMode = request.headers.get('x-import-mode') === 'true'
@@ -109,13 +111,24 @@ export async function withApiKeyAuth(
     )
   }
 
-  if (options.role === 'admin' && !isAdmin(auth.role)) {
-    throw new ForbiddenError('FORBIDDEN', 'Admin access required for this operation')
+  if (options && 'permission' in options) {
+    // A key's authority is its owner's permission set — the service principal's
+    // role preset. Per-key scope narrowing (owner permissions ∩ key scopes) is a
+    // future addition; today every key carries its owner's full authority, so
+    // this stays non-regressing vs the prior role inheritance.
+    if (!resolveActorPermissions(auth.role).has(options.permission)) {
+      throw new ForbiddenError('FORBIDDEN', `Requires the '${options.permission}' permission`)
+    }
+  } else if (options) {
+    if (options.role === 'admin' && !isAdmin(auth.role)) {
+      throw new ForbiddenError('FORBIDDEN', 'Admin access required for this operation')
+    }
+    if (options.role === 'team' && !isTeamMember(auth.role)) {
+      throw new ForbiddenError('FORBIDDEN', 'Team member access required for this operation')
+    }
   }
-
-  if (options.role === 'team' && !isTeamMember(auth.role)) {
-    throw new ForbiddenError('FORBIDDEN', 'Team member access required for this operation')
-  }
+  // No options: a valid key is required (authentication) but no authorization
+  // gate — for public reads whose data is already public.
 
   if (wantsImportMode && isAdmin(auth.role)) {
     auth.importMode = true

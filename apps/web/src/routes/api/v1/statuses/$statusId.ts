@@ -8,6 +8,7 @@ import {
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { StatusId } from '@quackback/ids'
 
 // Input validation schema - matches UpdateStatusInput from service
@@ -30,7 +31,7 @@ export const Route = createFileRoute('/api/v1/statuses/$statusId')({
        */
       GET: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request)
 
           const statusId = parseTypeId<StatusId>(params.statusId, 'status', 'status ID')
 
@@ -60,7 +61,7 @@ export const Route = createFileRoute('/api/v1/statuses/$statusId')({
        */
       PATCH: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.STATUS_MANAGE })
 
           const statusId = parseTypeId<StatusId>(params.statusId, 'status', 'status ID')
 
@@ -104,7 +105,7 @@ export const Route = createFileRoute('/api/v1/statuses/$statusId')({
        */
       DELETE: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.STATUS_MANAGE })
 
           const statusId = parseTypeId<StatusId>(params.statusId, 'status', 'status ID')
 

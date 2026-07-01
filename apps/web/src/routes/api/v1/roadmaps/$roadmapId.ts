@@ -9,6 +9,7 @@ import {
 } from '@/lib/server/domains/api/responses'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
 import type { RoadmapId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 // Input validation schema
 const updateRoadmapSchema = z.object({
@@ -26,7 +27,7 @@ export const Route = createFileRoute('/api/v1/roadmaps/$roadmapId')({
        */
       GET: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request)
 
           const roadmapId = parseTypeId<RoadmapId>(params.roadmapId, 'roadmap', 'roadmap ID')
 
@@ -54,7 +55,7 @@ export const Route = createFileRoute('/api/v1/roadmaps/$roadmapId')({
        */
       PATCH: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.ROADMAP_MANAGE })
 
           const roadmapId = parseTypeId<RoadmapId>(params.roadmapId, 'roadmap', 'roadmap ID')
 
@@ -95,7 +96,7 @@ export const Route = createFileRoute('/api/v1/roadmaps/$roadmapId')({
        */
       DELETE: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.ROADMAP_MANAGE })
 
           const roadmapId = parseTypeId<RoadmapId>(params.roadmapId, 'roadmap', 'roadmap ID')
 

@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   successResponse,
   noContentResponse,
@@ -35,7 +36,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId')({
        */
       GET: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.POST_VIEW_PRIVATE })
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')
 
@@ -99,7 +100,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId')({
        */
       PATCH: async ({ request, params }) => {
         try {
-          const auth = await withApiKeyAuth(request, { role: 'team' })
+          const auth = await withApiKeyAuth(request, { permission: PERMISSIONS.POST_MODERATE })
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')
 
@@ -162,7 +163,9 @@ export const Route = createFileRoute('/api/v1/posts/$postId')({
        */
       DELETE: async ({ request, params }) => {
         try {
-          const { principalId, role } = await withApiKeyAuth(request, { role: 'team' })
+          const { principalId, role } = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.POST_MODERATE,
+          })
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')
 

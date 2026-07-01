@@ -7,6 +7,7 @@ import {
   badRequestResponse,
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 // Input validation schema
 const createTagSchema = z.object({
@@ -28,7 +29,7 @@ export const Route = createFileRoute('/api/v1/tags/')({
        */
       GET: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request)
 
           // Import service function
           const { listTags } = await import('@/lib/server/domains/tags/tag.service')
@@ -55,7 +56,7 @@ export const Route = createFileRoute('/api/v1/tags/')({
        */
       POST: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.TAG_MANAGE })
 
           // Parse and validate body
           const body = await request.json()

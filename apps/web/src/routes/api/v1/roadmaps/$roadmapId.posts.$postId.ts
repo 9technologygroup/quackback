@@ -3,6 +3,7 @@ import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
 import { noContentResponse, handleDomainError } from '@/lib/server/domains/api/responses'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
 import type { RoadmapId, PostId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export const Route = createFileRoute('/api/v1/roadmaps/$roadmapId/posts/$postId')({
   server: {
@@ -13,7 +14,7 @@ export const Route = createFileRoute('/api/v1/roadmaps/$roadmapId/posts/$postId'
        */
       DELETE: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.ROADMAP_MANAGE })
 
           const roadmapId = parseTypeId<RoadmapId>(params.roadmapId, 'roadmap', 'roadmap ID')
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')

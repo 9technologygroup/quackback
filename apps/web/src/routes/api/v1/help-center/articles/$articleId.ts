@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   successResponse,
   noContentResponse,
@@ -73,7 +74,7 @@ export const Route = createFileRoute('/api/v1/help-center/articles/$articleId')(
         if (!(await isFeatureEnabled('helpCenter'))) return notFoundResponse('Knowledge base')
 
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request)
 
           const articleId = parseTypeId<HelpCenterArticleId>(
             params.articleId,
@@ -92,7 +93,7 @@ export const Route = createFileRoute('/api/v1/help-center/articles/$articleId')(
         if (!(await isFeatureEnabled('helpCenter'))) return notFoundResponse('Knowledge base')
 
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.HELP_CENTER_MANAGE })
 
           const articleId = parseTypeId<HelpCenterArticleId>(
             params.articleId,
@@ -150,8 +151,8 @@ export const Route = createFileRoute('/api/v1/help-center/articles/$articleId')(
         if (!(await isFeatureEnabled('helpCenter'))) return notFoundResponse('Knowledge base')
 
         try {
-          // Soft delete (deleteArticle sets deletedAt) — team OK.
-          await withApiKeyAuth(request, { role: 'team' })
+          // Soft delete (deleteArticle sets deletedAt).
+          await withApiKeyAuth(request, { permission: PERMISSIONS.HELP_CENTER_MANAGE })
 
           const articleId = parseTypeId<HelpCenterArticleId>(
             params.articleId,

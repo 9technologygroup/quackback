@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
 import { successResponse, handleDomainError } from '@/lib/server/domains/api/responses'
 import { encodeCursor, decodeCursor } from '@/lib/server/domains/api/responses'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 export const Route = createFileRoute('/api/v1/suggestions/')({
   server: {
@@ -12,7 +13,7 @@ export const Route = createFileRoute('/api/v1/suggestions/')({
        */
       GET: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.SUGGESTION_VIEW })
           const url = new URL(request.url)
 
           // Parse query params

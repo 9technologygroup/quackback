@@ -7,6 +7,7 @@ import {
   badRequestResponse,
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 
 // Input validation schema
 const createRoadmapSchema = z.object({
@@ -29,7 +30,7 @@ export const Route = createFileRoute('/api/v1/roadmaps/')({
        */
       GET: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request)
 
           // Import service function
           const { listRoadmaps } = await import('@/lib/server/domains/roadmaps/roadmap.service')
@@ -58,7 +59,7 @@ export const Route = createFileRoute('/api/v1/roadmaps/')({
        */
       POST: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.ROADMAP_MANAGE })
 
           // Parse and validate body
           const body = await request.json()

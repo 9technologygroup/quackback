@@ -8,6 +8,7 @@ import {
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { TagId } from '@quackback/ids'
 
 // Input validation schema
@@ -29,7 +30,7 @@ export const Route = createFileRoute('/api/v1/tags/$tagId')({
        */
       GET: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request)
 
           const tagId = parseTypeId<TagId>(params.tagId, 'tag', 'tag ID')
 
@@ -55,7 +56,7 @@ export const Route = createFileRoute('/api/v1/tags/$tagId')({
        */
       PATCH: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.TAG_MANAGE })
 
           const tagId = parseTypeId<TagId>(params.tagId, 'tag', 'tag ID')
 
@@ -94,7 +95,7 @@ export const Route = createFileRoute('/api/v1/tags/$tagId')({
        */
       DELETE: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.TAG_MANAGE })
 
           const tagId = parseTypeId<TagId>(params.tagId, 'tag', 'tag ID')
 

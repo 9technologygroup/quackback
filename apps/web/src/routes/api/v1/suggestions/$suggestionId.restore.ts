@@ -6,6 +6,7 @@ import {
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
 import { isTypeId, isValidTypeId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { FeedbackSuggestionId, MergeSuggestionId } from '@quackback/ids'
 
 export const Route = createFileRoute('/api/v1/suggestions/$suggestionId/restore')({
@@ -17,7 +18,9 @@ export const Route = createFileRoute('/api/v1/suggestions/$suggestionId/restore'
        */
       POST: async ({ request, params }) => {
         try {
-          const { principalId } = await withApiKeyAuth(request, { role: 'team' })
+          const { principalId } = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.SUGGESTION_MANAGE,
+          })
           const { suggestionId } = params
 
           // Validate suggestion ID format

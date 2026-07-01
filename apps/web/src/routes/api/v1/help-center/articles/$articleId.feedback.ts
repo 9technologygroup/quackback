@@ -23,9 +23,13 @@ export const Route = createFileRoute('/api/v1/help-center/articles/$articleId/fe
         if (!(await isFeatureEnabled('helpCenter'))) return notFoundResponse('Knowledge base')
 
         try {
-          const { principalId } = await withApiKeyAuth(request, { role: 'team' })
+          const { principalId } = await withApiKeyAuth(request)
 
-          const articleId = parseTypeId<HelpCenterArticleId>(params.articleId, 'article', 'article ID')
+          const articleId = parseTypeId<HelpCenterArticleId>(
+            params.articleId,
+            'article',
+            'article ID'
+          )
 
           const body = await request.json()
           const parsed = feedbackBody.safeParse(body)

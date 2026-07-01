@@ -9,6 +9,7 @@ import {
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { CommentId } from '@quackback/ids'
 
 // Input validation schema
@@ -26,7 +27,7 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
        */
       GET: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.POST_VIEW_PRIVATE })
 
           const commentId = parseTypeId<CommentId>(params.commentId, 'comment', 'comment ID')
 
@@ -58,7 +59,9 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
        */
       PATCH: async ({ request, params }) => {
         try {
-          const { principalId } = await withApiKeyAuth(request, { role: 'team' })
+          const { principalId } = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.COMMENT_MODERATE,
+          })
 
           const commentId = parseTypeId<CommentId>(params.commentId, 'comment', 'comment ID')
 
@@ -121,7 +124,9 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
        */
       DELETE: async ({ request, params }) => {
         try {
-          const { principalId } = await withApiKeyAuth(request, { role: 'team' })
+          const { principalId } = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.COMMENT_MODERATE,
+          })
 
           const commentId = parseTypeId<CommentId>(params.commentId, 'comment', 'comment ID')
 

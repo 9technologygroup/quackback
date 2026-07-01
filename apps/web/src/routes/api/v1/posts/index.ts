@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { InternalError, NotFoundError, ValidationError } from '@/lib/shared/errors'
 import {
   successResponse,
@@ -37,7 +38,7 @@ export const Route = createFileRoute('/api/v1/posts/')({
        */
       GET: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.POST_VIEW_PRIVATE })
 
           const url = new URL(request.url)
 
@@ -128,7 +129,7 @@ export const Route = createFileRoute('/api/v1/posts/')({
        */
       POST: async ({ request }) => {
         try {
-          const auth = await withApiKeyAuth(request, { role: 'team' })
+          const auth = await withApiKeyAuth(request, { permission: PERMISSIONS.POST_CREATE })
 
           const body = await request.json()
           const parsed = createPostSchema.safeParse(body)
