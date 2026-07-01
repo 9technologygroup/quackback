@@ -103,7 +103,7 @@ vi.mock('@/lib/server/db', () => {
     c.returning = vi.fn(async () => {
       if (label === 'chat_messages') {
         const last = insertedMessages.at(-1) ?? {}
-        return [{ ...last, id: 'chat_msg_new', createdAt: new Date() }]
+        return [{ ...last, id: 'conversation_msg_new', createdAt: new Date() }]
       }
       return []
     })
@@ -203,7 +203,7 @@ describe('addAgentNote', () => {
       authorPrincipalId: string
     }
     expect(arg.mentionedIds).toEqual(new Set(['principal_p1']))
-    expect(arg.conversationMessageId).toBe('chat_msg_new')
+    expect(arg.conversationMessageId).toBe('conversation_msg_new')
     expect(arg.conversationId).toBe(conversationId)
     expect(arg.authorPrincipalId).toBe(agent.principalId)
   })

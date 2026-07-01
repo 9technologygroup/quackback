@@ -103,7 +103,10 @@ export const Route = createFileRoute('/admin/inbox')({
     c: typeof search.c === 'string' ? search.c : undefined,
     // Only accept a well-formed chat-message id — a stray `?m=` is harmless
     // (the thread just won't find it), but validating keeps it tidy.
-    m: typeof search.m === 'string' && isValidTypeId(search.m, 'chat_msg') ? search.m : undefined,
+    m:
+      typeof search.m === 'string' && isValidTypeId(search.m, 'conversation_msg')
+        ? search.m
+        : undefined,
     // Allowlist tracks CONVERSATION_VIEWS (incl. 'saved') so deep-links can't
     // silently drop a real view and fall back to the conversation list.
     view: isInboxView(search.view) ? search.view : undefined,

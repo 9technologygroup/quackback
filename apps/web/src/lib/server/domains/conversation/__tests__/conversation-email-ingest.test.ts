@@ -104,7 +104,7 @@ describe('ingestInboundEmail', () => {
   })
 
   it('is a no-op for a redelivered Message-ID (idempotency)', async () => {
-    dupeRows = [{ id: 'chat_msg_existing' }]
+    dupeRows = [{ id: 'conversation_msg_existing' }]
 
     const result = await ingestInboundEmail(baseEvent)
 

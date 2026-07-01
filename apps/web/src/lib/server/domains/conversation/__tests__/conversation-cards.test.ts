@@ -102,7 +102,7 @@ vi.mock('@/lib/server/db', () => {
     c.returning = vi.fn(async () => {
       if (label === 'chat_messages') {
         const last = insertedMessages.at(-1) ?? {}
-        return [{ ...last, id: 'chat_msg_new', createdAt: new Date() }]
+        return [{ ...last, id: 'conversation_msg_new', createdAt: new Date() }]
       }
       if (label === 'conversations') {
         return [{ ...conversationRow }]

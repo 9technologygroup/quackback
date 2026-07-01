@@ -2363,7 +2363,7 @@ describe('MCP HTTP Handler', () => {
         await import('@/lib/server/domains/conversation/conversation.service')
       vi.mocked(sendAgentMessage).mockResolvedValue({
         message: {
-          id: 'chat_msg_1',
+          id: 'conversation_msg_1',
           conversationId: 'conversation_1',
           createdAt: '2026-06-05T00:00:00.000Z',
         },
@@ -2413,7 +2413,7 @@ describe('MCP HTTP Handler', () => {
     it('suggest_post calls suggestPost with the caller as agent', async () => {
       const handle = await initializeSession()
       const { suggestPost } = await import('@/lib/server/domains/conversation/conversation.cards')
-      vi.mocked(suggestPost).mockResolvedValue({ messageId: 'chat_msg_2' } as never)
+      vi.mocked(suggestPost).mockResolvedValue({ messageId: 'conversation_msg_2' } as never)
 
       await handle(
         mcpRequest(
@@ -2446,7 +2446,7 @@ describe('MCP HTTP Handler', () => {
       const handle = await initializeSession()
       const { sharePost } = await import('@/lib/server/domains/conversation/conversation.cards')
       vi.mocked(sharePost).mockResolvedValue({
-        message: { id: 'chat_msg_3', conversationId: 'conversation_1' },
+        message: { id: 'conversation_msg_3', conversationId: 'conversation_1' },
         conversation: { id: 'conversation_1', status: 'open' },
       } as never)
 

@@ -94,7 +94,7 @@ export const conversations = pgTable(
 export const conversationMessages = pgTable(
   'conversation_messages',
   {
-    id: typeIdWithDefault('chat_msg')('id').primaryKey(),
+    id: typeIdWithDefault('conversation_msg')('id').primaryKey(),
     conversationId: typeIdColumn('conversation')('conversation_id')
       .notNull()
       .references(() => conversations.id, { onDelete: 'cascade' }),
@@ -193,8 +193,8 @@ export const conversationTagAssignments = pgTable(
 export const conversationMessageMentions = pgTable(
   'conversation_message_mentions',
   {
-    id: typeIdWithDefault('chat_msg_mention')('id').primaryKey(),
-    conversationMessageId: typeIdColumn('chat_msg')('conversation_message_id')
+    id: typeIdWithDefault('conversation_msg_mention')('id').primaryKey(),
+    conversationMessageId: typeIdColumn('conversation_msg')('conversation_message_id')
       .notNull()
       .references(() => conversationMessages.id, { onDelete: 'cascade' }),
     principalId: typeIdColumn('principal')('principal_id')
@@ -225,7 +225,7 @@ export const conversationMessageReactions = pgTable(
   'conversation_message_reactions',
   {
     id: typeIdWithDefault('reaction')('id').primaryKey(),
-    conversationMessageId: typeIdColumn('chat_msg')('conversation_message_id')
+    conversationMessageId: typeIdColumn('conversation_msg')('conversation_message_id')
       .notNull()
       .references(() => conversationMessages.id, { onDelete: 'cascade' }),
     // Required — only authenticated team members can react.
@@ -255,7 +255,7 @@ export const conversationMessageReactions = pgTable(
 export const conversationMessageFlags = pgTable(
   'conversation_message_flags',
   {
-    conversationMessageId: typeIdColumn('chat_msg')('conversation_message_id')
+    conversationMessageId: typeIdColumn('conversation_msg')('conversation_message_id')
       .notNull()
       .references(() => conversationMessages.id, { onDelete: 'cascade' }),
     principalId: typeIdColumn('principal')('principal_id')

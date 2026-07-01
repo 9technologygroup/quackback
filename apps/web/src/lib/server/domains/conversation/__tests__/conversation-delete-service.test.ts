@@ -97,14 +97,14 @@ beforeEach(() => {
 describe('deleteConversationMessage publish routing', () => {
   it('broadcasts a public message deletion to the visitor channel', async () => {
     messageRow = {
-      id: 'chat_msg_1',
+      id: 'conversation_msg_1',
       conversationId: 'conversation_1',
       senderType: 'agent',
       principalId: 'principal_agent',
       isInternal: false,
       deletedAt: null,
     }
-    await deleteConversationMessage('chat_msg_1' as ConversationMessageId, agentActor)
+    await deleteConversationMessage('conversation_msg_1' as ConversationMessageId, agentActor)
     expect(publishConversationEvent).toHaveBeenCalledTimes(1)
     expect(publishAgentConversationEvent).not.toHaveBeenCalled()
     // A public deletion fires the public message.deleted webhook.
@@ -113,14 +113,14 @@ describe('deleteConversationMessage publish routing', () => {
 
   it('keeps an internal-note deletion on the agent inbox channel only', async () => {
     messageRow = {
-      id: 'chat_msg_note',
+      id: 'conversation_msg_note',
       conversationId: 'conversation_1',
       senderType: 'agent',
       principalId: 'principal_agent',
       isInternal: true,
       deletedAt: null,
     }
-    await deleteConversationMessage('chat_msg_note' as ConversationMessageId, agentActor)
+    await deleteConversationMessage('conversation_msg_note' as ConversationMessageId, agentActor)
     expect(publishAgentConversationEvent).toHaveBeenCalledTimes(1)
     expect(publishConversationEvent).not.toHaveBeenCalled()
     // The note never reached the visitor, so its deletion fires no public webhook.

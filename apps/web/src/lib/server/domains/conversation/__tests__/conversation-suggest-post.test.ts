@@ -130,7 +130,7 @@ vi.mock('@/lib/server/db', () => {
     c.returning = vi.fn(async () => {
       if (label === 'chat_messages') {
         const last = insertedMessages.at(-1) ?? {}
-        return [{ ...last, id: 'chat_msg_note', createdAt: new Date() }]
+        return [{ ...last, id: 'conversation_msg_note', createdAt: new Date() }]
       }
       return [conversationRow()]
     })
@@ -215,7 +215,7 @@ describe('suggestPost', () => {
       { agentActor, agentPrincipalId, agent }
     )
 
-    expect(res.messageId).toBe('chat_msg_note')
+    expect(res.messageId).toBe('conversation_msg_note')
 
     // The persisted row is an agent-authored INTERNAL note (never sent to the
     // visitor) carrying the suggestion payload under metadata.postSuggestion.

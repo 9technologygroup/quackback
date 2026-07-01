@@ -19,13 +19,17 @@ describe('buildAdminChatRows', () => {
 
   it('prepends load-older and keys messages by id, in order', () => {
     const rows = buildAdminChatRows({
-      messages: [msg('chat_msg_a'), msg('chat_msg_b')],
+      messages: [msg('conversation_msg_a'), msg('conversation_msg_b')],
       hasMoreOlder: true,
       firstUnreadId: null,
       showSeen: false,
       showTyping: false,
     })
-    expect(rows.map((r) => r.key)).toEqual(['load-older', 'chat_msg_a', 'chat_msg_b'])
+    expect(rows.map((r) => r.key)).toEqual([
+      'load-older',
+      'conversation_msg_a',
+      'conversation_msg_b',
+    ])
   })
 
   it('inserts the unread divider immediately before the first unread message', () => {

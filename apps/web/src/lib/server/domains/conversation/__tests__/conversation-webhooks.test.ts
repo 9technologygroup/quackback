@@ -64,7 +64,7 @@ const anonAuthor: ConversationAuthorInput = {
 }
 
 const message = {
-  id: 'chat_msg_1',
+  id: 'conversation_msg_1',
   conversationId: 'conversation_1',
   principalId: 'principal_v',
   senderType: 'visitor',
@@ -101,7 +101,7 @@ describe('chat.webhooks emit helpers', () => {
     await emitMessageCreated(visitorActor, anonAuthor, message, baseConversation)
     const [, msgArg, convRefArg] = dispatch.dispatchMessageCreated.mock.calls[0]
     expect(msgArg).toMatchObject({
-      id: 'chat_msg_1',
+      id: 'conversation_msg_1',
       senderType: 'visitor',
       authorName: 'A visitor',
       authorEmail: null,
@@ -224,7 +224,7 @@ describe('chat.webhooks emit helpers', () => {
     await emitMessageDeleted(visitorActor, message, baseConversation)
     expect(dispatch.dispatchMessageDeleted).toHaveBeenCalledTimes(1)
     const [, msgRef, convRef] = dispatch.dispatchMessageDeleted.mock.calls[0]
-    expect(msgRef).toEqual({ id: 'chat_msg_1', conversationId: 'conversation_1' })
+    expect(msgRef).toEqual({ id: 'conversation_msg_1', conversationId: 'conversation_1' })
     expect(convRef).toEqual({
       id: 'conversation_1',
       status: 'open',

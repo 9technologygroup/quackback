@@ -95,7 +95,7 @@ describe('markConversationUnreadFromMessage', () => {
   it('publishes the backward read watermark on the inbox channel only', async () => {
     await markConversationUnreadFromMessage(
       'conversation_1' as ConversationId,
-      'chat_msg_1' as ConversationMessageId,
+      'conversation_msg_1' as ConversationMessageId,
       agent
     )
     expect(publishAgentConversationEvent).toHaveBeenCalledTimes(1)
@@ -111,7 +111,7 @@ describe('markConversationUnreadFromMessage', () => {
     await expect(
       markConversationUnreadFromMessage(
         'conversation_1' as ConversationId,
-        'chat_msg_1' as ConversationMessageId,
+        'conversation_msg_1' as ConversationMessageId,
         visitor
       )
     ).rejects.toThrow()
@@ -123,7 +123,7 @@ describe('markConversationUnreadFromMessage', () => {
     await expect(
       markConversationUnreadFromMessage(
         'conversation_1' as ConversationId,
-        'chat_msg_missing' as ConversationMessageId,
+        'conversation_msg_missing' as ConversationMessageId,
         agent
       )
     ).rejects.toThrow()

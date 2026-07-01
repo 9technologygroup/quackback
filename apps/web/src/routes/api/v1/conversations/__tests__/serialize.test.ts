@@ -55,7 +55,7 @@ describe('serializeConversation', () => {
 describe('serializeMessage', () => {
   it('maps an agent message', () => {
     const m = {
-      id: 'chat_msg_1',
+      id: 'conversation_msg_1',
       conversationId: 'conversation_1',
       senderType: 'agent',
       content: 'hello',
@@ -68,7 +68,7 @@ describe('serializeMessage', () => {
       systemEvent: null,
     } as unknown as ConversationMessageDTO
     expect(serializeMessage(m)).toEqual({
-      id: 'chat_msg_1',
+      id: 'conversation_msg_1',
       conversationId: 'conversation_1',
       senderType: 'agent',
       isInternal: false,
@@ -81,7 +81,7 @@ describe('serializeMessage', () => {
 
   it('handles a system message with no author', () => {
     const m = {
-      id: 'chat_msg_2',
+      id: 'conversation_msg_2',
       conversationId: 'conversation_1',
       senderType: 'system',
       content: 'Chat ended',

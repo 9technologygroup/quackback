@@ -34,7 +34,7 @@ const convRef: EventConversationRef = {
   priority: 'none',
 }
 const msg: EventMessageData = {
-  id: 'chat_msg_1',
+  id: 'conversation_msg_1',
   conversationId: 'conversation_1',
   senderType: 'visitor',
   authorPrincipalId: 'principal_v',

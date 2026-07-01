@@ -80,7 +80,7 @@ vi.mock('@/lib/server/domains/notifications/notification.service', () => ({
 
 const { syncConversationMessageMentions } = await import('../sync-conversation-mentions')
 
-const MESSAGE_ID = 'chat_msg_test' as ConversationMessageId
+const MESSAGE_ID = 'conversation_msg_test' as ConversationMessageId
 const CONVERSATION_ID = 'conversation_test' as ConversationId
 const AUTHOR = 'principal_author' as PrincipalId
 const P1 = 'principal_one' as PrincipalId

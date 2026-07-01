@@ -98,7 +98,7 @@ import { isNull, eq } from '@/lib/server/db'
 const visitorId = 'principal_visitor' as PrincipalId
 const agentId = 'principal_agent' as PrincipalId
 const conversationId = 'conversation_1' as ConversationId
-const messageId = 'chat_msg_1' as ConversationMessageId
+const messageId = 'conversation_msg_1' as ConversationMessageId
 
 const visitorAuthor: ConversationAuthorDTO = {
   principalId: visitorId,
