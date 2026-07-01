@@ -11,7 +11,7 @@ import {
   isNull,
   sql,
   comments,
-  commentEditHistory,
+  postCommentEditHistory,
   posts,
   type Comment,
 } from '@/lib/server/db'
@@ -212,7 +212,7 @@ export async function userEditComment(
 
   const updatedComment = await db.transaction(async (tx) => {
     if (actor.principalId) {
-      await tx.insert(commentEditHistory).values({
+      await tx.insert(postCommentEditHistory).values({
         commentId,
         editorPrincipalId: actor.principalId,
         previousContent: existingComment.content,

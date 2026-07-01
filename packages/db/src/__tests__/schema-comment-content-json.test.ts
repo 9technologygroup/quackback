@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { comments, commentEditHistory } from '../schema/posts'
+import { comments, postCommentEditHistory } from '../schema/posts'
 
 describe('comments.contentJson column', () => {
   it('is exposed on the schema (mirrors posts.contentJson for the rich editor)', () => {
@@ -8,9 +8,9 @@ describe('comments.contentJson column', () => {
   })
 })
 
-describe('commentEditHistory.previousContentJson column', () => {
+describe('postCommentEditHistory.previousContentJson column', () => {
   it('is exposed on the schema (mirrors postEditHistory.previousContentJson)', () => {
-    const col = (commentEditHistory as unknown as Record<string, unknown>).previousContentJson
+    const col = (postCommentEditHistory as unknown as Record<string, unknown>).previousContentJson
     expect(col).toBeDefined()
   })
 })

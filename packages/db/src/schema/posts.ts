@@ -338,8 +338,8 @@ export const postEditHistory = pgTable(
   ]
 )
 
-export const commentEditHistory = pgTable(
-  'comment_edit_history',
+export const postCommentEditHistory = pgTable(
+  'post_comment_edit_history',
   {
     id: typeIdWithDefault('comment_edit')('id').primaryKey(),
     commentId: typeIdColumn('comment')('comment_id')
@@ -353,8 +353,8 @@ export const commentEditHistory = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    index('comment_edit_history_comment_id_idx').on(table.commentId),
-    index('comment_edit_history_created_at_idx').on(table.createdAt),
+    index('post_comment_edit_history_comment_id_idx').on(table.commentId),
+    index('post_comment_edit_history_created_at_idx').on(table.createdAt),
   ]
 )
 
@@ -526,13 +526,13 @@ export const postEditHistoryRelations = relations(postEditHistory, ({ one }) => 
   }),
 }))
 
-export const commentEditHistoryRelations = relations(commentEditHistory, ({ one }) => ({
+export const commentEditHistoryRelations = relations(postCommentEditHistory, ({ one }) => ({
   comment: one(comments, {
-    fields: [commentEditHistory.commentId],
+    fields: [postCommentEditHistory.commentId],
     references: [comments.id],
   }),
   editor: one(principal, {
-    fields: [commentEditHistory.editorPrincipalId],
+    fields: [postCommentEditHistory.editorPrincipalId],
     references: [principal.id],
     relationName: 'commentEditHistoryEditor',
   }),

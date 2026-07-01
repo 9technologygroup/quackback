@@ -26,7 +26,7 @@ vi.mock('@/lib/server/db', () => ({
   isNull: vi.fn(),
   sql: vi.fn(),
   comments: { id: 'id', parentId: 'parent_id' },
-  commentEditHistory: {},
+  postCommentEditHistory: {},
   posts: {},
 }))
 

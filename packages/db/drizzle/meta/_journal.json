@@ -918,6 +918,13 @@
       "when": 1784073600000,
       "tag": "0130_post_comment_reactions_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 131,
+      "version": "7",
+      "when": 1784160000000,
+      "tag": "0131_post_comment_edit_history_rename",
+      "breakpoints": true
     }
   ]
 }

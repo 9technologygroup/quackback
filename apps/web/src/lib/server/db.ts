@@ -143,7 +143,7 @@ export {
   postStatusesRelations,
   STATUS_CATEGORIES,
   // Schema tables - posts
-  commentEditHistory,
+  postCommentEditHistory,
   commentEditHistoryRelations,
   postCommentReactions,
   commentReactionsRelations,

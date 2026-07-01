@@ -19,7 +19,7 @@ vi.mock('@/lib/server/db', async () => {
     const c: Record<string, unknown> = {}
     c.values = vi.fn((row: Record<string, unknown>) => {
       if (label === 'comments') insertedComments.push(row)
-      if (label === 'commentEditHistory') insertedEditHistory.push(row)
+      if (label === 'postCommentEditHistory') insertedEditHistory.push(row)
       return c
     })
     c.set = vi.fn((row: Record<string, unknown>) => {
@@ -117,7 +117,7 @@ vi.mock('@/lib/server/db', async () => {
     postStatuses: { id: 'id' },
     postActivity: {},
     postCommentReactions: {},
-    commentEditHistory: { __name: 'commentEditHistory' },
+    postCommentEditHistory: { __name: 'postCommentEditHistory' },
   }
 })
 
