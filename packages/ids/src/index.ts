@@ -68,7 +68,7 @@ export type {
   PostId,
   BoardId,
   PostCommentId,
-  VoteId,
+  PostVoteId,
   PostTagId,
   StatusId,
   ReactionId,

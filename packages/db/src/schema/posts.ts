@@ -198,7 +198,7 @@ export const postRoadmaps = pgTable(
 export const postVotes = pgTable(
   'post_votes',
   {
-    id: typeIdWithDefault('vote')('id').primaryKey(),
+    id: typeIdWithDefault('post_vote')('id').primaryKey(),
     postId: typeIdColumn('post')('post_id')
       .notNull()
       .references(() => posts.id, { onDelete: 'cascade' }),

@@ -56,7 +56,7 @@ export interface VoterInfo {
 export async function voteOnPost(postId: PostId, principalId: PrincipalId): Promise<VoteResult> {
   const postUuid = toUuid(postId)
   const principalUuid = toUuid(principalId)
-  const voteId = toUuid(createId('vote'))
+  const voteId = toUuid(createId('post_vote'))
   const subscriptionId = toUuid(createId('post_subscription'))
 
   // Single atomic CTE: validate post/board, toggle vote, update count, auto-subscribe
@@ -172,7 +172,7 @@ export async function addVoteOnBehalf(
 ): Promise<VoteResult> {
   const postUuid = toUuid(postId)
   const principalUuid = toUuid(principalId)
-  const voteId = toUuid(createId('vote'))
+  const voteId = toUuid(createId('post_vote'))
   const subscriptionId = toUuid(createId('post_subscription'))
 
   const sourceType = source?.type ?? null

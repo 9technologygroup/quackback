@@ -15,7 +15,7 @@ export const ID_PREFIXES = {
   post: 'post',
   board: 'board',
   post_comment: 'post_comment',
-  vote: 'vote',
+  post_vote: 'post_vote',
   post_tag: 'post_tag',
   status: 'status',
   reaction: 'reaction',

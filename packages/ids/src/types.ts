@@ -32,7 +32,7 @@ export type BoardId = TypeId<'board'>
 export type PostCommentId = TypeId<'post_comment'>
 
 /** Vote ID - e.g., vote_01h455vb4pex5vsknk084sn02q */
-export type VoteId = TypeId<'vote'>
+export type PostVoteId = TypeId<'post_vote'>
 
 /** PostTag ID - e.g., tag_01h455vb4pex5vsknk084sn02q */
 export type PostTagId = TypeId<'post_tag'>
@@ -243,7 +243,7 @@ export interface EntityIdMap {
   post: PostId
   board: BoardId
   post_comment: PostCommentId
-  vote: VoteId
+  post_vote: PostVoteId
   post_tag: PostTagId
   status: StatusId
   reaction: ReactionId

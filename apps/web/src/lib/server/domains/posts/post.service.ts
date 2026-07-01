@@ -239,7 +239,7 @@ export async function createPost(
 
     // Auto-upvote by the author
     await tx.insert(postVotes).values({
-      id: createId('vote'),
+      id: createId('post_vote'),
       postId: newPost.id,
       principalId: author.principalId,
     })

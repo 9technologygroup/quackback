@@ -455,7 +455,7 @@ async function main() {
 
     const boardId = createCandidate.board_id ?? featureBoard.id
     const newPostId = toUuid(generateId('post'))
-    const voteId = toUuid(generateId('vote'))
+    const voteId = toUuid(generateId('post_vote'))
 
     // Create post
     await sql`
