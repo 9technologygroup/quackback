@@ -76,7 +76,7 @@ export type {
   PostEditId,
   PostCommentEditId,
   PostMentionId,
-  NoteId,
+  PostNoteId,
   RoadmapId,
   ChangelogId,
   ConversationId,

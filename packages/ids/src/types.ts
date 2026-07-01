@@ -105,8 +105,8 @@ export type PostCommentEditId = TypeId<'post_comment_edit'>
 /** Post mention ID - e.g., post_mention_01h455vb4pex5vsknk084sn02q */
 export type PostMentionId = TypeId<'post_mention'>
 
-/** Internal staff note ID - e.g., note_01h455vb4pex5vsknk084sn02q */
-export type NoteId = TypeId<'note'>
+/** Internal staff note ID - e.g., post_note_01h455vb4pex5vsknk084sn02q */
+export type PostNoteId = TypeId<'post_note'>
 
 /** Segment ID - e.g., segment_01h455vb4pex5vsknk084sn02q */
 export type SegmentId = TypeId<'segment'>
@@ -253,7 +253,7 @@ export interface EntityIdMap {
   post_edit: PostEditId
   post_comment_edit: PostCommentEditId
   post_mention: PostMentionId
-  note: NoteId
+  post_note: PostNoteId
   segment: SegmentId
   user_attr: UserAttributeId
   role: RoleId

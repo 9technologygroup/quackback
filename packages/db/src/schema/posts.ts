@@ -362,7 +362,7 @@ export const postCommentEditHistory = pgTable(
 export const postNotes = pgTable(
   'post_notes',
   {
-    id: typeIdWithDefault('note')('id').primaryKey(),
+    id: typeIdWithDefault('post_note')('id').primaryKey(),
     postId: typeIdColumn('post')('post_id')
       .notNull()
       .references(() => posts.id, { onDelete: 'cascade' }),
