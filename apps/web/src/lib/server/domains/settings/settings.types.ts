@@ -433,22 +433,22 @@ export interface CannedReply {
 }
 
 /**
- * Chat settings (sub-section of WidgetConfig). Most fields are client-safe
- * and projected into PublicLiveChatConfig; `cannedReplies` is agent-only and is
+ * Messenger settings (sub-section of WidgetConfig). Most fields are client-safe
+ * and projected into PublicMessengerConfig; `cannedReplies` is agent-only and is
  * stripped from the public projection (see getPublicWidgetConfig).
  */
-export interface LiveChatConfig {
-  /** Master toggle for the chat tab + endpoints. */
+export interface MessengerConfig {
+  /** Master toggle for the messenger tab + endpoints. */
   enabled: boolean
-  /** Greeting shown when a visitor opens chat with no history. */
+  /** Greeting shown when a visitor opens the messenger with no history. */
   welcomeMessage?: string
   /** Shown when no agents are currently available to reply. */
   offlineMessage?: string
-  /** Heading shown for the chat tab/view (falls back to the workspace name). */
+  /** Heading shown for the messenger tab/view (falls back to the workspace name). */
   teamName?: string
   /** Weekly office hours; when enabled, drives the widget's away state + copy. */
   officeHours?: OfficeHoursConfig
-  /** Ask anonymous visitors for an email before chatting ('off' by default). */
+  /** Ask anonymous visitors for an email before messaging ('off' by default). */
   preChatEmail?: PreChatEmailMode
   /** Agent-only saved replies — NEVER projected into the public widget config. */
   cannedReplies?: CannedReply[]
@@ -461,8 +461,8 @@ export interface LiveChatConfig {
   }
 }
 
-/** Client-safe subset of LiveChatConfig (drops agent-only fields). */
-export type PublicLiveChatConfig = Omit<LiveChatConfig, 'cannedReplies' | 'routing'>
+/** Client-safe subset of MessengerConfig (drops agent-only fields). */
+export type PublicMessengerConfig = Omit<MessengerConfig, 'cannedReplies' | 'routing'>
 
 export interface WidgetConfig {
   enabled: boolean
@@ -481,8 +481,8 @@ export interface WidgetConfig {
     /** Show the aggregated Home tab (defaults to on; only appears with 2+ sections) */
     home?: boolean
   }
-  /** Chat settings */
-  chat?: LiveChatConfig
+  /** Messenger settings */
+  chat?: MessengerConfig
 }
 
 /**
@@ -495,11 +495,11 @@ export type PublicWidgetConfig = Pick<
 > & {
   /** Whether verified identity is required (derived from identifyVerification) */
   hmacRequired?: boolean
-  /** Client-safe chat config (no agent-only fields like cannedReplies). */
-  chat?: PublicLiveChatConfig
+  /** Client-safe messenger config (no agent-only fields like cannedReplies). */
+  chat?: PublicMessengerConfig
 }
 
-export const DEFAULT_LIVE_CHAT_CONFIG: LiveChatConfig = {
+export const DEFAULT_MESSENGER_CONFIG: MessengerConfig = {
   enabled: false,
   welcomeMessage: 'Hi! 👋 How can we help you today?',
   offlineMessage: "We're away right now. Leave a message and we'll get back to you by email.",
@@ -529,7 +529,7 @@ export const DEFAULT_WIDGET_CONFIG: WidgetConfig = {
     chat: false,
     home: true,
   },
-  chat: DEFAULT_LIVE_CHAT_CONFIG,
+  chat: DEFAULT_MESSENGER_CONFIG,
 }
 
 /**
@@ -547,7 +547,7 @@ export interface UpdateWidgetConfigInput {
     chat?: boolean
     home?: boolean
   }
-  chat?: Partial<LiveChatConfig>
+  chat?: Partial<MessengerConfig>
 }
 
 // =============================================================================

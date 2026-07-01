@@ -1,6 +1,6 @@
 /**
- * Support-surface gates. `isLiveChatEnabled` (settings.widget.ts) keeps gating
- * the widget chat surface; these compose it with the portal Support tab so the
+ * Support-surface gates. `isMessengerEnabled` (settings.widget.ts) keeps gating
+ * the widget messenger surface; these compose it with the portal Support tab so the
  * shared conversation paths (visitor send/read, SSE stream, inbound email)
  * stay alive when either surface is on.
  */
@@ -22,7 +22,7 @@ export async function isPortalSupportEnabled(): Promise<boolean> {
  * disabling the widget no longer kills the portal surface and vice versa.
  */
 export async function isConversationsEnabled(): Promise<boolean> {
-  const { isLiveChatEnabled } = await import('./settings.widget')
-  const [widget, portal] = await Promise.all([isLiveChatEnabled(), isPortalSupportEnabled()])
+  const { isMessengerEnabled } = await import('./settings.widget')
+  const [widget, portal] = await Promise.all([isMessengerEnabled(), isPortalSupportEnabled()])
   return widget || portal
 }

@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const hoisted = vi.hoisted(() => ({
   mockIsFeatureEnabled: vi.fn(),
   mockGetPortalConfig: vi.fn(),
-  mockIsLiveChatEnabled: vi.fn(),
+  mockIsMessengerEnabled: vi.fn(),
 }))
 
 vi.mock('../settings.service', () => ({
@@ -12,7 +12,7 @@ vi.mock('../settings.service', () => ({
 }))
 
 vi.mock('../settings.widget', () => ({
-  isLiveChatEnabled: hoisted.mockIsLiveChatEnabled,
+  isMessengerEnabled: hoisted.mockIsMessengerEnabled,
 }))
 
 import { isPortalSupportEnabled, isConversationsEnabled } from '../settings.support'
@@ -62,7 +62,7 @@ describe('isConversationsEnabled', () => {
   ])(
     'widget=$widget portalSupport=$portalSupport → $expected',
     async ({ widget, portalSupport, expected }) => {
-      hoisted.mockIsLiveChatEnabled.mockResolvedValue(widget)
+      hoisted.mockIsMessengerEnabled.mockResolvedValue(widget)
       hoisted.mockGetPortalConfig.mockResolvedValue({ support: { enabled: portalSupport } })
       expect(await isConversationsEnabled()).toBe(expected)
     }

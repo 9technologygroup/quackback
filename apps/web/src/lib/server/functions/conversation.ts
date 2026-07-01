@@ -204,9 +204,9 @@ export const sendConversationMessageFn = createServerFn({ method: 'POST' })
         // button, but a direct call must not bypass it): only on the first
         // message of a new conversation, for a visitor with no email on file.
         if (!data.conversationId && !data.visitorEmail && !realEmail(ctx.user?.email)) {
-          const { getLiveChatConfig } =
+          const { getMessengerConfig } =
             await import('@/lib/server/domains/settings/settings.widget')
-          const { preChatEmail } = await getLiveChatConfig()
+          const { preChatEmail } = await getMessengerConfig()
           if (preChatEmail === 'required') {
             throw new Error('An email is required to start a conversation')
           }
@@ -253,16 +253,16 @@ export const sendConversationMessageFn = createServerFn({ method: 'POST' })
  */
 export const getConversationPresenceFn = createServerFn({ method: 'GET' }).handler(
   async (): Promise<ConversationPresence> => {
-    const { getLiveChatConfig } = await import('@/lib/server/domains/settings/settings.widget')
+    const { getMessengerConfig } = await import('@/lib/server/domains/settings/settings.widget')
     const { isAnyAgentAvailable } = await import('@/lib/server/realtime/presence')
-    const [liveChatConfig, agentsOnline] = await Promise.all([
-      getLiveChatConfig(),
+    const [messengerConfig, agentsOnline] = await Promise.all([
+      getMessengerConfig(),
       isAnyAgentAvailable(),
     ])
     return {
       agentsOnline,
       // withinOfficeHours + (when closed) the ISO instant we're next back.
-      ...officeHoursSnapshot(liveChatConfig.officeHours, new Date()),
+      ...officeHoursSnapshot(messengerConfig.officeHours, new Date()),
     }
   }
 )
@@ -278,29 +278,29 @@ export const getMyConversationFn = createServerFn({ method: 'GET' })
   .validator(myChatSchema)
   .handler(async ({ data }) => {
     try {
-      const { getLiveChatConfig } = await import('@/lib/server/domains/settings/settings.widget')
+      const { getMessengerConfig } = await import('@/lib/server/domains/settings/settings.widget')
       const { isConversationsEnabled } =
         await import('@/lib/server/domains/settings/settings.support')
       const { getSettings } = await import('./workspace')
       const { isEmailConfigured } = await import('@quackback/email')
       const { canEmailVisitor } = await import('@/lib/shared/conversation/reply-capability')
-      const [enabled, liveChatConfig, appSettings] = await Promise.all([
+      const [enabled, messengerConfig, appSettings] = await Promise.all([
         isConversationsEnabled(),
-        getLiveChatConfig(),
+        getMessengerConfig(),
         getSettings(),
       ])
-      const preChatEmail = liveChatConfig.preChatEmail ?? 'off'
+      const preChatEmail = messengerConfig.preChatEmail ?? 'off'
       const emailConfigured = isEmailConfigured()
       // Note: team-availability presence is NOT returned here. The widget reads it
       // from the shared useConversationPresence query (getConversationPresenceFn) so every surface
       // agrees and only one poll runs — this fn is just the visitor's thread.
       const base = {
         enabled,
-        welcomeMessage: liveChatConfig.welcomeMessage ?? null,
-        offlineMessage: liveChatConfig.offlineMessage ?? null,
+        welcomeMessage: messengerConfig.welcomeMessage ?? null,
+        offlineMessage: messengerConfig.offlineMessage ?? null,
         // Falls back to the workspace name (as the settings help text promises)
         // when no team name is set.
-        teamName: liveChatConfig.teamName?.trim() || appSettings?.name || null,
+        teamName: messengerConfig.teamName?.trim() || appSettings?.name || null,
         preChatEmail,
         // Whether we already have a contact email — the widget skips the pre-chat
         // prompt when true.
@@ -582,9 +582,9 @@ function agentFromCtx(ctx: AuthContext) {
 export const getCannedRepliesFn = createServerFn({ method: 'GET' }).handler(async () => {
   try {
     await requireAuth({ permission: PERMISSIONS.CONVERSATION_REPLY })
-    const { getLiveChatConfig } = await import('@/lib/server/domains/settings/settings.widget')
-    const chat = await getLiveChatConfig()
-    return { cannedReplies: chat.cannedReplies ?? [] }
+    const { getMessengerConfig } = await import('@/lib/server/domains/settings/settings.widget')
+    const messenger = await getMessengerConfig()
+    return { cannedReplies: messenger.cannedReplies ?? [] }
   } catch (error) {
     log.error({ err: error }, 'get canned replies failed')
     throw error

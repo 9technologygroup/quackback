@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   DEFAULT_WIDGET_CONFIG,
-  DEFAULT_LIVE_CHAT_CONFIG,
+  DEFAULT_MESSENGER_CONFIG,
   type WidgetConfig,
   type UpdateWidgetConfigInput,
   type PublicWidgetConfig,
@@ -9,9 +9,9 @@ import {
 import { generateWidgetSecret } from '../settings.widget'
 
 describe('Widget Config Types', () => {
-  describe('DEFAULT_LIVE_CHAT_CONFIG', () => {
+  describe('DEFAULT_MESSENGER_CONFIG', () => {
     it('captures an email by default (optional) so offline replies can reach the visitor', () => {
-      expect(DEFAULT_LIVE_CHAT_CONFIG.preChatEmail).toBe('optional')
+      expect(DEFAULT_MESSENGER_CONFIG.preChatEmail).toBe('optional')
     })
   })
 

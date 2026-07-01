@@ -4,24 +4,24 @@ import { logger } from '@/lib/server/logger'
 import type {
   WidgetConfig,
   PublicWidgetConfig,
-  PublicLiveChatConfig,
+  PublicMessengerConfig,
   UpdateWidgetConfigInput,
-  LiveChatConfig,
+  MessengerConfig,
 } from './settings.types'
-import { DEFAULT_WIDGET_CONFIG, DEFAULT_LIVE_CHAT_CONFIG } from './settings.types'
+import { DEFAULT_WIDGET_CONFIG, DEFAULT_MESSENGER_CONFIG } from './settings.types'
 
 const log = logger.child({ component: 'settings-widget' })
 
-/** Drop agent-only fields (cannedReplies) from a chat config for public
+/** Drop agent-only fields (cannedReplies) from a messenger config for public
  *  exposure. Allowlist projection: new fields are excluded unless added here. */
-export function publicLiveChatConfig(chat: LiveChatConfig): PublicLiveChatConfig {
+export function publicMessengerConfig(messenger: MessengerConfig): PublicMessengerConfig {
   return {
-    enabled: chat.enabled,
-    welcomeMessage: chat.welcomeMessage,
-    offlineMessage: chat.offlineMessage,
-    teamName: chat.teamName,
-    officeHours: chat.officeHours,
-    preChatEmail: chat.preChatEmail,
+    enabled: messenger.enabled,
+    welcomeMessage: messenger.welcomeMessage,
+    offlineMessage: messenger.offlineMessage,
+    teamName: messenger.teamName,
+    officeHours: messenger.officeHours,
+    preChatEmail: messenger.preChatEmail,
   }
 }
 import {
@@ -81,7 +81,7 @@ export async function getPublicWidgetConfig(): Promise<PublicWidgetConfig> {
       },
       hmacRequired: config.identifyVerification ?? false,
       // Project only client-safe chat fields; cannedReplies is agent-only.
-      chat: publicLiveChatConfig(config.chat ?? DEFAULT_LIVE_CHAT_CONFIG),
+      chat: publicMessengerConfig(config.chat ?? DEFAULT_MESSENGER_CONFIG),
     }
   } catch (error) {
     log.error({ err: error }, 'get public widget config failed')
@@ -90,22 +90,22 @@ export async function getPublicWidgetConfig(): Promise<PublicWidgetConfig> {
 }
 
 /**
- * Resolve the chat config, deep-merged over defaults so callers always see
- * welcome/offline copy even for tenants whose stored config predates chat.
+ * Resolve the messenger config, deep-merged over defaults so callers always see
+ * welcome/offline copy even for tenants whose stored config predates messenger.
  */
-export async function getLiveChatConfig(): Promise<LiveChatConfig> {
+export async function getMessengerConfig(): Promise<MessengerConfig> {
   const widget = await getWidgetConfig()
-  return { ...DEFAULT_LIVE_CHAT_CONFIG, ...(widget.chat ?? {}) }
+  return { ...DEFAULT_MESSENGER_CONFIG, ...(widget.chat ?? {}) }
 }
 
 /**
- * Whether chat is enabled for this workspace. Gated first by the
+ * Whether messenger is enabled for this workspace. Gated first by the
  * experimental `chat` feature flag (off by default); below it the per-widget
- * master + chat toggles still apply. This is the single choke point the
- * widget-facing chat paths (send, stream, visitor history) already consult, so
+ * master + messenger toggles still apply. This is the single choke point the
+ * widget-facing messenger paths (send, stream, visitor history) already consult, so
  * flipping the flag off fails them all closed.
  */
-export async function isLiveChatEnabled(): Promise<boolean> {
+export async function isMessengerEnabled(): Promise<boolean> {
   const { isFeatureEnabled } = await import('./settings.service')
   const [flagOn, widget] = await Promise.all([isFeatureEnabled('supportInbox'), getWidgetConfig()])
   return Boolean(flagOn && widget.enabled && widget.chat?.enabled)

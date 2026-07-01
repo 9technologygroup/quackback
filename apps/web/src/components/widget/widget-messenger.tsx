@@ -7,7 +7,7 @@ import { getWidgetAuthHeaders } from '@/lib/client/widget-auth'
 import { useConversationPresence, markAgentPresentInCache } from './use-messenger-presence'
 import { useWidgetImageUpload } from '@/lib/client/hooks/use-image-upload'
 
-interface WidgetLiveChatProps {
+interface WidgetMessengerProps {
   /** Whether the help center is available (gates in-chat article suggestions). */
   helpEnabled?: boolean
   /** Open a help article by slug (switches the widget to the article view). */
@@ -20,7 +20,7 @@ interface WidgetLiveChatProps {
 }
 
 /**
- * The widget's chat tab: the shared visitor thread wired to widget-specific
+ * The widget's messenger tab: the shared visitor thread wired to widget-specific
  * concerns — Bearer-token auth, lazy anonymous session minting, the widget
  * upload endpoint, the shared presence query, and help-center deflection via
  * the widget KB search API.
@@ -30,7 +30,7 @@ export function WidgetMessenger({
   onArticleSelect,
   conversationTarget,
   linkPreviews = false,
-}: WidgetLiveChatProps = {}) {
+}: WidgetMessengerProps = {}) {
   const queryClient = useQueryClient()
   const { user, ensureSession, sessionVersion } = useWidgetAuth()
   // Presence (online/offline + office hours) comes from the one shared query —

@@ -3,12 +3,12 @@ import { getStrategy } from './routing.registry'
 import type { RoutingResult } from './routing.types'
 import { logger } from '@/lib/server/logger'
 
-const log = logger.child({ component: 'chat-routing' })
+const log = logger.child({ component: 'conversation-routing' })
 
-/** The routing config lives on the live-chat config (widget JSON); null = off. */
+/** The routing config lives on the messenger config (widget JSON); null = off. */
 async function getRoutingConfig() {
-  const { getLiveChatConfig } = await import('@/lib/server/domains/settings/settings.widget')
-  return (await getLiveChatConfig()).routing ?? null
+  const { getMessengerConfig } = await import('@/lib/server/domains/settings/settings.widget')
+  return (await getMessengerConfig()).routing ?? null
 }
 
 /**

@@ -27,11 +27,11 @@ import {
   DEFAULT_PORTAL_CONFIG,
   DEFAULT_DEVELOPER_CONFIG,
   DEFAULT_WIDGET_CONFIG,
-  DEFAULT_LIVE_CHAT_CONFIG,
+  DEFAULT_MESSENGER_CONFIG,
   DEFAULT_FEATURE_FLAGS,
   DEFAULT_HELP_CENTER_CONFIG,
 } from './settings.types'
-import { publicLiveChatConfig } from './settings.widget'
+import { publicMessengerConfig } from './settings.widget'
 import {
   parseJsonConfig,
   parseJsonOrNull,
@@ -815,7 +815,7 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
         hmacRequired: widgetConfig.identifyVerification ?? false,
         // Client-safe chat config — the widget gates its chat tab on chat.enabled,
         // so this must be projected here (cannedReplies stay agent-only).
-        chat: publicLiveChatConfig(widgetConfig.chat ?? DEFAULT_LIVE_CHAT_CONFIG),
+        chat: publicMessengerConfig(widgetConfig.chat ?? DEFAULT_MESSENGER_CONFIG),
       },
       featureFlags,
       brandingData,
