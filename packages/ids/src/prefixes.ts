@@ -45,7 +45,6 @@ export const ID_PREFIXES = {
   platform_cred: 'platform_cred',
   event_mapping: 'event_mapping',
   post_external_link: 'post_external_link',
-  sync_log: 'sync_log',
   slack_monitor: 'slack_monitor',
 
   // Notifications
@@ -99,13 +98,6 @@ export const ID_PREFIXES = {
   audit_log: 'audit',
   sso_recovery_code: 'rcode',
   identity_provider: 'idp',
-
-  // ============================================
-  // Billing
-  // ============================================
-
-  subscription: 'subscription',
-  invoice: 'invoice',
 
   // ============================================
   // API

@@ -87,7 +87,6 @@ export type {
   PlatformCredentialId,
   EventMappingId,
   PostExternalLinkId,
-  SyncLogId,
   PostSubscriptionId,
   NotifPrefId,
   UnsubTokenId,
@@ -124,9 +123,6 @@ export type {
   IdentityProviderId,
   ApiKeyId,
   WebhookId,
-  // Billing
-  SubscriptionId,
-  InvoiceId,
   // Utilities
   ExtractPrefix,
   EntityIdMap,
@@ -169,8 +165,6 @@ export {
   principalIdSchema,
   sessionIdSchema,
   inviteIdSchema,
-  subscriptionIdSchema,
-  invoiceIdSchema,
   domainIdSchema,
   segmentIdSchema,
   // Pre-built strict schemas - feedback aggregation
@@ -196,8 +190,6 @@ export {
   flexiblePrincipalIdSchema,
   flexibleSessionIdSchema,
   flexibleInviteIdSchema,
-  flexibleSubscriptionIdSchema,
-  flexibleInvoiceIdSchema,
   flexibleDomainIdSchema,
   // Pre-built flexible schemas - feedback aggregation
   flexibleFeedbackSourceIdSchema,

@@ -76,9 +76,6 @@ export type EventMappingId = TypeId<'event_mapping'>
 /** Post external link ID - e.g., post_external_link_01h455vb4pex5vsknk084sn02q */
 export type PostExternalLinkId = TypeId<'post_external_link'>
 
-/** Sync log ID - e.g., sync_log_01h455vb4pex5vsknk084sn02q */
-export type SyncLogId = TypeId<'sync_log'>
-
 /** Slack channel monitor ID - e.g., slack_monitor_01h455vb4pex5vsknk084sn02q */
 export type SlackMonitorId = TypeId<'slack_monitor'>
 
@@ -221,16 +218,6 @@ export type ApiKeyId = TypeId<'api_key'>
 export type WebhookId = TypeId<'webhook'>
 
 // ============================================
-// Billing Entity IDs
-// ============================================
-
-/** Subscription ID - e.g., subscription_01h455vb4pex5vsknk084sn02q */
-export type SubscriptionId = TypeId<'subscription'>
-
-/** Invoice ID - e.g., invoice_01h455vb4pex5vsknk084sn02q */
-export type InvoiceId = TypeId<'invoice'>
-
-// ============================================
 // Type Utilities
 // ============================================
 
@@ -282,7 +269,6 @@ export interface EntityIdMap {
   platform_cred: PlatformCredentialId
   event_mapping: EventMappingId
   post_external_link: PostExternalLinkId
-  sync_log: SyncLogId
   slack_monitor: SlackMonitorId
   post_subscription: PostSubscriptionId
   notif_pref: NotifPrefId
@@ -304,8 +290,6 @@ export interface EntityIdMap {
   identity_provider: IdentityProviderId
   api_key: ApiKeyId
   webhook: WebhookId
-  subscription: SubscriptionId
-  invoice: InvoiceId
   kb_category: KbCategoryId
   kb_article: KbArticleId
   kb_article_feedback: KbArticleFeedbackId
