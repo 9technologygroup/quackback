@@ -178,7 +178,7 @@ export function PostContentSection({
             onChange={handleContentChange}
             placeholder={intl.formatMessage({
               id: 'portal.postDetail.edit.detailsPlaceholder',
-              defaultMessage: 'Add more details...',
+              defaultMessage: 'Add more details... Type / for commands',
             })}
             minHeight="150px"
             disabled={isSaving}

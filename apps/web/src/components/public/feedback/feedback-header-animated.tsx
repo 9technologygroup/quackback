@@ -368,7 +368,7 @@ export function FeedbackHeaderAnimated({
                 onChange={handleContentChange}
                 placeholder={intl.formatMessage({
                   id: 'portal.feedback.header.detailsPlaceholder',
-                  defaultMessage: 'Add more details...',
+                  defaultMessage: 'Add more details... Type / for commands',
                 })}
                 minHeight="150px"
                 borderless

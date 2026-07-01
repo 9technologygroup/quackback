@@ -195,7 +195,7 @@ function AddFilterButton({
         key: 'tag',
         label: intl.formatMessage({
           id: 'portal.feedback.filter.category.tag',
-          defaultMessage: 'PostTag',
+          defaultMessage: 'Tag',
         }),
         icon: TagIcon,
       },
@@ -544,7 +544,7 @@ function buildActiveChips(args: {
           type: 'tags',
           label: intl.formatMessage({
             id: 'portal.feedback.filter.chip.tag',
-            defaultMessage: 'PostTag:',
+            defaultMessage: 'Tag:',
           }),
           value: tag.name,
           valueId: id,
