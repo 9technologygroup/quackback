@@ -41,7 +41,9 @@ function ChatImageNodeView({ node, selected, deleteNode }: ReactNodeViewProps) {
  * through any editor that has this node in its schema and renders on display
  * surfaces via the shared HTML serializer.
  */
-export const ChatImage = Node.create({
+export const ConversationImage = Node.create({
+  // Serialized into stored message contentJson; the string is a data contract
+  // and stays 'chatImage' until a Phase B migration rewrites existing content.
   name: 'chatImage',
   group: 'block',
   atom: true,

@@ -6,7 +6,7 @@ import { Extension } from '@tiptap/core'
  * style) plus explicit autolink + linkOnPaste, so typed and pasted URLs become
  * clickable links — the URL recognition mainstream chat apps have.
  */
-export const ChatLink = Link.configure({
+export const ConversationLink = Link.configure({
   openOnClick: false,
   autolink: true,
   linkOnPaste: true,

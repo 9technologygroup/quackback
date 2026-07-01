@@ -4,8 +4,8 @@ import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import type { Editor, JSONContent } from '@tiptap/core'
 import { QuackbackEmbed } from '@/components/ui/quackback-embed-extension'
-import { ChatImage } from '@/components/ui/chat-image-node'
-import { ChatLink, LinkBackspaceUnlink } from '@/components/ui/chat-link'
+import { ConversationImage } from '@/components/ui/conversation-image-node'
+import { ConversationLink, LinkBackspaceUnlink } from '@/components/ui/conversation-link'
 import {
   hasActiveSuggestion,
   createEmojiExtension,
@@ -49,7 +49,7 @@ export interface ChatRichComposerHandle {
  * A reusable, visitor-facing TipTap composer for chat. Modeled on the
  * internal-note editor but with team @-mentions removed (visitors can't mention
  * teammates) and inline images added: pasting/dropping an image uploads it and
- * inserts a removable {@link ChatImage} node, and pasting a Quackback link
+ * inserts a removable {@link ConversationImage} node, and pasting a Quackback link
  * becomes a live embed card.
  *
  * Enter submits, Shift+Enter inserts a line break — except while a suggestion
@@ -131,12 +131,12 @@ export const ChatRichComposer = forwardRef<ChatRichComposerHandle, ChatRichCompo
           emptyEditorClass: 'is-editor-empty',
         }),
         // Autolink typed/pasted URLs; Backspace at a link edge unlinks.
-        ChatLink,
+        ConversationLink,
         LinkBackspaceUnlink,
         // Pasting a Quackback post/changelog link becomes a live embed card.
         QuackbackEmbed.configure({ enablePaste: true }),
         // Inline, removable images inserted on paste/drop upload.
-        ChatImage,
+        ConversationImage,
         // `:`-triggered inline emoji picker (same as posts).
         createEmojiExtension(),
       ],
