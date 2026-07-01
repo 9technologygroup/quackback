@@ -739,6 +739,8 @@ export interface FeatureFlags {
   supportInbox: boolean
   /** External link preview cards in conversations (OG unfurling) */
   linkPreviews: boolean
+  /** Cookieless visitor + pageview analytics (portal and widget) */
+  visitorAnalytics: boolean
 }
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -746,6 +748,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   aiFeedbackExtraction: false,
   supportInbox: false,
   linkPreviews: false,
+  visitorAnalytics: false,
 }
 
 /**
@@ -772,6 +775,11 @@ export const FEATURE_FLAG_REGISTRY: Record<
     label: 'Link Previews',
     description: 'Show Open Graph preview cards below external links shared in conversations.',
   },
+  visitorAnalytics: {
+    label: 'Visitor Analytics',
+    description:
+      'Measure visitors and pageviews across your portal and widget without cookies or personal data.',
+  },
 }
 
 /**
@@ -794,5 +802,10 @@ export const LAB_SECTIONS: Array<{
     title: 'Feedback',
     description: 'Understand your feedback faster, with AI that sorts and categorizes it for you.',
     flags: ['aiFeedbackExtraction'],
+  },
+  {
+    title: 'Analytics',
+    description: 'Understand who visits your portal and widget, privately and without cookies.',
+    flags: ['visitorAnalytics'],
   },
 ]
