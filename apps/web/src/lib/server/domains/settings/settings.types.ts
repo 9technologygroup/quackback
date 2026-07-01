@@ -502,7 +502,7 @@ export type PublicWidgetConfig = Pick<
 export const DEFAULT_LIVE_CHAT_CONFIG: LiveChatConfig = {
   enabled: false,
   welcomeMessage: 'Hi! 👋 How can we help you today?',
-  offlineMessage: "We're away right now — leave a message and we'll get back to you by email.",
+  offlineMessage: "We're away right now. Leave a message and we'll get back to you by email.",
   // Default to capturing an email (optional, non-blocking) so an offline reply
   // can actually reach the visitor. 'off' left the common "type and leave" case
   // with no way to follow up.

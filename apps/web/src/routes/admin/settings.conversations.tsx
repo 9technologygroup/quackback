@@ -275,7 +275,7 @@ function ConversationsSettingsPage() {
               value={offlineMessage}
               maxLength={500}
               rows={2}
-              placeholder="We're away right now — leave a message and we'll get back to you by email."
+              placeholder="We're away right now. Leave a message and we'll get back to you by email."
               onChange={(e) => setOfflineMessage(e.target.value)}
               onBlur={() =>
                 persist('offlineMessage', { chat: { offlineMessage: offlineMessage.trim() } })

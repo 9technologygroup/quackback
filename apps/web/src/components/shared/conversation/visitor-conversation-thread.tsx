@@ -856,7 +856,7 @@ export function VisitorConversationThread({
             ) : (
               <FormattedMessage
                 id="widget.messenger.offline.noEmail"
-                defaultMessage="We're away right now — leave a message and we'll reply here when we're back."
+                defaultMessage="We're away right now. Leave a message and we'll reply here when we're back."
               />
             )}
           </p>

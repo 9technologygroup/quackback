@@ -446,7 +446,7 @@
   "widget.messenger.loadingOlder": "Loading…",
   "widget.messenger.offline": "We'll reply by email",
   "widget.messenger.offline.backAt": "Back {when}",
-  "widget.messenger.offline.noEmail": "We're away right now — leave a message and we'll reply here when we're back.",
+  "widget.messenger.offline.noEmail": "We're away right now. Leave a message and we'll reply here when we're back.",
   "widget.messenger.online": "We're online",
   "widget.messenger.placeholder": "Type your message…",
   "widget.messenger.seen": "Seen",
