@@ -8,6 +8,7 @@ import {
   SYSTEM_ROLES as DB_SYSTEM_ROLES,
   SYSTEM_ROLE_PERMISSIONS as DB_SYSTEM_ROLE_PERMISSIONS,
   WORKSPACE_ADMIN_PERMISSIONS as DB_WORKSPACE_ADMIN_PERMISSIONS,
+  PERMISSION_CATALOGUE as DB_PERMISSION_CATALOGUE,
   presetForLegacyRole as dbPresetForLegacyRole,
 } from '@/lib/server/db'
 import * as mirror from '../permissions'
@@ -42,5 +43,11 @@ describe('permission catalogue mirror', () => {
     for (const legacy of ['admin', 'member', 'user']) {
       expect(mirror.presetForLegacyRole(legacy)).toBe(dbPresetForLegacyRole(legacy))
     }
+  })
+
+  it('the catalogue (key, category) projection matches', () => {
+    const proj = (c: ReadonlyArray<{ key: string; category: string }>): string[] =>
+      c.map((p) => `${p.key}:${p.category}`).sort()
+    expect(proj(mirror.PERMISSION_CATALOGUE)).toEqual(proj(DB_PERMISSION_CATALOGUE))
   })
 })

@@ -170,3 +170,73 @@ export function presetForLegacyRole(role: string): SystemRoleKey | null {
   if (role === 'member') return SYSTEM_ROLES.MANAGER
   return null
 }
+
+/**
+ * Each permission's category, for the read-only Roles matrix UI. The
+ * (key, category) pairs mirror @quackback/db's PERMISSION_CATALOGUE; the drift
+ * test enforces the projection. Descriptions live only in the db catalogue.
+ */
+export const PERMISSION_CATALOGUE: ReadonlyArray<{
+  key: PermissionKey
+  category: PermissionCategory
+}> = [
+  { key: PERMISSIONS.SETTINGS_MANAGE, category: 'workspace' },
+  { key: PERMISSIONS.BILLING_MANAGE, category: 'workspace' },
+  { key: PERMISSIONS.ROLE_MANAGE, category: 'workspace' },
+  { key: PERMISSIONS.API_KEY_MANAGE, category: 'workspace' },
+  { key: PERMISSIONS.WEBHOOK_VIEW, category: 'workspace' },
+  { key: PERMISSIONS.WEBHOOK_MANAGE, category: 'workspace' },
+  { key: PERMISSIONS.AUTH_MANAGE, category: 'workspace' },
+  { key: PERMISSIONS.AUDIT_VIEW, category: 'workspace' },
+  { key: PERMISSIONS.MEMBER_VIEW, category: 'members' },
+  { key: PERMISSIONS.MEMBER_MANAGE, category: 'members' },
+  { key: PERMISSIONS.PEOPLE_VIEW, category: 'people' },
+  { key: PERMISSIONS.PEOPLE_MANAGE, category: 'people' },
+  { key: PERMISSIONS.COMPANY_VIEW, category: 'company' },
+  { key: PERMISSIONS.COMPANY_MANAGE, category: 'company' },
+  { key: PERMISSIONS.SEGMENT_VIEW, category: 'audience' },
+  { key: PERMISSIONS.SEGMENT_MANAGE, category: 'audience' },
+  { key: PERMISSIONS.USER_ATTRIBUTE_VIEW, category: 'audience' },
+  { key: PERMISSIONS.USER_ATTRIBUTE_MANAGE, category: 'audience' },
+  { key: PERMISSIONS.POST_VIEW_PRIVATE, category: 'feedback' },
+  { key: PERMISSIONS.POST_CREATE, category: 'feedback' },
+  { key: PERMISSIONS.POST_MODERATE, category: 'feedback' },
+  { key: PERMISSIONS.POST_APPROVE, category: 'feedback' },
+  { key: PERMISSIONS.POST_VOTE_ON_BEHALF, category: 'feedback' },
+  { key: PERMISSIONS.COMMENT_MODERATE, category: 'feedback' },
+  { key: PERMISSIONS.BOARD_MANAGE, category: 'feedback' },
+  { key: PERMISSIONS.ROADMAP_MANAGE, category: 'feedback' },
+  { key: PERMISSIONS.STATUS_VIEW, category: 'feedback' },
+  { key: PERMISSIONS.STATUS_MANAGE, category: 'feedback' },
+  { key: PERMISSIONS.TAG_VIEW, category: 'feedback' },
+  { key: PERMISSIONS.TAG_MANAGE, category: 'feedback' },
+  { key: PERMISSIONS.SUGGESTION_VIEW, category: 'feedback' },
+  { key: PERMISSIONS.SUGGESTION_MANAGE, category: 'feedback' },
+  { key: PERMISSIONS.CHANGELOG_VIEW_DRAFT, category: 'changelog' },
+  { key: PERMISSIONS.CHANGELOG_MANAGE, category: 'changelog' },
+  { key: PERMISSIONS.HELP_CENTER_MANAGE, category: 'help_center' },
+  { key: PERMISSIONS.CONVERSATION_VIEW, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_REPLY, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_NOTE, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_ASSIGN, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_MANAGE, category: 'conversation' },
+  { key: PERMISSIONS.ANALYTICS_VIEW, category: 'analytics' },
+  { key: PERMISSIONS.INTEGRATION_VIEW, category: 'integration' },
+  { key: PERMISSIONS.INTEGRATION_MANAGE, category: 'integration' },
+  { key: PERMISSIONS.TICKET_VIEW_ALL, category: 'support' },
+  { key: PERMISSIONS.TICKET_VIEW_ASSIGNED, category: 'support' },
+  { key: PERMISSIONS.TICKET_REPLY, category: 'support' },
+  { key: PERMISSIONS.TICKET_NOTE, category: 'support' },
+  { key: PERMISSIONS.TICKET_ASSIGN, category: 'support' },
+  { key: PERMISSIONS.SLA_MANAGE, category: 'support' },
+  { key: PERMISSIONS.INBOX_MANAGE, category: 'support' },
+  { key: PERMISSIONS.ROUTING_MANAGE, category: 'support' },
+  { key: PERMISSIONS.TEAM_MANAGE, category: 'support' },
+]
+
+/** The permission set a legacy role resolves to (client-side mirror of the
+ *  server resolver) — the source for `<PermissionGate>`. */
+export function permissionsForRole(role: string | null): ReadonlySet<PermissionKey> {
+  const preset = role ? presetForLegacyRole(role) : null
+  return new Set(preset ? SYSTEM_ROLE_PERMISSIONS[preset] : [])
+}
