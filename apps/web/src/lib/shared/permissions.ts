@@ -2,10 +2,10 @@
  * Client-safe mirror of the RBAC permission catalogue.
  *
  * The widget/portal client bundles can't import `@quackback/db` (it drags in
- * postgres), so the catalogue is duplicated here as plain data for the admin UI
- * and `<PermissionGate>`. A drift test (permissions-catalogue-drift.test.ts)
- * asserts this stays identical to the `@quackback/db` source of truth: edit the
- * catalogue there first, then mirror the change here.
+ * postgres), so the catalogue is duplicated here as plain data for the admin
+ * UI. A drift test (permissions-catalogue-drift.test.ts) asserts this stays
+ * identical to the `@quackback/db` source of truth: edit the catalogue there
+ * first, then mirror the change here.
  */
 
 export const PERMISSIONS = {
@@ -311,10 +311,3 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   { key: PERMISSIONS.TEAM_MANAGE, category: 'support' },
   { key: PERMISSIONS.CHANNEL_ACCOUNT_MANAGE, category: 'support' },
 ]
-
-/** The permission set a legacy role resolves to (client-side mirror of the
- *  server resolver) — the source for `<PermissionGate>`. */
-export function permissionsForRole(role: string | null): ReadonlySet<PermissionKey> {
-  const preset = role ? presetForLegacyRole(role) : null
-  return new Set(preset ? SYSTEM_ROLE_PERMISSIONS[preset] : [])
-}
