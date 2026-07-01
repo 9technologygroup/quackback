@@ -396,7 +396,7 @@ async function seed() {
     console.log(`Using ${existingTags.length} existing tags`)
   } else {
     for (const t of tagPresets) {
-      const tagId = generateId('tag')
+      const tagId = generateId('post_tag')
       await db.insert(postTags).values({
         id: tagId,
         name: t.name,

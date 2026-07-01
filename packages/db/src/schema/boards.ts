@@ -51,7 +51,7 @@ export const roadmaps = pgTable(
 export const postTags = pgTable(
   'post_tags',
   {
-    id: typeIdWithDefault('tag')('id').primaryKey(),
+    id: typeIdWithDefault('post_tag')('id').primaryKey(),
     name: text('name').notNull().unique(),
     color: text('color').default('#6b7280').notNull(),
     description: text('description'),

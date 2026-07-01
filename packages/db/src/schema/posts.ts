@@ -165,7 +165,7 @@ export const postTagAssignments = pgTable(
     postId: typeIdColumn('post')('post_id')
       .notNull()
       .references(() => posts.id, { onDelete: 'cascade' }),
-    tagId: typeIdColumn('tag')('tag_id')
+    tagId: typeIdColumn('post_tag')('tag_id')
       .notNull()
       .references(() => postTags.id, { onDelete: 'cascade' }),
   },

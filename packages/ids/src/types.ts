@@ -35,7 +35,7 @@ export type CommentId = TypeId<'comment'>
 export type VoteId = TypeId<'vote'>
 
 /** PostTag ID - e.g., tag_01h455vb4pex5vsknk084sn02q */
-export type PostTagId = TypeId<'tag'>
+export type PostTagId = TypeId<'post_tag'>
 
 /** Post status ID - e.g., status_01h455vb4pex5vsknk084sn02q */
 export type StatusId = TypeId<'status'>
@@ -244,7 +244,7 @@ export interface EntityIdMap {
   board: BoardId
   comment: CommentId
   vote: VoteId
-  tag: PostTagId
+  post_tag: PostTagId
   status: StatusId
   reaction: ReactionId
   post_edit: PostEditId

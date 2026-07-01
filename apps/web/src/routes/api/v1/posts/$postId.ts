@@ -134,7 +134,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId')({
           )
           const tagIds =
             parsed.data.tagIds !== undefined
-              ? parseTypeIdArray<PostTagId>(parsed.data.tagIds, 'tag', 'tag IDs')
+              ? parseTypeIdArray<PostTagId>(parsed.data.tagIds, 'post_tag', 'tag IDs')
               : undefined
 
           const { updatePost } = await import('@/lib/server/domains/posts/post.service')

@@ -20,7 +20,7 @@ import {
 
 // PostTag schema
 const TagSchema = z.object({
-  id: TypeIdSchema.meta({ example: 'tag_01h455vb4pex5vsknk084sn02q' }),
+  id: TypeIdSchema.meta({ example: 'post_tag_01h455vb4pex5vsknk084sn02q' }),
   name: z.string().meta({ example: 'Bug' }),
   color: HexColorSchema.meta({ example: '#ef4444' }),
   createdAt: TimestampSchema,

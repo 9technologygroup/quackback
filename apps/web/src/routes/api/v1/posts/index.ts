@@ -66,7 +66,9 @@ export const Route = createFileRoute('/api/v1/posts/')({
           const { listInboxPosts } = await import('@/lib/server/domains/posts/post.inbox')
 
           const tagIdArray = tagIdsParam
-            ? (tagIdsParam.split(',').filter((id) => id && isValidTypeId(id, 'tag')) as PostTagId[])
+            ? (tagIdsParam
+                .split(',')
+                .filter((id) => id && isValidTypeId(id, 'post_tag')) as PostTagId[])
             : undefined
 
           const dateFrom = dateFromParam ? new Date(dateFromParam) : undefined
@@ -146,7 +148,7 @@ export const Route = createFileRoute('/api/v1/posts/')({
             'status',
             'status ID'
           )
-          const tagIds = parseTypeIdArray<PostTagId>(parsed.data.tagIds, 'tag', 'tag IDs')
+          const tagIds = parseTypeIdArray<PostTagId>(parsed.data.tagIds, 'post_tag', 'tag IDs')
 
           // Admin-only override; mirrors how createdAt is gated below.
           const overridePrincipalId =

@@ -251,7 +251,7 @@ export async function processBatch(
 
   // Pre-generate IDs for all new tags (neon-http compatible approach)
   const tagsToCreateArray = Array.from(tagsToCreate)
-  const newTagIds = tagsToCreateArray.map(() => createId('tag'))
+  const newTagIds = tagsToCreateArray.map(() => createId('post_tag'))
 
   // Build tag map with pre-generated IDs for new tags
   const newTagsWithIds = tagsToCreateArray.map((name, index) => ({

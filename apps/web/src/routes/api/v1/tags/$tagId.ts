@@ -32,7 +32,7 @@ export const Route = createFileRoute('/api/v1/tags/$tagId')({
         try {
           await withApiKeyAuth(request)
 
-          const tagId = parseTypeId<PostTagId>(params.tagId, 'tag', 'tag ID')
+          const tagId = parseTypeId<PostTagId>(params.tagId, 'post_tag', 'tag ID')
 
           const { getTagById } = await import('@/lib/server/domains/post-tags/post-tag.service')
 
@@ -58,7 +58,7 @@ export const Route = createFileRoute('/api/v1/tags/$tagId')({
         try {
           await withApiKeyAuth(request, { permission: PERMISSIONS.TAG_MANAGE })
 
-          const tagId = parseTypeId<PostTagId>(params.tagId, 'tag', 'tag ID')
+          const tagId = parseTypeId<PostTagId>(params.tagId, 'post_tag', 'tag ID')
 
           const body = await request.json()
           const parsed = updateTagSchema.safeParse(body)
@@ -97,7 +97,7 @@ export const Route = createFileRoute('/api/v1/tags/$tagId')({
         try {
           await withApiKeyAuth(request, { permission: PERMISSIONS.TAG_MANAGE })
 
-          const tagId = parseTypeId<PostTagId>(params.tagId, 'tag', 'tag ID')
+          const tagId = parseTypeId<PostTagId>(params.tagId, 'post_tag', 'tag ID')
 
           const { deletePostTag } = await import('@/lib/server/domains/post-tags/post-tag.service')
 
