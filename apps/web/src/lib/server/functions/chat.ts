@@ -848,7 +848,7 @@ export const setConversationStatusFn = createServerFn({ method: 'POST' })
   .validator(setStatusSchema)
   .handler(async ({ data }) => {
     try {
-      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_SET_STATUS })
       const actor = await policyActorFromAuth(ctx)
       const { setConversationStatus } = await import('@/lib/server/domains/chat/chat.service')
       await setConversationStatus(data.conversationId as ConversationId, data.status, actor)
@@ -864,7 +864,7 @@ export const endConversationFn = createServerFn({ method: 'POST' })
   .validator(endConversationSchema)
   .handler(async ({ data }) => {
     try {
-      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_SET_STATUS })
       const actor = await policyActorFromAuth(ctx)
       const { endConversation } = await import('@/lib/server/domains/chat/chat.service')
       return await endConversation(
@@ -902,7 +902,7 @@ export const setConversationPriorityFn = createServerFn({ method: 'POST' })
   .validator(setPrioritySchema)
   .handler(async ({ data }) => {
     try {
-      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_SET_STATUS })
       const actor = await policyActorFromAuth(ctx)
       const { setConversationPriority } = await import('@/lib/server/domains/chat/chat.service')
       await setConversationPriority(data.conversationId as ConversationId, data.priority, actor)

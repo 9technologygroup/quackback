@@ -1,13 +1,16 @@
 /**
  * Server functions for conversation tags ("labels"). Separate from the feedback
- * tag functions — these operate on the support-inbox chat_tags taxonomy. All
- * require a team member (admin/member); tags are agent-only.
+ * tag functions — these operate on the support-inbox chat_tags taxonomy.
+ * Applying/removing a label needs conversation.set_tags; defining the taxonomy
+ * (create/update/delete, and inline-create) needs conversation.manage_tags.
  */
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import type { ChatTagId, ConversationId } from '@quackback/ids'
 import { requireAuth } from './auth-helpers'
 import { PERMISSIONS } from '@/lib/shared/permissions'
+import { resolveActorPermissions } from '@/lib/server/policy/permissions'
+import { ForbiddenError } from '@/lib/shared/errors'
 import {
   listChatTags,
   listChatTagsWithCounts,
@@ -80,7 +83,7 @@ export const fetchChatTagsWithCountsFn = createServerFn({ method: 'GET' }).handl
 export const createChatTagFn = createServerFn({ method: 'POST' })
   .validator(createChatTagSchema)
   .handler(async ({ data }) => {
-    await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+    await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE_TAGS })
     const tag = await createChatTag({ name: data.name, color: data.color })
     return { id: tag.id, name: tag.name, color: tag.color }
   })
@@ -89,7 +92,7 @@ export const createChatTagFn = createServerFn({ method: 'POST' })
 export const updateChatTagFn = createServerFn({ method: 'POST' })
   .validator(updateChatTagSchema)
   .handler(async ({ data }) => {
-    await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+    await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE_TAGS })
     return updateChatTag(data.id as ChatTagId, { name: data.name, color: data.color })
   })
 
@@ -97,7 +100,7 @@ export const updateChatTagFn = createServerFn({ method: 'POST' })
 export const deleteChatTagFn = createServerFn({ method: 'POST' })
   .validator(deleteChatTagSchema)
   .handler(async ({ data }) => {
-    await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+    await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE_TAGS })
     await deleteChatTag(data.id as ChatTagId)
     return { id: data.id as ChatTagId }
   })
@@ -109,10 +112,17 @@ export const deleteChatTagFn = createServerFn({ method: 'POST' })
 export const addConversationTagFn = createServerFn({ method: 'POST' })
   .validator(addConversationTagSchema)
   .handler(async ({ data }) => {
-    await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+    const auth = await requireAuth({ permission: PERMISSIONS.CONVERSATION_SET_TAGS })
     const conversationId = data.conversationId as ConversationId
     let tagId = data.tagId as ChatTagId | undefined
     if (data.name?.trim()) {
+      // Inline-create mints new taxonomy, so it additionally requires manage_tags.
+      if (!resolveActorPermissions(auth.principal.role).has(PERMISSIONS.CONVERSATION_MANAGE_TAGS)) {
+        throw new ForbiddenError(
+          'FORBIDDEN',
+          `Requires the '${PERMISSIONS.CONVERSATION_MANAGE_TAGS}' permission`
+        )
+      }
       const tag = await createChatTag({ name: data.name, color: data.color })
       tagId = tag.id
     }
@@ -124,6 +134,6 @@ export const addConversationTagFn = createServerFn({ method: 'POST' })
 export const removeConversationTagFn = createServerFn({ method: 'POST' })
   .validator(removeConversationTagSchema)
   .handler(async ({ data }) => {
-    await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+    await requireAuth({ permission: PERMISSIONS.CONVERSATION_SET_TAGS })
     return detachTag(data.conversationId as ConversationId, data.tagId as ChatTagId)
   })

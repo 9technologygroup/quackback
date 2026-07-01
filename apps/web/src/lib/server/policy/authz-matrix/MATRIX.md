@@ -161,11 +161,11 @@ Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = membe
 | `lib/server/functions/chat-segments.ts`::fetchInboxSegmentsWithCountsFn | conversation.view |
 | `lib/server/functions/chat-tags.ts`::fetchChatTagsFn | conversation.view |
 | `lib/server/functions/chat-tags.ts`::fetchChatTagsWithCountsFn | conversation.view |
-| `lib/server/functions/chat-tags.ts`::createChatTagFn | conversation.manage |
-| `lib/server/functions/chat-tags.ts`::updateChatTagFn | conversation.manage |
-| `lib/server/functions/chat-tags.ts`::deleteChatTagFn | conversation.manage |
-| `lib/server/functions/chat-tags.ts`::addConversationTagFn | conversation.manage |
-| `lib/server/functions/chat-tags.ts`::removeConversationTagFn | conversation.manage |
+| `lib/server/functions/chat-tags.ts`::createChatTagFn | conversation.manage_tags |
+| `lib/server/functions/chat-tags.ts`::updateChatTagFn | conversation.manage_tags |
+| `lib/server/functions/chat-tags.ts`::deleteChatTagFn | conversation.manage_tags |
+| `lib/server/functions/chat-tags.ts`::addConversationTagFn | conversation.set_tags |
+| `lib/server/functions/chat-tags.ts`::removeConversationTagFn | conversation.set_tags |
 | `lib/server/functions/chat.ts`::sendChatMessageFn | END_USER (any authenticated) |
 | `lib/server/functions/chat.ts`::listChatMessagesFn | END_USER (any authenticated) |
 | `lib/server/functions/chat.ts`::markChatReadFn | END_USER (any authenticated) |
@@ -184,10 +184,10 @@ Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = membe
 | `lib/server/functions/chat.ts`::createPostFromConversationFn | post.create |
 | `lib/server/functions/chat.ts`::captureVisitorContactEmailFn | conversation.manage |
 | `lib/server/functions/chat.ts`::sharePostFn | conversation.reply |
-| `lib/server/functions/chat.ts`::setConversationStatusFn | conversation.manage |
-| `lib/server/functions/chat.ts`::endConversationFn | conversation.manage |
+| `lib/server/functions/chat.ts`::setConversationStatusFn | conversation.set_status |
+| `lib/server/functions/chat.ts`::endConversationFn | conversation.set_status |
 | `lib/server/functions/chat.ts`::assignConversationFn | conversation.assign |
-| `lib/server/functions/chat.ts`::setConversationPriorityFn | conversation.manage |
+| `lib/server/functions/chat.ts`::setConversationPriorityFn | conversation.set_status |
 | `lib/server/functions/chat.ts`::addMessageReactionFn | conversation.note |
 | `lib/server/functions/chat.ts`::removeMessageReactionFn | conversation.note |
 | `lib/server/functions/chat.ts`::setMessageFlagFn | conversation.note |
