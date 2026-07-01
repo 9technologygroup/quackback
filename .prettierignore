@@ -1,0 +1,3 @@
+# Generated authorization matrix — its exact bytes are a vitest file snapshot
+# (renderMatrixDoc output), so prettier must not reformat it.
+apps/web/src/lib/server/policy/authz-matrix/MATRIX.md
