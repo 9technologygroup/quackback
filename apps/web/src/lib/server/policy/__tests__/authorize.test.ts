@@ -16,8 +16,8 @@ function actorWith(perms: PermissionKey[]): Actor {
 
 describe('policy authorize', () => {
   it('can() reads the resolved permission set', () => {
-    const a = actorWith([PERMISSIONS.POST_MODERATE])
-    expect(can(a, PERMISSIONS.POST_MODERATE)).toBe(true)
+    const a = actorWith([PERMISSIONS.POST_EDIT])
+    expect(can(a, PERMISSIONS.POST_EDIT)).toBe(true)
     expect(can(a, PERMISSIONS.SETTINGS_MANAGE)).toBe(false)
   })
 
@@ -35,8 +35,8 @@ describe('policy authorize', () => {
   })
 
   it('authorize() returns a reasoned decision', () => {
-    const a = actorWith([PERMISSIONS.POST_MODERATE])
-    expect(authorize(a, PERMISSIONS.POST_MODERATE)).toEqual({ allowed: true })
+    const a = actorWith([PERMISSIONS.POST_EDIT])
+    expect(authorize(a, PERMISSIONS.POST_EDIT)).toEqual({ allowed: true })
     const denied = authorize(a, PERMISSIONS.SETTINGS_MANAGE)
     expect(denied.allowed).toBe(false)
     if (!denied.allowed) expect(denied.reason).toContain('insufficient_permission')
@@ -45,7 +45,7 @@ describe('policy authorize', () => {
   it('resolveActorPermissions expands the role (null/anonymous -> empty)', () => {
     expect(resolveActorPermissions('admin').has(PERMISSIONS.BILLING_MANAGE)).toBe(true)
     expect(resolveActorPermissions('member').has(PERMISSIONS.SETTINGS_MANAGE)).toBe(false)
-    expect(resolveActorPermissions('member').has(PERMISSIONS.POST_MODERATE)).toBe(true)
+    expect(resolveActorPermissions('member').has(PERMISSIONS.POST_EDIT)).toBe(true)
     expect(resolveActorPermissions('user').size).toBe(0)
     expect(resolveActorPermissions(null).size).toBe(0)
   })

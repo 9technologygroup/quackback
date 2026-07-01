@@ -27,6 +27,8 @@ export type SurfaceIntent =
   | 'PUBLIC_DATA'
   /** The MCP handler's bare `withApiKeyAuth(req)`: a valid key enters; per-tool scopes authorize. */
   | 'MCP_ENTRY'
+  /** Bare gate whose required permission is computed from the request (a field-scoped PATCH): a valid key authenticates, then `assertApiPermissions` enforces the permission for each field touched. No single static permission covers it. */
+  | 'DYNAMIC_PERMISSION'
   /** An inline role check that IS the access decision for a surface without a requireAuth/key gate. */
   | 'SECONDARY_GATE'
   /** An inline role check that refines behavior behind an already-present gate — not an entry point. */
@@ -38,6 +40,8 @@ export interface Classification {
   roleBar?: 'admin' | 'team'
   /** For SECONDARY_GATE: the catalogue permission the check mirrors, when it maps to one. */
   resolvesTo?: PermissionKey
+  /** For DYNAMIC_PERMISSION: the closed set of permissions the runtime check may require (one per patchable field). */
+  resolvesToAny?: readonly PermissionKey[]
   why: string
 }
 
@@ -62,6 +66,10 @@ export const ALIAS_RESOLUTIONS: Record<string, PermissionKey> = {
 
 const END_USER = (why: string): Classification => ({ intent: 'END_USER', why })
 const PUBLIC_DATA = (why: string): Classification => ({ intent: 'PUBLIC_DATA', why })
+const DYNAMIC_PERMISSION = (
+  resolvesToAny: readonly PermissionKey[],
+  why: string
+): Classification => ({ intent: 'DYNAMIC_PERMISSION', resolvesToAny, why })
 
 export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   // Visitor chat (widget + portal): any authenticated principal; team-vs-visitor
@@ -129,6 +137,20 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
     intent: 'MCP_ENTRY',
     why: 'MCP transport entry — a valid key authenticates; per-tool scopes provide authorization',
   },
+
+  // Field-scoped write: a valid key authenticates, then assertApiPermissions
+  // enforces the permission for each field the PATCH touches (title/content ->
+  // post.edit, statusId -> post.set_status, tagIds -> post.set_tags,
+  // ownerPrincipalId -> post.set_owner). No single static permission covers it.
+  'routes/api/v1/posts/$postId.ts::PATCH': DYNAMIC_PERMISSION(
+    [
+      PERMISSIONS.POST_EDIT,
+      PERMISSIONS.POST_SET_STATUS,
+      PERMISSIONS.POST_SET_TAGS,
+      PERMISSIONS.POST_SET_OWNER,
+    ],
+    'field-scoped post PATCH — assertApiPermissions authorizes per changed field'
+  ),
 
   // Public-tier REST reads: a valid key is required, but the data is portal-public
   // so no permission is checked. Anonymous (no key) is still rejected.

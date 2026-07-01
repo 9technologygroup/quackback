@@ -34,7 +34,6 @@ Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = membe
 | user_attribute.manage | audience | ✓ | ✓ |
 | post.view_private | feedback | ✓ | ✓ |
 | post.create | feedback | ✓ | ✓ |
-| post.moderate | feedback | ✓ | ✓ |
 | post.edit | feedback | ✓ | ✓ |
 | post.delete | feedback | ✓ | ✓ |
 | post.set_status | feedback | ✓ | ✓ |
@@ -271,8 +270,8 @@ Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = membe
 | `lib/server/functions/portal-invites.ts`::fetchPortalInvitesFn | settings.manage |
 | `lib/server/functions/portal-invites.ts`::getPortalInviteLinkFn | settings.manage |
 | `lib/server/functions/portal.ts`::fetchSubscriptionStatus | END_USER (any authenticated) |
-| `lib/server/functions/post-merge.ts`::mergePostFn | post.moderate |
-| `lib/server/functions/post-merge.ts`::unmergePostFn | post.moderate |
+| `lib/server/functions/post-merge.ts`::mergePostFn | post.merge |
+| `lib/server/functions/post-merge.ts`::unmergePostFn | post.merge |
 | `lib/server/functions/post-merge.ts`::getMergedPostsFn | post.view_private |
 | `lib/server/functions/post-merge.ts`::fetchMergePreviewFn | post.view_private |
 | `lib/server/functions/posts.ts`::fetchInboxPostsForAdmin | post.view_private |
@@ -280,17 +279,17 @@ Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = membe
 | `lib/server/functions/posts.ts`::fetchPostVotersFn | post.view_private |
 | `lib/server/functions/posts.ts`::fetchPostFeedbackSourceFn | post.view_private |
 | `lib/server/functions/posts.ts`::createPostFn | post.create |
-| `lib/server/functions/posts.ts`::updatePostFn | post.moderate |
+| `lib/server/functions/posts.ts`::updatePostFn | post.edit |
 | `lib/server/functions/posts.ts`::setPostOwnerFn | post.set_owner |
-| `lib/server/functions/posts.ts`::deletePostFn | post.moderate |
+| `lib/server/functions/posts.ts`::deletePostFn | post.delete |
 | `lib/server/functions/posts.ts`::fetchPostExternalLinksFn | post.view_private |
-| `lib/server/functions/posts.ts`::changePostStatusFn | post.moderate |
-| `lib/server/functions/posts.ts`::changePostBoardFn | post.moderate |
-| `lib/server/functions/posts.ts`::restorePostFn | post.moderate |
-| `lib/server/functions/posts.ts`::updatePostTagsFn | post.moderate |
+| `lib/server/functions/posts.ts`::changePostStatusFn | post.set_status |
+| `lib/server/functions/posts.ts`::changePostBoardFn | post.set_board |
+| `lib/server/functions/posts.ts`::restorePostFn | post.delete |
+| `lib/server/functions/posts.ts`::updatePostTagsFn | post.set_tags |
 | `lib/server/functions/posts.ts`::proxyVoteFn | post.vote_on_behalf |
 | `lib/server/functions/posts.ts`::removeVoteFn | post.vote_on_behalf |
-| `lib/server/functions/posts.ts`::toggleCommentsLockFn | post.moderate |
+| `lib/server/functions/posts.ts`::toggleCommentsLockFn | post.edit |
 | `lib/server/functions/public-posts.ts`::userEditPostFn | END_USER (any authenticated) |
 | `lib/server/functions/public-posts.ts`::userDeletePostFn | END_USER (any authenticated) |
 | `lib/server/functions/public-posts.ts`::toggleVoteFn | END_USER (any authenticated) |
@@ -353,7 +352,7 @@ Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = membe
 | `lib/server/functions/subscriptions.ts`::subscribeToPostFn | END_USER (any authenticated) |
 | `lib/server/functions/subscriptions.ts`::unsubscribeFromPostFn | END_USER (any authenticated) |
 | `lib/server/functions/subscriptions.ts`::updateSubscriptionLevelFn | END_USER (any authenticated) |
-| `lib/server/functions/subscriptions.ts`::adminUpdateVoterSubscriptionFn | post.moderate |
+| `lib/server/functions/subscriptions.ts`::adminUpdateVoterSubscriptionFn | post.vote_on_behalf |
 | `lib/server/functions/tags.ts`::fetchTags | tag.view |
 | `lib/server/functions/tags.ts`::fetchTag | tag.view |
 | `lib/server/functions/tags.ts`::createTagFn | tag.manage |
@@ -460,10 +459,10 @@ Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = membe
 | `routes/api/v1/posts/$postId.activity.ts`::GET | post.view_private |
 | `routes/api/v1/posts/$postId.comments.ts`::GET | post.view_private |
 | `routes/api/v1/posts/$postId.comments.ts`::POST | comment.moderate |
-| `routes/api/v1/posts/$postId.merge.ts`::POST | post.moderate |
+| `routes/api/v1/posts/$postId.merge.ts`::POST | post.merge |
 | `routes/api/v1/posts/$postId.ts`::GET | post.view_private |
-| `routes/api/v1/posts/$postId.ts`::PATCH | post.moderate |
-| `routes/api/v1/posts/$postId.ts`::DELETE | post.moderate |
+| `routes/api/v1/posts/$postId.ts`::PATCH | DYNAMIC (post.edit | post.set_status | post.set_tags | post.set_owner) |
+| `routes/api/v1/posts/$postId.ts`::DELETE | post.delete |
 | `routes/api/v1/posts/$postId.vote.proxy.ts`::POST | post.vote_on_behalf |
 | `routes/api/v1/posts/$postId.vote.proxy.ts`::DELETE | post.vote_on_behalf |
 | `routes/api/v1/posts/$postId.vote.ts`::POST | post.vote_on_behalf |

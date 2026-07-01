@@ -18,6 +18,7 @@ import { tiptapContentSchema, type TiptapContent } from '@/lib/shared/schemas/po
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
 import { requireAuth, policyActorFromAuth } from './auth-helpers'
+import { can } from '@/lib/server/policy/authorize'
 import { db, eq, posts } from '@/lib/server/db'
 import { createActivity } from '@/lib/server/domains/activity/activity.service'
 import { getMemberById } from '@/lib/server/domains/principals/principal.service'
@@ -360,7 +361,7 @@ export const createPostFn = createServerFn({ method: 'POST' })
       if (
         data.authorPrincipalId &&
         data.authorPrincipalId !== auth.principal.id &&
-        auth.principal.role === 'admin'
+        can(actor, PERMISSIONS.POST_SET_AUTHOR)
       ) {
         const selectedPrincipal = await getMemberById(data.authorPrincipalId as PrincipalId)
         if (selectedPrincipal) {
@@ -405,7 +406,7 @@ export const updatePostFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ post_id: data.id }, 'update post')
     try {
-      const auth = await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+      const auth = await requireAuth({ permission: PERMISSIONS.POST_EDIT })
 
       const result = await updatePost(
         data.id as PostId,
@@ -467,7 +468,7 @@ export const deletePostFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ post_id: data.id }, 'delete post')
     try {
-      const auth = await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+      const auth = await requireAuth({ permission: PERMISSIONS.POST_DELETE })
       const postId = data.id as PostId
 
       // Soft delete the post (always succeeds or throws; dispatches post.deleted event)
@@ -534,7 +535,7 @@ export const changePostStatusFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ post_id: data.id, status_id: data.statusId }, 'change post status')
     try {
-      const auth = await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+      const auth = await requireAuth({ permission: PERMISSIONS.POST_SET_STATUS })
 
       const result = await changeStatus(data.id as PostId, data.statusId as StatusId, {
         principalId: auth.principal.id,
@@ -560,7 +561,7 @@ export const changePostBoardFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ post_id: data.id, board_id: data.boardId }, 'change post board')
     try {
-      const auth = await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+      const auth = await requireAuth({ permission: PERMISSIONS.POST_SET_BOARD })
       const result = await changeBoard(data.id as PostId, data.boardId as BoardId, {
         principalId: auth.principal.id,
         userId: auth.user.id as UserId,
@@ -583,7 +584,7 @@ export const restorePostFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ post_id: data.id }, 'restore post')
     try {
-      const auth = await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+      const auth = await requireAuth({ permission: PERMISSIONS.POST_DELETE })
 
       const result = await restorePost(data.id as PostId, auth.principal.id, auth.user.id)
       log.info({ post_id: result.id }, 'post restored')
@@ -602,7 +603,7 @@ export const updatePostTagsFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ post_id: data.id, tag_count: data.tagIds.length }, 'update post tags')
     try {
-      const auth = await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+      const auth = await requireAuth({ permission: PERMISSIONS.POST_SET_TAGS })
 
       await updatePost(
         data.id as PostId,
@@ -695,7 +696,7 @@ export const toggleCommentsLockFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ post_id: data.id, locked: data.locked }, 'toggle comments lock')
     try {
-      const auth = await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+      const auth = await requireAuth({ permission: PERMISSIONS.POST_EDIT })
 
       await db
         .update(posts)

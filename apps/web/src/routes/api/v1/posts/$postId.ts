@@ -1,8 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { realEmail } from '@/lib/shared/anonymous-email'
-import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
-import { PERMISSIONS } from '@/lib/shared/permissions'
+import { withApiKeyAuth, assertApiPermissions } from '@/lib/server/domains/api/auth'
+import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import {
   successResponse,
   noContentResponse,
@@ -26,6 +26,16 @@ const updatePostSchema = z.object({
   tagIds: z.array(z.string()).optional(),
   ownerPrincipalId: z.string().nullable().optional(),
 })
+
+/** Every granular permission a posts PATCH body implies; the caller must hold all of them. */
+function permissionsForPostPatch(body: z.infer<typeof updatePostSchema>): PermissionKey[] {
+  const perms: PermissionKey[] = []
+  if (body.title !== undefined || body.content !== undefined) perms.push(PERMISSIONS.POST_EDIT)
+  if (body.statusId !== undefined) perms.push(PERMISSIONS.POST_SET_STATUS)
+  if (body.tagIds !== undefined) perms.push(PERMISSIONS.POST_SET_TAGS)
+  if (body.ownerPrincipalId !== undefined) perms.push(PERMISSIONS.POST_SET_OWNER)
+  return perms
+}
 
 export const Route = createFileRoute('/api/v1/posts/$postId')({
   server: {
@@ -100,7 +110,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId')({
        */
       PATCH: async ({ request, params }) => {
         try {
-          const auth = await withApiKeyAuth(request, { permission: PERMISSIONS.POST_MODERATE })
+          const auth = await withApiKeyAuth(request)
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')
 
@@ -112,6 +122,10 @@ export const Route = createFileRoute('/api/v1/posts/$postId')({
               errors: parsed.error.flatten().fieldErrors,
             })
           }
+
+          // The PATCH body can touch several permission-scoped fields; require the
+          // granular permission for each field actually present.
+          assertApiPermissions(auth, permissionsForPostPatch(parsed.data))
 
           const statusId = parseOptionalTypeId<StatusId>(
             parsed.data.statusId,
@@ -164,7 +178,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId')({
       DELETE: async ({ request, params }) => {
         try {
           const { principalId, role } = await withApiKeyAuth(request, {
-            permission: PERMISSIONS.POST_MODERATE,
+            permission: PERMISSIONS.POST_DELETE,
           })
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')

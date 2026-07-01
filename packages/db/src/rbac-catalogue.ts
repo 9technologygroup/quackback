@@ -53,7 +53,6 @@ export const PERMISSIONS = {
   // category 'feedback'
   POST_VIEW_PRIVATE: 'post.view_private', // internal / private posts
   POST_CREATE: 'post.create',
-  POST_MODERATE: 'post.moderate', // DEPRECATED umbrella; removed after Phase 3 gate conversion
   POST_EDIT: 'post.edit', // edit title / content / lock comments
   POST_DELETE: 'post.delete', // soft-delete + restore
   POST_SET_STATUS: 'post.set_status', // move through the status pipeline
@@ -280,11 +279,6 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     description: 'View internal / private posts',
   },
   { key: PERMISSIONS.POST_CREATE, category: 'feedback', description: 'Create posts' },
-  {
-    key: PERMISSIONS.POST_MODERATE,
-    category: 'feedback',
-    description: 'Edit, merge, triage, status, pin, and delete existing posts',
-  },
   {
     key: PERMISSIONS.POST_EDIT,
     category: 'feedback',
@@ -597,17 +591,28 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {
   // configure product structure or settings. The support operate permissions are
   // appended here by default when the platform lands.
   contributor: [
+    // sort feedback: triage without destructive edit
     PERMISSIONS.POST_VIEW_PRIVATE,
     PERMISSIONS.POST_CREATE,
-    PERMISSIONS.POST_MODERATE,
+    PERMISSIONS.POST_SET_STATUS,
+    PERMISSIONS.POST_SET_BOARD,
+    PERMISSIONS.POST_SET_TAGS,
+    PERMISSIONS.POST_SET_OWNER,
+    PERMISSIONS.POST_MERGE,
     PERMISSIONS.POST_APPROVE,
     PERMISSIONS.POST_VOTE_ON_BEHALF,
+    // comments
     PERMISSIONS.COMMENT_MODERATE,
-    PERMISSIONS.CHANGELOG_VIEW_DRAFT,
+    PERMISSIONS.COMMENT_PIN,
+    // inbox
     PERMISSIONS.CONVERSATION_VIEW,
     PERMISSIONS.CONVERSATION_REPLY,
     PERMISSIONS.CONVERSATION_NOTE,
     PERMISSIONS.CONVERSATION_ASSIGN,
+    PERMISSIONS.CONVERSATION_SET_STATUS,
+    PERMISSIONS.CONVERSATION_SET_TAGS,
+    // reads + triage intake
+    PERMISSIONS.CHANGELOG_VIEW_DRAFT,
     PERMISSIONS.PEOPLE_VIEW,
     PERMISSIONS.COMPANY_VIEW,
     PERMISSIONS.MEMBER_VIEW,
@@ -618,6 +623,8 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {
     PERMISSIONS.TAG_VIEW,
     PERMISSIONS.SUGGESTION_VIEW,
     PERMISSIONS.SUGGESTION_MANAGE,
+    // deliberately NOT granted (destructive / identity / config): post.edit, post.delete,
+    // post.set_author, comment.edit, conversation.manage_tags, conversation.manage
   ],
 }
 

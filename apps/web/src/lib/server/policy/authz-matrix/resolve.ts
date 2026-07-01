@@ -31,6 +31,8 @@ export type ResolvedAuthz =
   | { type: 'public_data' }
   /** MCP transport entry: a valid key authenticates; per-tool scopes authorize. */
   | { type: 'mcp_entry' }
+  /** A key authenticates; a runtime check authorizes against a closed set of candidate permissions (field-scoped write). */
+  | { type: 'dynamic_permission'; permissions: readonly PermissionKey[] }
   /** An inline decision gated on role (`admin`, or `team` = admin|member), optionally mirroring a permission. */
   | { type: 'role_gate'; bar: 'admin' | 'team'; permission?: PermissionKey }
 
@@ -113,6 +115,22 @@ export function resolveSurfaces(srcRoot: string): ResolveResult {
         continue
       }
       usedBare.add(key)
+      if (cls.intent === 'DYNAMIC_PERMISSION') {
+        const perms = cls.resolvesToAny ?? []
+        const unknown = perms.filter((p) => !PERMISSION_SET.has(p))
+        if (perms.length === 0 || unknown.length > 0) {
+          errors.push(
+            `${g.file}:${g.line} DYNAMIC_PERMISSION gate '${key}' has ${
+              perms.length === 0
+                ? 'no candidate permissions'
+                : `unknown candidates (${unknown.join(', ')})`
+            }`
+          )
+          continue
+        }
+        surfaces.push({ ...base, authz: { type: 'dynamic_permission', permissions: perms } })
+        continue
+      }
       const authz: ResolvedAuthz =
         cls.intent === 'PUBLIC_DATA'
           ? { type: 'public_data' }

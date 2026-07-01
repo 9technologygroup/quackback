@@ -127,3 +127,21 @@ export async function withApiKeyAuth(
 
   return auth
 }
+
+/**
+ * Assert an API key's authority (its owner's role preset) holds every permission
+ * in the list. For routes whose required permissions depend on the request body
+ * (e.g. a multi-field PATCH), gate with a bare `withApiKeyAuth(request)` then call
+ * this with the body-derived key set.
+ */
+export function assertApiPermissions(
+  auth: ApiAuthContext,
+  permissions: readonly PermissionKey[]
+): void {
+  const held = resolveActorPermissions(auth.role)
+  for (const permission of permissions) {
+    if (!held.has(permission)) {
+      throw new ForbiddenError('FORBIDDEN', `Requires the '${permission}' permission`)
+    }
+  }
+}

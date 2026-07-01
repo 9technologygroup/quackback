@@ -164,7 +164,7 @@ export const adminUpdateVoterSubscriptionFn = createServerFn({ method: 'POST' })
       'admin update voter subscription'
     )
     try {
-      await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+      await requireAuth({ permission: PERMISSIONS.POST_VOTE_ON_BEHALF })
 
       const targetPrincipalId = data.principalId as PrincipalId
       const targetPostId = data.postId as PostId

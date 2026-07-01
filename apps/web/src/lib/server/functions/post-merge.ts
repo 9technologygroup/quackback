@@ -72,7 +72,7 @@ export const mergePostFn = createServerFn({ method: 'POST' })
       { duplicate_post_id: data.duplicatePostId, canonical_post_id: data.canonicalPostId },
       'merge post'
     )
-    const auth = await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+    const auth = await requireAuth({ permission: PERMISSIONS.POST_MERGE })
 
     const result = await mergePost(
       data.duplicatePostId as PostId,
@@ -96,7 +96,7 @@ export const unmergePostFn = createServerFn({ method: 'POST' })
   .validator(unmergePostSchema)
   .handler(async ({ data }) => {
     log.debug({ post_id: data.postId }, 'unmerge post')
-    const auth = await requireAuth({ permission: PERMISSIONS.POST_MODERATE })
+    const auth = await requireAuth({ permission: PERMISSIONS.POST_MERGE })
 
     const result = await unmergePost(
       data.postId as PostId,

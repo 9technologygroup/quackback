@@ -76,10 +76,15 @@ describe('RBAC permission catalogue', () => {
     const c = SYSTEM_ROLE_PERMISSIONS.contributor
     expect(new Set(c).size).toBe(c.length)
     for (const p of c) expect(ALL_PERMISSIONS).toContain(p)
-    // Operates feedback + inbox...
-    expect(c).toContain(PERMISSIONS.POST_MODERATE)
+    // Sorts feedback (triage) + operates the inbox...
+    expect(c).toContain(PERMISSIONS.POST_SET_STATUS)
+    expect(c).toContain(PERMISSIONS.POST_SET_TAGS)
     expect(c).toContain(PERMISSIONS.CONVERSATION_REPLY)
-    // ...but does not configure product structure or settings.
+    // ...but NOT destructive edit / identity (triage without destructive edit)...
+    expect(c).not.toContain(PERMISSIONS.POST_EDIT)
+    expect(c).not.toContain(PERMISSIONS.POST_DELETE)
+    expect(c).not.toContain(PERMISSIONS.POST_SET_AUTHOR)
+    // ...and does not configure product structure or settings.
     expect(c).not.toContain(PERMISSIONS.BOARD_MANAGE)
     expect(c).not.toContain(PERMISSIONS.SETTINGS_MANAGE)
     expect(c).not.toContain(PERMISSIONS.SEGMENT_MANAGE)
@@ -99,9 +104,9 @@ describe('RBAC permission catalogue', () => {
     expect(presetForLegacyRole('anything-else')).toBeNull()
   })
 
-  it('carries the granular operator keys (Phase 1 additive)', () => {
-    // The post.moderate umbrella is split into field-level keys; both coexist
-    // until the Phase 3 gate conversion removes the umbrella.
+  it('carries the granular operator keys and the post.moderate umbrella is gone', () => {
+    // The coarse post.moderate umbrella was split into field-level keys and removed.
+    expect(ALL_PERMISSIONS).not.toContain('post.moderate')
     for (const key of [
       PERMISSIONS.POST_EDIT,
       PERMISSIONS.POST_DELETE,

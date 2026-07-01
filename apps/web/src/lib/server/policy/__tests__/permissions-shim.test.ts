@@ -48,7 +48,7 @@ describe('permissionsForLegacyRole (compat shim)', () => {
     expect(member.has(PERMISSIONS.MEMBER_MANAGE)).toBe(false)
     expect(member.has(PERMISSIONS.BILLING_MANAGE)).toBe(false)
     // ...but keeps the operate + non-regressing read permissions.
-    expect(member.has(PERMISSIONS.POST_MODERATE)).toBe(true)
+    expect(member.has(PERMISSIONS.POST_EDIT)).toBe(true)
     expect(member.has(PERMISSIONS.MEMBER_VIEW)).toBe(true)
     expect(member.has(PERMISSIONS.INTEGRATION_VIEW)).toBe(true)
   })

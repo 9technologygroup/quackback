@@ -24,7 +24,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId/merge')({
       POST: async ({ request, params }) => {
         try {
           const { principalId } = await withApiKeyAuth(request, {
-            permission: PERMISSIONS.POST_MODERATE,
+            permission: PERMISSIONS.POST_MERGE,
           })
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')
