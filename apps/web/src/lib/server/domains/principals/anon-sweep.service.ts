@@ -47,11 +47,11 @@ export async function sweepAnonymousPrincipals(opts?: {
       AND pr.created_at < ${cutoffIso}::timestamptz
       AND NOT EXISTS (SELECT 1 FROM session s WHERE s.user_id = pr.user_id AND s.expires_at > now())
       AND NOT EXISTS (SELECT 1 FROM posts WHERE principal_id = pr.id)
-      AND NOT EXISTS (SELECT 1 FROM votes WHERE principal_id = pr.id)
-      AND NOT EXISTS (SELECT 1 FROM comments WHERE principal_id = pr.id)
-      AND NOT EXISTS (SELECT 1 FROM comment_reactions WHERE principal_id = pr.id)
+      AND NOT EXISTS (SELECT 1 FROM post_votes WHERE principal_id = pr.id)
+      AND NOT EXISTS (SELECT 1 FROM post_comments WHERE principal_id = pr.id)
+      AND NOT EXISTS (SELECT 1 FROM post_comment_reactions WHERE principal_id = pr.id)
       AND NOT EXISTS (SELECT 1 FROM conversations WHERE visitor_principal_id = pr.id)
-      AND NOT EXISTS (SELECT 1 FROM chat_messages WHERE principal_id = pr.id)
+      AND NOT EXISTS (SELECT 1 FROM conversation_messages WHERE principal_id = pr.id)
       AND NOT EXISTS (SELECT 1 FROM post_subscriptions WHERE principal_id = pr.id)
       AND NOT EXISTS (SELECT 1 FROM in_app_notifications WHERE principal_id = pr.id)
     LIMIT ${batchSize}

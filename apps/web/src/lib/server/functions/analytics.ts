@@ -112,7 +112,7 @@ export const getAnalyticsData = createServerFn({ method: 'GET' })
           WHERE pa.type = 'status.changed' AND ps.category IN ('complete', 'closed')
           UNION ALL
           SELECT c.post_id, c.created_at
-          FROM comments c
+          FROM post_comments c
           JOIN post_statuses ps ON ps.id = c.status_change_to_id
           WHERE c.deleted_at IS NULL AND ps.category IN ('complete', 'closed')
         ),
@@ -164,12 +164,12 @@ export const getAnalyticsData = createServerFn({ method: 'GET' })
         ) post_counts ON post_counts.pid = p.id
         LEFT JOIN (
           SELECT principal_id as pid, COUNT(*)::int as cnt
-          FROM votes WHERE created_at >= ${sinceIso}::timestamptz
+          FROM post_votes WHERE created_at >= ${sinceIso}::timestamptz
           GROUP BY principal_id
         ) vote_counts ON vote_counts.pid = p.id
         LEFT JOIN (
           SELECT principal_id as pid, COUNT(*)::int as cnt
-          FROM comments WHERE created_at >= ${sinceIso}::timestamptz AND deleted_at IS NULL
+          FROM post_comments WHERE created_at >= ${sinceIso}::timestamptz AND deleted_at IS NULL
           GROUP BY principal_id
         ) comment_counts ON comment_counts.pid = p.id
         WHERE p.type != 'anonymous' AND p.role = 'user'

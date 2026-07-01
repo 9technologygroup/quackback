@@ -28,15 +28,15 @@ async function syncCommentCounts() {
       UPDATE posts
       SET comment_count = (
         SELECT COUNT(*)::int
-        FROM comments
-        WHERE comments.post_id = posts.id
-          AND comments.deleted_at IS NULL
+        FROM post_comments
+        WHERE post_comments.post_id = posts.id
+          AND post_comments.deleted_at IS NULL
       )
       WHERE comment_count != (
         SELECT COUNT(*)::int
-        FROM comments
-        WHERE comments.post_id = posts.id
-          AND comments.deleted_at IS NULL
+        FROM post_comments
+        WHERE post_comments.post_id = posts.id
+          AND post_comments.deleted_at IS NULL
       )
     `
 
