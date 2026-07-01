@@ -13,6 +13,7 @@ interface ServerConfig {
   theme?: ServerTheme
   tabs?: { feedback?: boolean; changelog?: boolean; help?: boolean; chat?: boolean; home?: boolean }
   hmacRequired?: boolean
+  visitorAnalytics?: boolean
 }
 
 function jsonResponse(body: unknown, maxAge: number): Response {
@@ -116,10 +117,13 @@ export const Route = createFileRoute('/api/widget/config.json')({
           // Fall back to SDK defaults — theme stays empty
         }
 
+        const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
+
         const config: ServerConfig = {
           theme: Object.keys(theme).length > 0 ? theme : undefined,
           tabs: widgetConfig.tabs,
           hmacRequired: widgetConfig.hmacRequired,
+          visitorAnalytics: await isFeatureEnabled('visitorAnalytics'),
         }
 
         return jsonResponse(config, 3600)

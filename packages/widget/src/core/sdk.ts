@@ -11,6 +11,7 @@ import { createBridge, type Bridge } from './postmessage'
 import { createLauncher, type LauncherHandle } from './launcher'
 import { createPanel, type PanelHandle } from './panel'
 import { fetchServerConfig, type ServerConfig } from './config'
+import { createTracker, type Tracker } from './tracker'
 import { removeStyles } from './style'
 
 type Command =
@@ -58,6 +59,7 @@ export function createSDK(): SDK {
   let currentUser: WidgetUser | null = null
   let mobileMql: MediaQueryList | null = null
   let mobileCleanup: (() => void) | null = null
+  let tracker: Tracker | null = null
   const emitter = createEmitter()
 
   function sendMobileState(): void {
@@ -215,7 +217,17 @@ export function createSDK(): SDK {
         const reveal = revealLauncherOnce()
         const fallback = window.setTimeout(reveal, LAUNCHER_REVEAL_FALLBACK_MS)
         void fetchServerConfig(config.instanceUrl)
-          .then(applyServerTheme)
+          .then((serverConfig) => {
+            applyServerTheme(serverConfig)
+            // Host-page pageview tracking is instance-controlled: it starts
+            // only when the server config enables visitor analytics, and only
+            // if this init is still the live one.
+            if (serverConfig.visitorAnalytics && config === next) {
+              tracker?.stop()
+              tracker = createTracker(next.instanceUrl)
+              tracker.start()
+            }
+          })
           .finally(() => {
             window.clearTimeout(fallback)
             window.setTimeout(reveal, LAUNCHER_REVEAL_DELAY_MS)
@@ -290,6 +302,8 @@ export function createSDK(): SDK {
         panel?.destroy()
         launcher?.remove()
         bridge?.dispose()
+        tracker?.stop()
+        tracker = null
         mobileCleanup?.()
         mobileCleanup = null
         mobileMql = null

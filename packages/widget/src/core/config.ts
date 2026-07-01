@@ -15,6 +15,8 @@ export interface ServerConfig {
   tabs?: { feedback?: boolean; changelog?: boolean; help?: boolean; chat?: boolean }
   imageUploadsInWidget?: boolean
   hmacRequired?: boolean
+  /** Host-page pageview tracking; the SDK starts the tracker only when true. */
+  visitorAnalytics?: boolean
 }
 
 export async function fetchServerConfig(instanceUrl: string): Promise<ServerConfig> {
