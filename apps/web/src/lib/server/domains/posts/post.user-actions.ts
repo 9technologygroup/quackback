@@ -9,7 +9,7 @@ import {
   db,
   posts,
   boards,
-  comments,
+  postComments,
   postEditHistory,
   eq,
   and,
@@ -66,11 +66,11 @@ async function hasCommentsFromOthers(
 ): Promise<boolean> {
   if (!authorPrincipalId) return false
 
-  const otherComment = await db.query.comments.findFirst({
+  const otherComment = await db.query.postComments.findFirst({
     where: and(
-      eq(comments.postId, postId),
-      sql`${comments.principalId} != ${authorPrincipalId}`,
-      isNull(comments.deletedAt)
+      eq(postComments.postId, postId),
+      sql`${postComments.principalId} != ${authorPrincipalId}`,
+      isNull(postComments.deletedAt)
     ),
   })
 
@@ -80,8 +80,8 @@ async function hasCommentsFromOthers(
 async function getCommentCount(postId: PostId): Promise<number> {
   const result = await db
     .select({ count: sql<number>`count(*)` })
-    .from(comments)
-    .where(and(eq(comments.postId, postId), isNull(comments.deletedAt)))
+    .from(postComments)
+    .where(and(eq(postComments.postId, postId), isNull(postComments.deletedAt)))
 
   return result[0]?.count ?? 0
 }

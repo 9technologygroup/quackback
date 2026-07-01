@@ -30,7 +30,7 @@ vi.mock('@/lib/server/db', () => {
     },
     posts: { principalId: 'principalId', deletedAt: 'deletedAt' },
     postVotes: { principalId: 'principalId' },
-    comments: { principalId: 'principalId', deletedAt: 'deletedAt' },
+    postComments: { principalId: 'principalId', deletedAt: 'deletedAt' },
     user: {},
     principal: {},
     eq: vi.fn(),

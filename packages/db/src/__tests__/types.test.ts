@@ -15,7 +15,7 @@ import type {
   PostVote,
   NewPostVote,
   Comment,
-  NewComment,
+  NewPostComment,
   PostCommentReaction,
   NewPostCommentReaction,
   Integration,
@@ -149,16 +149,16 @@ describe('Type definitions', () => {
 
   describe('Comment types', () => {
     it('Comment has correct shape', () => {
-      expectTypeOf<Comment>().toHaveProperty('id')
-      expectTypeOf<Comment>().toHaveProperty('postId')
-      expectTypeOf<Comment>().toHaveProperty('parentId')
-      expectTypeOf<Comment>().toHaveProperty('content')
-      expectTypeOf<Comment>().toHaveProperty('createdAt')
+      expectTypeOf<PostComment>().toHaveProperty('id')
+      expectTypeOf<PostComment>().toHaveProperty('postId')
+      expectTypeOf<PostComment>().toHaveProperty('parentId')
+      expectTypeOf<PostComment>().toHaveProperty('content')
+      expectTypeOf<PostComment>().toHaveProperty('createdAt')
     })
 
-    it('NewComment has required fields', () => {
-      expectTypeOf<NewComment>().toHaveProperty('postId')
-      expectTypeOf<NewComment>().toHaveProperty('content')
+    it('NewPostComment has required fields', () => {
+      expectTypeOf<NewPostComment>().toHaveProperty('postId')
+      expectTypeOf<NewPostComment>().toHaveProperty('content')
     })
 
     it('Comment.parentId can be null', () => {

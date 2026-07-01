@@ -342,7 +342,7 @@ vi.mock('@/lib/server/db', () => ({
           return dbState.posts.find((p) => matchRow({ posts: p }, args.where))
         }),
       },
-      comments: {
+      postComments: {
         findFirst: vi.fn(async (args: { where: PostCondition }) => {
           return dbState.comments.find((c) => matchRow({ comments: c }, args.where))
         }),
@@ -417,7 +417,7 @@ vi.mock('@/lib/server/db', () => ({
     slug: { __table: 'boards', __col: 'slug' } satisfies ColRef,
     deletedAt: { __table: 'boards', __col: 'deletedAt' } satisfies ColRef,
   },
-  comments: {
+  postComments: {
     __tableName: 'comments',
     id: { __table: 'comments', __col: 'id' } satisfies ColRef,
     moderationState: { __table: 'comments', __col: 'moderationState' } satisfies ColRef,

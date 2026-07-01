@@ -158,7 +158,7 @@ const LANG_ICONS: Record<string, (props: { className?: string }) => React.ReactE
 const API_RESOURCES = [
   'posts',
   'boards',
-  'comments',
+  'post_comments',
   'statuses',
   'tags',
   'webhooks',

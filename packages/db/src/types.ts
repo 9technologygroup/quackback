@@ -7,7 +7,7 @@ import type {
   postRoadmaps,
   postTagAssignments,
   postVotes,
-  comments,
+  postComments,
   postCommentReactions,
   postNotes,
 } from './schema/posts'
@@ -284,8 +284,8 @@ export type PostVote = InferSelectModel<typeof postVotes>
 export type NewPostVote = InferInsertModel<typeof postVotes>
 
 // Comment types
-export type Comment = InferSelectModel<typeof comments>
-export type NewComment = InferInsertModel<typeof comments>
+export type PostComment = InferSelectModel<typeof postComments>
+export type NewPostComment = InferInsertModel<typeof postComments>
 
 // Post note types (internal staff notes)
 export type PostNote = InferSelectModel<typeof postNotes>

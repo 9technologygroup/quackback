@@ -72,7 +72,7 @@ function createTx() {
 vi.mock('@/lib/server/db', async () => {
   const mockDb = {
     query: {
-      comments: {
+      postComments: {
         findFirst: vi.fn().mockResolvedValue({
           id: 'comment_mock',
           postId: 'post_mock',
@@ -145,7 +145,7 @@ vi.mock('@/lib/server/db', async () => {
     asc: vi.fn(),
     isNull: vi.fn(),
     sql: realSql,
-    comments: { id: 'id', postId: 'postId', parentId: 'parentId' },
+    postComments: { id: 'id', postId: 'postId', parentId: 'parentId' },
     postCommentReactions: {},
     postCommentEditHistory: {},
     posts: { id: 'id', commentCount: 'comment_count' },
@@ -371,7 +371,7 @@ describe('Comment count maintenance', () => {
           board: { id: 'board_mock', slug: 'test' },
         },
       }
-      vi.mocked(db.query.comments.findFirst)
+      vi.mocked(db.query.postComments.findFirst)
         .mockResolvedValueOnce(heldComment as never)
         .mockResolvedValueOnce(heldComment as never)
       // The decrement decision reads the LOCKED returning row, so the held
@@ -424,7 +424,7 @@ describe('Comment count maintenance', () => {
     it('should NOT decrement comment_count when hard-deleting a soft-deleted comment', async () => {
       const { db } = await import('@/lib/server/db')
       // Override mock to return a soft-deleted comment
-      vi.mocked(db.query.comments.findFirst).mockResolvedValueOnce({
+      vi.mocked(db.query.postComments.findFirst).mockResolvedValueOnce({
         id: 'comment_mock',
         postId: 'post_mock',
         content: 'test comment',
@@ -466,7 +466,7 @@ describe('Comment count maintenance', () => {
       // Same invariant as softDeleteComment: a pending comment was never
       // counted on insert, so the hard-delete path must not decrement either.
       const { db } = await import('@/lib/server/db')
-      vi.mocked(db.query.comments.findFirst).mockResolvedValueOnce({
+      vi.mocked(db.query.postComments.findFirst).mockResolvedValueOnce({
         id: 'comment_mock',
         postId: 'post_mock',
         content: 'held comment',

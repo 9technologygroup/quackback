@@ -42,7 +42,7 @@ vi.mock('@/lib/server/db', () => ({
     transaction: (fn: unknown) => mockTransaction(fn),
   },
   postVotes: { principalId: 'principalId', postId: 'postId', __name: 'post_votes' },
-  comments: { principalId: 'principalId', id: 'id', __name: 'comments' },
+  postComments: { principalId: 'principalId', id: 'id', __name: 'comments' },
   posts: { principalId: 'principalId', __name: 'posts' },
   conversations: {
     visitorPrincipalId: 'visitorPrincipalId',

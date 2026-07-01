@@ -13,7 +13,7 @@ import type { PrincipalId, UserId } from '@quackback/ids'
 import {
   db,
   postVotes,
-  comments,
+  postComments,
   posts,
   postSubscriptions,
   inAppNotifications,
@@ -66,9 +66,9 @@ export async function mergeAnonymousToIdentified(params: MergeAnonymousParams): 
 
     // 2. Get anonymous comment IDs before transfer (for notification cleanup)
     const anonCommentIds = await tx
-      .select({ id: comments.id })
-      .from(comments)
-      .where(eq(comments.principalId, anonPrincipalId))
+      .select({ id: postComments.id })
+      .from(postComments)
+      .where(eq(postComments.principalId, anonPrincipalId))
 
     // 3. Transfer votes, comments, posts, and chat history to target principal.
     // Chat rows use onDelete:'restrict', so re-pointing them here is mandatory —
@@ -79,9 +79,9 @@ export async function mergeAnonymousToIdentified(params: MergeAnonymousParams): 
         .set({ principalId: targetPrincipalId })
         .where(eq(postVotes.principalId, anonPrincipalId)),
       tx
-        .update(comments)
+        .update(postComments)
         .set({ principalId: targetPrincipalId })
-        .where(eq(comments.principalId, anonPrincipalId)),
+        .where(eq(postComments.principalId, anonPrincipalId)),
       tx
         .update(posts)
         .set({ principalId: targetPrincipalId })

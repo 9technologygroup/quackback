@@ -234,8 +234,8 @@ export const postVotes = pgTable(
   ]
 )
 
-export const comments = pgTable(
-  'comments',
+export const postComments = pgTable(
+  'post_comments',
   {
     id: typeIdWithDefault('comment')('id').primaryKey(),
     postId: typeIdColumn('post')('post_id')
@@ -275,17 +275,17 @@ export const comments = pgTable(
       .default('published'),
   },
   (table) => [
-    index('comments_post_id_idx').on(table.postId),
-    index('comments_parent_id_idx').on(table.parentId),
-    index('comments_principal_id_idx').on(table.principalId),
-    index('comments_created_at_idx').on(table.createdAt),
+    index('post_comments_post_id_idx').on(table.postId),
+    index('post_comments_parent_id_idx').on(table.parentId),
+    index('post_comments_principal_id_idx').on(table.principalId),
+    index('post_comments_created_at_idx').on(table.createdAt),
     // Composite index for comment listings
-    index('comments_post_created_at_idx').on(table.postId, table.createdAt),
-    index('comments_moderation_state_idx').on(table.moderationState),
+    index('post_comments_post_created_at_idx').on(table.postId, table.createdAt),
+    index('post_comments_moderation_state_idx').on(table.moderationState),
     // Partial index for the time-to-resolution analytics query, which joins
     // comments to post_statuses via status_change_to_id. The column is NULL on
     // ordinary comments, so the partial keeps the index to the sparse rows.
-    index('comments_status_change_to_id_idx')
+    index('post_comments_status_change_to_id_idx')
       .on(table.statusChangeToId)
       .where(sql`status_change_to_id IS NOT NULL`),
   ]
@@ -297,7 +297,7 @@ export const postCommentReactions = pgTable(
     id: typeIdWithDefault('reaction')('id').primaryKey(),
     commentId: typeIdColumn('comment')('comment_id')
       .notNull()
-      .references(() => comments.id, { onDelete: 'cascade' }),
+      .references(() => postComments.id, { onDelete: 'cascade' }),
     // principal_id is required - only authenticated users can react
     principalId: typeIdColumn('principal')('principal_id')
       .notNull()
@@ -344,7 +344,7 @@ export const postCommentEditHistory = pgTable(
     id: typeIdWithDefault('comment_edit')('id').primaryKey(),
     commentId: typeIdColumn('comment')('comment_id')
       .notNull()
-      .references(() => comments.id, { onDelete: 'cascade' }),
+      .references(() => postComments.id, { onDelete: 'cascade' }),
     editorPrincipalId: typeIdColumn('principal')('editor_principal_id')
       .notNull()
       .references(() => principal.id, { onDelete: 'set null' }),
@@ -404,9 +404,9 @@ export const postsRelations = relations(posts, ({ one, many }) => ({
     relationName: 'postOwner',
   }),
   // Pinned comment as official response
-  pinnedComment: one(comments, {
+  pinnedComment: one(postComments, {
     fields: [posts.pinnedCommentId],
-    references: [comments.id],
+    references: [postComments.id],
   }),
   // Merge/deduplication: the canonical post this was merged into
   canonicalPost: one(posts, {
@@ -423,7 +423,7 @@ export const postsRelations = relations(posts, ({ one, many }) => ({
     relationName: 'postMergedBy',
   }),
   votes: many(postVotes),
-  comments: many(comments),
+  comments: many(postComments),
   tags: many(postTagAssignments),
   roadmaps: many(postRoadmaps),
   notes: many(postNotes),
@@ -454,46 +454,46 @@ export const postVotesRelations = relations(postVotes, ({ one }) => ({
   }),
 }))
 
-export const commentsRelations = relations(comments, ({ one, many }) => ({
+export const postCommentsRelations = relations(postComments, ({ one, many }) => ({
   post: one(posts, {
-    fields: [comments.postId],
+    fields: [postComments.postId],
     references: [posts.id],
   }),
   // Principal-scoped author (Hub-and-Spoke identity)
   author: one(principal, {
-    fields: [comments.principalId],
+    fields: [postComments.principalId],
     references: [principal.id],
     relationName: 'commentAuthor',
   }),
-  parent: one(comments, {
-    fields: [comments.parentId],
-    references: [comments.id],
+  parent: one(postComments, {
+    fields: [postComments.parentId],
+    references: [postComments.id],
     relationName: 'commentReplies',
   }),
-  replies: many(comments, { relationName: 'commentReplies' }),
+  replies: many(postComments, { relationName: 'commentReplies' }),
   reactions: many(postCommentReactions),
   // Status change tracking
   statusChangeFrom: one(postStatuses, {
-    fields: [comments.statusChangeFromId],
+    fields: [postComments.statusChangeFromId],
     references: [postStatuses.id],
     relationName: 'commentStatusChangeFrom',
   }),
   statusChangeTo: one(postStatuses, {
-    fields: [comments.statusChangeToId],
+    fields: [postComments.statusChangeToId],
     references: [postStatuses.id],
     relationName: 'commentStatusChangeTo',
   }),
   deletedBy: one(principal, {
-    fields: [comments.deletedByPrincipalId],
+    fields: [postComments.deletedByPrincipalId],
     references: [principal.id],
     relationName: 'commentDeletedBy',
   }),
 }))
 
 export const commentReactionsRelations = relations(postCommentReactions, ({ one }) => ({
-  comment: one(comments, {
+  comment: one(postComments, {
     fields: [postCommentReactions.commentId],
-    references: [comments.id],
+    references: [postComments.id],
   }),
 }))
 
@@ -527,9 +527,9 @@ export const postEditHistoryRelations = relations(postEditHistory, ({ one }) => 
 }))
 
 export const commentEditHistoryRelations = relations(postCommentEditHistory, ({ one }) => ({
-  comment: one(comments, {
+  comment: one(postComments, {
     fields: [postCommentEditHistory.commentId],
-    references: [comments.id],
+    references: [postComments.id],
   }),
   editor: one(principal, {
     fields: [postCommentEditHistory.editorPrincipalId],

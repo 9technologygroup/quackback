@@ -14,7 +14,7 @@ interface MetricBarProps {
   summary: {
     posts: { total: number; delta: number }
     votes: { total: number; delta: number }
-    comments: { total: number; delta: number }
+    postComments: { total: number; delta: number }
     users: { total: number; delta: number }
   }
   activeMetric: MetricKey

@@ -20,7 +20,7 @@ const log = logger.child({ component: 'moderation' })
 import {
   db,
   posts,
-  comments,
+  postComments,
   boards,
   principal,
   eq,
@@ -85,7 +85,7 @@ function parentChainAliveForComment() {
     db
       .select({ one: sql`1` })
       .from(posts)
-      .where(and(eq(posts.id, comments.postId), isNull(posts.deletedAt), boardAliveForPost()))
+      .where(and(eq(posts.id, postComments.postId), isNull(posts.deletedAt), boardAliveForPost()))
   )
 }
 
@@ -115,28 +115,28 @@ export const listPendingCommentsFn = createServerFn({ method: 'GET' }).handler(a
   await requireTeamAuth()
   const rows = await db
     .select({
-      id: comments.id,
-      content: comments.content,
-      createdAt: comments.createdAt,
-      postId: comments.postId,
+      id: postComments.id,
+      content: postComments.content,
+      createdAt: postComments.createdAt,
+      postId: postComments.postId,
       postTitle: posts.title,
       boardName: boards.name,
       boardSlug: boards.slug,
       authorName: principal.displayName,
     })
-    .from(comments)
-    .innerJoin(posts, eq(comments.postId, posts.id))
+    .from(postComments)
+    .innerJoin(posts, eq(postComments.postId, posts.id))
     .innerJoin(boards, eq(posts.boardId, boards.id))
-    .leftJoin(principal, eq(comments.principalId, principal.id))
+    .leftJoin(principal, eq(postComments.principalId, principal.id))
     .where(
       and(
-        eq(comments.moderationState, 'pending'),
-        isNull(comments.deletedAt),
+        eq(postComments.moderationState, 'pending'),
+        isNull(postComments.deletedAt),
         isNull(posts.deletedAt),
         isNull(boards.deletedAt)
       )
     )
-    .orderBy(desc(comments.createdAt))
+    .orderBy(desc(postComments.createdAt))
   return { comments: rows }
 })
 
@@ -188,8 +188,8 @@ export const approveCommentFn = createServerFn({ method: 'POST' })
   .validator(ApproveCommentInput.parse)
   .handler(async ({ data }) => {
     const auth = await requireTeamAuth()
-    const before = await db.query.comments.findFirst({
-      where: eq(comments.id, data.commentId as never),
+    const before = await db.query.postComments.findFirst({
+      where: eq(postComments.id, data.commentId as never),
     })
     if (!before) throw new NotFoundError('COMMENT_NOT_FOUND', `Comment ${data.commentId}`)
     // Publish the comment and reconcile the public commentCount in ONE
@@ -201,17 +201,21 @@ export const approveCommentFn = createServerFn({ method: 'POST' })
     // flips it on; rejected comments stay uncounted.
     const updated = await db.transaction(async (tx) => {
       const [row] = await tx
-        .update(comments)
+        .update(postComments)
         .set({ moderationState: 'published' })
         .where(
           and(
-            eq(comments.id, data.commentId as never),
-            eq(comments.moderationState, 'pending'),
-            isNull(comments.deletedAt),
+            eq(postComments.id, data.commentId as never),
+            eq(postComments.moderationState, 'pending'),
+            isNull(postComments.deletedAt),
             parentChainAliveForComment()
           )
         )
-        .returning({ id: comments.id, postId: comments.postId, isPrivate: comments.isPrivate })
+        .returning({
+          id: postComments.id,
+          postId: postComments.postId,
+          isPrivate: postComments.isPrivate,
+        })
       if (!row) return null
       if (!row.isPrivate) {
         await tx
@@ -247,23 +251,23 @@ export const rejectCommentFn = createServerFn({ method: 'POST' })
   .validator(RejectCommentInput.parse)
   .handler(async ({ data }) => {
     const auth = await requireTeamAuth()
-    const before = await db.query.comments.findFirst({
-      where: eq(comments.id, data.commentId as never),
+    const before = await db.query.postComments.findFirst({
+      where: eq(postComments.id, data.commentId as never),
     })
     if (!before) throw new NotFoundError('COMMENT_NOT_FOUND', `Comment ${data.commentId}`)
     const deletedAt = new Date()
     const updated = await db
-      .update(comments)
+      .update(postComments)
       .set({ deletedAt })
       .where(
         and(
-          eq(comments.id, data.commentId as never),
-          eq(comments.moderationState, 'pending'),
-          isNull(comments.deletedAt),
+          eq(postComments.id, data.commentId as never),
+          eq(postComments.moderationState, 'pending'),
+          isNull(postComments.deletedAt),
           parentChainAliveForComment()
         )
       )
-      .returning({ id: comments.id })
+      .returning({ id: postComments.id })
     if (updated.length === 0) {
       throw new ConflictError('COMMENT_NOT_PENDING', 'Comment is not awaiting review')
     }
@@ -330,13 +334,13 @@ export const getModerationStatus = createServerFn({ method: 'GET' }).handler(asy
       ),
     db
       .select({ count: sql<number>`count(*)::int` })
-      .from(comments)
-      .innerJoin(posts, eq(comments.postId, posts.id))
+      .from(postComments)
+      .innerJoin(posts, eq(postComments.postId, posts.id))
       .innerJoin(boards, eq(posts.boardId, boards.id))
       .where(
         and(
-          eq(comments.moderationState, 'pending'),
-          isNull(comments.deletedAt),
+          eq(postComments.moderationState, 'pending'),
+          isNull(postComments.deletedAt),
           isNull(posts.deletedAt),
           isNull(boards.deletedAt)
         )

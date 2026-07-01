@@ -14,7 +14,7 @@ const mockDispatchCommentUpdated = vi.fn()
 vi.mock('@/lib/server/db', () => ({
   db: {
     query: {
-      comments: {
+      postComments: {
         findFirst: (...args: unknown[]) => mockFindFirst(...args),
         findMany: (...args: unknown[]) => mockFindMany(...args),
       },
@@ -25,7 +25,7 @@ vi.mock('@/lib/server/db', () => ({
   and: vi.fn(),
   isNull: vi.fn(),
   sql: vi.fn(),
-  comments: { id: 'id', parentId: 'parent_id' },
+  postComments: { id: 'id', parentId: 'parent_id' },
   postCommentEditHistory: {},
   posts: {},
 }))

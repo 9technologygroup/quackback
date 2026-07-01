@@ -4,10 +4,10 @@ import {
   and,
   isNull,
   sql,
-  comments,
+  postComments,
   posts,
   postStatuses,
-  type Comment,
+  type PostComment,
   type ModerationState,
 } from '@/lib/server/db'
 import { type CommentId, type PrincipalId, type StatusId, type UserId } from '@quackback/ids'
@@ -107,8 +107,8 @@ export async function createComment(
   // Validate parent comment exists if specified
   let parentIsPrivate = false
   if (input.parentId) {
-    const parentComment = await db.query.comments.findFirst({
-      where: eq(comments.id, input.parentId),
+    const parentComment = await db.query.postComments.findFirst({
+      where: eq(postComments.id, input.parentId),
     })
     if (!parentComment) {
       throw new ValidationError(
@@ -155,7 +155,7 @@ export async function createComment(
   const trimmedContent = input.content.trim()
   const contentJson = resolveContentJson(trimmedContent, input.contentJson)
 
-  let comment: Comment
+  let comment: PostComment
   let previousStatusName: string | null = null
   let newStatusName: string | null = null
 
@@ -178,7 +178,7 @@ export async function createComment(
     // Atomic transaction: insert comment + update post status + conditionally increment comment count
     const result = await db.transaction(async (tx) => {
       const [insertedComment] = await tx
-        .insert(comments)
+        .insert(postComments)
         .values({
           postId: input.postId,
           content: trimmedContent,
@@ -238,7 +238,7 @@ export async function createComment(
     // Atomic transaction: insert comment + conditionally increment comment count
     const result = await db.transaction(async (tx) => {
       const [insertedComment] = await tx
-        .insert(comments)
+        .insert(postComments)
         .values({
           postId: input.postId,
           content: trimmedContent,
@@ -330,11 +330,11 @@ export async function updateComment(
   id: CommentId,
   input: UpdateCommentInput,
   actor: { principalId: PrincipalId; role: Role; userId?: UserId }
-): Promise<Comment> {
+): Promise<PostComment> {
   log.info({ comment_id: id }, 'update comment')
   // Get existing comment with post and board in single query
-  const existingComment = await db.query.comments.findFirst({
-    where: eq(comments.id, id),
+  const existingComment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, id),
     with: {
       post: {
         with: { board: true },
@@ -366,7 +366,7 @@ export async function updateComment(
   }
 
   // Build update data
-  const updateData: Partial<Comment> = {}
+  const updateData: Partial<PostComment> = {}
   if (input.content !== undefined) {
     const trimmed = input.content.trim()
     updateData.content = trimmed
@@ -377,9 +377,9 @@ export async function updateComment(
 
   // Update the comment
   const [updatedComment] = await db
-    .update(comments)
+    .update(postComments)
     .set(updateData)
-    .where(eq(comments.id, id))
+    .where(eq(postComments.id, id))
     .returning()
 
   if (!updatedComment) {
@@ -426,8 +426,8 @@ export async function deleteComment(
 ): Promise<void> {
   log.info({ comment_id: id }, 'delete comment')
   // Get existing comment with post and board in single query
-  const existingComment = await db.query.comments.findFirst({
-    where: eq(comments.id, id),
+  const existingComment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, id),
     with: {
       post: {
         with: { board: true },
@@ -450,7 +450,7 @@ export async function deleteComment(
 
   // Atomic transaction: delete comment + conditionally decrement comment count
   await db.transaction(async (tx) => {
-    const result = await tx.delete(comments).where(eq(comments.id, id)).returning()
+    const result = await tx.delete(postComments).where(eq(postComments.id, id)).returning()
     if (result.length === 0) {
       throw new NotFoundError('COMMENT_NOT_FOUND', `Comment with ID ${id} not found`)
     }

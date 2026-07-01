@@ -143,7 +143,7 @@ export async function listInboxPosts(params: InboxPostListParams): Promise<Inbox
   // Responded filter - filter by whether any team member has commented
   // NOTE: Use raw SQL column names for the comments table inside the subquery.
   // Drizzle's relational query builder (db.query.posts.findMany) rewrites all
-  // column references to use the outer table's alias, so ${comments.postId}
+  // column references to use the outer table's alias, so ${postComments.postId}
   // becomes "posts"."post_id" instead of "comments"."post_id".
   if (responded === 'responded') {
     conditions.push(

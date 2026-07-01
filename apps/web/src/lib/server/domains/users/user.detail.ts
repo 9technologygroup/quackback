@@ -16,7 +16,7 @@ import {
   principal,
   user,
   posts,
-  comments,
+  postComments,
   postVotes,
   postStatuses,
   boards,
@@ -145,13 +145,15 @@ export async function getPortalUserDetail(
       // Get post IDs the user has commented on (via principalId)
       db
         .select({
-          postId: comments.postId,
-          latestCommentAt: sql<Date>`max(${comments.createdAt})`.as('latest_comment_at'),
+          postId: postComments.postId,
+          latestCommentAt: sql<Date>`max(${postComments.createdAt})`.as('latest_comment_at'),
         })
-        .from(comments)
-        .innerJoin(posts, eq(posts.id, comments.postId))
-        .where(and(eq(comments.principalId, principalData.principalId), isNull(posts.deletedAt)))
-        .groupBy(comments.postId)
+        .from(postComments)
+        .innerJoin(posts, eq(posts.id, postComments.postId))
+        .where(
+          and(eq(postComments.principalId, principalData.principalId), isNull(posts.deletedAt))
+        )
+        .groupBy(postComments.postId)
         .limit(100),
 
       // Get post IDs the user has voted on (via indexed principalId column)
@@ -208,12 +210,14 @@ export async function getPortalUserDetail(
       allCommentPostIds.length > 0
         ? db
             .select({
-              postId: comments.postId,
+              postId: postComments.postId,
               count: sql<number>`count(*)::int`.as('count'),
             })
-            .from(comments)
-            .where(and(inArray(comments.postId, allCommentPostIds), isNull(comments.deletedAt)))
-            .groupBy(comments.postId)
+            .from(postComments)
+            .where(
+              and(inArray(postComments.postId, allCommentPostIds), isNull(postComments.deletedAt))
+            )
+            .groupBy(postComments.postId)
         : [],
     ])
 

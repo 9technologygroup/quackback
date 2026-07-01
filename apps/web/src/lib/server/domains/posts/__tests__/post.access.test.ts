@@ -21,7 +21,7 @@ vi.mock('@/lib/server/db', () => {
     isNull: vi.fn(),
     posts: {},
     boards: {},
-    comments: {},
+    postComments: {},
   }
 })
 

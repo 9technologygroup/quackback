@@ -18,7 +18,7 @@ import {
   desc,
   posts,
   postVotes,
-  comments,
+  postComments,
   principal,
   postStatuses,
   boards,
@@ -62,12 +62,12 @@ export async function refreshAnalytics(): Promise<void> {
       .where(and(gte(postVotes.createdAt, dayStart), lte(postVotes.createdAt, dayEnd))),
     db
       .select({ value: count() })
-      .from(comments)
+      .from(postComments)
       .where(
         and(
-          gte(comments.createdAt, dayStart),
-          lte(comments.createdAt, dayEnd),
-          isNull(comments.deletedAt)
+          gte(postComments.createdAt, dayStart),
+          lte(postComments.createdAt, dayEnd),
+          isNull(postComments.deletedAt)
         )
       ),
     db
@@ -181,18 +181,18 @@ async function refreshTopPosts(): Promise<void> {
     if (postIds.length > 0) {
       const commentRows = await db
         .select({
-          postId: comments.postId,
+          postId: postComments.postId,
           value: count(),
         })
-        .from(comments)
+        .from(postComments)
         .where(
           and(
-            inArray(comments.postId, postIds),
-            gte(comments.createdAt, since),
-            isNull(comments.deletedAt)
+            inArray(postComments.postId, postIds),
+            gte(postComments.createdAt, since),
+            isNull(postComments.deletedAt)
           )
         )
-        .groupBy(comments.postId)
+        .groupBy(postComments.postId)
 
       for (const row of commentRows) {
         commentCounts[row.postId] = row.value

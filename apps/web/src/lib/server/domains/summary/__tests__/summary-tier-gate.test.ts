@@ -29,7 +29,7 @@ vi.mock('@/lib/server/db', () => ({
     select: () => ({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) }),
   },
   posts: { id: 'p' },
-  comments: {
+  postComments: {
     id: 'c',
     postId: 'pid',
     content: 'co',

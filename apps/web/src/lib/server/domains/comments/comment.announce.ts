@@ -9,7 +9,7 @@
  * original author, not the moderator. Mirrors announcePublishedPost.
  */
 
-import { db, boards, comments, posts, principal as principalTable, eq } from '@/lib/server/db'
+import { db, boards, postComments, posts, principal as principalTable, eq } from '@/lib/server/db'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import {
   type CommentId,
@@ -65,7 +65,9 @@ export async function dispatchCommentCreatedEvent(
  * and author from the database so the approve call site stays simple.
  */
 export async function announcePublishedComment(commentId: CommentId): Promise<void> {
-  const commentRow = await db.query.comments.findFirst({ where: eq(comments.id, commentId) })
+  const commentRow = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
+  })
   if (!commentRow) return
   const postRow = await db.query.posts.findFirst({ where: eq(posts.id, commentRow.postId) })
   if (!postRow) return

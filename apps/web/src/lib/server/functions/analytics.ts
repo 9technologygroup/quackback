@@ -314,7 +314,7 @@ export const getAnalyticsData = createServerFn({ method: 'GET' })
     const summary = {
       posts: { total: currentPosts, delta: delta(currentPosts, prevPosts) },
       votes: { total: currentVotes, delta: delta(currentVotes, prevVotes) },
-      comments: { total: currentComments, delta: delta(currentComments, prevComments) },
+      postComments: { total: currentComments, delta: delta(currentComments, prevComments) },
       users: { total: currentUsers, delta: delta(currentUsers, prevUsers) },
     }
 

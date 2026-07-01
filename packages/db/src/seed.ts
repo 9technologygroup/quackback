@@ -25,7 +25,7 @@ import type {
 } from '@quackback/ids'
 import { user, account, settings, principal } from './schema/auth'
 import { boards, postTags, roadmaps } from './schema/boards'
-import { posts, postTagAssignments, postRoadmaps, postVotes, comments } from './schema/posts'
+import { posts, postTagAssignments, postRoadmaps, postVotes, postComments } from './schema/posts'
 import { postStatuses, DEFAULT_STATUSES } from './schema/statuses'
 import { changelogEntries, changelogEntryPosts } from './schema/changelog'
 import { segments } from './schema/segments'
@@ -571,7 +571,7 @@ async function seed() {
 
     // Create comments
     console.log('Creating comments...')
-    const commentInserts: (typeof comments.$inferInsert)[] = []
+    const commentInserts: (typeof postComments.$inferInsert)[] = []
     for (const post of postRecords) {
       const numComments = Math.floor(Math.random() * 5) // 0-4 comments per post
       for (let c = 0; c < numComments; c++) {
@@ -586,7 +586,7 @@ async function seed() {
       }
     }
     for (let i = 0; i < commentInserts.length; i += BATCH_SIZE) {
-      await db.insert(comments).values(commentInserts.slice(i, i + BATCH_SIZE))
+      await db.insert(postComments).values(commentInserts.slice(i, i + BATCH_SIZE))
     }
     console.log(`Created ${commentInserts.length} comments`)
 

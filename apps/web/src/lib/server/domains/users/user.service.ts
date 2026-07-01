@@ -24,7 +24,7 @@ import {
   principal,
   user,
   posts,
-  comments,
+  postComments,
   postVotes,
   userSegments,
   segments,
@@ -146,12 +146,12 @@ export async function listPortalUsers(
 
     const commentCounts = db
       .select({
-        principalId: comments.principalId,
+        principalId: postComments.principalId,
         commentCount: sql<number>`count(*)::int`.as('comment_count'),
       })
-      .from(comments)
-      .where(isNull(comments.deletedAt))
-      .groupBy(comments.principalId)
+      .from(postComments)
+      .where(isNull(postComments.deletedAt))
+      .groupBy(postComments.principalId)
       .as('comment_counts')
 
     const voteCounts = db

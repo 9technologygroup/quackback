@@ -13,7 +13,7 @@ import {
   postTagAssignments,
   postRoadmaps,
   postTags,
-  comments,
+  postComments,
   eq,
   and,
   inArray,
@@ -104,8 +104,8 @@ export async function getPostWithDetails(postId: PostId): Promise<PostWithDetail
       .from(postRoadmaps)
       .where(eq(postRoadmaps.postId, postId)),
     post.pinnedCommentId
-      ? db.query.comments.findFirst({
-          where: eq(comments.id, post.pinnedCommentId),
+      ? db.query.postComments.findFirst({
+          where: eq(postComments.id, post.pinnedCommentId),
           with: {
             author: {
               columns: { displayName: true, avatarUrl: true, avatarKey: true },
@@ -219,8 +219,11 @@ export async function getCommentsWithReplies(
   const postIds = [postId, ...mergedPosts.map((p) => p.id)] as PostId[]
 
   // Get all comments with reactions, author info, and status changes (including from merged posts)
-  const allComments = await db.query.comments.findMany({
-    where: postIds.length === 1 ? eq(comments.postId, postId) : inArray(comments.postId, postIds),
+  const allComments = await db.query.postComments.findMany({
+    where:
+      postIds.length === 1
+        ? eq(postComments.postId, postId)
+        : inArray(postComments.postId, postIds),
     with: {
       reactions: true,
       author: {
@@ -233,7 +236,7 @@ export async function getCommentsWithReplies(
         columns: { name: true, color: true },
       },
     },
-    orderBy: asc(comments.createdAt),
+    orderBy: asc(postComments.createdAt),
   })
 
   // Build nested tree using the utility function

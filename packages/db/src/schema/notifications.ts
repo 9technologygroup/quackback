@@ -10,7 +10,7 @@ import {
 } from 'drizzle-orm/pg-core'
 import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
-import { posts, comments } from './posts'
+import { posts, postComments } from './posts'
 import { principal } from './auth'
 
 /**
@@ -152,7 +152,7 @@ export const inAppNotifications = pgTable(
     postId: typeIdColumnNullable('post')('post_id').references(() => posts.id, {
       onDelete: 'cascade',
     }),
-    commentId: typeIdColumnNullable('comment')('comment_id').references(() => comments.id, {
+    commentId: typeIdColumnNullable('comment')('comment_id').references(() => postComments.id, {
       onDelete: 'cascade',
     }),
     metadata: jsonb('metadata').$type<Record<string, unknown>>(),
@@ -181,8 +181,8 @@ export const inAppNotificationsRelations = relations(inAppNotifications, ({ one 
     fields: [inAppNotifications.postId],
     references: [posts.id],
   }),
-  comment: one(comments, {
+  comment: one(postComments, {
     fields: [inAppNotifications.commentId],
-    references: [comments.id],
+    references: [postComments.id],
   }),
 }))

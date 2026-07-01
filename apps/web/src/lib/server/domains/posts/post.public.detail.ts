@@ -8,7 +8,7 @@ import {
   boards,
   postTagAssignments,
   postTags,
-  comments,
+  postComments,
   postCommentReactions,
   postStatuses,
   postRoadmaps,
@@ -218,7 +218,7 @@ export async function getPublicPostDetail(
         scf.color as sc_from_color,
         sct.name as sc_to_name,
         sct.color as sc_to_color
-      FROM ${comments} c
+      FROM ${postComments} c
       INNER JOIN ${principalTable} m ON c.principal_id = m.id
       LEFT JOIN ${postCommentReactions} cr ON cr.comment_id = c.id
       LEFT JOIN ${postStatuses} scf ON scf.id = c.status_change_from_id
@@ -280,7 +280,7 @@ export async function getPublicPostDetail(
         ) as reactions_json,
         scf.name as sc_from_name, scf.color as sc_from_color,
         sct.name as sc_to_name, sct.color as sc_to_color
-      FROM ${comments} c
+      FROM ${postComments} c
       INNER JOIN ${principalTable} m ON c.principal_id = m.id
       LEFT JOIN ${postCommentReactions} cr ON cr.comment_id = c.id
       LEFT JOIN ${postStatuses} scf ON scf.id = c.status_change_from_id

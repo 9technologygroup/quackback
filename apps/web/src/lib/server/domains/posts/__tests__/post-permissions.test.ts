@@ -45,7 +45,7 @@ vi.mock('@/lib/server/db', async () => {
         postStatuses: {
           findFirst: vi.fn().mockResolvedValue({ id: 'status_mock', isDefault: true }),
         },
-        comments: { findFirst: vi.fn().mockResolvedValue(null) },
+        postComments: { findFirst: vi.fn().mockResolvedValue(null) },
         settings: { findFirst: vi.fn().mockResolvedValue(null) },
         boards: {
           findFirst: vi.fn().mockResolvedValue({ id: 'board_mock', slug: 'feedback' }),
@@ -71,7 +71,7 @@ vi.mock('@/lib/server/db', async () => {
       statusId: 'status_id',
     },
     boards: { id: 'board_id', slug: 'board_slug' },
-    comments: { postId: 'post_id', principalId: 'principal_id', deletedAt: 'deleted_at' },
+    postComments: { postId: 'post_id', principalId: 'principal_id', deletedAt: 'deleted_at' },
     postEditHistory: {},
     postStatuses: { id: 'id', isDefault: 'is_default' },
     postActivity: {},

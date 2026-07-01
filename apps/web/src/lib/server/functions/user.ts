@@ -11,7 +11,7 @@ import {
   principal,
   posts,
   postVotes,
-  comments,
+  postComments,
   eq,
   and,
   isNull,
@@ -375,8 +375,8 @@ export const getUserStatsFn = createServerFn({ method: 'GET' }).handler(
         db.select({ count: count() }).from(postVotes).where(eq(postVotes.principalId, principalId)),
         db
           .select({ count: count() })
-          .from(comments)
-          .where(and(eq(comments.principalId, principalId), isNull(comments.deletedAt))),
+          .from(postComments)
+          .where(and(eq(postComments.principalId, principalId), isNull(postComments.deletedAt))),
       ])
 
       return {

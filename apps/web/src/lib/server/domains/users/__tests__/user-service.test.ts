@@ -87,7 +87,7 @@ vi.mock('@/lib/server/db', () => ({
     updatedAt: 'updated_at',
   },
   posts: {},
-  comments: {},
+  postComments: {},
   postVotes: {},
   postStatuses: {},
   boards: {},

@@ -10,10 +10,10 @@ import {
   and,
   isNull,
   sql,
-  comments,
+  postComments,
   postCommentEditHistory,
   posts,
-  type Comment,
+  type PostComment,
 } from '@/lib/server/db'
 import { type CommentId, type PrincipalId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
@@ -39,8 +39,8 @@ const log = logger.child({ component: 'comment-permissions' })
  * Recursively checks all descendants
  */
 export async function hasTeamMemberReply(commentId: CommentId): Promise<boolean> {
-  const replies = await db.query.comments.findMany({
-    where: and(eq(comments.parentId, commentId), isNull(comments.deletedAt)),
+  const replies = await db.query.postComments.findMany({
+    where: and(eq(postComments.parentId, commentId), isNull(postComments.deletedAt)),
   })
 
   for (const reply of replies) {
@@ -73,8 +73,8 @@ export async function canEditComment(
 ): Promise<CommentPermissionCheckResult> {
   log.debug({ comment_id: commentId }, 'can edit comment check')
   // Get the comment
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
   })
 
   if (!comment) {
@@ -122,8 +122,8 @@ export async function canDeleteComment(
 ): Promise<CommentPermissionCheckResult> {
   log.debug({ comment_id: commentId }, 'can delete comment check')
   // Get the comment
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
   })
 
   if (!comment) {
@@ -175,7 +175,7 @@ export async function userEditComment(
   content: string,
   actor: { principalId: PrincipalId; role: Role },
   options?: { contentJson?: TiptapContent | null }
-): Promise<Comment> {
+): Promise<PostComment> {
   log.debug({ comment_id: commentId }, 'user edit comment')
   // Check permission first
   const permResult = await canEditComment(commentId, actor)
@@ -183,8 +183,8 @@ export async function userEditComment(
     throw new ForbiddenError('EDIT_NOT_ALLOWED', permResult.reason || 'Edit not allowed')
   }
 
-  const existingComment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const existingComment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
     with: { post: { with: { board: true } } },
   })
   if (!existingComment) {
@@ -221,9 +221,9 @@ export async function userEditComment(
     }
 
     const [result] = await tx
-      .update(comments)
+      .update(postComments)
       .set({ content: trimmed, contentJson: nextContentJson, updatedAt: new Date() })
-      .where(eq(comments.id, commentId))
+      .where(eq(postComments.id, commentId))
       .returning()
 
     if (!result) {
@@ -271,8 +271,8 @@ export async function softDeleteComment(
   }
 
   // Get the comment to find its post (needed for auto-unpin check)
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
     with: { post: true },
   })
 
@@ -284,12 +284,12 @@ export async function softDeleteComment(
   // Guard: only update comments that aren't already soft-deleted (idempotent)
   const wasDeleted = await db.transaction(async (tx) => {
     const [updatedComment] = await tx
-      .update(comments)
+      .update(postComments)
       .set({
         deletedAt: new Date(),
         deletedByPrincipalId: actor.principalId,
       })
-      .where(and(eq(comments.id, commentId), isNull(comments.deletedAt)))
+      .where(and(eq(postComments.id, commentId), isNull(postComments.deletedAt)))
       .returning()
 
     if (!updatedComment) {

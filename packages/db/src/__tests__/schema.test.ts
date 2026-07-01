@@ -3,7 +3,7 @@ import { getTableName, getTableColumns } from 'drizzle-orm'
 import {
   posts,
   postVotes,
-  comments,
+  postComments,
   postTagAssignments,
   postRoadmaps,
   postCommentReactions,
@@ -151,13 +151,13 @@ describe('Schema definitions', () => {
     })
   })
 
-  describe('comments schema', () => {
+  describe('postComments schema', () => {
     it('has correct table name', () => {
-      expect(getTableName(comments)).toBe('comments')
+      expect(getTableName(postComments)).toBe('post_comments')
     })
 
     it('has required columns', () => {
-      const columns = Object.keys(getTableColumns(comments))
+      const columns = Object.keys(getTableColumns(postComments))
       expect(columns).toContain('id')
       expect(columns).toContain('postId')
       expect(columns).toContain('parentId')
@@ -167,7 +167,7 @@ describe('Schema definitions', () => {
     })
 
     it('has parentId for nested comments', () => {
-      const columns = Object.keys(getTableColumns(comments))
+      const columns = Object.keys(getTableColumns(postComments))
       expect(columns).toContain('parentId')
     })
   })

@@ -5,7 +5,7 @@
  * Only accessible to team members.
  */
 
-import { db, eq, and, sql, comments, posts } from '@/lib/server/db'
+import { db, eq, and, sql, postComments, posts } from '@/lib/server/db'
 import { type CommentId, type PostId, type PrincipalId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
 import { isTeamMember, Role } from '@/lib/shared/roles'
@@ -31,8 +31,8 @@ export async function restoreComment(
     throw new ForbiddenError('UNAUTHORIZED', 'Only team members can restore comments')
   }
 
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
     with: { post: true },
   })
 
@@ -47,12 +47,12 @@ export async function restoreComment(
   // Atomic transaction: restore comment + re-increment comment count
   const wasRestored = await db.transaction(async (tx) => {
     const [updatedComment] = await tx
-      .update(comments)
+      .update(postComments)
       .set({
         deletedAt: null,
         deletedByPrincipalId: null,
       })
-      .where(and(eq(comments.id, commentId), sql`${comments.deletedAt} IS NOT NULL`))
+      .where(and(eq(postComments.id, commentId), sql`${postComments.deletedAt} IS NOT NULL`))
       .returning()
 
     if (!updatedComment) return false
@@ -101,8 +101,8 @@ export async function canPinComment(commentId: CommentId): Promise<{
   reason?: string
 }> {
   log.debug({ comment_id: commentId }, 'can pin comment check')
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
   })
 
   if (!comment) {
@@ -156,8 +156,8 @@ export async function pinComment(
   }
 
   // Get the comment to find its post
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
     with: {
       post: {
         with: { board: true },

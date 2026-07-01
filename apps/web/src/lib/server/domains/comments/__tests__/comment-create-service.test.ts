@@ -76,7 +76,7 @@ vi.mock('@/lib/server/db', async () => {
             },
           }),
         },
-        comments: { findFirst: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
+        postComments: { findFirst: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
         postStatuses: {
           findFirst: vi.fn().mockResolvedValue({ id: 'status_open', name: 'Open' }),
         },
@@ -88,7 +88,7 @@ vi.mock('@/lib/server/db', async () => {
     isNull: vi.fn(),
     asc: vi.fn(),
     sql: realSql,
-    comments: { __name: 'comments', id: 'id', postId: 'postId', parentId: 'parentId' },
+    postComments: { __name: 'comments', id: 'id', postId: 'postId', parentId: 'parentId' },
     posts: { __name: 'posts', id: 'id', commentCount: 'comment_count' },
     boards: { id: 'id' },
     postStatuses: { id: 'id' },

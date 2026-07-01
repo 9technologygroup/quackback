@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { comments, postCommentEditHistory } from '../schema/posts'
+import { postComments, postCommentEditHistory } from '../schema/posts'
 
-describe('comments.contentJson column', () => {
+describe('postComments.contentJson column', () => {
   it('is exposed on the schema (mirrors posts.contentJson for the rich editor)', () => {
-    const col = (comments as unknown as Record<string, unknown>).contentJson
+    const col = (postComments as unknown as Record<string, unknown>).contentJson
     expect(col).toBeDefined()
   })
 })

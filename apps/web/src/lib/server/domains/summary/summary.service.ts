@@ -8,7 +8,7 @@
 import {
   db,
   posts,
-  comments,
+  postComments,
   eq,
   and,
   or,
@@ -85,21 +85,21 @@ export async function generateAndSavePostSummary(postId: PostId): Promise<void> 
   }
 
   // Fetch comments (lightweight: just content and author name)
-  const postComments = await db
+  const commentRows = await db
     .select({
-      content: comments.content,
-      isTeamMember: comments.isTeamMember,
+      content: postComments.content,
+      isTeamMember: postComments.isTeamMember,
     })
-    .from(comments)
-    .where(and(eq(comments.postId, postId), isNull(comments.deletedAt)))
-    .orderBy(comments.createdAt)
+    .from(postComments)
+    .where(and(eq(postComments.postId, postId), isNull(postComments.deletedAt)))
+    .orderBy(postComments.createdAt)
 
   // Build prompt input
   let input = `# ${post.title}\n\n${post.content}`
 
-  if (postComments.length > 0) {
+  if (commentRows.length > 0) {
     input += '\n\n## Comments\n'
-    for (const c of postComments) {
+    for (const c of commentRows) {
       const prefix = c.isTeamMember ? '[Team]' : '[User]'
       input += `\n${prefix}: ${c.content}`
     }
@@ -172,11 +172,11 @@ export async function generateAndSavePostSummary(postId: PostId): Promise<void> 
       summaryJson,
       summaryModel: model,
       summaryUpdatedAt: new Date(),
-      summaryCommentCount: postComments.length,
+      summaryCommentCount: commentRows.length,
     })
     .where(eq(posts.id, postId))
 
-  log.info({ post_id: postId, comment_count: postComments.length }, 'post summary generated')
+  log.info({ post_id: postId, comment_count: commentRows.length }, 'post summary generated')
 }
 
 const SWEEP_BATCH_SIZE = 50
@@ -209,12 +209,12 @@ export async function refreshStaleSummaries(): Promise<void> {
 async function _doSweep(): Promise<void> {
   const liveCommentCountSq = db
     .select({
-      postId: comments.postId,
+      postId: postComments.postId,
       count: sql<number>`count(*)::int`.as('live_count'),
     })
-    .from(comments)
-    .where(isNull(comments.deletedAt))
-    .groupBy(comments.postId)
+    .from(postComments)
+    .where(isNull(postComments.deletedAt))
+    .groupBy(postComments.postId)
     .as('live_cc')
 
   // Failed rows stay stale (summaryJson NULL); without skipping them we'd
