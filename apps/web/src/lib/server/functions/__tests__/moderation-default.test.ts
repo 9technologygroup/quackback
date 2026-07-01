@@ -149,10 +149,10 @@ beforeEach(() => {
   mockUpdatePortalConfig.mockResolvedValue({ moderationDefault: { requireApproval: 'all' } })
 })
 
-describe('updateModerationDefaultFn — settings.manage gate', () => {
-  it('rejects role=user (lacks settings.manage)', async () => {
+describe('updateModerationDefaultFn — settings.moderation gate', () => {
+  it('rejects role=user (lacks settings.moderation)', async () => {
     mockRequireAuth.mockImplementation((opts?: { permission?: string }) => {
-      if (opts?.permission === PERMISSIONS.SETTINGS_MANAGE) throw new Error('Access denied')
+      if (opts?.permission === PERMISSIONS.SETTINGS_MODERATION) throw new Error('Access denied')
       return Promise.resolve(AUTH_USER)
     })
     await expect(
@@ -162,9 +162,9 @@ describe('updateModerationDefaultFn — settings.manage gate', () => {
     expect(state.auditEvents).toHaveLength(0)
   })
 
-  it('rejects role=member (lacks settings.manage)', async () => {
+  it('rejects role=member (lacks settings.moderation)', async () => {
     mockRequireAuth.mockImplementation((opts?: { permission?: string }) => {
-      if (opts?.permission === PERMISSIONS.SETTINGS_MANAGE) throw new Error('Access denied')
+      if (opts?.permission === PERMISSIONS.SETTINGS_MODERATION) throw new Error('Access denied')
       return Promise.resolve(AUTH_MEMBER)
     })
     await expect(
