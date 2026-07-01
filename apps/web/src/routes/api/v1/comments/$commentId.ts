@@ -60,7 +60,7 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
       PATCH: async ({ request, params }) => {
         try {
           const { principalId } = await withApiKeyAuth(request, {
-            permission: PERMISSIONS.COMMENT_MODERATE,
+            permission: PERMISSIONS.COMMENT_EDIT,
           })
 
           const commentId = parseTypeId<CommentId>(params.commentId, 'comment', 'comment ID')
@@ -125,7 +125,7 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
       DELETE: async ({ request, params }) => {
         try {
           const { principalId } = await withApiKeyAuth(request, {
-            permission: PERMISSIONS.COMMENT_MODERATE,
+            permission: PERMISSIONS.COMMENT_EDIT,
           })
 
           const commentId = parseTypeId<CommentId>(params.commentId, 'comment', 'comment ID')

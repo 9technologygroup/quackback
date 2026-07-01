@@ -215,9 +215,6 @@ export const INLINE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/chat.ts::listChatMessagesFn::isTeamMember': NOT_A_GATE(
     'internal notes are agent-only; visitors never see them'
   ),
-  'lib/server/functions/comments.ts::canPinCommentFn::isTeamMember': NOT_A_GATE(
-    'returns a UI capability hint (canPin), not an access decision'
-  ),
   'lib/server/functions/link-preview.ts::unfurlLinkFn::isTeamMember': NOT_A_GATE(
     'team bypasses the portal-access check; entry is the bare requireAuth'
   ),

@@ -201,8 +201,8 @@ Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = membe
 | `lib/server/functions/comments.ts`::userEditCommentFn | END_USER (any authenticated) |
 | `lib/server/functions/comments.ts`::userDeleteCommentFn | END_USER (any authenticated) |
 | `lib/server/functions/comments.ts`::restoreCommentFn | comment.moderate |
-| `lib/server/functions/comments.ts`::pinCommentFn | comment.moderate |
-| `lib/server/functions/comments.ts`::unpinCommentFn | comment.moderate |
+| `lib/server/functions/comments.ts`::pinCommentFn | comment.pin |
+| `lib/server/functions/comments.ts`::unpinCommentFn | comment.pin |
 | `lib/server/functions/external-statuses.ts`::fetchExternalStatusesFn | integration.manage |
 | `lib/server/functions/feature-flags.ts`::updateFeatureFlagsFn | settings.manage |
 | `lib/server/functions/feedback.ts`::fetchSuggestions | suggestion.view |
@@ -440,8 +440,8 @@ Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = membe
 | `routes/api/v1/changelog/index.ts`::GET | changelog.view_draft |
 | `routes/api/v1/changelog/index.ts`::POST | changelog.manage |
 | `routes/api/v1/comments/$commentId.ts`::GET | post.view_private |
-| `routes/api/v1/comments/$commentId.ts`::PATCH | comment.moderate |
-| `routes/api/v1/comments/$commentId.ts`::DELETE | comment.moderate |
+| `routes/api/v1/comments/$commentId.ts`::PATCH | comment.edit |
+| `routes/api/v1/comments/$commentId.ts`::DELETE | comment.edit |
 | `routes/api/v1/conversations/$conversationId.messages.ts`::GET | conversation.view |
 | `routes/api/v1/conversations/$conversationId.ts`::GET | conversation.view |
 | `routes/api/v1/conversations/index.ts`::GET | conversation.view |

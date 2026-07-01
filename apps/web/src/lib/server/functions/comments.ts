@@ -6,8 +6,8 @@ import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { type CommentId, type PostId, type StatusId, type UserId } from '@quackback/ids'
-import { isTeamMember } from '@/lib/shared/roles'
 import { PERMISSIONS } from '@/lib/shared/permissions'
+import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { createActivity } from '@/lib/server/domains/activity/activity.service'
 import { logger } from '@/lib/server/logger'
 
@@ -353,7 +353,7 @@ export const pinCommentFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ comment_id: data.commentId }, 'pin comment')
     try {
-      const auth = await requireAuth({ permission: PERMISSIONS.COMMENT_MODERATE })
+      const auth = await requireAuth({ permission: PERMISSIONS.COMMENT_PIN })
 
       const result = await pinComment(data.commentId as CommentId, {
         principalId: auth.principal.id,
@@ -380,7 +380,7 @@ export const unpinCommentFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ post_id: data.postId }, 'unpin comment')
     try {
-      const auth = await requireAuth({ permission: PERMISSIONS.COMMENT_MODERATE })
+      const auth = await requireAuth({ permission: PERMISSIONS.COMMENT_PIN })
 
       await unpinComment(data.postId as PostId, {
         principalId: auth.principal.id,
@@ -413,8 +413,11 @@ export const canPinCommentFn = createServerFn({ method: 'GET' })
       }
 
       const ctx = await getOptionalAuth()
-      // Must be a team member to pin
-      if (!ctx?.principal || !isTeamMember(ctx.principal.role)) {
+      // Must hold comment.pin to pin
+      if (
+        !ctx?.principal ||
+        !resolveActorPermissions(ctx.principal.role).has(PERMISSIONS.COMMENT_PIN)
+      ) {
         return { canPin: false, reason: 'Only team members can pin comments' }
       }
 

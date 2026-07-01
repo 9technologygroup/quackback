@@ -17,7 +17,9 @@ import {
 } from '@/lib/server/db'
 import { type CommentId, type PrincipalId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
-import { isTeamMember, Role } from '@/lib/shared/roles'
+import { Role } from '@/lib/shared/roles'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { createActivity } from '@/lib/server/domains/activity/activity.service'
 import { dispatchCommentUpdated, buildEventActor } from '@/lib/server/events/dispatch'
 import { commentMarkdownToTiptapJson } from '@/lib/server/markdown-tiptap'
@@ -84,8 +86,8 @@ export async function canEditComment(
     return { allowed: false, reason: 'Cannot edit a deleted comment' }
   }
 
-  // Team members (admin, member) can always edit
-  if (isTeamMember(actor.role)) {
+  // Operators holding comment.edit can edit any comment.
+  if (resolveActorPermissions(actor.role).has(PERMISSIONS.COMMENT_EDIT)) {
     return { allowed: true }
   }
 
@@ -133,8 +135,8 @@ export async function canDeleteComment(
     return { allowed: false, reason: 'Comment has already been deleted' }
   }
 
-  // Team members (admin, member) can always delete
-  if (isTeamMember(actor.role)) {
+  // Operators holding comment.edit can delete any comment.
+  if (resolveActorPermissions(actor.role).has(PERMISSIONS.COMMENT_EDIT)) {
     return { allowed: true }
   }
 
