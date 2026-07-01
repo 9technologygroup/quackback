@@ -18,7 +18,11 @@
 
 export const PERMISSIONS = {
   // category 'workspace' — workspace-level admin singletons (all in WORKSPACE_ADMIN_PERMISSIONS)
-  SETTINGS_MANAGE: 'settings.manage', // branding, general config, portal/widget, moderation default
+  SETTINGS_MANAGE: 'settings.manage', // portal, widget, developer, general (branding + moderation split out in Phase 3)
+  SETTINGS_BRANDING: 'settings.branding', // theme, logos, custom CSS, workspace name
+  SETTINGS_MODERATION: 'settings.moderation', // workspace moderation default
+  SETTINGS_NOTIFICATIONS: 'settings.notifications', // RESERVED: no OSS surface yet
+  SETTINGS_CUSTOM_DOMAIN: 'settings.custom_domain', // RESERVED: cloud/CP gateway concern
   BILLING_MANAGE: 'billing.manage', // cloud billing (Owner-only by default)
   ROLE_MANAGE: 'role.manage', // create / edit custom roles
   API_KEY_MANAGE: 'api_key.manage',
@@ -26,6 +30,7 @@ export const PERMISSIONS = {
   WEBHOOK_MANAGE: 'webhook.manage', // create / edit / rotate webhook subscriptions + secrets
   AUTH_MANAGE: 'auth.manage', // SSO / identity providers / 2FA policy
   AUDIT_VIEW: 'audit.view',
+  CUSTOM_FIELD_MANAGE: 'custom_field.manage', // RESERVED: Custom Fields feature
 
   // category 'members' — teammates
   MEMBER_VIEW: 'member.view', // read the teammate roster + assignee / owner pickers
@@ -48,10 +53,24 @@ export const PERMISSIONS = {
   // category 'feedback'
   POST_VIEW_PRIVATE: 'post.view_private', // internal / private posts
   POST_CREATE: 'post.create',
-  POST_MODERATE: 'post.moderate', // edit / merge / triage / status / pin / delete EXISTING posts
+  POST_MODERATE: 'post.moderate', // DEPRECATED umbrella; removed after Phase 3 gate conversion
+  POST_EDIT: 'post.edit', // edit title / content / lock comments
+  POST_DELETE: 'post.delete', // soft-delete + restore
+  POST_SET_STATUS: 'post.set_status', // move through the status pipeline
+  POST_SET_BOARD: 'post.set_board', // move to another board
+  POST_SET_TAGS: 'post.set_tags', // apply tags to a post
+  POST_SET_OWNER: 'post.set_owner', // assign owner / assignee
+  POST_SET_AUTHOR: 'post.set_author', // override author on create
+  POST_MERGE: 'post.merge', // merge / unmerge
+  POST_EXPORT: 'post.export', // RESERVED: bulk export
+  POST_SET_PINNED: 'post.set_pinned', // RESERVED: pin a post to the top of its board
+  POST_SET_ETA: 'post.set_eta', // RESERVED: set a post ETA (time-based roadmap)
   POST_APPROVE: 'post.approve', // approve / reject the pre-publication moderation queue
   POST_VOTE_ON_BEHALF: 'post.vote_on_behalf',
-  COMMENT_MODERATE: 'comment.moderate', // edit / delete others' comments
+  COMMENT_MODERATE: 'comment.moderate', // edit / delete others' comments (narrows to restore + team-comment after Phase 3)
+  COMMENT_EDIT: 'comment.edit', // edit / delete others' comments
+  COMMENT_PIN: 'comment.pin', // pin / unpin a comment to a post
+  COMMENT_VIEW_PRIVATE: 'comment.view_private', // RESERVED: private comments feature
   BOARD_MANAGE: 'board.manage', // create / edit / delete boards + access matrix
   ROADMAP_MANAGE: 'roadmap.manage',
   STATUS_VIEW: 'status.view', // read the post-status taxonomy (pickers)
@@ -60,6 +79,7 @@ export const PERMISSIONS = {
   TAG_MANAGE: 'tag.manage', // create / edit / delete tag definitions
   SUGGESTION_VIEW: 'suggestion.view', // read the AI feedback-suggestions triage queue
   SUGGESTION_MANAGE: 'suggestion.manage', // accept / dismiss / restore / retry suggestions
+  PRIORITIZATION_MANAGE: 'prioritization.manage', // RESERVED: prioritization frameworks
 
   // category 'changelog'
   CHANGELOG_VIEW_DRAFT: 'changelog.view_draft',
@@ -68,12 +88,21 @@ export const PERMISSIONS = {
   // category 'help_center'
   HELP_CENTER_MANAGE: 'help_center.manage', // articles / categories
 
+  // category 'survey' — RESERVED: Surveys feature
+  SURVEY_VIEW: 'survey.view', // RESERVED: view surveys + responses
+  SURVEY_MANAGE: 'survey.manage', // RESERVED: create / edit / delete surveys
+
   // category 'conversation' (the inbox)
-  CONVERSATION_VIEW: 'conversation.view',
+  CONVERSATION_VIEW: 'conversation.view', // your teams' inboxes (scoped by team membership)
+  CONVERSATION_VIEW_ALL: 'conversation.view_all', // cross-team supervisor scope override
   CONVERSATION_REPLY: 'conversation.reply',
   CONVERSATION_NOTE: 'conversation.note', // internal note
   CONVERSATION_ASSIGN: 'conversation.assign',
-  CONVERSATION_MANAGE: 'conversation.manage', // status / tags / canned replies admin / delete
+  CONVERSATION_MANAGE: 'conversation.manage', // delete, canned replies, capture email (status/tags split out in Phase 3)
+  CONVERSATION_SET_STATUS: 'conversation.set_status', // status / priority / end
+  CONVERSATION_SET_TAGS: 'conversation.set_tags', // apply tags to a conversation
+  CONVERSATION_MANAGE_TAGS: 'conversation.manage_tags', // define the chat-tag taxonomy
+  CONVERSATION_SET_ATTRIBUTES: 'conversation.set_attributes', // RESERVED: custom attributes feature
 
   // category 'analytics'
   ANALYTICS_VIEW: 'analytics.view',
@@ -82,16 +111,14 @@ export const PERMISSIONS = {
   INTEGRATION_VIEW: 'integration.view', // list connected integrations + in-inbox CRM lookups
   INTEGRATION_MANAGE: 'integration.manage', // connect / configure / secrets
 
-  // category 'support' — seeded, dormant until the support platform lands
-  TICKET_VIEW_ALL: 'ticket.view_all',
-  TICKET_VIEW_ASSIGNED: 'ticket.view_assigned',
-  TICKET_REPLY: 'ticket.reply',
-  TICKET_NOTE: 'ticket.note', // internal note (matches conversation.note)
-  TICKET_ASSIGN: 'ticket.assign',
-  SLA_MANAGE: 'sla.manage',
-  INBOX_MANAGE: 'inbox.manage',
-  ROUTING_MANAGE: 'routing.manage',
-  TEAM_MANAGE: 'team.manage',
+  // category 'support' — seeded, dormant until the support platform lands. Support access is
+  // MEMBERSHIP-SCOPED (team membership x a view-scope filter), so inbox action VERBS are the shared
+  // conversation.* set + conversation.view_all; only ticket-lifecycle + admin-config keys live here.
+  TICKET_MANAGE_TYPES: 'ticket.manage_types', // define ticket types + their statuses / fields
+  SLA_MANAGE: 'sla.manage', // manage SLA policies (workspace-admin)
+  ROUTING_MANAGE: 'routing.manage', // manage routing rules (workspace-admin)
+  TEAM_MANAGE: 'team.manage', // manage teams + membership (workspace-admin)
+  CHANNEL_ACCOUNT_MANAGE: 'channel_account.manage', // manage connected inbox channels (workspace-admin; was inbox.manage)
 } as const
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS]
@@ -109,6 +136,7 @@ export const PERMISSION_CATEGORIES = [
   'feedback',
   'changelog',
   'help_center',
+  'survey',
   'conversation',
   'analytics',
   'integration',
@@ -160,6 +188,31 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     description: 'Manage SSO, identity providers, and the 2FA policy',
   },
   { key: PERMISSIONS.AUDIT_VIEW, category: 'workspace', description: 'View the audit log' },
+  {
+    key: PERMISSIONS.SETTINGS_BRANDING,
+    category: 'workspace',
+    description: 'Manage branding: theme, logos, custom CSS, and workspace name',
+  },
+  {
+    key: PERMISSIONS.SETTINGS_MODERATION,
+    category: 'workspace',
+    description: 'Manage the workspace moderation default',
+  },
+  {
+    key: PERMISSIONS.SETTINGS_NOTIFICATIONS,
+    category: 'workspace',
+    description: 'Manage notification settings (reserved; not yet enforced)',
+  },
+  {
+    key: PERMISSIONS.SETTINGS_CUSTOM_DOMAIN,
+    category: 'workspace',
+    description: 'Manage the custom domain (reserved; not yet enforced)',
+  },
+  {
+    key: PERMISSIONS.CUSTOM_FIELD_MANAGE,
+    category: 'workspace',
+    description: 'Define custom fields (reserved; not yet enforced)',
+  },
 
   {
     key: PERMISSIONS.MEMBER_VIEW,
@@ -223,6 +276,45 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     description: 'Edit, merge, triage, status, pin, and delete existing posts',
   },
   {
+    key: PERMISSIONS.POST_EDIT,
+    category: 'feedback',
+    description: 'Edit a post title, content, and comment lock',
+  },
+  { key: PERMISSIONS.POST_DELETE, category: 'feedback', description: 'Delete and restore posts' },
+  {
+    key: PERMISSIONS.POST_SET_STATUS,
+    category: 'feedback',
+    description: 'Move a post through the status pipeline',
+  },
+  {
+    key: PERMISSIONS.POST_SET_BOARD,
+    category: 'feedback',
+    description: 'Move a post to another board',
+  },
+  { key: PERMISSIONS.POST_SET_TAGS, category: 'feedback', description: 'Apply tags to a post' },
+  { key: PERMISSIONS.POST_SET_OWNER, category: 'feedback', description: 'Assign a post owner' },
+  {
+    key: PERMISSIONS.POST_SET_AUTHOR,
+    category: 'feedback',
+    description: 'Override the author when creating a post',
+  },
+  { key: PERMISSIONS.POST_MERGE, category: 'feedback', description: 'Merge and unmerge posts' },
+  {
+    key: PERMISSIONS.POST_EXPORT,
+    category: 'feedback',
+    description: 'Bulk export posts (reserved; not yet enforced)',
+  },
+  {
+    key: PERMISSIONS.POST_SET_PINNED,
+    category: 'feedback',
+    description: 'Pin a post to the top of its board (reserved; not yet enforced)',
+  },
+  {
+    key: PERMISSIONS.POST_SET_ETA,
+    category: 'feedback',
+    description: 'Set a post ETA for time-based roadmaps (reserved; not yet enforced)',
+  },
+  {
     key: PERMISSIONS.POST_APPROVE,
     category: 'feedback',
     description: 'Approve or reject the pre-publication moderation queue',
@@ -236,6 +328,21 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     key: PERMISSIONS.COMMENT_MODERATE,
     category: 'feedback',
     description: "Edit and delete others' comments",
+  },
+  {
+    key: PERMISSIONS.COMMENT_EDIT,
+    category: 'feedback',
+    description: "Edit and delete others' comments",
+  },
+  {
+    key: PERMISSIONS.COMMENT_PIN,
+    category: 'feedback',
+    description: 'Pin and unpin a comment to a post',
+  },
+  {
+    key: PERMISSIONS.COMMENT_VIEW_PRIVATE,
+    category: 'feedback',
+    description: 'View private comments (reserved; not yet enforced)',
   },
   {
     key: PERMISSIONS.BOARD_MANAGE,
@@ -277,6 +384,11 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     category: 'feedback',
     description: 'Accept, dismiss, restore, and retry feedback suggestions',
   },
+  {
+    key: PERMISSIONS.PRIORITIZATION_MANAGE,
+    category: 'feedback',
+    description: 'Manage prioritization frameworks (reserved; not yet enforced)',
+  },
 
   {
     key: PERMISSIONS.CHANGELOG_VIEW_DRAFT,
@@ -296,9 +408,25 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   },
 
   {
+    key: PERMISSIONS.SURVEY_VIEW,
+    category: 'survey',
+    description: 'View surveys and responses (reserved; not yet enforced)',
+  },
+  {
+    key: PERMISSIONS.SURVEY_MANAGE,
+    category: 'survey',
+    description: 'Create, edit, and delete surveys (reserved; not yet enforced)',
+  },
+
+  {
     key: PERMISSIONS.CONVERSATION_VIEW,
     category: 'conversation',
     description: 'View conversations in the inbox',
+  },
+  {
+    key: PERMISSIONS.CONVERSATION_VIEW_ALL,
+    category: 'conversation',
+    description: "View all teams' conversations (cross-team supervisor scope)",
   },
   {
     key: PERMISSIONS.CONVERSATION_REPLY,
@@ -320,6 +448,26 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     category: 'conversation',
     description: 'Manage conversation status, tags, canned replies, and deletion',
   },
+  {
+    key: PERMISSIONS.CONVERSATION_SET_STATUS,
+    category: 'conversation',
+    description: 'Set conversation status, priority, and end state',
+  },
+  {
+    key: PERMISSIONS.CONVERSATION_SET_TAGS,
+    category: 'conversation',
+    description: 'Apply tags to a conversation',
+  },
+  {
+    key: PERMISSIONS.CONVERSATION_MANAGE_TAGS,
+    category: 'conversation',
+    description: 'Define the conversation tag taxonomy',
+  },
+  {
+    key: PERMISSIONS.CONVERSATION_SET_ATTRIBUTES,
+    category: 'conversation',
+    description: 'Set conversation custom attributes (reserved; not yet enforced)',
+  },
 
   { key: PERMISSIONS.ANALYTICS_VIEW, category: 'analytics', description: 'View analytics' },
 
@@ -334,23 +482,23 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     description: 'Connect, configure, and manage integration secrets',
   },
 
-  { key: PERMISSIONS.TICKET_VIEW_ALL, category: 'support', description: 'View all tickets' },
   {
-    key: PERMISSIONS.TICKET_VIEW_ASSIGNED,
+    key: PERMISSIONS.TICKET_MANAGE_TYPES,
     category: 'support',
-    description: 'View assigned tickets',
+    description: 'Define ticket types and their statuses and fields',
   },
-  { key: PERMISSIONS.TICKET_REPLY, category: 'support', description: 'Reply to tickets' },
-  {
-    key: PERMISSIONS.TICKET_NOTE,
-    category: 'support',
-    description: 'Add internal notes to tickets',
-  },
-  { key: PERMISSIONS.TICKET_ASSIGN, category: 'support', description: 'Assign tickets' },
   { key: PERMISSIONS.SLA_MANAGE, category: 'support', description: 'Manage SLA policies' },
-  { key: PERMISSIONS.INBOX_MANAGE, category: 'support', description: 'Manage inboxes' },
   { key: PERMISSIONS.ROUTING_MANAGE, category: 'support', description: 'Manage routing rules' },
-  { key: PERMISSIONS.TEAM_MANAGE, category: 'support', description: 'Manage support teams' },
+  {
+    key: PERMISSIONS.TEAM_MANAGE,
+    category: 'support',
+    description: 'Manage support teams and membership',
+  },
+  {
+    key: PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
+    category: 'support',
+    description: 'Manage connected inbox channels (email / widget accounts)',
+  },
 ]
 
 // --------------------------------------------------------------- presets ---
@@ -373,6 +521,10 @@ export type SystemRoleKey = (typeof SYSTEM_ROLES)[keyof typeof SYSTEM_ROLES]
  */
 export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.SETTINGS_MANAGE,
+  PERMISSIONS.SETTINGS_BRANDING,
+  PERMISSIONS.SETTINGS_MODERATION,
+  PERMISSIONS.SETTINGS_NOTIFICATIONS,
+  PERMISSIONS.SETTINGS_CUSTOM_DOMAIN,
   PERMISSIONS.BILLING_MANAGE,
   PERMISSIONS.MEMBER_MANAGE,
   PERMISSIONS.ROLE_MANAGE,
@@ -382,6 +534,11 @@ export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.AUTH_MANAGE,
   PERMISSIONS.INTEGRATION_MANAGE,
   PERMISSIONS.AUDIT_VIEW,
+  // support infrastructure config: SLA policies, routing rules, teams, inbox channels (admin-only)
+  PERMISSIONS.SLA_MANAGE,
+  PERMISSIONS.ROUTING_MANAGE,
+  PERMISSIONS.TEAM_MANAGE,
+  PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
 ]
 
 export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {

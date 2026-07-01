@@ -87,4 +87,70 @@ describe('RBAC permission catalogue', () => {
     expect(presetForLegacyRole('user')).toBeNull()
     expect(presetForLegacyRole('anything-else')).toBeNull()
   })
+
+  it('carries the granular operator keys (Phase 1 additive)', () => {
+    // The post.moderate umbrella is split into field-level keys; both coexist
+    // until the Phase 3 gate conversion removes the umbrella.
+    for (const key of [
+      PERMISSIONS.POST_EDIT,
+      PERMISSIONS.POST_DELETE,
+      PERMISSIONS.POST_SET_STATUS,
+      PERMISSIONS.POST_SET_BOARD,
+      PERMISSIONS.POST_SET_TAGS,
+      PERMISSIONS.POST_SET_OWNER,
+      PERMISSIONS.POST_SET_AUTHOR,
+      PERMISSIONS.POST_MERGE,
+      PERMISSIONS.COMMENT_EDIT,
+      PERMISSIONS.COMMENT_PIN,
+      PERMISSIONS.CONVERSATION_SET_STATUS,
+      PERMISSIONS.CONVERSATION_SET_TAGS,
+      PERMISSIONS.CONVERSATION_MANAGE_TAGS,
+      PERMISSIONS.SETTINGS_BRANDING,
+      PERMISSIONS.SETTINGS_MODERATION,
+    ]) {
+      expect(ALL_PERMISSIONS).toContain(key)
+    }
+    expect(PERMISSION_CATEGORIES).toContain('survey')
+  })
+
+  it('keeps Manager out of the split settings keys', () => {
+    for (const key of [
+      PERMISSIONS.SETTINGS_BRANDING,
+      PERMISSIONS.SETTINGS_MODERATION,
+      PERMISSIONS.SETTINGS_NOTIFICATIONS,
+      PERMISSIONS.SETTINGS_CUSTOM_DOMAIN,
+    ]) {
+      expect(WORKSPACE_ADMIN_PERMISSIONS).toContain(key)
+      expect(SYSTEM_ROLE_PERMISSIONS.manager).not.toContain(key)
+    }
+  })
+
+  it('support permissions are membership-scoped, not flat ticket capabilities', () => {
+    // Inbox VERBS are the shared conversation.* set, scoped by team membership; the flat
+    // ticket.reply/note/assign/view_* keys were the wrong shape and are removed.
+    for (const gone of [
+      'ticket.view_all',
+      'ticket.view_assigned',
+      'ticket.reply',
+      'ticket.note',
+      'ticket.assign',
+      'inbox.manage',
+    ]) {
+      expect(ALL_PERMISSIONS).not.toContain(gone)
+    }
+    // The cross-team view-scope override + ticket-lifecycle + renamed channel key exist.
+    expect(ALL_PERMISSIONS).toContain(PERMISSIONS.CONVERSATION_VIEW_ALL)
+    expect(ALL_PERMISSIONS).toContain(PERMISSIONS.TICKET_MANAGE_TYPES)
+    expect(ALL_PERMISSIONS).toContain(PERMISSIONS.CHANNEL_ACCOUNT_MANAGE)
+    // Support infrastructure config is admin-only; Manager operates but does not configure it.
+    for (const key of [
+      PERMISSIONS.SLA_MANAGE,
+      PERMISSIONS.ROUTING_MANAGE,
+      PERMISSIONS.TEAM_MANAGE,
+      PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
+    ]) {
+      expect(WORKSPACE_ADMIN_PERMISSIONS).toContain(key)
+      expect(SYSTEM_ROLE_PERMISSIONS.manager).not.toContain(key)
+    }
+  })
 })

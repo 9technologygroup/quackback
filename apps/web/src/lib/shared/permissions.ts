@@ -11,6 +11,10 @@
 export const PERMISSIONS = {
   // workspace
   SETTINGS_MANAGE: 'settings.manage',
+  SETTINGS_BRANDING: 'settings.branding',
+  SETTINGS_MODERATION: 'settings.moderation',
+  SETTINGS_NOTIFICATIONS: 'settings.notifications',
+  SETTINGS_CUSTOM_DOMAIN: 'settings.custom_domain',
   BILLING_MANAGE: 'billing.manage',
   ROLE_MANAGE: 'role.manage',
   API_KEY_MANAGE: 'api_key.manage',
@@ -18,6 +22,7 @@ export const PERMISSIONS = {
   WEBHOOK_MANAGE: 'webhook.manage',
   AUTH_MANAGE: 'auth.manage',
   AUDIT_VIEW: 'audit.view',
+  CUSTOM_FIELD_MANAGE: 'custom_field.manage',
 
   // members
   MEMBER_VIEW: 'member.view',
@@ -41,9 +46,23 @@ export const PERMISSIONS = {
   POST_VIEW_PRIVATE: 'post.view_private',
   POST_CREATE: 'post.create',
   POST_MODERATE: 'post.moderate',
+  POST_EDIT: 'post.edit',
+  POST_DELETE: 'post.delete',
+  POST_SET_STATUS: 'post.set_status',
+  POST_SET_BOARD: 'post.set_board',
+  POST_SET_TAGS: 'post.set_tags',
+  POST_SET_OWNER: 'post.set_owner',
+  POST_SET_AUTHOR: 'post.set_author',
+  POST_MERGE: 'post.merge',
+  POST_EXPORT: 'post.export',
+  POST_SET_PINNED: 'post.set_pinned',
+  POST_SET_ETA: 'post.set_eta',
   POST_APPROVE: 'post.approve',
   POST_VOTE_ON_BEHALF: 'post.vote_on_behalf',
   COMMENT_MODERATE: 'comment.moderate',
+  COMMENT_EDIT: 'comment.edit',
+  COMMENT_PIN: 'comment.pin',
+  COMMENT_VIEW_PRIVATE: 'comment.view_private',
   BOARD_MANAGE: 'board.manage',
   ROADMAP_MANAGE: 'roadmap.manage',
   STATUS_VIEW: 'status.view',
@@ -52,6 +71,7 @@ export const PERMISSIONS = {
   TAG_MANAGE: 'tag.manage',
   SUGGESTION_VIEW: 'suggestion.view',
   SUGGESTION_MANAGE: 'suggestion.manage',
+  PRIORITIZATION_MANAGE: 'prioritization.manage',
 
   // changelog
   CHANGELOG_VIEW_DRAFT: 'changelog.view_draft',
@@ -60,12 +80,21 @@ export const PERMISSIONS = {
   // help_center
   HELP_CENTER_MANAGE: 'help_center.manage',
 
+  // survey
+  SURVEY_VIEW: 'survey.view',
+  SURVEY_MANAGE: 'survey.manage',
+
   // conversation
   CONVERSATION_VIEW: 'conversation.view',
+  CONVERSATION_VIEW_ALL: 'conversation.view_all',
   CONVERSATION_REPLY: 'conversation.reply',
   CONVERSATION_NOTE: 'conversation.note',
   CONVERSATION_ASSIGN: 'conversation.assign',
   CONVERSATION_MANAGE: 'conversation.manage',
+  CONVERSATION_SET_STATUS: 'conversation.set_status',
+  CONVERSATION_SET_TAGS: 'conversation.set_tags',
+  CONVERSATION_MANAGE_TAGS: 'conversation.manage_tags',
+  CONVERSATION_SET_ATTRIBUTES: 'conversation.set_attributes',
 
   // analytics
   ANALYTICS_VIEW: 'analytics.view',
@@ -74,16 +103,12 @@ export const PERMISSIONS = {
   INTEGRATION_VIEW: 'integration.view',
   INTEGRATION_MANAGE: 'integration.manage',
 
-  // support (dormant until the support platform lands)
-  TICKET_VIEW_ALL: 'ticket.view_all',
-  TICKET_VIEW_ASSIGNED: 'ticket.view_assigned',
-  TICKET_REPLY: 'ticket.reply',
-  TICKET_NOTE: 'ticket.note',
-  TICKET_ASSIGN: 'ticket.assign',
+  // support (dormant until the support platform lands; inbox verbs are the conversation.* set)
+  TICKET_MANAGE_TYPES: 'ticket.manage_types',
   SLA_MANAGE: 'sla.manage',
-  INBOX_MANAGE: 'inbox.manage',
   ROUTING_MANAGE: 'routing.manage',
   TEAM_MANAGE: 'team.manage',
+  CHANNEL_ACCOUNT_MANAGE: 'channel_account.manage',
 } as const
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS]
@@ -99,6 +124,7 @@ export const PERMISSION_CATEGORIES = [
   'feedback',
   'changelog',
   'help_center',
+  'survey',
   'conversation',
   'analytics',
   'integration',
@@ -123,6 +149,10 @@ export type SystemRoleKey = (typeof SYSTEM_ROLES)[keyof typeof SYSTEM_ROLES]
 
 export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.SETTINGS_MANAGE,
+  PERMISSIONS.SETTINGS_BRANDING,
+  PERMISSIONS.SETTINGS_MODERATION,
+  PERMISSIONS.SETTINGS_NOTIFICATIONS,
+  PERMISSIONS.SETTINGS_CUSTOM_DOMAIN,
   PERMISSIONS.BILLING_MANAGE,
   PERMISSIONS.MEMBER_MANAGE,
   PERMISSIONS.ROLE_MANAGE,
@@ -132,6 +162,10 @@ export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.AUTH_MANAGE,
   PERMISSIONS.INTEGRATION_MANAGE,
   PERMISSIONS.AUDIT_VIEW,
+  PERMISSIONS.SLA_MANAGE,
+  PERMISSIONS.ROUTING_MANAGE,
+  PERMISSIONS.TEAM_MANAGE,
+  PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
 ]
 
 export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {
@@ -188,6 +222,11 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   { key: PERMISSIONS.WEBHOOK_MANAGE, category: 'workspace' },
   { key: PERMISSIONS.AUTH_MANAGE, category: 'workspace' },
   { key: PERMISSIONS.AUDIT_VIEW, category: 'workspace' },
+  { key: PERMISSIONS.SETTINGS_BRANDING, category: 'workspace' },
+  { key: PERMISSIONS.SETTINGS_MODERATION, category: 'workspace' },
+  { key: PERMISSIONS.SETTINGS_NOTIFICATIONS, category: 'workspace' },
+  { key: PERMISSIONS.SETTINGS_CUSTOM_DOMAIN, category: 'workspace' },
+  { key: PERMISSIONS.CUSTOM_FIELD_MANAGE, category: 'workspace' },
   { key: PERMISSIONS.MEMBER_VIEW, category: 'members' },
   { key: PERMISSIONS.MEMBER_MANAGE, category: 'members' },
   { key: PERMISSIONS.PEOPLE_VIEW, category: 'people' },
@@ -201,9 +240,23 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   { key: PERMISSIONS.POST_VIEW_PRIVATE, category: 'feedback' },
   { key: PERMISSIONS.POST_CREATE, category: 'feedback' },
   { key: PERMISSIONS.POST_MODERATE, category: 'feedback' },
+  { key: PERMISSIONS.POST_EDIT, category: 'feedback' },
+  { key: PERMISSIONS.POST_DELETE, category: 'feedback' },
+  { key: PERMISSIONS.POST_SET_STATUS, category: 'feedback' },
+  { key: PERMISSIONS.POST_SET_BOARD, category: 'feedback' },
+  { key: PERMISSIONS.POST_SET_TAGS, category: 'feedback' },
+  { key: PERMISSIONS.POST_SET_OWNER, category: 'feedback' },
+  { key: PERMISSIONS.POST_SET_AUTHOR, category: 'feedback' },
+  { key: PERMISSIONS.POST_MERGE, category: 'feedback' },
+  { key: PERMISSIONS.POST_EXPORT, category: 'feedback' },
+  { key: PERMISSIONS.POST_SET_PINNED, category: 'feedback' },
+  { key: PERMISSIONS.POST_SET_ETA, category: 'feedback' },
   { key: PERMISSIONS.POST_APPROVE, category: 'feedback' },
   { key: PERMISSIONS.POST_VOTE_ON_BEHALF, category: 'feedback' },
   { key: PERMISSIONS.COMMENT_MODERATE, category: 'feedback' },
+  { key: PERMISSIONS.COMMENT_EDIT, category: 'feedback' },
+  { key: PERMISSIONS.COMMENT_PIN, category: 'feedback' },
+  { key: PERMISSIONS.COMMENT_VIEW_PRIVATE, category: 'feedback' },
   { key: PERMISSIONS.BOARD_MANAGE, category: 'feedback' },
   { key: PERMISSIONS.ROADMAP_MANAGE, category: 'feedback' },
   { key: PERMISSIONS.STATUS_VIEW, category: 'feedback' },
@@ -212,26 +265,30 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   { key: PERMISSIONS.TAG_MANAGE, category: 'feedback' },
   { key: PERMISSIONS.SUGGESTION_VIEW, category: 'feedback' },
   { key: PERMISSIONS.SUGGESTION_MANAGE, category: 'feedback' },
+  { key: PERMISSIONS.PRIORITIZATION_MANAGE, category: 'feedback' },
   { key: PERMISSIONS.CHANGELOG_VIEW_DRAFT, category: 'changelog' },
   { key: PERMISSIONS.CHANGELOG_MANAGE, category: 'changelog' },
   { key: PERMISSIONS.HELP_CENTER_MANAGE, category: 'help_center' },
+  { key: PERMISSIONS.SURVEY_VIEW, category: 'survey' },
+  { key: PERMISSIONS.SURVEY_MANAGE, category: 'survey' },
   { key: PERMISSIONS.CONVERSATION_VIEW, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_VIEW_ALL, category: 'conversation' },
   { key: PERMISSIONS.CONVERSATION_REPLY, category: 'conversation' },
   { key: PERMISSIONS.CONVERSATION_NOTE, category: 'conversation' },
   { key: PERMISSIONS.CONVERSATION_ASSIGN, category: 'conversation' },
   { key: PERMISSIONS.CONVERSATION_MANAGE, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_SET_STATUS, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_SET_TAGS, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_MANAGE_TAGS, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_SET_ATTRIBUTES, category: 'conversation' },
   { key: PERMISSIONS.ANALYTICS_VIEW, category: 'analytics' },
   { key: PERMISSIONS.INTEGRATION_VIEW, category: 'integration' },
   { key: PERMISSIONS.INTEGRATION_MANAGE, category: 'integration' },
-  { key: PERMISSIONS.TICKET_VIEW_ALL, category: 'support' },
-  { key: PERMISSIONS.TICKET_VIEW_ASSIGNED, category: 'support' },
-  { key: PERMISSIONS.TICKET_REPLY, category: 'support' },
-  { key: PERMISSIONS.TICKET_NOTE, category: 'support' },
-  { key: PERMISSIONS.TICKET_ASSIGN, category: 'support' },
+  { key: PERMISSIONS.TICKET_MANAGE_TYPES, category: 'support' },
   { key: PERMISSIONS.SLA_MANAGE, category: 'support' },
-  { key: PERMISSIONS.INBOX_MANAGE, category: 'support' },
   { key: PERMISSIONS.ROUTING_MANAGE, category: 'support' },
   { key: PERMISSIONS.TEAM_MANAGE, category: 'support' },
+  { key: PERMISSIONS.CHANNEL_ACCOUNT_MANAGE, category: 'support' },
 ]
 
 /** The permission set a legacy role resolves to (client-side mirror of the
