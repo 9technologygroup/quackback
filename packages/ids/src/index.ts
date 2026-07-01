@@ -86,7 +86,7 @@ export type {
   IntegrationId,
   PlatformCredentialId,
   EventMappingId,
-  LinkedEntityId,
+  PostExternalLinkId,
   SyncLogId,
   PostSubscriptionId,
   NotifPrefId,

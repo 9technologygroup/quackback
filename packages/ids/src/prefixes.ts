@@ -44,7 +44,7 @@ export const ID_PREFIXES = {
   integration: 'integration',
   platform_cred: 'platform_cred',
   event_mapping: 'event_mapping',
-  linked_entity: 'linked_entity',
+  post_external_link: 'post_external_link',
   sync_log: 'sync_log',
   slack_monitor: 'slack_monitor',
 

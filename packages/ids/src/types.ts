@@ -73,8 +73,8 @@ export type PlatformCredentialId = TypeId<'platform_cred'>
 /** Event mapping ID - e.g., event_mapping_01h455vb4pex5vsknk084sn02q */
 export type EventMappingId = TypeId<'event_mapping'>
 
-/** Linked entity ID - e.g., linked_entity_01h455vb4pex5vsknk084sn02q */
-export type LinkedEntityId = TypeId<'linked_entity'>
+/** Post external link ID - e.g., post_external_link_01h455vb4pex5vsknk084sn02q */
+export type PostExternalLinkId = TypeId<'post_external_link'>
 
 /** Sync log ID - e.g., sync_log_01h455vb4pex5vsknk084sn02q */
 export type SyncLogId = TypeId<'sync_log'>
@@ -281,7 +281,7 @@ export interface EntityIdMap {
   integration: IntegrationId
   platform_cred: PlatformCredentialId
   event_mapping: EventMappingId
-  linked_entity: LinkedEntityId
+  post_external_link: PostExternalLinkId
   sync_log: SyncLogId
   slack_monitor: SlackMonitorId
   post_subscription: PostSubscriptionId

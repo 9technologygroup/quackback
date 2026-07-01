@@ -5,7 +5,7 @@
  * Failures are warnings, never blockers -- the post delete always succeeds.
  */
 
-import type { PostId, LinkedEntityId, IntegrationId } from '@quackback/ids'
+import type { PostId, PostExternalLinkId, IntegrationId } from '@quackback/ids'
 import { db, eq, and, inArray, postExternalLinks, integrations } from '@/lib/server/db'
 import { decryptSecrets, encryptSecrets } from '@/lib/server/integrations/encryption'
 import { archiveExternalIssue } from '@/lib/server/integrations/archive'
@@ -172,7 +172,7 @@ export async function executeCascadeDelete(
   const toArchive = choices.filter((c) => c.shouldArchive)
   if (toArchive.length === 0) return []
 
-  const linkIds = toArchive.map((c) => c.linkId as LinkedEntityId)
+  const linkIds = toArchive.map((c) => c.linkId as PostExternalLinkId)
 
   // Single query: fetch links + integration secrets in one JOIN
   const rows = await db
@@ -213,7 +213,7 @@ export async function executeCascadeDelete(
   // Run all archive calls in parallel
   const results = await Promise.allSettled(
     toArchive.map(async (choice): Promise<CascadeResult> => {
-      const link = linkMap.get(choice.linkId as LinkedEntityId)
+      const link = linkMap.get(choice.linkId as PostExternalLinkId)
       if (!link) {
         return {
           linkId: choice.linkId,
@@ -261,8 +261,9 @@ export async function executeCascadeDelete(
       : {
           linkId: toArchive[i].linkId,
           integrationType:
-            linkMap.get(toArchive[i].linkId as LinkedEntityId)?.integrationType ?? 'unknown',
-          externalId: linkMap.get(toArchive[i].linkId as LinkedEntityId)?.externalId ?? 'unknown',
+            linkMap.get(toArchive[i].linkId as PostExternalLinkId)?.integrationType ?? 'unknown',
+          externalId:
+            linkMap.get(toArchive[i].linkId as PostExternalLinkId)?.externalId ?? 'unknown',
           success: false,
           error: r.reason instanceof Error ? r.reason.message : 'Unknown error',
         }
@@ -270,9 +271,9 @@ export async function executeCascadeDelete(
 
   // Batch update link statuses
   const updates = cascadeResults
-    .filter((r) => linkMap.has(r.linkId as LinkedEntityId))
+    .filter((r) => linkMap.has(r.linkId as PostExternalLinkId))
     .map((r) => ({
-      id: r.linkId as LinkedEntityId,
+      id: r.linkId as PostExternalLinkId,
       status: r.success ? (r.action ?? 'archived') : 'error',
     }))
   if (updates.length > 0) {

@@ -13,7 +13,7 @@ import { integrations } from './integrations'
 export const postExternalLinks = pgTable(
   'post_external_links',
   {
-    id: typeIdWithDefault('linked_entity')('id').primaryKey(),
+    id: typeIdWithDefault('post_external_link')('id').primaryKey(),
     postId: typeIdColumn('post')('post_id').notNull(),
     // Nullable: sidebar-created links don't require a full integration record
     integrationId: typeIdColumnNullable('integration')('integration_id'),
