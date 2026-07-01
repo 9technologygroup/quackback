@@ -36,9 +36,9 @@ export const ID_PREFIXES = {
   conversation_message_reaction: 'conversation_msg_reaction',
 
   // Help center
-  category: 'category',
-  article: 'article',
-  article_feedback: 'article_feedback',
+  kb_category: 'kb_category',
+  kb_article: 'kb_article',
+  kb_article_feedback: 'kb_article_feedback',
 
   // Integrations
   integration: 'integration',

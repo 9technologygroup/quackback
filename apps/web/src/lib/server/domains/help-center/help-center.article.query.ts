@@ -16,7 +16,7 @@ import {
   sql,
   inArray,
 } from '@/lib/server/db'
-import type { HelpCenterArticleId, HelpCenterCategoryId, PrincipalId } from '@quackback/ids'
+import type { KbArticleId, KbCategoryId, PrincipalId } from '@quackback/ids'
 import type {
   HelpCenterArticleWithCategory,
   ListArticlesParams,
@@ -49,7 +49,7 @@ export async function listArticles(params: ListArticlesParams): Promise<ArticleL
     : [isNull(helpCenterArticles.deletedAt)]
 
   if (categoryId) {
-    conditions.push(eq(helpCenterArticles.categoryId, categoryId as HelpCenterCategoryId))
+    conditions.push(eq(helpCenterArticles.categoryId, categoryId as KbCategoryId))
   }
 
   if (!showDeleted) {
@@ -69,7 +69,7 @@ export async function listArticles(params: ListArticlesParams): Promise<ArticleL
 
   if (cursor) {
     const cursorEntry = await db.query.helpCenterArticles.findFirst({
-      where: eq(helpCenterArticles.id, cursor as HelpCenterArticleId),
+      where: eq(helpCenterArticles.id, cursor as KbArticleId),
       columns: { createdAt: true },
     })
     if (cursorEntry?.createdAt) {
@@ -79,7 +79,7 @@ export async function listArticles(params: ListArticlesParams): Promise<ArticleL
             gt(helpCenterArticles.createdAt, cursorEntry.createdAt),
             and(
               eq(helpCenterArticles.createdAt, cursorEntry.createdAt),
-              gt(helpCenterArticles.id, cursor as HelpCenterArticleId)
+              gt(helpCenterArticles.id, cursor as KbArticleId)
             )
           )!
         )
@@ -89,7 +89,7 @@ export async function listArticles(params: ListArticlesParams): Promise<ArticleL
             lt(helpCenterArticles.createdAt, cursorEntry.createdAt),
             and(
               eq(helpCenterArticles.createdAt, cursorEntry.createdAt),
-              lt(helpCenterArticles.id, cursor as HelpCenterArticleId)
+              lt(helpCenterArticles.id, cursor as KbArticleId)
             )
           )!
         )
@@ -163,8 +163,8 @@ export async function listArticles(params: ListArticlesParams): Promise<ArticleL
       // that need the full JSON (e.g. article detail page) call getArticleById.
       contentJson: null,
       category: cat
-        ? { id: cat.id as HelpCenterCategoryId, slug: cat.slug, name: cat.name }
-        : { id: article.categoryId as HelpCenterCategoryId, slug: '', name: 'Unknown' },
+        ? { id: cat.id as KbCategoryId, slug: cat.slug, name: cat.name }
+        : { id: article.categoryId as KbCategoryId, slug: '', name: 'Unknown' },
       author: author?.displayName
         ? { id: author.id as PrincipalId, name: author.displayName, avatarUrl: author.avatarUrl }
         : null,
@@ -210,7 +210,7 @@ export async function listPublicArticlesForCategory(categoryId: string) {
     .leftJoin(principal, eq(principal.id, helpCenterArticles.principalId))
     .where(
       and(
-        eq(helpCenterArticles.categoryId, categoryId as HelpCenterCategoryId),
+        eq(helpCenterArticles.categoryId, categoryId as KbCategoryId),
         isNotNull(helpCenterArticles.publishedAt),
         lte(helpCenterArticles.publishedAt, new Date()),
         isNull(helpCenterArticles.deletedAt),

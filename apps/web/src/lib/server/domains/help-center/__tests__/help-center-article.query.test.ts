@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { HelpCenterArticleId } from '@quackback/ids'
+import type { KbArticleId } from '@quackback/ids'
 
 const mockArticleFindFirst = vi.fn()
 const mockArticleFindMany = vi.fn()
@@ -87,7 +87,7 @@ describe('listPublicArticlesForCategory', () => {
 
     const mockArticles = [
       {
-        id: 'article_1' as HelpCenterArticleId,
+        id: 'kb_article_1' as KbArticleId,
         slug: 'first-article',
         title: 'First Article',
         description: 'Desc 1',
@@ -95,7 +95,7 @@ describe('listPublicArticlesForCategory', () => {
         publishedAt: new Date('2024-01-01'),
       },
       {
-        id: 'article_2' as HelpCenterArticleId,
+        id: 'kb_article_2' as KbArticleId,
         slug: 'second-article',
         title: 'Second Article',
         description: null,
@@ -111,7 +111,7 @@ describe('listPublicArticlesForCategory', () => {
     const fromMock = vi.fn().mockReturnValue({ innerJoin: innerJoinMock })
     vi.mocked(db.select).mockReturnValueOnce({ from: fromMock } as never)
 
-    const result = await listPublicArticlesForCategory('category_1')
+    const result = await listPublicArticlesForCategory('kb_category_1')
 
     expect(result).toHaveLength(2)
     expect(result[0].slug).toBe('first-article')
@@ -131,7 +131,7 @@ describe('listPublicArticlesForCategory', () => {
     const fromMock = vi.fn().mockReturnValue({ innerJoin: innerJoinMock })
     vi.mocked(db.select).mockReturnValueOnce({ from: fromMock } as never)
 
-    const result = await listPublicArticlesForCategory('category_1')
+    const result = await listPublicArticlesForCategory('kb_category_1')
     expect(result).toHaveLength(0)
   })
 })
@@ -141,13 +141,13 @@ describe('listArticles with showDeleted option', () => {
     const recentDeletedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
     mockArticleFindMany.mockResolvedValue([
       {
-        id: 'article_1' as HelpCenterArticleId,
+        id: 'kb_article_1' as KbArticleId,
         slug: 'deleted-article',
         title: 'Deleted Article',
         description: null,
         position: null,
         content: 'Some content',
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: null,
         publishedAt: null,
         viewCount: 0,
@@ -159,7 +159,7 @@ describe('listArticles with showDeleted option', () => {
       },
     ])
 
-    mockCategoryFindMany.mockResolvedValue([{ id: 'category_1', slug: 'cat', name: 'Category' }])
+    mockCategoryFindMany.mockResolvedValue([{ id: 'kb_category_1', slug: 'cat', name: 'Category' }])
 
     const result = await listArticles({ showDeleted: true })
     expect(result.items).toHaveLength(1)
@@ -169,13 +169,13 @@ describe('listArticles with showDeleted option', () => {
   it('returns live articles by default', async () => {
     mockArticleFindMany.mockResolvedValue([
       {
-        id: 'article_2' as HelpCenterArticleId,
+        id: 'kb_article_2' as KbArticleId,
         slug: 'live-article',
         title: 'Live Article',
         description: null,
         position: null,
         content: 'Content',
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: null,
         publishedAt: new Date(),
         viewCount: 0,
@@ -187,7 +187,7 @@ describe('listArticles with showDeleted option', () => {
       },
     ])
 
-    mockCategoryFindMany.mockResolvedValue([{ id: 'category_1', slug: 'cat', name: 'Category' }])
+    mockCategoryFindMany.mockResolvedValue([{ id: 'kb_category_1', slug: 'cat', name: 'Category' }])
 
     const result = await listArticles({})
     expect(result.items).toHaveLength(1)
@@ -198,13 +198,13 @@ describe('listArticles with showDeleted option', () => {
 describe('listArticles sort param', () => {
   function makeArticle(id: string, title: string) {
     return {
-      id: id as HelpCenterArticleId,
+      id: id as KbArticleId,
       slug: id,
       title,
       description: null,
       position: null,
       content: 'Content',
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       principalId: null,
       publishedAt: null,
       viewCount: 0,
@@ -217,12 +217,12 @@ describe('listArticles sort param', () => {
   }
 
   beforeEach(() => {
-    mockCategoryFindMany.mockResolvedValue([{ id: 'category_1', slug: 'cat', name: 'Category' }])
+    mockCategoryFindMany.mockResolvedValue([{ id: 'kb_category_1', slug: 'cat', name: 'Category' }])
   })
 
   it('returns articles with sort=newest (default)', async () => {
     const { asc: ascMock, desc: descMock } = await import('@/lib/server/db')
-    mockArticleFindMany.mockResolvedValue([makeArticle('article_1', 'Article A')])
+    mockArticleFindMany.mockResolvedValue([makeArticle('kb_article_1', 'Article A')])
 
     const result = await listArticles({ sort: 'newest' })
     expect(result.items).toHaveLength(1)
@@ -232,7 +232,7 @@ describe('listArticles sort param', () => {
 
   it('returns articles with sort=oldest using asc order', async () => {
     const { asc: ascMock } = await import('@/lib/server/db')
-    mockArticleFindMany.mockResolvedValue([makeArticle('article_2', 'Article B')])
+    mockArticleFindMany.mockResolvedValue([makeArticle('kb_article_2', 'Article B')])
 
     const result = await listArticles({ sort: 'oldest' })
     expect(result.items).toHaveLength(1)
@@ -241,7 +241,7 @@ describe('listArticles sort param', () => {
 
   it('defaults to newest when sort is not provided', async () => {
     const { desc: descMock } = await import('@/lib/server/db')
-    mockArticleFindMany.mockResolvedValue([makeArticle('article_3', 'Article C')])
+    mockArticleFindMany.mockResolvedValue([makeArticle('kb_article_3', 'Article C')])
 
     const result = await listArticles({})
     expect(result.items).toHaveLength(1)

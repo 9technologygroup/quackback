@@ -34,8 +34,8 @@ const vector = customType<{ data: number[] }>({
 export const helpCenterCategories = pgTable(
   'kb_categories',
   {
-    id: typeIdWithDefault('category')('id').primaryKey(),
-    parentId: typeIdColumnNullable('category')('parent_id').references(
+    id: typeIdWithDefault('kb_category')('id').primaryKey(),
+    parentId: typeIdColumnNullable('kb_category')('parent_id').references(
       (): AnyPgColumn => helpCenterCategories.id,
       { onDelete: 'set null' }
     ),
@@ -64,8 +64,8 @@ export const helpCenterCategories = pgTable(
 export const helpCenterArticles = pgTable(
   'kb_articles',
   {
-    id: typeIdWithDefault('article')('id').primaryKey(),
-    categoryId: typeIdColumn('category')('category_id')
+    id: typeIdWithDefault('kb_article')('id').primaryKey(),
+    categoryId: typeIdColumn('kb_category')('category_id')
       .notNull()
       .references(() => helpCenterCategories.id, { onDelete: 'cascade' }),
     slug: text('slug').notNull(),
@@ -110,8 +110,8 @@ export const helpCenterArticles = pgTable(
 export const helpCenterArticleFeedback = pgTable(
   'kb_article_feedback',
   {
-    id: typeIdWithDefault('article_feedback')('id').primaryKey(),
-    articleId: typeIdColumn('article')('article_id')
+    id: typeIdWithDefault('kb_article_feedback')('id').primaryKey(),
+    articleId: typeIdColumn('kb_article')('article_id')
       .notNull()
       .references(() => helpCenterArticles.id, { onDelete: 'cascade' }),
     principalId: typeIdColumnNullable('principal')('principal_id').references(() => principal.id, {

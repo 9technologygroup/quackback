@@ -34,7 +34,7 @@ import {
 } from '@/lib/server/domains/help-center/help-center.service'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
 import { ForbiddenError, ValidationError } from '@/lib/shared/errors'
-import type { HelpCenterCategoryId, PrincipalId, ApiKeyId } from '@quackback/ids'
+import type { KbCategoryId, PrincipalId, ApiKeyId } from '@quackback/ids'
 import type {
   HelpCenterCategory,
   HelpCenterCategoryWithCount,
@@ -44,7 +44,10 @@ import type {
 import { Route } from '../categories/index'
 import { Route as CategoryDetailRoute } from '../categories/$categoryId'
 
-type MockedHandler = (ctx: { request: Request; params?: Record<string, string> }) => Promise<Response>
+type MockedHandler = (ctx: {
+  request: Request
+  params?: Record<string, string>
+}) => Promise<Response>
 type MockedRouteShape = { options: { server: { handlers: Record<string, MockedHandler> } } }
 
 // Access handlers
@@ -111,7 +114,7 @@ describe('GET /api/v1/help-center/categories', () => {
     vi.mocked(isFeatureEnabled).mockResolvedValue(true)
     vi.mocked(withApiKeyAuth).mockResolvedValue(mockTeamAuthContext)
     const mockCategory: HelpCenterCategoryWithCount = {
-      id: 'category_01jk0000000000000000000001' as HelpCenterCategoryId,
+      id: 'kb_category_01jk0000000000000000000001' as KbCategoryId,
       slug: 'getting-started',
       name: 'Getting Started',
       description: 'Intro guides',
@@ -135,7 +138,7 @@ describe('GET /api/v1/help-center/categories', () => {
     expect(response.status).toBe(200)
     expect(json.data).toHaveLength(1)
     expect(json.data[0]).toMatchObject({
-      id: 'category_01jk0000000000000000000001',
+      id: 'kb_category_01jk0000000000000000000001',
       name: 'Getting Started',
       icon: '\u{1F4DA}',
       parentId: null,
@@ -147,7 +150,7 @@ describe('GET /api/v1/help-center/categories', () => {
     vi.mocked(isFeatureEnabled).mockResolvedValue(true)
     vi.mocked(withApiKeyAuth).mockResolvedValue(mockTeamAuthContext)
     const mockCategory: HelpCenterCategoryWithCount = {
-      id: 'category_01jk0000000000000000000002' as HelpCenterCategoryId,
+      id: 'kb_category_01jk0000000000000000000002' as KbCategoryId,
       slug: 'faq',
       name: 'FAQ',
       description: null,
@@ -186,12 +189,12 @@ describe('POST /api/v1/help-center/categories', () => {
     vi.mocked(isFeatureEnabled).mockResolvedValue(true)
     vi.mocked(withApiKeyAuth).mockResolvedValue(mockAuthContext)
     const newCategory: HelpCenterCategory = {
-      id: 'category_01jk0000000000000000000003' as HelpCenterCategoryId,
+      id: 'kb_category_01jk0000000000000000000003' as KbCategoryId,
       slug: 'billing',
       name: 'Billing',
       description: null,
       icon: '\u{1F4B0}',
-      parentId: 'category_01jk0000000000000000000001' as HelpCenterCategoryId,
+      parentId: 'kb_category_01jk0000000000000000000001' as KbCategoryId,
       isPublic: true,
       position: 0,
       createdAt: new Date('2026-01-01'),
@@ -202,7 +205,7 @@ describe('POST /api/v1/help-center/categories', () => {
     const request = createRequest('POST', 'http://localhost/api/v1/help-center/categories', {
       name: 'Billing',
       icon: '\u{1F4B0}',
-      parentId: 'category_01jk0000000000000000000001',
+      parentId: 'kb_category_01jk0000000000000000000001',
     })
     const response = await handlers.POST({ request })
     const json = await parseJson(response)
@@ -210,12 +213,12 @@ describe('POST /api/v1/help-center/categories', () => {
     expect(response.status).toBe(201)
     expect(json.data.name).toBe('Billing')
     expect(json.data.icon).toBe('\u{1F4B0}')
-    expect(json.data.parentId).toBe('category_01jk0000000000000000000001')
+    expect(json.data.parentId).toBe('kb_category_01jk0000000000000000000001')
     expect(createCategory).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'Billing',
         icon: '\u{1F4B0}',
-        parentId: 'category_01jk0000000000000000000001',
+        parentId: 'kb_category_01jk0000000000000000000001',
       })
     )
   })
@@ -224,7 +227,7 @@ describe('POST /api/v1/help-center/categories', () => {
     vi.mocked(isFeatureEnabled).mockResolvedValue(true)
     vi.mocked(withApiKeyAuth).mockResolvedValue(mockAuthContext)
     const newCategory: HelpCenterCategory = {
-      id: 'category_01jk0000000000000000000004' as HelpCenterCategoryId,
+      id: 'kb_category_01jk0000000000000000000004' as KbCategoryId,
       slug: 'general',
       name: 'General',
       description: null,
@@ -259,9 +262,7 @@ describe('POST /api/v1/help-center/categories', () => {
 
   it('returns 403 when auth fails (non-admin)', async () => {
     vi.mocked(isFeatureEnabled).mockResolvedValue(true)
-    vi.mocked(withApiKeyAuth).mockRejectedValue(
-      new ForbiddenError('FORBIDDEN', 'Admin required')
-    )
+    vi.mocked(withApiKeyAuth).mockRejectedValue(new ForbiddenError('FORBIDDEN', 'Admin required'))
 
     const request = createRequest('POST', 'http://localhost/api/v1/help-center/categories', {
       name: 'Test',
@@ -281,7 +282,7 @@ describe('GET /api/v1/help-center/categories/:categoryId', () => {
     vi.mocked(withApiKeyAuth).mockResolvedValue(mockTeamAuthContext)
     vi.mocked(parseTypeId).mockImplementation((v) => v as string)
     const mockCategory: HelpCenterCategory = {
-      id: 'category_01jk0000000000000000000001' as HelpCenterCategoryId,
+      id: 'kb_category_01jk0000000000000000000001' as KbCategoryId,
       slug: 'getting-started',
       name: 'Getting Started',
       description: 'Intro guides',
@@ -300,13 +301,13 @@ describe('GET /api/v1/help-center/categories/:categoryId', () => {
     )
     const response = await detailHandlers.GET({
       request,
-      params: { categoryId: 'category_01jk0000000000000000000001' },
+      params: { categoryId: 'kb_category_01jk0000000000000000000001' },
     })
     const json = await parseJson(response)
 
     expect(response.status).toBe(200)
     expect(json.data).toMatchObject({
-      id: 'category_01jk0000000000000000000001',
+      id: 'kb_category_01jk0000000000000000000001',
       name: 'Getting Started',
       icon: '\u{1F680}',
       parentId: null,
@@ -321,7 +322,7 @@ describe('GET /api/v1/help-center/categories/:categoryId', () => {
     )
     const response = await detailHandlers.GET({
       request,
-      params: { categoryId: 'category_01jk0000000000000000000001' },
+      params: { categoryId: 'kb_category_01jk0000000000000000000001' },
     })
     expect(response.status).toBe(404)
   })
@@ -351,7 +352,7 @@ describe('PATCH /api/v1/help-center/categories/:categoryId', () => {
     vi.mocked(withApiKeyAuth).mockResolvedValue(mockAuthContext)
     vi.mocked(parseTypeId).mockImplementation((v) => v as string)
     const updatedCategory: HelpCenterCategory = {
-      id: 'category_01jk0000000000000000000001' as HelpCenterCategoryId,
+      id: 'kb_category_01jk0000000000000000000001' as KbCategoryId,
       slug: 'getting-started',
       name: 'Getting Started',
       description: 'Intro guides',
@@ -371,14 +372,14 @@ describe('PATCH /api/v1/help-center/categories/:categoryId', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { categoryId: 'category_01jk0000000000000000000001' },
+      params: { categoryId: 'kb_category_01jk0000000000000000000001' },
     })
     const json = await parseJson(response)
 
     expect(response.status).toBe(200)
     expect(json.data.icon).toBe('\u{2728}')
     expect(updateCategory).toHaveBeenCalledWith(
-      'category_01jk0000000000000000000001',
+      'kb_category_01jk0000000000000000000001',
       expect.objectContaining({ icon: '\u{2728}' })
     )
   })
@@ -388,12 +389,12 @@ describe('PATCH /api/v1/help-center/categories/:categoryId', () => {
     vi.mocked(withApiKeyAuth).mockResolvedValue(mockAuthContext)
     vi.mocked(parseTypeId).mockImplementation((v) => v as string)
     const updatedCategory: HelpCenterCategory = {
-      id: 'category_01jk0000000000000000000001' as HelpCenterCategoryId,
+      id: 'kb_category_01jk0000000000000000000001' as KbCategoryId,
       slug: 'getting-started',
       name: 'Getting Started',
       description: null,
       icon: null,
-      parentId: 'category_01jk0000000000000000000002' as HelpCenterCategoryId,
+      parentId: 'kb_category_01jk0000000000000000000002' as KbCategoryId,
       isPublic: true,
       position: 0,
       createdAt: new Date('2026-01-01'),
@@ -404,20 +405,20 @@ describe('PATCH /api/v1/help-center/categories/:categoryId', () => {
     const request = createRequest(
       'PATCH',
       'http://localhost/api/v1/help-center/categories/category_01jk0000000000000000000001',
-      { parentId: 'category_01jk0000000000000000000002' }
+      { parentId: 'kb_category_01jk0000000000000000000002' }
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { categoryId: 'category_01jk0000000000000000000001' },
+      params: { categoryId: 'kb_category_01jk0000000000000000000001' },
     })
     const json = await parseJson(response)
 
     expect(response.status).toBe(200)
-    expect(json.data.parentId).toBe('category_01jk0000000000000000000002')
+    expect(json.data.parentId).toBe('kb_category_01jk0000000000000000000002')
     expect(updateCategory).toHaveBeenCalledWith(
-      'category_01jk0000000000000000000001',
+      'kb_category_01jk0000000000000000000001',
       expect.objectContaining({
-        parentId: 'category_01jk0000000000000000000002',
+        parentId: 'kb_category_01jk0000000000000000000002',
       })
     )
   })
@@ -427,7 +428,7 @@ describe('PATCH /api/v1/help-center/categories/:categoryId', () => {
     vi.mocked(withApiKeyAuth).mockResolvedValue(mockAuthContext)
     vi.mocked(parseTypeId).mockImplementation((v) => v as string)
     const updatedCategory: HelpCenterCategory = {
-      id: 'category_01jk0000000000000000000001' as HelpCenterCategoryId,
+      id: 'kb_category_01jk0000000000000000000001' as KbCategoryId,
       slug: 'getting-started',
       name: 'Getting Started',
       description: null,
@@ -447,23 +448,21 @@ describe('PATCH /api/v1/help-center/categories/:categoryId', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { categoryId: 'category_01jk0000000000000000000001' },
+      params: { categoryId: 'kb_category_01jk0000000000000000000001' },
     })
     const json = await parseJson(response)
 
     expect(response.status).toBe(200)
     expect(json.data.icon).toBeNull()
     expect(updateCategory).toHaveBeenCalledWith(
-      'category_01jk0000000000000000000001',
+      'kb_category_01jk0000000000000000000001',
       expect.objectContaining({ icon: null })
     )
   })
 
   it('returns 403 when auth fails (non-admin)', async () => {
     vi.mocked(isFeatureEnabled).mockResolvedValue(true)
-    vi.mocked(withApiKeyAuth).mockRejectedValue(
-      new ForbiddenError('FORBIDDEN', 'Admin required')
-    )
+    vi.mocked(withApiKeyAuth).mockRejectedValue(new ForbiddenError('FORBIDDEN', 'Admin required'))
 
     const request = createRequest(
       'PATCH',
@@ -472,7 +471,7 @@ describe('PATCH /api/v1/help-center/categories/:categoryId', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { categoryId: 'category_01jk0000000000000000000001' },
+      params: { categoryId: 'kb_category_01jk0000000000000000000001' },
     })
     expect(response.status).toBe(403)
   })
@@ -491,18 +490,16 @@ describe('DELETE /api/v1/help-center/categories/:categoryId', () => {
     )
     const response = await detailHandlers.DELETE({
       request,
-      params: { categoryId: 'category_01jk0000000000000000000001' },
+      params: { categoryId: 'kb_category_01jk0000000000000000000001' },
     })
 
     expect(response.status).toBe(204)
-    expect(deleteCategory).toHaveBeenCalledWith('category_01jk0000000000000000000001')
+    expect(deleteCategory).toHaveBeenCalledWith('kb_category_01jk0000000000000000000001')
   })
 
   it('returns 403 when auth fails (non-admin)', async () => {
     vi.mocked(isFeatureEnabled).mockResolvedValue(true)
-    vi.mocked(withApiKeyAuth).mockRejectedValue(
-      new ForbiddenError('FORBIDDEN', 'Admin required')
-    )
+    vi.mocked(withApiKeyAuth).mockRejectedValue(new ForbiddenError('FORBIDDEN', 'Admin required'))
 
     const request = createRequest(
       'DELETE',
@@ -510,7 +507,7 @@ describe('DELETE /api/v1/help-center/categories/:categoryId', () => {
     )
     const response = await detailHandlers.DELETE({
       request,
-      params: { categoryId: 'category_01jk0000000000000000000001' },
+      params: { categoryId: 'kb_category_01jk0000000000000000000001' },
     })
     expect(response.status).toBe(403)
   })

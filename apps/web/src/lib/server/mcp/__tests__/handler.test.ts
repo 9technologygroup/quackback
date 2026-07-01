@@ -24,13 +24,16 @@ vi.mock('@/lib/server/db', () => ({
   eq: vi.fn((_a: unknown, _b: unknown) => 'eq-condition'),
 }))
 
-// Mock getTypeIdPrefix from @quackback/ids — extract prefix from underscore-separated IDs
+// Mock getTypeIdPrefix from @quackback/ids — extract everything before the last
+// underscore, matching the real TypeID split (the suffix is a fixed base32
+// block with no underscores, so this also works for compound prefixes like
+// kb_article).
 vi.mock('@quackback/ids', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
   return {
     ...actual,
     getTypeIdPrefix: vi.fn((id: string) => {
-      const underscoreIndex = id.indexOf('_')
+      const underscoreIndex = id.lastIndexOf('_')
       if (underscoreIndex === -1) throw new Error(`Invalid TypeID: ${id}`)
       return id.substring(0, underscoreIndex)
     }),
@@ -1905,7 +1908,7 @@ describe('MCP HTTP Handler', () => {
         oauthRequest(
           jsonRpcRequest('tools/call', {
             name: 'get_details',
-            arguments: { id: 'article_01jx0p1q3rh0d8t5a8j4f7y3p9' },
+            arguments: { id: 'kb_article_01jx0p1q3rh0d8t5a8j4f7y3p9' },
           })
         )
       )

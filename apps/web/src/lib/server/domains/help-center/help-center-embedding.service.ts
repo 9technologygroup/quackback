@@ -9,7 +9,7 @@ import { db, helpCenterArticles, eq, sql } from '@/lib/server/db'
 import { getOpenAI } from '@/lib/server/domains/ai/config'
 import { getEmbeddingModel } from '@/lib/server/domains/ai/models'
 import { withRetry } from '@/lib/server/domains/ai/retry'
-import type { HelpCenterArticleId } from '@quackback/ids'
+import type { KbArticleId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'help-center-embedding' })
@@ -73,7 +73,7 @@ export async function generateArticleEmbedding(
       embeddingModel: getEmbeddingModel() ?? 'unknown',
       embeddingUpdatedAt: new Date(),
     })
-    .where(eq(helpCenterArticles.id, articleId as HelpCenterArticleId))
+    .where(eq(helpCenterArticles.id, articleId as KbArticleId))
 
   return true
 }

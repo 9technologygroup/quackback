@@ -30,7 +30,7 @@ import {
   getCategoryDepth,
   getSubtreeMaxDepth,
 } from '@/lib/shared/help-center-tree'
-import type { HelpCenterCategoryId } from '@quackback/ids'
+import type { KbCategoryId } from '@quackback/ids'
 
 const DEFAULT_ICON = 'FolderIcon'
 
@@ -46,15 +46,15 @@ interface CategoryFormDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialValues?: {
-    id: HelpCenterCategoryId
+    id: KbCategoryId
     name: string
     description: string | null
     icon: string | null
     isPublic: boolean
-    parentId: HelpCenterCategoryId | null
+    parentId: KbCategoryId | null
   }
   /** Pre-selected parent when creating a new category (ignored if initialValues is set). */
-  defaultParentId?: HelpCenterCategoryId | null
+  defaultParentId?: KbCategoryId | null
   onCreated?: (categoryId: string) => void
 }
 
@@ -73,7 +73,7 @@ export function CategoryFormDialog({
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [isPublic, setIsPublic] = useState(true)
-  const [parentId, setParentId] = useState<HelpCenterCategoryId | null>(null)
+  const [parentId, setParentId] = useState<KbCategoryId | null>(null)
   const [iconPickerOpen, setIconPickerOpen] = useState(false)
   const [iconSearch, setIconSearch] = useState('')
 
@@ -240,7 +240,7 @@ export function CategoryFormDialog({
             <Select
               value={parentId ?? '__none__'}
               onValueChange={(value) =>
-                setParentId(value === '__none__' ? null : (value as HelpCenterCategoryId))
+                setParentId(value === '__none__' ? null : (value as KbCategoryId))
               }
             >
               <SelectTrigger id="category-parent">

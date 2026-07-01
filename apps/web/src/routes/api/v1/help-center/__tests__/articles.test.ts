@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ApiAuthContext } from '@/lib/server/domains/api/auth'
 import type { ApiKeyId } from '@/lib/server/domains/api-keys'
 import type { HelpCenterArticleWithCategory } from '@/lib/server/domains/help-center/help-center.types'
-import type { HelpCenterArticleId, HelpCenterCategoryId, PrincipalId } from '@quackback/ids'
+import type { KbArticleId, KbCategoryId, PrincipalId } from '@quackback/ids'
 
 // --- Mocks ---
 
@@ -59,12 +59,16 @@ import { Route as ArticlesListRoute } from '../articles/index'
 import { Route as ArticleDetailRoute } from '../articles/$articleId'
 import { Route as ArticleFeedbackRoute } from '../articles/$articleId.feedback'
 
-type MockedHandler = (ctx: { request: Request; params?: Record<string, string> }) => Promise<Response>
+type MockedHandler = (ctx: {
+  request: Request
+  params?: Record<string, string>
+}) => Promise<Response>
 type MockedRouteShape = { options: { server: { handlers: Record<string, MockedHandler> } } }
 
 const listHandlers = (ArticlesListRoute as unknown as MockedRouteShape).options.server.handlers
 const detailHandlers = (ArticleDetailRoute as unknown as MockedRouteShape).options.server.handlers
-const feedbackHandlers = (ArticleFeedbackRoute as unknown as MockedRouteShape).options.server.handlers
+const feedbackHandlers = (ArticleFeedbackRoute as unknown as MockedRouteShape).options.server
+  .handlers
 
 // --- Helpers ---
 
@@ -94,8 +98,8 @@ const mockAuthContext: ApiAuthContext = {
 }
 
 const mockArticle: HelpCenterArticleWithCategory = {
-  id: 'article_1' as HelpCenterArticleId,
-  categoryId: 'category_1' as HelpCenterCategoryId,
+  id: 'kb_article_1' as KbArticleId,
+  categoryId: 'kb_category_1' as KbCategoryId,
   slug: 'how-to-start',
   title: 'How to Get Started',
   description: null,
@@ -110,7 +114,11 @@ const mockArticle: HelpCenterArticleWithCategory = {
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-10'),
   deletedAt: null,
-  category: { id: 'category_1' as HelpCenterCategoryId, slug: 'getting-started', name: 'Getting Started' },
+  category: {
+    id: 'kb_category_1' as KbCategoryId,
+    slug: 'getting-started',
+    name: 'Getting Started',
+  },
   author: { id: 'principal_1' as PrincipalId, name: 'Admin', avatarUrl: null },
 }
 
@@ -137,7 +145,7 @@ describe('GET /api/v1/help-center/articles', () => {
     expect(response.status).toBe(200)
     const json = await response.json()
     expect(json.data).toHaveLength(1)
-    expect(json.data[0].id).toBe('article_1')
+    expect(json.data[0].id).toBe('kb_article_1')
     expect(json.data[0].title).toBe('How to Get Started')
     expect(json.data[0].publishedAt).toBe('2026-01-15T00:00:00.000Z')
     expect(json.meta.pagination).toEqual({ cursor: null, hasMore: false })
@@ -190,7 +198,7 @@ describe('POST /api/v1/help-center/articles', () => {
     vi.mocked(createArticle).mockResolvedValue(mockArticle)
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'How to Get Started',
       content: 'Follow these steps...',
     }
@@ -199,7 +207,7 @@ describe('POST /api/v1/help-center/articles', () => {
 
     expect(response.status).toBe(201)
     const json = await response.json()
-    expect(json.data.id).toBe('article_1')
+    expect(json.data.id).toBe('kb_article_1')
     expect(createArticle).toHaveBeenCalledWith(body, 'principal_1', undefined)
   })
 
@@ -208,7 +216,7 @@ describe('POST /api/v1/help-center/articles', () => {
     vi.mocked(parseOptionalTypeId).mockReturnValue('principal_2' as PrincipalId)
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'Authored Article',
       content: 'Content',
       authorId: 'principal_2',
@@ -218,7 +226,7 @@ describe('POST /api/v1/help-center/articles', () => {
 
     expect(response.status).toBe(201)
     expect(createArticle).toHaveBeenCalledWith(
-      { categoryId: 'category_1', title: 'Authored Article', content: 'Content' },
+      { categoryId: 'kb_category_1', title: 'Authored Article', content: 'Content' },
       'principal_1',
       'principal_2'
     )
@@ -230,7 +238,7 @@ describe('POST /api/v1/help-center/articles', () => {
     })
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'Test',
       content: 'Content',
       authorId: 'not-a-valid-id',
@@ -247,7 +255,7 @@ describe('POST /api/v1/help-center/articles', () => {
     )
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'Test',
       content: 'Content',
       authorId: 'principal_ghost',
@@ -277,7 +285,7 @@ describe('POST /api/v1/help-center/articles', () => {
     )
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'Test',
       content: 'Test content',
     }
@@ -302,14 +310,14 @@ describe('GET /api/v1/help-center/articles/:id', () => {
     const request = createRequest('GET', 'http://localhost/api/v1/help-center/articles/article_1')
     const response = await detailHandlers.GET({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(200)
     const json = await response.json()
-    expect(json.data.id).toBe('article_1')
+    expect(json.data.id).toBe('kb_article_1')
     expect(json.data.category).toEqual({
-      id: 'category_1',
+      id: 'kb_category_1',
       slug: 'getting-started',
       name: 'Getting Started',
     })
@@ -354,17 +362,24 @@ describe('PATCH /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(200)
     const json = await response.json()
     expect(json.data.title).toBe('Updated Title')
-    expect(updateArticle).toHaveBeenCalledWith('article_1', { title: 'Updated Title' }, undefined)
+    expect(updateArticle).toHaveBeenCalledWith(
+      'kb_article_1',
+      { title: 'Updated Title' },
+      undefined
+    )
   })
 
   it('reassigns author when authorId is provided', async () => {
-    const updatedArticle = { ...mockArticle, author: { id: 'principal_2' as PrincipalId, name: 'Other', avatarUrl: null } }
+    const updatedArticle = {
+      ...mockArticle,
+      author: { id: 'principal_2' as PrincipalId, name: 'Other', avatarUrl: null },
+    }
     vi.mocked(updateArticle).mockResolvedValue(updatedArticle)
     vi.mocked(parseOptionalTypeId).mockReturnValue('principal_2' as PrincipalId)
 
@@ -376,11 +391,11 @@ describe('PATCH /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(200)
-    expect(updateArticle).toHaveBeenCalledWith('article_1', {}, 'principal_2')
+    expect(updateArticle).toHaveBeenCalledWith('kb_article_1', {}, 'principal_2')
   })
 
   it('returns 400 when authorId format is invalid', async () => {
@@ -396,7 +411,7 @@ describe('PATCH /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(400)
@@ -416,7 +431,7 @@ describe('PATCH /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(400)
@@ -436,11 +451,11 @@ describe('PATCH /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(200)
-    expect(publishArticle).toHaveBeenCalledWith('article_1')
+    expect(publishArticle).toHaveBeenCalledWith('kb_article_1')
     expect(updateArticle).not.toHaveBeenCalled()
   })
 
@@ -456,11 +471,11 @@ describe('PATCH /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(200)
-    expect(unpublishArticle).toHaveBeenCalledWith('article_1')
+    expect(unpublishArticle).toHaveBeenCalledWith('kb_article_1')
     expect(updateArticle).not.toHaveBeenCalled()
   })
 
@@ -477,7 +492,7 @@ describe('PATCH /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(403)
@@ -492,7 +507,7 @@ describe('PATCH /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.PATCH({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(400)
@@ -518,11 +533,11 @@ describe('DELETE /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.DELETE({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(204)
-    expect(deleteArticle).toHaveBeenCalledWith('article_1')
+    expect(deleteArticle).toHaveBeenCalledWith('kb_article_1')
   })
 
   it('requires admin role', async () => {
@@ -536,7 +551,7 @@ describe('DELETE /api/v1/help-center/articles/:id', () => {
     )
     const response = await detailHandlers.DELETE({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(403)
@@ -562,13 +577,13 @@ describe('POST /api/v1/help-center/articles/:id/feedback', () => {
     )
     const response = await feedbackHandlers.POST({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(200)
     const json = await response.json()
     expect(json.data.success).toBe(true)
-    expect(recordArticleFeedback).toHaveBeenCalledWith('article_1', true, 'principal_1')
+    expect(recordArticleFeedback).toHaveBeenCalledWith('kb_article_1', true, 'principal_1')
   })
 
   it('records helpful=false feedback', async () => {
@@ -582,11 +597,11 @@ describe('POST /api/v1/help-center/articles/:id/feedback', () => {
     )
     const response = await feedbackHandlers.POST({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(200)
-    expect(recordArticleFeedback).toHaveBeenCalledWith('article_1', false, 'principal_1')
+    expect(recordArticleFeedback).toHaveBeenCalledWith('kb_article_1', false, 'principal_1')
   })
 
   it('returns 400 for invalid body (missing helpful field)', async () => {
@@ -598,7 +613,7 @@ describe('POST /api/v1/help-center/articles/:id/feedback', () => {
     )
     const response = await feedbackHandlers.POST({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(400)
@@ -619,7 +634,7 @@ describe('POST /api/v1/help-center/articles/:id/feedback', () => {
     )
     const response = await feedbackHandlers.POST({
       request,
-      params: { articleId: 'article_1' },
+      params: { articleId: 'kb_article_1' },
     })
 
     expect(response.status).toBe(403)

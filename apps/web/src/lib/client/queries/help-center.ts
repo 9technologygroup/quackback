@@ -5,7 +5,7 @@
  */
 
 import { queryOptions, infiniteQueryOptions } from '@tanstack/react-query'
-import type { HelpCenterArticleId } from '@quackback/ids'
+import type { KbArticleId } from '@quackback/ids'
 import {
   listCategoriesFn,
   listPublicCategoriesFn,
@@ -34,7 +34,7 @@ export const helpCenterKeys = {
     showDeleted?: boolean
   }) => [...helpCenterKeys.articleLists(), filters] as const,
   articleDetails: () => [...helpCenterKeys.articles(), 'detail'] as const,
-  articleDetail: (id: HelpCenterArticleId) => [...helpCenterKeys.articleDetails(), id] as const,
+  articleDetail: (id: KbArticleId) => [...helpCenterKeys.articleDetails(), id] as const,
   public: () => [...helpCenterKeys.all, 'public'] as const,
   publicArticleList: (categoryId?: string) =>
     [...helpCenterKeys.public(), 'list', categoryId] as const,
@@ -79,7 +79,7 @@ export const helpCenterQueries = {
       staleTime: STALE_TIME_SHORT,
     }),
 
-  articleDetail: (id: HelpCenterArticleId) =>
+  articleDetail: (id: KbArticleId) =>
     queryOptions({
       queryKey: helpCenterKeys.articleDetail(id),
       queryFn: () => getArticleFn({ data: { id } }),

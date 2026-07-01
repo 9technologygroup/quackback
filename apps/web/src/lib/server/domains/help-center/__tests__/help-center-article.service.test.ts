@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { HelpCenterArticleId, PrincipalId } from '@quackback/ids'
+import type { KbArticleId, PrincipalId } from '@quackback/ids'
 
 const insertValuesCalls: unknown[][] = []
 const updateSetCalls: unknown[][] = []
@@ -17,14 +17,14 @@ function createUpdateChain() {
   })
   chain.returning = vi.fn().mockResolvedValue([
     {
-      id: 'article_1' as HelpCenterArticleId,
+      id: 'kb_article_1' as KbArticleId,
       slug: 'test',
       title: 'Test',
       description: null,
       position: null,
       content: 'Content',
       contentJson: null,
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       principalId: 'principal_1',
       publishedAt: null,
       viewCount: 0,
@@ -154,12 +154,12 @@ beforeEach(async () => {
 describe('getArticleById', () => {
   it('returns article with category when found', async () => {
     mockArticleFindFirst.mockResolvedValue({
-      id: 'article_1' as HelpCenterArticleId,
+      id: 'kb_article_1' as KbArticleId,
       slug: 'how-to-start',
       title: 'How to Start',
       content: 'Content here',
       contentJson: null,
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       principalId: 'principal_1',
       publishedAt: new Date(),
       viewCount: 5,
@@ -170,7 +170,7 @@ describe('getArticleById', () => {
     })
 
     mockCategoryFindFirst.mockResolvedValue({
-      id: 'category_1',
+      id: 'kb_category_1',
       slug: 'getting-started',
       name: 'Getting Started',
     })
@@ -181,7 +181,7 @@ describe('getArticleById', () => {
       avatarUrl: null,
     })
 
-    const result = await getArticleById('article_1' as HelpCenterArticleId)
+    const result = await getArticleById('kb_article_1' as KbArticleId)
     expect(result.title).toBe('How to Start')
     expect(result.category.name).toBe('Getting Started')
     expect(result.author?.name).toBe('Test Author')
@@ -190,7 +190,7 @@ describe('getArticleById', () => {
   it('throws NotFoundError when article does not exist', async () => {
     mockArticleFindFirst.mockResolvedValue(null)
 
-    await expect(getArticleById('article_missing' as HelpCenterArticleId)).rejects.toMatchObject({
+    await expect(getArticleById('kb_article_missing' as KbArticleId)).rejects.toMatchObject({
       code: 'ARTICLE_NOT_FOUND',
     })
   })
@@ -206,12 +206,12 @@ describe('createArticle', () => {
     })
     articleInsertChain.returning = vi.fn().mockResolvedValue([
       {
-        id: 'article_new1' as HelpCenterArticleId,
+        id: 'kb_article_new1' as KbArticleId,
         slug: 'how-to-start',
         title: 'How to Start',
         content: 'Some content',
         contentJson: { type: 'doc', content: [] },
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: 'principal_1',
         publishedAt: null,
         viewCount: 0,
@@ -224,7 +224,7 @@ describe('createArticle', () => {
     vi.mocked(db.insert).mockReturnValueOnce(articleInsertChain as never)
 
     mockCategoryFindFirst.mockResolvedValue({
-      id: 'category_1',
+      id: 'kb_category_1',
       slug: 'getting-started',
       name: 'Getting Started',
     })
@@ -236,7 +236,7 @@ describe('createArticle', () => {
     })
 
     const result = await createArticle(
-      { categoryId: 'category_1', title: 'How to Start', content: 'Some content' },
+      { categoryId: 'kb_category_1', title: 'How to Start', content: 'Some content' },
       'principal_1' as PrincipalId
     )
 
@@ -248,7 +248,7 @@ describe('createArticle', () => {
     mockPrincipalFindFirst.mockResolvedValueOnce({ id: 'principal_svc', type: 'service' })
     await expect(
       createArticle(
-        { categoryId: 'category_1', title: 'Title', content: 'Content' },
+        { categoryId: 'kb_category_1', title: 'Title', content: 'Content' },
         'principal_svc' as PrincipalId
       )
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
@@ -257,7 +257,7 @@ describe('createArticle', () => {
   it('throws ValidationError when title is empty', async () => {
     await expect(
       createArticle(
-        { categoryId: 'category_1', title: '', content: 'Content' },
+        { categoryId: 'kb_category_1', title: '', content: 'Content' },
         'principal_1' as PrincipalId
       )
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
@@ -266,7 +266,7 @@ describe('createArticle', () => {
   it('throws ValidationError when content is empty', async () => {
     await expect(
       createArticle(
-        { categoryId: 'category_1', title: 'Title', content: '' },
+        { categoryId: 'kb_category_1', title: 'Title', content: '' },
         'principal_1' as PrincipalId
       )
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
@@ -280,7 +280,7 @@ describe('createArticle', () => {
     })
     await expect(
       createArticle(
-        { categoryId: 'category_1', title: 'Title', content: 'Content' },
+        { categoryId: 'kb_category_1', title: 'Title', content: 'Content' },
         'principal_admin' as PrincipalId,
         'principal_portal' as PrincipalId
       )
@@ -295,7 +295,7 @@ describe('createArticle', () => {
     })
     await expect(
       createArticle(
-        { categoryId: 'category_1', title: 'Title', content: 'Content' },
+        { categoryId: 'kb_category_1', title: 'Title', content: 'Content' },
         'principal_admin' as PrincipalId,
         'principal_svc' as PrincipalId
       )
@@ -308,7 +308,7 @@ describe('createArticle', () => {
       role: 'member',
       type: 'user',
     })
-    mockCategoryFindFirst.mockResolvedValue({ id: 'category_1', slug: 'cat', name: 'Cat' })
+    mockCategoryFindFirst.mockResolvedValue({ id: 'kb_category_1', slug: 'cat', name: 'Cat' })
     mockPrincipalFindFirst.mockResolvedValueOnce({
       id: 'principal_member',
       displayName: 'Jane',
@@ -320,12 +320,12 @@ describe('createArticle', () => {
     chain.values = vi.fn(() => chain)
     chain.returning = vi.fn().mockResolvedValue([
       {
-        id: 'article_new' as HelpCenterArticleId,
+        id: 'kb_article_new' as KbArticleId,
         slug: 'title',
         title: 'Title',
         content: 'Content',
         contentJson: null,
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: 'principal_member',
         publishedAt: null,
         viewCount: 0,
@@ -339,7 +339,7 @@ describe('createArticle', () => {
 
     await expect(
       createArticle(
-        { categoryId: 'category_1', title: 'Title', content: 'Content' },
+        { categoryId: 'kb_category_1', title: 'Title', content: 'Content' },
         'principal_admin' as PrincipalId,
         'principal_member' as PrincipalId
       )
@@ -357,12 +357,12 @@ describe('createArticle slug generation (#285)', () => {
     })
     chain.returning = vi.fn().mockResolvedValue([
       {
-        id: 'article_new1' as HelpCenterArticleId,
+        id: 'kb_article_new1' as KbArticleId,
         slug: 'placeholder',
         title: 'placeholder',
         content: 'Content',
         contentJson: { type: 'doc', content: [] },
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: 'principal_1',
         publishedAt: null,
         viewCount: 0,
@@ -374,7 +374,7 @@ describe('createArticle slug generation (#285)', () => {
     ])
     vi.mocked(db.insert).mockReturnValue(chain as never)
     mockCategoryFindFirst.mockResolvedValue({
-      id: 'category_1',
+      id: 'kb_category_1',
       slug: 'getting-started',
       name: 'Getting Started',
     })
@@ -390,41 +390,43 @@ describe('createArticle slug generation (#285)', () => {
   const insertedSlug = () => (insertValuesCalls[0][0] as Record<string, unknown>).slug
 
   it('transliterates a Chinese title to a pinyin slug', async () => {
-    await createArticle({ categoryId: 'category_1', title: '反馈', content: 'c' }, author)
+    await createArticle({ categoryId: 'kb_category_1', title: '反馈', content: 'c' }, author)
     expect(insertedSlug()).toBe('fan-kui')
   })
 
   it('falls back to a generic slug for an emoji-only title', async () => {
-    await createArticle({ categoryId: 'category_1', title: '🎉🎉', content: 'c' }, author)
+    await createArticle({ categoryId: 'kb_category_1', title: '🎉🎉', content: 'c' }, author)
     expect(insertedSlug()).toBe('article')
   })
 
   it('appends a counter when the derived slug collides', async () => {
-    mockArticleFindFirst.mockResolvedValueOnce({ id: 'article_other' }).mockResolvedValueOnce(null)
-    await createArticle({ categoryId: 'category_1', title: '反馈', content: 'c' }, author)
+    mockArticleFindFirst
+      .mockResolvedValueOnce({ id: 'kb_article_other' })
+      .mockResolvedValueOnce(null)
+    await createArticle({ categoryId: 'kb_category_1', title: '反馈', content: 'c' }, author)
     expect(insertedSlug()).toBe('fan-kui-2')
   })
 })
 
 describe('updateArticle slug generation (#285)', () => {
   it('falls back to a generic slug when an explicit empty slug is given', async () => {
-    await updateArticle('article_1' as HelpCenterArticleId, { slug: '' })
+    await updateArticle('kb_article_1' as KbArticleId, { slug: '' })
     expect((updateSetCalls[0][0] as Record<string, unknown>).slug).toBe('article')
   })
 
   it('keeps an explicit slug that only collides with the same article', async () => {
-    mockArticleFindFirst.mockResolvedValueOnce({ id: 'article_1' })
-    await updateArticle('article_1' as HelpCenterArticleId, { slug: 'guide' })
+    mockArticleFindFirst.mockResolvedValueOnce({ id: 'kb_article_1' })
+    await updateArticle('kb_article_1' as KbArticleId, { slug: 'guide' })
     expect((updateSetCalls[0][0] as Record<string, unknown>).slug).toBe('guide')
   })
 })
 
 describe('publishArticle', () => {
   it('sets publishedAt to current date', async () => {
-    mockCategoryFindFirst.mockResolvedValue({ id: 'category_1', slug: 'test', name: 'Test' })
+    mockCategoryFindFirst.mockResolvedValue({ id: 'kb_category_1', slug: 'test', name: 'Test' })
     mockPrincipalFindFirst.mockResolvedValue(null)
 
-    const result = await publishArticle('article_1' as HelpCenterArticleId)
+    const result = await publishArticle('kb_article_1' as KbArticleId)
     expect(result).toBeDefined()
     expect(updateSetCalls.length).toBeGreaterThan(0)
   })
@@ -432,10 +434,10 @@ describe('publishArticle', () => {
 
 describe('unpublishArticle', () => {
   it('sets publishedAt to null', async () => {
-    mockCategoryFindFirst.mockResolvedValue({ id: 'category_1', slug: 'test', name: 'Test' })
+    mockCategoryFindFirst.mockResolvedValue({ id: 'kb_category_1', slug: 'test', name: 'Test' })
     mockPrincipalFindFirst.mockResolvedValue(null)
 
-    const result = await unpublishArticle('article_1' as HelpCenterArticleId)
+    const result = await unpublishArticle('kb_article_1' as KbArticleId)
     expect(result).toBeDefined()
     expect(updateSetCalls.length).toBeGreaterThan(0)
   })
@@ -443,7 +445,7 @@ describe('unpublishArticle', () => {
 
 describe('deleteArticle', () => {
   it('soft deletes the article', async () => {
-    const result = await deleteArticle('article_1' as HelpCenterArticleId)
+    const result = await deleteArticle('kb_article_1' as KbArticleId)
     expect(result).toBeUndefined()
   })
 
@@ -455,7 +457,7 @@ describe('deleteArticle', () => {
     emptyChain.returning = vi.fn().mockResolvedValue([])
     vi.mocked(db.update).mockReturnValueOnce(emptyChain as never)
 
-    await expect(deleteArticle('article_missing' as HelpCenterArticleId)).rejects.toMatchObject({
+    await expect(deleteArticle('kb_article_missing' as KbArticleId)).rejects.toMatchObject({
       code: 'ARTICLE_NOT_FOUND',
     })
   })
@@ -471,14 +473,14 @@ describe('createArticle with position and description', () => {
     })
     articleInsertChain.returning = vi.fn().mockResolvedValue([
       {
-        id: 'article_new1' as HelpCenterArticleId,
+        id: 'kb_article_new1' as KbArticleId,
         slug: 'how-to-start',
         title: 'How to Start',
         description: 'A short intro',
         position: 5,
         content: 'Some content',
         contentJson: { type: 'doc', content: [] },
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: 'principal_1',
         publishedAt: null,
         viewCount: 0,
@@ -491,7 +493,7 @@ describe('createArticle with position and description', () => {
     vi.mocked(db.insert).mockReturnValueOnce(articleInsertChain as never)
 
     mockCategoryFindFirst.mockResolvedValue({
-      id: 'category_1',
+      id: 'kb_category_1',
       slug: 'getting-started',
       name: 'Getting Started',
     })
@@ -504,7 +506,7 @@ describe('createArticle with position and description', () => {
 
     const result = await createArticle(
       {
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         title: 'How to Start',
         content: 'Some content',
         position: 5,
@@ -528,7 +530,7 @@ describe('updateArticle authorId validation', () => {
       type: 'user',
     })
     await expect(
-      updateArticle('article_1' as HelpCenterArticleId, {}, 'principal_portal' as PrincipalId)
+      updateArticle('kb_article_1' as KbArticleId, {}, 'principal_portal' as PrincipalId)
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
   })
 
@@ -539,12 +541,15 @@ describe('updateArticle authorId validation', () => {
       type: 'service',
     })
     await expect(
-      updateArticle('article_1' as HelpCenterArticleId, {}, 'principal_svc' as PrincipalId)
+      updateArticle('kb_article_1' as KbArticleId, {}, 'principal_svc' as PrincipalId)
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
   })
 
   it('allows re-asserting a former-member as author when they already own the article', async () => {
-    mockArticleFindFirst.mockResolvedValueOnce({ id: 'article_1', principalId: 'principal_former' })
+    mockArticleFindFirst.mockResolvedValueOnce({
+      id: 'kb_article_1',
+      principalId: 'principal_former',
+    })
     mockPrincipalFindFirst.mockResolvedValueOnce({
       id: 'principal_former',
       role: 'user',
@@ -557,12 +562,12 @@ describe('updateArticle authorId validation', () => {
     chain.where = vi.fn(() => chain)
     chain.returning = vi.fn().mockResolvedValue([
       {
-        id: 'article_1' as HelpCenterArticleId,
+        id: 'kb_article_1' as KbArticleId,
         slug: 'test',
         title: 'Test',
         content: 'Content',
         contentJson: null,
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: 'principal_former',
         publishedAt: null,
         viewCount: 0,
@@ -573,7 +578,7 @@ describe('updateArticle authorId validation', () => {
       },
     ])
     vi.mocked(db.update).mockReturnValueOnce(chain as never)
-    mockCategoryFindFirst.mockResolvedValue({ id: 'category_1', slug: 'cat', name: 'Cat' })
+    mockCategoryFindFirst.mockResolvedValue({ id: 'kb_category_1', slug: 'cat', name: 'Cat' })
     mockPrincipalFindFirst.mockResolvedValueOnce({
       id: 'principal_former',
       displayName: 'Jane',
@@ -581,7 +586,7 @@ describe('updateArticle authorId validation', () => {
     })
 
     await expect(
-      updateArticle('article_1' as HelpCenterArticleId, {}, 'principal_former' as PrincipalId)
+      updateArticle('kb_article_1' as KbArticleId, {}, 'principal_former' as PrincipalId)
     ).resolves.toBeDefined()
   })
 
@@ -598,12 +603,12 @@ describe('updateArticle authorId validation', () => {
     chain.where = vi.fn(() => chain)
     chain.returning = vi.fn().mockResolvedValue([
       {
-        id: 'article_1' as HelpCenterArticleId,
+        id: 'kb_article_1' as KbArticleId,
         slug: 'test',
         title: 'Test',
         content: 'Content',
         contentJson: null,
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: 'principal_member',
         publishedAt: null,
         viewCount: 0,
@@ -614,7 +619,7 @@ describe('updateArticle authorId validation', () => {
       },
     ])
     vi.mocked(db.update).mockReturnValueOnce(chain as never)
-    mockCategoryFindFirst.mockResolvedValue({ id: 'category_1', slug: 'cat', name: 'Cat' })
+    mockCategoryFindFirst.mockResolvedValue({ id: 'kb_category_1', slug: 'cat', name: 'Cat' })
     mockPrincipalFindFirst.mockResolvedValueOnce({
       id: 'principal_member',
       displayName: 'Jane',
@@ -622,7 +627,7 @@ describe('updateArticle authorId validation', () => {
     })
 
     await expect(
-      updateArticle('article_1' as HelpCenterArticleId, {}, 'principal_member' as PrincipalId)
+      updateArticle('kb_article_1' as KbArticleId, {}, 'principal_member' as PrincipalId)
     ).resolves.toBeDefined()
   })
 })
@@ -641,14 +646,14 @@ describe('updateArticle with position and description', () => {
     })
     articleUpdateChain.returning = vi.fn().mockResolvedValue([
       {
-        id: 'article_1' as HelpCenterArticleId,
+        id: 'kb_article_1' as KbArticleId,
         slug: 'test',
         title: 'Test',
         description: 'Updated desc',
         position: 3,
         content: 'Content',
         contentJson: null,
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: 'principal_1',
         publishedAt: null,
         viewCount: 0,
@@ -660,10 +665,10 @@ describe('updateArticle with position and description', () => {
     ])
     vi.mocked(db.update).mockReturnValueOnce(articleUpdateChain as never)
 
-    mockCategoryFindFirst.mockResolvedValue({ id: 'category_1', slug: 'test', name: 'Test' })
+    mockCategoryFindFirst.mockResolvedValue({ id: 'kb_category_1', slug: 'test', name: 'Test' })
     mockPrincipalFindFirst.mockResolvedValue(null)
 
-    await updateArticle('article_1' as HelpCenterArticleId, {
+    await updateArticle('kb_article_1' as KbArticleId, {
       position: 3,
       description: 'Updated desc',
     })
@@ -679,28 +684,20 @@ describe('recordArticleFeedback', () => {
   it('inserts new feedback when no existing feedback', async () => {
     mockFeedbackFindFirst.mockResolvedValue(null)
 
-    await recordArticleFeedback(
-      'article_1' as HelpCenterArticleId,
-      true,
-      'principal_1' as PrincipalId
-    )
+    await recordArticleFeedback('kb_article_1' as KbArticleId, true, 'principal_1' as PrincipalId)
 
     expect(insertValuesCalls.length).toBeGreaterThan(0)
   })
 
   it('returns early when feedback is unchanged', async () => {
     mockFeedbackFindFirst.mockResolvedValue({
-      id: 'article_feedback_1',
-      articleId: 'article_1',
+      id: 'kb_article_feedback_1',
+      articleId: 'kb_article_1',
       principalId: 'principal_1',
       helpful: true,
     })
 
-    await recordArticleFeedback(
-      'article_1' as HelpCenterArticleId,
-      true,
-      'principal_1' as PrincipalId
-    )
+    await recordArticleFeedback('kb_article_1' as KbArticleId, true, 'principal_1' as PrincipalId)
 
     expect(insertValuesCalls).toHaveLength(0)
   })
@@ -716,12 +713,12 @@ describe('restoreArticle', () => {
     chain.where = vi.fn().mockReturnValue(chain)
     chain.returning = vi.fn().mockResolvedValue([
       {
-        id: 'article_1' as HelpCenterArticleId,
+        id: 'kb_article_1' as KbArticleId,
         slug: 'how-to-start',
         title: 'How to Start',
         content: 'Some content',
         contentJson: null,
-        categoryId: 'category_1',
+        categoryId: 'kb_category_1',
         principalId: 'principal_1',
         publishedAt: null,
         viewCount: 0,
@@ -738,12 +735,12 @@ describe('restoreArticle', () => {
   it('restores a deleted article within the 30-day window', async () => {
     const recentDeletedAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)
     mockArticleFindFirst.mockResolvedValue({
-      id: 'article_1' as HelpCenterArticleId,
+      id: 'kb_article_1' as KbArticleId,
       slug: 'how-to-start',
       title: 'How to Start',
       content: 'Some content',
       contentJson: null,
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       principalId: 'principal_1',
       publishedAt: null,
       viewCount: 0,
@@ -759,14 +756,14 @@ describe('restoreArticle', () => {
     vi.mocked(db.update).mockReturnValueOnce(makeRestoredArticleChain(setCallsCapture) as never)
 
     mockCategoryFindFirst.mockResolvedValue({
-      id: 'category_1',
+      id: 'kb_category_1',
       slug: 'getting-started',
       name: 'Getting Started',
     })
     mockPrincipalFindFirst.mockResolvedValue(null)
 
-    const result = await restoreArticle('article_1' as HelpCenterArticleId)
-    expect(result.id).toBe('article_1')
+    const result = await restoreArticle('kb_article_1' as KbArticleId)
+    expect(result.id).toBe('kb_article_1')
     expect(result.deletedAt).toBeNull()
     expect(setCallsCapture.length).toBeGreaterThan(0)
     const setArgs = setCallsCapture[0][0] as Record<string, unknown>
@@ -775,19 +772,19 @@ describe('restoreArticle', () => {
 
   it('throws NotFoundError for a non-existent article', async () => {
     mockArticleFindFirst.mockResolvedValue(null)
-    await expect(restoreArticle('article_missing' as HelpCenterArticleId)).rejects.toMatchObject({
+    await expect(restoreArticle('kb_article_missing' as KbArticleId)).rejects.toMatchObject({
       code: 'ARTICLE_NOT_FOUND',
     })
   })
 
   it('throws ValidationError when article is not deleted', async () => {
     mockArticleFindFirst.mockResolvedValue({
-      id: 'article_1' as HelpCenterArticleId,
+      id: 'kb_article_1' as KbArticleId,
       slug: 'live',
       title: 'Live Article',
       content: 'Content',
       contentJson: null,
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       principalId: 'principal_1',
       publishedAt: null,
       viewCount: 0,
@@ -797,7 +794,7 @@ describe('restoreArticle', () => {
       updatedAt: new Date('2024-01-01'),
       deletedAt: null,
     })
-    await expect(restoreArticle('article_1' as HelpCenterArticleId)).rejects.toMatchObject({
+    await expect(restoreArticle('kb_article_1' as KbArticleId)).rejects.toMatchObject({
       code: 'VALIDATION_ERROR',
     })
   })
@@ -805,12 +802,12 @@ describe('restoreArticle', () => {
   it('throws ValidationError when article is outside the 30-day restore window', async () => {
     const oldDeletedAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000)
     mockArticleFindFirst.mockResolvedValue({
-      id: 'article_1' as HelpCenterArticleId,
+      id: 'kb_article_1' as KbArticleId,
       slug: 'old',
       title: 'Old Article',
       content: 'Content',
       contentJson: null,
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       principalId: 'principal_1',
       publishedAt: null,
       viewCount: 0,
@@ -820,7 +817,7 @@ describe('restoreArticle', () => {
       updatedAt: new Date('2024-01-01'),
       deletedAt: oldDeletedAt,
     })
-    await expect(restoreArticle('article_1' as HelpCenterArticleId)).rejects.toMatchObject({
+    await expect(restoreArticle('kb_article_1' as KbArticleId)).rejects.toMatchObject({
       code: 'RESTORE_EXPIRED',
     })
   })

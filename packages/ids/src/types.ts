@@ -162,14 +162,14 @@ export type PostMergeSuggestionId = TypeId<'post_merge_sug'>
 // Help Center Entity IDs
 // ============================================
 
-/** Help center category ID - e.g., category_01h455vb4pex5vsknk084sn02q */
-export type HelpCenterCategoryId = TypeId<'category'>
+/** Help center category ID - e.g., kb_category_01h455vb4pex5vsknk084sn02q */
+export type KbCategoryId = TypeId<'kb_category'>
 
-/** Help center article ID - e.g., article_01h455vb4pex5vsknk084sn02q */
-export type HelpCenterArticleId = TypeId<'article'>
+/** Help center article ID - e.g., kb_article_01h455vb4pex5vsknk084sn02q */
+export type KbArticleId = TypeId<'kb_article'>
 
-/** Article feedback ID - e.g., article_feedback_01h455vb4pex5vsknk084sn02q */
-export type HelpCenterFeedbackId = TypeId<'article_feedback'>
+/** Article feedback ID - e.g., kb_article_feedback_01h455vb4pex5vsknk084sn02q */
+export type KbArticleFeedbackId = TypeId<'kb_article_feedback'>
 
 // ============================================
 // Auth Entity IDs (Better-auth)
@@ -306,9 +306,9 @@ export interface EntityIdMap {
   webhook: WebhookId
   subscription: SubscriptionId
   invoice: InvoiceId
-  category: HelpCenterCategoryId
-  article: HelpCenterArticleId
-  article_feedback: HelpCenterFeedbackId
+  kb_category: KbCategoryId
+  kb_article: KbArticleId
+  kb_article_feedback: KbArticleFeedbackId
 }
 
 /**

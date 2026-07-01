@@ -34,7 +34,7 @@ import { useInfiniteScroll } from '@/lib/client/hooks/use-infinite-scroll'
 import { AdminListHeader } from '@/components/admin/admin-list-header'
 import { useDebouncedSearch } from '@/lib/client/hooks/use-debounced-search'
 import { TimeAgo } from '@/components/ui/time-ago'
-import type { HelpCenterArticleId } from '@quackback/ids'
+import type { KbArticleId } from '@quackback/ids'
 
 const SORT_OPTIONS = [
   { value: 'newest', label: 'Newest' },
@@ -60,8 +60,8 @@ function HelpCenterListSkeleton() {
 }
 
 interface HelpCenterFinderProps {
-  onEditArticle: (id: HelpCenterArticleId) => void
-  onDeleteArticle: (id: HelpCenterArticleId) => void
+  onEditArticle: (id: KbArticleId) => void
+  onDeleteArticle: (id: KbArticleId) => void
   categoryActions: CategoryActions
 }
 
@@ -232,7 +232,7 @@ function LiveHelpCenterFinder({
                   style={{ animationDelay: `${Math.min(index * 30, 150)}ms` }}
                 >
                   <HelpCenterListItem
-                    id={article.id as HelpCenterArticleId}
+                    id={article.id as KbArticleId}
                     title={article.title}
                     description={article.description}
                     content={article.content}
@@ -368,7 +368,7 @@ function DeletedItemsView() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => restoreArticleMutation.mutate(article.id as HelpCenterArticleId)}
+                  onClick={() => restoreArticleMutation.mutate(article.id as KbArticleId)}
                   disabled={restoreArticleMutation.isPending}
                 >
                   <ArrowUturnLeftIcon className="h-3.5 w-3.5 mr-1" />

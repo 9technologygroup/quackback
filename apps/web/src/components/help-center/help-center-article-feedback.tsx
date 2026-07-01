@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { FormattedMessage } from 'react-intl'
 import { recordArticleFeedbackFn } from '@/lib/server/functions/help-center'
-import type { HelpCenterArticleId } from '@quackback/ids'
+import type { KbArticleId } from '@quackback/ids'
 
 interface HelpCenterArticleFeedbackProps {
   articleId: string
@@ -24,7 +24,7 @@ export function HelpCenterArticleFeedback({
     setIsPending(true)
     try {
       await recordArticleFeedbackFn({
-        data: { articleId: articleId as HelpCenterArticleId, helpful },
+        data: { articleId: articleId as KbArticleId, helpful },
       })
       setFeedback(newFeedback)
     } catch {

@@ -5,13 +5,13 @@ import { FilterList } from '@/components/admin/feedback/single-select-filter-lis
 import { HelpCenterCategoryTree, type CategoryActions } from './help-center-category-tree'
 import { helpCenterQueries } from '@/lib/client/queries/help-center'
 import type { HelpCenterStatusFilter } from './use-help-center-filters'
-import type { HelpCenterCategoryId } from '@quackback/ids'
+import type { KbCategoryId } from '@quackback/ids'
 
 interface HelpCenterFiltersProps {
   status: HelpCenterStatusFilter
   onStatusChange: (status: HelpCenterStatusFilter) => void
   selectedCategoryId: string | undefined
-  onSelectCategory: (id: HelpCenterCategoryId | null) => void
+  onSelectCategory: (id: KbCategoryId | null) => void
   categoryActions: CategoryActions
   showDeleted?: boolean
   onShowDeletedChange?: (showDeleted: boolean | undefined) => void

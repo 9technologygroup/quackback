@@ -109,8 +109,8 @@ import type {
   RoadmapId,
   FeedbackSuggestionId,
   PostMergeSuggestionId,
-  HelpCenterArticleId,
-  HelpCenterCategoryId,
+  KbArticleId,
+  KbCategoryId,
   ConversationId,
   SegmentId,
 } from '@quackback/ids'
@@ -804,7 +804,7 @@ Examples:
 - Filter by board and status: search({ boardId: "board_01abc...", status: "open" })
 - Search changelogs: search({ entity: "changelogs", status: "published" })
 - Search articles: search({ entity: "articles", query: "getting started" })
-- Filter articles by category: search({ entity: "articles", categoryId: "category_01abc..." })
+- Filter articles by category: search({ entity: "articles", categoryId: "kb_category_01abc..." })
 - Sort by votes: search({ sort: "votes", limit: 10 })`,
     searchSchema,
     READ_ONLY,
@@ -855,8 +855,8 @@ Examples:
 Examples:
 - Get a post: get_details({ id: "post_01abc..." })
 - Get a changelog: get_details({ id: "changelog_01xyz..." })
-- Get an article: get_details({ id: "article_01abc..." })
-- Get a category: get_details({ id: "category_01abc..." })`,
+- Get an article: get_details({ id: "kb_article_01abc..." })
+- Get a category: get_details({ id: "kb_category_01abc..." })`,
     getDetailsSchema,
     READ_ONLY,
     async (args: GetDetailsArgs): Promise<CallToolResult> => {
@@ -867,7 +867,7 @@ Examples:
         } catch {
           return errorResult(
             new Error(
-              `Invalid TypeID format: "${args.id}". Expected format: prefix_base32suffix (e.g., post_01abc..., article_01abc...)`
+              `Invalid TypeID format: "${args.id}". Expected format: prefix_base32suffix (e.g., post_01abc..., kb_article_01abc...)`
             )
           )
         }
@@ -892,7 +892,7 @@ Examples:
             if (roleDenied) return roleDenied
             return await getChangelogDetails(args.id as ChangelogId)
           }
-          case 'article': {
+          case 'kb_article': {
             const flagDenied = await requireHelpCenter()
             if (flagDenied) return flagDenied
             const denied = requireScope(auth, 'read:article')
@@ -904,9 +904,9 @@ Examples:
             // unauthenticated path for the published slice.
             const roleDenied = requireTeamRole(auth)
             if (roleDenied) return roleDenied
-            return await getArticleDetails(args.id as HelpCenterArticleId)
+            return await getArticleDetails(args.id as KbArticleId)
           }
-          case 'category': {
+          case 'kb_category': {
             const flagDenied = await requireHelpCenter()
             if (flagDenied) return flagDenied
             const denied = requireScope(auth, 'read:article')
@@ -915,12 +915,12 @@ Examples:
             // symmetric with the article path.
             const roleDenied = requireTeamRole(auth)
             if (roleDenied) return roleDenied
-            return await getCategoryDetails(args.id as HelpCenterCategoryId)
+            return await getCategoryDetails(args.id as KbCategoryId)
           }
           default:
             return errorResult(
               new Error(
-                `Unsupported entity type: "${prefix}". Supported: post, changelog, article, category`
+                `Unsupported entity type: "${prefix}". Supported: post, changelog, kb_article, kb_category`
               )
             )
         }
@@ -1848,8 +1848,8 @@ Examples:
     `Create a new help center article (draft). Use update_article to publish it.
 
 Examples:
-- create_article({ categoryId: "category_01abc...", title: "Getting Started", content: "Welcome to..." })
-- With custom slug: create_article({ categoryId: "category_01abc...", title: "FAQ", content: "...", slug: "frequently-asked-questions" })${CONTENT_FORMAT_BLOCK}`,
+- create_article({ categoryId: "kb_category_01abc...", title: "Getting Started", content: "Welcome to..." })
+- With custom slug: create_article({ categoryId: "kb_category_01abc...", title: "FAQ", content: "...", slug: "frequently-asked-questions" })${CONTENT_FORMAT_BLOCK}`,
     createHelpCenterArticleSchema,
     WRITE,
     async (args: CreateHelpCenterArticleArgs): Promise<CallToolResult> => {
@@ -1886,9 +1886,9 @@ Examples:
     `Update a help center article. All fields optional — only provided fields change. Set publishedAt to any ISO datetime string to publish immediately, or null to unpublish.
 
 Examples:
-- Update title: update_article({ articleId: "article_01abc...", title: "New Title" })
-- Publish: update_article({ articleId: "article_01abc...", publishedAt: "2026-04-08T00:00:00Z" })
-- Unpublish: update_article({ articleId: "article_01abc...", publishedAt: null })${CONTENT_FORMAT_BLOCK}`,
+- Update title: update_article({ articleId: "kb_article_01abc...", title: "New Title" })
+- Publish: update_article({ articleId: "kb_article_01abc...", publishedAt: "2026-04-08T00:00:00Z" })
+- Unpublish: update_article({ articleId: "kb_article_01abc...", publishedAt: null })${CONTENT_FORMAT_BLOCK}`,
     updateHelpCenterArticleSchema,
     WRITE,
     async (args: UpdateHelpCenterArticleArgs): Promise<CallToolResult> => {
@@ -1910,7 +1910,7 @@ Examples:
         let article = null
         if (hasUpdates) {
           article = await updateArticle(
-            args.articleId as HelpCenterArticleId,
+            args.articleId as KbArticleId,
             updateData,
             authorPrincipalId
           )
@@ -1919,12 +1919,12 @@ Examples:
         if (args.publishedAt !== undefined) {
           article =
             args.publishedAt === null
-              ? await unpublishArticle(args.articleId as HelpCenterArticleId)
-              : await publishArticle(args.articleId as HelpCenterArticleId)
+              ? await unpublishArticle(args.articleId as KbArticleId)
+              : await publishArticle(args.articleId as KbArticleId)
         }
 
         if (!article) {
-          article = await getArticleById(args.articleId as HelpCenterArticleId)
+          article = await getArticleById(args.articleId as KbArticleId)
         }
 
         return articleResult(article)
@@ -1940,14 +1940,14 @@ Examples:
     `Soft-delete a help center article.
 
 Example:
-- delete_article({ articleId: "article_01abc..." })`,
+- delete_article({ articleId: "kb_article_01abc..." })`,
     deleteHelpCenterArticleSchema,
     DESTRUCTIVE,
     async (args: DeleteHelpCenterArticleArgs): Promise<CallToolResult> => {
       const denied = await requireHelpCenterWrite(auth)
       if (denied) return denied
       try {
-        await deleteArticle(args.articleId as HelpCenterArticleId)
+        await deleteArticle(args.articleId as KbArticleId)
         return jsonResult({ deleted: true, id: args.articleId })
       } catch (err) {
         return errorResult(err)
@@ -1962,8 +1962,8 @@ Example:
 
 Examples:
 - Create: manage_category({ action: "create", name: "Getting Started", icon: "🚀" })
-- Update: manage_category({ action: "update", categoryId: "category_01abc...", name: "New Name" })
-- Delete: manage_category({ action: "delete", categoryId: "category_01abc..." })`,
+- Update: manage_category({ action: "update", categoryId: "kb_category_01abc...", name: "New Name" })
+- Delete: manage_category({ action: "delete", categoryId: "kb_category_01abc..." })`,
     manageCategorySchema,
     DESTRUCTIVE,
     async (args: ManageCategoryArgs): Promise<CallToolResult> => {
@@ -1990,17 +1990,14 @@ Examples:
               return errorResult(new Error('categoryId is required when action is "update"'))
             }
             const { action: _, categoryId: __, ...updateData } = args
-            const category = await updateCategory(
-              args.categoryId as HelpCenterCategoryId,
-              updateData
-            )
+            const category = await updateCategory(args.categoryId as KbCategoryId, updateData)
             return categoryResult(category)
           }
           case 'delete': {
             if (!args.categoryId) {
               return errorResult(new Error('categoryId is required when action is "delete"'))
             }
-            await deleteCategory(args.categoryId as HelpCenterCategoryId)
+            await deleteCategory(args.categoryId as KbCategoryId)
             return jsonResult({ deleted: true, id: args.categoryId })
           }
         }
@@ -2547,12 +2544,12 @@ async function getChangelogDetails(changelogId: ChangelogId): Promise<CallToolRe
   })
 }
 
-async function getArticleDetails(articleId: HelpCenterArticleId): Promise<CallToolResult> {
+async function getArticleDetails(articleId: KbArticleId): Promise<CallToolResult> {
   const article = await getArticleById(articleId)
   return articleResult(article)
 }
 
-async function getCategoryDetails(categoryId: HelpCenterCategoryId): Promise<CallToolResult> {
+async function getCategoryDetails(categoryId: KbCategoryId): Promise<CallToolResult> {
   const category = await getCategoryById(categoryId)
   return categoryResult(category)
 }

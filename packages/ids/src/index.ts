@@ -106,9 +106,9 @@ export type {
   ExternalUserMappingId,
   PostMergeSuggestionId,
   // Help center entities
-  HelpCenterCategoryId,
-  HelpCenterArticleId,
-  HelpCenterFeedbackId,
+  KbCategoryId,
+  KbArticleId,
+  KbArticleFeedbackId,
   // Auth entities
   WorkspaceId,
   UserId,

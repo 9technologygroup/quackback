@@ -3,7 +3,7 @@
  */
 
 import { createServerFn } from '@tanstack/react-start'
-import type { HelpCenterCategoryId, HelpCenterArticleId, PrincipalId } from '@quackback/ids'
+import type { KbCategoryId, KbArticleId, PrincipalId } from '@quackback/ids'
 import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
 import { requireAuth, getOptionalAuth } from './auth-helpers'
 import { PERMISSIONS } from '@/lib/shared/permissions'
@@ -105,7 +105,7 @@ export const getCategoryFn = createServerFn({ method: 'GET' })
   .validator(getCategorySchema)
   .handler(async ({ data }) => {
     await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-    const category = await getCategoryById(data.id as HelpCenterCategoryId)
+    const category = await getCategoryById(data.id as KbCategoryId)
     return serializeCategory(category)
   })
 
@@ -133,7 +133,7 @@ export const updateCategoryFn = createServerFn({ method: 'POST' })
   .validator(updateCategorySchema)
   .handler(async ({ data }) => {
     await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-    const category = await updateCategory(data.id as HelpCenterCategoryId, data)
+    const category = await updateCategory(data.id as KbCategoryId, data)
     return serializeCategory(category)
   })
 
@@ -141,7 +141,7 @@ export const deleteCategoryFn = createServerFn({ method: 'POST' })
   .validator(deleteCategorySchema)
   .handler(async ({ data }) => {
     await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-    await deleteCategory(data.id as HelpCenterCategoryId)
+    await deleteCategory(data.id as KbCategoryId)
     return { success: true }
   })
 
@@ -166,7 +166,7 @@ export const restoreCategoryFn = createServerFn({ method: 'POST' })
     log.debug({ category_id: data.id }, 'restore category')
     try {
       await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-      const category = await restoreCategory(data.id as HelpCenterCategoryId)
+      const category = await restoreCategory(data.id as KbCategoryId)
       log.info({ category_id: category.id }, 'category restored')
       return serializeCategory(category)
     } catch (error) {
@@ -181,7 +181,7 @@ export const restoreArticleFn = createServerFn({ method: 'POST' })
     log.debug({ article_id: data.id }, 'restore article')
     try {
       await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-      const article = await restoreArticle(data.id as HelpCenterArticleId)
+      const article = await restoreArticle(data.id as KbArticleId)
       log.info({ article_id: article.id }, 'article restored')
       return serializeArticle(article)
     } catch (error) {
@@ -220,7 +220,7 @@ export const getArticleFn = createServerFn({ method: 'GET' })
   .validator(getArticleSchema)
   .handler(async ({ data }) => {
     await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-    const article = await getArticleById(data.id as HelpCenterArticleId)
+    const article = await getArticleById(data.id as KbArticleId)
     return serializeArticle(article)
   })
 
@@ -250,7 +250,7 @@ export const updateArticleFn = createServerFn({ method: 'POST' })
   .validator(updateArticleSchema)
   .handler(async ({ data }) => {
     await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-    const article = await updateArticle(data.id as HelpCenterArticleId, {
+    const article = await updateArticle(data.id as KbArticleId, {
       ...data,
       contentJson: data.contentJson ? sanitizeTiptapContent(data.contentJson) : data.contentJson,
     })
@@ -261,7 +261,7 @@ export const publishArticleFn = createServerFn({ method: 'POST' })
   .validator(publishArticleSchema)
   .handler(async ({ data }) => {
     await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-    const article = await publishArticle(data.id as HelpCenterArticleId)
+    const article = await publishArticle(data.id as KbArticleId)
     return serializeArticle(article)
   })
 
@@ -269,7 +269,7 @@ export const unpublishArticleFn = createServerFn({ method: 'POST' })
   .validator(unpublishArticleSchema)
   .handler(async ({ data }) => {
     await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-    const article = await unpublishArticle(data.id as HelpCenterArticleId)
+    const article = await unpublishArticle(data.id as KbArticleId)
     return serializeArticle(article)
   })
 
@@ -278,7 +278,7 @@ export const deleteArticleFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     // Soft delete (deleteArticle sets deletedAt) — team OK.
     await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
-    await deleteArticle(data.id as HelpCenterArticleId)
+    await deleteArticle(data.id as KbArticleId)
     return { success: true }
   })
 
@@ -287,7 +287,7 @@ export const recordArticleFeedbackFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const auth = await getOptionalAuth()
     await recordArticleFeedback(
-      data.articleId as HelpCenterArticleId,
+      data.articleId as KbArticleId,
       data.helpful,
       (auth?.principal?.id as PrincipalId) ?? null
     )

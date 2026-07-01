@@ -37,11 +37,11 @@ import {
 import { helpCenterQueries } from '@/lib/client/queries/help-center'
 import { getInitialContentJson } from '@/components/admin/feedback/detail/post-utils'
 import { cn } from '@/lib/shared/utils'
-import type { HelpCenterArticleId } from '@quackback/ids'
+import type { KbArticleId } from '@quackback/ids'
 import type { JSONContent } from '@tiptap/react'
 
 interface HelpCenterArticleEditorProps {
-  articleId: HelpCenterArticleId
+  articleId: KbArticleId
 }
 
 /**

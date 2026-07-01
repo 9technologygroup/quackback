@@ -3,7 +3,7 @@
  */
 
 import type { TiptapContent } from '@/lib/server/db'
-import type { HelpCenterCategoryId, HelpCenterArticleId, PrincipalId } from '@quackback/ids'
+import type { KbCategoryId, KbArticleId, PrincipalId } from '@quackback/ids'
 
 // Re-export input types from shared schemas (single source of truth)
 export type {
@@ -19,8 +19,8 @@ export type {
 // ============================================================================
 
 export interface HelpCenterCategory {
-  id: HelpCenterCategoryId
-  parentId: HelpCenterCategoryId | null
+  id: KbCategoryId
+  parentId: KbCategoryId | null
   slug: string
   name: string
   description: string | null
@@ -48,8 +48,8 @@ export interface HelpCenterCategoryWithCount extends HelpCenterCategory {
 // ============================================================================
 
 export interface HelpCenterArticle {
-  id: HelpCenterArticleId
-  categoryId: HelpCenterCategoryId
+  id: KbArticleId
+  categoryId: KbCategoryId
   slug: string
   title: string
   description: string | null
@@ -68,7 +68,7 @@ export interface HelpCenterArticle {
 
 export interface HelpCenterArticleWithCategory extends HelpCenterArticle {
   category: {
-    id: HelpCenterCategoryId
+    id: KbCategoryId
     slug: string
     name: string
   }

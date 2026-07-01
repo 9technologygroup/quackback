@@ -10,7 +10,7 @@ import {
   sql,
   inArray,
 } from '@/lib/server/db'
-import type { HelpCenterCategoryId } from '@quackback/ids'
+import type { KbCategoryId } from '@quackback/ids'
 import { NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { slugify } from '@/lib/shared/utils'
 import { uniqueHelpCenterSlug } from './help-center.slug'
@@ -149,15 +149,15 @@ export async function listCategories(
   const flat = categories.map((c) => ({ id: c.id, parentId: c.parentId ?? null }))
   const recursiveTotal = computeRecursiveCounts(
     flat,
-    (id) => countMap.get(id as HelpCenterCategoryId)?.total ?? 0
+    (id) => countMap.get(id as KbCategoryId)?.total ?? 0
   )
   const recursivePublished = computeRecursiveCounts(
     flat,
-    (id) => countMap.get(id as HelpCenterCategoryId)?.published ?? 0
+    (id) => countMap.get(id as KbCategoryId)?.published ?? 0
   )
 
   return categories.map((cat) => {
-    const row = countMap.get(cat.id as HelpCenterCategoryId)
+    const row = countMap.get(cat.id as KbCategoryId)
     return {
       ...cat,
       articleCount: row?.total ?? 0,
@@ -175,7 +175,7 @@ export async function listPublicCategories(): Promise<HelpCenterCategoryWithCoun
     .map((cat) => ({ ...cat, articleCount: cat.recursivePublishedArticleCount }))
 }
 
-export async function getCategoryById(id: HelpCenterCategoryId): Promise<HelpCenterCategory> {
+export async function getCategoryById(id: KbCategoryId): Promise<HelpCenterCategory> {
   const category = await db.query.helpCenterCategories.findFirst({
     where: and(eq(helpCenterCategories.id, id), isNull(helpCenterCategories.deletedAt)),
   })
@@ -255,7 +255,7 @@ export async function createCategory(input: CreateCategoryInput): Promise<HelpCe
       description: input.description?.trim() || null,
       isPublic: input.isPublic ?? true,
       position: input.position ?? 0,
-      parentId: (input.parentId as HelpCenterCategoryId) ?? null,
+      parentId: (input.parentId as KbCategoryId) ?? null,
       icon: input.icon ?? null,
     })
     .returning()
@@ -264,7 +264,7 @@ export async function createCategory(input: CreateCategoryInput): Promise<HelpCe
 }
 
 export async function updateCategory(
-  id: HelpCenterCategoryId,
+  id: KbCategoryId,
   input: UpdateCategoryInput
 ): Promise<HelpCenterCategory> {
   const updateData: Partial<typeof helpCenterCategories.$inferInsert> = { updatedAt: new Date() }
@@ -291,7 +291,7 @@ export async function updateCategory(
       movingId: id,
       newParentId: (input.parentId as string | null) ?? null,
     })
-    updateData.parentId = (input.parentId as HelpCenterCategoryId) ?? null
+    updateData.parentId = (input.parentId as KbCategoryId) ?? null
   }
 
   const [updated] = await db
@@ -304,7 +304,7 @@ export async function updateCategory(
   return updated
 }
 
-export async function deleteCategory(id: HelpCenterCategoryId): Promise<void> {
+export async function deleteCategory(id: KbCategoryId): Promise<void> {
   const flat = await db.query.helpCenterCategories.findMany({
     where: isNull(helpCenterCategories.deletedAt),
     columns: { id: true, parentId: true },
@@ -317,7 +317,7 @@ export async function deleteCategory(id: HelpCenterCategoryId): Promise<void> {
     flat as Array<{ id: string; parentId: string | null }>,
     id
   )
-  const ids = [...toDelete] as HelpCenterCategoryId[]
+  const ids = [...toDelete] as KbCategoryId[]
   const now = new Date()
 
   await db.transaction(async (tx) => {
@@ -332,7 +332,7 @@ export async function deleteCategory(id: HelpCenterCategoryId): Promise<void> {
   })
 }
 
-export async function restoreCategory(id: HelpCenterCategoryId): Promise<HelpCenterCategory> {
+export async function restoreCategory(id: KbCategoryId): Promise<HelpCenterCategory> {
   log.debug({ category_id: id }, 'restore category')
   const category = await db.query.helpCenterCategories.findFirst({
     where: eq(helpCenterCategories.id, id),
