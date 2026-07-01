@@ -110,7 +110,7 @@ export const Route = createFileRoute('/admin/inbox')({
     // Only accept a well-formed chat-tag id — a malformed `?tag=` would reach a
     // uuid-backed query and 500 the conversation list.
     tag:
-      typeof search.tag === 'string' && isValidTypeId(search.tag, 'chat_tag')
+      typeof search.tag === 'string' && isValidTypeId(search.tag, 'conversation_tag')
         ? search.tag
         : undefined,
     // Only accept a well-formed segment id — a malformed `?segment=` would reach

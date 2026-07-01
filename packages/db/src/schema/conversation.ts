@@ -149,7 +149,7 @@ export const conversationMessages = pgTable(
 export const conversationTags = pgTable(
   'conversation_tags',
   {
-    id: typeIdWithDefault('chat_tag')('id').primaryKey(),
+    id: typeIdWithDefault('conversation_tag')('id').primaryKey(),
     name: text('name').notNull().unique(),
     color: text('color').default('#6b7280').notNull(),
     description: text('description'),
@@ -170,7 +170,7 @@ export const conversationTagAssignments = pgTable(
     conversationId: typeIdColumn('conversation')('conversation_id')
       .notNull()
       .references(() => conversations.id, { onDelete: 'cascade' }),
-    conversationTagId: typeIdColumn('chat_tag')('conversation_tag_id')
+    conversationTagId: typeIdColumn('conversation_tag')('conversation_tag_id')
       .notNull()
       .references(() => conversationTags.id, { onDelete: 'cascade' }),
   },
