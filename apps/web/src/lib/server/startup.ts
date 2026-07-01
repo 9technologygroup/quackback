@@ -134,6 +134,11 @@ export function logStartupBanner(): void {
     .then(({ initAnonSweepWorker }) => initAnonSweepWorker())
     .catch((err) => log.error({ err }, 'failed to init anon-sweep worker'))
 
+  // Initialize page_views partition maintenance (daily; pre-create + retention drop)
+  import('./domains/analytics/partition-maintenance-queue')
+    .then(({ initPageViewPartitionWorker }) => initPageViewPartitionWorker())
+    .catch((err) => log.error({ err }, 'failed to init page-view partition worker'))
+
   // Periodic feedback maintenance (stuck-item recovery every 15min, suggestion expiry daily).
   // Runs under a cross-instance lock so only one replica executes per tick.
   Promise.all([

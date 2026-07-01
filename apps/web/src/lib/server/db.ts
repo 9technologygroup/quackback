@@ -265,6 +265,8 @@ export {
   visitorTopStats,
   VISITOR_SURFACES,
   VISITOR_TOP_DIMENSIONS,
+  ensurePageViewPartitions,
+  dropExpiredPageViewPartitions,
   // Schema tables - help center
   helpCenterCategories,
   helpCenterCategoriesRelations,
