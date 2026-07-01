@@ -145,7 +145,7 @@ export const Route = createFileRoute('/api/v1/posts/')({
           const boardId = parseTypeId<BoardId>(parsed.data.boardId, 'board', 'board ID')
           const statusId = parseOptionalTypeId<PostStatusId>(
             parsed.data.statusId,
-            'status',
+            'post_status',
             'status ID'
           )
           const tagIds = parseTypeIdArray<PostTagId>(parsed.data.tagIds, 'post_tag', 'tag IDs')

@@ -129,7 +129,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId')({
 
           const statusId = parseOptionalTypeId<PostStatusId>(
             parsed.data.statusId,
-            'status',
+            'post_status',
             'status ID'
           )
           const tagIds =

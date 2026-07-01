@@ -33,7 +33,7 @@ export const Route = createFileRoute('/api/v1/statuses/$statusId')({
         try {
           await withApiKeyAuth(request)
 
-          const statusId = parseTypeId<PostStatusId>(params.statusId, 'status', 'status ID')
+          const statusId = parseTypeId<PostStatusId>(params.statusId, 'post_status', 'status ID')
 
           const { getStatusById } = await import('@/lib/server/domains/statuses/status.service')
 
@@ -63,7 +63,7 @@ export const Route = createFileRoute('/api/v1/statuses/$statusId')({
         try {
           await withApiKeyAuth(request, { permission: PERMISSIONS.STATUS_MANAGE })
 
-          const statusId = parseTypeId<PostStatusId>(params.statusId, 'status', 'status ID')
+          const statusId = parseTypeId<PostStatusId>(params.statusId, 'post_status', 'status ID')
 
           const body = await request.json()
           const parsed = updateStatusSchema.safeParse(body)
@@ -107,7 +107,7 @@ export const Route = createFileRoute('/api/v1/statuses/$statusId')({
         try {
           await withApiKeyAuth(request, { permission: PERMISSIONS.STATUS_MANAGE })
 
-          const statusId = parseTypeId<PostStatusId>(params.statusId, 'status', 'status ID')
+          const statusId = parseTypeId<PostStatusId>(params.statusId, 'post_status', 'status ID')
 
           const { deleteStatus } = await import('@/lib/server/domains/statuses/status.service')
 
