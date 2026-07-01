@@ -23,7 +23,7 @@ export interface PinnedComment {
  * Reaction count with user's reaction state.
  * Re-exported from shared for convenience.
  */
-export type CommentReaction = CommentReactionCount
+export type PostCommentReaction = CommentReactionCount
 
 /**
  * Comment with nested replies and reactions.

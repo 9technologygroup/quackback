@@ -7,7 +7,7 @@
 import { useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { createCommentFn, addReactionFn, removeReactionFn } from '@/lib/server/functions/comments'
 import { inboxKeys } from '@/lib/client/hooks/use-inbox-query'
-import type { PostDetails, CommentReaction, CommentWithReplies } from '@/lib/shared/types'
+import type { PostDetails, PostCommentReaction, CommentWithReplies } from '@/lib/shared/types'
 import type { InboxPostListResult } from '@/lib/shared/db-types'
 import type { CommentId, PrincipalId, PostId } from '@quackback/ids'
 import { addReplyToTree, replaceOptimisticInTree } from '@/lib/client/utils/comment-tree-helpers'
@@ -25,7 +25,7 @@ interface ToggleReactionInput {
 }
 
 interface ToggleReactionResponse {
-  reactions: CommentReaction[]
+  reactions: PostCommentReaction[]
 }
 
 interface AddCommentInput {
@@ -74,7 +74,7 @@ function updateCommentsReaction(
   return comments.map((comment) => {
     if (comment.id === commentId) {
       const existingReaction = comment.reactions?.find((r) => r.emoji === emoji)
-      let newReactions: CommentReaction[]
+      let newReactions: PostCommentReaction[]
 
       if (existingReaction?.hasReacted) {
         newReactions = comment.reactions
@@ -106,7 +106,7 @@ function updateCommentsReaction(
 function updateCommentReactionsFromServer(
   comments: CommentWithReplies[],
   commentId: CommentId,
-  reactions: CommentReaction[]
+  reactions: PostCommentReaction[]
 ): CommentWithReplies[] {
   return comments.map((comment) => {
     if (comment.id === commentId) {

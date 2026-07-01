@@ -8,7 +8,7 @@ import type {
   postTagAssignments,
   votes,
   comments,
-  commentReactions,
+  postCommentReactions,
   postNotes,
 } from './schema/posts'
 import type { integrations } from './schema/integrations'
@@ -292,8 +292,8 @@ export type PostNote = InferSelectModel<typeof postNotes>
 export type NewPostNote = InferInsertModel<typeof postNotes>
 
 // Comment reaction types
-export type CommentReaction = InferSelectModel<typeof commentReactions>
-export type NewCommentReaction = InferInsertModel<typeof commentReactions>
+export type PostCommentReaction = InferSelectModel<typeof postCommentReactions>
+export type NewPostCommentReaction = InferInsertModel<typeof postCommentReactions>
 
 // Support-inbox conversation statuses — kept in sync with the conversations.status
 // column enum (schema.test.ts pins the match).
@@ -417,7 +417,7 @@ export type NewPrincipal = InferInsertModel<typeof principal>
 // Extended types for queries with relations
 export type CommentWithReplies = Comment & {
   replies: CommentWithReplies[]
-  reactions: CommentReaction[]
+  reactions: PostCommentReaction[]
 }
 
 export type PostWithDetails = Post & {

@@ -116,7 +116,7 @@ vi.mock('@/lib/server/db', async () => {
     boards: { id: 'id' },
     postStatuses: { id: 'id' },
     postActivity: {},
-    commentReactions: {},
+    postCommentReactions: {},
     commentEditHistory: { __name: 'commentEditHistory' },
   }
 })

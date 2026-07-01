@@ -145,7 +145,7 @@ export {
   // Schema tables - posts
   commentEditHistory,
   commentEditHistoryRelations,
-  commentReactions,
+  postCommentReactions,
   commentReactionsRelations,
   comments,
   commentsRelations,

@@ -9,7 +9,7 @@ import {
   postTagAssignments,
   postTags,
   comments,
-  commentReactions,
+  postCommentReactions,
   postStatuses,
   postRoadmaps,
   roadmaps,
@@ -220,7 +220,7 @@ export async function getPublicPostDetail(
         sct.color as sc_to_color
       FROM ${comments} c
       INNER JOIN ${principalTable} m ON c.principal_id = m.id
-      LEFT JOIN ${commentReactions} cr ON cr.comment_id = c.id
+      LEFT JOIN ${postCommentReactions} cr ON cr.comment_id = c.id
       LEFT JOIN ${postStatuses} scf ON scf.id = c.status_change_from_id
       LEFT JOIN ${postStatuses} sct ON sct.id = c.status_change_to_id
       WHERE c.post_id = ${postUuid}::uuid
@@ -282,7 +282,7 @@ export async function getPublicPostDetail(
         sct.name as sc_to_name, sct.color as sc_to_color
       FROM ${comments} c
       INNER JOIN ${principalTable} m ON c.principal_id = m.id
-      LEFT JOIN ${commentReactions} cr ON cr.comment_id = c.id
+      LEFT JOIN ${postCommentReactions} cr ON cr.comment_id = c.id
       LEFT JOIN ${postStatuses} scf ON scf.id = c.status_change_from_id
       LEFT JOIN ${postStatuses} sct ON sct.id = c.status_change_to_id
       WHERE c.post_id IN (${sql.join(

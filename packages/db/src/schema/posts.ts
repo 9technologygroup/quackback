@@ -291,8 +291,8 @@ export const comments = pgTable(
   ]
 )
 
-export const commentReactions = pgTable(
-  'comment_reactions',
+export const postCommentReactions = pgTable(
+  'post_comment_reactions',
   {
     id: typeIdWithDefault('reaction')('id').primaryKey(),
     commentId: typeIdColumn('comment')('comment_id')
@@ -306,9 +306,13 @@ export const commentReactions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    index('comment_reactions_comment_id_idx').on(table.commentId),
-    index('comment_reactions_principal_id_idx').on(table.principalId),
-    uniqueIndex('comment_reactions_unique_idx').on(table.commentId, table.principalId, table.emoji),
+    index('post_comment_reactions_comment_id_idx').on(table.commentId),
+    index('post_comment_reactions_principal_id_idx').on(table.principalId),
+    uniqueIndex('post_comment_reactions_unique_idx').on(
+      table.commentId,
+      table.principalId,
+      table.emoji
+    ),
   ]
 )
 
@@ -467,7 +471,7 @@ export const commentsRelations = relations(comments, ({ one, many }) => ({
     relationName: 'commentReplies',
   }),
   replies: many(comments, { relationName: 'commentReplies' }),
-  reactions: many(commentReactions),
+  reactions: many(postCommentReactions),
   // Status change tracking
   statusChangeFrom: one(postStatuses, {
     fields: [comments.statusChangeFromId],
@@ -486,9 +490,9 @@ export const commentsRelations = relations(comments, ({ one, many }) => ({
   }),
 }))
 
-export const commentReactionsRelations = relations(commentReactions, ({ one }) => ({
+export const commentReactionsRelations = relations(postCommentReactions, ({ one }) => ({
   comment: one(comments, {
-    fields: [commentReactions.commentId],
+    fields: [postCommentReactions.commentId],
     references: [comments.id],
   }),
 }))

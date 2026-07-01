@@ -17,7 +17,7 @@ export type {
 // Inbox/post detail types
 export type {
   PinnedComment,
-  CommentReaction,
+  PostCommentReaction,
   CommentWithReplies,
   PostDetails,
   CurrentUser,

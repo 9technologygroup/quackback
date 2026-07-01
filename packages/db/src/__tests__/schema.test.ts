@@ -6,7 +6,7 @@ import {
   comments,
   postTagAssignments,
   postRoadmaps,
-  commentReactions,
+  postCommentReactions,
 } from '../schema/posts'
 import { REACTION_EMOJIS, MODERATION_STATES } from '../types'
 import { boards, roadmaps, postTags } from '../schema/boards'
@@ -172,13 +172,13 @@ describe('Schema definitions', () => {
     })
   })
 
-  describe('commentReactions schema', () => {
+  describe('postCommentReactions schema', () => {
     it('has correct table name', () => {
-      expect(getTableName(commentReactions)).toBe('comment_reactions')
+      expect(getTableName(postCommentReactions)).toBe('post_comment_reactions')
     })
 
     it('has required columns', () => {
-      const columns = Object.keys(getTableColumns(commentReactions))
+      const columns = Object.keys(getTableColumns(postCommentReactions))
       expect(columns).toContain('id')
       expect(columns).toContain('commentId')
       expect(columns).toContain('principalId')

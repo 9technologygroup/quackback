@@ -16,8 +16,8 @@ import type {
   NewVote,
   Comment,
   NewComment,
-  CommentReaction,
-  NewCommentReaction,
+  PostCommentReaction,
+  NewPostCommentReaction,
   Integration,
   NewIntegration,
   IntegrationStatus,
@@ -167,18 +167,18 @@ describe('Type definitions', () => {
     })
   })
 
-  describe('CommentReaction types', () => {
-    it('CommentReaction has correct shape', () => {
-      expectTypeOf<CommentReaction>().toHaveProperty('id')
-      expectTypeOf<CommentReaction>().toHaveProperty('commentId')
-      expectTypeOf<CommentReaction>().toHaveProperty('principalId')
-      expectTypeOf<CommentReaction>().toHaveProperty('emoji')
+  describe('PostCommentReaction types', () => {
+    it('PostCommentReaction has correct shape', () => {
+      expectTypeOf<PostCommentReaction>().toHaveProperty('id')
+      expectTypeOf<PostCommentReaction>().toHaveProperty('commentId')
+      expectTypeOf<PostCommentReaction>().toHaveProperty('principalId')
+      expectTypeOf<PostCommentReaction>().toHaveProperty('emoji')
     })
 
-    it('NewCommentReaction has required fields', () => {
-      expectTypeOf<NewCommentReaction>().toHaveProperty('commentId')
-      expectTypeOf<NewCommentReaction>().toHaveProperty('principalId')
-      expectTypeOf<NewCommentReaction>().toHaveProperty('emoji')
+    it('NewPostCommentReaction has required fields', () => {
+      expectTypeOf<NewPostCommentReaction>().toHaveProperty('commentId')
+      expectTypeOf<NewPostCommentReaction>().toHaveProperty('principalId')
+      expectTypeOf<NewPostCommentReaction>().toHaveProperty('emoji')
     })
   })
 

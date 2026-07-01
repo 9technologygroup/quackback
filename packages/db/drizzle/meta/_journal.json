@@ -911,6 +911,13 @@
       "when": 1783987200000,
       "tag": "0129_post_tags_catalog_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1784073600000,
+      "tag": "0130_post_comment_reactions_rename",
+      "breakpoints": true
     }
   ]
 }

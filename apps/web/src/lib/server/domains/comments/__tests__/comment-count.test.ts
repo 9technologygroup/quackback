@@ -146,7 +146,7 @@ vi.mock('@/lib/server/db', async () => {
     isNull: vi.fn(),
     sql: realSql,
     comments: { id: 'id', postId: 'postId', parentId: 'parentId' },
-    commentReactions: {},
+    postCommentReactions: {},
     commentEditHistory: {},
     posts: { id: 'id', commentCount: 'comment_count' },
     boards: { id: 'id' },
