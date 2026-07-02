@@ -23,8 +23,10 @@
  * leadEngagementWhere() (it protects ANY referenced row, not just engagement),
  * so the two predicates must never be naively unified.
  */
-import { db, eq, sql, principal, session, user } from '@/lib/server/db'
+import type { PrincipalId, UserId } from '@quackback/ids'
+import { db, sql } from '@/lib/server/db'
 import { logger } from '@/lib/server/logger'
+import { deleteAnonymousIdentity } from './principal.factory'
 
 const log = logger.child({ component: 'anon-sweep' })
 
@@ -66,9 +68,10 @@ export async function sweepAnonymousPrincipals(opts?: {
   for (const t of targets) {
     try {
       await db.transaction(async (tx) => {
-        await tx.delete(principal).where(eq(principal.id, t.principal_id as never))
-        await tx.delete(session).where(eq(session.userId, t.user_id as never))
-        await tx.delete(user).where(eq(user.id, t.user_id as never))
+        await deleteAnonymousIdentity(
+          { principalId: t.principal_id as PrincipalId, userId: t.user_id as UserId },
+          tx
+        )
       })
       deleted++
     } catch (err) {

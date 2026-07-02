@@ -12,7 +12,8 @@ import {
 } from 'better-auth/plugins'
 import { oauthProvider } from '@better-auth/oauth-provider'
 import { tanstackStartCookies } from 'better-auth/tanstack-start'
-import { generateId } from '@quackback/ids'
+import { generateId, type PrincipalId, type UserId } from '@quackback/ids'
+import { API_KEY_SCOPES } from '@/lib/server/domains/api-keys/api-key-scopes'
 import { config } from '@/lib/server/config'
 import { logger } from '@/lib/server/logger'
 import type { GenericOAuthConfig } from './build-oauth-configs'
@@ -93,7 +94,7 @@ async function createAuth() {
   const { listIdentityProviders, getIdentityProviderCredentials } =
     await import('@/lib/server/domains/settings/identity-providers.service')
   const { buildGenericOAuthConfigs } = await import('./build-oauth-configs')
-  const { ensurePrincipalForUser, updatePrincipalFields } =
+  const { ensurePrincipalForUser } =
     await import('@/lib/server/domains/principals/principal.factory')
 
   // OIDC `locale` claim: shipped by Google, Microsoft, and most generic
@@ -416,20 +417,9 @@ async function createAuth() {
           tenantSettings?.developerConfig?.oauthDynamicClientRegistrationEnabled ?? true,
         allowUnauthenticatedClientRegistration: true,
 
-        // Quackback-specific scopes
-        scopes: [
-          'openid',
-          'profile',
-          'email',
-          'offline_access',
-          'read:feedback',
-          'write:feedback',
-          'write:changelog',
-          'read:article',
-          'write:article',
-          'read:chat',
-          'write:chat',
-        ],
+        // Identity scopes plus the shared capability vocabulary (the same
+        // list API keys store and the MCP tools enforce).
+        scopes: ['openid', 'profile', 'email', 'offline_access', ...API_KEY_SCOPES],
 
         // Default scopes when a registering client omits `scope` (RFC 7591).
         // Real MCP clients (Claude Code, MCP SDK per SEP-835) resolve their
@@ -442,9 +432,7 @@ async function createAuth() {
           'openid',
           'profile',
           'email',
-          'read:feedback',
-          'read:article',
-          'read:chat',
+          ...API_KEY_SCOPES.filter((s) => s.startsWith('read:')),
         ],
 
         // Setting clientRegistrationDefaultScopes alone would also narrow
@@ -456,13 +444,7 @@ async function createAuth() {
           'profile',
           'email',
           'offline_access',
-          'read:feedback',
-          'write:feedback',
-          'write:changelog',
-          'read:article',
-          'write:article',
-          'read:chat',
-          'write:chat',
+          ...API_KEY_SCOPES,
         ],
 
         // MCP endpoint is a valid token audience
@@ -497,8 +479,8 @@ async function createAuth() {
         emailDomainName: ANON_EMAIL_DOMAIN,
         disableDeleteAnonymousUser: true, // we handle cleanup ourselves to avoid cascade-deleting sessions
         async onLinkAccount({ anonymousUser, newUser }) {
-          const anonUserId = anonymousUser.user.id as ReturnType<typeof generateId<'user'>>
-          const newUserId = newUser.user.id as ReturnType<typeof generateId<'user'>>
+          const anonUserId = anonymousUser.user.id as UserId
+          const newUserId = newUser.user.id as UserId
 
           // Check if the new user is a freshly created account or an existing one
           const [existingPrincipal, anonPrincipal] = await Promise.all([
@@ -513,10 +495,8 @@ async function createAuth() {
             if (anonPrincipal) {
               const { mergeAnonymousToIdentified } = await import('./merge-anonymous')
               await mergeAnonymousToIdentified({
-                anonPrincipalId: anonPrincipal.id as ReturnType<typeof generateId<'principal'>>,
-                targetPrincipalId: existingPrincipal.id as ReturnType<
-                  typeof generateId<'principal'>
-                >,
+                anonPrincipalId: anonPrincipal.id as PrincipalId,
+                targetPrincipalId: existingPrincipal.id as PrincipalId,
                 anonUserId,
                 anonDisplayName: anonPrincipal.displayName || 'Anonymous',
                 targetDisplayName: newUser.user.name || 'User',
@@ -528,53 +508,22 @@ async function createAuth() {
               'linked anonymous user to existing account'
             )
           } else {
-            // SIGN-UP (new account): keep the anonymous user, absorb the new user into it.
-            // This preserves sessions, principal, votes, comments on the same userId.
+            // SIGN-UP (new account): keep the anonymous user, absorb the new
+            // user into it. The absorb shares the principal re-point registry
+            // and factory teardown with the sign-in merge above.
             const newImage =
               ((newUser.user as Record<string, unknown>).image as string | null) ?? null
 
-            // Captured inside the tx, busted after commit.
-            let cacheKeysToBust: readonly string[] = []
-            await db.transaction(async (tx) => {
-              // Move account+session refs to anon user (before deleting new user)
-              await Promise.all([
-                tx
-                  .update(accountTable)
-                  .set({ userId: anonUserId })
-                  .where(eq(accountTable.userId, newUserId)),
-                tx
-                  .update(sessionTable)
-                  .set({ userId: anonUserId })
-                  .where(eq(sessionTable.userId, newUserId)),
-              ])
-              // Delete the new user (frees the email for the anon user update)
-              if (existingPrincipal) {
-                await tx.delete(principalTable).where(eq(principalTable.id, existingPrincipal.id))
-              }
-              await tx.delete(userTable).where(eq(userTable.id, newUserId))
-              // Update the anon user with real identity + upgrade principal
-              const [, fieldResult] = await Promise.all([
-                tx
-                  .update(userTable)
-                  .set({
-                    name: newUser.user.name,
-                    email: newUser.user.email,
-                    emailVerified: true,
-                    isAnonymous: false,
-                    image: newImage,
-                  })
-                  .where(eq(userTable.id, anonUserId)),
-                updatePrincipalFields(
-                  { userId: anonUserId },
-                  {
-                    type: 'user',
-                    displayName: newUser.user.name || anonymousUser.user.name,
-                    avatarUrl: newImage,
-                  },
-                  { executor: tx }
-                ),
-              ])
-              cacheKeysToBust = fieldResult.cacheKeysToBust
+            const { absorbSignupIntoAnonymous } = await import('./merge-anonymous')
+            const { cacheKeysToBust } = await absorbSignupIntoAnonymous({
+              anonUserId,
+              anonPrincipalId: anonPrincipal ? (anonPrincipal.id as PrincipalId) : null,
+              newUserId,
+              newUserPrincipalId: existingPrincipal ? (existingPrincipal.id as PrincipalId) : null,
+              name: newUser.user.name,
+              email: newUser.user.email,
+              image: newImage,
+              displayName: newUser.user.name || anonymousUser.user.name,
             })
 
             // The principal's `type` flipped from 'anonymous' → 'user'; drop

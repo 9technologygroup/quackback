@@ -17,6 +17,8 @@
 import {
   db,
   principal,
+  session,
+  user,
   eq,
   and,
   type Principal,
@@ -230,6 +232,30 @@ export async function updatePrincipalFields(
   const keys = userId ? [CACHE_KEYS.PRINCIPAL_BY_USER(userId)] : []
   if (!opts.executor) for (const k of keys) await cacheDel(k)
   return { cacheKeysToBust: keys }
+}
+
+// -------------------------------------------------------- identity teardown ---
+
+/**
+ * Delete a merged or absorbed identity: principal first (it references
+ * user_id), then any remaining sessions and the user row. `principalId` is
+ * optional because an absorbed signup may never have received a principal.
+ *
+ * The caller owns re-pointing that principal's activity BEFORE this runs
+ * (repointPrincipalActivity in principal-repoint.ts); a missed re-point either
+ * aborts here (RESTRICT FKs) or silently cascades content away.
+ */
+export async function deleteAnonymousIdentity(
+  ref: { principalId: PrincipalId | null | undefined; userId: UserId },
+  exec: Executor = db
+): Promise<void> {
+  if (ref.principalId) {
+    await exec.delete(principal).where(eq(principal.id, ref.principalId))
+  }
+  await Promise.all([
+    exec.delete(session).where(eq(session.userId, ref.userId)),
+    exec.delete(user).where(eq(user.id, ref.userId)),
+  ])
 }
 
 // -------------------------------------------- back-compat profile wrappers ---
