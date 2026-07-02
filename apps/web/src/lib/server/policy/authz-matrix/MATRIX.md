@@ -573,7 +573,7 @@ API-key classes hold **every** scope regardless of their configured scope (REST 
 
 ## 4. Entry points without a requireAuth/key gate
 
-138 of 541 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+139 of 542 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
@@ -701,6 +701,7 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `routes/api/v1/docs.ts`::GET | route |
 | `routes/api/v1/openapi.json.ts`::GET | route |
 | `routes/api/widget/config[.]json.ts`::GET | route |
+| `routes/api/widget/device.ts`::POST | route |
 | `routes/api/widget/identify.ts`::POST | route |
 | `routes/api/widget/kb-search.ts`::GET | route |
 | `routes/api/widget/sdk[.]js.ts`::GET | route |
