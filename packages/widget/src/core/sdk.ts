@@ -61,6 +61,7 @@ export function createSDK(): SDK {
   let mobileMql: MediaQueryList | null = null
   let mobileCleanup: (() => void) | null = null
   let tracker: Tracker | null = null
+  let pendingDevice: string | null = null
   const emitter = createEmitter()
 
   function sendMobileState(): void {
@@ -82,6 +83,10 @@ export function createSDK(): SDK {
         }
         if (config?.locale) bridge!.send('quackback:locale', config.locale)
         if (metadata) bridge!.send('quackback:metadata', metadata)
+        if (pendingDevice) {
+          bridge!.send('quackback:device', pendingDevice)
+          pendingDevice = null
+        }
         if (pendingOpen) {
           bridge!.send('quackback:open', pendingOpen)
           pendingOpen = null
@@ -229,6 +234,12 @@ export function createSDK(): SDK {
               const deviceId = serverConfig.visitorDeviceTracking ? getOrCreateDeviceId() : null
               tracker = createTracker(next.instanceUrl, deviceId)
               tracker.start()
+              // The iframe links the device to the session's principal; queue
+              // until the panel reports ready if it hasn't yet.
+              if (deviceId) {
+                if (ready && bridge) bridge.send('quackback:device', deviceId)
+                else pendingDevice = deviceId
+              }
             }
           })
           .finally(() => {
@@ -307,6 +318,7 @@ export function createSDK(): SDK {
         bridge?.dispose()
         tracker?.stop()
         tracker = null
+        pendingDevice = null
         mobileCleanup?.()
         mobileCleanup = null
         mobileMql = null

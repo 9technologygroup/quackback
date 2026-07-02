@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { getTableName, getTableColumns } from 'drizzle-orm'
-import { pageViews, visitorStatsDaily, visitorTopStats } from '../schema/visitor-analytics'
+import {
+  pageViews,
+  visitorStatsDaily,
+  visitorTopStats,
+  visitorDevices,
+} from '../schema/visitor-analytics'
 
 describe('visitor analytics schema', () => {
   describe('pageViews', () => {
@@ -52,6 +57,22 @@ describe('visitor analytics schema', () => {
           'pageviews',
           'visits',
           'computedAt',
+        ])
+      )
+    })
+  })
+
+  describe('visitorDevices', () => {
+    it('has correct table name and columns', () => {
+      expect(getTableName(visitorDevices)).toBe('visitor_devices')
+      const columns = Object.keys(getTableColumns(visitorDevices))
+      expect(columns).toEqual(
+        expect.arrayContaining([
+          'deviceId',
+          'principalId',
+          'firstSeenAt',
+          'lastSeenAt',
+          'lastCountry',
         ])
       )
     })

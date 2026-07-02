@@ -119,6 +119,7 @@ export async function recordPageView(request: Request): Promise<void> {
   const visitorHash = computeVisitorHash({ salt, siteOrigin: url.origin, ip, userAgent })
 
   const { device, browser, os } = parseUserAgent(userAgent)
+  const country = captureCountryFromHeaders(request.headers)
 
   try {
     await db.insert(pageViews).values({
@@ -126,13 +127,17 @@ export async function recordPageView(request: Request): Promise<void> {
       surface: beacon.surface,
       path: url.pathname,
       source: deriveSource(url, beacon.referrer),
-      country: captureCountryFromHeaders(request.headers),
+      country,
       device,
       browser,
       os,
       visitorHash,
       deviceId: beacon.deviceId ?? null,
     })
+    if (beacon.deviceId) {
+      const { touchVisitorDevice } = await import('./device-link.service')
+      await touchVisitorDevice(beacon.deviceId, country)
+    }
   } catch (error) {
     // Most likely a missing day partition (maintenance job not running).
     log.error({ err: error }, 'pageview insert failed, dropping')

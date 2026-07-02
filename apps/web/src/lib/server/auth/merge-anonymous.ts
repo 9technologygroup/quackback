@@ -19,6 +19,8 @@ import {
   inAppNotifications,
   conversations,
   conversationMessages,
+  pageViews,
+  visitorDevices,
   principal,
   session,
   user,
@@ -94,6 +96,16 @@ export async function mergeAnonymousToIdentified(params: MergeAnonymousParams): 
         .update(conversationMessages)
         .set({ principalId: targetPrincipalId })
         .where(eq(conversationMessages.principalId, anonPrincipalId)),
+      // Visitor analytics soft links (no FK): the lead's page-view history
+      // and device mapping follow them onto the identified principal.
+      tx
+        .update(pageViews)
+        .set({ principalId: targetPrincipalId })
+        .where(eq(pageViews.principalId, anonPrincipalId)),
+      tx
+        .update(visitorDevices)
+        .set({ principalId: targetPrincipalId })
+        .where(eq(visitorDevices.principalId, anonPrincipalId)),
     ])
 
     // 4. Fix notifications for transferred comments

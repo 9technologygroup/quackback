@@ -40,6 +40,22 @@ export const pageViews = pgTable(
   ]
 )
 
+/**
+ * Durable device id -> principal mapping (layer-2 identity, opt-in).
+ * A device row exists once a durable id is minted; the principal soft link is
+ * set when the device engages (widget identify / anonymous mint) and follows
+ * the anonymous-to-identified merge. Converges with the support platform's
+ * per-channel identity table when that lands.
+ */
+export const visitorDevices = pgTable('visitor_devices', {
+  deviceId: text('device_id').primaryKey(),
+  /** Soft link (no FK): the person this device belongs to, once engaged. */
+  principalId: typeIdColumnNullable('principal')('principal_id'),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  lastCountry: text('last_country'),
+})
+
 /** Surface values stored on rollup rows; 'all' is the cross-surface aggregate. */
 export const VISITOR_SURFACES = ['all', 'portal', 'widget'] as const
 

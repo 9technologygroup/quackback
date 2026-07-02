@@ -967,6 +967,13 @@
       "when": 1784678400000,
       "tag": "0137_visitor_analytics",
       "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1784764800000,
+      "tag": "0138_visitor_devices",
+      "breakpoints": true
     }
   ]
 }

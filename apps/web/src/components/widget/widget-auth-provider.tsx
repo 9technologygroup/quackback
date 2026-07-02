@@ -93,6 +93,28 @@ export function WidgetAuthProvider({
   const sessionReadyRef = useRef(false)
   const sessionSourceRef = useRef<SessionSource>(null)
 
+  // Durable device id from the host page (visitor analytics layer 2). Linked
+  // to the session's principal server-side; deduped per (device, token) so
+  // auth-state changes re-link at most once each.
+  const deviceIdRef = useRef<string | null>(null)
+  const lastDeviceLinkRef = useRef<string | null>(null)
+  const attemptDeviceLink = useCallback(() => {
+    const deviceId = deviceIdRef.current
+    const token = getWidgetToken()
+    if (!deviceId || !token) return
+    const linkKey = `${deviceId}:${token}`
+    if (lastDeviceLinkRef.current === linkKey) return
+    lastDeviceLinkRef.current = linkKey
+    void fetch('/api/widget/device', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ deviceId }),
+    }).catch(() => {})
+  }, [])
+  useEffect(() => {
+    attemptDeviceLink()
+  }, [attemptDeviceLink, user, sessionVersion])
+
   // i18n locale state — seeded from the SSR-resolved prop only, so the
   // first client render matches the server (see issue #133).
   const [locale, setLocale] = useState<SupportedLocale>(initialLocale ?? DEFAULT_LOCALE)
@@ -373,6 +395,12 @@ export function WidgetAuthProvider({
       if (msg.type === 'quackback:locale' && typeof msg.data === 'string') {
         const normalized = normalizeLocale(msg.data)
         if (normalized) setLocale(normalized)
+        return
+      }
+
+      if (msg.type === 'quackback:device' && typeof msg.data === 'string' && msg.data) {
+        deviceIdRef.current = msg.data.slice(0, 128)
+        attemptDeviceLink()
         return
       }
 

@@ -263,6 +263,7 @@ export {
   pageViews,
   visitorStatsDaily,
   visitorTopStats,
+  visitorDevices,
   VISITOR_SURFACES,
   VISITOR_TOP_DIMENSIONS,
   ensurePageViewPartitions,
