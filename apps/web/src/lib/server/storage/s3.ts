@@ -322,13 +322,15 @@ export async function uploadObject(
  *
  * @param prefix - Path prefix, e.g., "changelog-images"
  * @param filename - Original filename
- * @returns Storage key like "changelog-images/2024/01/abc123-filename.jpg"
+ * @returns Storage key like "changelog-images/2024/01/<uuid>-filename.jpg"
  */
 export function generateStorageKey(prefix: string, filename: string): string {
   const now = new Date()
   const year = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, '0')
-  const randomId = crypto.randomUUID().slice(0, 8)
+  // Full UUID: object keys are effectively unguessable capability URLs on
+  // public buckets, so a truncated ID would be brute-forceable.
+  const randomId = crypto.randomUUID()
   const safeFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_').toLowerCase()
 
   return `${prefix}/${year}/${month}/${randomId}-${safeFilename}`
@@ -491,7 +493,10 @@ export function getPublicUrl(key: string): string {
  * Use this when the bucket is not publicly accessible (e.g., Railway Buckets).
  *
  * @param key - Storage key (path within bucket)
- * @param expiresIn - URL expiration time in seconds (default: 172800 = 48 hours)
+ * @param expiresIn - URL expiration time in seconds (default: 172800 = 48 hours).
+ *   The sole caller (GET /api/storage 302 redirect) marks the redirect
+ *   cacheable for 24h, so the presigned URL must outlive cached copies;
+ *   48h keeps a 2x margin over that cache window.
  */
 export async function generatePresignedGetUrl(
   key: string,
