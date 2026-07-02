@@ -14,7 +14,7 @@ import { execFileSync } from 'child_process'
 import { dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { expect, type BrowserContext } from '@playwright/test'
-import { getMagicLinkToken, ensureTestUserHasRole } from './db-helpers'
+import { getMagicLinkToken, ensureTestUserHasRole, clearSigninRateLimit } from './db-helpers'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -74,22 +74,12 @@ export function setPortalAuthMethods(action: 'disable' | 'restore' | 'enable-mag
 /**
  * Flush the magic-link per-email rate-limit keys from Redis/Dragonfly so that
  * repeated e2e runs on the same email addresses don't hit the sign-in limiter.
- * No-op when no keys exist.
+ * No-op when no keys exist. Delegates to db-helpers' script-backed
+ * implementation (the single owner of the signin:magiclink:* key prefix),
+ * which uses ioredis directly and so also works in CI.
  */
 export function flushMagicLinkRateLimit(): void {
-  // Scan for all rate-limit keys, then delete each one. Two separate execFileSync
-  // calls avoid a shell pipeline (no shell-interpolation risk).
-  const scan = execFileSync(
-    'docker',
-    ['exec', 'quackback-dragonfly', 'redis-cli', '--scan', '--pattern', 'signin:magiclink:*'],
-    { encoding: 'utf-8' }
-  )
-  const keys = scan.split('\n').map((k) => k.trim()).filter(Boolean)
-  for (const key of keys) {
-    execFileSync('docker', ['exec', 'quackback-dragonfly', 'redis-cli', 'del', key], {
-      stdio: 'pipe',
-    })
-  }
+  clearSigninRateLimit()
 }
 
 /** Config for {@link seedIdentityProvider} (mirrors the seed script's input). */
@@ -110,11 +100,7 @@ export interface SeedIdpConfig {
  * caches normally only invalidate via the app's own write paths).
  */
 function invalidateAuthCaches(): void {
-  for (const key of ['settings:tenant', 'platform-cred:configured-types']) {
-    execFileSync('docker', ['exec', 'quackback-dragonfly', 'redis-cli', 'del', key], {
-      stdio: 'pipe',
-    })
-  }
+  runScript('../scripts/bust-caches.ts', ['settings:tenant', 'platform-cred:configured-types'])
 }
 
 /**
@@ -145,9 +131,7 @@ export function setPortalVisibility(visibility: 'private' | 'public'): void {
   runScript('../scripts/set-portal-visibility.ts', [visibility])
   // The portal-access decision is cached under 'settings:tenant'. Drop it so
   // the dev server evaluates the new visibility on the next request.
-  execFileSync('docker', ['exec', 'quackback-dragonfly', 'redis-cli', 'del', 'settings:tenant'], {
-    stdio: 'pipe',
-  })
+  runScript('../scripts/bust-caches.ts', ['settings:tenant'])
 }
 
 /**

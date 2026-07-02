@@ -82,6 +82,16 @@ export default defineConfig({
       },
       testMatch: /tests\/public\/.+\.spec\.ts/,
     },
+
+    /* Widget surface tests — anonymous visitor loading /widget directly
+       (no stored auth state; the widget mints its own anonymous session). */
+    {
+      name: 'chromium-widget',
+      use: {
+        ...devices['Desktop Chrome'],
+      },
+      testMatch: /tests\/widget\/.+\.spec\.ts/,
+    },
   ],
 
   /* Run local dev server before starting the tests */

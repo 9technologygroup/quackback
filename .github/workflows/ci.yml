@@ -48,3 +48,72 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run db:migrate
       - run: bun run test --run
+
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: quackback_test
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+      # Dev/prod run Dragonfly, but the app only speaks the Redis protocol
+      # (ioredis), so the canonical Redis image keeps the CI service simple.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379
+      SECRET_KEY: e2e-smoke-secret-key-for-ci-only-at-least-32-chars
+      BASE_URL: http://acme.localhost:3000
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      # The seed workspace is served on the acme.localhost subdomain; make sure
+      # Node-side fetches (Playwright request API, webServer readiness probe)
+      # resolve it regardless of the runner's resolver.
+      - name: Map acme.localhost to loopback
+        run: echo "127.0.0.1 acme.localhost" | sudo tee -a /etc/hosts
+      - run: bun install --frozen-lockfile
+      # The dev server loads env from the repo-root .env (bun --env-file) and
+      # the e2e db-helpers spawn scripts through `dotenv -e ../../.env`, so
+      # materialize one for CI.
+      - name: Write .env for the dev server and e2e scripts
+        run: |
+          cat > .env <<EOF
+          DATABASE_URL=$DATABASE_URL
+          REDIS_URL=$REDIS_URL
+          SECRET_KEY=$SECRET_KEY
+          BASE_URL=$BASE_URL
+          EOF
+      # apps/web imports packages/widget/dist/browser.js via Vite ?raw — the
+      # bundle must exist before the dev server starts.
+      - run: bun run --filter @quackback/widget build
+      - run: bun run db:migrate
+      - run: bun run db:seed
+      - run: bunx playwright install --with-deps chromium
+        working-directory: apps/web
+      # Explicit spec files (not just the tag) so an unrelated spec with a
+      # load-time error can't take the smoke gate down; the setup project
+      # (admin auth) still runs as a project dependency, unfiltered.
+      - name: Run @smoke e2e specs
+        run: >
+          bunx playwright test
+          tests/admin/inbox.spec.ts
+          tests/public/portal-support.spec.ts
+          tests/widget/messenger.spec.ts
+          --grep "@smoke"
+        working-directory: apps/web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-smoke-report
+          path: apps/web/blob-report
+          retention-days: 7
