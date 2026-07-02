@@ -565,7 +565,7 @@ export function UserDetail({
                   <p className="text-sm text-muted-foreground/50 italic">No email</p>
                 )}
                 <Badge variant="secondary" className="mt-2 text-xs">
-                  {user.isLead ? 'Lead' : 'Portal User'}
+                  {user.isLead ? 'Lead' : 'User'}
                 </Badge>
               </>
             )}

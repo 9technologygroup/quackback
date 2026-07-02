@@ -27,7 +27,9 @@ import {
   session,
   posts,
   postComments,
+  postCommentReactions,
   postVotes,
+  conversationMessages,
   userSegments,
   segments,
   visitorDevices,
@@ -82,6 +84,26 @@ async function fetchSegmentsForPrincipals(
     })
   }
   return map
+}
+
+/**
+ * The canonical lead definition. A lead is an ENGAGED anonymous principal:
+ * they authored something (message, post, vote, comment, reaction) or
+ * volunteered a contact email. A minted-but-idle anonymous session is a
+ * visitor, not a lead, and never appears in the directory (the analytics
+ * Visitors section covers that tier). Receiving an agent-started conversation
+ * does not qualify either: the visitor becomes a lead when they reply. All
+ * the EXISTS probes run on indexed principal_id columns.
+ */
+export function leadEngagementWhere() {
+  return sql`(
+    ${principal.contactEmail} IS NOT NULL
+    OR EXISTS (SELECT 1 FROM ${conversationMessages} WHERE ${conversationMessages.principalId} = ${principal.id})
+    OR EXISTS (SELECT 1 FROM ${posts} WHERE ${posts.principalId} = ${principal.id})
+    OR EXISTS (SELECT 1 FROM ${postVotes} WHERE ${postVotes.principalId} = ${principal.id})
+    OR EXISTS (SELECT 1 FROM ${postComments} WHERE ${postComments.principalId} = ${principal.id})
+    OR EXISTS (SELECT 1 FROM ${postCommentReactions} WHERE ${postCommentReactions.principalId} = ${principal.id})
+  )`
 }
 
 /**
@@ -195,6 +217,10 @@ export async function listPortalUsers(
     // Lifecycle view: identified users by default, engaged anonymous
     // principals (leads) on request. The two views never mix.
     conditions.push(eq(principal.type, lifecycle === 'leads' ? 'anonymous' : 'user'))
+
+    if (lifecycle === 'leads') {
+      conditions.push(leadEngagementWhere())
+    }
 
     if (search) {
       conditions.push(

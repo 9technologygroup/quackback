@@ -129,6 +129,8 @@ vi.mock('@/lib/server/db', () => ({
     deletedAt: 'post_comments.deleted_at',
   },
   postVotes: { principalId: 'post_votes.principal_id' },
+  postCommentReactions: { principalId: 'post_comment_reactions.principal_id' },
+  conversationMessages: { principalId: 'conversation_messages.principal_id' },
   postStatuses: {},
   boards: {},
   userSegments: {
@@ -395,5 +397,34 @@ describe('listPortalUsers lifecycle filter', () => {
     await listPortalUsers({ lifecycle: 'leads' })
     expect(mockEq).toHaveBeenCalledWith('principal.type', 'anonymous')
     expect(mockEq).not.toHaveBeenCalledWith('principal.type', 'user')
+  })
+
+  // A lead is engaged, not merely anonymous: the leads view must carry the
+  // engagement predicate (authored content or a volunteered contact email)
+  // so idle minted sessions (visitors) never appear in the directory.
+  // The tagged-template mock receives (strings, ...values); collect the
+  // literal SQL skeletons so assertions can probe for the predicate shape.
+  function sqlSkeletons(): string[] {
+    return (mockSql.mock.calls as unknown as unknown[][])
+      .map((call) => (Array.isArray(call[0]) ? (call[0] as string[]).join('') : ''))
+      .filter((skeleton) => skeleton.includes('EXISTS (SELECT 1 FROM'))
+  }
+
+  it('gates the leads view on engagement, not mere anonymity', async () => {
+    mockSql.mockClear()
+    const { listPortalUsers } = await import('../user.service')
+    await listPortalUsers({ lifecycle: 'leads' })
+    const skeletons = sqlSkeletons()
+    expect(skeletons).toHaveLength(1)
+    expect(skeletons[0]).toContain('IS NOT NULL')
+    // one probe per authored-content table: messages, posts, votes, comments, reactions
+    expect(skeletons[0].match(/EXISTS \(SELECT 1 FROM/g)).toHaveLength(5)
+  })
+
+  it('does not apply the engagement predicate to the users view', async () => {
+    mockSql.mockClear()
+    const { listPortalUsers } = await import('../user.service')
+    await listPortalUsers({})
+    expect(sqlSkeletons()).toHaveLength(0)
   })
 })

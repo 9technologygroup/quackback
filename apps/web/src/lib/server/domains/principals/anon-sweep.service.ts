@@ -18,6 +18,10 @@
  * also cascade but are derived preference state, so sweeping them is intended.)
  * Each principal is still removed in its own transaction so an unexpected
  * restrict reference skips just that row rather than failing the batch.
+ *
+ * NOTE: this NOT EXISTS guard is deliberately BROADER than the users domain's
+ * leadEngagementWhere() (it protects ANY referenced row, not just engagement),
+ * so the two predicates must never be naively unified.
  */
 import { db, eq, sql, principal, session, user } from '@/lib/server/db'
 import { logger } from '@/lib/server/logger'

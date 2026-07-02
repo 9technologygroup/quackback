@@ -37,9 +37,9 @@ export interface PortalUserListItem {
   segments: UserSegmentSummary[]
   /** Raw metadata JSON string — parsed at the route layer into `attributes` */
   metadata: string | null
-  /** Lifecycle: engaged-but-unauthenticated principal (type='anonymous'). */
+  /** Lead = engaged anonymous principal (type='anonymous'); see lifecycle doc. */
   isLead: boolean
-  /** Email captured from a lead mid-conversation (unverified, self-asserted). */
+  /** Email a lead volunteered mid-conversation (unverified, self-asserted). */
   contactEmail: string | null
   /** Freshest activity signal: session touch or device beacon; null = none. */
   lastSeenAt: Date | null
@@ -113,10 +113,15 @@ export interface PortalUserListParams {
   /** Filter by segment IDs (OR logic — users in ANY of the given segments) */
   segmentIds?: import('@quackback/ids').SegmentId[]
   /**
-   * Lifecycle view. 'users' (default) = identified accounts
-   * (principal.type='user'); 'leads' = engaged-but-unauthenticated principals
-   * (type='anonymous' — minted only on first interaction, so engaged by
-   * construction).
+   * Lifecycle view over the three-tier people model:
+   * - visitor: anonymous with no engagement yet (idle minted session, or an
+   *   agent-started conversation they never replied to). Not a directory row;
+   *   the analytics Visitors section covers that tier.
+   * - lead ('leads'): anonymous (type='anonymous') AND engaged — authored a
+   *   message/post/vote/comment/reaction or volunteered a contact email
+   *   (unverified). Enforced by leadEngagementWhere() in user.service.ts.
+   * - user ('users', default): verified identified account (type='user');
+   *   the identity merge carries a lead's history forward on sign-in.
    */
   lifecycle?: 'users' | 'leads'
 }
