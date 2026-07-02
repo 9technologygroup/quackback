@@ -1,4 +1,8 @@
 import { useState } from 'react'
+import { useRouteContext } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
+import { analyticsQueries } from '@/lib/client/queries/analytics'
+import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { UsersLayout } from '@/components/admin/users/users-layout'
 import { UsersSegmentNav } from '@/components/admin/users/users-segment-nav'
 import { UsersList } from '@/components/admin/users/users-list'
@@ -83,6 +87,21 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
   const { data: totalUserCount } = useTotalUserCount()
   const { data: totalLeadCount } = useTotalUserCount('leads')
   const inLeadsMode = filters.lifecycle === 'leads'
+
+  // Top-of-funnel context: 30d unique visitors from the analytics rollup.
+  // Visitors are not directory rows (no principal yet), so this is a
+  // non-navigating count that links to the analytics Visitors section.
+  const { settings } = useRouteContext({ from: '__root__' })
+  const visitorAnalyticsOn =
+    (settings?.featureFlags as FeatureFlags | undefined)?.visitorAnalytics ?? false
+  const { data: visitorAnalyticsData } = useQuery({
+    ...analyticsQueries.visitors('30d', 'all'),
+    enabled: visitorAnalyticsOn,
+  })
+  const visitorCount =
+    visitorAnalyticsData && visitorAnalyticsData.enabled
+      ? visitorAnalyticsData.uniqueVisitors.current
+      : null
 
   // Segments data
   const { data: segments, isLoading: isLoadingSegments } = useSegments()
@@ -229,6 +248,7 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
             invitesPendingCount={invitesPendingCount}
             inLeadsMode={inLeadsMode}
             totalLeadCount={totalLeadCount}
+            visitorCount={visitorCount}
           />
         }
       >

@@ -64,6 +64,7 @@ export const getAnalyticsData = createServerFn({ method: 'GET' })
       [changelogResult, topChangelogEntries],
       csatRows,
       closedRows,
+      newLeadsRows,
     ] = await Promise.all([
       // Daily stats for current + previous periods (one scan, split in memory).
       db
@@ -284,6 +285,17 @@ export const getAnalyticsData = createServerFn({ method: 'GET' })
         .select({ closedCount: sql<number>`count(*)::int` })
         .from(conversations)
         .where(and(isNotNull(conversations.resolvedAt), gte(conversations.resolvedAt, start))),
+
+      // New leads: engaged-but-unauthenticated principals minted in the
+      // current and previous windows (the lifecycle stage before signup).
+      db.execute<{ current: number; previous: number }>(sql`
+        SELECT
+          COUNT(*) FILTER (WHERE created_at >= ${sinceIso})::int AS current,
+          COUNT(*) FILTER (WHERE created_at < ${sinceIso})::int AS previous
+        FROM principal
+        WHERE role = 'user' AND type = 'anonymous'
+          AND created_at >= ${previousStart.toISOString()}
+      `),
     ])
 
     // -- Period split for the daily-stats rollup --
@@ -369,6 +381,12 @@ export const getAnalyticsData = createServerFn({ method: 'GET' })
 
     const { followers } = followersRows[0] ?? { followers: 0 }
 
+    const leadRow = Array.from(newLeadsRows as Iterable<{ current: number; previous: number }>)[0]
+    const newLeads = {
+      total: leadRow?.current ?? 0,
+      delta: delta(leadRow?.current ?? 0, leadRow?.previous ?? 0),
+    }
+
     const medianResolutionDays = ttrRows[0]?.medianDays ?? null
 
     // -- Top posts --
@@ -437,6 +455,7 @@ export const getAnalyticsData = createServerFn({ method: 'GET' })
       resolutionRate,
       medianResolutionDays,
       followers,
+      newLeads,
       boardBreakdown,
       topPosts,
       topContributors,

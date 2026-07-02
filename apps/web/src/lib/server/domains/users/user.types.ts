@@ -41,6 +41,8 @@ export interface PortalUserListItem {
   isLead: boolean
   /** Email captured from a lead mid-conversation (unverified, self-asserted). */
   contactEmail: string | null
+  /** Freshest activity signal: session touch or device beacon; null = none. */
+  lastSeenAt: Date | null
 }
 
 /**
@@ -61,6 +63,7 @@ export interface PortalUserListItemView {
   metadata: string | null
   isLead: boolean
   contactEmail: string | null
+  lastSeenAt: Date | string | null
 }
 
 /**
@@ -100,6 +103,7 @@ export interface PortalUserListParams {
     | 'newest'
     | 'oldest'
     | 'most_active'
+    | 'last_active'
     | 'most_posts'
     | 'most_comments'
     | 'most_votes'

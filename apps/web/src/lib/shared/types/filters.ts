@@ -98,6 +98,7 @@ export interface UsersFilters {
     | 'newest'
     | 'oldest'
     | 'most_active'
+    | 'last_active'
     | 'most_posts'
     | 'most_comments'
     | 'most_votes'

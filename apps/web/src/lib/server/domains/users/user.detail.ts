@@ -15,6 +15,7 @@ import {
   sql,
   principal,
   user,
+  session,
   posts,
   postComments,
   postVotes,
@@ -22,6 +23,7 @@ import {
   boards,
   userSegments,
   segments,
+  visitorDevices,
   asc,
 } from '@/lib/server/db'
 import type { PrincipalId, SegmentId } from '@quackback/ids'
@@ -300,6 +302,23 @@ export async function getPortalUserDetail(
     const segmentMap = await fetchSegmentsForUser([principalData.principalId])
     const userSegmentList = segmentMap.get(principalData.principalId) ?? []
 
+    // Freshest activity signal: session touch or device beacon (layer 2).
+    const [[sessionSeen], [deviceSeen]] = await Promise.all([
+      db
+        .select({ v: sql<Date | null>`max(${session.updatedAt})` })
+        .from(session)
+        .where(eq(session.userId, principalData.userId)),
+      db
+        .select({ v: sql<Date | null>`max(${visitorDevices.lastSeenAt})` })
+        .from(visitorDevices)
+        .where(eq(visitorDevices.principalId, principalData.principalId)),
+    ])
+    const seenDates = [sessionSeen?.v, deviceSeen?.v]
+      .filter((d): d is Date => d != null)
+      .map((d) => new Date(d))
+    const lastSeenAt =
+      seenDates.length > 0 ? new Date(Math.max(...seenDates.map((d) => d.getTime()))) : null
+
     return {
       principalId: principalData.principalId,
       userId: principalData.userId,
@@ -312,6 +331,7 @@ export async function getPortalUserDetail(
       isLead: principalData.principalType === 'anonymous',
       contactEmail: realEmail(principalData.contactEmail),
       joinedAt: principalData.joinedAt,
+      lastSeenAt,
       createdAt: principalData.createdAt,
       postCount,
       commentCount,

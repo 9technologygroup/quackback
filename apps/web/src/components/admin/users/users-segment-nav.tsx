@@ -10,6 +10,7 @@ import {
   BoltIcon,
   ArrowPathIcon,
   EnvelopeIcon,
+  GlobeAltIcon,
 } from '@heroicons/react/24/solid'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FilterSection } from '@/components/shared/filter-section'
@@ -39,6 +40,8 @@ interface UsersSegmentNavProps {
   inLeadsMode?: boolean
   /** Lead count for the All-leads entry badge. */
   totalLeadCount?: number
+  /** 30d unique visitors (top of funnel); null hides the line. */
+  visitorCount?: number | null
 }
 
 export function UsersSegmentNav({
@@ -62,6 +65,7 @@ export function UsersSegmentNav({
   invitesPendingCount,
   inLeadsMode,
   totalLeadCount,
+  visitorCount,
 }: UsersSegmentNavProps) {
   const hasSelection = selectedSegmentIds.length > 0
   const navigate = useNavigate()
@@ -144,6 +148,22 @@ export function UsersSegmentNav({
               </span>
             )}
           </button>
+
+          {/* Visitors — top of the funnel. Not directory rows (a visitor has
+              no principal until they engage), so this deep-links to the
+              analytics Visitors section instead of filtering the list. */}
+          {visitorCount != null && (
+            <Link
+              to="/admin/analytics"
+              className="w-full text-left px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground hover:bg-muted/50"
+            >
+              <GlobeAltIcon className="h-3.5 w-3.5 shrink-0" />
+              <span className="flex-1 truncate">Visitors (30d)</span>
+              <span className="text-xs text-muted-foreground/60 shrink-0 tabular-nums">
+                {visitorCount.toLocaleString()}
+              </span>
+            </Link>
+          )}
 
           {/* Invitations — sibling of All users. Clicking enters invites
               mode with the pending status by default; the InvitationsView

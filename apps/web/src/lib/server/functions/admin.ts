@@ -121,7 +121,16 @@ const listPortalUsersSchema = z.object({
   commentCount: activityCountFilterSchema.optional(),
   customAttrs: z.array(customAttrFilterSchema).optional(),
   sort: z
-    .enum(['newest', 'oldest', 'most_active', 'most_posts', 'most_comments', 'most_votes', 'name'])
+    .enum([
+      'newest',
+      'oldest',
+      'most_active',
+      'last_active',
+      'most_posts',
+      'most_comments',
+      'most_votes',
+      'name',
+    ])
     .optional(),
   page: z.number().optional(),
   limit: z.number().optional(),
@@ -713,6 +722,7 @@ export const listPortalUsersFn = createServerFn({ method: 'GET' })
         items: result.items.map((user) => ({
           ...user,
           joinedAt: user.joinedAt.toISOString(),
+          lastSeenAt: user.lastSeenAt ? user.lastSeenAt.toISOString() : null,
         })),
       }
     } catch (error) {

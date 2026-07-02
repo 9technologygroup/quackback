@@ -346,6 +346,11 @@ export function AnalyticsPage() {
                           value: data.summary.users.total.toLocaleString(),
                           delta: data.summary.users.delta,
                         },
+                        {
+                          label: 'New leads',
+                          value: data.newLeads.total.toLocaleString(),
+                          delta: data.newLeads.delta,
+                        },
                         { label: 'Active users', value: data.activeUsers.toLocaleString() },
                         { label: 'Verified', value: `${data.verifiedRate}%`, caption: 'all time' },
                         { label: 'Contributors', value: data.contributorCount.toLocaleString() },

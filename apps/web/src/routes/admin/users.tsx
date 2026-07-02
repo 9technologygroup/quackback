@@ -22,7 +22,16 @@ const searchSchema = z.object({
   // principals (the "All leads" nav entry).
   lifecycle: z.enum(['leads']).optional(),
   sort: z
-    .enum(['newest', 'oldest', 'most_active', 'most_posts', 'most_comments', 'most_votes', 'name'])
+    .enum([
+      'newest',
+      'oldest',
+      'most_active',
+      'last_active',
+      'most_posts',
+      'most_comments',
+      'most_votes',
+      'name',
+    ])
     .optional()
     .default('newest'),
   selected: z.string().optional(),

@@ -68,6 +68,9 @@ function createChain(resolveValue: unknown = []) {
     postCount: 'post_count',
     commentCount: 'comment_count',
     voteCount: 'vote_count',
+    userId: 'mock_user_col',
+    lastSessionAt: 'last_session_at',
+    lastDeviceAt: 'last_device_at',
   })
   chain.then = (resolve: (v: unknown) => void) => {
     resolve(resolveValue)
@@ -81,9 +84,9 @@ vi.mock('@/lib/server/db', () => ({
     select: vi.fn(() => {
       selectCallCount.count++
       const c = selectCallCount.count
-      if (c <= 3) return createChain([]) // subqueries
-      if (c === 4) return createChain(mockUserRows) // main query
-      if (c === 5) return createChain(mockCountResult) // count query
+      if (c <= 5) return createChain([]) // subqueries (counts + last-seen)
+      if (c === 6) return createChain(mockUserRows) // main query
+      if (c === 7) return createChain(mockCountResult) // count query
       return createChain([]) // segment/other queries
     }),
     query: {
@@ -140,6 +143,12 @@ vi.mock('@/lib/server/db', () => ({
     deletedAt: 'segments.deleted_at',
   },
   userAttributeDefinitions: 'user_attribute_definitions',
+  session: { userId: 'session.user_id', updatedAt: 'session.updated_at' },
+  visitorDevices: {
+    principalId: 'visitor_devices.principal_id',
+    lastSeenAt: 'visitor_devices.last_seen_at',
+  },
+  isNotNull: () => 'is_not_null_result',
 }))
 
 vi.mock('@quackback/ids', () => ({
@@ -180,9 +189,9 @@ describe('listPortalUsers', () => {
     vi.mocked(db.select).mockImplementation(() => {
       selectCallCount.count++
       const c = selectCallCount.count
-      if (c <= 3) return createChain([]) as never
-      if (c === 4) return createChain(mockUserRows) as never
-      if (c === 5) return createChain(mockCountResult) as never
+      if (c <= 5) return createChain([]) as never
+      if (c === 6) return createChain(mockUserRows) as never
+      if (c === 7) return createChain(mockCountResult) as never
       return createChain([]) as never
     })
   })

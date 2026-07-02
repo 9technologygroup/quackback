@@ -18,16 +18,19 @@ import {
   ilike,
   inArray,
   isNull,
+  isNotNull,
   desc,
   asc,
   sql,
   principal,
   user,
+  session,
   posts,
   postComments,
   postVotes,
   userSegments,
   segments,
+  visitorDevices,
 } from '@/lib/server/db'
 import type { PrincipalId, SegmentId } from '@quackback/ids'
 import { NotFoundError, InternalError } from '@/lib/shared/errors'
@@ -163,6 +166,29 @@ export async function listPortalUsers(
       .groupBy(postVotes.principalId)
       .as('vote_counts')
 
+    // Last-seen signals: freshest session touch (identified activity) and
+    // freshest device beacon (layer-2 visitor analytics, when enabled).
+    const lastSessions = db
+      .select({
+        userId: session.userId,
+        lastSessionAt: sql<Date>`max(${session.updatedAt})`.as('last_session_at'),
+      })
+      .from(session)
+      .groupBy(session.userId)
+      .as('last_sessions')
+
+    const lastDevices = db
+      .select({
+        principalId: visitorDevices.principalId,
+        lastDeviceAt: sql<Date>`max(${visitorDevices.lastSeenAt})`.as('last_device_at'),
+      })
+      .from(visitorDevices)
+      .where(isNotNull(visitorDevices.principalId))
+      .groupBy(visitorDevices.principalId)
+      .as('last_devices')
+
+    const lastSeenExpr = sql<Date | null>`greatest(${lastSessions.lastSessionAt}, ${lastDevices.lastDeviceAt})`
+
     // Build conditions array - filter for role='user' (portal users only)
     const conditions = [eq(principal.role, 'user')]
 
@@ -288,6 +314,9 @@ export async function listPortalUsers(
       case 'most_votes':
         orderBy = desc(sql`COALESCE(${voteCounts.voteCount}, 0)`)
         break
+      case 'last_active':
+        orderBy = sql`${lastSeenExpr} DESC NULLS LAST`
+        break
       case 'name':
         orderBy = asc(user.name)
         break
@@ -313,12 +342,15 @@ export async function listPortalUsers(
           postCount: sql<number>`COALESCE(${postCounts.postCount}, 0)`,
           commentCount: sql<number>`COALESCE(${commentCounts.commentCount}, 0)`,
           voteCount: sql<number>`COALESCE(${voteCounts.voteCount}, 0)`,
+          lastSeenAt: lastSeenExpr,
         })
         .from(principal)
         .innerJoin(user, eq(principal.userId, user.id))
         .leftJoin(postCounts, eq(postCounts.principalId, principal.id))
         .leftJoin(commentCounts, eq(commentCounts.principalId, principal.id))
         .leftJoin(voteCounts, eq(voteCounts.principalId, principal.id))
+        .leftJoin(lastSessions, eq(lastSessions.userId, user.id))
+        .leftJoin(lastDevices, eq(lastDevices.principalId, principal.id))
         .where(whereClause)
         .orderBy(orderBy)
         .limit(limit)
@@ -358,6 +390,7 @@ export async function listPortalUsers(
       isLead: row.principalType === 'anonymous',
       contactEmail: realEmail(row.contactEmail),
       joinedAt: row.joinedAt,
+      lastSeenAt: row.lastSeenAt ? new Date(row.lastSeenAt) : null,
       postCount: Number(row.postCount),
       commentCount: Number(row.commentCount),
       voteCount: Number(row.voteCount),

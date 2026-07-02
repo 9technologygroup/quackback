@@ -39,6 +39,7 @@ const SORT_OPTIONS = [
   { value: 'newest', label: 'Newest' },
   { value: 'oldest', label: 'Oldest' },
   { value: 'most_active', label: 'Most Active' },
+  { value: 'last_active', label: 'Last Active' },
   { value: 'most_posts', label: 'Most Posts' },
   { value: 'most_comments', label: 'Most Comments' },
   { value: 'most_votes', label: 'Most Votes' },

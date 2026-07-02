@@ -57,10 +57,18 @@ export function UserCard({ user, isSelected, onClick }: UserCardProps) {
           <p className="text-sm text-muted-foreground/50 italic">No email</p>
         )}
 
-        {/* Join date */}
-        <div className="flex items-center gap-1.5 mt-1 text-xs text-muted-foreground">
-          <span>Joined</span>
-          <TimeAgo date={new Date(user.joinedAt)} />
+        {/* Join date + freshest activity signal */}
+        <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span>Joined</span>
+            <TimeAgo date={new Date(user.joinedAt)} />
+          </span>
+          {user.lastSeenAt && (
+            <span className="flex items-center gap-1.5">
+              <span>Seen</span>
+              <TimeAgo date={new Date(user.lastSeenAt)} />
+            </span>
+          )}
         </div>
 
         {/* Activity summary */}
