@@ -42,7 +42,7 @@ const PANELS: Array<{
  *  snapshots (top 10 per dimension for the selected period + surface). */
 export function AnalyticsVisitorPanels({ top }: { top: TopBreakdowns }) {
   return (
-    <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:items-start">
+    <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3 md:items-start">
       {PANELS.map(({ dimension, title, header, format }) => {
         const rows = top[dimension] ?? []
         return (

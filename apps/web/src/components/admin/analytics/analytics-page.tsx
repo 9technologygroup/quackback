@@ -136,7 +136,7 @@ export function AnalyticsPage() {
       {/* Main content */}
       <main className="flex-1 min-w-0 overflow-hidden">
         <ScrollArea className="h-full">
-          <div className="mx-auto w-full max-w-4xl px-6 pt-4 pb-6 flex flex-col gap-4">
+          <div className="w-full px-6 pt-4 pb-6 flex flex-col gap-4">
             {/* Header: mobile title + section switcher (left) · updated + period (right) */}
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3 lg:hidden">
