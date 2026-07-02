@@ -200,6 +200,11 @@ export async function getCategoryBySlug(slug: string): Promise<HelpCenterCategor
  * marked public. Routes that serve the unauthenticated help-center UI
  * must use this — otherwise an admin marking a category private hides
  * it from the nav but not from a direct-slug lookup.
+ *
+ * Deliberately not built on helpCenterVisibilityConditions (the shared
+ * article predicate owner): this query has no article join, so only the
+ * category-side conditions (not deleted, isPublic) apply here. Keep the
+ * category-side semantics in lockstep with that owner.
  */
 export async function getPublicCategoryBySlug(slug: string): Promise<HelpCenterCategory> {
   const category = await db.query.helpCenterCategories.findFirst({

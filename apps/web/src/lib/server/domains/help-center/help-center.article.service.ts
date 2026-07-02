@@ -7,8 +7,6 @@ import {
   eq,
   and,
   isNull,
-  isNotNull,
-  lte,
   sql,
 } from '@/lib/server/db'
 import type { KbArticleId, KbCategoryId, PrincipalId } from '@quackback/ids'
@@ -24,6 +22,7 @@ import type {
   UpdateArticleInput,
 } from './help-center.types'
 import { generateArticleEmbedding } from './help-center-embedding.service'
+import { helpCenterVisibilityConditions } from './help-center-search.service'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'help-center-articles' })
@@ -84,25 +83,15 @@ export async function getArticleBySlug(slug: string): Promise<HelpCenterArticleW
 }
 
 export async function getPublicArticleBySlug(slug: string): Promise<HelpCenterArticleWithCategory> {
-  const now = new Date()
-  // Join the parent category so the public lookup also enforces
-  // category.isPublic. Without that check, an article under a category
-  // an admin had flagged private was still reachable by slug — the
-  // category's intent was respected only in the list/nav UI.
+  // Join the parent category so the shared public predicate
+  // (helpCenterVisibilityConditions, the single owner) also enforces
+  // category.isPublic: an article under a private category must not be
+  // reachable by slug.
   const rows = await db
     .select({ article: helpCenterArticles })
     .from(helpCenterArticles)
     .innerJoin(helpCenterCategories, eq(helpCenterArticles.categoryId, helpCenterCategories.id))
-    .where(
-      and(
-        eq(helpCenterArticles.slug, slug),
-        isNull(helpCenterArticles.deletedAt),
-        isNotNull(helpCenterArticles.publishedAt),
-        lte(helpCenterArticles.publishedAt, now),
-        isNull(helpCenterCategories.deletedAt),
-        eq(helpCenterCategories.isPublic, true)
-      )
-    )
+    .where(and(eq(helpCenterArticles.slug, slug), ...helpCenterVisibilityConditions('public')))
     .limit(1)
   const article = rows[0]?.article
   if (!article) {

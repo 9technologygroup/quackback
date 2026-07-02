@@ -9,6 +9,7 @@ import { db, helpCenterArticles, eq, sql } from '@/lib/server/db'
 import { getOpenAI } from '@/lib/server/domains/ai/config'
 import { getEmbeddingModel } from '@/lib/server/domains/ai/models'
 import { withRetry } from '@/lib/server/domains/ai/retry'
+import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import type { KbArticleId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
 
@@ -29,20 +30,43 @@ export function formatArticleText(title: string, content: string, categoryName?:
   return parts.join('\n\n').slice(0, 8000)
 }
 
+/** Where an embedding call came from, for the ai_usage_log row. */
+export interface KbEmbeddingLogContext {
+  pipelineStep: string
+  metadata?: Record<string, unknown>
+}
+
 /**
  * Generate embedding for text using the configured embedding model.
+ * Every call is recorded in ai_usage_log under the caller's pipeline step.
  */
-export async function generateKbEmbedding(text: string): Promise<number[] | null> {
+export async function generateKbEmbedding(
+  text: string,
+  logContext?: KbEmbeddingLogContext
+): Promise<number[] | null> {
   const openai = getOpenAI()
   const model = getEmbeddingModel()
   if (!openai || !model) return null
 
   try {
-    const { result: response } = await withRetry(() =>
-      openai.embeddings.create({
+    const response = await withUsageLogging(
+      {
+        pipelineStep: logContext?.pipelineStep ?? 'kb_embedding',
+        callType: 'embedding',
         model,
-        input: text,
-        dimensions: KB_EMBEDDING_DIMENSIONS,
+        metadata: logContext?.metadata,
+      },
+      () =>
+        withRetry(() =>
+          openai.embeddings.create({
+            model,
+            input: text,
+            dimensions: KB_EMBEDDING_DIMENSIONS,
+          })
+        ),
+      (result) => ({
+        inputTokens: result.usage?.prompt_tokens ?? 0,
+        totalTokens: result.usage?.total_tokens ?? 0,
       })
     )
     return response.data[0]?.embedding ?? null
@@ -62,7 +86,10 @@ export async function generateArticleEmbedding(
   categoryName?: string
 ): Promise<boolean> {
   const text = formatArticleText(title, content, categoryName)
-  const embedding = await generateKbEmbedding(text)
+  const embedding = await generateKbEmbedding(text, {
+    pipelineStep: 'kb_article_embedding',
+    metadata: { kbArticleId: articleId },
+  })
   if (!embedding) return false
 
   const vectorStr = `[${embedding.join(',')}]`

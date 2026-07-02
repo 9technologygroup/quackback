@@ -22,10 +22,36 @@ import type {
   ListArticlesParams,
   ArticleListResult,
 } from './help-center.types'
+import {
+  searchArticleIdsRanked,
+  helpCenterVisibilityConditions,
+  RANKED_SEARCH_POOL,
+} from './help-center-search.service'
 
 // ============================================================================
 // Article Queries
 // ============================================================================
+
+// The list query intentionally excludes heavy columns (contentJson,
+// embedding, searchVector) — the list UI only needs metadata + a short
+// preview of `content`.
+const LIST_COLUMNS = {
+  id: true,
+  categoryId: true,
+  slug: true,
+  title: true,
+  description: true,
+  position: true,
+  content: true,
+  principalId: true,
+  publishedAt: true,
+  viewCount: true,
+  helpfulCount: true,
+  notHelpfulCount: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+} as const
 
 export async function listArticles(params: ListArticlesParams): Promise<ArticleListResult> {
   const {
@@ -38,6 +64,15 @@ export async function listArticles(params: ListArticlesParams): Promise<ArticleL
     sort = 'newest',
   } = params
   const now = new Date()
+
+  // Text search rides the same hybrid ranking as the public help center
+  // (keyword + semantic), with team visibility (drafts, private categories).
+  // The trash view keeps the plain keyword filter below: soft-deleted rows
+  // are excluded from ranking by design.
+  const searchTerm = search?.trim()
+  if (searchTerm && !showDeleted) {
+    return listArticlesRanked(searchTerm, { categoryId, status, cursor, limit })
+  }
 
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
@@ -102,35 +137,81 @@ export async function listArticles(params: ListArticlesParams): Promise<ArticleL
       ? [asc(helpCenterArticles.createdAt), asc(helpCenterArticles.id)]
       : [desc(helpCenterArticles.createdAt), desc(helpCenterArticles.id)]
 
-  // Exclude heavy columns (contentJson, embedding, searchVector) from the list
-  // query — the list UI only needs metadata + a short preview of `content`.
   const articles = await db.query.helpCenterArticles.findMany({
     where: and(...conditions),
     orderBy: orderByClause,
     limit: limit + 1,
-    columns: {
-      id: true,
-      categoryId: true,
-      slug: true,
-      title: true,
-      description: true,
-      position: true,
-      content: true,
-      principalId: true,
-      publishedAt: true,
-      viewCount: true,
-      helpfulCount: true,
-      notHelpfulCount: true,
-      createdAt: true,
-      updatedAt: true,
-      deletedAt: true,
-    },
+    columns: LIST_COLUMNS,
   })
 
   const hasMore = articles.length > limit
   const items = hasMore ? articles.slice(0, limit) : articles
+  const resolved = await resolveArticleRelations(items)
 
-  // Batch resolve categories and authors
+  return {
+    items: resolved,
+    nextCursor: hasMore && items.length > 0 ? items[items.length - 1].id : null,
+    hasMore,
+  }
+}
+
+/**
+ * Search branch of listArticles: rank ids with the shared hybrid scorer,
+ * paginate by slicing the ranked pool after the cursor, then load rows and
+ * restore rank order.
+ */
+async function listArticlesRanked(
+  searchTerm: string,
+  opts: {
+    categoryId?: string
+    status: 'draft' | 'published' | 'all'
+    cursor?: string
+    limit: number
+  }
+): Promise<ArticleListResult> {
+  const rankedIds = await searchArticleIdsRanked(searchTerm, {
+    audience: 'team',
+    categoryId: opts.categoryId,
+    status: opts.status,
+    limit: RANKED_SEARCH_POOL,
+  })
+
+  let window = rankedIds
+  if (opts.cursor) {
+    const idx = window.indexOf(opts.cursor)
+    window = idx >= 0 ? window.slice(idx + 1) : []
+  }
+  const pageIds = window.slice(0, opts.limit)
+  const hasMore = window.length > opts.limit
+
+  const rows =
+    pageIds.length > 0
+      ? await db.query.helpCenterArticles.findMany({
+          where: inArray(helpCenterArticles.id, pageIds as KbArticleId[]),
+          columns: LIST_COLUMNS,
+        })
+      : []
+
+  const rowById = new Map(rows.map((r) => [r.id as string, r]))
+  const ordered = pageIds.flatMap((id) => {
+    const row = rowById.get(id)
+    return row ? [row] : []
+  })
+  const resolved = await resolveArticleRelations(ordered)
+
+  return {
+    items: resolved,
+    nextCursor: hasMore && pageIds.length > 0 ? pageIds[pageIds.length - 1] : null,
+    hasMore,
+  }
+}
+
+type ArticleListRow = Omit<HelpCenterArticleWithCategory, 'contentJson' | 'category' | 'author'>
+
+/** Batch resolve categories and authors for a page of article rows. */
+async function resolveArticleRelations(
+  items: ArticleListRow[]
+): Promise<HelpCenterArticleWithCategory[]> {
   const categoryIds = [...new Set(items.map((a) => a.categoryId))]
   const principalIds = [
     ...new Set(items.map((a) => a.principalId).filter(Boolean)),
@@ -154,7 +235,7 @@ export async function listArticles(params: ListArticlesParams): Promise<ArticleL
   const categoryMap = new Map(categories.map((c) => [c.id, c]))
   const authorMap = new Map(principals.map((p) => [p.id, p]))
 
-  const resolved: HelpCenterArticleWithCategory[] = items.map((article) => {
+  return items.map((article) => {
     const cat = categoryMap.get(article.categoryId)
     const author = article.principalId ? authorMap.get(article.principalId) : null
     return {
@@ -170,12 +251,6 @@ export async function listArticles(params: ListArticlesParams): Promise<ArticleL
         : null,
     }
   })
-
-  return {
-    items: resolved,
-    nextCursor: hasMore && items.length > 0 ? items[items.length - 1].id : null,
-    hasMore,
-  }
 }
 
 export async function listPublicArticles(params: {
@@ -188,11 +263,10 @@ export async function listPublicArticles(params: {
 }
 
 export async function listPublicArticlesForCategory(categoryId: string) {
-  // Join category so we can enforce isPublic + non-deleted on the
-  // category side. Without these checks, an admin marking a category
-  // private only hid it from the public nav — direct category-id
-  // article lookups still returned the children. Also caps published_at
-  // at now() so a scheduled-future article doesn't leak via the list.
+  // Join category so the shared public predicate can enforce isPublic +
+  // non-deleted on the category side too. Without the join, an admin
+  // marking a category private only hid it from the public nav; direct
+  // category-id article lookups still returned the children.
   return db
     .select({
       id: helpCenterArticles.id,
@@ -211,11 +285,7 @@ export async function listPublicArticlesForCategory(categoryId: string) {
     .where(
       and(
         eq(helpCenterArticles.categoryId, categoryId as KbCategoryId),
-        isNotNull(helpCenterArticles.publishedAt),
-        lte(helpCenterArticles.publishedAt, new Date()),
-        isNull(helpCenterArticles.deletedAt),
-        isNull(helpCenterCategories.deletedAt),
-        eq(helpCenterCategories.isPublic, true)
+        ...helpCenterVisibilityConditions('public')
       )
     )
     .orderBy(asc(helpCenterArticles.position), asc(helpCenterArticles.publishedAt))
