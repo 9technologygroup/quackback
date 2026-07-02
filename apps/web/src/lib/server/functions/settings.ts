@@ -677,12 +677,19 @@ export const updateCustomCssFn = createServerFn({ method: 'POST' })
 
 const updateDeveloperConfigSchema = z.object({
   mcpEnabled: z.boolean().optional(),
+  oauthDynamicClientRegistrationEnabled: z.boolean().optional(),
 })
 
 export const updateDeveloperConfigFn = createServerFn({ method: 'POST' })
   .validator(updateDeveloperConfigSchema)
   .handler(async ({ data }) => {
-    log.info({ mcp_enabled: data.mcpEnabled }, 'update developer config')
+    log.info(
+      {
+        mcp_enabled: data.mcpEnabled,
+        oauth_dynamic_client_registration_enabled: data.oauthDynamicClientRegistrationEnabled,
+      },
+      'update developer config'
+    )
     try {
       await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
       return await updateDeveloperConfig(data)

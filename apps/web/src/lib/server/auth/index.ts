@@ -407,7 +407,13 @@ async function createAuth() {
         consentPage: '/oauth/consent',
 
         // Allow Claude Code (and other MCP clients) to self-register
-        allowDynamicClientRegistration: true,
+        // (RFC 7591). Admin-toggleable via Settings > Developers; the
+        // service bumps auth_config_version on change, so the toggle takes
+        // effect without a restart via the normal instance rebuild.
+        // `?? true` also covers cached settings serialized before the key
+        // existed.
+        allowDynamicClientRegistration:
+          tenantSettings?.developerConfig?.oauthDynamicClientRegistrationEnabled ?? true,
         allowUnauthenticatedClientRegistration: true,
 
         // Quackback-specific scopes
@@ -425,13 +431,32 @@ async function createAuth() {
           'write:chat',
         ],
 
-        // Default scopes for dynamically registered clients
+        // Default scopes when a registering client omits `scope` (RFC 7591).
+        // Real MCP clients (Claude Code, MCP SDK per SEP-835) resolve their
+        // scope list from the protected-resource metadata's scopes_supported
+        // and send it explicitly at registration, so these defaults only
+        // apply to clients that ask for nothing. Keep that fallback
+        // read-only with no offline_access: an unknown silent client gets
+        // no write access and no refresh token unless it asks.
         clientRegistrationDefaultScopes: [
           'openid',
           'profile',
           'email',
           'read:feedback',
+          'read:article',
+          'read:chat',
+        ],
+
+        // Setting clientRegistrationDefaultScopes alone would also narrow
+        // the set a registering client may REQUEST to those defaults and
+        // reject MCP clients' explicit write/offline_access registrations,
+        // so allow the full catalogue for explicit requests.
+        clientRegistrationAllowedScopes: [
+          'openid',
+          'profile',
+          'email',
           'offline_access',
+          'read:feedback',
           'write:feedback',
           'write:changelog',
           'read:article',

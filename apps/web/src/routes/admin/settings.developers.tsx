@@ -118,7 +118,12 @@ function ApiPage() {
             title="MCP Server"
             description="Enable or disable the MCP endpoint for AI integrations."
           >
-            <McpServerSettings initialEnabled={developerConfigQuery.data.mcpEnabled} />
+            <McpServerSettings
+              initialEnabled={developerConfigQuery.data.mcpEnabled}
+              initialDynamicRegistrationEnabled={
+                developerConfigQuery.data.oauthDynamicClientRegistrationEnabled
+              }
+            />
           </SettingsCard>
           <McpSetupGuide endpointUrl={mcpEndpointUrl} />
         </TabsContent>

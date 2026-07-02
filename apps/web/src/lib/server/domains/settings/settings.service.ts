@@ -1,4 +1,11 @@
-import { db, eq, settings, ssoVerifiedDomain } from '@/lib/server/db'
+import {
+  db,
+  eq,
+  settings,
+  ssoVerifiedDomain,
+  type Database,
+  type Transaction,
+} from '@/lib/server/db'
 import type { IdentityProviderId } from '@quackback/ids'
 import { cacheGet, cacheSet, CACHE_KEYS } from '@/lib/server/redis'
 import { ValidationError } from '@/lib/shared/errors'
@@ -641,10 +648,31 @@ export async function updateDeveloperConfig(
     const org = await requireSettings()
     const existing = parseJsonConfig(org.developerConfig, DEFAULT_DEVELOPER_CONFIG)
     const updated = deepMerge(existing, input as Partial<DeveloperConfig>)
-    await db
-      .update(settings)
-      .set({ developerConfig: JSON.stringify(updated) })
-      .where(eq(settings.id, org.id))
+
+    const writeConfig = (executor: Database | Transaction) =>
+      executor
+        .update(settings)
+        .set({ developerConfig: JSON.stringify(updated) })
+        .where(eq(settings.id, org.id))
+
+    // The oauthProvider plugin reads the dynamic-client-registration toggle
+    // at auth-instance build time, so a change must bump auth_config_version
+    // in the same transaction to rebuild cached Better-Auth instances on
+    // every pod (same pattern as updateAuthConfig).
+    if (
+      updated.oauthDynamicClientRegistrationEnabled !==
+      existing.oauthDynamicClientRegistrationEnabled
+    ) {
+      const { bumpAuthConfigVersionInTx } = await import('@/lib/server/auth/config-version')
+      const { resetAuth } = await import('@/lib/server/auth')
+      await db.transaction(async (tx) => {
+        await writeConfig(tx)
+        await bumpAuthConfigVersionInTx(tx)
+      })
+      resetAuth()
+    } else {
+      await writeConfig(db)
+    }
     await invalidateSettingsCache()
     return updated
   } catch (error) {

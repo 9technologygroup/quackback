@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ApiKey } from '@/lib/server/domains/api-keys'
 import type { PrincipalId, ApiKeyId, UserId } from '@quackback/ids'
 
+/** DeveloperConfig for the mocked getDeveloperConfig (everything enabled). */
+const devConfig = (overrides = {}) => ({
+  mcpEnabled: true,
+  mcpPortalAccessEnabled: true,
+  oauthDynamicClientRegistrationEnabled: true,
+  ...overrides,
+})
+
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 
 vi.mock('@/lib/server/domains/api-keys/api-key.service', () => ({
@@ -50,9 +58,7 @@ vi.mock('@/lib/server/domains/api/rate-limit', () => ({
 // `getTenantSettings` is consumed lazily by the suspension guard (which the
 // API auth chokepoint invokes); returning `null` keeps the workspace 'active'.
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
-  getDeveloperConfig: vi
-    .fn()
-    .mockResolvedValue({ mcpEnabled: true, mcpPortalAccessEnabled: false }),
+  getDeveloperConfig: vi.fn().mockResolvedValue(devConfig({ mcpPortalAccessEnabled: false })),
   getTenantSettings: vi.fn().mockResolvedValue(null),
   isFeatureEnabled: vi.fn().mockResolvedValue(true),
 }))
@@ -588,10 +594,7 @@ describe('MCP HTTP Handler', () => {
 
     it('should succeed for OAuth portal user when portal access enabled', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       await setupValidOAuth({ role: 'user' })
 
       const { handleMcpRequest } = await import('../handler')
@@ -1708,10 +1711,7 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny triage_post for OAuth portal user (role enforcement)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession([
         'read:feedback',
         'write:feedback',
@@ -1723,10 +1723,7 @@ describe('MCP HTTP Handler', () => {
         scopes: ['read:feedback', 'write:feedback', 'write:changelog'],
       })
       // Also need portal access enabled for the tool call auth
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1787,19 +1784,13 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny search posts for OAuth portal user (inbox is team-only)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1820,19 +1811,13 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny get_details(post) for OAuth portal user (inbox is team-only)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1855,19 +1840,13 @@ describe('MCP HTTP Handler', () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
       const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
       vi.mocked(isFeatureEnabled).mockResolvedValue(true)
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:article'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:article'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1890,19 +1869,13 @@ describe('MCP HTTP Handler', () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
       const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
       vi.mocked(isFeatureEnabled).mockResolvedValue(true)
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:article'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:article'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1923,19 +1896,13 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny get_details(changelog) for OAuth portal user (drafts/scheduled are team-only)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1956,19 +1923,13 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny search showDeleted for OAuth portal user (role enforcement)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback', 'write:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback', 'write:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1989,19 +1950,13 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny delete_post for OAuth portal user (role enforcement)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback', 'write:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback', 'write:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -2049,16 +2004,10 @@ describe('MCP HTTP Handler', () => {
       // — forcing 'admin' would early-return tierAllows for every tier and
       // set requiresApproval:false, bypassing both gates.
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
       await setupValidOAuth({ role: 'user', scopes: ['write:feedback'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const { createPost } = await import('@/lib/server/domains/posts/post.service')
 
@@ -2083,16 +2032,10 @@ describe('MCP HTTP Handler', () => {
       // canCreateComment applies the comment tier + moderation axis — forcing
       // 'admin' would bypass both via the isTeamActor early-return.
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
       await setupValidOAuth({ role: 'user', scopes: ['write:feedback'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const { createComment } = await import('@/lib/server/domains/comments/comment.service')
 
@@ -2120,16 +2063,10 @@ describe('MCP HTTP Handler', () => {
       const { NotFoundError } = await import('@/lib/shared/errors')
 
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
       await setupValidOAuth({ role: 'user', scopes: ['write:feedback'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       vi.mocked(assertCommentViewable).mockRejectedValueOnce(
         new NotFoundError('COMMENT_NOT_FOUND', 'Comment comment_1 not found')
@@ -2162,16 +2099,10 @@ describe('MCP HTTP Handler', () => {
       const { NotFoundError } = await import('@/lib/shared/errors')
 
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
       await setupValidOAuth({ role: 'user', scopes: ['write:feedback'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       vi.mocked(assertCommentViewable).mockRejectedValueOnce(
         new NotFoundError('COMMENT_NOT_FOUND', 'Comment comment_1 not found')
@@ -2587,10 +2518,7 @@ describe('MCP HTTP Handler', () => {
       // Mirror the triage_post role-denial test: a non-team (role: 'user')
       // principal must be rejected by requireTeamRole even with read:chat.
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       await setupValidOAuth({ role: 'user', scopes: ['read:chat'] })
       const { handleMcpRequest } = await import('../handler')
       await handleMcpRequest(
@@ -2603,10 +2531,7 @@ describe('MCP HTTP Handler', () => {
         )
       )
       await setupValidOAuth({ role: 'user', scopes: ['read:chat'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
