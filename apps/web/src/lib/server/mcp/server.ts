@@ -21,7 +21,12 @@ export function createMcpServer(auth: McpAuthContext): McpServer {
   return server
 }
 
-/** Wrap a resource callback with a scope check. */
+/**
+ * Wrap a resource callback with a scope check. The scope literals below are
+ * per-resource requirements, not a scope list: each is typed McpScope (an
+ * alias of the API_KEY_SCOPES vocabulary), so a scope removed from the
+ * vocabulary fails typecheck here rather than drifting.
+ */
 function scopeGated(
   auth: McpAuthContext,
   scope: McpScope,
