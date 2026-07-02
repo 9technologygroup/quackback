@@ -299,8 +299,10 @@ export type PostCommentReaction = InferSelectModel<typeof postCommentReactions>
 export type NewPostCommentReaction = InferInsertModel<typeof postCommentReactions>
 
 // Support-inbox conversation statuses — kept in sync with the conversations.status
-// column enum (schema.test.ts pins the match).
-export const CONVERSATION_STATUSES = ['open', 'pending', 'closed'] as const
+// column enum (schema.test.ts pins the match). 'snoozed' is a deferred-work state
+// with an explicit conversations.snoozed_until wake time (NULL = snoozed until the
+// customer next replies); it replaced the earlier 'pending' in migration 0139.
+export const CONVERSATION_STATUSES = ['open', 'snoozed', 'closed'] as const
 export type ConversationStatus = (typeof CONVERSATION_STATUSES)[number]
 
 // Why a conversation was ended (conversations.end_reason). A plain-text column

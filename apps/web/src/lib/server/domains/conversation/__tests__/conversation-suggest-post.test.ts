@@ -18,7 +18,7 @@ const publishAgentConversationEvent = vi.fn()
 // Mutable state the db mock reads: the conversation status drives the
 // resolved-gate, so one mock serves both the rejected and accepted cases.
 const mocks = vi.hoisted(() => ({
-  state: { conversationStatus: 'open' as 'open' | 'pending' | 'closed' },
+  state: { conversationStatus: 'open' as 'open' | 'snoozed' | 'closed' },
 }))
 
 vi.mock('../conversation.webhooks', () => ({
@@ -196,8 +196,8 @@ describe('suggestPost', () => {
     expect(publishAgentConversationEvent).not.toHaveBeenCalled()
   })
 
-  it('rejects a pending conversation too (only closed is resolved)', async () => {
-    mocks.state.conversationStatus = 'pending'
+  it('rejects a snoozed conversation too (only closed is resolved)', async () => {
+    mocks.state.conversationStatus = 'snoozed'
     await expect(
       suggestPost(
         { conversationId, boardId, title: 'Add dark mode', content: 'x' },

@@ -24,7 +24,7 @@ test.describe('Admin Support Inbox', { tag: '@smoke' }, () => {
     seeded = seedConversation(`E2E inbox conversation ${Date.now()}`)
   })
 
-  test('conversation lifecycle: list, thread, reply, note, triage, convert, close', async ({
+  test('conversation lifecycle: list, thread, reply, note, triage, convert, snooze, close', async ({
     page,
   }) => {
     await page.goto('/admin/inbox')
@@ -100,9 +100,18 @@ test.describe('Admin Support Inbox', { tag: '@smoke' }, () => {
     await waitForToast(page, /Post created from conversation|Upvoted existing post/)
     await expect(dialog).toBeHidden({ timeout: 10000 })
 
+    // Snooze the conversation (until the customer replies): the status badge
+    // flips to 'snoozed'. A customer reply then waking it is covered by unit
+    // tests (it needs a widget-side message this DB-seeded spec can't drive).
+    await panel.getByRole('button', { name: 'open', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Snooze until they reply' }).click()
+    await expect(panel.getByRole('button', { name: 'snoozed', exact: true })).toBeVisible({
+      timeout: 10000,
+    })
+
     // Close the conversation via the status control (kept last: the default
     // list filter is 'open', so the row drops out of the list after this).
-    await panel.getByRole('button', { name: 'open', exact: true }).click()
+    await panel.getByRole('button', { name: 'snoozed', exact: true }).click()
     await page.getByRole('menuitem', { name: 'closed' }).click()
     await expect(panel.getByRole('button', { name: 'closed', exact: true })).toBeVisible({
       timeout: 10000,

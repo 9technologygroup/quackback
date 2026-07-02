@@ -39,6 +39,24 @@ export const conversations = pgTable(
     // conversation may be unassigned). `set null` mirrors other actor FKs.
     assignedAgentPrincipalId: typeIdColumnNullable('principal')('assigned_agent_principal_id'),
     status: text('status', { enum: CONVERSATION_STATUSES }).notNull().default('open'),
+    // Snooze wake time for a 'snoozed' conversation. NULL while snoozed means
+    // "until the customer next replies" (a customer message always wakes it); a
+    // timestamp is a timer the sweeper trips to reopen the thread.
+    snoozedUntil: timestamp('snoozed_until', { withTimezone: true }),
+    // When the customer started waiting on a reply: set on a customer message
+    // when currently NULL, cleared on any teammate/assistant reply. Drives the
+    // waiting-longest inbox ordering. NULL = nobody is waiting.
+    waitingSince: timestamp('waiting_since', { withTimezone: true }),
+    // Inbound source discriminator for the unified inbox. Only 'widget' exists
+    // today; email and other sources join in later phases. NOT NULL so a new
+    // source can never be silently mislabeled by an omitted insert.
+    source: text('source').notNull().default('widget'),
+    // Per-conversation extensible metadata (B2B custom fields). Empty object by
+    // default; the app owns the shape.
+    customAttributes: jsonb('custom_attributes')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     // The inbound channel this conversation arrived on. Required and set
     // explicitly by every create path; no default, so a conversation on a new
     // channel ('email' / 'web_form' / ...) can never be silently labeled
@@ -89,8 +107,20 @@ export const conversations = pgTable(
     }).onDelete('set null'),
     // Inbox feed: list by status, newest activity first.
     index('conversations_status_last_message_idx').on(table.status, table.lastMessageAt),
+    // Cross-status keyset feed (D17): last activity first with an id tiebreak, so
+    // the unfiltered inbox pages deterministically without leaning on the status
+    // composite above. nullsFirst matches postgres's default for plain DESC.
+    index('conversations_last_message_at_id_idx').on(
+      table.lastMessageAt.desc().nullsFirst(),
+      table.id
+    ),
     index('conversations_visitor_principal_idx').on(table.visitorPrincipalId),
     index('conversations_assigned_agent_idx').on(table.assignedAgentPrincipalId),
+    // Sweeper wake pass: only timer-snoozed rows have a due wake time, so a
+    // partial index over them keeps the periodic sweep cheap.
+    index('conversations_snoozed_until_idx')
+      .on(table.snoozedUntil)
+      .where(sql`status = 'snoozed' AND snoozed_until IS NOT NULL`),
   ]
 )
 

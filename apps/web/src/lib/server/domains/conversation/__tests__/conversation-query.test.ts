@@ -411,9 +411,9 @@ describe('resolveVisitorConversation', () => {
       conversation: closed,
       isReadOnly: true,
     })
-    const pending = makeConversation({ status: 'pending' })
-    expect(resolveVisitorConversation(pending, visitorId)).toEqual({
-      conversation: pending,
+    const snoozed = makeConversation({ status: 'snoozed' })
+    expect(resolveVisitorConversation(snoozed, visitorId)).toEqual({
+      conversation: snoozed,
       isReadOnly: false,
     })
   })

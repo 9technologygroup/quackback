@@ -1,27 +1,45 @@
+import type { PrincipalId } from '@quackback/ids'
 import type { ConversationStatus, ConversationEndReason } from '@/lib/shared/conversation/types'
 
 /**
  * Conversation status transitions, kept pure so they're unit-tested directly.
  *
- * A "content surface" lifecycle: open (active) | pending (waiting on the
- * customer) | closed (resolved).
+ * The lifecycle: open (active) | snoozed (deferred, waking on a timer or the
+ * customer's next reply) | closed (resolved).
  */
 
 /**
  * A visitor message always surfaces the conversation — it returns to 'open'
- * from any prior state: a reply answers a 'pending' thread and reopens a
- * 'closed' one. (No parameter: the result never depends on the prior status.)
+ * from any prior state: a reply wakes a 'snoozed' thread and reopens a 'closed'
+ * one. (No parameter: the result never depends on the prior status.)
  */
 export function applyVisitorReopenStatus(): ConversationStatus {
   return 'open'
 }
 
 /**
- * An agent reply reopens a 'closed' thread, but preserves 'pending' (still
- * waiting on the customer — replying again doesn't change that).
+ * An agent reply reopens a 'closed' thread, but preserves 'snoozed' — ANY
+ * teammate replying into a snoozed thread is "send and stay snoozed" (a
+ * deliberate reply does not re-queue it), leaving the snooze timer or an
+ * explicit reopen to bring it back.
  */
 export function applyAgentReopenStatus(current: ConversationStatus): ConversationStatus {
   return current === 'closed' ? 'open' : current
+}
+
+/**
+ * Whether a triage/attribute update should WAKE a snoozed conversation. A
+ * non-assignee teammate touching a snoozed thread (priority, reassignment, …)
+ * pulls it back into the open queue; the assignee's own edits leave it snoozed
+ * (send-and-stay-snoozed). Only applies while snoozed.
+ */
+export function shouldWakeSnoozedOnTriage(
+  status: ConversationStatus,
+  actorPrincipalId: PrincipalId | null,
+  assignedAgentPrincipalId: PrincipalId | null
+): boolean {
+  if (status !== 'snoozed') return false
+  return actorPrincipalId !== assignedAgentPrincipalId
 }
 
 /** resolvedAt is stamped when a conversation is closed/resolved, cleared otherwise. */

@@ -17,10 +17,10 @@ export const Route = createFileRoute('/_portal/support/')({
 /** Status chip copy, localized per status (mirrors the widget's history list). */
 function StatusLabel({ status }: { status: string }) {
   switch (status) {
+    // Snooze is internal queue discipline; customers see a snoozed thread as open.
     case 'open':
+    case 'snoozed':
       return <FormattedMessage id="portal.support.status.open" defaultMessage="Open" />
-    case 'pending':
-      return <FormattedMessage id="portal.support.status.pending" defaultMessage="Awaiting you" />
     case 'closed':
       return <FormattedMessage id="portal.support.status.closed" defaultMessage="Closed" />
     default:

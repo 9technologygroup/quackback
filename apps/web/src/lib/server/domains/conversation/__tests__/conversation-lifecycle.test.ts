@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest'
 import {
   applyVisitorReopenStatus,
   applyAgentReopenStatus,
+  shouldWakeSnoozedOnTriage,
   resolvedAtForStatus,
   shouldRequeueOnAgentOffline,
   unreadWatermarkFromAnchor,
   resolvedConversationRate,
 } from '../conversation.lifecycle'
+import type { PrincipalId } from '@quackback/ids'
 import { CONVERSATION_END_REASONS } from '@/lib/shared/conversation/types'
 
 describe('unreadWatermarkFromAnchor', () => {
@@ -38,11 +40,33 @@ describe('applyVisitorReopenStatus', () => {
 })
 
 describe('applyAgentReopenStatus', () => {
-  it('reopens a closed thread but preserves pending', () => {
+  it('reopens a closed thread but preserves snoozed', () => {
     expect(applyAgentReopenStatus('closed')).toBe('open')
-    // An agent reply does NOT clear "waiting on customer" — only a visitor does.
-    expect(applyAgentReopenStatus('pending')).toBe('pending')
+    // An agent reply is "send and stay snoozed" — only a customer or the timer wakes it.
+    expect(applyAgentReopenStatus('snoozed')).toBe('snoozed')
     expect(applyAgentReopenStatus('open')).toBe('open')
+  })
+})
+
+describe('shouldWakeSnoozedOnTriage', () => {
+  const assignee = 'principal_assignee' as PrincipalId
+  const other = 'principal_other' as PrincipalId
+
+  it('wakes a snoozed thread when a NON-assignee teammate triages it', () => {
+    expect(shouldWakeSnoozedOnTriage('snoozed', other, assignee)).toBe(true)
+  })
+
+  it('leaves it snoozed when the assignee triages their own thread', () => {
+    expect(shouldWakeSnoozedOnTriage('snoozed', assignee, assignee)).toBe(false)
+  })
+
+  it('treats any teammate as a non-assignee on an unassigned snoozed thread', () => {
+    expect(shouldWakeSnoozedOnTriage('snoozed', other, null)).toBe(true)
+  })
+
+  it('never wakes a non-snoozed thread', () => {
+    expect(shouldWakeSnoozedOnTriage('open', other, assignee)).toBe(false)
+    expect(shouldWakeSnoozedOnTriage('closed', other, assignee)).toBe(false)
   })
 })
 
@@ -53,7 +77,7 @@ describe('resolvedAtForStatus', () => {
   })
   it('clears it for every non-closed status', () => {
     expect(resolvedAtForStatus('open', now)).toBeNull()
-    expect(resolvedAtForStatus('pending', now)).toBeNull()
+    expect(resolvedAtForStatus('snoozed', now)).toBeNull()
   })
 })
 
@@ -67,9 +91,9 @@ describe('shouldRequeueOnAgentOffline', () => {
     expect(shouldRequeueOnAgentOffline('open', true)).toBe(false)
   })
 
-  it('never re-queues a closed or pending conversation', () => {
+  it('never re-queues a closed or snoozed conversation', () => {
     expect(shouldRequeueOnAgentOffline('closed', false)).toBe(false)
-    expect(shouldRequeueOnAgentOffline('pending', false)).toBe(false)
+    expect(shouldRequeueOnAgentOffline('snoozed', false)).toBe(false)
   })
 })
 

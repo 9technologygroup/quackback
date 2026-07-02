@@ -159,7 +159,7 @@ export function ConversationListColumn({
               <DropdownMenuItem onClick={() => onStatus('all')} className="text-xs">
                 All statuses
               </DropdownMenuItem>
-              {(['open', 'pending', 'closed'] as const).map((s) => (
+              {(['open', 'snoozed', 'closed'] as const).map((s) => (
                 <DropdownMenuItem
                   key={s}
                   onClick={() => onStatus(s)}

@@ -68,7 +68,7 @@ export const Route = createFileRoute('/admin/inbox')({
         : undefined,
     status:
       search.status === 'open' ||
-      search.status === 'pending' ||
+      search.status === 'snoozed' ||
       search.status === 'closed' ||
       search.status === 'all'
         ? search.status

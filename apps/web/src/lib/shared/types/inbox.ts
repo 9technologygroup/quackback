@@ -47,6 +47,8 @@ export interface PostDetails {
   authorName: string | null
   authorEmail: string | null
   createdAt: Date
+  /** Target ship date (time-based roadmap); null when unset. */
+  eta?: Date | string | null
   board: Pick<Board, 'id' | 'name' | 'slug'>
   tags: Pick<PostTag, 'id' | 'name' | 'color'>[]
   comments: CommentWithReplies[]

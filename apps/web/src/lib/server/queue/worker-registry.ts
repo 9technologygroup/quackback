@@ -87,6 +87,17 @@ export const WORKER_REGISTRY: readonly WorkerEntry[] = [
         m.closePageViewPartitionQueue()
       ),
   },
+  {
+    name: 'snooze-sweep',
+    init: () =>
+      import('@/lib/server/domains/conversation/snooze-sweep-queue').then((m) =>
+        m.initSnoozeSweepWorker()
+      ),
+    close: () =>
+      import('@/lib/server/domains/conversation/snooze-sweep-queue').then((m) =>
+        m.closeSnoozeSweepQueue()
+      ),
+  },
 ]
 
 type WorkerBootState = 'pending' | 'running' | 'failed'

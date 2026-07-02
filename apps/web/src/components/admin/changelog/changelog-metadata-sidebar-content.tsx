@@ -25,7 +25,7 @@ import {
   ListItemRemoveButton,
   type StatusOption,
 } from '@/components/shared/sidebar-primitives'
-import { cn } from '@/lib/shared/utils'
+import { cn, tomorrowAt } from '@/lib/shared/utils'
 import type { PostId } from '@quackback/ids'
 import type { PublishState } from '@/lib/shared/schemas/changelog'
 
@@ -66,10 +66,7 @@ export function ChangelogMetadataSidebarContent({
     if (publishState.type === 'scheduled') {
       return publishState.publishAt
     }
-    const tomorrow = new Date()
-    tomorrow.setDate(tomorrow.getDate() + 1)
-    tomorrow.setHours(9, 0, 0, 0)
-    return tomorrow
+    return tomorrowAt(9)
   })
 
   const displayPlaceholder =

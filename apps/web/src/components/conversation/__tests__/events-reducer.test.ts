@@ -446,7 +446,7 @@ describe('applyVisitorThreadEvent', () => {
 describe('appendSentAgentMessage', () => {
   it('appends our sent message and adopts the returned conversation', () => {
     const prev = agentCache()
-    const conv = conversation({ status: 'pending' })
+    const conv = conversation({ status: 'snoozed' })
     const next = appendSentAgentMessage(prev, {
       conversation: conv,
       message: baseMessage('m2', { senderType: 'agent' }),

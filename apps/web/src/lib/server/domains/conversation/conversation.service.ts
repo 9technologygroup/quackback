@@ -13,6 +13,8 @@ import {
   eq,
   and,
   isNull,
+  isNotNull,
+  lte,
   inArray,
   conversations,
   conversationMessages,
@@ -46,6 +48,7 @@ import {
 import {
   applyVisitorReopenStatus,
   applyAgentReopenStatus,
+  shouldWakeSnoozedOnTriage,
   resolvedAtForStatus,
   shouldRequeueOnAgentOffline,
   unreadWatermarkFromAnchor,
@@ -308,6 +311,11 @@ export async function sendVisitorMessage(
         // Visitor is active, so their side is read; a reply surfaces the thread.
         visitorLastReadAt: message.createdAt,
         status: visitorNextStatus,
+        // A customer message always wakes a snoozed thread — clear the timer.
+        snoozedUntil: null,
+        // The customer is now waiting on a reply: start the clock if it isn't
+        // already running (the oldest unanswered message wins).
+        waitingSince: conversation.waitingSince ?? message.createdAt,
         // Keep resolvedAt consistent with the new status — a reply that reopens
         // a closed thread must clear the stale resolution timestamp.
         resolvedAt: resolvedAtForStatus(visitorNextStatus, message.createdAt),
@@ -564,6 +572,10 @@ export async function sendAgentMessage(
         agentLastReadAt: message.createdAt,
         assignedAgentPrincipalId: existing.assignedAgentPrincipalId ?? agent.principalId,
         status: agentNextStatus,
+        // A teammate reply answers the customer — the wait clock stops. (A
+        // snoozed thread stays snoozed on ANY teammate reply: send-and-stay, per
+        // applyAgentReopenStatus.)
+        waitingSince: null,
         // Keep resolvedAt consistent with the new status (reopening clears it).
         resolvedAt: resolvedAtForStatus(agentNextStatus, message.createdAt),
         updatedAt: message.createdAt,
@@ -694,7 +706,7 @@ export async function addAgentNote(
   return { conversation: conversationDTO, message: messageDTO }
 }
 
-/** Agent action: set a conversation's status (open / pending / closed). */
+/** Agent action: set a conversation's status (open / snoozed / closed). */
 export async function setConversationStatus(
   conversationId: ConversationId,
   status: ConversationStatus,
@@ -707,8 +719,15 @@ export async function setConversationStatus(
   const now = new Date()
   const [updated] = await db
     .update(conversations)
-    // Stamp resolvedAt on close, clear it on any reopen.
-    .set({ status, resolvedAt: resolvedAtForStatus(status, now), updatedAt: now })
+    // Stamp resolvedAt on close, clear it on any reopen. Setting status through
+    // this plain control always clears the snooze timer — a timed snooze goes
+    // through snoozeConversation; 'snoozed' here means "until the customer replies".
+    .set({
+      status,
+      snoozedUntil: null,
+      resolvedAt: resolvedAtForStatus(status, now),
+      updatedAt: now,
+    })
     .where(eq(conversations.id, conversationId))
     .returning()
   // Mark the lifecycle change in the transcript for both sides (author-less).
@@ -725,6 +744,68 @@ export async function setConversationStatus(
     void emitConversationStatusChanged(actor, updated, previous)
   }
   return updated
+}
+
+/**
+ * Agent action: snooze a conversation until `until` (a wake time), or until the
+ * customer next replies when `until` is null. Snoozing is a queue discipline —
+ * it never notifies the customer and posts no transcript notice; it only defers
+ * the thread on the team's side. Publishes the same inbox/realtime update a
+ * manual status change does so every agent's list reflects it immediately.
+ */
+export async function snoozeConversation(
+  conversationId: ConversationId,
+  until: Date | null,
+  actor: Actor
+): Promise<Conversation> {
+  const decision = canActAsAgent(actor)
+  if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
+  const existing = await loadConversationOr404(conversationId)
+  const previous = existing.status
+  const now = new Date()
+  const [updated] = await db
+    .update(conversations)
+    // Snoozing is never a resolution — clear resolvedAt if it was set (a closed
+    // thread snoozed back into the queue).
+    .set({ status: 'snoozed', snoozedUntil: until, resolvedAt: null, updatedAt: now })
+    .where(eq(conversations.id, conversationId))
+    .returning()
+  const dto = await conversationToDTO(updated, 'agent')
+  publishConversationUpdate(conversationId, dto)
+  if (updated.status !== previous) {
+    void emitConversationStatusChanged(actor, updated, previous)
+  }
+  return updated
+}
+
+/**
+ * Wake every snoozed conversation whose timer has elapsed: reopen it (status
+ * 'open', timer cleared), leaving assignment untouched and running no routing.
+ * Publishes the same inbox update + status_changed webhook a manual reopen does.
+ * Driven by the snooze-sweep queue (system actor); returns the count woken.
+ */
+export async function sweepDueSnoozedConversations(): Promise<{ woken: number }> {
+  const now = new Date()
+  const due = await db
+    .update(conversations)
+    .set({ status: 'open', snoozedUntil: null, updatedAt: now })
+    .where(
+      and(
+        eq(conversations.status, 'snoozed'),
+        isNotNull(conversations.snoozedUntil),
+        lte(conversations.snoozedUntil, now)
+      )
+    )
+    .returning()
+  const actor = systemActor()
+  await Promise.all(
+    due.map(async (conversation) => {
+      const dto = await conversationToDTO(conversation, 'agent')
+      publishConversationUpdate(conversation.id, dto)
+      void emitConversationStatusChanged(actor, conversation, 'snoozed')
+    })
+  )
+  return { woken: due.length }
 }
 
 /** Max length of the optional free-text end-note (mirrors csatComment). */
@@ -882,9 +963,19 @@ export async function assignConversation(
       throw new ValidationError('INVALID_ASSIGNEE', 'Can only assign to a team member')
     }
   }
+  // A non-assignee (re)assigning a snoozed thread wakes it into the open queue.
+  const wake = shouldWakeSnoozedOnTriage(
+    existing.status,
+    actor.principalId,
+    existing.assignedAgentPrincipalId
+  )
   const [updated] = await db
     .update(conversations)
-    .set({ assignedAgentPrincipalId: agentPrincipalId, updatedAt: new Date() })
+    .set({
+      assignedAgentPrincipalId: agentPrincipalId,
+      ...(wake ? { status: 'open' as const, snoozedUntil: null } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(conversations.id, conversationId))
     .returning()
   const dto = await conversationToDTO(updated, 'agent')
@@ -895,6 +986,7 @@ export async function assignConversation(
   if (updated.assignedAgentPrincipalId !== existing.assignedAgentPrincipalId) {
     void emitConversationAssigned(actor, updated, existing.assignedAgentPrincipalId)
   }
+  if (wake) void emitConversationStatusChanged(actor, updated, existing.status)
   return updated
 }
 
@@ -984,9 +1076,19 @@ export async function setConversationPriority(
   const decision = canActAsAgent(actor)
   if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
   const existing = await loadConversationOr404(conversationId)
+  // A non-assignee triaging a snoozed thread wakes it back into the open queue.
+  const wake = shouldWakeSnoozedOnTriage(
+    existing.status,
+    actor.principalId,
+    existing.assignedAgentPrincipalId
+  )
   const [updated] = await db
     .update(conversations)
-    .set({ priority, updatedAt: new Date() })
+    .set({
+      priority,
+      ...(wake ? { status: 'open' as const, snoozedUntil: null } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(conversations.id, conversationId))
     .returning()
   const dto = await conversationToDTO(updated, 'agent')
@@ -994,6 +1096,7 @@ export async function setConversationPriority(
   if (updated.priority !== existing.priority) {
     void emitConversationPriorityChanged(actor, updated, existing.priority)
   }
+  if (wake) void emitConversationStatusChanged(actor, updated, existing.status)
   return updated
 }
 

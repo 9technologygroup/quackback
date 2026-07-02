@@ -10,9 +10,9 @@ describe('selectActiveConversation', () => {
     expect(selectActiveConversation([])).toEqual({ conversation: null, isReadOnly: false })
   })
 
-  it('treats open / pending as resumable (visitor can still reply)', () => {
+  it('treats open / snoozed as resumable (visitor can still reply)', () => {
     expect(selectActiveConversation([row('open')]).isReadOnly).toBe(false)
-    expect(selectActiveConversation([row('pending')]).isReadOnly).toBe(false)
+    expect(selectActiveConversation([row('snoozed')]).isReadOnly).toBe(false)
   })
 
   it('surfaces a lone closed conversation read-only (so the widget offers "start new")', () => {

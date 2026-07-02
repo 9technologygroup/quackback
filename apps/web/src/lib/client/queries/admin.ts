@@ -292,6 +292,7 @@ export const adminQueries = {
           createdAt: new Date(data.createdAt),
           updatedAt: new Date(data.updatedAt),
           deletedAt: data.deletedAt ? new Date(data.deletedAt) : null,
+          eta: data.eta ? new Date(data.eta) : null,
           summaryUpdatedAt: data.summaryUpdatedAt ? new Date(data.summaryUpdatedAt) : null,
           comments: data.comments.map(deserializeComment),
           pinnedComment: data.pinnedComment

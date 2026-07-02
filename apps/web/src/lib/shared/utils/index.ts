@@ -23,4 +23,11 @@ export {
   safePositiveInt,
   extractYoutubeId,
 } from './sanitize'
-export { toIsoString, toIsoStringOrNull, toIsoDateOnly } from './date'
+export {
+  toIsoString,
+  toIsoStringOrNull,
+  toIsoDateOnly,
+  formatMonthYear,
+  tomorrowAt,
+  startOfUtcMonth,
+} from './date'

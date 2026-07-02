@@ -25,7 +25,7 @@ import {
 
 export function registerConversationTools(server: McpServer, auth: McpAuthContext) {
   registerTool<{
-    status?: 'open' | 'pending' | 'closed'
+    status?: 'open' | 'snoozed' | 'closed'
     priority?: 'none' | 'low' | 'medium' | 'high' | 'urgent'
     assignedAgentPrincipalId?: string
     cursor?: string
@@ -241,10 +241,10 @@ Example: share_post({ conversationId: "conversation_01...", postId: "post_01..."
 
   registerTool<{
     conversationId: string
-    status: 'open' | 'pending' | 'closed'
+    status: 'open' | 'snoozed' | 'closed'
   }>(server, auth, {
     name: 'set_conversation_status',
-    description: `Change a conversation's status (open, pending, or closed). Closing stamps the resolution time; a later reply reopens it.
+    description: `Change a conversation's status (open, snoozed, or closed). Snoozing defers it until the customer next replies; closing stamps the resolution time; a later reply reopens it.
 
 Example: set_conversation_status({ conversationId: "conversation_01abc...", status: "closed" })`,
     schema: {

@@ -15,11 +15,12 @@ import {
   UnauthorizedErrorSchema,
   NotFoundErrorSchema,
 } from './common'
+import { CONVERSATION_STATUSES } from '@/lib/shared/db-types'
 
 // Conversation schema (GET /conversations, GET /conversations/:id)
 const ConversationSchema = z.object({
   id: TypeIdSchema.meta({ example: 'conversation_01h455vb4pex5vsknk084sn02q' }),
-  status: z.enum(['open', 'pending', 'closed']).meta({
+  status: z.enum(CONVERSATION_STATUSES).meta({
     description: 'Current conversation status',
     example: 'open',
   }),
@@ -88,7 +89,7 @@ registerPath('/conversations', {
       {
         name: 'status',
         in: 'query',
-        schema: { type: 'string', enum: ['open', 'pending', 'closed'] },
+        schema: { type: 'string', enum: [...CONVERSATION_STATUSES] },
         description: 'Filter by conversation status',
       },
       {

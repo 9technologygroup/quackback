@@ -1,6 +1,7 @@
 /**
  * Event system types.
  */
+import type { ConversationStatus } from '@/lib/shared/db-types'
 
 /**
  * Supported event types — single source of truth.
@@ -161,7 +162,7 @@ export interface ChangelogPublishedPayload {
 // Conversation / message events
 export interface EventConversationRef {
   id: string
-  status: 'open' | 'pending' | 'closed'
+  status: ConversationStatus
   channel: 'messenger' | 'email' | 'web_form'
   priority: 'none' | 'low' | 'medium' | 'high' | 'urgent'
 }

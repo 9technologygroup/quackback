@@ -125,6 +125,22 @@ const EXEMPTIONS: { reason: string; pattern: RegExp }[] = [
     pattern:
       /^ALTER TABLE "invitation" ALTER COLUMN "magic_link_tokens" SET DEFAULT '\{\}'::text\[\];?$/,
   },
+  {
+    // 0139 adds a GIN pg_trgm index for the inbox message-content ILIKE search;
+    // drizzle-kit cannot express the gin_trgm_ops operator class, so it reads the
+    // index as undeclared and wants to drop it. The migration owns this DDL.
+    reason:
+      'pg_trgm GIN index for inbox content search; gin_trgm_ops opclass is not expressible in TS',
+    pattern: /^DROP INDEX "conversation_messages_content_trgm_idx"/,
+  },
+  {
+    // 0139 adds a GIN pg_trgm index on principal.display_name for the inbox
+    // visitor-name ILIKE search. Same gin_trgm_ops limitation; the principal
+    // schema is not extended for it, so the index stays SQL-only.
+    reason:
+      'pg_trgm GIN index on principal.display_name for inbox name search; gin_trgm_ops opclass is not expressible in TS',
+    pattern: /^DROP INDEX "principal_display_name_trgm_idx"/,
+  },
 ]
 
 function scratchUrl(): string {

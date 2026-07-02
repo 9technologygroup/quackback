@@ -43,6 +43,7 @@ import type { PortalUserDetail, EngagedPost } from '@/lib/shared/types'
 import type { ConversationDTO, ConversationStatus } from '@/lib/shared/conversation/types'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { UserSegmentBadges } from '@/components/admin/users/user-segments'
+import { UserCompanyControl } from '@/components/admin/users/user-company-control'
 import { useUpdatePortalUser } from '@/lib/client/mutations'
 import { listConversationsForUserFn, getConversationFn } from '@/lib/server/functions/conversation'
 import type { PrincipalId } from '@quackback/ids'
@@ -192,7 +193,7 @@ type StatusFilter = ConversationStatus | 'all'
 
 const STATUS_STYLE: Record<ConversationStatus, string> = {
   open: 'bg-emerald-500/10 text-emerald-600',
-  pending: 'bg-amber-500/10 text-amber-600',
+  snoozed: 'bg-amber-500/10 text-amber-600',
   closed: 'bg-muted text-muted-foreground',
 }
 
@@ -285,7 +286,7 @@ function UserConversations({ principalId }: { principalId: PrincipalId }) {
             >
               All statuses
             </DropdownMenuItem>
-            {(['open', 'pending', 'closed'] as const).map((s) => (
+            {(['open', 'snoozed', 'closed'] as const).map((s) => (
               <DropdownMenuItem
                 key={s}
                 onClick={() => {
@@ -667,6 +668,15 @@ export function UserDetail({
             />
           </div>
         )}
+
+        {/* Company */}
+        <div className="border-t border-border/50 pt-4">
+          <h3 className="text-sm font-medium mb-3">Company</h3>
+          <UserCompanyControl
+            principalId={user.principalId as PrincipalId}
+            canManage={canManageUsers}
+          />
+        </div>
 
         {/* Support conversations */}
         <UserConversations principalId={user.principalId as PrincipalId} />

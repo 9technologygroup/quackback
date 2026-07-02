@@ -23,7 +23,7 @@ import {
   MAX_CONVERSATION_ATTACHMENTS,
   type ConversationAttachment,
 } from '@/lib/shared/conversation/types'
-import { officeHoursSnapshot } from '@/lib/shared/conversation/office-hours'
+import { officeHoursSnapshot } from '@/lib/shared/office-hours'
 import type { ConversationPresence } from '@/lib/shared/conversation/presence'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import {
@@ -122,6 +122,12 @@ const agentNoteSchema = z.object({
 const setStatusSchema = z.object({
   conversationId: z.string(),
   status: z.enum(CONVERSATION_STATUSES),
+})
+
+const snoozeConversationSchema = z.object({
+  conversationId: z.string(),
+  // ISO wake time, or null = snooze until the customer next replies.
+  until: z.string().datetime().nullable(),
 })
 
 const endConversationSchema = z.object({
@@ -239,16 +245,17 @@ export const sendConversationMessageFn = createServerFn({ method: 'POST' })
  */
 export const getConversationPresenceFn = createServerFn({ method: 'GET' }).handler(
   async (): Promise<ConversationPresence> => {
-    const { getMessengerConfig } = await import('@/lib/server/domains/settings/settings.widget')
+    const { getOfficeHoursSchedule } =
+      await import('@/lib/server/domains/settings/settings.office-hours')
     const { isAnyAgentAvailable } = await import('@/lib/server/realtime/presence')
-    const [messengerConfig, agentsOnline] = await Promise.all([
-      getMessengerConfig(),
+    const [schedule, agentsOnline] = await Promise.all([
+      getOfficeHoursSchedule(),
       isAnyAgentAvailable(),
     ])
     return {
       agentsOnline,
       // withinOfficeHours + (when closed) the ISO instant we're next back.
-      ...officeHoursSnapshot(messengerConfig.officeHours, new Date()),
+      ...officeHoursSnapshot(schedule, new Date()),
     }
   }
 )
@@ -876,6 +883,27 @@ export const setConversationStatusFn = createServerFn({ method: 'POST' })
       return { ok: true }
     } catch (error) {
       log.error({ err: error }, 'set conversation status failed')
+      throw error
+    }
+  })
+
+/** Agent action: snooze a conversation until a wake time (or until the customer replies). */
+export const snoozeConversationFn = createServerFn({ method: 'POST' })
+  .validator(snoozeConversationSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_SET_STATUS })
+      const actor = await policyActorFromAuth(ctx)
+      const { snoozeConversation } =
+        await import('@/lib/server/domains/conversation/conversation.service')
+      await snoozeConversation(
+        data.conversationId as ConversationId,
+        data.until ? new Date(data.until) : null,
+        actor
+      )
+      return { ok: true }
+    } catch (error) {
+      log.error({ err: error }, 'snooze conversation failed')
       throw error
     }
   })

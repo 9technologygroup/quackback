@@ -436,9 +436,10 @@ export interface ActiveConversationResult {
   isReadOnly: boolean
 }
 
-// Statuses a returning visitor can still reply to. 'pending' = waiting on the
-// customer, so they can resume. Only 'closed' is read-only.
-const RESUMABLE_STATUSES: ReadonlySet<string> = new Set(['open', 'pending'])
+// Statuses a returning visitor can still reply to. A 'snoozed' thread is only
+// deferred on the team's side — the customer can always reply (which wakes it),
+// so they can resume. Only 'closed' is read-only.
+const RESUMABLE_STATUSES: ReadonlySet<string> = new Set(['open', 'snoozed'])
 
 /**
  * Pick the conversation to surface to a returning visitor from their recent
@@ -680,6 +681,9 @@ export async function listMessages(
 
 export interface ConversationListFilter {
   status?: ConversationStatus
+  /** Inbound source discriminator ('widget' today; email/others join later).
+   *  Plumbing for channel/source nav scopes — the column is plain text. */
+  source?: string
   priority?: 'none' | 'low' | 'medium' | 'high' | 'urgent'
   assignedAgentPrincipalId?: PrincipalId
   /** Unassigned queue: only conversations with no assigned agent. */
@@ -754,6 +758,7 @@ export async function listConversationsForAgent(
     .where(
       and(
         filter.status ? eq(conversations.status, filter.status) : undefined,
+        filter.source ? eq(conversations.source, filter.source) : undefined,
         filter.visitorPrincipalId
           ? eq(conversations.visitorPrincipalId, filter.visitorPrincipalId)
           : undefined,
