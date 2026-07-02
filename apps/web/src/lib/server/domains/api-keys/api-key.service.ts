@@ -16,6 +16,13 @@ import {
   updatePrincipalFields,
   syncPrincipalProfileById,
 } from '@/lib/server/domains/principals/principal.factory'
+import {
+  API_KEY_SCOPES,
+  EMPTY_SCOPES_MESSAGE,
+  orderScopes,
+  parseApiKeyScopes,
+  parseScopesJson,
+} from './api-key-scopes'
 import type { ApiKey, ApiKeyId, CreateApiKeyInput, CreateApiKeyResult } from './api-key.types'
 export type { ApiKey, ApiKeyId, CreateApiKeyInput, CreateApiKeyResult }
 
@@ -25,8 +32,10 @@ const API_KEY_PREFIX = 'qb_'
 /** Length of the random part of the key (in bytes, will be hex encoded) */
 const KEY_RANDOM_BYTES = 24 // 48 hex chars
 
-/** Map a database row to the public ApiKey shape (strips keyHash). */
-function toApiKey(row: ApiKey & Record<string, unknown>): ApiKey {
+type ApiKeyRow = typeof apiKeys.$inferSelect
+
+/** Map a database row to the public ApiKey shape (strips keyHash, parses scopes). */
+function toApiKey(row: ApiKeyRow): ApiKey {
   return {
     id: row.id,
     name: row.name,
@@ -37,7 +46,26 @@ function toApiKey(row: ApiKey & Record<string, unknown>): ApiKey {
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,
     revokedAt: row.revokedAt,
+    scopes: parseApiKeyScopes(row.scopes),
   }
+}
+
+/**
+ * Validate + normalize the scopes for a new key. Undefined/null means a legacy
+ * full-authority key (stored NULL). A provided list must be non-empty and drawn
+ * from the vocabulary; it is deduped and stored in vocabulary order.
+ */
+function normalizeScopesInput(scopes: CreateApiKeyInput['scopes']): string | null {
+  if (scopes === undefined || scopes === null) return null
+  const unknown = scopes.filter((s) => !API_KEY_SCOPES.includes(s))
+  if (unknown.length > 0) {
+    throw new ValidationError('VALIDATION_ERROR', `Unknown API key scope(s): ${unknown.join(', ')}`)
+  }
+  const ordered = orderScopes(scopes)
+  if (ordered.length === 0) {
+    throw new ValidationError('VALIDATION_ERROR', EMPTY_SCOPES_MESSAGE)
+  }
+  return JSON.stringify(ordered)
 }
 
 /**
@@ -84,6 +112,8 @@ export async function createApiKey(
     throw new ValidationError('VALIDATION_ERROR', 'API key name must be 255 characters or less')
   }
 
+  const storedScopes = normalizeScopesInput(input.scopes)
+
   // Generate the key
   const plainTextKey = generateApiKey()
   const keyHash = hashApiKey(plainTextKey)
@@ -113,6 +143,7 @@ export async function createApiKey(
       createdById,
       principalId: servicePrincipal.id,
       expiresAt: input.expiresAt ?? null,
+      scopes: storedScopes,
     })
     .returning()
 
@@ -167,14 +198,15 @@ export async function verifyApiKey(key: string, scope?: string): Promise<ApiKey 
   return toApiKey(apiKey)
 }
 
+/**
+ * Whether the raw stored scopes hold `scope`. Unlike the vocabulary-filtered
+ * parseApiKeyScopes, this matches ANY stored entry (internal capability
+ * scopes such as `internal:tier-limits`) and fails closed: no stored scopes
+ * means no internal capability.
+ */
 function hasScope(scopesRaw: string | null, scope: string): boolean {
   if (!scopesRaw) return false
-  try {
-    const parsed = JSON.parse(scopesRaw)
-    return Array.isArray(parsed) && parsed.includes(scope)
-  } catch {
-    return false
-  }
+  return parseScopesJson(scopesRaw)?.includes(scope) ?? false
 }
 
 /**

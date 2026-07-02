@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { requireAuth } from './auth-helpers'
 import { PERMISSIONS } from '@/lib/shared/permissions'
+import { API_KEY_SCOPES, EMPTY_SCOPES_MESSAGE } from '@/lib/server/domains/api-keys/api-key-scopes'
 import type { ApiKeyId } from '@/lib/server/domains/api-keys/api-key.service'
 import { logger } from '@/lib/server/logger'
 
@@ -18,6 +19,7 @@ const log = logger.child({ component: 'api-keys' })
 const createApiKeySchema = z.object({
   name: z.string().min(1, 'Name is required').max(255, 'Name must be 255 characters or less'),
   expiresAt: z.string().datetime().optional().nullable(),
+  scopes: z.array(z.enum(API_KEY_SCOPES)).min(1, EMPTY_SCOPES_MESSAGE).optional(),
 })
 
 const getApiKeySchema = z.object({
@@ -110,6 +112,7 @@ export const createApiKeyFn = createServerFn({ method: 'POST' })
         {
           name: data.name,
           expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+          scopes: data.scopes,
         },
         auth.principal.id
       )

@@ -35,15 +35,19 @@ as a diff in `MATRIX.md` for a reviewer to sign off on.
 `admin`, `member`, `portal_user`, `anon_widget`, `unverified_widget`,
 `verified_widget`, `scoped_api_key`, `full_api_key`, `oauth_client`.
 
-Two collapses are encoded honestly rather than hidden:
+One collapse is encoded honestly rather than hidden:
 
 - **Widget classes** (anon / unverified / verified) hold the same empty teammate
   permission set — they differ only in identity and the end-user policy layer
   (audience / segments), which the `policy/__tests__` modules cover.
-- **API-key scopes are currently inert.** REST never checks a key's scopes, and
-  MCP forces `ALL_SCOPES` for keys, so a "scoped" key has the same reach as a
-  full key. Only OAuth grants are enforced. The matrix pins this over-grant so
-  the deferred scope∩permission work will show up as a tightening diff.
+
+**API-key scopes are enforced.** A key's authority is its owner's permission
+set intersected with its stored scopes: MCP resolves a key's scopes from
+storage and every tool asserts its scope, and REST maps each permission gate
+onto the same scope vocabulary (`domains/api-keys/api-key-scopes.ts`) and
+requires the mapped scope. The `scoped_api_key` class models a read-only key
+through that mapping; `full_api_key` models a legacy key with NULL stored
+scopes, which keeps full owner authority (deliberate back-compat).
 
 ## The CI gates
 
@@ -70,14 +74,14 @@ that inventory into per-endpoint intent (`PUBLIC` / `PRE_AUTH` / `SIGNATURE` /
 
 Most of the time you do **nothing** — the scanner picks it up:
 
-| You add…                                                                                             | What to do                                                                                                                   |
-| ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `requireAuth({ permission: PERMISSIONS.X })` or `withApiKeyAuth(req, { permission: PERMISSIONS.X })` | Nothing — the permission is the expectation.                                                                                 |
-| A bare `requireAuth()` (end-user action)                                                             | Add an `END_USER` entry to `BARE_GATE_CLASSIFICATIONS` keyed `file::surface`.                                                |
-| A bare `withApiKeyAuth(req)` public read                                                             | Add a `PUBLIC_DATA` entry.                                                                                                   |
-| An MCP tool                                                                                          | Nothing — guard it with `requireScope` (+ `requireTeamRole` if team-only) and it's scanned automatically.                    |
-| An inline `isAdmin` / `isTeamMember` in a route/function                                             | Classify it in `INLINE_CLASSIFICATIONS` as `SECONDARY_GATE` (a real access decision, with `roleBar: 'admin'                  | 'team'`) or `NOT_A_GATE` (a refinement behind an existing gate), with a one-line rationale. |
-| An entry point with **no** gate (a public read, webhook, or pre-auth flow)                           | Nothing to add, but `MATRIX.md` §4 gains a row — confirm in review that it's genuinely meant to be reachable without a gate. |
+| You add…                                                                                             | What to do                                                                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `requireAuth({ permission: PERMISSIONS.X })` or `withApiKeyAuth(req, { permission: PERMISSIONS.X })` | Nothing — the permission is the expectation.                                                                                                                                 |
+| A bare `requireAuth()` (end-user action)                                                             | Add an `END_USER` entry to `BARE_GATE_CLASSIFICATIONS` keyed `file::surface`.                                                                                                |
+| A bare `withApiKeyAuth(req)` public read                                                             | Add a `PUBLIC_DATA` entry.                                                                                                                                                   |
+| An MCP tool                                                                                          | Nothing — declare `scope` (+ `teamOnly: true` if team-only) on its `registerTool` definition (per-branch `requireScope` / `requireTeamRole` in the handler is also scanned). |
+| An inline `isAdmin` / `isTeamMember` in a route/function                                             | Classify it in `INLINE_CLASSIFICATIONS` as `SECONDARY_GATE` (a real access decision, with `roleBar: 'admin'                                                                  | 'team'`) or `NOT_A_GATE` (a refinement behind an existing gate), with a one-line rationale. |
+| An entry point with **no** gate (a public read, webhook, or pre-auth flow)                           | Nothing to add, but `MATRIX.md` §4 gains a row — confirm in review that it's genuinely meant to be reachable without a gate.                                                 |
 
 When a gate changes, run the suite; the completeness test names exactly what is
 unclassified or stale. Then regenerate and review the snapshot:

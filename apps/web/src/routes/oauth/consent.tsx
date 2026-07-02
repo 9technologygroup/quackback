@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { Button } from '@/components/ui/button'
+import { API_KEY_SCOPES } from '@/lib/server/domains/api-keys/api-key-scopes'
 import { ExternalLink, Globe, ShieldCheck } from 'lucide-react'
 
 const searchSchema = z.object({
@@ -51,42 +52,42 @@ interface ScopeGroup {
   write: boolean
 }
 
+/**
+ * Consent copy per scope domain (the part after the colon). The group
+ * structure itself — which domains exist and whether each has a read/write
+ * half — is derived from the shared API_KEY_SCOPES vocabulary.
+ */
+const SCOPE_DOMAIN_COPY: Record<string, { label: string; description: string }> = {
+  feedback: { label: 'Feedback', description: 'Posts, comments, boards, and roadmaps' },
+  changelog: { label: 'Changelog', description: 'Changelog entries and releases' },
+  article: { label: 'Help Center', description: 'Categories and articles' },
+  chat: { label: 'Conversations', description: 'Support inbox conversations and messages' },
+}
+
 function groupScopes(scopes: string[]): ScopeGroup[] {
   const scopeSet = new Set(scopes)
+  const vocabulary = new Set<string>(API_KEY_SCOPES)
 
-  const groups: { read?: string; write?: string; label: string; description: string }[] = [
-    {
-      read: 'read:feedback',
-      write: 'write:feedback',
-      label: 'Feedback',
-      description: 'Posts, comments, boards, and roadmaps',
-    },
-    {
-      write: 'write:changelog',
-      label: 'Changelog',
-      description: 'Changelog entries and releases',
-    },
-    {
-      read: 'read:article',
-      write: 'write:article',
-      label: 'Help Center',
-      description: 'Categories and articles',
-    },
-    {
-      read: 'read:chat',
-      write: 'write:chat',
-      label: 'Conversations',
-      description: 'Support inbox conversations and messages',
-    },
-  ]
+  // Domains in vocabulary order, deduped
+  const domains: string[] = []
+  for (const scope of API_KEY_SCOPES) {
+    const domain = scope.split(':')[1]
+    if (!domains.includes(domain)) domains.push(domain)
+  }
 
-  return groups
-    .map((g) => ({
-      label: g.label,
-      description: g.description,
-      read: g.read ? scopeSet.has(g.read) : false,
-      write: g.write ? scopeSet.has(g.write) : false,
-    }))
+  return domains
+    .map((domain) => {
+      const copy = SCOPE_DOMAIN_COPY[domain] ?? { label: domain, description: '' }
+      // A requested scope only counts when the vocabulary defines it (e.g.
+      // there is no read:changelog, so that group can never show Read).
+      const holds = (scope: string) => vocabulary.has(scope) && scopeSet.has(scope)
+      return {
+        label: copy.label,
+        description: copy.description,
+        read: holds(`read:${domain}`),
+        write: holds(`write:${domain}`),
+      }
+    })
     .filter((g) => g.read || g.write)
 }
 

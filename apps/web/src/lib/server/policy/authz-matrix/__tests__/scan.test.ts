@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import { join } from 'node:path'
-import { scanSourceFile, scanAuthzSurfaces, scanEntryPoints, type ScannedAuthz } from '../scan'
+import {
+  scanSourceFile,
+  scanAuthzSurfaces,
+  scanEntryPoints,
+  scanMcpTools,
+  scanAllMcpTools,
+  type ScannedAuthz,
+} from '../scan'
 
 const SRC_ROOT = join(__dirname, '../../../../..') // apps/web/src
 
@@ -190,6 +197,78 @@ describe('scanEntryPoints — gate presence per entry point', () => {
     expect(eps).toEqual([
       { file: 'routes/api/v1/x.ts', surface: 'GET', kind: 'route', gated: false },
     ])
+  })
+})
+
+describe('scanMcpTools — tool authorization extraction', () => {
+  it('reads declarative scope + teamOnly metadata off a registerTool definition', () => {
+    const tools = scanMcpTools(
+      'lib/server/mcp/tools/x.ts',
+      `registerTool(server, auth, {
+        name: 'triage_post',
+        description: 'd',
+        schema: {},
+        annotations: WRITE,
+        scope: 'write:feedback',
+        teamOnly: true,
+        handler: async (args) => jsonResult({}),
+      })`
+    )
+    expect(tools).toEqual([{ name: 'triage_post', scopes: ['write:feedback'], teamOnly: true }])
+  })
+
+  it('a scope-only registerTool definition scans as non-team', () => {
+    const tools = scanMcpTools(
+      'lib/server/mcp/tools/x.ts',
+      `registerTool(server, auth, { name: 'vote_post', schema: {}, annotations: WRITE, scope: 'write:feedback', handler: async () => r })`
+    )
+    expect(tools).toEqual([{ name: 'vote_post', scopes: ['write:feedback'], teamOnly: false }])
+  })
+
+  it('unions per-branch requireScope/requireTeamRole from a branchy handler', () => {
+    const tools = scanMcpTools(
+      'lib/server/mcp/tools/x.ts',
+      `registerTool(server, auth, {
+        name: 'search',
+        schema: {},
+        annotations: READ_ONLY,
+        handler: async (args) => {
+          if (args.entity === 'articles') {
+            const d = requireScope(auth, 'read:article'); if (d) return d
+            const t = requireTeamRole(auth); if (t) return t
+            return r
+          }
+          const d = requireScope(auth, 'read:feedback'); if (d) return d
+          const t = requireTeamRole(auth); if (t) return t
+          return r
+        },
+      })`
+    )
+    expect(tools).toEqual([
+      { name: 'search', scopes: ['read:article', 'read:feedback'], teamOnly: true },
+    ])
+  })
+
+  it('still reads the legacy server.tool(name, …) shape with in-handler guards', () => {
+    const tools = scanMcpTools(
+      'lib/server/mcp/tools.ts',
+      `server.tool('create_changelog', 'd', schema, WRITE, async (args) => {
+        const s = requireScope(auth, 'write:changelog'); if (s) return s
+        const t = requireTeamRole(auth); if (t) return t
+        return r
+      })`
+    )
+    expect(tools).toEqual([
+      { name: 'create_changelog', scopes: ['write:changelog'], teamOnly: true },
+    ])
+  })
+})
+
+describe('scanAllMcpTools — live tool modules', () => {
+  it('finds all 33 tools across the tool modules, each with at least one scope', () => {
+    const tools = scanAllMcpTools(SRC_ROOT)
+    expect(tools).toHaveLength(33)
+    expect(tools.filter((t) => t.scopes.length === 0)).toEqual([])
   })
 })
 

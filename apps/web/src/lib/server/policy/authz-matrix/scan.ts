@@ -22,7 +22,7 @@
  */
 import * as ts from 'typescript'
 import { readFileSync } from 'node:fs'
-import { relative } from 'node:path'
+import { join, relative } from 'node:path'
 import { walkSourceFiles } from '../source-files'
 
 /** Gate call-ees whose argument declares the enforced authorization. */
@@ -65,16 +65,14 @@ export interface ScanResult {
   inline: ScannedInline[]
 }
 
-/** MCP gate helpers that fold a scope + team requirement into one call. */
-const MCP_SCOPE_HELPERS: Record<string, { scope: string; teamOnly: boolean }> = {
-  requireHelpCenterWrite: { scope: 'write:article', teamOnly: true },
-}
-
 export interface ScannedMcpTool {
   name: string
-  /** Scopes the tool's handler asserts via `requireScope` (any branch). */
+  /**
+   * Scopes the tool requires: the declarative `scope` on its `registerTool`
+   * definition plus any `requireScope` the handler asserts per-branch.
+   */
   scopes: string[]
-  /** The handler asserts a team role via `requireTeamRole` (or a helper that does). */
+  /** The tool declares `teamOnly: true` or its handler calls `requireTeamRole`. */
   teamOnly: boolean
 }
 
@@ -214,14 +212,78 @@ export function scanSourceFile(relPath: string, text: string): ScanResult {
 
 /**
  * Extract every MCP tool's authorization contract (required scope(s) + team
- * requirement) straight from `server.tool(name, …)` registrations, so the MCP
- * matrix reads the real guards rather than a hand-kept list.
+ * requirement) straight from the registrations, so the MCP matrix reads the
+ * real guards rather than a hand-kept list. Two shapes are recognized:
+ *
+ *   - `registerTool(server, auth, { name, scope?, teamOnly?, handler })` — the
+ *     tool-module convention: the declarative metadata IS the guard (the helper
+ *     places requireScope/requireTeamRole), and any per-branch `requireScope` /
+ *     `requireTeamRole` inside the handler is unioned in (search, get_details).
+ *   - `server.tool(name, …)` with in-handler guard calls — the legacy shape,
+ *     kept so a tool registered outside the helper still scans instead of
+ *     silently disappearing.
+ *
+ * Feature-flag gating on MCP tools (`feature: 'helpCenter'`) is deliberately
+ * not captured: it is workspace configuration, not a per-principal authz decision.
  */
 export function scanMcpTools(relPath: string, text: string): ScannedMcpTool[] {
   const sf = ts.createSourceFile(relPath, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const tools: ScannedMcpTool[] = []
 
+  /** Union in guard calls found anywhere under `node` (handler branches). */
+  const collectGuardCalls = (node: ts.Node, scopes: Set<string>, team: { value: boolean }) => {
+    const inner = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+        const callee = n.expression.text
+        const scopeArg = n.arguments[1]
+        if (callee === 'requireScope' && scopeArg && ts.isStringLiteral(scopeArg)) {
+          scopes.add(scopeArg.text)
+        } else if (callee === 'requireTeamRole') {
+          team.value = true
+        }
+      }
+      ts.forEachChild(n, inner)
+    }
+    ts.forEachChild(node, inner)
+  }
+
   const visit = (node: ts.Node): void => {
+    // registerTool(server, auth, { name: 'x', scope: 'read:x', teamOnly: true, ... })
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'registerTool'
+    ) {
+      const def = node.arguments.find(ts.isObjectLiteralExpression)
+      if (def) {
+        const prop = (key: string) =>
+          def.properties.find(
+            (p): p is ts.PropertyAssignment =>
+              ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === key
+          )
+        const nameProp = prop('name')
+        if (nameProp && ts.isStringLiteral(nameProp.initializer)) {
+          const scopes = new Set<string>()
+          const team = { value: false }
+          const scopeProp = prop('scope')
+          if (scopeProp && ts.isStringLiteral(scopeProp.initializer)) {
+            scopes.add(scopeProp.initializer.text)
+          }
+          const teamProp = prop('teamOnly')
+          if (teamProp && teamProp.initializer.kind === ts.SyntaxKind.TrueKeyword) {
+            team.value = true
+          }
+          collectGuardCalls(def, scopes, team)
+          tools.push({
+            name: nameProp.initializer.text,
+            scopes: [...scopes].sort(),
+            teamOnly: team.value,
+          })
+        }
+      }
+    }
+
+    // server.tool('x', …) with hand-placed guards in the handler
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
@@ -229,31 +291,34 @@ export function scanMcpTools(relPath: string, text: string): ScannedMcpTool[] {
       node.arguments.length > 0 &&
       ts.isStringLiteral(node.arguments[0])
     ) {
-      const name = node.arguments[0].text
       const scopes = new Set<string>()
-      let teamOnly = false
-
-      const inner = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
-          const callee = n.expression.text
-          const scopeArg = n.arguments[1]
-          if (callee === 'requireScope' && scopeArg && ts.isStringLiteral(scopeArg)) {
-            scopes.add(scopeArg.text)
-          } else if (callee === 'requireTeamRole') {
-            teamOnly = true
-          } else if (MCP_SCOPE_HELPERS[callee]) {
-            scopes.add(MCP_SCOPE_HELPERS[callee].scope)
-            teamOnly = teamOnly || MCP_SCOPE_HELPERS[callee].teamOnly
-          }
-        }
-        ts.forEachChild(n, inner)
-      }
-      ts.forEachChild(node, inner)
-      tools.push({ name, scopes: [...scopes].sort(), teamOnly })
+      const team = { value: false }
+      collectGuardCalls(node, scopes, team)
+      tools.push({
+        name: node.arguments[0].text,
+        scopes: [...scopes].sort(),
+        teamOnly: team.value,
+      })
     }
     ts.forEachChild(node, visit)
   }
   visit(sf)
+  tools.sort((a, b) => a.name.localeCompare(b.name))
+  return tools
+}
+
+/**
+ * Scan every MCP tool module for registrations. The tool modules live in
+ * `lib/server/mcp/tools/`; scanning the directory (rather than one file) keeps
+ * the matrix attesting every tool as modules are added.
+ */
+export function scanAllMcpTools(srcRoot: string): ScannedMcpTool[] {
+  const toolsDir = join(srcRoot, 'lib/server/mcp/tools')
+  const tools: ScannedMcpTool[] = []
+  for (const absPath of walkSourceFiles(toolsDir)) {
+    const rel = relative(srcRoot, absPath).split('\\').join('/')
+    tools.push(...scanMcpTools(rel, readFileSync(absPath, 'utf8')))
+  }
   tools.sort((a, b) => a.name.localeCompare(b.name))
   return tools
 }

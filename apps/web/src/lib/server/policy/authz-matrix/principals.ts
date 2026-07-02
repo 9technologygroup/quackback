@@ -9,35 +9,40 @@
  * token only reaches MCP) so the matrix marks unreachable cells `n/a` rather
  * than pretending every class hits every surface.
  *
- * Two honest collapses are encoded rather than hidden:
+ * One honest collapse is encoded rather than hidden:
  *   - anon / unverified / verified widget all resolve to the *same* (empty)
  *     permission set — they differ only in identity metadata and the end-user
  *     policy layer (audience/segments), which the policy-module tests cover.
- *   - a "scoped" API key holds the *same* authority as a full key today: REST
- *     never consults key scopes, and MCP forces ALL_SCOPES for keys. OAuth is
- *     the only class whose scopes actually constrain it. The matrix pins this
- *     over-grant so the deferred scope-narrowing work shows up as a diff.
+ *
+ * API-key scopes are ENFORCED: a key's authority is its owner's permission set
+ * intersected with its stored scopes, on both REST (permission-to-scope
+ * mapping) and MCP (per-tool scope guards). The scoped_api_key class models a
+ * read-only key through the same `scopeForPermission` mapping the runtime
+ * uses; only null-scope legacy keys retain full owner authority
+ * (full_api_key).
  */
 import { resolveActorPermissions } from '@/lib/server/policy/permissions'
+import {
+  API_KEY_SCOPES,
+  permissionsWithinScopes,
+} from '@/lib/server/domains/api-keys/api-key-scopes'
 import type { PermissionKey } from '@/lib/shared/permissions'
 import type { Role, PrincipalType } from '@/lib/shared/roles'
 import type { McpScope } from '@/lib/server/mcp/types'
 import type { Channel } from './resolve'
 
 /**
- * Mirrors `ALL_SCOPES` in mcp/handler.ts (kept local so this stays DB-free).
- * `satisfies` ties it to the canonical `McpScope` union — a scope renamed or
- * removed there becomes a compile error here.
+ * The full scope vocabulary (shared with mcp/handler.ts via
+ * domains/api-keys/api-key-scopes.ts — a pure module, so this stays DB-free).
  */
-export const ALL_MCP_SCOPES = [
-  'read:feedback',
-  'write:feedback',
-  'write:changelog',
-  'read:article',
-  'write:article',
-  'read:chat',
-  'write:chat',
-] as const satisfies readonly McpScope[]
+export const ALL_MCP_SCOPES: readonly McpScope[] = API_KEY_SCOPES
+
+/**
+ * The read-only scope set the scoped_api_key fixture holds. Its REST
+ * permissions are derived through the same permission-to-scope mapping the
+ * runtime enforces, so the matrix shows exactly what a read-only key reaches.
+ */
+const READ_ONLY_KEY_SCOPES = new Set<McpScope>(['read:feedback', 'read:article', 'read:chat'])
 
 export type PrincipalClassId =
   | 'admin'
@@ -152,18 +157,18 @@ export const PRINCIPAL_CLASSES: PrincipalClass[] = [
   },
   {
     id: 'scoped_api_key',
-    label: 'Scoped API key (admin-owned)',
+    label: 'Scoped API key (admin-owned, read-only scopes)',
     role: 'admin',
     principalType: 'service',
     authMethod: 'api-key',
     channels: KEY_CHANNELS,
-    permissions: perms('admin'),
+    // Owner permissions ∩ key scopes: REST enforces the permission-to-scope
+    // mapping, so a read-only key holds only the read-mapped permissions.
+    permissions: permissionsWithinScopes(perms('admin'), READ_ONLY_KEY_SCOPES),
     isTeamMember: true,
     isAuthenticatedPrincipal: false,
-    // Declared scope is narrow, but REST ignores key scopes and MCP forces
-    // ALL_SCOPES for keys — so the effective scope set is everything. Over-grant.
-    mcpScopes: new Set(ALL_MCP_SCOPES),
-    note: 'Configured scope is ignored: REST never checks it, MCP forces ALL_SCOPES. Effective reach equals a full key.',
+    mcpScopes: READ_ONLY_KEY_SCOPES,
+    note: 'Stored scopes are enforced on REST (permission-to-scope mapping) and MCP (per-tool scope guards): a read-only key cannot write.',
   },
   {
     id: 'full_api_key',
@@ -176,6 +181,7 @@ export const PRINCIPAL_CLASSES: PrincipalClass[] = [
     isTeamMember: true,
     isAuthenticatedPrincipal: false,
     mcpScopes: new Set(ALL_MCP_SCOPES),
+    note: 'A legacy key with NULL stored scopes (or one granted every scope): full owner authority.',
   },
   {
     id: 'oauth_client',

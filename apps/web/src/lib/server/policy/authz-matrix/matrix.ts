@@ -100,7 +100,7 @@ export function renderMatrixDoc(
   out.push('## 1. Permission reach by role profile')
   out.push('')
   out.push(
-    'Profiles: **Owner** = admin class + any admin-owned API key; **Manager** = member class + member OAuth grant; **None** = portal user + every widget class (holds no teammate permission).'
+    'Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hold the subset their scopes map to); **Manager** = member class + member OAuth grant; **None** = portal user + every widget class (holds no teammate permission).'
   )
   out.push('')
   out.push('| Permission | Category | Owner | Manager |')
@@ -151,7 +151,7 @@ export function renderMatrixDoc(
   out.push('### MCP scope holdings by class')
   out.push('')
   out.push(
-    'API-key classes hold **every** scope regardless of their configured scope (REST ignores scopes; MCP forces ALL_SCOPES for keys). Only OAuth grants are enforced.'
+    'Key scopes are enforced: an API key holds exactly its stored scopes (owner permissions ∩ key scopes on REST, per-tool scope guards on MCP). A key with NULL stored scopes (legacy, pre-scope-selection) holds every scope. OAuth grants carry their own enforced scopes.'
   )
   out.push('')
   const scopeUniverse = [...new Set(tools.flatMap((t) => t.scopes))].sort()

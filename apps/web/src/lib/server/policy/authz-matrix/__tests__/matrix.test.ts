@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
 import { resolveSurfaces } from '../resolve'
-import { scanMcpTools, scanAllEntryPoints } from '../scan'
+import { scanAllMcpTools, scanAllEntryPoints } from '../scan'
 import { PRINCIPAL_CLASS_BY_ID, ALL_MCP_SCOPES } from '../principals'
 import { evaluate, evaluateMcpTool, renderMatrixDoc } from '../matrix'
 import { resolveActorPermissions } from '@/lib/server/policy/permissions'
@@ -10,10 +9,7 @@ import type { PermissionKey } from '@/lib/shared/permissions'
 
 const SRC_ROOT = join(__dirname, '../../../../..') // apps/web/src
 const { surfaces } = resolveSurfaces(SRC_ROOT)
-const tools = scanMcpTools(
-  'lib/server/mcp/tools.ts',
-  readFileSync(join(SRC_ROOT, 'lib/server/mcp/tools.ts'), 'utf8')
-)
+const tools = scanAllMcpTools(SRC_ROOT)
 const entryPoints = scanAllEntryPoints(SRC_ROOT)
 
 const byId = (id: string) => PRINCIPAL_CLASS_BY_ID[id as keyof typeof PRINCIPAL_CLASS_BY_ID]
@@ -100,29 +96,53 @@ describe('API-route channel reachability', () => {
   })
 })
 
-describe('API key scope over-grant (deferred scope∩permission work)', () => {
-  it('a scoped key has identical reach to a full key across every surface and tool', () => {
-    for (const s of surfaces) {
-      expect(evaluate(byId('scoped_api_key'), s), `${s.file}::${s.surface}`).toBe(
-        evaluate(byId('full_api_key'), s)
-      )
-    }
-    for (const t of tools) {
-      expect(evaluateMcpTool(byId('scoped_api_key'), t), t.name).toBe(
-        evaluateMcpTool(byId('full_api_key'), t)
-      )
+describe('API key scope enforcement (owner permissions ∩ key scopes)', () => {
+  it('a read-only scoped key is denied every write tool a full key passes', () => {
+    const writeTools = tools.filter((t) => t.scopes.every((s) => s.startsWith('write:')))
+    expect(writeTools.length).toBeGreaterThan(0)
+    for (const t of writeTools) {
+      expect(evaluateMcpTool(byId('full_api_key'), t), t.name).toBe('allow')
+      expect(evaluateMcpTool(byId('scoped_api_key'), t), t.name).toBe('deny')
     }
   })
 
-  it('a nominally read-only scoped key can still invoke write tools', () => {
-    const writeTool = tools.find((t) => t.scopes.includes('write:feedback'))!
-    expect(writeTool).toBeTruthy()
-    expect(evaluateMcpTool(byId('scoped_api_key'), writeTool)).toBe('allow')
+  it('the scoped key still invokes read tools within its scopes', () => {
+    const readTool = tools.find(
+      (t) => t.scopes.includes('read:feedback') && !t.scopes.some((s) => s.startsWith('write:'))
+    )!
+    expect(readTool).toBeTruthy()
+    expect(evaluateMcpTool(byId('scoped_api_key'), readTool)).toBe('allow')
+  })
+
+  it('the scoped key holds strictly fewer REST permissions than the full key', () => {
+    const scoped = byId('scoped_api_key').permissions
+    const full = byId('full_api_key').permissions
+    expect(scoped.size).toBeGreaterThan(0)
+    expect(scoped.size).toBeLessThan(full.size)
+    for (const p of scoped) expect(full.has(p), p).toBe(true)
+  })
+
+  it('a read-only key is denied write-mapped REST permission gates the full key passes', () => {
+    const tightened = surfaces.filter(
+      (s) =>
+        s.channel === 'api-route' &&
+        evaluate(byId('full_api_key'), s) === 'allow' &&
+        evaluate(byId('scoped_api_key'), s) === 'deny'
+    )
+    expect(tightened.length).toBeGreaterThan(0)
+  })
+
+  it('public-tier reads still admit any valid key regardless of scopes', () => {
+    const publicReads = surfaces.filter((s) => s.authz.type === 'public_data')
+    expect(publicReads.length).toBeGreaterThan(0)
+    for (const s of publicReads) {
+      expect(evaluate(byId('scoped_api_key'), s), `${s.file}::${s.surface}`).toBe('allow')
+    }
   })
 })
 
-describe('OAuth scope enforcement (contrast with API keys)', () => {
-  it("a read-only OAuth grant is denied write tools an API key's forced ALL_SCOPES would pass", () => {
+describe('OAuth scope enforcement (same model as scoped keys)', () => {
+  it('a read-only OAuth grant is denied write tools a full (legacy) key passes', () => {
     const contrast = tools.filter(
       (t) =>
         evaluateMcpTool(byId('full_api_key'), t) === 'allow' &&
@@ -167,8 +187,9 @@ describe('MCP scope universe', () => {
   })
 
   it('every MCP tool declares at least one scope', () => {
-    // Guards the requireHelpCenterWrite helper mapping: if it stops resolving,
-    // those tools scan as scopeless and this fails rather than silently over-granting.
+    // Guards the registerTool metadata extraction: if a tool's declarative
+    // `scope` (or a branchy handler's requireScope) stops resolving, it scans
+    // as scopeless and this fails rather than silently over-granting.
     const scopeless = tools.filter((t) => t.scopes.length === 0).map((t) => t.name)
     expect(scopeless, scopeless.join(', ')).toEqual([])
   })

@@ -321,6 +321,7 @@ const MOCK_API_KEY: ApiKey = {
   lastUsedAt: null,
   expiresAt: null,
   revokedAt: null,
+  scopes: null,
 }
 
 const MOCK_MEMBER_RECORD = {
@@ -457,7 +458,7 @@ describe('MCP HTTP Handler', () => {
     it('should return 403 when member is a portal user (not team)', async () => {
       const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
       vi.mocked(verifyApiKey).mockResolvedValue(MOCK_API_KEY)
-      // Return role: 'user' for the role lookup in withApiKeyAuth
+      // Return role: 'user' for the principal lookup in withApiKeyAuth
       mockFindFirst.mockResolvedValue({ role: 'user' })
 
       const { handleMcpRequest } = await import('../handler')
@@ -469,9 +470,9 @@ describe('MCP HTTP Handler', () => {
     it('should return 401 when member record not found', async () => {
       const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
       vi.mocked(verifyApiKey).mockResolvedValue(MOCK_API_KEY)
-      // First call for role lookup in withApiKeyAuth → admin
-      // Second call for full member record → null
-      mockFindFirst.mockResolvedValueOnce({ role: 'admin' }).mockResolvedValueOnce(null)
+      // The single principal lookup in withApiKeyAuth finds nothing; the MCP
+      // handler rejects the request off that same (reused) result.
+      mockFindFirst.mockResolvedValueOnce(null)
 
       const { handleMcpRequest } = await import('../handler')
       const response = await handleMcpRequest(mcpRequest(jsonRpcRequest('initialize')))
@@ -2124,6 +2125,89 @@ describe('MCP HTTP Handler', () => {
       expect(vi.mocked(deleteComment)).not.toHaveBeenCalled()
       const body = (await response.json()) as { result: { isError: boolean } }
       expect(body.result.isError).toBe(true)
+    })
+
+    // ── API-key scope enforcement (stored scopes ∩ owner authority) ──────────
+
+    /** Initialize a session authenticated by an API key carrying stored scopes. */
+    async function initializeScopedKeySession(scopes: ApiKey['scopes']) {
+      const scopedKey = { ...MOCK_API_KEY, scopes }
+      const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
+      vi.mocked(verifyApiKey).mockResolvedValue(scopedKey)
+      mockFindFirst.mockResolvedValue(MOCK_MEMBER_RECORD)
+      const { handleMcpRequest } = await import('../handler')
+      await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('initialize', {
+            protocolVersion: '2025-03-26',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '1.0' },
+          })
+        )
+      )
+      vi.mocked(verifyApiKey).mockResolvedValue(scopedKey)
+      mockFindFirst.mockResolvedValue(MOCK_MEMBER_RECORD)
+      return handleMcpRequest
+    }
+
+    it('a read-only scoped API key is denied write tools', async () => {
+      const handleMcpRequest = await initializeScopedKeySession(['read:feedback'])
+
+      const response = await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'create_changelog',
+            arguments: { title: 'v1', content: 'New stuff' },
+          })
+        )
+      )
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        result: { isError: boolean; content: Array<{ text: string }> }
+      }
+      expect(body.result.isError).toBe(true)
+      expect(body.result.content[0].text).toContain('write:changelog')
+    })
+
+    it('a read-only scoped API key can still invoke read tools', async () => {
+      const handleMcpRequest = await initializeScopedKeySession(['read:feedback'])
+
+      const response = await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'search',
+            arguments: { query: 'test' },
+          })
+        )
+      )
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        result: { isError?: boolean; content: Array<{ text: string }> }
+      }
+      expect(body.result.isError).not.toBe(true)
+      expect(body.result.content[0].text).toContain('posts')
+    })
+
+    it('a feedback-scoped API key is denied conversation tools (cross-domain)', async () => {
+      const handleMcpRequest = await initializeScopedKeySession(['read:feedback', 'write:feedback'])
+
+      const response = await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'list_conversations',
+            arguments: {},
+          })
+        )
+      )
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        result: { isError: boolean; content: Array<{ text: string }> }
+      }
+      expect(body.result.isError).toBe(true)
+      expect(body.result.content[0].text).toContain('read:chat')
     })
   })
 

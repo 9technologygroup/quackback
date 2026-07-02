@@ -78,9 +78,11 @@ const mockAuthContext: ApiAuthContext = {
     expiresAt: null,
     createdAt: new Date('2026-01-01'),
     revokedAt: null,
+    scopes: null,
   },
   principalId: 'principal_1' as PrincipalId,
   role: 'admin',
+  principal: null,
   importMode: false,
 }
 
@@ -95,9 +97,11 @@ const mockTeamAuthContext: ApiAuthContext = {
     expiresAt: null,
     createdAt: new Date('2026-01-01'),
     revokedAt: null,
+    scopes: null,
   },
   principalId: 'principal_1' as PrincipalId,
   role: 'member',
+  principal: null,
   importMode: false,
 }
 
