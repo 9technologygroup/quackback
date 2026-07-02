@@ -4,6 +4,7 @@ import type { Role } from '@/lib/server/auth'
 import { auth } from '@/lib/server/auth'
 import { db, session, principal, eq, and, gt } from '@/lib/server/db'
 import { ensurePrincipalForUser } from '@/lib/server/domains/principals/principal.factory'
+import { rawSessionToken } from '@/lib/server/auth/session-token'
 import { shouldRollSession, WIDGET_SESSION_TTL_MS } from './widget-session-roll'
 import { logger } from '@/lib/server/logger'
 
@@ -46,8 +47,11 @@ export async function getWidgetSession(opts?: {
     const headers = getRequestHeaders()
     const authHeader = headers.get('authorization')
     // Bearer is the widget's sole credential — the visitor's localStorage token.
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) || null : null
-    if (!token) return null
+    // Anonymous sessions persist the signed set-auth-token form; normalize to
+    // the raw token the session table stores before comparing.
+    const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) || null : null
+    if (!bearer) return null
+    const token = rawSessionToken(bearer)
 
     const sessionRecord = await db.query.session.findFirst({
       where: and(eq(session.token, token), gt(session.expiresAt, new Date())),

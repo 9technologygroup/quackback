@@ -2,21 +2,13 @@ import { test, expect } from '@playwright/test'
 import { setSupportSurfaces } from '../../utils/db-helpers'
 
 /**
- * Characterization net for the widget messenger, pinning CURRENT anonymous
- * visitor behavior: the widget route loads directly (the SDK normally iframes
+ * Characterization net for the widget messenger, pinning anonymous visitor
+ * behavior: the widget route loads directly (the SDK normally iframes
  * /widget; the route itself needs no params), the Messages tab lists the
- * visitor's conversations, and the first send lazily mints an anonymous
- * session.
- *
- * KNOWN BUG (pinned, not fixed - this is a characterization net): anonymous
- * session persistence across reloads is currently broken. The client persists
- * better-auth's SIGNED bearer token (raw.signature, from the set-auth-token
- * header) to localStorage, but /api/widget/session -> getWidgetSession()
- * compares that value verbatim against the RAW session.token column, so the
- * mount-time restore always 401s and clears the persisted token. The
- * conversation therefore does NOT survive a reload today. When that bug is
- * fixed, the reload assertions below must be flipped to expect the
- * conversation list to show the thread.
+ * visitor's conversations, the first send lazily mints an anonymous session,
+ * and the persisted token survives a reload so the visitor keeps their
+ * conversation (the persisted signed bearer form is normalized to the raw
+ * session token server-side; see lib/server/auth/session-token.ts).
  *
  * Deliberately independent of agent activity - no replies are awaited.
  */
@@ -60,12 +52,13 @@ test.describe('Widget messenger (anonymous visitor)', { tag: '@smoke' }, () => {
     // (in-memory token; back via the thread's back affordance is covered by
     // navigating the tab bar after the panel state resets on reload below).
 
-    // CURRENT BEHAVIOR (BUG, see header comment): after a reload the persisted
-    // token is rejected by /api/widget/session and cleared, so the visitor's
-    // conversation does NOT survive - the Messages tab is empty again.
+    // After a reload the persisted token restores the anonymous session, so
+    // the visitor's conversation survives: the Messages list shows the thread
+    // (the sent message is the conversation preview) and the token remains.
     await page.reload()
     await page.getByRole('button', { name: 'Messages', exact: true }).click()
-    await expect(page.getByText('No conversations yet')).toBeVisible({ timeout: 15000 })
+    await expect(page.getByText(message).first()).toBeVisible({ timeout: 15000 })
+    await expect(page.getByText('No conversations yet')).not.toBeVisible()
     await expect
       .poll(
         () =>
@@ -74,6 +67,6 @@ test.describe('Widget messenger (anonymous visitor)', { tag: '@smoke' }, () => {
           ),
         { timeout: 10000 }
       )
-      .toBeNull()
+      .not.toBeNull()
   })
 })

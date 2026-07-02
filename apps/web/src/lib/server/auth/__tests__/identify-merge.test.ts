@@ -131,6 +131,31 @@ describe('resolveAndMergeAnonymousToken', () => {
     expect(mockMerge).not.toHaveBeenCalled()
   })
 
+  it('normalizes a signed previousToken to the raw token for the lookup', async () => {
+    // The widget persists the signed set-auth-token form; the DB stores the
+    // raw token. A signed previousToken must still find the session, or the
+    // visitor-to-user history merge silently drops.
+    mockSessionFindFirst.mockResolvedValue({
+      userId: 'user_anon' as UserId,
+      user: { id: 'user_anon', name: 'Anon User' },
+    })
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_anon' as PrincipalId,
+      type: 'anonymous',
+      displayName: 'Curious Penguin',
+    })
+
+    await resolveAndMergeAnonymousToken({
+      previousToken: 'anon-token-123.c2lnbmF0dXJl',
+      targetPrincipalId: TARGET_PRINCIPAL_ID,
+      targetDisplayName: 'Jane Doe',
+    })
+
+    const { eq } = await import('@/lib/server/db')
+    expect(eq).toHaveBeenCalledWith(expect.anything(), 'anon-token-123')
+    expect(mockMerge).toHaveBeenCalled()
+  })
+
   it('calls merge when previous session is a different anonymous user', async () => {
     const anonPrincipalId = 'principal_anon' as PrincipalId
     const anonUserId = 'user_anon' as UserId
