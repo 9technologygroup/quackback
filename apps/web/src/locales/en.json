@@ -511,5 +511,13 @@
   "portal.hc.contactSupport.cta": "Contact support",
   "portal.hc.articleFeedback.stillStuck": "Still stuck?",
   "portal.hc.articleFeedback.contactSupport": "Contact support",
-  "portal.vote.noAccess": "You don't have access to vote on this board"
+  "portal.vote.noAccess": "You don't have access to vote on this board",
+  "helpAskAi.thinking": "Finding an answer...",
+  "helpAskAi.noAnswer": "We couldn't find an answer in our help articles. Try different keywords or browse the articles.",
+  "helpAskAi.error": "We couldn't generate an answer right now. Please try again.",
+  "helpAskAi.sources": "Sources",
+  "helpAskAi.searchPlaceholder": "Ask AI or search our help articles to find an answer",
+  "helpAskAi.rowTitle": "Ask AI about \"{query}\"",
+  "helpAskAi.rowSubtitle": "Use AI to answer your question in seconds",
+  "helpAskAi.dismiss": "Dismiss"
 }

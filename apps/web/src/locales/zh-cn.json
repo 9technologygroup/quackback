@@ -511,5 +511,13 @@
   "portal.hc.contactSupport.cta": "联系支持",
   "portal.hc.articleFeedback.stillStuck": "还没解决？",
   "portal.hc.articleFeedback.contactSupport": "联系支持",
-  "portal.vote.noAccess": "你没有权限在此看板投票"
+  "portal.vote.noAccess": "你没有权限在此看板投票",
+  "helpAskAi.thinking": "正在寻找答案...",
+  "helpAskAi.noAnswer": "我们没有在帮助文章中找到答案。请尝试其他关键词或浏览文章。",
+  "helpAskAi.error": "暂时无法生成答案，请稍后重试。",
+  "helpAskAi.sources": "来源",
+  "helpAskAi.searchPlaceholder": "问问 AI，或搜索我们的帮助文章寻找答案",
+  "helpAskAi.rowTitle": "向 AI 询问\"{query}\"",
+  "helpAskAi.rowSubtitle": "让 AI 在几秒钟内回答你的问题",
+  "helpAskAi.dismiss": "关闭"
 }

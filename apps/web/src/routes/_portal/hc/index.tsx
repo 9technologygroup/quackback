@@ -57,6 +57,7 @@ function HelpCenterLandingPage() {
   const { settings } = Route.useRouteContext()
   const supportEnabled =
     !!settings?.featureFlags?.supportInbox && !!settings?.portalConfig?.support?.enabled
+  const askAiEnabled = !!settings?.featureFlags?.helpCenterAiAnswers
 
   const title = helpCenterConfig?.homepageTitle ?? 'How can we help?'
   const description =
@@ -67,7 +68,7 @@ function HelpCenterLandingPage() {
       <div className="text-center mb-10 animate-in fade-in slide-in-from-bottom-2 duration-300">
         <h1 className="text-3xl sm:text-4xl font-bold text-foreground mb-3">{title}</h1>
         <p className="text-muted-foreground text-base mb-8">{description}</p>
-        <HelpCenterHeroSearch />
+        <HelpCenterHeroSearch askAiEnabled={askAiEnabled} />
       </div>
 
       <div

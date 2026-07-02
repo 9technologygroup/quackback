@@ -1,75 +1,48 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { MagnifyingGlassIcon } from '@heroicons/react/24/outline'
+import { useIntl } from 'react-intl'
+import { MagnifyingGlassIcon, ArrowRightIcon } from '@heroicons/react/24/outline'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { contentPreview } from '@/lib/shared/utils/string'
-
-// ============================================================================
-// Types
-// ============================================================================
-
-interface SearchResult {
-  id: string
-  slug: string
-  title: string
-  content: string
-  category: {
-    id: string
-    slug: string
-    name: string
-  }
-}
+import {
+  AskAiAnswerPanel,
+  AskAiRow,
+  HighlightedText,
+  useAskAiAvailable,
+  useAskAiSearchController,
+  type AskAiSourceMeta,
+} from '@/components/help-center/ask-ai'
+import { useKbSearch, type KbSearchArticle } from '@/components/help-center/use-kb-search'
 
 // ============================================================================
 // Hero Search (landing page)
 // ============================================================================
 
-export function HelpCenterHeroSearch() {
+interface HelpCenterHeroSearchProps {
+  /** Surface hook: the route decides whether Ask AI may be offered. */
+  askAiEnabled?: boolean
+}
+
+export function HelpCenterHeroSearch({ askAiEnabled = false }: HelpCenterHeroSearchProps) {
+  const intl = useIntl()
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchResult[]>([])
-  const [isSearching, setIsSearching] = useState(false)
   const [showResults, setShowResults] = useState(false)
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const doSearch = useCallback(async (q: string) => {
-    if (!q.trim()) {
-      setResults([])
-      setShowResults(false)
-      setIsSearching(false)
-      return
-    }
+  const askAiAvailable = useAskAiAvailable(askAiEnabled)
+  const { results, isSearching } = useKbSearch({
+    query,
+    limit: 8,
+    // With Ask AI available the dropdown also opens on zero results: the
+    // pinned Ask-AI row is the no-results affordance.
+    onResults: (articles) => setShowResults(articles.length > 0 || askAiAvailable),
+  })
 
-    setIsSearching(true)
-    try {
-      const res = await fetch(`/api/widget/kb-search?q=${encodeURIComponent(q)}&limit=8`)
-      const json = await res.json()
-      const articles: SearchResult[] = json.data?.articles ?? []
-      setResults(articles)
-      setShowResults(articles.length > 0)
-    } catch {
-      setResults([])
-      setShowResults(false)
-    } finally {
-      setIsSearching(false)
-    }
-  }, [])
-
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const value = e.target.value
-      setQuery(value)
-
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current)
-      }
-
-      debounceRef.current = setTimeout(() => {
-        doSearch(value)
-      }, 300)
-    },
-    [doSearch]
-  )
+  // A cleared query always closes the dropdown (the hook only reports
+  // results for non-blank queries).
+  useEffect(() => {
+    if (!query.trim()) setShowResults(false)
+  }, [query])
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -82,18 +55,43 @@ export function HelpCenterHeroSearch() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Cleanup debounce on unmount
-  useEffect(() => {
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
-    }
-  }, [])
-
-  const handleResultClick = (result: SearchResult) => {
+  const handleResultClick = (result: KbSearchArticle) => {
     setShowResults(false)
     setQuery('')
     window.location.href = `/hc/articles/${result.category.slug}/${result.slug}`
   }
+
+  const handleSourceClick = useCallback((source: AskAiSourceMeta) => {
+    window.location.href = `/hc/articles/${source.categorySlug}/${source.slug}`
+  }, [])
+
+  const {
+    askAiState,
+    selectedIndex,
+    hasAskRow,
+    answerOpen,
+    askRowOffset,
+    triggerAsk,
+    dismissAnswer,
+    handleKeyDown,
+  } = useAskAiSearchController({
+    query,
+    askAiAvailable,
+    resultCount: results.length,
+    onSelectResult: (idx) => {
+      const result = results[idx]
+      if (result) handleResultClick(result)
+    },
+    onClearQuery: () => {
+      setQuery('')
+      setShowResults(false)
+    },
+    onAsk: () => setShowResults(false),
+    // Return to the autocomplete results for the current query.
+    onDismiss: () => {
+      if (query.trim()) setShowResults(results.length > 0 || askAiAvailable)
+    },
+  })
 
   return (
     <div ref={containerRef} className="relative w-full max-w-xl mx-auto">
@@ -101,40 +99,87 @@ export function HelpCenterHeroSearch() {
         <MagnifyingGlassIcon className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
         <Input
           type="search"
-          placeholder="Search articles..."
+          placeholder={
+            askAiAvailable
+              ? intl.formatMessage({
+                  id: 'helpAskAi.searchPlaceholder',
+                  defaultMessage: 'Ask AI or search our help articles to find an answer',
+                })
+              : 'Search articles...'
+          }
           value={query}
-          onChange={handleChange}
-          onFocus={() => results.length > 0 && setShowResults(true)}
-          className="h-12 pl-12 pr-4 text-base rounded-xl shadow-sm border-border/60 bg-background"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onFocus={() => (results.length > 0 || (hasAskRow && !answerOpen)) && setShowResults(true)}
+          className="h-12 pl-12 pr-12 text-base rounded-xl shadow-sm border-border/60 bg-background"
         />
         {isSearching && (
-          <div className="absolute right-4 top-1/2 -translate-y-1/2">
+          <div
+            className={`absolute top-1/2 -translate-y-1/2 ${hasAskRow ? 'right-12' : 'right-4'}`}
+          >
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
           </div>
         )}
+        {hasAskRow && (
+          <button
+            type="button"
+            onClick={triggerAsk}
+            aria-label={intl.formatMessage({
+              id: 'helpAskAi.rowSubtitle',
+              defaultMessage: 'Use AI to answer your question in seconds',
+            })}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity cursor-pointer"
+          >
+            <ArrowRightIcon className="h-4 w-4 rtl:rotate-180" />
+          </button>
+        )}
       </div>
 
-      {showResults && results.length > 0 && (
+      {!answerOpen && showResults && (results.length > 0 || hasAskRow) && (
         <div className="absolute top-full left-0 right-0 mt-2 rounded-xl border border-border bg-popover shadow-lg z-50 overflow-hidden">
-          <ul className="py-1">
-            {results.map((result) => (
-              <li key={result.id}>
-                <button
-                  type="button"
-                  onClick={() => handleResultClick(result)}
-                  className="w-full text-left px-4 py-3 hover:bg-accent transition-colors"
-                >
-                  <div className="text-sm font-medium text-foreground">{result.title}</div>
-                  <div className="text-xs text-muted-foreground mt-0.5">{result.category.name}</div>
-                  {result.content && (
-                    <div className="text-xs text-muted-foreground/70 mt-1 line-clamp-2">
-                      {contentPreview(result.content, 150)}
+          {hasAskRow && (
+            <div className={`p-1.5 ${results.length > 0 ? 'border-b border-border/60' : ''}`}>
+              <AskAiRow query={query} onSelect={triggerAsk} highlighted={selectedIndex === 0} />
+            </div>
+          )}
+          {results.length > 0 && (
+            <ul className="py-1">
+              {results.map((result, idx) => (
+                <li key={result.id}>
+                  <button
+                    type="button"
+                    onClick={() => handleResultClick(result)}
+                    data-highlighted={selectedIndex === idx + askRowOffset || undefined}
+                    className={`w-full text-left px-4 py-3 transition-colors ${
+                      selectedIndex === idx + askRowOffset ? 'bg-accent' : 'hover:bg-accent'
+                    }`}
+                  >
+                    <div className="text-sm font-medium text-foreground">
+                      <HighlightedText text={result.title} query={query} />
                     </div>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      {result.category.name}
+                    </div>
+                    {result.content && (
+                      <div className="text-xs text-muted-foreground/70 mt-1 line-clamp-2">
+                        <HighlightedText text={contentPreview(result.content, 150)} query={query} />
+                      </div>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {answerOpen && (
+        <div className="mt-3 text-start">
+          <AskAiAnswerPanel
+            state={askAiState}
+            onDismiss={dismissAnswer}
+            onSourceClick={handleSourceClick}
+          />
         </div>
       )}
     </div>

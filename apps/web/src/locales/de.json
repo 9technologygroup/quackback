@@ -511,5 +511,13 @@
   "portal.hc.contactSupport.cta": "Support kontaktieren",
   "portal.hc.articleFeedback.stillStuck": "Kommen Sie nicht weiter?",
   "portal.hc.articleFeedback.contactSupport": "Support kontaktieren",
-  "portal.vote.noAccess": "Sie haben keine Berechtigung, in dieser Kategorie abzustimmen"
+  "portal.vote.noAccess": "Sie haben keine Berechtigung, in dieser Kategorie abzustimmen",
+  "helpAskAi.thinking": "Antwort wird gesucht...",
+  "helpAskAi.noAnswer": "Wir konnten in unseren Hilfeartikeln keine Antwort finden. Versuche andere Suchbegriffe oder stöbere in den Artikeln.",
+  "helpAskAi.error": "Wir konnten gerade keine Antwort erstellen. Bitte versuche es erneut.",
+  "helpAskAi.sources": "Quellen",
+  "helpAskAi.searchPlaceholder": "Frag die KI oder durchsuche unsere Hilfeartikel, um eine Antwort zu finden",
+  "helpAskAi.rowTitle": "KI zu \"{query}\" fragen",
+  "helpAskAi.rowSubtitle": "Lass dir deine Frage in Sekunden von der KI beantworten",
+  "helpAskAi.dismiss": "Schließen"
 }

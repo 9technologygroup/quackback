@@ -511,5 +511,13 @@
   "portal.hc.contactSupport.cta": "Contacter le support",
   "portal.hc.articleFeedback.stillStuck": "Toujours bloqué ?",
   "portal.hc.articleFeedback.contactSupport": "Contacter le support",
-  "portal.vote.noAccess": "Vous n'avez pas l'autorisation de voter dans cette catégorie"
+  "portal.vote.noAccess": "Vous n'avez pas l'autorisation de voter dans cette catégorie",
+  "helpAskAi.thinking": "Recherche d'une réponse...",
+  "helpAskAi.noAnswer": "Nous n'avons pas trouvé de réponse dans nos articles d'aide. Essayez d'autres mots-clés ou parcourez les articles.",
+  "helpAskAi.error": "Nous n'avons pas pu générer de réponse pour le moment. Veuillez réessayer.",
+  "helpAskAi.sources": "Sources",
+  "helpAskAi.searchPlaceholder": "Demandez à l'IA ou cherchez dans nos articles d'aide pour trouver une réponse",
+  "helpAskAi.rowTitle": "Demander à l'IA : \"{query}\"",
+  "helpAskAi.rowSubtitle": "Utilisez l'IA pour répondre à votre question en quelques secondes",
+  "helpAskAi.dismiss": "Fermer"
 }

@@ -511,5 +511,13 @@
   "portal.hc.contactSupport.cta": "Contactar con soporte",
   "portal.hc.articleFeedback.stillStuck": "¿Sigues atascado?",
   "portal.hc.articleFeedback.contactSupport": "Contactar con soporte",
-  "portal.vote.noAccess": "No tienes permiso para votar en esta categoría"
+  "portal.vote.noAccess": "No tienes permiso para votar en esta categoría",
+  "helpAskAi.thinking": "Buscando una respuesta...",
+  "helpAskAi.noAnswer": "No encontramos una respuesta en nuestros artículos de ayuda. Prueba con otras palabras clave o explora los artículos.",
+  "helpAskAi.error": "No pudimos generar una respuesta en este momento. Inténtalo de nuevo.",
+  "helpAskAi.sources": "Fuentes",
+  "helpAskAi.searchPlaceholder": "Pregunta a la IA o busca en nuestros artículos de ayuda para encontrar una respuesta",
+  "helpAskAi.rowTitle": "Preguntar a la IA sobre \"{query}\"",
+  "helpAskAi.rowSubtitle": "Usa la IA para responder tu pregunta en segundos",
+  "helpAskAi.dismiss": "Descartar"
 }

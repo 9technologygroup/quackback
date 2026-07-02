@@ -511,5 +511,13 @@
   "portal.hc.contactSupport.cta": "Связаться с поддержкой",
   "portal.hc.articleFeedback.stillStuck": "Все еще не получается?",
   "portal.hc.articleFeedback.contactSupport": "Связаться с поддержкой",
-  "portal.vote.noAccess": "У вас нет доступа для голосования в этой категории"
+  "portal.vote.noAccess": "У вас нет доступа для голосования в этой категории",
+  "helpAskAi.thinking": "Ищем ответ...",
+  "helpAskAi.noAnswer": "Мы не нашли ответ в наших справочных статьях. Попробуйте другие ключевые слова или просмотрите статьи.",
+  "helpAskAi.error": "Не удалось сформировать ответ. Пожалуйста, попробуйте ещё раз.",
+  "helpAskAi.sources": "Источники",
+  "helpAskAi.searchPlaceholder": "Спросите ИИ или поищите ответ в наших справочных статьях",
+  "helpAskAi.rowTitle": "Спросить ИИ про \"{query}\"",
+  "helpAskAi.rowSubtitle": "ИИ ответит на ваш вопрос за считанные секунды",
+  "helpAskAi.dismiss": "Закрыть"
 }

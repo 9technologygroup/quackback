@@ -813,6 +813,8 @@ export interface TenantSettings {
 export interface FeatureFlags {
   /** Help center knowledge base */
   helpCenter: boolean
+  /** AI answers with citations on help-center search surfaces */
+  helpCenterAiAnswers: boolean
   /** AI-powered feedback extraction from external sources */
   aiFeedbackExtraction: boolean
   /** Support inbox: messenger widget channel + unified admin inbox */
@@ -827,6 +829,7 @@ export interface FeatureFlags {
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   helpCenter: false,
+  helpCenterAiAnswers: false,
   aiFeedbackExtraction: false,
   supportInbox: false,
   linkPreviews: false,
@@ -844,6 +847,11 @@ export const FEATURE_FLAG_REGISTRY: Record<
   helpCenter: {
     label: 'Help Center',
     description: 'Publish a searchable help center so customers can find answers on their own.',
+  },
+  helpCenterAiAnswers: {
+    label: 'Help Center AI Answers',
+    description:
+      'Let customers ask a question and get an instant AI answer with citations, built only from your published help articles. Requires an AI model to be configured.',
   },
   aiFeedbackExtraction: {
     label: 'AI Feedback Extraction',
@@ -884,7 +892,7 @@ export const LAB_SECTIONS: Array<{
   {
     title: 'Support',
     description: 'Support your customers with Messenger and a self-serve help center.',
-    flags: ['supportInbox', 'helpCenter', 'linkPreviews'],
+    flags: ['supportInbox', 'helpCenter', 'helpCenterAiAnswers', 'linkPreviews'],
   },
   {
     title: 'Feedback',

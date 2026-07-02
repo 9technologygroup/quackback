@@ -511,5 +511,13 @@
   "portal.hc.contactSupport.cta": "تواصل مع الدعم",
   "portal.hc.articleFeedback.stillStuck": "ما زلت عالقًا؟",
   "portal.hc.articleFeedback.contactSupport": "تواصل مع الدعم",
-  "portal.vote.noAccess": "ليست لديك صلاحية التصويت في هذه الفئة"
+  "portal.vote.noAccess": "ليست لديك صلاحية التصويت في هذه الفئة",
+  "helpAskAi.thinking": "جارٍ البحث عن إجابة...",
+  "helpAskAi.noAnswer": "لم نعثر على إجابة في مقالات المساعدة لدينا. جرّب كلمات مفتاحية أخرى أو تصفّح المقالات.",
+  "helpAskAi.error": "تعذّر إنشاء إجابة الآن. يرجى المحاولة مرة أخرى.",
+  "helpAskAi.sources": "المصادر",
+  "helpAskAi.searchPlaceholder": "اسأل الذكاء الاصطناعي أو ابحث في مقالات المساعدة للعثور على إجابة",
+  "helpAskAi.rowTitle": "اسأل الذكاء الاصطناعي عن \"{query}\"",
+  "helpAskAi.rowSubtitle": "استخدم الذكاء الاصطناعي للإجابة على سؤالك في ثوانٍ",
+  "helpAskAi.dismiss": "إغلاق"
 }
