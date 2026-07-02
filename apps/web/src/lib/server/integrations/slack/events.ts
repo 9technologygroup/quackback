@@ -11,6 +11,7 @@ import { getPlatformCredentials } from '@/lib/server/domains/platform-credential
 import { decryptSecrets } from '../encryption'
 import { ingestRawFeedback } from '@/lib/server/domains/feedback/ingestion/feedback-ingest.service'
 import { verifySlackSignature } from './verify'
+import { readTextBodyOr413, MAX_WEBHOOK_BODY_BYTES } from '@/lib/server/utils/read-body'
 import { logger } from '@/lib/server/logger'
 import type { FeedbackSourceId, IntegrationId } from '@quackback/ids'
 
@@ -60,7 +61,9 @@ function pruneMap(map: Map<string, number | { ts: number }>, maxSize: number, tt
  * POST /api/integrations/slack/events
  */
 export async function handleSlackEvents(request: Request): Promise<Response> {
-  const body = await request.text()
+  // Bounded read before signature verification so oversized bodies never buffer fully
+  const body = await readTextBodyOr413(request, MAX_WEBHOOK_BODY_BYTES)
+  if (body instanceof Response) return body
 
   // Verify signature first — all Slack requests (including url_verification) are signed
   const [credentials, integration] = await Promise.all([

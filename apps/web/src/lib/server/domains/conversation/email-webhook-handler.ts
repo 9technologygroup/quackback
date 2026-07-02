@@ -8,9 +8,13 @@
 import { isEmailInboundConfigured } from './conversation.email-channel'
 import { verifyResendWebhookSignature } from './email-webhook-verify'
 import { ingestInboundEmail } from './conversation.email-inbound.service'
+import { readTextBodyOr413 } from '@/lib/server/utils/read-body'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'conversation-email-inbound' })
+
+// Resend inbound events can embed base64 attachment payloads, so allow up to 10 MB.
+export const MAX_EMAIL_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024
 
 /** Svix sends both `webhook-*` and `svix-*` aliases; accept either. */
 function header(request: Request, base: string): string | null {
@@ -20,8 +24,9 @@ function header(request: Request, base: string): string | null {
 export async function handleInboundEmailWebhook(request: Request): Promise<Response> {
   if (!isEmailInboundConfigured()) return new Response('Not found', { status: 404 })
 
-  // Verify against the raw body before parsing — signature covers the bytes.
-  const body = await request.text()
+  // Bounded read of the raw body; the signature covers these exact bytes.
+  const body = await readTextBodyOr413(request, MAX_EMAIL_WEBHOOK_BODY_BYTES)
+  if (body instanceof Response) return body
   const verified = verifyResendWebhookSignature({
     id: header(request, 'id'),
     timestamp: header(request, 'timestamp'),

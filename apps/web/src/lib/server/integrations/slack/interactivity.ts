@@ -12,6 +12,7 @@ import { getBaseUrl } from '@/lib/server/config'
 import { decryptSecrets } from '../encryption'
 import { ingestRawFeedback } from '@/lib/server/domains/feedback/ingestion/feedback-ingest.service'
 import { verifySlackSignature } from './verify'
+import { readTextBodyOr413, MAX_WEBHOOK_BODY_BYTES } from '@/lib/server/utils/read-body'
 import { logger } from '@/lib/server/logger'
 import type { FeedbackSourceId, IntegrationId } from '@quackback/ids'
 
@@ -42,7 +43,9 @@ const CALLBACK_ID_MODAL = 'quackback_send_feedback_modal'
  * POST /api/integrations/slack/interact
  */
 export async function handleSlackInteractivity(request: Request): Promise<Response> {
-  const body = await request.text()
+  // Bounded read before signature verification so oversized bodies never buffer fully
+  const body = await readTextBodyOr413(request, MAX_WEBHOOK_BODY_BYTES)
+  if (body instanceof Response) return body
 
   // Fetch credentials and integration record in parallel (independent queries)
   const [credentials, integration] = await Promise.all([

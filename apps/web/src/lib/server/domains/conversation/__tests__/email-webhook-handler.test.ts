@@ -24,7 +24,7 @@ vi.mock('@/lib/server/domains/settings/settings.support', () => ({
   isConversationsEnabled: () => isConversationsEnabled(),
 }))
 
-import { handleInboundEmailWebhook } from '../email-webhook-handler'
+import { handleInboundEmailWebhook, MAX_EMAIL_WEBHOOK_BODY_BYTES } from '../email-webhook-handler'
 
 function req(body: unknown): Request {
   return new Request('http://localhost/api/chat/email/inbound', {
@@ -93,6 +93,14 @@ describe('handleInboundEmailWebhook', () => {
 
     expect(res.status).toBe(200)
     await expect(res.json()).resolves.toMatchObject({ status: 'disabled' })
+    expect(ingestInboundEmail).not.toHaveBeenCalled()
+  })
+
+  it('413s an oversized body before signature verification', async () => {
+    const res = await handleInboundEmailWebhook(req('x'.repeat(MAX_EMAIL_WEBHOOK_BODY_BYTES + 1)))
+
+    expect(res.status).toBe(413)
+    expect(verifyResendWebhookSignature).not.toHaveBeenCalled()
     expect(ingestInboundEmail).not.toHaveBeenCalled()
   })
 

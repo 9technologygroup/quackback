@@ -13,6 +13,7 @@ import { getIntegration } from './index'
 import { decryptSecrets } from './encryption'
 import { resolveStatusMapping, type StatusMappings } from './status-mapping'
 import { changeStatus } from '@/lib/server/domains/posts/post.status'
+import { readTextBodyOr413, MAX_WEBHOOK_BODY_BYTES } from '@/lib/server/utils/read-body'
 import type { PostId, PostStatusId, PrincipalId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
 
@@ -30,8 +31,9 @@ export async function handleInboundWebhook(
     return new Response('Unknown integration type', { status: 404 })
   }
 
-  // Read raw body (needed for HMAC verification)
-  const body = await request.text()
+  // Read raw body through the bounded reader (needed for HMAC verification)
+  const body = await readTextBodyOr413(request, MAX_WEBHOOK_BODY_BYTES)
+  if (body instanceof Response) return body
 
   // Get integration record
   const integration = await db.query.integrations.findFirst({
