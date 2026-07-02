@@ -19,6 +19,8 @@ export function createTracker(instanceUrl: string): Tracker {
   let lastHref: string | null = null
   let originalPushState: History['pushState'] | null = null
   let originalReplaceState: History['replaceState'] | null = null
+  let installedPushState: History['pushState'] | null = null
+  let installedReplaceState: History['replaceState'] | null = null
 
   const optedOut = () =>
     navigator.doNotTrack === '1' ||
@@ -49,14 +51,19 @@ export function createTracker(instanceUrl: string): Tracker {
       const h = window.history
       originalPushState = h.pushState
       originalReplaceState = h.replaceState
-      h.pushState = function (this: History, ...args: Parameters<History['pushState']>) {
+      installedPushState = function (this: History, ...args: Parameters<History['pushState']>) {
         originalPushState!.apply(this, args)
         send()
       }
-      h.replaceState = function (this: History, ...args: Parameters<History['replaceState']>) {
+      installedReplaceState = function (
+        this: History,
+        ...args: Parameters<History['replaceState']>
+      ) {
         originalReplaceState!.apply(this, args)
         send()
       }
+      h.pushState = installedPushState
+      h.replaceState = installedReplaceState
       window.addEventListener('popstate', send)
       window.addEventListener('hashchange', send)
 
@@ -67,10 +74,19 @@ export function createTracker(instanceUrl: string): Tracker {
       if (!active) return
       active = false
       const h = window.history
-      if (originalPushState) h.pushState = originalPushState
-      if (originalReplaceState) h.replaceState = originalReplaceState
+      // Restore only if the methods are still ours: if the host site layered
+      // its own patch on top after start(), restoring would silently discard
+      // it. Leaving our wrapper is safe — send() is a no-op once inactive.
+      if (originalPushState && h.pushState === installedPushState) {
+        h.pushState = originalPushState
+      }
+      if (originalReplaceState && h.replaceState === installedReplaceState) {
+        h.replaceState = originalReplaceState
+      }
       originalPushState = null
       originalReplaceState = null
+      installedPushState = null
+      installedReplaceState = null
       window.removeEventListener('popstate', send)
       window.removeEventListener('hashchange', send)
       lastHref = null

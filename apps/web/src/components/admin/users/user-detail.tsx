@@ -543,7 +543,10 @@ export function UserDetail({
                   {user.emailVerified && (
                     <CheckCircleIcon className="h-4 w-4 text-primary shrink-0" />
                   )}
-                  {canManageUsers && (
+                  {/* Leads have no editable account fields: the visible email
+                      is the captured contact email, not user.email, which the
+                      form edits. Editing arrives with the lead merge work. */}
+                  {canManageUsers && !user.isLead && (
                     <button
                       type="button"
                       onClick={startEditing}

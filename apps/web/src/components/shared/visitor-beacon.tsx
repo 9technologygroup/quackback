@@ -16,13 +16,18 @@ export function VisitorBeacon() {
   const { settings } = useRouteContext({ from: '__root__' })
   const enabled = (settings?.featureFlags as FeatureFlags | undefined)?.visitorAnalytics ?? false
   const href = useRouterState({ select: (s) => s.location.href })
-  const isPortal = useRouterState({
-    select: (s) => s.matches.some((m) => m.routeId.startsWith('/_portal')),
+  // Public visitor-facing surfaces: the portal tree plus the standalone
+  // changelog and help-center trees (the latter also serve the subdomain).
+  const isPublicSurface = useRouterState({
+    select: (s) =>
+      s.matches.some((m) =>
+        ['/_portal', '/changelog', '/hc', '/help'].some((prefix) => m.routeId.startsWith(prefix))
+      ),
   })
   const lastTracked = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!enabled || !isPortal || lastTracked.current === href) return
+    if (!enabled || !isPublicSurface || lastTracked.current === href) return
     const nav = navigator as Navigator & { globalPrivacyControl?: boolean }
     if (nav.doNotTrack === '1' || nav.globalPrivacyControl === true) return
     lastTracked.current = href
@@ -35,7 +40,7 @@ export function VisitorBeacon() {
     if (!navigator.sendBeacon?.('/api/track', body)) {
       fetch('/api/track', { method: 'POST', body, keepalive: true }).catch(() => {})
     }
-  }, [href, isPortal])
+  }, [href, isPublicSurface, enabled])
 
   return null
 }

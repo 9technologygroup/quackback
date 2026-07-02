@@ -43,8 +43,11 @@ interface DayStats {
  */
 async function computeDayStats(db: Database, date: string): Promise<DayStats[]> {
   // A visit opens where a visitor's gap since their previous event exceeds
-  // the session gap. Both scopes (per-surface and cross-surface 'all') are
-  // computed from one pass via named windows.
+  // the session gap. Both scopes (per-surface and 'all') are computed from
+  // one pass via named windows. Note the 'all' scope can only dedupe a
+  // visitor across surfaces when they share a site_origin (e.g. the widget
+  // embedded on the portal itself): distinct origins hash to distinct
+  // visitor keys by design, so 'all' is otherwise the per-surface sum.
   const result = await db.execute(sql`
     WITH scoped AS (
       SELECT surface, visitor_hash, occurred_at

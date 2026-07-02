@@ -121,17 +121,19 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
 
   const handleSelectSegment = (segmentId: string, shiftKey: boolean) => {
     const currentIds = filters.segmentIds ?? []
+    // Segments are populated by identified users, so selecting one always
+    // returns to the users view (leads can't be segment members).
     if (shiftKey) {
       // Shift-click: toggle the segment in/out of multi-selection
       const isSelected = currentIds.includes(segmentId)
       const newIds = isSelected
         ? currentIds.filter((id) => id !== segmentId)
         : [...currentIds, segmentId]
-      setFilters({ segmentIds: newIds.length > 0 ? newIds : undefined })
+      setFilters({ segmentIds: newIds.length > 0 ? newIds : undefined, lifecycle: undefined })
     } else {
       // Normal click: replace selection with just this segment (or deselect if already sole selection)
       const isSoleSelection = currentIds.length === 1 && currentIds[0] === segmentId
-      setFilters({ segmentIds: isSoleSelection ? undefined : [segmentId] })
+      setFilters({ segmentIds: isSoleSelection ? undefined : [segmentId], lifecycle: undefined })
     }
   }
 

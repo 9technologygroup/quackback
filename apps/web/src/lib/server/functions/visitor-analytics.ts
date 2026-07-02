@@ -52,8 +52,11 @@ export const getVisitorAnalyticsData = createServerFn({ method: 'GET' })
 
     const days = VISITOR_PERIODS[period]
     const now = new Date()
-    const startStr = toIsoDateOnly(new Date(now.getTime() - days * 86_400_000))
-    const previousStartStr = toIsoDateOnly(new Date(now.getTime() - 2 * days * 86_400_000))
+    // The current window is the last `days` calendar days INCLUSIVE of today
+    // (the rollup writes today's row hourly); subtracting a full `days` would
+    // span days+1 and bias every period-over-period delta upward.
+    const startStr = toIsoDateOnly(new Date(now.getTime() - (days - 1) * 86_400_000))
+    const previousStartStr = toIsoDateOnly(new Date(now.getTime() - (2 * days - 1) * 86_400_000))
 
     const [dailyRows, topRows] = await Promise.all([
       db

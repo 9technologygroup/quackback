@@ -187,6 +187,7 @@ export const adminQueries = {
             page: filters.page,
             limit: filters.limit,
             segmentIds: filters.segmentIds,
+            lifecycle: filters.lifecycle,
           },
         }),
       staleTime: 30 * 1000,
