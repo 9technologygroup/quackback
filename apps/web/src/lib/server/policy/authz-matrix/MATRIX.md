@@ -93,7 +93,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 324 surfaces
+### Server functions (`requireAuth`) — 336 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -166,6 +166,14 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/comments.ts`::restoreCommentFn | comment.moderate |
 | `lib/server/functions/comments.ts`::pinCommentFn | comment.pin |
 | `lib/server/functions/comments.ts`::unpinCommentFn | comment.pin |
+| `lib/server/functions/companies.ts`::listCompaniesFn | company.view |
+| `lib/server/functions/companies.ts`::getCompanyFn | company.view |
+| `lib/server/functions/companies.ts`::getCompanyForPrincipalFn | company.view |
+| `lib/server/functions/companies.ts`::createCompanyFn | company.manage |
+| `lib/server/functions/companies.ts`::updateCompanyFn | company.manage |
+| `lib/server/functions/companies.ts`::deleteCompanyFn | company.manage |
+| `lib/server/functions/companies.ts`::attachPrincipalToCompanyFn | company.manage |
+| `lib/server/functions/companies.ts`::detachPrincipalFromCompanyFn | company.manage |
 | `lib/server/functions/conversation-segments.ts`::fetchInboxSegmentsWithCountsFn | conversation.view |
 | `lib/server/functions/conversation-tags.ts`::fetchConversationTagsFn | conversation.view |
 | `lib/server/functions/conversation-tags.ts`::fetchConversationTagsWithCountsFn | conversation.view |
@@ -193,6 +201,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/conversation.ts`::captureVisitorContactEmailFn | conversation.manage |
 | `lib/server/functions/conversation.ts`::sharePostFn | conversation.reply |
 | `lib/server/functions/conversation.ts`::setConversationStatusFn | conversation.set_status |
+| `lib/server/functions/conversation.ts`::snoozeConversationFn | conversation.set_status |
 | `lib/server/functions/conversation.ts`::endConversationFn | conversation.set_status |
 | `lib/server/functions/conversation.ts`::assignConversationFn | conversation.assign |
 | `lib/server/functions/conversation.ts`::setConversationPriorityFn | conversation.set_status |
@@ -286,6 +295,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/posts.ts`::createPostFn | post.create |
 | `lib/server/functions/posts.ts`::updatePostFn | post.edit |
 | `lib/server/functions/posts.ts`::setPostOwnerFn | post.set_owner |
+| `lib/server/functions/posts.ts`::setPostEtaFn | post.set_eta |
 | `lib/server/functions/posts.ts`::deletePostFn | post.delete |
 | `lib/server/functions/posts.ts`::fetchPostExternalLinksFn | post.view_private |
 | `lib/server/functions/posts.ts`::changePostStatusFn | post.set_status |
@@ -332,6 +342,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/settings.ts`::saveWidgetHeroImageKeyFn | settings.manage |
 | `lib/server/functions/settings.ts`::deleteWidgetHeroImageFn | settings.manage |
 | `lib/server/functions/settings.ts`::regenerateWidgetSecretFn | settings.manage |
+| `lib/server/functions/settings.ts`::fetchOfficeHoursFn | settings.manage |
+| `lib/server/functions/settings.ts`::updateOfficeHoursFn | settings.manage |
 | `lib/server/functions/settings.ts`::getEmailChannelStatusFn | settings.manage |
 | `lib/server/functions/settings.ts`::updateModerationDefaultFn | settings.moderation |
 | `lib/server/functions/sso-test.ts`::startSsoTestFn | auth.manage |
@@ -422,10 +434,11 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/integrations/zendesk/functions.ts`::getZendeskConnectUrl | integration.manage |
 | `lib/server/integrations/zendesk/functions.ts`::searchZendeskUserFn | integration.view |
 
-### Public REST API (`withApiKeyAuth`) — 85 surfaces
+### Public REST API (`withApiKeyAuth`) — 86 surfaces
 
 | Surface | Enforces |
 | --- | --- |
+| `routes/api/admin/assistant/sandbox.ts`::handleSandbox | settings.manage |
 | `routes/api/v1/apps/boards.ts`::GET | PUBLIC (any valid key) |
 | `routes/api/v1/apps/link.ts`::POST | integration.manage |
 | `routes/api/v1/apps/linked.ts`::GET | integration.view |
@@ -576,7 +589,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-149 of 555 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+149 of 568 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 

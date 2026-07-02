@@ -163,6 +163,9 @@ export {
   postTagAssignmentsRelations,
   postVotes,
   postVotesRelations,
+  // Schema tables - companies
+  companies,
+  companiesRelations,
   // Schema tables - integrations
   integrationEventMappings,
   integrationEventMappingsRelations,
@@ -279,6 +282,11 @@ export {
   helpCenterArticleFeedbackRelations,
   // Schema tables - push devices
   pushDevices,
+  // Schema tables - assistant (Quinn) involvement record
+  assistantInvolvements,
+  ASSISTANT_INVOLVEMENT_TRIGGERS,
+  ASSISTANT_INVOLVEMENT_STATUSES,
+  ASSISTANT_HANDOFF_REASONS,
   // Schema tables - RBAC
   roles,
   permissions,
@@ -302,6 +310,12 @@ export {
 } from '@quackback/db'
 
 // Re-export schema types not covered by @quackback/db/types
+export type {
+  AssistantInvolvementSource,
+  AssistantInvolvementStatus,
+  AssistantInvolvementTrigger,
+  AssistantHandoffReason,
+} from '@quackback/db'
 export type { ServiceMetadata } from '@quackback/db'
 export type { IdentityProviderAttributeMapping } from '@quackback/db'
 export type { PermissionKey, PermissionCategory, SystemRoleKey } from '@quackback/db'

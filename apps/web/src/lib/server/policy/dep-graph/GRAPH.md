@@ -9,13 +9,13 @@ Edges come from static analysis of import / export-from / string-literal dynamic
 
 Nodes (6): apps/web, packages/db, packages/email, packages/ids, packages/logger, packages/widget
 
-| From           | To              | Evidence            |
-| -------------- | --------------- | ------------------- |
-| apps/web       | packages/db     | declared + imported |
-| apps/web       | packages/email  | declared + imported |
-| apps/web       | packages/ids    | declared + imported |
-| apps/web       | packages/logger | declared + imported |
-| packages/db    | packages/ids    | declared + imported |
+| From | To | Evidence |
+| --- | --- | --- |
+| apps/web | packages/db | declared + imported |
+| apps/web | packages/email | declared + imported |
+| apps/web | packages/ids | declared + imported |
+| apps/web | packages/logger | declared + imported |
+| packages/db | packages/ids | declared + imported |
 | packages/email | packages/logger | declared + imported |
 
 Hard rule (test-enforced, not just snapshotted): no package imports app code.
@@ -47,8 +47,8 @@ Edges (17):
 
 ## 3. Server domains (lib/server/domains)
 
-Nodes (31): activity, ai, analytics, api, api-keys, assistant, boards, changelog, comments, conversation, embeddings, feedback, help-center, import, merge-suggestions, notifications, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, segments, sentiment, settings, statuses, subscriptions, summary, user-attributes, users, webhooks
-Edges (48):
+Nodes (32): activity, ai, analytics, api, api-keys, assistant, boards, changelog, comments, companies, conversation, embeddings, feedback, help-center, import, merge-suggestions, notifications, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, segments, sentiment, settings, statuses, subscriptions, summary, user-attributes, users, webhooks
+Edges (50):
 
 - analytics -> api
 - analytics -> settings
@@ -57,7 +57,9 @@ Edges (48):
 - api -> webhooks
 - api-keys -> principals
 - assistant -> ai
+- assistant -> conversation
 - assistant -> help-center
+- assistant -> principals
 - boards -> settings
 - comments -> activity
 - comments -> posts

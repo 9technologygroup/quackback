@@ -46,6 +46,33 @@ export function parseAskAiSseBlock(block: string): { event: string; data: unknow
 }
 
 /**
+ * Read an SSE body to completion, invoking `onBlock` for each "\n\n"-delimited
+ * block (including a final unterminated one). Framing only — callers parse and
+ * dispatch. Shared by the kb-ask reader and the assistant sandbox so the
+ * chunk-splitting lives in one place.
+ */
+export async function readSseBlocks(
+  body: ReadableStream<Uint8Array>,
+  onBlock: (block: string) => void
+): Promise<void> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep = buffer.indexOf('\n\n')
+    while (sep !== -1) {
+      onBlock(buffer.slice(0, sep))
+      buffer = buffer.slice(sep + 2)
+      sep = buffer.indexOf('\n\n')
+    }
+  }
+  if (buffer.trim()) onBlock(buffer)
+}
+
+/**
  * Read a kb-ask SSE body to completion, dispatching versioned events.
  * Unknown event names are ignored so future additions stay backward
  * compatible for older clients.
@@ -54,11 +81,7 @@ export async function readAskAiStream(
   body: ReadableStream<Uint8Array>,
   handlers: AskAiStreamHandlers
 ): Promise<void> {
-  const reader = body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  const dispatch = (block: string) => {
+  await readSseBlocks(body, (block) => {
     const parsed = parseAskAiSseBlock(block)
     if (!parsed) return
     switch (parsed.event) {
@@ -75,20 +98,7 @@ export async function readAskAiStream(
         handlers.onError?.((parsed.data as { code: string }).code)
         break
     }
-  }
-
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let sep = buffer.indexOf('\n\n')
-    while (sep !== -1) {
-      dispatch(buffer.slice(0, sep))
-      buffer = buffer.slice(sep + 2)
-      sep = buffer.indexOf('\n\n')
-    }
-  }
-  if (buffer.trim()) dispatch(buffer)
+  })
 }
 
 // ============================================================================
