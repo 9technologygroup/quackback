@@ -878,8 +878,8 @@ export function VisitorConversationThread({
         </div>
       )}
 
-      {/* Composer is always available. A closed thread reopens on the next send
-          (Intercom-style), so we keep the composer and only hint at the state. */}
+      {/* Composer is always available. A closed thread reopens on the next send,
+          so we keep the composer and only hint at the state. */}
       {conversationStatus === 'closed' && (
         <div className="flex items-center gap-2 px-3 pt-2" role="status">
           <span className="h-px flex-1 bg-border/50" />

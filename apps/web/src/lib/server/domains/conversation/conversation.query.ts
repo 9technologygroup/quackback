@@ -432,7 +432,7 @@ export async function conversationToDTO(
 export interface ActiveConversationResult {
   conversation: Conversation | null
   /** True when the surfaced thread is closed. The widget keeps the composer and
-   *  hints that replying reopens the conversation (Intercom-style). */
+   *  hints that replying reopens the conversation. */
   isReadOnly: boolean
 }
 
