@@ -815,6 +815,8 @@ export interface FeatureFlags {
   aiFeedbackExtraction: boolean
   /** Support inbox: messenger widget channel + unified admin inbox */
   supportInbox: boolean
+  /** Support tickets: durable, trackable requests portal alongside conversations */
+  supportTickets: boolean
   /** External link preview cards in conversations (OG unfurling) */
   linkPreviews: boolean
   /** Cookieless visitor + pageview analytics (portal and widget) */
@@ -828,6 +830,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   helpCenterAiAnswers: false,
   aiFeedbackExtraction: false,
   supportInbox: false,
+  supportTickets: false,
   linkPreviews: false,
   visitorAnalytics: false,
   visitorDeviceTracking: false,
@@ -857,6 +860,11 @@ export const FEATURE_FLAG_REGISTRY: Record<
     label: 'Conversations',
     description:
       'Let visitors start a conversation with Messenger from the widget; messages land in a shared inbox your team works from.',
+  },
+  supportTickets: {
+    label: 'Support Tickets',
+    description:
+      'Give customers a Tickets portal for durable, trackable support requests alongside conversations.',
   },
   linkPreviews: {
     label: 'Link Previews',
@@ -888,7 +896,7 @@ export const LAB_SECTIONS: Array<{
   {
     title: 'Support',
     description: 'Support your customers with Messenger and a self-serve help center.',
-    flags: ['supportInbox', 'helpCenter', 'helpCenterAiAnswers', 'linkPreviews'],
+    flags: ['supportInbox', 'supportTickets', 'helpCenter', 'helpCenterAiAnswers', 'linkPreviews'],
   },
   {
     title: 'Feedback',

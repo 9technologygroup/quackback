@@ -173,6 +173,16 @@ export {
   teamsRelations,
   teamMembers,
   teamMembersRelations,
+  // Schema tables - tickets (support platform §4.2)
+  tickets,
+  ticketsRelations,
+  ticketStatuses,
+  ticketStatusesRelations,
+  ticketConversations,
+  ticketConversationsRelations,
+  ticketLinks,
+  ticketLinksRelations,
+  DEFAULT_TICKET_STATUSES,
   // Schema tables - integrations
   integrationEventMappings,
   integrationEventMappingsRelations,

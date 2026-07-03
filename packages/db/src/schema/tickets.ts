@@ -1,0 +1,387 @@
+/**
+ * Tickets — the durable, trackable support object (support platform §4.2). A
+ * ticket is a peer to a conversation, not a wrapper around it: conversations
+ * carry the message thread, tickets carry the tracked work (status, assignee,
+ * SLA timestamps) and link to conversations through `ticket_conversations`.
+ *
+ * Three kinds share one table (`type`): a `customer` ticket is the
+ * customer-visible request (at most one per conversation); a `back_office`
+ * ticket is an internal task; a `tracker` is an umbrella that fans work out to
+ * other tickets via `ticket_links`. Scoped to the tenant by the database
+ * connection (database-per-tenant); no workspace column.
+ */
+import {
+  pgTable,
+  text,
+  integer,
+  boolean,
+  timestamp,
+  jsonb,
+  bigserial,
+  index,
+  uniqueIndex,
+  foreignKey,
+  primaryKey,
+} from 'drizzle-orm/pg-core'
+import { relations, sql } from 'drizzle-orm'
+import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
+import { principal } from './auth'
+import { teams } from './teams'
+import { companies } from './companies'
+import { conversations } from './conversation'
+import {
+  CONVERSATION_PRIORITIES,
+  TICKET_TYPES,
+  TICKET_STATUS_CATEGORIES,
+  TICKET_STAGES,
+  type TicketStatusCategory,
+  type TicketStage,
+} from '../types'
+
+/**
+ * Customizable ticket statuses (mirrors post_statuses). Each status rolls up to
+ * a coarse `category` for reporting and projects to a requester-facing
+ * `public_stage`; a NULL `public_stage` hides the status from the requester so
+ * internal states (e.g. "Won't do") never leak. Soft-deleted so a removed
+ * status keeps its restrict-guarded ticket history.
+ */
+export const ticketStatuses = pgTable(
+  'ticket_statuses',
+  {
+    id: typeIdWithDefault('ticket_status')('id').primaryKey(),
+    name: text('name').notNull(),
+    slug: text('slug').notNull().unique(),
+    color: text('color').notNull().default('#6b7280'),
+    category: text('category', { enum: TICKET_STATUS_CATEGORIES }).notNull().default('open'),
+    position: integer('position').notNull().default(0),
+    isDefault: boolean('is_default').notNull().default(false),
+    // Requester-facing stage this status projects to. NULL = hidden from the
+    // requester (the status is internal-only).
+    publicStage: text('public_stage', { enum: TICKET_STAGES }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    // Soft delete support.
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (table) => [
+    // slug uniqueness is covered by the ticket_statuses_slug_unique constraint.
+    index('ticket_statuses_position_idx').on(table.category, table.position),
+    index('ticket_statuses_deleted_at_idx').on(table.deletedAt),
+  ]
+)
+
+export const tickets = pgTable(
+  'tickets',
+  {
+    id: typeIdWithDefault('ticket')('id').primaryKey(),
+    // Human-facing sequential id (e.g. #1042) for URLs and references. bigserial
+    // is inherently NOT NULL; the unique index enforces no two tickets share one.
+    number: bigserial('number', { mode: 'number' }),
+    type: text('type', { enum: TICKET_TYPES }).notNull().default('customer'),
+    title: text('title').notNull(),
+    statusId: typeIdColumn('ticket_status')('status_id').notNull(),
+    // Reuses the conversation priority scale. 'none' = unset (the default).
+    priority: text('priority', { enum: CONVERSATION_PRIORITIES }).notNull().default('none'),
+    // The person the ticket is for. `set null` so a removed principal leaves the
+    // ticket requester-less rather than orphaned.
+    requesterPrincipalId: typeIdColumnNullable('principal')('requester_principal_id'),
+    // The teammate handling the ticket (nullable: an open ticket may be
+    // unassigned). Independent of the team assignee, mirroring conversations.
+    assigneePrincipalId: typeIdColumnNullable('principal')('assignee_principal_id'),
+    assigneeTeamId: typeIdColumnNullable('team')('assignee_team_id'),
+    // B2B company context (plan / MRR) shown inline; `set null` on delete.
+    companyId: typeIdColumnNullable('company')('company_id'),
+    // Extensible per-ticket custom fields; empty object by default.
+    customAttributes: jsonb('custom_attributes')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    // SLA + lifecycle timestamps. first_response_at is the first agent reply;
+    // waiting_since is when the requester started waiting (drives waiting sorts);
+    // due_at is the SLA target; resolved_at is set on close, cleared on reopen.
+    firstResponseAt: timestamp('first_response_at', { withTimezone: true }),
+    waitingSince: timestamp('waiting_since', { withTimezone: true }),
+    dueAt: timestamp('due_at', { withTimezone: true }),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    // How many times the ticket has been reopened after resolution.
+    reopenedCount: integer('reopened_count').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+    // Soft delete; set-null'd actor history survives.
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (table) => [
+    // FK names match the constraints the SQL migration created.
+    // restrict: a status in use can never be deleted out from under its tickets.
+    foreignKey({
+      name: 'tickets_status_id_fkey',
+      columns: [table.statusId],
+      foreignColumns: [ticketStatuses.id],
+    }).onDelete('restrict'),
+    foreignKey({
+      name: 'tickets_requester_principal_id_fkey',
+      columns: [table.requesterPrincipalId],
+      foreignColumns: [principal.id],
+    }).onDelete('set null'),
+    foreignKey({
+      name: 'tickets_assignee_principal_id_fkey',
+      columns: [table.assigneePrincipalId],
+      foreignColumns: [principal.id],
+    }).onDelete('set null'),
+    foreignKey({
+      name: 'tickets_assignee_team_id_fkey',
+      columns: [table.assigneeTeamId],
+      foreignColumns: [teams.id],
+    }).onDelete('set null'),
+    foreignKey({
+      name: 'tickets_company_id_fkey',
+      columns: [table.companyId],
+      foreignColumns: [companies.id],
+    }).onDelete('set null'),
+    // Ticket #N lookups + the sequence guarantee.
+    uniqueIndex('tickets_number_uq').on(table.number),
+    index('tickets_status_id_idx').on(table.statusId),
+    index('tickets_assignee_principal_id_idx').on(table.assigneePrincipalId),
+    index('tickets_requester_principal_id_idx').on(table.requesterPrincipalId),
+    index('tickets_company_id_idx').on(table.companyId),
+    // Type-scoped status boards (e.g. all open customer tickets).
+    index('tickets_type_status_id_idx').on(table.type, table.statusId),
+  ]
+)
+
+/**
+ * Soft link between a ticket and a conversation (support platform §4.2). A
+ * conversation can back several tickets and a ticket can span several
+ * conversations, so this is a join, not an FK on either table. `ticket_type` is
+ * denormalized from tickets.type at link time so the "at most one CUSTOMER
+ * ticket per conversation" rule is a partial unique index here without a join.
+ * Both sides cascade: deleting a ticket or conversation removes the link.
+ */
+export const ticketConversations = pgTable(
+  'ticket_conversations',
+  {
+    ticketId: typeIdColumn('ticket')('ticket_id').notNull(),
+    conversationId: typeIdColumn('conversation')('conversation_id').notNull(),
+    // Denormalized from tickets.type at link time; drives the customer-uniqueness
+    // partial index below.
+    ticketType: text('ticket_type', { enum: TICKET_TYPES }).notNull(),
+    linkedByPrincipalId: typeIdColumnNullable('principal')('linked_by_principal_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Composite PK columns listed alphabetically: drizzle-kit introspects them in
+    // that order. The real key order is (ticket_id, conversation_id) in the migration.
+    primaryKey({
+      name: 'ticket_conversations_pkey',
+      columns: [table.conversationId, table.ticketId],
+    }),
+    foreignKey({
+      name: 'ticket_conversations_ticket_id_fkey',
+      columns: [table.ticketId],
+      foreignColumns: [tickets.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'ticket_conversations_conversation_id_fkey',
+      columns: [table.conversationId],
+      foreignColumns: [conversations.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'ticket_conversations_linked_by_principal_id_fkey',
+      columns: [table.linkedByPrincipalId],
+      foreignColumns: [principal.id],
+    }).onDelete('set null'),
+    // Conversation -> tickets reverse lookup (the PK leads with ticket_id).
+    index('ticket_conversations_conversation_idx').on(table.conversationId),
+    // At most one CUSTOMER ticket per conversation. Partial so back-office and
+    // tracker links never collide.
+    uniqueIndex('ticket_conversations_customer_uq')
+      .on(table.conversationId)
+      .where(sql`ticket_type = 'customer'`),
+  ]
+)
+
+/**
+ * Tracker cascade links (support platform §4.2): a `tracker` ticket points at
+ * the tickets it fans work out to. `relation` defaults to 'tracks'; the partial
+ * unique index makes a linked ticket trackable by at most one tracker while
+ * leaving room for other relation kinds later. Both sides cascade to tickets.
+ */
+export const ticketLinks = pgTable(
+  'ticket_links',
+  {
+    trackerTicketId: typeIdColumn('ticket')('tracker_ticket_id').notNull(),
+    linkedTicketId: typeIdColumn('ticket')('linked_ticket_id').notNull(),
+    relation: text('relation').notNull().default('tracks'),
+    linkedByPrincipalId: typeIdColumnNullable('principal')('linked_by_principal_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Composite PK columns listed alphabetically to match introspection. The real
+    // key order is (tracker_ticket_id, linked_ticket_id) in the migration.
+    primaryKey({
+      name: 'ticket_links_pkey',
+      columns: [table.linkedTicketId, table.trackerTicketId],
+    }),
+    foreignKey({
+      name: 'ticket_links_tracker_ticket_id_fkey',
+      columns: [table.trackerTicketId],
+      foreignColumns: [tickets.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'ticket_links_linked_ticket_id_fkey',
+      columns: [table.linkedTicketId],
+      foreignColumns: [tickets.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'ticket_links_linked_by_principal_id_fkey',
+      columns: [table.linkedByPrincipalId],
+      foreignColumns: [principal.id],
+    }).onDelete('set null'),
+    // Tracker -> linked reverse lookup (the PK leads with tracker_ticket_id).
+    index('ticket_links_linked_ticket_idx').on(table.linkedTicketId),
+    // A linked ticket is tracked by at most one tracker (partial: 'tracks' only).
+    uniqueIndex('ticket_links_tracks_uq')
+      .on(table.linkedTicketId)
+      .where(sql`relation = 'tracks'`),
+  ]
+)
+
+/**
+ * Default ticket statuses seeded for new workspaces (mirrors DEFAULT_STATUSES).
+ * No id — the column default generates it. `publicStage: null` marks a status
+ * hidden from the requester.
+ */
+export const DEFAULT_TICKET_STATUSES: Array<{
+  name: string
+  slug: string
+  color: string
+  category: TicketStatusCategory
+  position: number
+  isDefault: boolean
+  publicStage: TicketStage | null
+}> = [
+  {
+    name: 'New',
+    slug: 'new',
+    color: '#3b82f6',
+    category: 'open',
+    position: 0,
+    isDefault: true,
+    publicStage: 'received',
+  },
+  {
+    name: 'Investigating',
+    slug: 'investigating',
+    color: '#eab308',
+    category: 'open',
+    position: 1,
+    isDefault: false,
+    publicStage: 'in_progress',
+  },
+  {
+    name: 'Escalated',
+    slug: 'escalated',
+    color: '#f97316',
+    category: 'open',
+    position: 2,
+    isDefault: false,
+    publicStage: 'in_progress',
+  },
+  {
+    name: 'Waiting on customer',
+    slug: 'waiting_customer',
+    color: '#a855f7',
+    category: 'pending',
+    position: 3,
+    isDefault: false,
+    publicStage: 'awaiting_requester',
+  },
+  {
+    name: 'Waiting on third party',
+    slug: 'waiting_third_party',
+    color: '#8b5cf6',
+    category: 'pending',
+    position: 4,
+    isDefault: false,
+    publicStage: 'in_progress',
+  },
+  {
+    name: 'Resolved',
+    slug: 'resolved',
+    color: '#22c55e',
+    category: 'closed',
+    position: 5,
+    isDefault: false,
+    publicStage: 'resolved',
+  },
+  {
+    name: "Won't do",
+    slug: 'wont_do',
+    color: '#6b7280',
+    category: 'closed',
+    position: 6,
+    isDefault: false,
+    publicStage: null,
+  },
+  {
+    name: 'Duplicate',
+    slug: 'duplicate',
+    color: '#6b7280',
+    category: 'closed',
+    position: 7,
+    isDefault: false,
+    publicStage: null,
+  },
+]
+
+export const ticketStatusesRelations = relations(ticketStatuses, ({ many }) => ({
+  tickets: many(tickets),
+}))
+
+export const ticketsRelations = relations(tickets, ({ one, many }) => ({
+  status: one(ticketStatuses, {
+    fields: [tickets.statusId],
+    references: [ticketStatuses.id],
+  }),
+  company: one(companies, {
+    fields: [tickets.companyId],
+    references: [companies.id],
+  }),
+  requester: one(principal, {
+    fields: [tickets.requesterPrincipalId],
+    references: [principal.id],
+    relationName: 'ticketRequester',
+  }),
+  assignee: one(principal, {
+    fields: [tickets.assigneePrincipalId],
+    references: [principal.id],
+    relationName: 'ticketAssignee',
+  }),
+  conversations: many(ticketConversations),
+}))
+
+export const ticketConversationsRelations = relations(ticketConversations, ({ one }) => ({
+  ticket: one(tickets, {
+    fields: [ticketConversations.ticketId],
+    references: [tickets.id],
+  }),
+  conversation: one(conversations, {
+    fields: [ticketConversations.conversationId],
+    references: [conversations.id],
+  }),
+}))
+
+export const ticketLinksRelations = relations(ticketLinks, ({ one }) => ({
+  trackerTicket: one(tickets, {
+    fields: [ticketLinks.trackerTicketId],
+    references: [tickets.id],
+    relationName: 'ticketTracker',
+  }),
+  linkedTicket: one(tickets, {
+    fields: [ticketLinks.linkedTicketId],
+    references: [tickets.id],
+    relationName: 'ticketLinked',
+  }),
+}))

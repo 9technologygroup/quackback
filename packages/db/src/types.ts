@@ -22,6 +22,7 @@ import type {
   conversationMessageFlags,
 } from './schema/conversation'
 import type { teams, teamMembers } from './schema/teams'
+import type { tickets, ticketStatuses, ticketConversations, ticketLinks } from './schema/tickets'
 import type { principal } from './schema/auth'
 
 // Status categories (defined here to avoid circular imports in tests)
@@ -338,6 +339,24 @@ export type Channel = (typeof CHANNELS)[number]
 export const CONVERSATION_PRIORITIES = ['none', 'low', 'medium', 'high', 'urgent'] as const
 export type ConversationPriority = (typeof CONVERSATION_PRIORITIES)[number]
 
+// Ticket kind (support platform §4.2) — kept in sync with the tickets.type column
+// enum. 'customer' is the customer-visible support request (at most one per
+// conversation); 'back_office' is an internal task; 'tracker' is an umbrella that
+// fans work out to linked tickets via ticket_links.
+export const TICKET_TYPES = ['customer', 'back_office', 'tracker'] as const
+export type TicketType = (typeof TICKET_TYPES)[number]
+
+// Coarse lifecycle bucket a ticket status rolls up to for reporting and inbox
+// grouping — kept in sync with the ticket_statuses.category column enum.
+export const TICKET_STATUS_CATEGORIES = ['open', 'pending', 'closed'] as const
+export type TicketStatusCategory = (typeof TICKET_STATUS_CATEGORIES)[number]
+
+// Requester-facing stage a ticket status projects to (ticket_statuses.public_stage).
+// A NULL public_stage hides the status from the requester entirely; these values
+// are the only labels a customer ever sees, decoupled from internal status names.
+export const TICKET_STAGES = ['received', 'in_progress', 'awaiting_requester', 'resolved'] as const
+export type TicketStage = (typeof TICKET_STAGES)[number]
+
 // How a team-assigned conversation picks a member — kept in sync with the
 // teams.assignment_method column enum. 'manual' assigns the team only (no
 // member pick); 'round_robin' rotates over online members; 'balanced' reuses
@@ -428,6 +447,16 @@ export type Team = InferSelectModel<typeof teams>
 export type NewTeam = InferInsertModel<typeof teams>
 export type TeamMember = InferSelectModel<typeof teamMembers>
 export type NewTeamMember = InferInsertModel<typeof teamMembers>
+
+// Tickets (§4.2) row types
+export type Ticket = InferSelectModel<typeof tickets>
+export type NewTicket = InferInsertModel<typeof tickets>
+export type TicketStatusEntity = InferSelectModel<typeof ticketStatuses>
+export type NewTicketStatusEntity = InferInsertModel<typeof ticketStatuses>
+export type TicketConversation = InferSelectModel<typeof ticketConversations>
+export type NewTicketConversation = InferInsertModel<typeof ticketConversations>
+export type TicketLink = InferSelectModel<typeof ticketLinks>
+export type NewTicketLink = InferInsertModel<typeof ticketLinks>
 
 // Reaction emoji constants (client-safe)
 export const REACTION_EMOJIS = ['👍', '❤️', '🎉', '😄', '🤔', '👀'] as const

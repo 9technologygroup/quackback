@@ -54,6 +54,10 @@ export const ID_PREFIXES = {
   // Assistant (in-product AI agent)
   assistant_involvement: 'assistant_involvement',
 
+  // Tickets (support platform §4.2)
+  ticket: 'ticket',
+  ticket_status: 'ticket_status',
+
   // Integrations
   integration: 'integration',
   platform_cred: 'platform_cred',

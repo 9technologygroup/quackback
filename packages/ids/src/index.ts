@@ -104,6 +104,8 @@ export type {
   MacroId,
   ConversationViewId,
   AssistantInvolvementId,
+  TicketId,
+  TicketStatusId,
   // Feedback aggregation entities
   FeedbackSourceId,
   RawFeedbackItemId,

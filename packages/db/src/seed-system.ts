@@ -11,6 +11,7 @@
 import { eq, inArray } from 'drizzle-orm'
 import type { Database } from './client'
 import { postStatuses, DEFAULT_STATUSES } from './schema/statuses'
+import { ticketStatuses, DEFAULT_TICKET_STATUSES } from './schema/tickets'
 import { principal } from './schema/auth'
 import { roles, permissions, rolePermissions, principalRoleAssignments } from './schema/rbac'
 import {
@@ -30,6 +31,17 @@ export async function seedSystemData(db: Executor): Promise<void> {
   const existingStatus = await db.select({ id: postStatuses.id }).from(postStatuses).limit(1)
   if (existingStatus.length === 0) {
     await db.insert(postStatuses).values(DEFAULT_STATUSES)
+  }
+
+  // 1b. Default ticket statuses (support platform §4.2) — the ticket service
+  //     needs a default 'New' status to create the first ticket. Seed only when
+  //     the table is empty, mirroring post statuses.
+  const existingTicketStatus = await db
+    .select({ id: ticketStatuses.id })
+    .from(ticketStatuses)
+    .limit(1)
+  if (existingTicketStatus.length === 0) {
+    await db.insert(ticketStatuses).values(DEFAULT_TICKET_STATUSES)
   }
 
   // 2. Permissions — upsert each catalogue entry by key; reconcile category /

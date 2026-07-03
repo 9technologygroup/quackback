@@ -24,7 +24,11 @@ export {
   MODERATION_RULE_VALUES,
   CONVERSATION_STATUSES,
   CONVERSATION_END_REASONS,
+  CONVERSATION_PRIORITIES,
   TEAM_ASSIGNMENT_METHODS,
+  TICKET_TYPES,
+  TICKET_STATUS_CATEGORIES,
+  TICKET_STAGES,
 } from '@quackback/db/types'
 export type {
   AccessTier,
@@ -32,6 +36,9 @@ export type {
   ModerationRuleValue,
   ConversationEndReason,
   TeamAssignmentMethod,
+  TicketType,
+  TicketStatusCategory,
+  TicketStage,
 } from '@quackback/db/types'
 
 // Schema types needed by client components (type-only = no side effects)

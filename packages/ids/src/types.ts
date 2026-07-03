@@ -142,6 +142,12 @@ export type CompanyId = TypeId<'company'>
 /** Assistant involvement ID - e.g., assistant_involvement_01h455vb4pex5vsknk084sn02q */
 export type AssistantInvolvementId = TypeId<'assistant_involvement'>
 
+/** Ticket ID - e.g., ticket_01h455vb4pex5vsknk084sn02q */
+export type TicketId = TypeId<'ticket'>
+
+/** Ticket status ID - e.g., ticket_status_01h455vb4pex5vsknk084sn02q */
+export type TicketStatusId = TypeId<'ticket_status'>
+
 /** Team ID - e.g., team_01h455vb4pex5vsknk084sn02q */
 export type TeamId = TypeId<'team'>
 
@@ -275,6 +281,8 @@ export interface EntityIdMap {
   page_view: PageViewId
   company: CompanyId
   assistant_involvement: AssistantInvolvementId
+  ticket: TicketId
+  ticket_status: TicketStatusId
   team: TeamId
   team_member: TeamMemberId
   macro: MacroId
