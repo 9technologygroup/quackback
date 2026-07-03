@@ -1,5 +1,5 @@
 import { pgTable, text, timestamp, jsonb, integer, index } from 'drizzle-orm/pg-core'
-import { relations } from 'drizzle-orm'
+import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn } from '@quackback/ids/drizzle'
 import { conversations } from './conversation'
 
@@ -61,10 +61,24 @@ export const assistantInvolvements = pgTable(
     handoffReason: text('handoff_reason', { enum: ASSISTANT_HANDOFF_REASONS }),
     sources: jsonb('sources').$type<AssistantInvolvementSource[]>().notNull().default([]),
     rating: integer('rating'),
+    // When Quinn made its single escalation offer. Its presence is the
+    // "already offered" flag: the engine escalates straight to hand-off on a
+    // repeat rather than offering a human twice.
+    escalationOfferedAt: timestamp('escalation_offered_at', { withTimezone: true }),
+    // When Quinn last gave a substantive answer. Drives the assumed-resolution
+    // inactivity sweep — a quiet thread past the window is resolved as assumed.
+    lastAssistantAnswerAt: timestamp('last_assistant_answer_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp('ended_at', { withTimezone: true }),
   },
-  (t) => [index('assistant_involvements_conversation_id_idx').on(t.conversationId)]
+  (t) => [
+    index('assistant_involvements_conversation_id_idx').on(t.conversationId),
+    // Drives the stale-involvement sweep, which scans active involvements by
+    // last-answer time; partial so only active rows are indexed.
+    index('assistant_involvements_active_answer_idx')
+      .on(t.lastAssistantAnswerAt)
+      .where(sql`${t.status} = 'active'`),
+  ]
 )
 
 export const assistantInvolvementsRelations = relations(assistantInvolvements, ({ one }) => ({

@@ -246,6 +246,9 @@ export async function sendVisitorMessage(
   const content = validateContent(input.content, attachments.length > 0 || !!fallbackLabel)
 
   let created = false
+  // The conversation's status BEFORE this message, so the assistant trigger can
+  // tell a genuinely reopened thread from one a human deliberately closed.
+  let priorStatus: ConversationStatus | null = null
   const txResult = await db.transaction(async (tx) => {
     let conversation: Conversation
     if (input.conversationId) {
@@ -266,6 +269,7 @@ export async function sendVisitorMessage(
         throw new ForbiddenError('FORBIDDEN', decision.reason)
       }
       conversation = existing
+      priorStatus = existing.status
     } else {
       const start = canStartConversation(actor)
       if (!start.allowed) throw new ForbiddenError('FORBIDDEN', start.reason)
@@ -369,6 +373,16 @@ export async function sendVisitorMessage(
     void emitConversationCreated(actor, author, txResult.conversation)
   }
   void emitMessageCreated(actor, author, txResult.message, txResult.conversation)
+
+  // Quinn, out of band: a widget customer message may trigger an assistant turn.
+  // Fire-and-forget with full error isolation so it never blocks or fails the
+  // customer's send; the deep gate (respond flag, AI configured, silence rule)
+  // lives inside the orchestration, which the assistant domain owns.
+  if (shouldConsiderAssistant(txResult.conversation, priorStatus)) {
+    void import('@/lib/server/domains/assistant/assistant.orchestrator')
+      .then((m) => m.runAssistantTurnForConversation(txResult.conversation.id))
+      .catch((err) => log.warn({ err }, 'assistant turn failed'))
+  }
 
   // Return a VISITOR-side DTO to the caller — never leak the agent-only
   // visitorEmail back to the visitor in the send response.
@@ -1220,6 +1234,12 @@ export async function recordCsat(
   // Emit after the transaction commits so a rolled-back write never webhooks.
   if (isFirstSubmission) void emitConversationCsatSubmitted(actor, updated)
   if (commentJustAdded) void emitConversationCsatCommentAdded(actor, updated)
+
+  // Mirror the CSAT rating onto Quinn's involvement when it was the last handler
+  // (best-effort — never fails the rating; the assistant domain owns it).
+  void import('@/lib/server/domains/assistant/assistant.orchestrator')
+    .then((m) => m.attributeCsatIfLastHandler(conversationId, rating))
+    .catch((err) => log.warn({ err }, 'attribute csat to assistant involvement failed'))
 }
 
 /**
@@ -1309,4 +1329,119 @@ export async function markConversationUnreadFromMessage(
     side: 'agent',
     at: (watermark ?? new Date(0)).toISOString(),
   })
+}
+
+// -------------------------------------------------------------- assistant (Quinn) ---
+
+/** Actor for an assistant-authored write: the system actor, carrying Quinn's principal id. */
+function assistantActor(principalId: PrincipalId): Actor {
+  return { ...systemActor(), principalId }
+}
+
+/**
+ * Cheap synchronous gate before spending on an assistant turn: only the widget
+ * channel triggers Quinn today (email + other sources join later phases), and a
+ * thread a human deliberately closed must not summon Quinn on the reopen.
+ */
+export function shouldConsiderAssistant(
+  conversation: Conversation,
+  priorStatus: ConversationStatus | null
+): boolean {
+  if (conversation.source !== 'widget') return false
+  if (priorStatus === 'closed') return false
+  return true
+}
+
+/**
+ * Append a reply authored by the assistant service principal — the message-
+ * append primitive for Quinn. Like an agent reply it bumps the last-message
+ * preview and reopens a closed thread, but it never claims assignment (Quinn
+ * fronts, it does not own) and it never marks the agent side read. `waiting`
+ * controls the customer wait clock: an answer stops it; a hand-off restarts it
+ * so the team sees a thread waiting on a human. Delivered over the normal
+ * realtime publish; the visitor agent-reply NOTIFICATION is suppressed (an
+ * assistant reply is instant and in-session, not an offline follow-up), but the
+ * message still webhooks as an ordinary conversation message.
+ */
+export async function appendAssistantReply(
+  conversationId: ConversationId,
+  content: string,
+  author: ConversationAuthorInput,
+  opts: { waiting: boolean }
+): Promise<void> {
+  const txResult = await db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, conversationId))
+      .limit(1)
+    if (!existing) throw new NotFoundError('CONVERSATION_NOT_FOUND', 'Conversation not found')
+    const [message] = await tx
+      .insert(conversationMessages)
+      .values({
+        conversationId,
+        principalId: author.principalId,
+        senderType: 'agent',
+        content,
+      })
+      .returning()
+    const nextStatus = applyAgentReopenStatus(existing.status)
+    const [updated] = await tx
+      .update(conversations)
+      .set({
+        lastMessageAt: message.createdAt,
+        lastMessagePreview: preview(content, []),
+        status: nextStatus,
+        waitingSince: opts.waiting ? message.createdAt : null,
+        resolvedAt: resolvedAtForStatus(nextStatus, message.createdAt),
+        updatedAt: message.createdAt,
+      })
+      .where(eq(conversations.id, conversationId))
+      .returning()
+    return { conversation: updated, message }
+  })
+
+  const messageDTO = toMessageDTO(txResult.message, authorFromInput(author))
+  const conversationDTO = await conversationToDTO(txResult.conversation, 'agent')
+  publishConversationUpdate(conversationDTO.id, conversationDTO)
+  publishConversationEvent(messageDTO.conversationId, {
+    kind: 'message',
+    conversationId: messageDTO.conversationId,
+    message: messageDTO,
+  })
+  void emitMessageCreated(
+    assistantActor(author.principalId),
+    author,
+    txResult.message,
+    txResult.conversation
+  )
+}
+
+/**
+ * Execute a hand-off Quinn decided on: record the structured reason on the
+ * conversation for the receiving human, keep it open, and route it to a
+ * teammate via the existing auto-assign strategy (Quinn never opens a stream, so
+ * it is never a routing candidate). If nobody is routable it stays in the
+ * unassigned queue with the wait clock running.
+ */
+export async function executeAssistantHandoff(
+  conversationId: ConversationId,
+  reason: string
+): Promise<void> {
+  const existing = await loadConversationOr404(conversationId)
+  const nextAttributes = {
+    ...(existing.customAttributes ?? {}),
+    assistant_escalation_reason: reason,
+  }
+  const [updated] = await db
+    .update(conversations)
+    .set({ customAttributes: nextAttributes, status: 'open', updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId))
+    .returning()
+  const assigned = await assignRoutedConversation(updated)
+  // assignRoutedConversation broadcasts the assigned DTO itself on success; when
+  // routing declines, still surface the updated attributes/status to the inbox.
+  if (!assigned) {
+    publishConversationUpdate(updated.id, await conversationToDTO(updated, 'agent'))
+  }
 }

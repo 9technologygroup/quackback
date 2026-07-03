@@ -35,10 +35,12 @@ export {
 export {
   openInvolvement,
   getActiveInvolvement,
-  setInvolvementSources,
+  getLatestInvolvement,
+  recordAssistantAnswer,
   recordHandoff,
   recordOutcome,
-  voidAssumedResolution,
+  voidAssumedResolutionForConversation,
+  finalizeStaleAssistantInvolvements,
   setInvolvementRating,
   assumedResolutionEligible,
   confirmedResolutionEligible,
@@ -47,6 +49,14 @@ export {
   type AssistantInvolvement,
   type OutcomeContext,
 } from './assistant.involvement'
+
+// Quinn — messenger thread mapping + handover copy
+export {
+  mapRowsToThreadMessages,
+  loadConversationThread,
+  ASSISTANT_THREAD_WINDOW,
+} from './assistant.thread'
+export { buildAssistantHandoverMessage } from './assistant.handover'
 
 // Quinn — tools + runtime
 export {

@@ -43,6 +43,19 @@ async function initializeQueue() {
         if (result.woken > 0) {
           log.debug({ woken: result.woken }, 'snooze-sweep run complete')
         }
+        // Ride the same per-minute tick to close out assistant involvements that
+        // have gone quiet (assumed resolution). Best-effort: an assistant sweep
+        // failure must not fail the snooze wake.
+        try {
+          const { finalizeStaleAssistantInvolvements } =
+            await import('@/lib/server/domains/assistant')
+          const { resolved } = await finalizeStaleAssistantInvolvements()
+          if (resolved > 0) {
+            log.debug({ resolved }, 'assistant assumed-resolution sweep complete')
+          }
+        } catch (err) {
+          log.warn({ err }, 'assistant assumed-resolution sweep failed')
+        }
       }
     },
     { connection, concurrency: CONCURRENCY }

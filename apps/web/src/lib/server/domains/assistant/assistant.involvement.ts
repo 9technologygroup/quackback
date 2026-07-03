@@ -10,9 +10,15 @@
 import {
   db,
   assistantInvolvements,
+  conversationMessages,
   and,
   eq,
+  gt,
+  lt,
+  isNull,
+  notExists,
   desc,
+  sql,
   type AssistantInvolvementSource,
   type AssistantInvolvementStatus,
   type AssistantInvolvementTrigger,
@@ -24,11 +30,12 @@ import type { AssistantInvolvementId, ConversationId } from '@quackback/ids'
 export type AssistantInvolvement = typeof assistantInvolvements.$inferSelect
 
 /**
- * Default inactivity window before an unanswered-back thread is assumed
- * resolved (~minutes). The timer that trips it rides the next wave; exported so
- * that wiring reuses this single source.
+ * Inactivity window before a thread with no customer reply after Quinn's last
+ * answer is assumed resolved. The stale-involvement sweep
+ * (`finalizeStaleAssistantInvolvements`) trips it; the pure eligibility rule
+ * defaults to the same window. Single source for both.
  */
-export const ASSUMED_RESOLUTION_INACTIVITY_MINUTES = 30
+export const ASSUMED_RESOLUTION_INACTIVITY_MINUTES = 10
 
 // --------------------------------------------------------------- pure rules ---
 
@@ -102,13 +109,46 @@ export async function getActiveInvolvement(
   return row ?? null
 }
 
-/** Persist the sources Quinn cited on an involvement. */
-export async function setInvolvementSources(
+/** The most recent involvement for a conversation regardless of status, or null. */
+export async function getLatestInvolvement(
+  conversationId: ConversationId,
+  exec: Executor = db
+): Promise<AssistantInvolvement | null> {
+  const [row] = await exec
+    .select()
+    .from(assistantInvolvements)
+    .where(eq(assistantInvolvements.conversationId, conversationId))
+    .orderBy(desc(assistantInvolvements.createdAt))
+    .limit(1)
+  return row ?? null
+}
+
+/**
+ * Record the outcome of one answered turn on the involvement in a single UPDATE:
+ * the sources Quinn cited, the substantive-answer time (the inactivity clock the
+ * stale-involvement sweep reads), and — only when this turn made the single
+ * escalation OFFER — the offer stamp. The offer stamp is written via COALESCE so
+ * it only lands when not already set (the "offer once" guard the engine reads as
+ * `escalationAlreadyOffered`), keeping the whole write one statement.
+ */
+export async function recordAssistantAnswer(
   id: AssistantInvolvementId,
-  sources: AssistantInvolvementSource[],
+  input: { sources: AssistantInvolvementSource[]; offeredEscalation: boolean; at?: Date },
   exec: Executor = db
 ): Promise<void> {
-  await exec.update(assistantInvolvements).set({ sources }).where(eq(assistantInvolvements.id, id))
+  const at = input.at ?? new Date()
+  await exec
+    .update(assistantInvolvements)
+    .set({
+      sources: input.sources,
+      lastAssistantAnswerAt: at,
+      ...(input.offeredEscalation
+        ? {
+            escalationOfferedAt: sql`COALESCE(${assistantInvolvements.escalationOfferedAt}, ${at})`,
+          }
+        : {}),
+    })
+    .where(eq(assistantInvolvements.id, id))
 }
 
 /** Record a hand-off: Quinn decided THAT it escalates and why (never WHERE). */
@@ -148,17 +188,68 @@ export async function recordOutcome(
   return row ?? null
 }
 
-/** Void an assumed resolution when the customer returns needing help. */
-export async function voidAssumedResolution(
-  id: AssistantInvolvementId,
+/**
+ * Revive any assumed-resolved involvement on a conversation back to active — the
+ * customer came back needing help, so Quinn re-engages within the same
+ * involvement rather than opening a new one. Returns the revived row, which the
+ * turn orchestrator reuses AS the active involvement (skipping a second lookup),
+ * or null when there was nothing to revive.
+ */
+export async function voidAssumedResolutionForConversation(
+  conversationId: ConversationId,
   exec: Executor = db
-): Promise<void> {
-  await exec
+): Promise<AssistantInvolvement | null> {
+  const [row] = await exec
     .update(assistantInvolvements)
     .set({ status: 'active', endedAt: null })
     .where(
-      and(eq(assistantInvolvements.id, id), eq(assistantInvolvements.status, 'resolved_assumed'))
+      and(
+        eq(assistantInvolvements.conversationId, conversationId),
+        eq(assistantInvolvements.status, 'resolved_assumed')
+      )
     )
+    .returning()
+  return row ?? null
+}
+
+/**
+ * Sweep active involvements whose last answer has gone quiet and record an
+ * assumed resolution on each, in one set-based UPDATE. An involvement qualifies
+ * when it is still active (the at-most-one guard — a resolved/handed-off one is
+ * excluded), its last real answer is older than the inactivity window (a NULL
+ * answer time fails the `<` and is excluded too), and no non-deleted customer
+ * message has arrived since (a later one means they returned needing help, which
+ * voids the assumption). Returns how many were resolved. Called from the
+ * periodic snooze-sweep tick.
+ */
+export async function finalizeStaleAssistantInvolvements(
+  thresholdMinutes: number = ASSUMED_RESOLUTION_INACTIVITY_MINUTES,
+  exec: Executor = db
+): Promise<{ resolved: number }> {
+  const cutoff = new Date(Date.now() - thresholdMinutes * 60_000)
+  const laterCustomerMessage = exec
+    .select({ one: sql`1` })
+    .from(conversationMessages)
+    .where(
+      and(
+        eq(conversationMessages.conversationId, assistantInvolvements.conversationId),
+        eq(conversationMessages.senderType, 'visitor'),
+        isNull(conversationMessages.deletedAt),
+        gt(conversationMessages.createdAt, assistantInvolvements.lastAssistantAnswerAt)
+      )
+    )
+  const resolvedRows = await exec
+    .update(assistantInvolvements)
+    .set({ status: 'resolved_assumed', endedAt: new Date() })
+    .where(
+      and(
+        eq(assistantInvolvements.status, 'active'),
+        lt(assistantInvolvements.lastAssistantAnswerAt, cutoff),
+        notExists(laterCustomerMessage)
+      )
+    )
+    .returning({ id: assistantInvolvements.id })
+  return { resolved: resolvedRows.length }
 }
 
 /** Attach a CSAT rating (recorded when Quinn was the last handler). */

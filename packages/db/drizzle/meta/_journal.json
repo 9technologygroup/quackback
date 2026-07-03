@@ -1002,6 +1002,20 @@
       "when": 1784765040000,
       "tag": "0142_assistant_involvements",
       "breakpoints": true
+    },
+    {
+      "idx": 143,
+      "version": "7",
+      "when": 1784765100000,
+      "tag": "0143_channel_identities",
+      "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1784765160000,
+      "tag": "0144_assistant_involvement_offer",
+      "breakpoints": true
     }
   ]
 }
