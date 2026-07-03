@@ -6,6 +6,12 @@ import { BuildingOffice2Icon } from '@heroicons/react/24/outline'
 import { isValidTypeId } from '@quackback/ids'
 import type { ConversationId, ConversationMessageId, CompanyId } from '@quackback/ids'
 import type { ConversationPriority } from '@/lib/shared/conversation/types'
+import {
+  isConversationSort,
+  viewFiltersToListParams,
+  type ConversationSort,
+  type ConversationViewDTO,
+} from '@/lib/shared/conversation/views'
 import { AgentConversationThread } from '@/components/conversation/agent-conversation-thread'
 import {
   agentEventChangesInboxList,
@@ -21,7 +27,10 @@ import {
   scopeLabelFor,
   useConversationTagsWithCounts,
   useInboxSegmentsWithCounts,
+  useInboxTeams,
+  useConversationViews,
 } from '@/components/admin/conversation/inbox-nav-sidebar'
+import { ConversationViewDialog } from '@/components/admin/conversation/conversation-view-dialog'
 import {
   inboxNavKey,
   navFromSearch,
@@ -74,6 +83,18 @@ export const Route = createFileRoute('/admin/inbox')({
       typeof search.segment === 'string' && isValidTypeId(search.segment, 'segment')
         ? search.segment
         : undefined,
+    // Per-team inbox scope — validated to a real team id.
+    team:
+      typeof search.team === 'string' && isValidTypeId(search.team, 'team')
+        ? search.team
+        : undefined,
+    // Custom saved view scope — validated to a real conversation-view id.
+    viewId:
+      typeof search.viewId === 'string' && isValidTypeId(search.viewId, 'conversation_view')
+        ? search.viewId
+        : undefined,
+    // Inbox ordering; only a canonical sort is accepted (else the default).
+    sort: isConversationSort(search.sort) ? search.sort : undefined,
     status:
       search.status === 'open' ||
       search.status === 'snoozed' ||
@@ -107,6 +128,9 @@ export const Route = createFileRoute('/admin/inbox')({
     view: search.view,
     tag: search.tag,
     segment: search.segment,
+    team: search.team,
+    viewId: search.viewId,
+    sort: search.sort,
     status: search.status,
     priority: search.priority,
     q: search.q,
@@ -124,7 +148,11 @@ export const Route = createFileRoute('/admin/inbox')({
     const status = deps.status ?? 'open'
     const priority = deps.priority ?? 'all'
     const search = (deps.q ?? '').trim()
+    const sort = deps.sort ?? 'recent'
     const isSaved = nav.kind === 'view' && nav.view === 'saved'
+    // A custom view's list depends on its rule set (loaded client-side from the
+    // views list), so — like Saved — it hydrates client-side, not here.
+    const skipListPrefetch = isSaved || nav.kind === 'custom'
     // A `?company=` deep link SSR-prefetches the FILTERED list under the same
     // factory key the component reads, so the filtered view hydrates too.
     const company = deps.company as CompanyId | undefined
@@ -133,15 +161,23 @@ export const Route = createFileRoute('/admin/inbox')({
     // fetches client-side, degrading to today's behavior.
     const warm = (p: Promise<unknown>) => p.catch(() => undefined)
     await Promise.all([
-      isSaved
+      skipListPrefetch
         ? undefined
         : warm(
             queryClient.ensureQueryData(
-              conversationInboxQueries.conversationList(nav, status, priority, search, company)
+              conversationInboxQueries.conversationList(
+                nav,
+                status,
+                priority,
+                search,
+                company,
+                sort
+              )
             )
           ),
       warm(queryClient.ensureQueryData(conversationInboxQueries.tagCounts())),
       warm(queryClient.ensureQueryData(conversationInboxQueries.segmentCounts())),
+      warm(queryClient.ensureQueryData(conversationInboxQueries.views())),
       deps.c
         ? warm(
             queryClient.ensureQueryData(conversationInboxQueries.thread(deps.c as ConversationId))
@@ -176,6 +212,9 @@ function InboxPage() {
     view: urlView,
     tag: urlTag,
     segment: urlSegment,
+    team: urlTeam,
+    viewId: urlViewId,
+    sort: urlSort,
     status: urlStatus,
     priority: urlPriority,
     q: urlQ,
@@ -198,13 +237,20 @@ function InboxPage() {
   )
 
   // Left-nav scope: an assignee queue (Mine / Unassigned / All), the Mentions
-  // feed, a single Label, or a single Segment. Scopes are mutually exclusive;
-  // tag wins over segment wins over view if the URL somehow carries more than
-  // one. Status/priority chips refine WITHIN it; Mentions is a self-contained
-  // feed so those chips are hidden.
+  // feed, a Label, a Segment, a per-team inbox, or a custom saved view. Scopes
+  // are mutually exclusive; precedence custom > team > tag > segment > view.
+  // Status/priority chips refine WITHIN a built-in scope; Mentions + custom
+  // views are self-contained so those chips are hidden.
   const nav = useMemo<InboxNavItem>(
-    () => navFromSearch({ tag: urlTag, segment: urlSegment, view: urlView }),
-    [urlTag, urlSegment, urlView]
+    () =>
+      navFromSearch({
+        tag: urlTag,
+        segment: urlSegment,
+        team: urlTeam,
+        viewId: urlViewId,
+        view: urlView,
+      }),
+    [urlTag, urlSegment, urlTeam, urlViewId, urlView]
   )
   // Per-scope memory: each scope (view / tag / segment, keyed by inboxNavKey)
   // remembers the conversation last open in it, so returning to a scope resumes
@@ -214,15 +260,17 @@ function InboxPage() {
   // yourself had open here — never auto-opens an arbitrary unread one — so it
   // can't silently clear unread badges the way auto-opening the top would.
   const scopeMemory = useRef<Map<string, ConversationId>>(new Map())
-  // Selecting any scope clears the other two so exactly one stays in the URL,
-  // and resumes that scope's last-open conversation (or clears to the empty
-  // state when there's nothing remembered).
+  // Selecting any scope clears the others so exactly one stays in the URL, and
+  // resumes that scope's last-open conversation (or clears to the empty state
+  // when there's nothing remembered).
   const setNav = useCallback(
     (item: InboxNavItem) =>
       updateSearch({
         view: item.kind === 'view' ? item.view : undefined,
         tag: item.kind === 'tag' ? item.tagId : undefined,
         segment: item.kind === 'segment' ? item.segmentId : undefined,
+        team: item.kind === 'team' ? item.teamId : undefined,
+        viewId: item.kind === 'custom' ? item.viewId : undefined,
         c: scopeMemory.current.get(inboxNavKey(item)),
         m: undefined,
       }),
@@ -237,6 +285,10 @@ function InboxPage() {
   const priorityFilter: ConversationPriority | 'all' = urlPriority ?? 'all'
   const setPriorityFilter = useCallback(
     (p: ConversationPriority | 'all') => updateSearch({ priority: p === 'all' ? undefined : p }),
+    [updateSearch]
+  )
+  const setSort = useCallback(
+    (s: ConversationSort) => updateSearch({ sort: s === 'recent' ? undefined : s }),
     [updateSearch]
   )
   const selectedId = (urlC as ConversationId | undefined) ?? null
@@ -267,12 +319,38 @@ function InboxPage() {
     [navigate]
   )
 
-  // The status/priority chips apply to every scope except the Mentions feed
-  // (tag + segment scopes both refine by status/priority).
-  const showRefinements = nav.kind !== 'view' || nav.view !== 'mentions'
   const { data: navTags } = useConversationTagsWithCounts()
   const { data: navSegments } = useInboxSegmentsWithCounts()
-  const scopeLabel = scopeLabelFor(nav, navTags, navSegments)
+  const { data: navTeams } = useInboxTeams()
+  const { data: navViews } = useConversationViews()
+  const scopeLabel = scopeLabelFor(nav, navTags, navSegments, navTeams, navViews)
+
+  // The active custom view (if any): its saved rules become the list-query
+  // params, and its own sort is the default until the user re-sorts. The
+  // status/priority chips are hidden for a custom view (the view owns them),
+  // as they are for the self-contained Mentions feed.
+  const activeView: ConversationViewDTO | undefined =
+    nav.kind === 'custom' ? navViews?.find((v) => v.id === nav.viewId) : undefined
+  const customParams = useMemo(
+    () => (activeView ? viewFiltersToListParams(activeView.filters) : undefined),
+    [activeView]
+  )
+  const showRefinements = nav.kind !== 'custom' && !(nav.kind === 'view' && nav.view === 'mentions')
+  // Ordering: URL sort wins; else a custom view's saved sort; else the default.
+  const sort: ConversationSort = urlSort ?? activeView?.sort ?? 'recent'
+
+  // Custom-view dialog (create / edit), reachable from the nav "+" and per-view
+  // menu. The route owns it so a save can select the new view.
+  const [viewDialogOpen, setViewDialogOpen] = useState(false)
+  const [editingView, setEditingView] = useState<ConversationViewDTO | null>(null)
+  const openCreateView = useCallback(() => {
+    setEditingView(null)
+    setViewDialogOpen(true)
+  }, [])
+  const openEditView = useCallback((v: ConversationViewDTO) => {
+    setEditingView(v)
+    setViewDialogOpen(true)
+  }, [])
 
   // Search is a live local input mirrored (debounced) into the URL `q`.
   const [searchInput, setSearchInput] = useState(urlQ ?? '')
@@ -312,10 +390,14 @@ function InboxPage() {
       status,
       priorityFilter,
       search,
-      urlCompany as CompanyId | undefined
+      urlCompany as CompanyId | undefined,
+      sort,
+      customParams
     ),
     refetchInterval: 30_000, // polling fallback if the stream drops
-    enabled: !isSaved,
+    // Saved shows flagged messages (no list). A custom view can't run until its
+    // rule set has loaded from the views list, so hold the query until then.
+    enabled: !isSaved && (nav.kind !== 'custom' || !!activeView),
   })
 
   const conversations = listData?.conversations ?? []
@@ -335,10 +417,11 @@ function InboxPage() {
     }
   }, [nav, selectedId, conversations])
 
-  // If the active tag/segment scope no longer exists (deleted here or by another
-  // agent, or a stale deep-link to a removed id), fall back to the default view
-  // instead of stranding the user on an empty, unlabelled scope. Guarded on the
-  // option list having loaded so a valid scope isn't reset mid-fetch.
+  // If the active tag/segment/team/custom scope no longer exists (deleted here or
+  // by another agent, or a stale deep-link to a removed id), fall back to the
+  // default view instead of stranding the user on an empty, unlabelled scope.
+  // Guarded on the option list having loaded so a valid scope isn't reset
+  // mid-fetch.
   useEffect(() => {
     if (nav.kind === 'tag' && navTags && !navTags.some((t) => t.id === nav.tagId)) {
       updateSearch({ tag: undefined })
@@ -348,8 +431,12 @@ function InboxPage() {
       !navSegments.some((s) => s.id === nav.segmentId)
     ) {
       updateSearch({ segment: undefined })
+    } else if (nav.kind === 'team' && navTeams && !navTeams.some((t) => t.id === nav.teamId)) {
+      updateSearch({ team: undefined })
+    } else if (nav.kind === 'custom' && navViews && !navViews.some((v) => v.id === nav.viewId)) {
+      updateSearch({ viewId: undefined })
     }
-  }, [nav, navTags, navSegments, updateSearch])
+  }, [nav, navTags, navSegments, navTeams, navViews, updateSearch])
 
   // Live updates for the whole inbox over one cookie-authenticated stream.
   const refreshInbox = useCallback(() => {
@@ -403,7 +490,20 @@ function InboxPage() {
 
   return (
     <div className="flex h-full">
-      <InboxNavSidebar nav={nav} onSelect={setNav} search={searchInput} onSearch={setSearchInput} />
+      <InboxNavSidebar
+        nav={nav}
+        onSelect={setNav}
+        search={searchInput}
+        onSearch={setSearchInput}
+        onCreateView={openCreateView}
+        onEditView={openEditView}
+      />
+      <ConversationViewDialog
+        open={viewDialogOpen}
+        onOpenChange={setViewDialogOpen}
+        editing={editingView}
+        onSaved={(viewId) => setNav({ kind: 'custom', viewId })}
+      />
       {isSaved ? (
         <SavedMessagesColumn selectedConversationId={selectedId} onSelect={selectSavedMessage} />
       ) : (
@@ -429,6 +529,8 @@ function InboxPage() {
           onStatus={setStatus}
           priorityFilter={priorityFilter}
           onPriorityFilter={setPriorityFilter}
+          sort={sort}
+          onSort={setSort}
           loading={listLoading}
           conversations={conversations}
           selectedId={selectedId}

@@ -1,0 +1,85 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { ConversationId } from '@quackback/ids'
+import type { Actor } from '@/lib/server/policy/types'
+import type { MacroAction } from '@/lib/server/db'
+
+const assignConversation = vi.fn()
+const assignTeam = vi.fn()
+const setConversationPriority = vi.fn()
+const snoozeConversation = vi.fn()
+const setConversationStatus = vi.fn()
+const attachTag = vi.fn()
+
+vi.mock('@/lib/server/domains/conversation/conversation.service', () => ({
+  assignConversation,
+  assignTeam,
+  setConversationPriority,
+  snoozeConversation,
+  setConversationStatus,
+}))
+vi.mock('@/lib/server/domains/conversation/conversation-tag.service', () => ({
+  attachTag,
+}))
+
+import { applyMacroActions } from '../macro.actions'
+
+const conversationId = 'conversation_1' as ConversationId
+const actor = { principalId: 'principal_a', role: 'admin' } as unknown as Actor
+
+beforeEach(() => {
+  vi.clearAllMocks()
+})
+
+describe('applyMacroActions', () => {
+  it('dispatches each supported action to its conversation service', async () => {
+    const actions: MacroAction[] = [
+      { type: 'assign_agent', principalId: 'principal_x' },
+      { type: 'assign_team', teamId: 'team_1' },
+      { type: 'add_tag', tagId: 'ctag_1' },
+      { type: 'set_priority', priority: 'high' },
+      { type: 'snooze', preset: 'tomorrow' },
+      { type: 'close' },
+    ]
+    const applied = await applyMacroActions(conversationId, actions, actor)
+
+    expect(assignConversation).toHaveBeenCalledWith(conversationId, 'principal_x', actor)
+    expect(assignTeam).toHaveBeenCalledWith(conversationId, 'team_1', actor)
+    expect(attachTag).toHaveBeenCalledWith(conversationId, 'ctag_1')
+    expect(setConversationPriority).toHaveBeenCalledWith(conversationId, 'high', actor)
+    expect(snoozeConversation).toHaveBeenCalledWith(conversationId, expect.any(Date), actor)
+    expect(setConversationStatus).toHaveBeenCalledWith(conversationId, 'closed', actor)
+    expect(applied).toEqual([
+      'assigned',
+      'assigned to team',
+      'tagged',
+      'priority high',
+      'snoozed',
+      'closed',
+    ])
+  })
+
+  it('snooze until_reply defers with a null wake time', async () => {
+    await applyMacroActions(conversationId, [{ type: 'snooze', preset: 'until_reply' }], actor)
+    expect(snoozeConversation).toHaveBeenCalledWith(conversationId, null, actor)
+  })
+
+  it('skips the deferred set_attribute action with no dispatch', async () => {
+    const applied = await applyMacroActions(
+      conversationId,
+      [{ type: 'set_attribute', key: 'plan', value: 'scale' }],
+      actor
+    )
+    expect(applied).toEqual([])
+  })
+
+  it('continues past a failing action', async () => {
+    assignConversation.mockRejectedValueOnce(new Error('boom'))
+    const applied = await applyMacroActions(
+      conversationId,
+      [{ type: 'assign_agent', principalId: 'principal_x' }, { type: 'close' }],
+      actor
+    )
+    expect(applied).toEqual(['closed'])
+    expect(setConversationStatus).toHaveBeenCalled()
+  })
+})

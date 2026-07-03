@@ -165,6 +165,9 @@ export interface EventConversationRef {
   status: ConversationStatus
   channel: 'messenger' | 'email' | 'web_form'
   priority: 'none' | 'low' | 'medium' | 'high' | 'urgent'
+  /** The assigned team (§4.12), when set. Optional so pre-teams payloads and
+   *  refs that don't carry assignment stay unchanged. */
+  assignedTeamId?: string | null
 }
 
 export interface EventConversationData extends EventConversationRef {

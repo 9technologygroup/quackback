@@ -99,6 +99,10 @@ export type {
   PostActivityId,
   // Support platform entities
   CompanyId,
+  TeamId,
+  TeamMemberId,
+  MacroId,
+  ConversationViewId,
   AssistantInvolvementId,
   // Feedback aggregation entities
   FeedbackSourceId,

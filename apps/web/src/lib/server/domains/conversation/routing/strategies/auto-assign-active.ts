@@ -24,6 +24,30 @@ export function pickLeastLoaded(
 }
 
 /**
+ * Count each candidate's currently-open assigned conversations. Volume is low,
+ * so the tally is done in app code; a candidate with none is absent (reads 0).
+ * Shared by the balanced auto-assign strategy and team distribution.
+ */
+export async function countOpenConversationLoad(
+  candidates: PrincipalId[]
+): Promise<Map<PrincipalId, number>> {
+  const rows = await db
+    .select({ agent: conversations.assignedAgentPrincipalId })
+    .from(conversations)
+    .where(
+      and(
+        inArray(conversations.assignedAgentPrincipalId, candidates),
+        eq(conversations.status, 'open')
+      )
+    )
+  const load = new Map<PrincipalId, number>()
+  for (const r of rows) {
+    if (r.agent) load.set(r.agent, (load.get(r.agent) ?? 0) + 1)
+  }
+  return load
+}
+
+/**
  * Assign to an agent who currently has a live inbox stream, preferring the
  * least-loaded so work spreads across the online team. Returns a null
  * assignment when no agent is online, so the conversation simply stays
@@ -48,21 +72,7 @@ export const autoAssignActiveStrategy: RoutingStrategy = {
     if (candidates.length === 0) {
       return { assignedPrincipalId: null, strategyId: AUTO_ASSIGN_ACTIVE }
     }
-    // Current open-conversation load per candidate (rows counted in app code;
-    // conversation volume is low). A candidate with no open conversations is absent → 0.
-    const loadRows = await db
-      .select({ agent: conversations.assignedAgentPrincipalId })
-      .from(conversations)
-      .where(
-        and(
-          inArray(conversations.assignedAgentPrincipalId, candidates),
-          eq(conversations.status, 'open')
-        )
-      )
-    const openLoad = new Map<PrincipalId, number>()
-    for (const r of loadRows) {
-      if (r.agent) openLoad.set(r.agent, (openLoad.get(r.agent) ?? 0) + 1)
-    }
+    const openLoad = await countOpenConversationLoad(candidates)
     return {
       assignedPrincipalId: pickLeastLoaded(candidates, openLoad),
       strategyId: AUTO_ASSIGN_ACTIVE,

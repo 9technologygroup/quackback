@@ -90,6 +90,7 @@ export function buildNavSections(flags?: {
             to: '/admin/settings/office-hours',
             icon: ClockIcon,
           },
+          { label: 'Teams', to: '/admin/settings/teams', icon: UserGroupIcon },
         ]
       : []),
     ...(flags?.helpCenter

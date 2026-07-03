@@ -14,6 +14,11 @@ import {
   fetchWidgetSecret,
 } from '@/lib/server/functions/settings'
 import { getHelpCenterConfigFn } from '@/lib/server/functions/help-center-settings'
+import {
+  listTeamsAdminFn,
+  listTeamMembersFn,
+  listAssignableTeammatesFn,
+} from '@/lib/server/functions/teams'
 import { getVerifiedDomainsFn, listIdentityProvidersFn } from '@/lib/server/functions/sso'
 import {
   fetchSettingsLogoData,
@@ -37,6 +42,27 @@ export const settingsQueries = {
       queryKey: ['settings', 'customCss'],
       queryFn: fetchCustomCssFn,
       staleTime: STALE_TIME_LONG,
+    }),
+
+  teams: () =>
+    queryOptions({
+      queryKey: ['settings', 'teams'],
+      queryFn: listTeamsAdminFn,
+      staleTime: STALE_TIME_SHORT,
+    }),
+
+  assignableTeammates: () =>
+    queryOptions({
+      queryKey: ['settings', 'teams', 'assignable'],
+      queryFn: listAssignableTeammatesFn,
+      staleTime: STALE_TIME_MEDIUM,
+    }),
+
+  teamMembers: (teamId: string) =>
+    queryOptions({
+      queryKey: ['settings', 'teams', teamId, 'members'],
+      queryFn: () => listTeamMembersFn({ data: { teamId } }),
+      staleTime: STALE_TIME_SHORT,
     }),
 
   logo: () =>

@@ -112,6 +112,7 @@ describe('conversation.webhooks emit helpers', () => {
       status: 'open',
       channel: 'messenger',
       priority: 'none',
+      assignedTeamId: null,
     })
     expect(dispatch.dispatchMessageNoteCreated).not.toHaveBeenCalled()
   })
@@ -194,6 +195,7 @@ describe('conversation.webhooks emit helpers', () => {
       status: 'closed',
       channel: 'messenger',
       priority: 'none',
+      assignedTeamId: null,
     })
     expect(previousStatus).toBe('open')
     expect(newStatus).toBe('closed')
@@ -230,6 +232,7 @@ describe('conversation.webhooks emit helpers', () => {
       status: 'open',
       channel: 'messenger',
       priority: 'none',
+      assignedTeamId: null,
     })
   })
 })

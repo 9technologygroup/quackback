@@ -104,7 +104,7 @@ test.describe('Admin Support Inbox', { tag: '@smoke' }, () => {
     // flips to 'snoozed'. A customer reply then waking it is covered by unit
     // tests (it needs a widget-side message this DB-seeded spec can't drive).
     await panel.getByRole('button', { name: 'open', exact: true }).click()
-    await page.getByRole('menuitem', { name: 'Snooze until they reply' }).click()
+    await page.getByRole('menuitem', { name: 'Until they reply' }).click()
     await expect(panel.getByRole('button', { name: 'snoozed', exact: true })).toBeVisible({
       timeout: 10000,
     })

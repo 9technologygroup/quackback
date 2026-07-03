@@ -28,14 +28,14 @@ export const conversationKeys = {
   /** Segments + per-segment open-conversation counts (nav Segments group). */
   agentSegmentCounts: () => ['admin', 'inbox', 'segments', 'counts'] as const,
 
+  /** Shared saved views + the caller's pin state (nav Views group). */
+  agentViews: () => ['admin', 'inbox', 'views'] as const,
+
   /** The detail panel's "Previous conversations" cache (prefix). */
   agentUserConversations: () => ['admin', 'inbox', 'user-conversations'] as const,
 
   /** The per-agent "Saved for later" (flagged messages) feed. */
   agentFlagged: () => ['admin', 'inbox', 'flagged'] as const,
-
-  /** Saved replies for the admin composer picker. */
-  agentCannedReplies: () => ['admin', 'inbox', 'canned'] as const,
 
   /** A visitor-side thread (portal Support tab + widget messenger). Keyed by
    *  conversation id; a not-yet-created thread has no cache entry. */

@@ -18,6 +18,11 @@ vi.mock('@/lib/server/realtime/conversation-channels', () => ({
   publishConversationUpdate: vi.fn(),
 }))
 
+// The visitor-send funnel guards on isBlocked; these visitors are never blocked.
+vi.mock('@/lib/server/domains/principals/blocking', () => ({
+  isBlocked: vi.fn(async () => false),
+}))
+
 vi.mock('@/lib/server/config', () => ({
   config: { s3PublicUrl: undefined, baseUrl: 'http://localhost:3000' },
   getBaseUrl: () => 'http://localhost:3000',

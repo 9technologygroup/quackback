@@ -18,6 +18,7 @@ import { db, eq, sql, conversationMessages, conversations, principal, user } fro
 import type { ConversationId, PrincipalId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
 import { normalizePrincipalType } from '@/lib/server/functions/auth-helpers'
+import { isBlocked } from '@/lib/server/domains/principals/blocking'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import {
   parseInboundEmail,
@@ -122,6 +123,10 @@ export async function ingestParsedEmail(parsed: ParsedInboundEmail): Promise<Ing
     const mappedPrincipalId = await resolvePrincipalIdByEmail(sender)
     if (mappedPrincipalId !== visitorPrincipalId) return { status: 'from_mismatch' }
   }
+
+  // Blocked people cannot reply over email either; ack (200) so the provider
+  // stops retrying, mirroring the widget send gate.
+  if (await isBlocked(visitorPrincipalId)) return { status: 'suppressed' }
 
   // Same per-visitor throttle the widget send path enforces — the inbound email
   // channel must not be an unbounded back door for the offline-notification

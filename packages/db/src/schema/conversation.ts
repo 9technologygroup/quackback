@@ -13,6 +13,7 @@ import {
 import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
 import { principal } from './auth'
+import { teams } from './teams'
 import {
   CONVERSATION_STATUSES,
   MESSAGE_SENDER_TYPES,
@@ -38,6 +39,11 @@ export const conversations = pgTable(
     // The team member currently handling the conversation (nullable: an open
     // conversation may be unassigned). `set null` mirrors other actor FKs.
     assignedAgentPrincipalId: typeIdColumnNullable('principal')('assigned_agent_principal_id'),
+    // The team the conversation is assigned to (§4.12). Independent of the
+    // agent assignee: a conversation may be assigned to a team, a teammate, or
+    // both, and assigning one never clears the other. `set null` so a deleted
+    // team leaves the conversation team-unassigned rather than orphaned.
+    assignedTeamId: typeIdColumnNullable('team')('assigned_team_id'),
     status: text('status', { enum: CONVERSATION_STATUSES }).notNull().default('open'),
     // Snooze wake time for a 'snoozed' conversation. NULL while snoozed means
     // "until the customer next replies" (a customer message always wakes it); a
@@ -105,6 +111,11 @@ export const conversations = pgTable(
       columns: [table.assignedAgentPrincipalId],
       foreignColumns: [principal.id],
     }).onDelete('set null'),
+    foreignKey({
+      name: 'conversations_assigned_team_id_fkey',
+      columns: [table.assignedTeamId],
+      foreignColumns: [teams.id],
+    }).onDelete('set null'),
     // Inbox feed: list by status, newest activity first.
     index('conversations_status_last_message_idx').on(table.status, table.lastMessageAt),
     // Cross-status keyset feed (D17): last activity first with an id tiebreak, so
@@ -114,8 +125,18 @@ export const conversations = pgTable(
       table.lastMessageAt.desc().nullsFirst(),
       table.id
     ),
+    // Keyset support for the 'created' saved-view sort (created_at DESC, id).
+    // nullsFirst matches the migration's plain DESC (postgres default).
+    index('conversations_created_at_id_idx').on(table.createdAt.desc().nullsFirst(), table.id),
+    // Keyset support for the 'waiting' sort: longest-waiting first, NULL (nobody
+    // waiting) rows last, id tiebreak.
+    index('conversations_waiting_since_id_idx').on(table.waitingSince.asc().nullsLast(), table.id),
     index('conversations_visitor_principal_idx').on(table.visitorPrincipalId),
     index('conversations_assigned_agent_idx').on(table.assignedAgentPrincipalId),
+    // Team inbox view: only team-assigned rows are indexed (partial).
+    index('conversations_assigned_team_idx')
+      .on(table.assignedTeamId)
+      .where(sql`assigned_team_id IS NOT NULL`),
     // Sweeper wake pass: only timer-snoozed rows have a due wake time, so a
     // partial index over them keeps the periodic sweep cheap.
     index('conversations_snoozed_until_idx')

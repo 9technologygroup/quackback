@@ -14,6 +14,7 @@ import type { ConversationId, CompanyId } from '@quackback/ids'
 import { listConversationsFn, getConversationFn } from '@/lib/server/functions/conversation'
 import { fetchConversationTagsWithCountsFn } from '@/lib/server/functions/conversation-tags'
 import { fetchInboxSegmentsWithCountsFn } from '@/lib/server/functions/conversation-segments'
+import { listConversationViewsFn } from '@/lib/server/functions/conversation-views'
 import {
   inboxNavKey,
   buildListParams,
@@ -22,6 +23,7 @@ import {
 } from '@/lib/client/conversation/inbox-scope'
 import { conversationKeys } from '@/lib/client/queries/conversation-keys'
 import type { ConversationPriority } from '@/lib/shared/conversation/types'
+import type { ConversationSort, ConversationViewListParams } from '@/lib/shared/conversation/views'
 
 export const conversationInboxQueries = {
   /** The conversation list for a scope + status/priority/search refinement,
@@ -34,7 +36,13 @@ export const conversationInboxQueries = {
     status: StatusFilter,
     priority: ConversationPriority | 'all',
     search: string,
-    companyId?: CompanyId
+    companyId?: CompanyId,
+    // The active sort (default 'recent') and, for a custom view, its
+    // pre-translated rule set. Both leave the base key byte-identical when
+    // absent/default, so the loader's SSR prefetch keeps hydrating existing
+    // scopes and the key-parity test still passes.
+    sort?: ConversationSort,
+    customParams?: ConversationViewListParams
   ) => {
     const baseKey = conversationKeys.agentConversationList(
       inboxNavKey(nav),
@@ -42,12 +50,27 @@ export const conversationInboxQueries = {
       priority,
       search
     )
+    // Append the non-default sort then the company (fixed order) — both stay
+    // under the agentConversations() prefix SSE invalidations target.
+    const key = [...baseKey]
+    if (sort && sort !== 'recent') key.push(`sort:${sort}`)
+    if (companyId) key.push(companyId)
     return queryOptions({
-      queryKey: companyId ? [...baseKey, companyId] : baseKey,
+      queryKey: key,
       queryFn: () =>
-        listConversationsFn({ data: buildListParams(nav, status, priority, search, companyId) }),
+        listConversationsFn({
+          data: buildListParams(nav, status, priority, search, companyId, sort, customParams),
+        }),
     })
   },
+
+  /** Shared saved views with the caller's pin state (drives the nav Views group). */
+  views: () =>
+    queryOptions({
+      queryKey: conversationKeys.agentViews(),
+      queryFn: () => listConversationViewsFn(),
+      staleTime: 60_000,
+    }),
 
   /** A single conversation's thread (conversation DTO + first page of messages). */
   thread: (conversationId: ConversationId) =>

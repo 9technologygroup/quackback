@@ -78,6 +78,8 @@ function conversation(overrides: Partial<ConversationDTO> = {}): ConversationDTO
     csatRating: null,
     visitorEmail: null,
     resolvedAt: null,
+    snoozedUntil: null,
+    assignedTeamId: null,
     endReason: null,
     endNote: null,
     tags: [],

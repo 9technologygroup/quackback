@@ -130,8 +130,14 @@ describe('REPOINT_STEPS registry', () => {
     it('fills the target from the source via one conditional UPDATE', async () => {
       await repointPrincipalActivity(tx, FROM, TO)
 
-      // Two principal consolidation UPDATEs: contact_email then company_id.
-      expect(opsFor('principal')).toEqual(['update:principal', 'update:principal'])
+      // Four principal consolidation UPDATEs: contact_email, company_id,
+      // blocked_at, then blocked_by.
+      expect(opsFor('principal')).toEqual([
+        'update:principal',
+        'update:principal',
+        'update:principal',
+        'update:principal',
+      ])
       // The SET pulls the source email with a correlated subquery.
       expect(mockUpdateSet).toHaveBeenCalledWith({
         contactEmail: expect.objectContaining({ _type: 'sql' }),
@@ -163,6 +169,28 @@ describe('REPOINT_STEPS registry', () => {
       await repointPrincipalActivity(tx, FROM, TO)
 
       expect(isNull).toHaveBeenCalledWith('principal.companyId')
+    })
+  })
+
+  describe('blocking consolidation (a block follows the person on merge)', () => {
+    it('fills the target blocked_at + blocked_by from the source', async () => {
+      await repointPrincipalActivity(tx, FROM, TO)
+
+      // A blocked anonymous source blocks the identified target, carrying who
+      // blocked them, both via correlated subqueries mirroring company_id.
+      expect(mockUpdateSet).toHaveBeenCalledWith({
+        blockedAt: expect.objectContaining({ _type: 'sql' }),
+      })
+      expect(mockUpdateSet).toHaveBeenCalledWith({
+        blockedByPrincipalId: expect.objectContaining({ _type: 'sql' }),
+      })
+    })
+
+    it('never overwrites an already-blocked target (guarded by IS NULL)', async () => {
+      await repointPrincipalActivity(tx, FROM, TO)
+
+      expect(isNull).toHaveBeenCalledWith('principal.blockedAt')
+      expect(isNull).toHaveBeenCalledWith('principal.blockedByPrincipalId')
     })
   })
 })

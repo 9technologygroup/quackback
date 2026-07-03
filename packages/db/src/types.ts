@@ -21,6 +21,7 @@ import type {
   conversationMessageReactions,
   conversationMessageFlags,
 } from './schema/conversation'
+import type { teams, teamMembers } from './schema/teams'
 import type { principal } from './schema/auth'
 
 // Status categories (defined here to avoid circular imports in tests)
@@ -337,6 +338,13 @@ export type Channel = (typeof CHANNELS)[number]
 export const CONVERSATION_PRIORITIES = ['none', 'low', 'medium', 'high', 'urgent'] as const
 export type ConversationPriority = (typeof CONVERSATION_PRIORITIES)[number]
 
+// How a team-assigned conversation picks a member — kept in sync with the
+// teams.assignment_method column enum. 'manual' assigns the team only (no
+// member pick); 'round_robin' rotates over online members; 'balanced' reuses
+// the least-loaded auto-assign strategy scoped to the team's members.
+export const TEAM_ASSIGNMENT_METHODS = ['manual', 'round_robin', 'balanced'] as const
+export type TeamAssignmentMethod = (typeof TEAM_ASSIGNMENT_METHODS)[number]
+
 // Which side of a conversation a message came from — kept in sync with the
 // conversation_messages.sender_type column enum. 'system' rows are status events (e.g.
 // assignment) shown to both sides; attributed to the relevant agent's principal
@@ -401,6 +409,12 @@ export type ConversationMessageReaction = InferSelectModel<typeof conversationMe
 export type NewConversationMessageReaction = InferInsertModel<typeof conversationMessageReactions>
 export type ConversationMessageFlag = InferSelectModel<typeof conversationMessageFlags>
 export type NewConversationMessageFlag = InferInsertModel<typeof conversationMessageFlags>
+
+// Teams (§4.12) row types
+export type Team = InferSelectModel<typeof teams>
+export type NewTeam = InferInsertModel<typeof teams>
+export type TeamMember = InferSelectModel<typeof teamMembers>
+export type NewTeamMember = InferInsertModel<typeof teamMembers>
 
 // Reaction emoji constants (client-safe)
 export const REACTION_EMOJIS = ['👍', '❤️', '🎉', '😄', '🤔', '👀'] as const

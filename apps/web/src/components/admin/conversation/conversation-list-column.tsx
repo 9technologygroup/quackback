@@ -5,7 +5,12 @@ import type {
   ConversationPriority,
   ConversationStatus,
 } from '@/lib/shared/conversation/types'
-import { ChevronDownIcon, PencilSquareIcon } from '@heroicons/react/24/solid'
+import { ChevronDownIcon, PencilSquareIcon, BarsArrowDownIcon } from '@heroicons/react/24/solid'
+import {
+  CONVERSATION_SORTS,
+  CONVERSATION_SORT_LABELS,
+  type ConversationSort,
+} from '@/lib/shared/conversation/views'
 import { NewConversationDialog } from '@/components/admin/conversation/new-conversation-dialog'
 import { priorityMeta } from '@/lib/shared/conversation/priority-meta'
 import { PriorityDot, PriorityMenuItems } from '@/components/admin/conversation/priority-control'
@@ -46,6 +51,11 @@ function emptyStateMessage(nav: InboxNavItem, status: StatusFilter, scopeLabel: 
     const part = status === 'all' ? '' : `${status} `
     return `No ${part}conversations from ${scopeLabel}`
   }
+  if (nav.kind === 'team') {
+    const part = status === 'all' ? '' : `${status} `
+    return `No ${part}conversations for ${scopeLabel}`
+  }
+  if (nav.kind === 'custom') return `No conversations match ${scopeLabel}`
   if (nav.view === 'mentions') return 'No conversations mention you yet'
   const statusPart = status === 'all' ? '' : `${status} `
   if (nav.view === 'mine') return `No ${statusPart}conversations assigned to you`
@@ -70,6 +80,8 @@ interface ConversationListColumnProps {
   onStatus: (value: StatusFilter) => void
   priorityFilter: ConversationPriority | 'all'
   onPriorityFilter: (value: ConversationPriority | 'all') => void
+  sort: ConversationSort
+  onSort: (value: ConversationSort) => void
   loading: boolean
   conversations: ConversationDTO[]
   selectedId: ConversationId | null
@@ -93,6 +105,8 @@ export function ConversationListColumn({
   onStatus,
   priorityFilter,
   onPriorityFilter,
+  sort,
+  onSort,
   loading,
   conversations,
   selectedId,
@@ -141,69 +155,101 @@ export function ConversationListColumn({
           className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:ring-2 focus:ring-primary/20"
         />
       </div>
-      {showRefinements && (
-        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none px-3 py-2">
-          {/* Status is a removable filter chip (mirrors the feedback inbox) — not
-              a primary view. 'all' = no status filter. */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className={cn(
-                  'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium transition-colors',
-                  status !== 'all'
-                    ? 'bg-primary/10 text-primary'
-                    : 'text-muted-foreground hover:bg-muted'
-                )}
+      <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none px-3 py-2">
+        {/* Sort applies to every scope (including Mentions + custom views). */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="Sort conversations"
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                sort !== 'recent'
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-muted-foreground hover:bg-muted'
+              )}
+            >
+              <BarsArrowDownIcon className="h-3.5 w-3.5" />
+              {CONVERSATION_SORT_LABELS[sort]}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            {CONVERSATION_SORTS.map((s) => (
+              <DropdownMenuItem
+                key={s}
+                onClick={() => onSort(s)}
+                className={cn('text-xs', s === sort && 'text-primary')}
               >
-                <span className="capitalize">{status === 'all' ? 'Status' : status}</span>
-                <ChevronDownIcon className="h-3 w-3" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuItem onClick={() => onStatus('all')} className="text-xs">
-                All statuses
+                {CONVERSATION_SORT_LABELS[s]}
               </DropdownMenuItem>
-              {(['open', 'snoozed', 'closed'] as const).map((s) => (
-                <DropdownMenuItem
-                  key={s}
-                  onClick={() => onStatus(s)}
-                  className="text-xs capitalize"
-                >
-                  {s}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Filter by priority"
-                className={cn(
-                  'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium transition-colors',
-                  priorityFilter !== 'all'
-                    ? 'bg-primary/10 text-primary'
-                    : 'text-muted-foreground hover:bg-muted'
-                )}
-              >
-                <PriorityDot priority={priorityFilter === 'all' ? 'none' : priorityFilter} />
-                {priorityFilter === 'all' ? 'Priority' : priorityMeta(priorityFilter).label}
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => onPriorityFilter('all')} className="text-xs">
-                All priorities
-              </DropdownMenuItem>
-              <PriorityMenuItems
-                selected={priorityFilter === 'all' ? undefined : priorityFilter}
-                onSelect={onPriorityFilter}
-              />
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      )}
+        {showRefinements && (
+          <>
+            {/* Status is a removable filter chip (mirrors the feedback inbox) — not
+              a primary view. 'all' = no status filter. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className={cn(
+                    'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                    status !== 'all'
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:bg-muted'
+                  )}
+                >
+                  <span className="capitalize">{status === 'all' ? 'Status' : status}</span>
+                  <ChevronDownIcon className="h-3 w-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem onClick={() => onStatus('all')} className="text-xs">
+                  All statuses
+                </DropdownMenuItem>
+                {(['open', 'snoozed', 'closed'] as const).map((s) => (
+                  <DropdownMenuItem
+                    key={s}
+                    onClick={() => onStatus(s)}
+                    className="text-xs capitalize"
+                  >
+                    {s}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Filter by priority"
+                  className={cn(
+                    'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                    priorityFilter !== 'all'
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:bg-muted'
+                  )}
+                >
+                  <PriorityDot priority={priorityFilter === 'all' ? 'none' : priorityFilter} />
+                  {priorityFilter === 'all' ? 'Priority' : priorityMeta(priorityFilter).label}
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => onPriorityFilter('all')} className="text-xs">
+                  All priorities
+                </DropdownMenuItem>
+                <PriorityMenuItems
+                  selected={priorityFilter === 'all' ? undefined : priorityFilter}
+                  onSelect={onPriorityFilter}
+                />
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        )}
+      </div>
       <ScrollArea className="min-h-0 flex-1">
         {loading ? (
           <div className="flex justify-center py-10">

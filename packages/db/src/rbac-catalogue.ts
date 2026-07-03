@@ -101,6 +101,7 @@ export const PERMISSIONS = {
   CONVERSATION_SET_STATUS: 'conversation.set_status', // status / priority / end
   CONVERSATION_SET_TAGS: 'conversation.set_tags', // apply tags to a conversation
   CONVERSATION_MANAGE_TAGS: 'conversation.manage_tags', // define the chat-tag taxonomy
+  CONVERSATION_MANAGE_VIEWS: 'conversation.manage_views', // create / edit / delete shared saved inbox views
   CONVERSATION_SET_ATTRIBUTES: 'conversation.set_attributes', // RESERVED: custom attributes feature
 
   // category 'analytics'
@@ -466,6 +467,11 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     key: PERMISSIONS.CONVERSATION_MANAGE_TAGS,
     category: 'conversation',
     description: 'Define the conversation tag taxonomy',
+  },
+  {
+    key: PERMISSIONS.CONVERSATION_MANAGE_VIEWS,
+    category: 'conversation',
+    description: 'Create, edit, and delete shared saved inbox views',
   },
   {
     key: PERMISSIONS.CONVERSATION_SET_ATTRIBUTES,

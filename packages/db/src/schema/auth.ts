@@ -531,8 +531,21 @@ export const principal = pgTable(
     companyId: typeIdColumnNullable('company')('company_id').references(() => companies.id, {
       onDelete: 'set null',
     }),
+    // Blocking (support platform §4.6). `blocked_at` = when the person was
+    // blocked (null = not blocked, the enforcement flag); `blocked_by_principal_id`
+    // = the team actor who blocked them. The FK is self-referential and set-null
+    // so removing the actor never clears a live block on its own. Guards keep
+    // team members and service principals from ever being blocked.
+    blockedAt: timestamp('blocked_at', { withTimezone: true }),
+    blockedByPrincipalId: typeIdColumnNullable('principal')('blocked_by_principal_id'),
   },
   (table) => [
+    // Self-referential blocking actor FK; named to match the SQL migration.
+    foreignKey({
+      name: 'principal_blocked_by_principal_id_principal_id_fk',
+      columns: [table.blockedByPrincipalId],
+      foreignColumns: [table.id],
+    }).onDelete('set null'),
     // Ensure one principal record per human user (partial index excludes service principals)
     uniqueIndex('principal_user_idx')
       .on(table.userId)

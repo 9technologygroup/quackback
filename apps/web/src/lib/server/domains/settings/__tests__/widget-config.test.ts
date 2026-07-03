@@ -100,11 +100,9 @@ describe('Widget Config Types', () => {
       const projected = publicMessengerConfig({
         enabled: true,
         assistant: { enabled: true, name: 'Quinn' },
-        cannedReplies: [{ id: '1', title: 'Hi', body: 'Hello!' }],
         routing: { enabled: true, strategy: 'auto_assign_active' },
       })
       expect(projected.assistant).toEqual({ enabled: true, name: 'Quinn' })
-      expect('cannedReplies' in projected).toBe(false)
       expect('routing' in projected).toBe(false)
     })
   })

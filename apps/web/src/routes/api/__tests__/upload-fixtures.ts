@@ -74,6 +74,8 @@ export function mockPrincipal(
     serviceMetadata: null,
     contactEmail: null,
     companyId: null,
+    blockedAt: null,
+    blockedByPrincipalId: null,
     chatAvailability: 'online',
     createdAt: new Date(),
     lastSsoSignInAt: null,

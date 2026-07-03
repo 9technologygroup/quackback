@@ -27,8 +27,9 @@ import {
   type Transaction,
 } from '@/lib/server/db'
 import { generateId, type PrincipalId, type UserId } from '@quackback/ids'
-import type { Role, PrincipalType } from '@/lib/shared/roles'
+import { isTeamMember, type Role, type PrincipalType } from '@/lib/shared/roles'
 import { cacheDel, CACHE_KEYS } from '@/lib/server/redis'
+import { addPrincipalToDefaultTeam } from '@/lib/server/domains/teams'
 
 /** The live db or an open transaction — both expose insert/update/query. */
 export type Executor = Database | Transaction
@@ -73,12 +74,24 @@ function toRow(input: CreatePrincipalInput): typeof principal.$inferInsert {
   }
 }
 
+/**
+ * Enroll a freshly-created team-tier principal in the default team (§4.12).
+ * End-users, anonymous visitors and service principals are skipped; a missing
+ * default team or a duplicate membership is a no-op. Enlists in the caller's
+ * executor so it is atomic with the principal insert (e.g. invitation accept).
+ */
+async function enrollTeamTierInDefaultTeam(created: Principal, exec: Executor): Promise<void> {
+  if (created.type !== 'user' || !isTeamMember(created.role)) return
+  await addPrincipalToDefaultTeam(created.id, exec)
+}
+
 /** Insert one brand-new principal. Use only where no concurrent creator can race. */
 export async function createPrincipal(
   input: CreatePrincipalInput,
   exec: Executor = db
 ): Promise<Principal> {
   const [created] = await exec.insert(principal).values(toRow(input)).returning()
+  await enrollTeamTierInDefaultTeam(created, exec)
   return created
 }
 
@@ -88,7 +101,9 @@ export async function createPrincipals(
   exec: Executor = db
 ): Promise<Principal[]> {
   if (inputs.length === 0) return []
-  return exec.insert(principal).values(inputs.map(toRow)).returning()
+  const created = await exec.insert(principal).values(inputs.map(toRow)).returning()
+  for (const row of created) await enrollTeamTierInDefaultTeam(row, exec)
+  return created
 }
 
 // ------------------------------------------------- idempotent lazy create ---
@@ -123,6 +138,7 @@ export async function ensurePrincipalForUser(
     .onConflictDoNothing()
     .returning()
   if (inserted) {
+    await enrollTeamTierInDefaultTeam(inserted, exec)
     await cacheDel(CACHE_KEYS.PRINCIPAL_BY_USER(input.userId))
     return { principal: inserted, created: true }
   }

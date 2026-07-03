@@ -44,6 +44,10 @@ import type { ConversationDTO, ConversationStatus } from '@/lib/shared/conversat
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { UserSegmentBadges } from '@/components/admin/users/user-segments'
 import { UserCompanyControl } from '@/components/admin/users/user-company-control'
+import {
+  BlockPersonControl,
+  usePersonBlockStatus,
+} from '@/components/admin/users/block-person-control'
 import { useUpdatePortalUser } from '@/lib/client/mutations'
 import { listConversationsForUserFn, getConversationFn } from '@/lib/server/functions/conversation'
 import type { PrincipalId } from '@quackback/ids'
@@ -428,6 +432,7 @@ export function UserDetail({
     (settings?.featureFlags as FeatureFlags | undefined)?.supportInbox ?? false
   // Check if current user can manage portal users
   const canManageUsers = currentMemberRole === 'admin'
+  const { blocked } = usePersonBlockStatus(user?.principalId as PrincipalId | undefined)
 
   const startEditing = () => {
     if (!user) return
@@ -565,9 +570,16 @@ export function UserDetail({
                 ) : (
                   <p className="text-sm text-muted-foreground/50 italic">No email</p>
                 )}
-                <Badge variant="secondary" className="mt-2 text-xs">
-                  {user.isLead ? 'Lead' : 'User'}
-                </Badge>
+                <div className="mt-2 flex items-center gap-1.5">
+                  <Badge variant="secondary" className="text-xs">
+                    {user.isLead ? 'Lead' : 'User'}
+                  </Badge>
+                  {blocked && (
+                    <Badge variant="destructive" className="text-xs">
+                      Blocked
+                    </Badge>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -714,6 +726,13 @@ export function UserDetail({
         {canManageUsers && (
           <div className="border-t border-border/50 pt-4 space-y-3">
             <h3 className="text-sm font-medium">Actions</h3>
+
+            {/* Block / Unblock — rejects future messages and re-registration. */}
+            <BlockPersonControl
+              principalId={user.principalId as PrincipalId}
+              personName={user.name}
+              className="w-full"
+            />
 
             {/* Remove User */}
             <Button

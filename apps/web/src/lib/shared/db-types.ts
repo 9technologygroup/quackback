@@ -24,12 +24,14 @@ export {
   MODERATION_RULE_VALUES,
   CONVERSATION_STATUSES,
   CONVERSATION_END_REASONS,
+  TEAM_ASSIGNMENT_METHODS,
 } from '@quackback/db/types'
 export type {
   AccessTier,
   BoardAccess,
   ModerationRuleValue,
   ConversationEndReason,
+  TeamAssignmentMethod,
 } from '@quackback/db/types'
 
 // Schema types needed by client components (type-only = no side effects)
@@ -43,6 +45,10 @@ export type {
   UserAttributeDefinition,
   UserAttributeType,
   CurrencyCode,
+  MacroScope,
+  MacroPriority,
+  MacroSnoozePreset,
+  MacroAction,
 } from '@quackback/db/schema'
 
 // Runtime exports used in client components.

@@ -12,7 +12,6 @@ import { useRouteContext } from '@tanstack/react-router'
 import {
   PaperAirplaneIcon,
   PaperClipIcon,
-  ChatBubbleBottomCenterTextIcon,
   PencilSquareIcon,
   ChevronLeftIcon,
   ChevronDownIcon,
@@ -22,7 +21,6 @@ import type { ConversationId, ConversationMessageId } from '@quackback/ids'
 import {
   sendAgentMessageFn,
   addConversationNoteFn,
-  getCannedRepliesFn,
   deleteConversationMessageFn,
   addMessageReactionFn,
   removeMessageReactionFn,
@@ -54,6 +52,7 @@ import {
   type AgentThreadCache,
 } from '@/components/conversation/events-reducer'
 import { conversationKeys } from '@/components/conversation/query-keys'
+import { MacroPicker } from '@/components/conversation/macro-picker'
 import { PriorityControl } from '@/components/admin/conversation/priority-control'
 import { AssigneeControl } from '@/components/admin/conversation/assignee-control'
 import { ChannelBadge } from '@/components/admin/conversation/channel-badge'
@@ -87,7 +86,6 @@ import { TypingDots } from '@/components/shared/typing-dots'
 import { EmojiPicker } from '@/components/shared/emoji-picker'
 import { Avatar } from '@/components/ui/avatar'
 import { Spinner } from '@/components/shared/spinner'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
@@ -493,15 +491,9 @@ export function AgentConversationThread({
     onError: () => toast.error('Failed to mark unread'),
   })
 
-  // Saved replies for the composer picker.
-  const { data: cannedData } = useQuery({
-    queryKey: conversationKeys.agentCannedReplies(),
-    queryFn: () => getCannedRepliesFn(),
-    staleTime: 60_000,
-  })
-  const cannedReplies = cannedData?.cannedReplies ?? []
-
-  const insertCanned = useCallback((body: string) => {
+  // Insert a macro's rendered body into the reply composer (the picker applies
+  // any bundled actions server-side before calling this).
+  const insertMacroBody = useCallback((body: string) => {
     replyComposerRef.current?.insertText(body)
   }, [])
 
@@ -857,38 +849,12 @@ export function AgentConversationThread({
                   else replyComposerRef.current?.insertText(emoji)
                 }}
               />
-              {!noteMode && cannedReplies.length > 0 && (
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted transition-colors"
-                      aria-label="Saved replies"
-                    >
-                      <ChatBubbleBottomCenterTextIcon className="h-4 w-4" />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent align="start" className="w-72 p-1">
-                    <p className="px-2 py-1 text-[11px] font-medium text-muted-foreground">
-                      Saved replies
-                    </p>
-                    <div className="max-h-64 overflow-y-auto">
-                      {cannedReplies.map((c) => (
-                        <button
-                          key={c.id}
-                          type="button"
-                          onClick={() => insertCanned(c.body)}
-                          className="block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
-                        >
-                          <span className="font-medium">{c.title}</span>
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {c.body}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </PopoverContent>
-                </Popover>
+              {!noteMode && (
+                <MacroPicker
+                  conversationId={conversationId}
+                  onInsert={insertMacroBody}
+                  onApplied={refreshThread}
+                />
               )}
               <div className="flex-1" />
               <button

@@ -174,6 +174,12 @@ export interface ConversationDTO {
   visitorEmail: string | null
   /** When the conversation was resolved/closed (ISO), or null while still active. */
   resolvedAt: string | null
+  /** When a snoozed conversation wakes (ISO); null when snoozed "until they
+   *  reply" or not snoozed. Agent-only — the snooze queue is invisible to the
+   *  visitor, so this is stripped on visitor-facing payloads. */
+  snoozedUntil: string | null
+  /** Agent-audience only: the team this conversation is assigned to. */
+  assignedTeamId: string | null
   /** Why the conversation was ended (from CONVERSATION_END_REASONS), or null when
    *  it was never ended (or ended before this was captured). Shown on both sides
    *  so a closed thread can display its outcome. */

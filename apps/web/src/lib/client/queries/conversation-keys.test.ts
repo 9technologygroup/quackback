@@ -36,7 +36,6 @@ describe('conversationKeys parity', () => {
       'user-conversations',
     ])
     expect(conversationKeys.agentFlagged()).toEqual(['admin', 'inbox', 'flagged'])
-    expect(conversationKeys.agentCannedReplies()).toEqual(['admin', 'inbox', 'canned'])
   })
 
   it('widget list key matches the legacy inline widget key', () => {

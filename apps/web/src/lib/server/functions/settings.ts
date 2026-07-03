@@ -733,6 +733,8 @@ const messengerConfigInputSchema = z.object({
   welcomeMessage: z.string().max(500).optional(),
   offlineMessage: z.string().max(500).optional(),
   teamName: z.string().max(80).optional(),
+  // Refuse visitor replies to closed conversations (Messenger only; §4.3).
+  preventRepliesWhenClosed: z.boolean().optional(),
   assistant: z
     .object({
       enabled: z.boolean().optional(),
@@ -756,16 +758,6 @@ const messengerConfigInputSchema = z.object({
         )
         .length(7),
     })
-    .optional(),
-  cannedReplies: z
-    .array(
-      z.object({
-        id: z.string().max(64),
-        title: z.string().max(80),
-        body: z.string().max(2000),
-      })
-    )
-    .max(100)
     .optional(),
   routing: z
     .object({

@@ -74,6 +74,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | conversation.set_status | conversation | ✓ | ✓ |
 | conversation.set_tags | conversation | ✓ | ✓ |
 | conversation.manage_tags | conversation | ✓ | ✓ |
+| conversation.manage_views | conversation | ✓ | ✓ |
 | conversation.set_attributes | conversation | ✓ | ✓ |
 | analytics.view | analytics | ✓ | ✓ |
 | integration.view | integration | ✓ | ✓ |
@@ -93,7 +94,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 336 surfaces
+### Server functions (`requireAuth`) — 358 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -145,6 +146,9 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/auth-provider-credentials.ts`::deleteAuthProviderCredentialsFn | auth.manage |
 | `lib/server/functions/auth-provider-credentials.ts`::fetchAuthProviderCredentialsMaskedFn | auth.manage |
 | `lib/server/functions/auth-provider-credentials.ts`::fetchAuthProviderStatusFn | auth.manage |
+| `lib/server/functions/blocking.ts`::getPersonBlockStatusFn | people.view |
+| `lib/server/functions/blocking.ts`::blockPersonFn | people.manage |
+| `lib/server/functions/blocking.ts`::unblockPersonFn | people.manage |
 | `lib/server/functions/boards.ts`::fetchBoardsFn | board.manage |
 | `lib/server/functions/boards.ts`::fetchBoardFn | board.manage |
 | `lib/server/functions/boards.ts`::createBoardFn | board.manage |
@@ -182,6 +186,12 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/conversation-tags.ts`::deleteConversationTagFn | conversation.manage_tags |
 | `lib/server/functions/conversation-tags.ts`::addConversationTagFn | conversation.set_tags |
 | `lib/server/functions/conversation-tags.ts`::removeConversationTagFn | conversation.set_tags |
+| `lib/server/functions/conversation-views.ts`::listConversationViewsFn | conversation.view |
+| `lib/server/functions/conversation-views.ts`::createConversationViewFn | conversation.manage_views |
+| `lib/server/functions/conversation-views.ts`::updateConversationViewFn | conversation.manage_views |
+| `lib/server/functions/conversation-views.ts`::deleteConversationViewFn | conversation.manage_views |
+| `lib/server/functions/conversation-views.ts`::pinConversationViewFn | conversation.view |
+| `lib/server/functions/conversation-views.ts`::unpinConversationViewFn | conversation.view |
 | `lib/server/functions/conversation.ts`::sendConversationMessageFn | END_USER (any authenticated) |
 | `lib/server/functions/conversation.ts`::listConversationMessagesFn | END_USER (any authenticated) |
 | `lib/server/functions/conversation.ts`::markConversationReadFn | END_USER (any authenticated) |
@@ -190,7 +200,6 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/conversation.ts`::setAgentAvailabilityFn | conversation.view |
 | `lib/server/functions/conversation.ts`::mintConversationStreamTokenFn | END_USER (any authenticated) |
 | `lib/server/functions/conversation.ts`::deleteConversationMessageFn | END_USER (any authenticated) |
-| `lib/server/functions/conversation.ts`::getCannedRepliesFn | conversation.reply |
 | `lib/server/functions/conversation.ts`::listConversationsFn | conversation.view |
 | `lib/server/functions/conversation.ts`::listConversationsForUserFn | conversation.view |
 | `lib/server/functions/conversation.ts`::getConversationFn | conversation.view |
@@ -251,6 +260,11 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/integrations.ts`::updateMonitoredChannelFn | integration.manage |
 | `lib/server/functions/integrations.ts`::removeMonitoredChannelFn | integration.manage |
 | `lib/server/functions/link-preview.ts`::unfurlLinkFn | END_USER (any authenticated) |
+| `lib/server/functions/macros.ts`::listMacrosFn | conversation.reply |
+| `lib/server/functions/macros.ts`::createMacroFn | conversation.manage |
+| `lib/server/functions/macros.ts`::updateMacroFn | conversation.manage |
+| `lib/server/functions/macros.ts`::deleteMacroFn | conversation.manage |
+| `lib/server/functions/macros.ts`::applyMacroFn | conversation.reply |
 | `lib/server/functions/merge-suggestions.ts`::getMergeSuggestionsForPostFn | post.view_private |
 | `lib/server/functions/merge-suggestions.ts`::fetchMergeSuggestionSummaryFn | post.view_private |
 | `lib/server/functions/merge-suggestions.ts`::fetchMergeSuggestionCountsForPostsFn | post.view_private |
@@ -372,6 +386,15 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/subscriptions.ts`::unsubscribeFromPostFn | END_USER (any authenticated) |
 | `lib/server/functions/subscriptions.ts`::updateSubscriptionLevelFn | END_USER (any authenticated) |
 | `lib/server/functions/subscriptions.ts`::adminUpdateVoterSubscriptionFn | post.vote_on_behalf |
+| `lib/server/functions/teams.ts`::listTeamsFn | conversation.view |
+| `lib/server/functions/teams.ts`::listTeamsAdminFn | team.manage |
+| `lib/server/functions/teams.ts`::listTeamMembersFn | team.manage |
+| `lib/server/functions/teams.ts`::listAssignableTeammatesFn | team.manage |
+| `lib/server/functions/teams.ts`::createTeamFn | team.manage |
+| `lib/server/functions/teams.ts`::updateTeamFn | team.manage |
+| `lib/server/functions/teams.ts`::deleteTeamFn | team.manage |
+| `lib/server/functions/teams.ts`::setTeamMembersFn | team.manage |
+| `lib/server/functions/teams.ts`::assignConversationTeamFn | conversation.assign |
 | `lib/server/functions/uploads.ts`::getPresignedUploadUrlFn | post.create |
 | `lib/server/functions/uploads.ts`::getChangelogImageUploadUrlFn | changelog.manage |
 | `lib/server/functions/uploads.ts`::getPostImageUploadUrlFn | post.create |
@@ -589,7 +612,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-149 of 568 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+150 of 591 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
@@ -611,6 +634,7 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `lib/server/functions/embeds.ts`::getEmbedPreviewFn | server-fn |
 | `lib/server/functions/help-center.ts`::getPublicArticleBySlugFn | server-fn |
 | `lib/server/functions/help-center.ts`::getPublicCategoryBySlugFn | server-fn |
+| `lib/server/functions/help-center.ts`::listPopularPublicArticlesFn | server-fn |
 | `lib/server/functions/help-center.ts`::listPublicArticlesFn | server-fn |
 | `lib/server/functions/help-center.ts`::listPublicArticlesForCategoryFn | server-fn |
 | `lib/server/functions/help-center.ts`::listPublicCategoriesFn | server-fn |

@@ -15,6 +15,7 @@ import {
   gt,
   inArray,
   isNull,
+  isNotNull,
   desc,
   asc,
   sql,
@@ -32,15 +33,18 @@ import {
   type ConversationMessage,
   type PostSuggestion,
 } from '@/lib/server/db'
-import type {
-  ConversationId,
-  PrincipalId,
-  PostId,
-  ConversationTagId,
-  ConversationMessageId,
-  SegmentId,
-  CompanyId,
+import {
+  toUuid,
+  type ConversationId,
+  type PrincipalId,
+  type PostId,
+  type ConversationTagId,
+  type ConversationMessageId,
+  type SegmentId,
+  type CompanyId,
+  type TeamId,
 } from '@quackback/ids'
+import type { ConversationSort } from '@/lib/shared/conversation/views'
 import { aggregateReactions } from '@/lib/shared'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
 import { truncate } from '@/lib/shared/utils/string'
@@ -308,7 +312,10 @@ export function toConversationDTO(
   // Conversation labels (agent-only); empty when untagged.
   tags: ConversationTagDTO[] = [],
   // The end-conversation note (agent-only); callers pass null on visitor paths.
-  endNote: string | null = null
+  endNote: string | null = null,
+  // Snooze wake time (agent-only); callers pass null on visitor paths.
+  snoozedUntil: string | null = null,
+  assignedTeamId: string | null = null
 ): ConversationDTO {
   return {
     id: conversation.id,
@@ -332,6 +339,8 @@ export function toConversationDTO(
     // the app constrains writes to the taxonomy, so the cast is safe.
     endReason: (conversation.endReason as ConversationEndReason | null) ?? null,
     endNote,
+    snoozedUntil,
+    assignedTeamId,
     tags,
   }
 }
@@ -425,7 +434,9 @@ export async function conversationToDTO(
     unread,
     side === 'agent' ? (conversation.visitorEmail ?? null) : null,
     tagMap.get(conversation.id) ?? [],
-    side === 'agent' ? (conversation.endNote ?? null) : null
+    side === 'agent' ? (conversation.endNote ?? null) : null,
+    side === 'agent' ? (conversation.snoozedUntil?.toISOString() ?? null) : null,
+    side === 'agent' ? (conversation.assignedTeamId ?? null) : null
   )
 }
 
@@ -699,15 +710,143 @@ export interface ConversationListFilter {
   segmentIds?: SegmentId[]
   /** Restrict to conversations whose visitor principal belongs to this company. */
   companyId?: CompanyId
+  /** Per-team inbox: conversations assigned to this team. Applied via a raw
+   *  `assigned_team_id` predicate so the read stays decoupled from the sibling
+   *  team-assignment schema change; only set once teams exist. */
+  teamId?: TeamId
+  /** "Waiting" scope: only conversations a customer is currently waiting on
+   *  (waiting_since IS NOT NULL). */
+  waitingOnly?: boolean
   /** Restrict to a single visitor's conversations (the admin user profile). */
   visitorPrincipalId?: PrincipalId
   /** "Mentions" view: only conversations whose internal notes @-mention this
    *  principal. Always the requesting agent — resolved server-side from auth,
    *  never client-supplied (it would leak who-mentioned-whom). */
   mentionedPrincipalId?: PrincipalId
-  /** Cursor: lastMessageAt ISO string — fetch conversations older than it. */
+  /** Inbox ordering (default 'recent'). Keyset pagination adapts per sort. */
+  sort?: ConversationSort
+  /** Cursor: the previous page's last conversation id, re-resolved per sort. */
   before?: string
   limit?: number
+}
+
+/**
+ * The ordering contract for each sort, as pure data (column + direction +
+ * null handling). The query builder derives its ORDER BY and keyset cursor
+ * comparison from this, so the two can never diverge — and it is directly
+ * unit-testable without a database.
+ */
+export interface SortDescriptor {
+  primary: 'lastMessageAt' | 'createdAt' | 'waitingSince' | 'priorityRank'
+  direction: 'asc' | 'desc'
+}
+
+export function sortDescriptorFor(sort: ConversationSort = 'recent'): SortDescriptor {
+  switch (sort) {
+    case 'oldest':
+      return { primary: 'lastMessageAt', direction: 'asc' }
+    case 'created':
+      return { primary: 'createdAt', direction: 'desc' }
+    case 'waiting':
+      return { primary: 'waitingSince', direction: 'asc' }
+    case 'priority':
+      return { primary: 'priorityRank', direction: 'desc' }
+    case 'recent':
+    default:
+      return { primary: 'lastMessageAt', direction: 'desc' }
+  }
+}
+
+/** Numeric priority rank (text enum → orderable int) for the priority sort. */
+const PRIORITY_RANK: Record<string, number> = { urgent: 5, high: 4, medium: 3, low: 2, none: 1 }
+const priorityRankExpr = sql<number>`CASE ${conversations.priority} WHEN 'urgent' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END`
+
+/** ORDER BY clause list for a sort. `id` breaks ties so keyset never dupes/skips. */
+function orderByForSort(sort: ConversationSort) {
+  const d = sortDescriptorFor(sort)
+  const idTie = d.direction === 'asc' ? asc(conversations.id) : desc(conversations.id)
+  switch (d.primary) {
+    case 'priorityRank':
+      // Highest priority first, then most-recent activity, then id. No
+      // functional index backs the CASE rank: it intentionally full-sorts,
+      // bounded by inbox size (the result set is already status/team-scoped).
+      return [desc(priorityRankExpr), desc(conversations.lastMessageAt), desc(conversations.id)]
+    case 'waitingSince':
+      // Longest-waiting first; nobody-waiting (NULL) rows sit at the end.
+      return [sql`${conversations.waitingSince} ASC NULLS LAST`, asc(conversations.id)]
+    case 'createdAt':
+      return [
+        d.direction === 'asc' ? asc(conversations.createdAt) : desc(conversations.createdAt),
+        idTie,
+      ]
+    case 'lastMessageAt':
+    default:
+      return [
+        d.direction === 'asc'
+          ? asc(conversations.lastMessageAt)
+          : desc(conversations.lastMessageAt),
+        idTie,
+      ]
+  }
+}
+
+/**
+ * Keyset cursor comparison for a sort: rows strictly after the cursor row in
+ * the sort's order. The cursor is re-resolved from the DB (never a client
+ * string) so ties + sub-ms precision are exact. Mirrors the (column, id)
+ * composite idiom for every sort, including the waiting NULLS-LAST boundary and
+ * the priority-rank CASE.
+ */
+function cursorConditionForSort(sort: ConversationSort, c: Conversation) {
+  const d = sortDescriptorFor(sort)
+  switch (d.primary) {
+    case 'priorityRank': {
+      const rank = PRIORITY_RANK[c.priority] ?? 1
+      return or(
+        lt(priorityRankExpr, rank),
+        and(
+          eq(priorityRankExpr, rank),
+          or(
+            lt(conversations.lastMessageAt, c.lastMessageAt),
+            and(eq(conversations.lastMessageAt, c.lastMessageAt), lt(conversations.id, c.id))
+          )
+        )
+      )
+    }
+    case 'waitingSince': {
+      // waiting_since ASC NULLS LAST, id ASC. A cursor already in the NULL tail
+      // only precedes later NULL rows (by id); otherwise later non-NULL rows,
+      // same-instant id ties, then the whole NULL tail follow it.
+      if (!c.waitingSince)
+        return and(isNull(conversations.waitingSince), gt(conversations.id, c.id))
+      return or(
+        gt(conversations.waitingSince, c.waitingSince),
+        and(eq(conversations.waitingSince, c.waitingSince), gt(conversations.id, c.id)),
+        isNull(conversations.waitingSince)
+      )
+    }
+    case 'createdAt':
+      return d.direction === 'asc'
+        ? or(
+            gt(conversations.createdAt, c.createdAt),
+            and(eq(conversations.createdAt, c.createdAt), gt(conversations.id, c.id))
+          )
+        : or(
+            lt(conversations.createdAt, c.createdAt),
+            and(eq(conversations.createdAt, c.createdAt), lt(conversations.id, c.id))
+          )
+    case 'lastMessageAt':
+    default:
+      return d.direction === 'asc'
+        ? or(
+            gt(conversations.lastMessageAt, c.lastMessageAt),
+            and(eq(conversations.lastMessageAt, c.lastMessageAt), gt(conversations.id, c.id))
+          )
+        : or(
+            lt(conversations.lastMessageAt, c.lastMessageAt),
+            and(eq(conversations.lastMessageAt, c.lastMessageAt), lt(conversations.id, c.id))
+          )
+  }
 }
 
 export interface ConversationListPage {
@@ -721,19 +860,20 @@ export async function listConversationsForAgent(
   filter: ConversationListFilter = {}
 ): Promise<ConversationListPage> {
   const limit = Math.min(filter.limit ?? INBOX_PAGE_SIZE, 100)
-  // Keyset cursor = the previous page's last conversation id. Re-read its exact
-  // (lastMessageAt, id) from the DB rather than trusting a client-supplied
-  // timestamp string, so same-millisecond ties and sub-millisecond precision are
-  // handled deterministically (mirrors listMessages). An unknown id → first page,
-  // and a malformed cursor can no longer reach a date parse / 500 the list.
-  let cursor: { at: Date; id: ConversationId } | null = null
+  const sort = filter.sort ?? 'recent'
+  // Keyset cursor = the previous page's last conversation id. Re-read the exact
+  // row from the DB rather than trusting a client-supplied string, so the sort's
+  // ordering columns (which vary per sort) + ties are handled deterministically
+  // (mirrors listMessages). An unknown id → first page, and a malformed cursor
+  // can no longer reach a date parse / 500 the list.
+  let cursor: Conversation | null = null
   if (filter.before) {
     const [row] = await db
-      .select({ at: conversations.lastMessageAt, id: conversations.id })
+      .select()
       .from(conversations)
       .where(eq(conversations.id, filter.before as ConversationId))
       .limit(1)
-    if (row) cursor = { at: row.at, id: row.id }
+    if (row) cursor = row
   }
   const search = filter.search?.trim()
   // Match the visitor's name or any non-deleted message content. EXISTS keeps
@@ -770,6 +910,14 @@ export async function listConversationsForAgent(
           ? eq(conversations.assignedAgentPrincipalId, filter.assignedAgentPrincipalId)
           : undefined,
         filter.unassignedOnly ? isNull(conversations.assignedAgentPrincipalId) : undefined,
+        // Per-team inbox. A raw predicate on assigned_team_id keeps this read
+        // decoupled from the sibling team-assignment schema change; only set
+        // once teams exist, so the default inbox never touches the column.
+        filter.teamId
+          ? sql`${conversations}.assigned_team_id = ${toUuid(filter.teamId)}`
+          : undefined,
+        // "Waiting" scope: a customer is currently waiting on a reply.
+        filter.waitingOnly ? isNotNull(conversations.waitingSince) : undefined,
         searchCondition,
         // Label filter: conversations carrying ANY of the selected labels. A
         // DISTINCT subquery keeps the select shape (conversations only).
@@ -850,17 +998,12 @@ export async function listConversationsForAgent(
                 )
             )
           : undefined,
-        cursor
-          ? or(
-              lt(conversations.lastMessageAt, cursor.at),
-              and(eq(conversations.lastMessageAt, cursor.at), lt(conversations.id, cursor.id))
-            )
-          : undefined
+        // Keyset comparison for the active sort (re-resolved cursor row). id is
+        // always the final tiebreak so a page boundary never dupes or skips.
+        cursor ? cursorConditionForSort(sort, cursor) : undefined
       )
     )
-    // desc(id) tiebreaker makes same-lastMessageAt ordering deterministic so the
-    // composite keyset above never drops or duplicates a row at a page boundary.
-    .orderBy(desc(conversations.lastMessageAt), desc(conversations.id))
+    .orderBy(...orderByForSort(sort))
     .limit(limit + 1)
 
   const hasMore = rows.length > limit
@@ -916,7 +1059,9 @@ export async function listConversationsForAgent(
         unreadMap.get(c.id) ?? 0,
         c.visitorEmail ?? null,
         tagMap.get(c.id) ?? [],
-        c.endNote ?? null
+        c.endNote ?? null,
+        c.snoozedUntil?.toISOString() ?? null,
+        c.assignedTeamId ?? null
       )
     ),
     hasMore,

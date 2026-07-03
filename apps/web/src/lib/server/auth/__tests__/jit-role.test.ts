@@ -26,7 +26,11 @@ const mockRecordAuditEvent = vi.fn()
 // provider id rather than a hardcoded 'sso'.
 const mockEq = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+// Spread the real module (lazy db proxy; importing is safe) and override only
+// what these tests drive, so the mock never needs re-teaching as the factory's
+// import graph grows (see lib/server/__tests__/README.md).
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: { findFirst: (...args: unknown[]) => mockFindFirst(...args) },
@@ -34,6 +38,8 @@ vi.mock('@/lib/server/db', () => ({
       user: { findFirst: (...args: unknown[]) => mockUserFindFirst(...args) },
     },
     update: () => ({ set: mockSet, where: mockWhere }),
+    // Default-team enrollment lookup: resolves empty (no default team seeded).
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
     insert: () => ({
       values: (...args: unknown[]) => {
         mockInsertValues(...args)

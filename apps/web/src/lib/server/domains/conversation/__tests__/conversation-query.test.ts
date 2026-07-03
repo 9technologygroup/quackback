@@ -79,8 +79,11 @@ vi.mock('@/lib/server/db', () => {
     and: vi.fn(),
     or: vi.fn(),
     lt: vi.fn(),
+    gt: vi.fn(),
     isNull: vi.fn(),
+    isNotNull: vi.fn(),
     desc: vi.fn(),
+    asc: vi.fn(),
     sql: vi.fn(),
     inArray: vi.fn((_col: unknown, values: unknown[]) => {
       inArrayCalls.push(values)
@@ -98,8 +101,9 @@ import {
   listConversationsForAgent,
   resolveVisitorConversation,
   enrichMessagesForAgent,
+  sortDescriptorFor,
 } from '../conversation.query'
-import { isNull, eq } from '@/lib/server/db'
+import { isNull, isNotNull, eq } from '@/lib/server/db'
 
 const visitorId = 'principal_visitor' as PrincipalId
 const agentId = 'principal_agent' as PrincipalId
@@ -424,6 +428,47 @@ describe('listConversationsForAgent company filter', () => {
     const calls = vi.mocked(eq).mock.calls
     expect(calls.some((c) => c[1] === companyId)).toBe(true)
     expect(calls.some((c) => c[1] === 'open')).toBe(true)
+  })
+})
+
+describe('sortDescriptorFor', () => {
+  it('maps every sort to its ordering contract', () => {
+    expect(sortDescriptorFor('recent')).toEqual({
+      primary: 'lastMessageAt',
+      direction: 'desc',
+    })
+    expect(sortDescriptorFor('oldest')).toEqual({
+      primary: 'lastMessageAt',
+      direction: 'asc',
+    })
+    expect(sortDescriptorFor('created')).toEqual({
+      primary: 'createdAt',
+      direction: 'desc',
+    })
+    expect(sortDescriptorFor('waiting')).toEqual({
+      primary: 'waitingSince',
+      direction: 'asc',
+    })
+    expect(sortDescriptorFor('priority')).toEqual({
+      primary: 'priorityRank',
+      direction: 'desc',
+    })
+  })
+
+  it('defaults to the recent sort', () => {
+    expect(sortDescriptorFor()).toEqual(sortDescriptorFor('recent'))
+  })
+})
+
+describe('listConversationsForAgent waiting filter', () => {
+  it('adds a "waiting_since IS NOT NULL" condition for the waiting scope', async () => {
+    await listConversationsForAgent({ waitingOnly: true })
+    expect(isNotNull).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not constrain by waiting by default', async () => {
+    await listConversationsForAgent({})
+    expect(isNotNull).not.toHaveBeenCalled()
   })
 })
 

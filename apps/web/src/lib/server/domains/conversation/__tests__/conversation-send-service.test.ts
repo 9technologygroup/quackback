@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PrincipalId, ConversationId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
-import { ValidationError } from '@/lib/shared/errors'
+import { ValidationError, ForbiddenError } from '@/lib/shared/errors'
 
 const insertedConversations: Record<string, unknown>[] = []
 const insertedMessages: Record<string, unknown>[] = []
@@ -36,6 +36,11 @@ vi.mock('@/lib/server/realtime/conversation-channels', () => ({
 vi.mock('../routing', () => ({
   routeConversation: vi.fn(async () => ({ assignedPrincipalId: 'principal_agent' })),
 }))
+
+// The visitor-send funnel guards on isBlocked; default to not-blocked and let
+// individual tests override.
+const blockingMock = vi.hoisted(() => ({ isBlocked: vi.fn(async () => false) }))
+vi.mock('@/lib/server/domains/principals/blocking', () => blockingMock)
 
 // config getters validate the full env (absent in tests); provide just what the
 // attachment URL check reads.
@@ -164,6 +169,16 @@ describe('sendVisitorMessage validation', () => {
     await expect(
       sendVisitorMessage({ content: huge }, { principalId: visitor }, visitorActor)
     ).rejects.toBeInstanceOf(ValidationError)
+    expect(insertedMessages).toHaveLength(0)
+  })
+
+  // Defense in depth: the shared visitor-send seam refuses a blocked visitor even
+  // if a future ingress channel forgets its own pre-check. No message is written.
+  it('refuses a blocked visitor at the shared seam', async () => {
+    blockingMock.isBlocked.mockResolvedValueOnce(true)
+    await expect(
+      sendVisitorMessage({ content: 'Hello there' }, { principalId: visitor }, visitorActor)
+    ).rejects.toBeInstanceOf(ForbiddenError)
     expect(insertedMessages).toHaveLength(0)
   })
 })

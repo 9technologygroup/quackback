@@ -15,6 +15,7 @@ import {
   sql,
 } from '@/lib/server/db'
 import { ensurePrincipalForUser } from '@/lib/server/domains/principals/principal.factory'
+import { isBlocked } from '@/lib/server/domains/principals/blocking'
 import { getWidgetConfig, getWidgetSecret } from '@/lib/server/domains/settings/settings.widget'
 import { getAllUserVotedPostIds } from '@/lib/server/domains/posts/post.public'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
@@ -340,6 +341,14 @@ export const Route = createFileRoute('/api/widget/identify')({
               targetDisplayName: userRecord.name || 'User',
             })
           }
+        }
+
+        // Re-registration prevention (support platform §4.6): a blocked person
+        // cannot mint a session by identifying. Checked AFTER the previousToken
+        // merge so a block inherited from a blocked anonymous session (via the
+        // fill-if-empty repoint step) is caught too.
+        if (await isBlocked(principalId)) {
+          return jsonError('BLOCKED', 'This account is blocked.', 403)
         }
 
         // Find/create session and fetch voted posts in parallel

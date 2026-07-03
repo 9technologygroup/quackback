@@ -14,49 +14,12 @@ import {
   updateConversationTagFn,
   deleteConversationTagFn,
 } from '@/lib/server/functions/conversation-tags'
-import { cn } from '@/lib/shared/utils'
+import { ColorSwatches, DEFAULT_TAG_COLOR } from '@/components/shared/color-swatches'
 
 const CONVERSATION_TAGS_KEY = ['admin', 'inbox', 'conversation-tags'] as const
 
-// The palette offered when creating / recoloring a label. The first entry is the
-// service-side default, so "no choice" matches what the server would pick anyway.
-const TAG_COLORS = [
-  '#6b7280',
-  '#ef4444',
-  '#f59e0b',
-  '#eab308',
-  '#10b981',
-  '#3b82f6',
-  '#8b5cf6',
-  '#ec4899',
-] as const
-const DEFAULT_TAG_COLOR = TAG_COLORS[0]
-
 /** The slice of the thread query cache this editor writes (it owns `tags`). */
 type ThreadCache = { conversation: ConversationDTO; messages: unknown[]; hasMore?: boolean }
-
-/** A compact swatch row for picking a label color. */
-function ColorSwatches({ value, onChange }: { value: string; onChange: (color: string) => void }) {
-  return (
-    <div className="flex flex-wrap gap-1">
-      {TAG_COLORS.map((c) => (
-        <button
-          key={c}
-          type="button"
-          aria-label={`Color ${c}`}
-          onClick={() => onChange(c)}
-          className={cn(
-            'h-4 w-4 rounded-full ring-offset-1 ring-offset-background transition',
-            value.toLowerCase() === c.toLowerCase()
-              ? 'ring-2 ring-foreground/60'
-              : 'hover:scale-110'
-          )}
-          style={{ backgroundColor: c }}
-        />
-      ))}
-    </div>
-  )
-}
 
 /**
  * Inline label editor for a conversation: the current labels as removable chips

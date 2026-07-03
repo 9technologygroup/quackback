@@ -24,6 +24,11 @@ import { ConversationTagsEditor } from './conversation-tags-editor'
 import { StatusControl } from './status-control'
 import { NoEmailBadge } from './channel-badge'
 import { CompanyCard } from './company-card'
+import {
+  BlockPersonControl,
+  usePersonBlockStatus,
+} from '@/components/admin/users/block-person-control'
+import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -103,6 +108,7 @@ export function ConversationDetailPanel({
 }) {
   const visitorPrincipalId = conversation.visitor.principalId
   const name = conversation.visitor.displayName ?? 'Visitor'
+  const { blocked: visitorBlocked } = usePersonBlockStatus(visitorPrincipalId)
   // The panel is `hidden xl:flex`; only fetch its data when it's actually shown
   // so smaller viewports don't pay for an invisible sidebar.
   const isVisible = useMediaQuery('(min-width: 1280px)')
@@ -183,6 +189,11 @@ export function ConversationDetailPanel({
                   <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     Anonymous <NoEmailBadge />
                   </p>
+                )}
+                {visitorBlocked && (
+                  <Badge variant="destructive" className="mt-1 text-[10px]">
+                    Blocked
+                  </Badge>
                 )}
               </div>
             </div>
@@ -269,6 +280,7 @@ export function ConversationDetailPanel({
               <StatusControl
                 conversationId={conversation.id}
                 status={conversation.status}
+                snoozedUntil={conversation.snoozedUntil}
                 onChanged={onChanged}
               />
             </Row>
@@ -310,6 +322,15 @@ export function ConversationDetailPanel({
                   </span>
                 </span>
               </Row>
+            )}
+            {/* Block / Unblock the person on the other side of the conversation
+                — rejects their future messages and re-registration. */}
+            {visitorPrincipalId && (
+              <BlockPersonControl
+                principalId={visitorPrincipalId}
+                personName={conversation.visitor.displayName}
+                className="w-full"
+              />
             )}
           </div>
 

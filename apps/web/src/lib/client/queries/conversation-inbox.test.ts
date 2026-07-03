@@ -19,6 +19,9 @@ vi.mock('@/lib/server/functions/conversation-tags', () => ({
 vi.mock('@/lib/server/functions/conversation-segments', () => ({
   fetchInboxSegmentsWithCountsFn: vi.fn(),
 }))
+vi.mock('@/lib/server/functions/conversation-views', () => ({
+  listConversationViewsFn: vi.fn(),
+}))
 
 import { conversationInboxQueries } from './conversation-inbox'
 
@@ -63,6 +66,56 @@ describe('conversationInboxQueries key parity', () => {
         'company_z' as never
       ).queryKey
     ).toEqual([...base, 'company_z'])
+  })
+
+  it('appends a non-default sort before the company, and omits the default', () => {
+    const base = ['admin', 'inbox', 'conversations', 'view:all', 'open', 'all', '']
+    // Default 'recent' leaves the key byte-identical (parity preserved).
+    expect(
+      conversationInboxQueries.conversationList(
+        { kind: 'view', view: 'all' },
+        'open',
+        'all',
+        '',
+        undefined,
+        'recent'
+      ).queryKey
+    ).toEqual(base)
+    expect(
+      conversationInboxQueries.conversationList(
+        { kind: 'view', view: 'all' },
+        'open',
+        'all',
+        '',
+        undefined,
+        'waiting'
+      ).queryKey
+    ).toEqual([...base, 'sort:waiting'])
+    expect(
+      conversationInboxQueries.conversationList(
+        { kind: 'view', view: 'all' },
+        'open',
+        'all',
+        '',
+        'company_z' as never,
+        'oldest'
+      ).queryKey
+    ).toEqual([...base, 'sort:oldest', 'company_z'])
+  })
+
+  it('keys a custom view by its id under the conversations prefix', () => {
+    expect(
+      conversationInboxQueries.conversationList(
+        { kind: 'custom', viewId: 'conversation_view_v' as never },
+        'all',
+        'all',
+        ''
+      ).queryKey
+    ).toEqual(['admin', 'inbox', 'conversations', 'custom:conversation_view_v', 'all', 'all', ''])
+  })
+
+  it('views key matches agentViews()', () => {
+    expect(conversationInboxQueries.views().queryKey).toEqual(['admin', 'inbox', 'views'])
   })
 
   it('thread key matches the legacy thread key', () => {

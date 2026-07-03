@@ -24,8 +24,16 @@ import {
   type ConversationSystemEvent,
 } from '@/lib/server/db'
 import { isTeamMember } from '@/lib/shared/roles'
-import type { ConversationAttachment } from '@/lib/server/db'
-import type { ConversationId, ConversationMessageId, PrincipalId, SegmentId } from '@quackback/ids'
+import type { ConversationAttachment, Team } from '@/lib/server/db'
+import { getTeam } from '@/lib/server/domains/teams'
+import { isBlocked } from '@/lib/server/domains/principals/blocking'
+import type {
+  ConversationId,
+  ConversationMessageId,
+  PrincipalId,
+  SegmentId,
+  TeamId,
+} from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
 import { isTrustedAttachmentUrl } from '@/lib/server/storage/trusted-url'
 import {
@@ -64,6 +72,7 @@ import {
   notifyVisitorMessage,
   notifyAgentReply,
   notifyConversationStarted,
+  notifyTeamAssigned,
 } from './conversation.notify'
 import { resolveReplyRecipient } from './conversation.recipient'
 import { realEmail } from '@/lib/shared/anonymous-email'
@@ -233,6 +242,12 @@ export async function sendVisitorMessage(
   actor: Actor,
   contentJson?: TiptapContent | null
 ): Promise<SendVisitorMessageResult> {
+  // Defense in depth: every visitor-ingress channel funnels through here, so a
+  // blocked visitor is refused at the shared seam even if a future channel
+  // forgets its own pre-check. A single indexed PK read on a low-volume path.
+  if (await isBlocked(author.principalId)) {
+    throw new ForbiddenError('BLOCKED', 'You are not able to send messages here.')
+  }
   const attachments = validateAttachments(input.attachments)
   // Rich-composer doc (inline embeds/images): sanitized on write, like the agent
   // path — but no mention extraction (a visitor carries no team @-mentions).
@@ -930,6 +945,14 @@ async function emitAssignmentSystemMessage(
   })
 }
 
+/** "Conversation assigned to the <team> team" status event (author-less). */
+async function emitTeamAssignmentSystemMessage(
+  conversationId: ConversationId,
+  teamName: string
+): Promise<void> {
+  await emitSystemMessage(conversationId, `Conversation assigned to the ${teamName} team`)
+}
+
 /**
  * Auto-assign a currently-unassigned conversation to an active agent via the
  * routing strategy, announce it, and broadcast the update. Shared by new-
@@ -998,6 +1021,76 @@ export async function assignConversation(
     await emitAssignmentSystemMessage(conversationId, agentPrincipalId)
   }
   if (updated.assignedAgentPrincipalId !== existing.assignedAgentPrincipalId) {
+    void emitConversationAssigned(actor, updated, existing.assignedAgentPrincipalId)
+  }
+  if (wake) void emitConversationStatusChanged(actor, updated, existing.status)
+  return updated
+}
+
+/**
+ * Agent action: assign a conversation to a team, or pass null to clear the team
+ * assignment. Independent of the agent assignee (§4.12): this never touches the
+ * agent column except when the team's assignment_method distributes the
+ * conversation to a specific online member (round_robin / balanced), which sets
+ * that member as the assignee. Triage-wake matches assignConversation: a
+ * non-assignee touching a snoozed thread wakes it.
+ */
+export async function assignTeam(
+  conversationId: ConversationId,
+  teamId: TeamId | null,
+  actor: Actor
+): Promise<Conversation> {
+  const decision = canActAsAgent(actor)
+  if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
+  const existing = await loadConversationOr404(conversationId)
+
+  // Validate the target (throws NotFound if missing/deleted) and pick a member
+  // when the team routes automatically.
+  let team: Team | null = null
+  let distributedAgentId: PrincipalId | null = null
+  if (teamId) {
+    team = await getTeam(teamId)
+    const { distributeToTeamMember } = await import('./routing')
+    distributedAgentId = await distributeToTeamMember(team)
+  }
+
+  const wake = shouldWakeSnoozedOnTriage(
+    existing.status,
+    actor.principalId,
+    existing.assignedAgentPrincipalId
+  )
+  const [updated] = await db
+    .update(conversations)
+    .set({
+      assignedTeamId: teamId,
+      // Distribution sets an assignee; a null pick leaves the agent untouched
+      // (assigning a team never clears the existing agent).
+      ...(distributedAgentId ? { assignedAgentPrincipalId: distributedAgentId } : {}),
+      ...(wake ? { status: 'open' as const, snoozedUntil: null } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(conversations.id, conversationId))
+    .returning()
+
+  const dto = await conversationToDTO(updated, 'agent')
+  publishConversationUpdate(conversationId, dto)
+
+  if (team) {
+    await emitTeamAssignmentSystemMessage(conversationId, team.name)
+  }
+  if (distributedAgentId && distributedAgentId !== existing.assignedAgentPrincipalId) {
+    await emitAssignmentSystemMessage(conversationId, distributedAgentId)
+  }
+
+  // Ping the team's members (in-app bell), excluding the actor.
+  if (teamId && teamId !== existing.assignedTeamId) {
+    void notifyTeamAssigned({ conversation: updated, teamId, actorPrincipalId: actor.principalId })
+  }
+
+  if (
+    updated.assignedTeamId !== existing.assignedTeamId ||
+    updated.assignedAgentPrincipalId !== existing.assignedAgentPrincipalId
+  ) {
     void emitConversationAssigned(actor, updated, existing.assignedAgentPrincipalId)
   }
   if (wake) void emitConversationStatusChanged(actor, updated, existing.status)

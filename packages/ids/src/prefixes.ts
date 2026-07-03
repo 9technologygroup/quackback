@@ -43,6 +43,14 @@ export const ID_PREFIXES = {
   // Companies (B2B customer accounts)
   company: 'company',
 
+  // Teams (inbox assignment groups)
+  team: 'team',
+  team_member: 'team_member',
+
+  // Inbox productivity
+  macro: 'macro',
+  conversation_view: 'conversation_view',
+
   // Assistant (in-product AI agent)
   assistant_involvement: 'assistant_involvement',
 

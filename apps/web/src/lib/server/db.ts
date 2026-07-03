@@ -168,6 +168,11 @@ export {
   // Schema tables - companies
   companies,
   companiesRelations,
+  // Schema tables - teams
+  teams,
+  teamsRelations,
+  teamMembers,
+  teamMembersRelations,
   // Schema tables - integrations
   integrationEventMappings,
   integrationEventMappingsRelations,
@@ -200,9 +205,14 @@ export {
   conversationMessageReactionsRelations,
   conversationMessageFlags,
   conversationMessageFlagsRelations,
+  // Schema tables - custom saved inbox views + per-user pins
+  conversationViews,
+  conversationViewPins,
   // Schema tables - channel identities + outbound-email threading
   channelIdentities,
   conversationOutboundEmails,
+  // Schema tables - macros (canned replies + bundled actions)
+  macros,
   // Schema tables - notifications
   inAppNotifications,
   inAppNotificationsRelations,
@@ -320,6 +330,10 @@ export type {
   AssistantInvolvementStatus,
   AssistantInvolvementTrigger,
   AssistantHandoffReason,
+  MacroScope,
+  MacroPriority,
+  MacroSnoozePreset,
+  MacroAction,
 } from '@quackback/db'
 export type { ServiceMetadata } from '@quackback/db'
 export type { IdentityProviderAttributeMapping } from '@quackback/db'

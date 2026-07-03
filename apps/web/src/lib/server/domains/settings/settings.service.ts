@@ -846,7 +846,7 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
         // the stored hero-image key is resolved to a public URL.
         home: publicHomeConfig(widgetConfig.home),
         // Client-safe messenger config — the widget gates its messenger tab on
-        // messenger.enabled, so this must be projected here (cannedReplies stay
+        // messenger.enabled, so this must be projected here (routing stays
         // agent-only).
         messenger: publicMessengerConfig(widgetConfig.messenger ?? DEFAULT_MESSENGER_CONFIG),
       },

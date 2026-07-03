@@ -24,7 +24,7 @@ export function publicHomeConfig(home: WidgetHomeConfig | undefined): WidgetHome
   return { ...rest, heroImageUrl: getPublicUrlOrNull(heroImageKey) }
 }
 
-/** Drop agent-only fields (cannedReplies) from a messenger config for public
+/** Drop agent-only fields (routing) from a messenger config for public
  *  exposure. Allowlist projection: new fields are excluded unless added here.
  *  Office hours are NOT projected here — the widget reads availability from the
  *  presence snapshot (getConversationPresenceFn), which resolves the one canonical
@@ -98,7 +98,7 @@ export async function getPublicWidgetConfig(): Promise<PublicWidgetConfig> {
       // Home customisation is client-safe (greeting, hero style, quick links);
       // the stored hero-image key is resolved to a public URL.
       home: publicHomeConfig(config.home),
-      // Project only client-safe messenger fields; cannedReplies is agent-only.
+      // Project only client-safe messenger fields; routing is agent-only.
       messenger: publicMessengerConfig(config.messenger ?? DEFAULT_MESSENGER_CONFIG),
     }
   } catch (error) {

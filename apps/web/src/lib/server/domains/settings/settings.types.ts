@@ -435,16 +435,9 @@ export interface UpdateDeveloperConfigInput {
  * Controls the embeddable feedback widget behavior
  * Note: widgetSecret is stored in its own DB column, NOT here
  */
-/** An agent saved reply (canned response). */
-export interface CannedReply {
-  id: string
-  title: string
-  body: string
-}
-
 /**
  * Messenger settings (sub-section of WidgetConfig). Most fields are client-safe
- * and projected into PublicMessengerConfig; `cannedReplies` is agent-only and is
+ * and projected into PublicMessengerConfig; agent-only fields (routing) are
  * stripped from the public projection (see getPublicWidgetConfig).
  */
 /**
@@ -474,6 +467,13 @@ export interface MessengerConfig {
   offlineMessage?: string
   /** Heading shown for the messenger tab/view (falls back to the workspace name). */
   teamName?: string
+  /**
+   * When true, a visitor cannot reply to a CLOSED conversation from the
+   * Messenger — the send is refused instead of reopening the thread (support
+   * platform §4.3). Default off (undefined = off), where a reply reopens. Email
+   * replies always reopen regardless; this applies to the Messenger only.
+   */
+  preventRepliesWhenClosed?: boolean
   /** AI-assistant display identity (client-safe). */
   assistant?: AssistantIdentityConfig
   /**
@@ -483,8 +483,6 @@ export interface MessengerConfig {
    * code writes it and it is not projected into the public widget config.
    */
   officeHours?: OfficeHoursConfig
-  /** Agent-only saved replies — NEVER projected into the public widget config. */
-  cannedReplies?: CannedReply[]
   /** Conversation routing: auto-assign new conversations to an active agent.
    *  Agent-only; never projected into the public config. */
   routing?: {
@@ -495,10 +493,7 @@ export interface MessengerConfig {
 }
 
 /** Client-safe subset of MessengerConfig (drops agent-only + deprecated fields). */
-export type PublicMessengerConfig = Omit<
-  MessengerConfig,
-  'cannedReplies' | 'routing' | 'officeHours'
->
+export type PublicMessengerConfig = Omit<MessengerConfig, 'routing' | 'officeHours'>
 
 /**
  * Types of card the widget Home surface can show. Built-in types route to a
@@ -594,7 +589,7 @@ export type PublicWidgetConfig = Pick<
 > & {
   /** Always true: identify requires a backend-signed ssoToken (GH issue #300). */
   hmacRequired?: boolean
-  /** Client-safe messenger config (no agent-only fields like cannedReplies). */
+  /** Client-safe messenger config (no agent-only fields like routing). */
   messenger?: PublicMessengerConfig
 }
 

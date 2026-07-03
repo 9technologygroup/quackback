@@ -93,6 +93,7 @@ export const PERMISSIONS = {
   CONVERSATION_SET_STATUS: 'conversation.set_status',
   CONVERSATION_SET_TAGS: 'conversation.set_tags',
   CONVERSATION_MANAGE_TAGS: 'conversation.manage_tags',
+  CONVERSATION_MANAGE_VIEWS: 'conversation.manage_views',
   CONVERSATION_SET_ATTRIBUTES: 'conversation.set_attributes',
 
   // analytics
@@ -294,6 +295,7 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   { key: PERMISSIONS.CONVERSATION_SET_STATUS, category: 'conversation' },
   { key: PERMISSIONS.CONVERSATION_SET_TAGS, category: 'conversation' },
   { key: PERMISSIONS.CONVERSATION_MANAGE_TAGS, category: 'conversation' },
+  { key: PERMISSIONS.CONVERSATION_MANAGE_VIEWS, category: 'conversation' },
   { key: PERMISSIONS.CONVERSATION_SET_ATTRIBUTES, category: 'conversation' },
   { key: PERMISSIONS.ANALYTICS_VIEW, category: 'analytics' },
   { key: PERMISSIONS.INTEGRATION_VIEW, category: 'integration' },

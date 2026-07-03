@@ -142,6 +142,18 @@ export type CompanyId = TypeId<'company'>
 /** Assistant involvement ID - e.g., assistant_involvement_01h455vb4pex5vsknk084sn02q */
 export type AssistantInvolvementId = TypeId<'assistant_involvement'>
 
+/** Team ID - e.g., team_01h455vb4pex5vsknk084sn02q */
+export type TeamId = TypeId<'team'>
+
+/** Team membership ID - e.g., team_member_01h455vb4pex5vsknk084sn02q */
+export type TeamMemberId = TypeId<'team_member'>
+
+/** Macro (canned reply with actions) ID - e.g., macro_01h455vb4pex5vsknk084sn02q */
+export type MacroId = TypeId<'macro'>
+
+/** Saved inbox view ID - e.g., conversation_view_01h455vb4pex5vsknk084sn02q */
+export type ConversationViewId = TypeId<'conversation_view'>
+
 // ============================================
 // Feedback Aggregation Entity IDs
 // ============================================
@@ -263,6 +275,10 @@ export interface EntityIdMap {
   page_view: PageViewId
   company: CompanyId
   assistant_involvement: AssistantInvolvementId
+  team: TeamId
+  team_member: TeamMemberId
+  macro: MacroId
+  conversation_view: ConversationViewId
   feedback_source: FeedbackSourceId
   raw_feedback: RawFeedbackItemId
   feedback_signal: FeedbackSignalId

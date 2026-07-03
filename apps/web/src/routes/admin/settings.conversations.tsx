@@ -2,8 +2,6 @@ import { useState, useTransition } from 'react'
 import { createFileRoute, useRouter, Navigate } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { ChatBubbleLeftRightIcon, ArrowPathIcon } from '@heroicons/react/24/solid'
-import { PlusIcon, TrashIcon } from '@heroicons/react/24/outline'
-import type { CannedReply } from '@/lib/server/domains/settings/settings.types'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { useQuery } from '@tanstack/react-query'
 import { settingsQueries } from '@/lib/client/queries/settings'
@@ -12,11 +10,11 @@ import { getEmailChannelStatusFn } from '@/lib/server/functions/settings'
 import { BackLink } from '@/components/ui/back-link'
 import { PageHeader } from '@/components/shared/page-header'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
+import { MacrosManager } from '@/components/admin/conversation/macros-manager'
 import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
-import { Button } from '@/components/ui/button'
 
 export const Route = createFileRoute('/admin/settings/conversations')({
   loader: async ({ context }) => {
@@ -60,24 +58,15 @@ function ConversationsSettingsPage() {
   )
 
   const [enabled, setEnabled] = useState(messengerConfig?.enabled ?? false)
+  const [preventRepliesWhenClosed, setPreventRepliesWhenClosed] = useState(
+    messengerConfig?.preventRepliesWhenClosed ?? false
+  )
   const [welcomeMessage, setWelcomeMessage] = useState(messengerConfig?.welcomeMessage ?? '')
   const [offlineMessage, setOfflineMessage] = useState(messengerConfig?.offlineMessage ?? '')
   const [teamName, setTeamName] = useState(messengerConfig?.teamName ?? '')
-  const [cannedReplies, setCannedReplies] = useState<CannedReply[]>(
-    messengerConfig?.cannedReplies ?? []
-  )
   const [routingEnabled, setRoutingEnabled] = useState(messengerConfig?.routing?.enabled ?? false)
 
   const widgetEnabled = config.enabled
-
-  function saveCannedReplies(next: CannedReply[]) {
-    setCannedReplies(next)
-    // Persist only well-formed rows (both fields filled).
-    const cleaned = next
-      .map((r) => ({ id: r.id, title: r.title.trim(), body: r.body.trim() }))
-      .filter((r) => r.title && r.body)
-    void persist('cannedReplies', { messenger: { cannedReplies: cleaned } })
-  }
 
   async function persist(
     field: string,
@@ -114,6 +103,13 @@ function ConversationsSettingsPage() {
     } finally {
       setSavingField(null)
     }
+  }
+
+  const onTogglePreventRepliesClosed = (checked: boolean) => {
+    setPreventRepliesWhenClosed(checked)
+    persist('preventClosed', { messenger: { preventRepliesWhenClosed: checked } }, () =>
+      setPreventRepliesWhenClosed(!checked)
+    )
   }
 
   const onToggleRouting = (checked: boolean) => {
@@ -169,6 +165,29 @@ function ConversationsSettingsPage() {
               checked={enabled}
               onCheckedChange={onToggleEnabled}
               disabled={isBusy}
+            />
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between border-t border-border/40 py-1 pt-4">
+          <div className="pr-4">
+            <Label htmlFor="prevent-replies-closed" className="text-sm font-medium cursor-pointer">
+              Prevent replies to closed conversations
+            </Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Once a conversation is closed, visitors start a new one instead of reopening it from
+              the Messenger. Replies that arrive by email always reopen the conversation.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {savingField === 'preventClosed' && (
+              <ArrowPathIcon className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+            )}
+            <Switch
+              id="prevent-replies-closed"
+              checked={preventRepliesWhenClosed}
+              onCheckedChange={onTogglePreventRepliesClosed}
+              disabled={isBusy || !enabled}
             />
           </div>
         </div>
@@ -266,71 +285,10 @@ function ConversationsSettingsPage() {
       </SettingsCard>
 
       <SettingsCard
-        title="Saved replies"
-        description="Reusable responses agents can insert into a reply with one click."
+        title="Macros"
+        description="Reusable replies with variables and bundled actions agents can apply from the composer."
       >
-        <div className="space-y-3">
-          {cannedReplies.length === 0 && (
-            <p className="text-sm text-muted-foreground">No saved replies yet.</p>
-          )}
-          {cannedReplies.map((reply, i) => (
-            <div
-              key={reply.id}
-              className="flex items-start gap-2 rounded-lg border border-border/60 p-2.5"
-            >
-              <div className="flex-1 space-y-1.5">
-                <Input
-                  value={reply.title}
-                  maxLength={80}
-                  placeholder="Title (e.g. Greeting)"
-                  onChange={(e) =>
-                    setCannedReplies((prev) =>
-                      prev.map((r, idx) => (idx === i ? { ...r, title: e.target.value } : r))
-                    )
-                  }
-                  onBlur={() => saveCannedReplies(cannedReplies)}
-                  disabled={isBusy}
-                />
-                <Textarea
-                  value={reply.body}
-                  maxLength={2000}
-                  rows={2}
-                  placeholder="Reply text…"
-                  onChange={(e) =>
-                    setCannedReplies((prev) =>
-                      prev.map((r, idx) => (idx === i ? { ...r, body: e.target.value } : r))
-                    )
-                  }
-                  onBlur={() => saveCannedReplies(cannedReplies)}
-                  disabled={isBusy}
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => saveCannedReplies(cannedReplies.filter((_, idx) => idx !== i))}
-                disabled={isBusy}
-                className="mt-1 rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors"
-                aria-label="Remove saved reply"
-              >
-                <TrashIcon className="h-4 w-4" />
-              </button>
-            </div>
-          ))}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={isBusy}
-            onClick={() =>
-              setCannedReplies((prev) => [
-                ...prev,
-                { id: crypto.randomUUID(), title: '', body: '' },
-              ])
-            }
-          >
-            <PlusIcon className="h-4 w-4" /> Add reply
-          </Button>
-        </div>
+        <MacrosManager />
       </SettingsCard>
 
       <EmailChannelStatusCard />

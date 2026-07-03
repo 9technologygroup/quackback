@@ -3,7 +3,6 @@ import {
   text,
   timestamp,
   boolean,
-  uuid,
   index,
   uniqueIndex,
   foreignKey,
@@ -11,6 +10,7 @@ import {
 import { sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
 import { principal } from './auth'
+import { teams } from './teams'
 
 /**
  * RBAC schema — four small tables rooted on the existing `principal`.
@@ -20,8 +20,8 @@ import { principal } from './auth'
  * grouping. `principal.role` is retained as a denormalised cache of the
  * primary role so the legacy role gate keeps working through Phase C.
  *
- * `team_id` is reserved for the later team-scoping phase: a plain nullable
- * uuid (no `teams` table yet, always NULL in v1). The partial unique index
+ * `team_id` is a nullable FK to `teams` (§4.12) for the team-scoping phase;
+ * NULL = workspace-wide, which is every row today. The partial unique index
  * `(principal_id, role_id) WHERE team_id IS NULL` enforces one workspace-wide
  * assignment per (principal, role) and is the backstop the backfill relies on.
  */
@@ -69,8 +69,9 @@ export const principalRoleAssignments = pgTable(
     roleId: typeIdColumn('role')('role_id')
       .notNull()
       .references(() => roles.id, { onDelete: 'cascade' }),
-    // Reserved for the later team-scoping phase; NULL = workspace-wide.
-    teamId: uuid('team_id'),
+    // Team-scoped role grant (§4.12); NULL = workspace-wide. All-NULL today, so
+    // the retype from a plain uuid to a typed team FK is a pure ALTER.
+    teamId: typeIdColumnNullable('team')('team_id'),
     grantedByPrincipalId: typeIdColumnNullable('principal')('granted_by_principal_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -81,6 +82,12 @@ export const principalRoleAssignments = pgTable(
       columns: [table.grantedByPrincipalId],
       foreignColumns: [principal.id],
     }).onDelete('set null'),
+    // Team-scoped grants tear down with their team.
+    foreignKey({
+      name: 'principal_role_assignments_team_id_teams_id_fk',
+      columns: [table.teamId],
+      foreignColumns: [teams.id],
+    }).onDelete('cascade'),
     // One workspace-wide assignment per (principal, role). Partial so future
     // team-scoped grants (team_id NOT NULL) are exempt.
     uniqueIndex('principal_role_assignments_workspace_unique_idx')

@@ -58,6 +58,7 @@ function conversationData(c: Conversation): EventConversationData {
     visitorPrincipalId: c.visitorPrincipalId,
     visitorEmail: realEmail(c.visitorEmail),
     assignedAgentPrincipalId: c.assignedAgentPrincipalId ?? null,
+    assignedTeamId: c.assignedTeamId ?? null,
     createdAt: c.createdAt.toISOString(),
     lastMessageAt: c.lastMessageAt.toISOString(),
     resolvedAt: c.resolvedAt ? c.resolvedAt.toISOString() : null,
@@ -65,7 +66,13 @@ function conversationData(c: Conversation): EventConversationData {
 }
 
 function conversationRef(c: Conversation): EventConversationRef {
-  return { id: c.id, status: c.status, channel: c.channel, priority: c.priority }
+  return {
+    id: c.id,
+    status: c.status,
+    channel: c.channel,
+    priority: c.priority,
+    assignedTeamId: c.assignedTeamId ?? null,
+  }
 }
 
 function messageData(m: ConversationMessage, author: ConversationAuthorInput): EventMessageData {

@@ -1,10 +1,18 @@
 import { describe, it, expect } from 'vitest'
-import type { ConversationTagId, SegmentId, CompanyId } from '@quackback/ids'
-import { navFromSearch, buildListParams, type InboxNavItem } from './inbox-scope'
+import type {
+  ConversationTagId,
+  SegmentId,
+  CompanyId,
+  TeamId,
+  ConversationViewId,
+} from '@quackback/ids'
+import { navFromSearch, buildListParams, inboxNavKey, type InboxNavItem } from './inbox-scope'
 
 const tagId = 'conversation_tag_x' as ConversationTagId
 const segId = 'segment_y' as SegmentId
 const companyId = 'company_z' as CompanyId
+const teamId = 'team_t' as TeamId
+const viewId = 'conversation_view_v' as ConversationViewId
 
 describe('navFromSearch', () => {
   it('resolves a tag scope', () => {
@@ -29,6 +37,27 @@ describe('navFromSearch', () => {
   it('falls back to the view, defaulting to "all"', () => {
     expect(navFromSearch({ view: 'unassigned' })).toEqual({ kind: 'view', view: 'unassigned' })
     expect(navFromSearch({})).toEqual({ kind: 'view', view: 'all' })
+  })
+
+  it('resolves team + custom scopes with precedence custom > team > tag', () => {
+    expect(navFromSearch({ team: teamId })).toEqual({ kind: 'team', teamId })
+    expect(navFromSearch({ viewId })).toEqual({ kind: 'custom', viewId })
+    // custom wins over everything; team wins over tag/segment/view.
+    expect(navFromSearch({ viewId, team: teamId, tag: tagId })).toEqual({ kind: 'custom', viewId })
+    expect(navFromSearch({ team: teamId, tag: tagId, view: 'mine' })).toEqual({
+      kind: 'team',
+      teamId,
+    })
+  })
+})
+
+describe('inboxNavKey', () => {
+  it('namespaces every scope kind so query keys never collide', () => {
+    expect(inboxNavKey({ kind: 'view', view: 'all' })).toBe('view:all')
+    expect(inboxNavKey({ kind: 'tag', tagId })).toBe(`tag:${tagId}`)
+    expect(inboxNavKey({ kind: 'segment', segmentId: segId })).toBe(`segment:${segId}`)
+    expect(inboxNavKey({ kind: 'team', teamId })).toBe(`team:${teamId}`)
+    expect(inboxNavKey({ kind: 'custom', viewId })).toBe(`custom:${viewId}`)
   })
 })
 
@@ -92,6 +121,54 @@ describe('buildListParams', () => {
     expect(buildListParams({ kind: 'tag', tagId }, 'open', 'all', '', companyId)).toMatchObject({
       tagIds: [tagId],
       companyId,
+    })
+  })
+
+  it('carries a non-default sort but omits the implicit "recent" default', () => {
+    expect(buildListParams(view('all'), 'open', 'all', '', undefined, 'waiting')).toMatchObject({
+      assignee: 'all',
+      sort: 'waiting',
+    })
+    // 'recent' is the server default, so it is dropped to keep params stable.
+    expect(
+      buildListParams(view('all'), 'open', 'all', '', undefined, 'recent').sort
+    ).toBeUndefined()
+  })
+
+  it('maps a team scope to a teamId filter', () => {
+    expect(buildListParams({ kind: 'team', teamId }, 'open', 'high', 'bug')).toMatchObject({
+      teamId,
+      status: 'open',
+      priority: 'high',
+      search: 'bug',
+    })
+  })
+
+  it('runs a custom view from its pre-translated params (chips ignored)', () => {
+    const customParams = {
+      status: 'closed' as const,
+      waitingOnly: true,
+      tagIds: ['conversation_tag_x'],
+    }
+    // Even though status='open'/priority='high' chips are passed, a custom scope
+    // uses ONLY its own rule set (plus search/company/sort).
+    expect(
+      buildListParams(
+        { kind: 'custom', viewId },
+        'open',
+        'high',
+        'refund',
+        companyId,
+        'oldest',
+        customParams
+      )
+    ).toEqual({
+      status: 'closed',
+      waitingOnly: true,
+      tagIds: ['conversation_tag_x'],
+      search: 'refund',
+      companyId,
+      sort: 'oldest',
     })
   })
 })

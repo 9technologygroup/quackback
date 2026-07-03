@@ -320,6 +320,21 @@ export const REPOINT_STEPS: RepointStep[] = [
     'company_id',
     'Attribute consolidation, not a re-point: company_id fills the target only when the target has none (user wins, source fills gaps), mirroring contact_email.'
   ),
+  // A block follows the person: if a blocked anonymous visitor identifies, the
+  // block must transfer so they cannot escape it by signing in. Fill-if-empty
+  // (user wins) — an already-blocked target keeps its own record; an unblocked
+  // target inherits the source's. `blocked_at` and `blocked_by` move together so
+  // the "who blocked them" trail survives. Both live on the `principal` table,
+  // which the completeness walk skips, so they are steps (like contact_email /
+  // company_id), never REPOINT_EXEMPTIONS entries.
+  fillIfEmpty(
+    'blocked_at',
+    'Attribute consolidation, not a re-point: a blocked source blocks the target when the target is not already blocked (user wins). Stops a merged visitor from shedding a block by identifying.'
+  ),
+  fillIfEmpty(
+    'blocked_by_principal_id',
+    'Attribute consolidation, not a re-point: the blocking team actor moves with blocked_at so the audit trail survives the merge (only filled when the target was not itself blocked).'
+  ),
 ]
 
 /**
@@ -342,6 +357,9 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
   'post_notes.principal_id': 'internal staff notes; authors are team members',
   'post_mentions.principal_id': 'mention targets are team members',
   'conversations.assigned_agent_principal_id': 'agents are never anonymous',
+  'team_members.principal_id': 'team members are teammates; the merge source is always anonymous',
+  'teams.rr_cursor_principal_id':
+    'round-robin cursor points at an online teammate, never anonymous',
   'conversation_messages.deleted_by_principal_id': 'message moderation is agent-only',
   'conversation_message_mentions.principal_id': 'conversation mentions target agents',
   'conversation_message_reactions.principal_id':
@@ -373,6 +391,11 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
     'derived preference state; cascades with the anon principal by design (target keeps its own)',
   'unsubscribe_tokens.principal_id':
     'derived token state; cascades with the anon principal by design',
+  'conversation_views.created_by_principal_id':
+    'saved views are created by team members; the merge source is always anonymous',
+  'conversation_view_pins.principal_id':
+    'view pins belong to team members; the merge source is always anonymous',
+  'macros.created_by_principal_id': 'macro authors are team members, never anonymous',
 }
 
 /**

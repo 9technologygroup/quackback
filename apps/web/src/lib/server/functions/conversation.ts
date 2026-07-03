@@ -9,6 +9,7 @@
  */
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
+import { isValidTypeId } from '@quackback/ids'
 import type {
   ConversationId,
   ConversationMessageId,
@@ -18,6 +19,7 @@ import type {
   ConversationTagId,
   SegmentId,
   CompanyId,
+  TeamId,
 } from '@quackback/ids'
 import {
   MAX_CONVERSATION_MESSAGE_LENGTH,
@@ -41,6 +43,7 @@ import {
 } from './auth-helpers'
 import { isTeamMember } from '@/lib/shared/roles'
 import { PERMISSIONS } from '@/lib/shared/permissions'
+import { ConflictError, ForbiddenError } from '@/lib/shared/errors'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'conversation' })
@@ -74,9 +77,19 @@ const listMessagesSchema = z.object({
 const listConversationsSchema = z.object({
   status: z.enum(CONVERSATION_STATUSES).optional(),
   priority: z.enum(['none', 'low', 'medium', 'high', 'urgent']).optional(),
-  // Assignee queue: 'mine' = assigned to the requesting agent, 'unassigned' =
-  // no agent yet, 'all'/omitted = no assignee constraint.
-  assignee: z.enum(['all', 'mine', 'unassigned']).optional(),
+  // Assignee queue: 'mine' = the requesting agent, 'unassigned' = no agent yet,
+  // 'all'/omitted = no constraint. A custom view can also target a specific
+  // teammate — any other value is treated as that teammate's principal id
+  // (validated to a real principal id server-side).
+  assignee: z.string().max(64).optional(),
+  // Per-team inbox: only conversations assigned to this team.
+  teamId: z.string().optional(),
+  // Inbound source discriminator (e.g. 'widget', 'email').
+  source: z.string().max(32).optional(),
+  // "Waiting" scope: only conversations a customer is currently waiting on.
+  waitingOnly: z.boolean().optional(),
+  // Inbox ordering; omitted = 'recent'.
+  sort: z.enum(['recent', 'oldest', 'created', 'waiting', 'priority']).optional(),
   search: z.string().max(200).optional(),
   // Filter to conversations carrying ANY of these labels.
   tagIds: z.array(z.string()).optional(),
@@ -201,9 +214,44 @@ export const sendConversationMessageFn = createServerFn({ method: 'POST' })
       const ctx = await requireAuth()
       await assertVisitorConversationAccess(ctx.principal.role)
 
-      // Throttle per principal: bounds write/notify fanout and runaway
-      // conversation creation. Agents (team) send via sendAgentMessageFn.
+      // Visitor-only ingress checks (agents send via sendAgentMessageFn).
       if (!isTeamMember(ctx.principal.role)) {
+        // Blocked people cannot send (support platform §4.6). The same
+        // isBlocked read backs the widget identify gate and, per the integrator
+        // TODO in blocking.ts, the email-inbound boundary.
+        const { isBlocked } = await import('@/lib/server/domains/principals/blocking')
+        if (await isBlocked(ctx.principal.id)) {
+          throw new ForbiddenError('BLOCKED', 'You are not able to send messages here.')
+        }
+
+        // "Prevent replies to closed conversations" (§4.3) — Messenger/portal
+        // only, opt-in. When on, a visitor reply to a CLOSED thread is refused
+        // rather than reopening it. Email replies bypass this: they arrive via
+        // conversation.email-inbound.service.ts (a different boundary that never
+        // reaches this function) and ALWAYS reopen, the only viable behavior on
+        // email mid-thread.
+        if (data.conversationId) {
+          const { getMessengerConfig } =
+            await import('@/lib/server/domains/settings/settings.widget')
+          const messenger = await getMessengerConfig()
+          if (messenger.preventRepliesWhenClosed) {
+            const { getConversationForVisitor } =
+              await import('@/lib/server/domains/conversation/conversation.query')
+            const { conversation } = await getConversationForVisitor(
+              data.conversationId as ConversationId,
+              ctx.principal.id
+            )
+            if (conversation?.status === 'closed') {
+              throw new ConflictError(
+                'CONVERSATION_CLOSED',
+                'This conversation has been closed. Please start a new one.'
+              )
+            }
+          }
+        }
+
+        // Throttle per principal: bounds write/notify fanout and runaway
+        // conversation creation.
         const { assertConversationSendRate } =
           await import('@/lib/server/domains/conversation/conversation.ratelimit')
         await assertConversationSendRate(ctx.principal.id)
@@ -593,19 +641,6 @@ function agentFromCtx(ctx: AuthContext) {
 
 // ── Agent functions ──────────────────────────────────────────────────────
 
-/** Saved replies for the agent composer (team-gated; agent-only, not public). */
-export const getCannedRepliesFn = createServerFn({ method: 'GET' }).handler(async () => {
-  try {
-    await requireAuth({ permission: PERMISSIONS.CONVERSATION_REPLY })
-    const { getMessengerConfig } = await import('@/lib/server/domains/settings/settings.widget')
-    const messenger = await getMessengerConfig()
-    return { cannedReplies: messenger.cannedReplies ?? [] }
-  } catch (error) {
-    log.error({ err: error }, 'get canned replies failed')
-    throw error
-  }
-})
-
 /** Inbox feed for the support team. */
 export const listConversationsFn = createServerFn({ method: 'GET' })
   .validator(listConversationsSchema)
@@ -614,11 +649,29 @@ export const listConversationsFn = createServerFn({ method: 'GET' })
       const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_VIEW })
       const { listConversationsForAgent } =
         await import('@/lib/server/domains/conversation/conversation.query')
+      // assignee is 'all' | 'mine' | 'unassigned' | a teammate principal id. A
+      // specific id is honored only when it's a well-formed principal id, so a
+      // junk value can't reach the uuid-backed query and 500 the list.
+      const assignee = data.assignee
+      const assignedAgentPrincipalId =
+        assignee === 'mine'
+          ? ctx.principal.id
+          : assignee &&
+              assignee !== 'all' &&
+              assignee !== 'unassigned' &&
+              isValidTypeId(assignee, 'principal')
+            ? (assignee as PrincipalId)
+            : undefined
       return await listConversationsForAgent({
         status: data.status,
         priority: data.priority,
-        assignedAgentPrincipalId: data.assignee === 'mine' ? ctx.principal.id : undefined,
-        unassignedOnly: data.assignee === 'unassigned',
+        assignedAgentPrincipalId,
+        unassignedOnly: assignee === 'unassigned',
+        teamId:
+          data.teamId && isValidTypeId(data.teamId, 'team') ? (data.teamId as TeamId) : undefined,
+        source: data.source,
+        waitingOnly: data.waitingOnly,
+        sort: data.sort,
         search: data.search,
         tagIds: data.tagIds as ConversationTagId[] | undefined,
         segmentIds: data.segmentIds as SegmentId[] | undefined,
