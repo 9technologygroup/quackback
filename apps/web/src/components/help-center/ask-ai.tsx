@@ -15,7 +15,7 @@ import {
   type KbAskFinalPayload,
   type KbAskSourceMeta,
 } from '@/lib/shared/help-center/kb-ask-contract'
-import { splitByTerms, parseMarkdownLite } from './ask-ai-text'
+import { splitByTerms, parseMarkdownLite, type InlineSpan } from './ask-ai-text'
 
 // ============================================================================
 // Stream contract (kb-ask.v1.*)
@@ -358,43 +358,112 @@ export function HighlightedText({ text, query }: { text: string; query: string }
   )
 }
 
-/** Markdown-lite answer rendering: paragraphs, bullets, bold. No raw HTML. */
-function AskAiMarkdown({ text }: { text: string }) {
+/**
+ * A Wikipedia-style inline citation: a superscript `[n]` that links to the
+ * n-th cited source. Until the final sources arrive (mid-stream) or when the
+ * number has no matching source, it renders as an inert marker.
+ */
+function CitationMark({
+  n,
+  citedSources,
+  onSourceClick,
+}: {
+  n: number
+  citedSources: AskAiSourceMeta[]
+  onSourceClick: (source: AskAiSourceMeta) => void
+}) {
+  const source = citedSources[n - 1]
+  if (!source) {
+    return <sup className="text-[0.65em] font-medium text-muted-foreground/60">[{n}]</sup>
+  }
+  return (
+    <sup>
+      <button
+        type="button"
+        onClick={() => onSourceClick(source)}
+        aria-label={source.title}
+        className="text-[0.65em] font-semibold text-primary align-super hover:underline underline-offset-2 cursor-pointer"
+      >
+        [{n}]
+      </button>
+    </sup>
+  )
+}
+
+interface InlineRenderProps {
+  spans: InlineSpan[]
+  citedSources: AskAiSourceMeta[]
+  onSourceClick: (source: AskAiSourceMeta) => void
+}
+
+/** Render one line's inline spans: plain text, **bold**, and [n] citations. */
+function InlineSpans({ spans, citedSources, onSourceClick }: InlineRenderProps) {
+  return (
+    <>
+      {spans.map((span, k) =>
+        span.cite !== undefined ? (
+          <CitationMark
+            key={k}
+            n={span.cite}
+            citedSources={citedSources}
+            onSourceClick={onSourceClick}
+          />
+        ) : span.bold ? (
+          <strong key={k}>{span.text}</strong>
+        ) : (
+          <span key={k}>{span.text}</span>
+        )
+      )}
+    </>
+  )
+}
+
+interface AskAiMarkdownProps {
+  text: string
+  citedSources: AskAiSourceMeta[]
+  onSourceClick: (source: AskAiSourceMeta) => void
+}
+
+/**
+ * Markdown-lite answer rendering: paragraphs, ordered/bullet lists, bold, and
+ * inline `[n]` citation links. No raw HTML.
+ */
+function AskAiMarkdown({ text, citedSources, onSourceClick }: AskAiMarkdownProps) {
   const blocks = parseMarkdownLite(text)
   return (
-    <div className="space-y-2 text-sm text-foreground leading-relaxed">
-      {blocks.map((block, i) =>
-        block.kind === 'list' ? (
-          <ul key={i} className="list-disc ps-5 space-y-1">
-            {block.items.map((item, j) => (
-              <li key={j}>
-                {item.map((span, k) =>
-                  span.bold ? (
-                    <strong key={k}>{span.text}</strong>
-                  ) : (
-                    <span key={k}>{span.text}</span>
-                  )
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : (
+    <div className="space-y-2.5 text-sm text-foreground leading-relaxed">
+      {blocks.map((block, i) => {
+        if (block.kind === 'list') {
+          const items = block.items.map((item, j) => (
+            <li key={j} className="ps-0.5">
+              <InlineSpans spans={item} citedSources={citedSources} onSourceClick={onSourceClick} />
+            </li>
+          ))
+          return block.ordered ? (
+            <ol key={i} className="list-decimal ps-5 space-y-1 marker:text-muted-foreground/60">
+              {items}
+            </ol>
+          ) : (
+            <ul key={i} className="list-disc ps-5 space-y-1 marker:text-muted-foreground/50">
+              {items}
+            </ul>
+          )
+        }
+        return (
           <p key={i}>
             {block.lines.map((line, j) => (
               <span key={j}>
                 {j > 0 && <br />}
-                {line.map((span, k) =>
-                  span.bold ? (
-                    <strong key={k}>{span.text}</strong>
-                  ) : (
-                    <span key={k}>{span.text}</span>
-                  )
-                )}
+                <InlineSpans
+                  spans={line}
+                  citedSources={citedSources}
+                  onSourceClick={onSourceClick}
+                />
               </span>
             ))}
           </p>
         )
-      )}
+      })}
     </div>
   )
 }
@@ -456,9 +525,11 @@ export function AskAiAnswerPanel({ state, onDismiss, onSourceClick }: AskAiAnswe
   const busy = state.status === 'loading' || state.status === 'streaming'
 
   return (
-    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-3 space-y-2">
+    <div className="rounded-xl border border-border/60 bg-muted/20 px-3.5 py-3 space-y-2.5">
       <div className="flex items-start gap-2">
-        <SparklesIcon className="mt-0.5 w-4 h-4 shrink-0 text-primary" />
+        <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15">
+          <SparklesIcon className="w-3 h-3 text-primary" />
+        </span>
         <p className="min-w-0 flex-1 text-sm font-medium text-foreground">{state.question}</p>
         {busy && (
           <span className="mt-0.5 size-3.5 shrink-0 animate-spin rounded-full border-2 border-muted-foreground/40 border-t-transparent" />
@@ -481,7 +552,11 @@ export function AskAiAnswerPanel({ state, onDismiss, onSourceClick }: AskAiAnswe
 
       {(state.status === 'streaming' || state.status === 'done') && (
         <div>
-          <AskAiMarkdown text={state.answer} />
+          <AskAiMarkdown
+            text={state.answer}
+            citedSources={state.citedSources}
+            onSourceClick={onSourceClick}
+          />
           {state.status === 'streaming' && (
             <span className="inline-block w-1.5 h-3.5 ms-0.5 align-middle bg-primary/60 animate-pulse rounded-sm" />
           )}
@@ -492,7 +567,7 @@ export function AskAiAnswerPanel({ state, onDismiss, onSourceClick }: AskAiAnswe
         <p className="text-sm text-muted-foreground">
           <FormattedMessage
             id="helpAskAi.noAnswer"
-            defaultMessage="We couldn't find an answer in our help articles. Try different keywords or browse the articles."
+            defaultMessage="Sorry, we couldn't find any information about that in our help articles. Try rephrasing your question or browse the articles."
           />
         </p>
       )}
@@ -507,22 +582,28 @@ export function AskAiAnswerPanel({ state, onDismiss, onSourceClick }: AskAiAnswe
       )}
 
       {state.status === 'done' && state.citedSources.length > 0 && (
-        <div className="pt-1">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60 mb-1">
+        <div className="pt-2 mt-1 border-t border-border/40">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60 mb-1.5">
             <FormattedMessage id="helpAskAi.sources" defaultMessage="Sources" />
           </p>
-          <div className="flex flex-wrap gap-1.5">
-            {state.citedSources.map((source) => (
-              <button
-                key={source.articleId}
-                type="button"
-                onClick={() => onSourceClick(source)}
-                className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-2.5 py-1 text-xs text-foreground hover:bg-muted/50 hover:border-primary/40 transition-colors cursor-pointer"
-              >
-                <span className="line-clamp-1 max-w-56">{source.title}</span>
-              </button>
+          <ol className="space-y-0.5">
+            {state.citedSources.map((source, i) => (
+              <li key={source.articleId}>
+                <button
+                  type="button"
+                  onClick={() => onSourceClick(source)}
+                  className="group flex w-full items-baseline gap-2 rounded-md px-1.5 py-1 text-start hover:bg-muted/50 transition-colors cursor-pointer"
+                >
+                  <span className="shrink-0 text-xs font-semibold text-primary tabular-nums">
+                    {i + 1}.
+                  </span>
+                  <span className="min-w-0 flex-1 text-sm text-foreground line-clamp-1 group-hover:text-primary group-hover:underline underline-offset-2">
+                    {source.title}
+                  </span>
+                </button>
+              </li>
             ))}
-          </div>
+          </ol>
         </div>
       )}
     </div>

@@ -43,7 +43,18 @@ describe('parseMarkdownLite', () => {
     expect(parseMarkdownLite('- one\n- two')).toEqual([
       {
         kind: 'list',
+        ordered: false,
         items: [[{ text: 'one', bold: false }], [{ text: 'two', bold: false }]],
+      },
+    ])
+  })
+
+  it('parses numbered lists as ordered', () => {
+    expect(parseMarkdownLite('1. first\n2. second')).toEqual([
+      {
+        kind: 'list',
+        ordered: true,
+        items: [[{ text: 'first', bold: false }], [{ text: 'second', bold: false }]],
       },
     ])
   })
@@ -57,6 +68,40 @@ describe('parseMarkdownLite', () => {
             { text: 'Use the ', bold: false },
             { text: 'Invite member', bold: true },
             { text: ' button.', bold: false },
+          ],
+        ],
+      },
+    ])
+  })
+
+  it('parses [n] citation markers into cite spans', () => {
+    expect(parseMarkdownLite('Open Settings [1] then Team [2].')).toEqual([
+      {
+        kind: 'paragraph',
+        lines: [
+          [
+            { text: 'Open Settings ', bold: false },
+            { text: '1', bold: false, cite: 1 },
+            { text: ' then Team ', bold: false },
+            { text: '2', bold: false, cite: 2 },
+            { text: '.', bold: false },
+          ],
+        ],
+      },
+    ])
+  })
+
+  it('handles a bold label and a citation in the same line', () => {
+    expect(parseMarkdownLite('Click **Invite** [3].')).toEqual([
+      {
+        kind: 'paragraph',
+        lines: [
+          [
+            { text: 'Click ', bold: false },
+            { text: 'Invite', bold: true },
+            { text: ' ', bold: false },
+            { text: '3', bold: false, cite: 3 },
+            { text: '.', bold: false },
           ],
         ],
       },

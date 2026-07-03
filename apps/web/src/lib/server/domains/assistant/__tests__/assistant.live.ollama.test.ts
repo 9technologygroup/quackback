@@ -1,27 +1,42 @@
+// @vitest-environment node
 /**
- * Live integration smoke test against a local Ollama (skipped when unreachable).
+ * Live integration smoke test against a real, OpenAI-compatible AI endpoint.
  *
- *   OPENAI_BASE_URL=http://localhost:11434/v1  OPENAI_API_KEY=ollama
- *   AI_CHAT_MODEL=gemma4:12b-it-q4_K_M
+ * Opt-in: it runs only when BOTH OPENAI_BASE_URL and AI_CHAT_MODEL are set in
+ * the environment (and that endpoint is reachable). So it stays skipped in CI
+ * and in a plain `bun run test` — matching the other resource-gated live tests
+ * (real-DB suites) — and runs against whatever you point it at, e.g.
  *
- * Exercises the real runtime end to end: real TanStack AI chat() against Ollama,
- * real structured-output decoding (terse models can return an empty object,
- * which the runtime treats as retryable), and the retrieval keyword fallback
- * (no local embedding model, so the semantic path is skipped by design).
+ *   # local Ollama
+ *   OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_API_KEY=ollama \
+ *     AI_CHAT_MODEL=gemma4:e4b-it-qat npx vitest run assistant.live.ollama
+ *   # or the app's configured hosted endpoint
+ *   bun --env-file=../../.env test -- --run assistant.live.ollama
+ *
+ * Runs in the node environment because the OpenAI SDK refuses to construct a
+ * client under a browser-like global (happy-dom) without dangerouslyAllowBrowser.
+ *
+ * Exercises the real runtime end to end: real TanStack AI chat(), real
+ * structured-output decoding (terse models can return an empty object, which
+ * the runtime treats as retryable), and the retrieval keyword fallback (no
+ * local embedding model, so the semantic path is skipped by design).
  */
 import { describe, it, expect, vi } from 'vitest'
 
-const OLLAMA_BASE = process.env.OPENAI_BASE_URL || 'http://localhost:11434/v1'
-const OLLAMA_MODEL = process.env.AI_CHAT_MODEL || 'gemma4:12b-it-q4_K_M'
+const AI_BASE = process.env.OPENAI_BASE_URL
+const AI_MODEL = process.env.AI_CHAT_MODEL
+// Only meaningful when a developer has explicitly configured an endpoint.
+const liveConfigured = Boolean(AI_BASE && AI_MODEL)
 
-// Point the runtime + retrieval at Ollama and the test DB. Embeddings stay off
-// so retrieval runs its keyword fallback (the pgvector dims differ locally).
+// Point the runtime + retrieval at the configured endpoint and the test DB.
+// Embeddings stay off so retrieval runs its keyword fallback (the pgvector dims
+// differ locally).
 vi.mock('@/lib/server/config', () => ({
   config: {
     databaseUrl: process.env.DATABASE_URL,
     openaiApiKey: process.env.OPENAI_API_KEY || 'ollama',
-    openaiBaseUrl: OLLAMA_BASE,
-    aiChatModel: OLLAMA_MODEL,
+    openaiBaseUrl: AI_BASE,
+    aiChatModel: AI_MODEL,
     aiEmbeddingModel: undefined,
     aiSummaryModel: undefined,
     aiSentimentModel: undefined,
@@ -33,11 +48,11 @@ vi.mock('@/lib/server/config', () => ({
   },
 }))
 
-async function ollamaReachable(): Promise<boolean> {
+async function endpointReachable(base: string): Promise<boolean> {
   try {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 2000)
-    const res = await fetch(`${OLLAMA_BASE}/models`, { signal: ctrl.signal })
+    const res = await fetch(`${base}/models`, { signal: ctrl.signal })
     clearTimeout(timer)
     return res.ok
   } catch {
@@ -45,9 +60,9 @@ async function ollamaReachable(): Promise<boolean> {
   }
 }
 
-const reachable = await ollamaReachable()
+const reachable = liveConfigured ? await endpointReachable(AI_BASE!) : false
 
-describe.skipIf(!reachable)('assistant runtime (live Ollama)', () => {
+describe.skipIf(!reachable)('assistant runtime (live AI endpoint)', () => {
   it('produces a structured, cited answer through the real loop', async () => {
     const { runAssistantTurn } = await import('../assistant.runtime')
 

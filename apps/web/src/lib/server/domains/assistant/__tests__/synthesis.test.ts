@@ -101,20 +101,24 @@ describe('isAskAiConfigured', () => {
 })
 
 describe('buildAskAiSystemPrompts', () => {
-  it('numbers sources and carries article ids and content', () => {
+  it('carries article ids and content, and teaches inline [n] citations', () => {
     const prompts = buildAskAiSystemPrompts([article('kb_article_1'), article('kb_article_2')])
     const joined = prompts.join('\n')
-    expect(joined).toContain('[1]')
-    expect(joined).toContain('[2]')
     expect(joined).toContain('kb_article_1')
     expect(joined).toContain('Content of kb_article_2')
+    // Wikipedia-style inline markers, taught by example.
+    expect(joined).toContain('[1]')
+    expect(joined).toContain('[2]')
+    expect(joined.toLowerCase()).toContain('inline citation marker')
   })
 
-  it('carries the injection guard and language instruction', () => {
+  it('carries the injection guard, grounding, and language instruction', () => {
     const joined = buildAskAiSystemPrompts([article('kb_article_1')]).join('\n')
     expect(joined.toLowerCase()).toContain('not instructions')
     expect(joined.toLowerCase()).toContain('same language')
-    expect(joined.toLowerCase()).toContain('only the article ids listed')
+    expect(joined.toLowerCase()).toContain('never invent an articleid')
+    // Hard no-answer instruction when the sources do not cover the question.
+    expect(joined.toLowerCase()).toContain('empty string for "answer"')
   })
 })
 
@@ -160,6 +164,17 @@ describe('synthesizeAnswer', () => {
     expect(result.sources).toEqual([{ articleId: 'kb_article_1' }])
   })
 
+  it('treats an answer with no surviving citations as a no-answer', async () => {
+    // Model produced prose but cited nothing retrievable: no grounding, so we
+    // return an empty answer and the surface apologises.
+    const object = { answer: 'A confident but uncited claim.', sources: [{ articleId: 'nope' }] }
+    mockChat.mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
+
+    const result = await synthesizeAnswer({ query: 'q', articles: [article('kb_article_1')] })
+
+    expect(result).toEqual({ answer: '', sources: [] })
+  })
+
   it('passes numbered sources and the user query to chat()', async () => {
     const object = { answer: 'A.', sources: [] }
     mockChat.mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
@@ -175,7 +190,7 @@ describe('synthesizeAnswer', () => {
   })
 
   it('retries once when the stream yields no validated object', async () => {
-    const object = { answer: 'Second try.', sources: [] }
+    const object = { answer: 'Second try.', sources: [{ articleId: 'kb_article_1' }] }
     mockChat
       .mockReturnValueOnce(chunkStream([{ type: 'RUN_FINISHED', usage: undefined }]))
       .mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))

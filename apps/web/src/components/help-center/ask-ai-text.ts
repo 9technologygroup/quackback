@@ -38,29 +38,43 @@ export function splitByTerms(text: string, query: string): TermSegment[] {
 export interface InlineSpan {
   text: string
   bold: boolean
+  /** 1-based citation number when this span is a `[n]` marker (Wikipedia-style). */
+  cite?: number
 }
 
 export type MarkdownLiteBlock =
   | { kind: 'paragraph'; lines: InlineSpan[][] }
-  | { kind: 'list'; items: InlineSpan[][] }
+  | { kind: 'list'; ordered: boolean; items: InlineSpan[][] }
 
-/** Parse `**bold**` spans within a single line. */
+// A bold run (**...**) or a citation marker ([n]); everything else is literal.
+const INLINE_RE = /\*\*([^*]+)\*\*|\[(\d+)\]/g
+
+/** Parse `**bold**` runs and `[n]` citation markers within a single line. */
 function parseInline(line: string): InlineSpan[] {
-  const parts = line.split(/\*\*([^*]+)\*\*/)
   const spans: InlineSpan[] = []
-  for (let i = 0; i < parts.length; i++) {
-    if (!parts[i]) continue
-    spans.push({ text: parts[i], bold: i % 2 === 1 })
+  let last = 0
+  for (const m of line.matchAll(INLINE_RE)) {
+    const idx = m.index ?? 0
+    if (idx > last) spans.push({ text: line.slice(last, idx), bold: false })
+    if (m[1] !== undefined) {
+      spans.push({ text: m[1], bold: true })
+    } else if (m[2] !== undefined) {
+      spans.push({ text: m[2], bold: false, cite: Number(m[2]) })
+    }
+    last = idx + m[0].length
   }
+  if (last < line.length) spans.push({ text: line.slice(last), bold: false })
   return spans.length > 0 ? spans : [{ text: '', bold: false }]
 }
 
 const BULLET_RE = /^\s*[-*•]\s+/
+const ORDERED_RE = /^\s*\d+\.\s+/
 
 /**
- * Parse answer text into paragraph and bullet-list blocks. Only the
- * structures AI answers are instructed to use (paragraphs, bullets, bold)
- * are recognized; anything else stays literal text.
+ * Parse answer text into paragraph and list blocks. Only the structures AI
+ * answers are instructed to use (paragraphs, ordered/bullet lists, bold, and
+ * `[n]` citation markers) are recognized; anything else stays literal text.
+ * A block is a list only when every one of its lines shares one marker style.
  */
 export function parseMarkdownLite(text: string): MarkdownLiteBlock[] {
   const blocks: MarkdownLiteBlock[] = []
@@ -69,10 +83,18 @@ export function parseMarkdownLite(text: string): MarkdownLiteBlock[] {
     if (!blockText) continue
     const lines = blockText.split('\n').filter((l) => l.trim().length > 0)
 
-    const bulletLines = lines.filter((l) => BULLET_RE.test(l))
-    if (bulletLines.length === lines.length && lines.length > 0) {
+    if (lines.length > 0 && lines.every((l) => ORDERED_RE.test(l))) {
       blocks.push({
         kind: 'list',
+        ordered: true,
+        items: lines.map((l) => parseInline(l.replace(ORDERED_RE, '').trim())),
+      })
+      continue
+    }
+    if (lines.length > 0 && lines.every((l) => BULLET_RE.test(l))) {
+      blocks.push({
+        kind: 'list',
+        ordered: false,
         items: lines.map((l) => parseInline(l.replace(BULLET_RE, '').trim())),
       })
       continue

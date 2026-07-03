@@ -515,7 +515,7 @@
   "portal.hc.articleFeedback.contactSupport": "Contact support",
   "portal.vote.noAccess": "You don't have access to vote on this board",
   "helpAskAi.thinking": "Finding an answer...",
-  "helpAskAi.noAnswer": "We couldn't find an answer in our help articles. Try different keywords or browse the articles.",
+  "helpAskAi.noAnswer": "Sorry, we couldn't find any information about that in our help articles. Try rephrasing your question or browse the articles.",
   "helpAskAi.error": "We couldn't generate an answer right now. Please try again.",
   "helpAskAi.sources": "Sources",
   "helpAskAi.searchPlaceholder": "Ask AI or search our help articles to find an answer",
