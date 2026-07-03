@@ -160,6 +160,14 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
     'field-scoped post PATCH — assertApiPermissions authorizes per changed field'
   ),
 
+  // Bulk inbox action: the permission depends on the action (assign vs status),
+  // so the gate is bare and the per-action permission is asserted at runtime,
+  // identical to performing each action through its single-conversation fn.
+  'lib/server/functions/conversation.ts::bulkUpdateConversationsFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.CONVERSATION_ASSIGN, PERMISSIONS.CONVERSATION_SET_STATUS],
+    'bulk action — assign/assign_team require conversation.assign, the rest conversation.set_status'
+  ),
+
   // Public-tier REST reads: a valid key is required, but the data is portal-public
   // so no permission is checked. Anonymous (no key) is still rejected.
   'routes/api/v1/apps/boards.ts::GET': PUBLIC_DATA('public board list'),

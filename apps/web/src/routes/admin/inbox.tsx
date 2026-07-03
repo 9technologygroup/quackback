@@ -1,6 +1,7 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { ChatBubbleLeftRightIcon, ChevronDownIcon } from '@heroicons/react/24/solid'
 import { BuildingOffice2Icon } from '@heroicons/react/24/outline'
 import { isValidTypeId } from '@quackback/ids'
@@ -21,6 +22,22 @@ import {
 import { conversationKeys } from '@/components/conversation/query-keys'
 import { ConversationListColumn } from '@/components/admin/conversation/conversation-list-column'
 import { SavedMessagesColumn } from '@/components/admin/conversation/saved-messages-column'
+import { BulkActionBar, type BulkMenuId } from '@/components/admin/conversation/bulk-action-bar'
+import { InboxCommandBar } from '@/components/admin/conversation/inbox-command-bar'
+import { ShortcutHelpPanel } from '@/components/admin/conversation/shortcut-help-panel'
+import { useInboxKeyboard } from '@/components/admin/conversation/use-inbox-keyboard'
+import {
+  useBulkConversationUpdate,
+  type BulkConversationAction,
+} from '@/lib/client/mutations/conversation-bulk'
+import type { InboxActionId } from '@/lib/shared/conversation/inbox-actions'
+import {
+  assignConversationFn,
+  setConversationPriorityFn,
+  setConversationStatusFn,
+  snoozeConversationFn,
+} from '@/lib/server/functions/conversation'
+import { assignConversationTeamFn } from '@/lib/server/functions/teams'
 import {
   InboxNavSidebar,
   isInboxView,
@@ -219,6 +236,7 @@ function InboxPage() {
     priority: urlPriority,
     q: urlQ,
     company: urlCompany,
+    post: urlPost,
   } = Route.useSearch()
 
   // The URL is the single source of truth for the open conversation + filters,
@@ -488,6 +506,270 @@ function InboxPage() {
     },
   })
 
+  // ── Keyboard-first layer + bulk selection (support platform §4.6) ────────
+  // Multi-select set (bulk actions). Cleared whenever the scope/filters change
+  // so a stale id from a different list can never be acted on, and after a fully
+  // successful bulk apply.
+  const [selectedIds, setSelectedIds] = useState<Set<ConversationId>>(() => new Set())
+  const hasSelection = selectedIds.size > 0
+  const hasActiveConversation = !!selectedId
+  // Which value menu the floating bar shows open — driven by the command bar /
+  // keyboard so a single keypress can pop the right picker.
+  const [bulkMenu, setBulkMenu] = useState<BulkMenuId | null>(null)
+  const [commandOpen, setCommandOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
+  // Anchor for shift-click range selection.
+  const selectAnchor = useRef<ConversationId | null>(null)
+  // The thread wrapper, so the reply action can focus the open composer.
+  const threadContainerRef = useRef<HTMLDivElement>(null)
+  const bulk = useBulkConversationUpdate()
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set())
+    setBulkMenu(null)
+    selectAnchor.current = null
+  }, [])
+
+  // Reset the selection when the visible list changes (scope / status / priority
+  // / company / search) — the checked ids belong to the previous list. The
+  // first-mount clear is harmless (the selection starts empty).
+  const selectionScopeKey = `${inboxNavKey(nav)}|${status}|${priorityFilter}|${urlCompany ?? ''}|${search}`
+  useEffect(() => {
+    clearSelection()
+  }, [selectionScopeKey, clearSelection])
+
+  const toggleSelect = useCallback(
+    (id: ConversationId, opts?: { range?: boolean }) => {
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        const ids = conversations.map((c) => c.id)
+        const a = selectAnchor.current ? ids.indexOf(selectAnchor.current) : -1
+        const b = ids.indexOf(id)
+        if (opts?.range && a >= 0 && b >= 0) {
+          // Shift-click adds the contiguous range from the anchor to here.
+          const [lo, hi] = a < b ? [a, b] : [b, a]
+          for (let i = lo; i <= hi; i++) next.add(ids[i])
+        } else if (next.has(id)) {
+          next.delete(id)
+        } else {
+          next.add(id)
+        }
+        return next
+      })
+      selectAnchor.current = id
+    },
+    [conversations]
+  )
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      const allSelected = conversations.length > 0 && conversations.every((c) => prev.has(c.id))
+      return allSelected ? new Set() : new Set(conversations.map((c) => c.id))
+    })
+  }, [conversations])
+
+  // Toast the bulk summary: a clean line on full success, a partial-failure count
+  // otherwise. Verb is the past-tense action word ("Closed", "Snoozed", …).
+  const summarize = useCallback((verb: string, ok: number, fail: number) => {
+    if (fail === 0) {
+      toast.success(`${verb} ${ok} ${ok === 1 ? 'conversation' : 'conversations'}`)
+    } else {
+      toast.warning(`${ok} updated, ${fail} failed`)
+    }
+  }, [])
+
+  const runBulk = useCallback(
+    async (action: BulkConversationAction, verb: string) => {
+      const ids = [...selectedIds]
+      if (ids.length === 0) return
+      try {
+        const res = await bulk.mutateAsync({ conversationIds: ids, action })
+        summarize(verb, res.succeeded.length, res.failed.length)
+        if (res.failed.length === 0) clearSelection()
+        else setBulkMenu(null)
+      } catch {
+        toast.error('Bulk action failed')
+      }
+    },
+    [selectedIds, bulk, summarize, clearSelection]
+  )
+
+  // Apply a single-conversation action for the solo (no-selection) case: run its
+  // own server fn, refresh the inbox, and toast the outcome. Always dismisses any
+  // open value menu so every control behaves the same.
+  const runSolo = useCallback(
+    async (fn: () => Promise<unknown>, msg: { success: string; error: string }) => {
+      setBulkMenu(null)
+      try {
+        await fn()
+        refreshInbox()
+        toast.success(msg.success)
+      } catch {
+        toast.error(msg.error)
+      }
+    },
+    [refreshInbox]
+  )
+
+  // Each control targets the multi-selection when there is one (runBulk), else the
+  // single open conversation via its own server fn (runSolo).
+  const applyAssign = useCallback(
+    async (assignTo: string | null) => {
+      if (hasSelection) return runBulk({ type: 'assign', assignTo }, 'Assigned')
+      if (!selectedId) return
+      return runSolo(
+        () => assignConversationFn({ data: { conversationId: selectedId, assignTo } }),
+        { success: 'Conversation assigned', error: 'Failed to assign conversation' }
+      )
+    },
+    [hasSelection, selectedId, runBulk, runSolo]
+  )
+
+  const applyAssignTeam = useCallback(
+    async (teamId: string) => {
+      if (hasSelection) return runBulk({ type: 'assign_team', teamId }, 'Assigned')
+      if (!selectedId) return
+      return runSolo(
+        () => assignConversationTeamFn({ data: { conversationId: selectedId, teamId } }),
+        { success: 'Assigned to team', error: 'Failed to assign team' }
+      )
+    },
+    [hasSelection, selectedId, runBulk, runSolo]
+  )
+
+  const applyPriority = useCallback(
+    async (priority: ConversationPriority) => {
+      if (hasSelection) return runBulk({ type: 'priority', priority }, 'Updated')
+      if (!selectedId) return
+      return runSolo(
+        () => setConversationPriorityFn({ data: { conversationId: selectedId, priority } }),
+        { success: 'Priority updated', error: 'Failed to set priority' }
+      )
+    },
+    [hasSelection, selectedId, runBulk, runSolo]
+  )
+
+  const applySnooze = useCallback(
+    async (until: string | null) => {
+      if (hasSelection) return runBulk({ type: 'snooze', until }, 'Snoozed')
+      if (!selectedId) return
+      return runSolo(() => snoozeConversationFn({ data: { conversationId: selectedId, until } }), {
+        success: 'Conversation snoozed',
+        error: 'Failed to snooze conversation',
+      })
+    },
+    [hasSelection, selectedId, runBulk, runSolo]
+  )
+
+  const applyClose = useCallback(async () => {
+    if (hasSelection) return runBulk({ type: 'close' }, 'Closed')
+    if (!selectedId) return
+    return runSolo(
+      () => setConversationStatusFn({ data: { conversationId: selectedId, status: 'closed' } }),
+      { success: 'Conversation closed', error: 'Failed to close conversation' }
+    )
+  }, [hasSelection, selectedId, runBulk, runSolo])
+
+  const applyReopen = useCallback(async () => {
+    if (hasSelection) return runBulk({ type: 'reopen' }, 'Reopened')
+    if (!selectedId) return
+    return runSolo(
+      () => setConversationStatusFn({ data: { conversationId: selectedId, status: 'open' } }),
+      { success: 'Conversation reopened', error: 'Failed to reopen conversation' }
+    )
+  }, [hasSelection, selectedId, runBulk, runSolo])
+
+  // Focus the open thread's composer (the single contenteditable inside it). The
+  // `.ProseMirror` selector couples to the editor's internals; the proper fix is a
+  // composer imperative handle (next wave).
+  const focusComposer = useCallback(() => {
+    threadContainerRef.current
+      ?.querySelector<HTMLElement>('.ProseMirror[contenteditable="true"]')
+      ?.focus()
+  }, [])
+
+  // j / k: move the open conversation to the next / previous row in the list.
+  const moveSelection = useCallback(
+    (delta: number) => {
+      if (conversations.length === 0) return
+      const idx = conversations.findIndex((c) => c.id === selectedId)
+      const nextIdx =
+        idx < 0
+          ? delta > 0
+            ? 0
+            : conversations.length - 1
+          : Math.min(Math.max(idx + delta, 0), conversations.length - 1)
+      setSelectedId(conversations[nextIdx].id)
+    },
+    [conversations, selectedId, setSelectedId]
+  )
+
+  // The single action router shared by the command bar and the keyboard hook.
+  // Both-scope value actions (assign/team/priority/snooze) pop the matching menu
+  // in the floating bar (targeting the selection, or the single open thread);
+  // close/reopen apply immediately. See the report for the value-action UX note.
+  const onInboxAction = useCallback(
+    (id: InboxActionId) => {
+      const needsTarget = hasSelection || hasActiveConversation
+      switch (id) {
+        case 'reply':
+          focusComposer()
+          break
+        case 'next':
+          moveSelection(1)
+          break
+        case 'prev':
+          moveSelection(-1)
+          break
+        case 'toggle_select':
+          if (selectedId) toggleSelect(selectedId)
+          break
+        case 'assign':
+          if (needsTarget) setBulkMenu('assign')
+          break
+        case 'assign_team':
+          if (needsTarget) setBulkMenu('assign_team')
+          break
+        case 'priority':
+          if (needsTarget) setBulkMenu('priority')
+          break
+        case 'snooze':
+          if (needsTarget) setBulkMenu('snooze')
+          break
+        case 'close':
+          if (needsTarget) void applyClose()
+          break
+        case 'reopen':
+          if (needsTarget) void applyReopen()
+          break
+      }
+    },
+    [
+      hasSelection,
+      hasActiveConversation,
+      focusComposer,
+      moveSelection,
+      selectedId,
+      toggleSelect,
+      applyClose,
+      applyReopen,
+    ]
+  )
+
+  // Bind global shortcuts only when the inbox itself is focused — never behind a
+  // modal (command bar, help, the view dialog, or the `?post=` overlay), so their
+  // own key handling wins.
+  useInboxKeyboard({
+    enabled: !commandOpen && !helpOpen && !viewDialogOpen && !urlPost,
+    onAction: onInboxAction,
+    onOpenCommandBar: () => setCommandOpen(true),
+    onOpenHelp: () => setHelpOpen(true),
+  })
+
+  // The floating bar shows for a real multi-selection, or when a value menu was
+  // popped for the single open conversation.
+  const bulkBarVisible = hasSelection || (bulkMenu !== null && hasActiveConversation)
+
   return (
     <div className="flex h-full">
       <InboxNavSidebar
@@ -535,11 +817,18 @@ function InboxPage() {
           conversations={conversations}
           selectedId={selectedId}
           onSelect={setSelectedId}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelect}
+          onToggleSelectAll={toggleSelectAll}
+          selectionActive={hasSelection}
         />
       )}
 
       {/* Thread */}
-      <div className={cn('min-w-0 flex-1', !selectedId && 'hidden md:block')}>
+      <div
+        ref={threadContainerRef}
+        className={cn('min-w-0 flex-1', !selectedId && 'hidden md:block')}
+      >
         {selectedId ? (
           <AgentConversationThread
             key={selectedId}
@@ -562,6 +851,31 @@ function InboxPage() {
           </div>
         )}
       </div>
+
+      {bulkBarVisible && (
+        <BulkActionBar
+          count={hasSelection ? selectedIds.size : 1}
+          solo={!hasSelection}
+          pending={bulk.isPending}
+          openMenu={bulkMenu}
+          onOpenMenuChange={setBulkMenu}
+          onClear={clearSelection}
+          onAssign={applyAssign}
+          onAssignTeam={applyAssignTeam}
+          onPriority={applyPriority}
+          onSnooze={applySnooze}
+          onClose={applyClose}
+        />
+      )}
+
+      <InboxCommandBar
+        open={commandOpen}
+        onOpenChange={setCommandOpen}
+        onAction={onInboxAction}
+        hasSelection={hasSelection}
+        hasActiveConversation={hasActiveConversation}
+      />
+      <ShortcutHelpPanel open={helpOpen} onOpenChange={setHelpOpen} />
     </div>
   )
 }

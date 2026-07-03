@@ -22,6 +22,7 @@ import {
 import { TagChip } from '@/components/shared/tag-chip'
 import { Spinner } from '@/components/shared/spinner'
 import { Avatar } from '@/components/ui/avatar'
+import { Checkbox } from '@/components/ui/checkbox'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   DropdownMenu,
@@ -86,6 +87,16 @@ interface ConversationListColumnProps {
   conversations: ConversationDTO[]
   selectedId: ConversationId | null
   onSelect: (id: ConversationId) => void
+  /** Bulk-select set (a checkbox per row). Kept visually quiet until at least one
+   *  row is checked — see `selectionActive`. */
+  selectedIds: Set<ConversationId>
+  /** Toggle one row; `range` extends a contiguous range from the last-checked row
+   *  (shift-click). The parent owns the ordered list, so it computes the range. */
+  onToggleSelect: (id: ConversationId, opts?: { range?: boolean }) => void
+  /** Select-all (in view) / clear-all toggle for the header checkbox. */
+  onToggleSelectAll: () => void
+  /** True once a selection exists — reveals the checkboxes + the select-all bar. */
+  selectionActive: boolean
 }
 
 /**
@@ -111,8 +122,14 @@ export function ConversationListColumn({
   conversations,
   selectedId,
   onSelect,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
+  selectionActive,
 }: ConversationListColumnProps) {
   const [composeOpen, setComposeOpen] = useState(false)
+  const allSelected = conversations.length > 0 && conversations.every((c) => selectedIds.has(c.id))
+  const someSelected = conversations.some((c) => selectedIds.has(c.id))
   return (
     <div
       className={cn(
@@ -250,6 +267,20 @@ export function ConversationListColumn({
           </>
         )}
       </div>
+      {/* Progressive disclosure: the select-all + count bar only appears once a
+          selection exists (the per-row checkboxes are the entry point). */}
+      {selectionActive && (
+        <div className="flex items-center gap-2 border-b border-border/50 bg-muted/30 px-3 py-1.5">
+          <Checkbox
+            checked={allSelected ? true : someSelected ? 'indeterminate' : false}
+            onCheckedChange={() => onToggleSelectAll()}
+            aria-label="Select all conversations in view"
+          />
+          <span className="text-xs font-medium text-muted-foreground">
+            {selectedIds.size} selected
+          </span>
+        </div>
+      )}
       <ScrollArea className="min-h-0 flex-1">
         {loading ? (
           <div className="flex justify-center py-10">
@@ -261,55 +292,79 @@ export function ConversationListColumn({
           </div>
         ) : (
           conversations.map((c) => (
-            <button
+            <div
               key={c.id}
-              type="button"
-              onClick={() => onSelect(c.id)}
               className={cn(
-                'flex w-full items-start gap-2.5 border-b border-border/30 px-3 py-3 text-left transition-colors',
-                selectedId === c.id ? 'bg-muted/60' : 'hover:bg-muted/30'
+                'group relative flex w-full items-start border-b border-border/30 transition-colors',
+                selectedIds.has(c.id)
+                  ? 'bg-primary/5'
+                  : selectedId === c.id
+                    ? 'bg-muted/60'
+                    : 'hover:bg-muted/30'
               )}
             >
-              <Avatar
-                src={c.visitor.avatarUrl}
-                name={c.visitor.displayName ?? 'Visitor'}
-                className="size-8 shrink-0 text-xs"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <PriorityDot priority={c.priority} />
-                    <span className="truncate text-sm font-medium">
-                      {c.visitor.displayName ?? 'Visitor'}
-                    </span>
-                  </span>
-                  <span className="shrink-0 text-[10px] text-muted-foreground">
-                    {relativeTime(c.lastMessageAt)}
-                  </span>
-                </div>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {c.lastMessagePreview ?? c.subject ?? 'No messages yet'}
-                </p>
-                {(c.channel !== 'messenger' || c.tags.length > 0) && (
-                  <div className="mt-1 flex flex-wrap items-center gap-1">
-                    {c.channel !== 'messenger' && <ChannelBadge channel={c.channel} />}
-                    {c.tags.map((t) => (
-                      <TagChip
-                        key={t.id}
-                        name={t.name}
-                        color={t.color}
-                        className="px-1.5 py-0 text-[10px]"
-                      />
-                    ))}
-                  </div>
+              {/* The checkbox is a separate hit target (not the row click), quiet
+                  until a selection exists or the row is hovered/focused. */}
+              <div
+                className={cn(
+                  'flex items-center self-stretch pl-3 pr-0.5 transition-opacity',
+                  selectionActive || selectedIds.has(c.id)
+                    ? 'opacity-100'
+                    : 'opacity-0 focus-within:opacity-100 group-hover:opacity-100'
                 )}
+              >
+                <Checkbox
+                  checked={selectedIds.has(c.id)}
+                  onClick={(e) => onToggleSelect(c.id, { range: e.shiftKey })}
+                  aria-label={`Select conversation from ${c.visitor.displayName ?? 'Visitor'}`}
+                />
               </div>
-              {c.unreadCount > 0 && (
-                <span className="mt-1 inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
-                  {c.unreadCount}
-                </span>
-              )}
-            </button>
+              <button
+                type="button"
+                onClick={() => onSelect(c.id)}
+                className="flex min-w-0 flex-1 items-start gap-2.5 py-3 pl-1.5 pr-3 text-left"
+              >
+                <Avatar
+                  src={c.visitor.avatarUrl}
+                  name={c.visitor.displayName ?? 'Visitor'}
+                  className="size-8 shrink-0 text-xs"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <PriorityDot priority={c.priority} />
+                      <span className="truncate text-sm font-medium">
+                        {c.visitor.displayName ?? 'Visitor'}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      {relativeTime(c.lastMessageAt)}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {c.lastMessagePreview ?? c.subject ?? 'No messages yet'}
+                  </p>
+                  {(c.channel !== 'messenger' || c.tags.length > 0) && (
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      {c.channel !== 'messenger' && <ChannelBadge channel={c.channel} />}
+                      {c.tags.map((t) => (
+                        <TagChip
+                          key={t.id}
+                          name={t.name}
+                          color={t.color}
+                          className="px-1.5 py-0 text-[10px]"
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {c.unreadCount > 0 && (
+                  <span className="mt-1 inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                    {c.unreadCount}
+                  </span>
+                )}
+              </button>
+            </div>
           ))
         )}
       </ScrollArea>

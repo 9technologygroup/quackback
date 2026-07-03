@@ -37,6 +37,7 @@ import {
 import {
   getOptionalAuth,
   requireAuth,
+  assertPermission,
   policyActorFromAuth,
   hasAuthCredentials,
   type AuthContext,
@@ -1086,6 +1087,118 @@ export const markConversationUnreadFromMessageFn = createServerFn({ method: 'POS
       return { ok: true }
     } catch (error) {
       log.error({ err: error }, 'mark conversation unread from message failed')
+      throw error
+    }
+  })
+
+// ── Bulk inbox actions ─────────────────────────────────────────────────────
+
+/**
+ * One inbox bulk action, discriminated on `type`. Each variant maps 1:1 onto the
+ * single-conversation service op its non-bulk fn calls, so a bulk apply is
+ * exactly N individual applies (identical realtime publish + webhook + triage-wake).
+ */
+const bulkConversationActionSchema = z.discriminatedUnion('type', [
+  // assignTo: 'me' = the acting agent, a principal id, or null to unassign.
+  z.object({ type: z.literal('assign'), assignTo: z.string().nullable() }),
+  z.object({ type: z.literal('assign_team'), teamId: z.string().nullable() }),
+  z.object({
+    type: z.literal('priority'),
+    priority: z.enum(['none', 'low', 'medium', 'high', 'urgent']),
+  }),
+  // until: ISO wake time, or null = snooze until the customer next replies.
+  z.object({ type: z.literal('snooze'), until: z.string().datetime().nullable() }),
+  z.object({ type: z.literal('close') }),
+  z.object({ type: z.literal('reopen') }),
+])
+
+type BulkConversationAction = z.infer<typeof bulkConversationActionSchema>
+
+const bulkUpdateConversationsSchema = z.object({
+  // Cap the batch so a single call can't fan out unbounded writes/publishes.
+  conversationIds: z.array(z.string()).min(1).max(200),
+  action: bulkConversationActionSchema,
+})
+
+/** Gate a bulk action on the SAME permission its single-conversation fn uses:
+ *  (re)assignment mirrors assignConversationFn/assignConversationTeamFn
+ *  (conversation.assign); status/priority/snooze mirror the set-status fns. */
+function permissionForBulkAction(type: BulkConversationAction['type']) {
+  return type === 'assign' || type === 'assign_team'
+    ? PERMISSIONS.CONVERSATION_ASSIGN
+    : PERMISSIONS.CONVERSATION_SET_STATUS
+}
+
+/**
+ * Apply one inbox action to many conversations in a single call (support platform
+ * §4.6: assign, priority, snooze, close). The required permission depends on the
+ * action (assign vs status), so the gate is bare and the per-action permission is
+ * asserted at runtime — matching the field-scoped PATCH pattern; the closed set is
+ * declared in the authz-matrix classifications. Per-item isolation: each
+ * conversation is applied independently, so one failure (missing thread, invalid
+ * assignee, a race) lands in `failed` and never aborts the rest of the batch. Every
+ * success reuses the single-conversation service op, so it fires the same realtime
+ * publish + webhook + triage-wake — this fn adds no side effects of its own.
+ */
+export const bulkUpdateConversationsFn = createServerFn({ method: 'POST' })
+  .validator(bulkUpdateConversationsSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth()
+      assertPermission(ctx.principal.role, permissionForBulkAction(data.action.type))
+      const actor = await policyActorFromAuth(ctx)
+      const {
+        assignConversation,
+        assignTeam,
+        setConversationPriority,
+        setConversationStatus,
+        snoozeConversation,
+      } = await import('@/lib/server/domains/conversation/conversation.service')
+
+      // Resolve the action into a single per-conversation op once, up front — the
+      // acting agent, snooze wake-time, and assignee are computed a single time,
+      // not per conversation.
+      const action = data.action
+      const apply: (id: ConversationId) => Promise<unknown> = (() => {
+        switch (action.type) {
+          case 'assign': {
+            const assignTo: PrincipalId | null =
+              action.assignTo === 'me'
+                ? ctx.principal.id
+                : ((action.assignTo as PrincipalId | null) ?? null)
+            return (id) => assignConversation(id, assignTo, actor)
+          }
+          case 'assign_team':
+            return (id) => assignTeam(id, (action.teamId as TeamId | null) ?? null, actor)
+          case 'priority':
+            return (id) => setConversationPriority(id, action.priority, actor)
+          case 'snooze': {
+            const until = action.until ? new Date(action.until) : null
+            return (id) => snoozeConversation(id, until, actor)
+          }
+          case 'close':
+            return (id) => setConversationStatus(id, 'closed', actor)
+          case 'reopen':
+            return (id) => setConversationStatus(id, 'open', actor)
+        }
+      })()
+
+      const succeeded: string[] = []
+      const failed: { id: string; reason: string }[] = []
+      for (const rawId of data.conversationIds) {
+        try {
+          await apply(rawId as ConversationId)
+          succeeded.push(rawId)
+        } catch (error) {
+          failed.push({
+            id: rawId,
+            reason: error instanceof Error ? error.message : 'Unknown error',
+          })
+        }
+      }
+      return { succeeded, failed }
+    } catch (error) {
+      log.error({ err: error }, 'bulk update conversations failed')
       throw error
     }
   })

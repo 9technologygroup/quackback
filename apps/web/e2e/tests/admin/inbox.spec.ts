@@ -118,3 +118,42 @@ test.describe('Admin Support Inbox', { tag: '@smoke' }, () => {
     })
   })
 })
+
+/**
+ * The keyboard-first + bulk layer (support platform §4.6): selecting a row
+ * surfaces the floating bulk-action toolbar, and its Close acts on the whole
+ * selection. Its own seed (a separate conversation) so it never races the
+ * lifecycle test's shared thread.
+ */
+test.describe('Admin Support Inbox bulk actions', { tag: '@smoke' }, () => {
+  let seeded: SeededConversation
+
+  test.beforeAll(() => {
+    setSupportSurfaces(true)
+    seeded = seedConversation(`E2E bulk conversation ${Date.now()}`)
+  })
+
+  test('multi-select then bulk close', async ({ page }) => {
+    await page.goto('/admin/inbox')
+
+    // The seeded row (grouped div carries the `group` class) — check its box.
+    const row = page.locator('div.group').filter({ hasText: seeded.messages[1] }).first()
+    await expect(row).toBeVisible({ timeout: 15000 })
+
+    // The list is server-rendered before React hydrates, so a first click can
+    // land on inert HTML — retry checking the box until the toolbar appears.
+    const toolbar = page.getByRole('toolbar', { name: 'Bulk actions' })
+    await expect(async () => {
+      await row.getByRole('checkbox').click()
+      await expect(toolbar).toBeVisible({ timeout: 2000 })
+    }).toPass({ timeout: 15000 })
+
+    // The floating bulk toolbar shows the count, and Close acts on the selection.
+    await expect(toolbar.getByText('1 selected')).toBeVisible({ timeout: 10000 })
+    await toolbar.getByRole('button', { name: 'Close', exact: true }).click()
+
+    // The summary toast confirms the bulk apply; the row leaves the open list.
+    await waitForToast(page, /Closed 1 conversation/)
+    await expect(row).toBeHidden({ timeout: 10000 })
+  })
+})

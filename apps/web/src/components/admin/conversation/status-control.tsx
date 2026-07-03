@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import type { ConversationId } from '@quackback/ids'
 import type { ConversationStatus } from '@/lib/shared/conversation/types'
 import { setConversationStatusFn, snoozeConversationFn } from '@/lib/server/functions/conversation'
-import { tomorrowAt } from '@/lib/shared/utils'
+import { tomorrowAt, inHours, nextMondayAt } from '@/lib/shared/utils'
 import { DateTimePicker } from '@/components/ui/datetime-picker'
 import { Button } from '@/components/ui/button'
 import {
@@ -32,22 +32,6 @@ const wakeFormatter = new Intl.DateTimeFormat(undefined, {
   hour: 'numeric',
   minute: '2-digit',
 })
-
-/** Now + `hours`, workspace-local (the agent's browser). */
-function inHours(hours: number): Date {
-  const d = new Date()
-  d.setHours(d.getHours() + hours, d.getMinutes(), 0, 0)
-  return d
-}
-
-/** The next Monday at `hour`:00, workspace-local (never today if today is Monday). */
-function nextMondayAt(hour: number): Date {
-  const d = new Date()
-  const diff = (8 - d.getDay()) % 7 || 7
-  d.setDate(d.getDate() + diff)
-  d.setHours(hour, 0, 0, 0)
-  return d
-}
 
 /**
  * The conversation status control. Open and Closed set the status directly;

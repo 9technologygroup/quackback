@@ -30,4 +30,6 @@ export {
   formatMonthYear,
   tomorrowAt,
   startOfUtcMonth,
+  inHours,
+  nextMondayAt,
 } from './date'

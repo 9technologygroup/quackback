@@ -145,6 +145,19 @@ export async function requireAuth(options?: { permission?: PermissionKey }): Pro
 }
 
 /**
+ * Assert a role holds a permission, throwing the same canonical message
+ * `requireAuth({ permission })` uses. For the rare gate whose required
+ * permission is computed at runtime (a field- or action-scoped write), so the
+ * gate must stay a bare `requireAuth()` for the authz scanner while the
+ * per-action permission is still enforced.
+ */
+export function assertPermission(role: Role, permission: PermissionKey): void {
+  if (!permissionsForLegacyRole(role).has(permission)) {
+    throw new Error(`Access denied: Requires permission '${permission}', role ${role} lacks it`)
+  }
+}
+
+/**
  * Get auth context if authenticated, null otherwise.
  * Useful for public endpoints that behave differently for logged-in users.
  *

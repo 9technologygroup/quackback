@@ -74,3 +74,25 @@ export function tomorrowAt(hour: number): Date {
 export function startOfUtcMonth(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1))
 }
+
+/**
+ * Now + `hours`, browser-local (the agent's timezone): minutes preserved,
+ * seconds and below zeroed. Backs the "later today" snooze preset.
+ */
+export function inHours(hours: number): Date {
+  const d = new Date()
+  d.setHours(d.getHours() + hours, d.getMinutes(), 0, 0)
+  return d
+}
+
+/**
+ * The next Monday at `hour`:00, browser-local — never today, even when today is
+ * Monday. Backs the "next week" snooze preset.
+ */
+export function nextMondayAt(hour: number): Date {
+  const d = new Date()
+  const diff = (8 - d.getDay()) % 7 || 7
+  d.setDate(d.getDate() + diff)
+  d.setHours(hour, 0, 0, 0)
+  return d
+}
