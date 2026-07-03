@@ -41,57 +41,13 @@ import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { DetailRow as Row, formatDate } from '@/components/shared/detail-row'
 import { cn } from '@/lib/shared/utils'
 
 const CHANNEL_LABEL: Record<Channel, string> = {
   messenger: 'Messenger',
   email: 'Email',
   web_form: 'Web form',
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
-
-/**
- * A metadata row matching the feedback post-detail "Manage" card: an optional
- * leading outline icon + muted label on the left, the control/value on the
- * right. Rows with no icon (e.g. Status) sit flush to the card padding, exactly
- * like the reference sidebar's Status row.
- */
-function Row({
-  icon: Icon,
-  label,
-  align = 'center',
-  children,
-}: {
-  icon?: React.ComponentType<{ className?: string }>
-  label: string
-  align?: 'center' | 'start'
-  children: React.ReactNode
-}) {
-  return (
-    <div
-      className={cn(
-        'flex justify-between gap-3',
-        align === 'start' ? 'items-start' : 'items-center'
-      )}
-    >
-      {Icon ? (
-        <div className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
-          <Icon className="h-4 w-4" />
-          <span>{label}</span>
-        </div>
-      ) : (
-        <span className="shrink-0 text-sm text-muted-foreground">{label}</span>
-      )}
-      <div className="flex min-w-0 max-w-[62%] justify-end">{children}</div>
-    </div>
-  )
 }
 
 const RESOLVED_META = {

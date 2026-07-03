@@ -4,6 +4,7 @@ import { Link, useRouter, useRouterState, useRouteContext } from '@tanstack/reac
 import {
   ChatBubbleLeftIcon,
   ChatBubbleLeftRightIcon,
+  TicketIcon,
   MapIcon,
   UsersIcon,
   Cog6ToothIcon,
@@ -64,6 +65,7 @@ interface AdminSidebarProps {
 const navItems = [
   { label: 'Feedback', href: '/admin/feedback', icon: ChatBubbleLeftIcon },
   { label: 'Conversations', href: '/admin/inbox', icon: ChatBubbleLeftRightIcon },
+  { label: 'Tickets', href: '/admin/tickets', icon: TicketIcon },
   { label: 'Roadmap', href: '/admin/roadmap', icon: MapIcon },
   { label: 'Changelog', href: '/admin/changelog', icon: DocumentTextIcon },
   { label: 'Help Center', href: '/admin/help-center', icon: BookOpenIcon },
@@ -119,7 +121,7 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
   // Members would only ever land on the access-denied page, so hide the cog.
   const isAdmin = userRole === 'admin'
   const flags = settings?.featureFlags as
-    | { helpCenter?: boolean; supportInbox?: boolean }
+    | { helpCenter?: boolean; supportInbox?: boolean; supportTickets?: boolean }
     | undefined
   // The org's own logo (resolved in brandingData by the root loader, same source
   // PortalBrandMark uses); fall back to the Quackback mark when none is set.
@@ -130,6 +132,7 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
   const filteredNavItems = navItems.filter((item) => {
     if (item.href === '/admin/help-center') return flags?.helpCenter ?? false
     if (item.href === '/admin/inbox') return flags?.supportInbox ?? false
+    if (item.href === '/admin/tickets') return flags?.supportTickets ?? false
     return true
   })
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)

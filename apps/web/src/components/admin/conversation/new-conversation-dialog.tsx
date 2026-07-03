@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { ArrowLeftIcon, PaperAirplaneIcon } from '@heroicons/react/24/solid'
 import type { PrincipalId } from '@quackback/ids'
 import { startAgentConversationFn } from '@/lib/server/functions/conversation'
-import { adminQueries } from '@/lib/client/queries/admin'
-import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
 import { realEmail } from '@/lib/shared/anonymous-email'
+import { PortalUserPicker } from '@/components/shared/portal-user-picker'
 import {
   Dialog,
   DialogContent,
@@ -16,7 +15,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Avatar } from '@/components/ui/avatar'
 
@@ -47,23 +45,15 @@ export function NewConversationDialog({
 }: NewConversationDialogProps) {
   const navigate = useNavigate()
   const [target, setTarget] = useState<NewConversationTarget | null>(initialTarget ?? null)
-  const [search, setSearch] = useState('')
   const [message, setMessage] = useState('')
-  const debounced = useDebouncedValue(search.trim(), 350)
 
   // A fresh open starts clean, honoring the (possibly changed) initial target.
   useEffect(() => {
     if (open) {
       setTarget(initialTarget ?? null)
-      setSearch('')
       setMessage('')
     }
   }, [open, initialTarget])
-
-  const usersQuery = useQuery({
-    ...adminQueries.portalUsers({ search: debounced || undefined, page: 1, limit: 8 }),
-    enabled: open && !target,
-  })
 
   const send = useMutation({
     mutationFn: (vars: { targetPrincipalId: PrincipalId; content: string }) =>
@@ -93,52 +83,13 @@ export function NewConversationDialog({
         </DialogHeader>
 
         {!target ? (
-          <div className="space-y-2">
-            <Input
-              autoFocus
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search users by name or email…"
-            />
-            <div className="max-h-64 overflow-y-auto rounded-md border border-border/60 divide-y divide-border/40">
-              {usersQuery.isLoading ? (
-                <p className="px-3 py-4 text-sm text-muted-foreground">Searching…</p>
-              ) : (usersQuery.data?.items.length ?? 0) === 0 ? (
-                <p className="px-3 py-4 text-sm text-muted-foreground">No users found.</p>
-              ) : (
-                usersQuery.data!.items.map((u) => {
-                  const deliverable = !!realEmail(u.email)
-                  return (
-                    <button
-                      key={u.principalId}
-                      type="button"
-                      disabled={!deliverable}
-                      title={deliverable ? undefined : 'This user has no email address'}
-                      onClick={() =>
-                        setTarget({
-                          principalId: u.principalId,
-                          name: u.name,
-                          email: u.email,
-                          image: u.image,
-                        })
-                      }
-                      className="flex w-full items-center gap-2.5 px-3 py-2 text-start transition-colors hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <Avatar src={u.image} name={u.name ?? 'User'} className="size-7 text-xs" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm text-foreground">
-                          {u.name || 'Unnamed user'}
-                        </span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {realEmail(u.email) ?? 'No email'}
-                        </span>
-                      </span>
-                    </button>
-                  )
-                })
-              )}
-            </div>
-          </div>
+          <PortalUserPicker
+            onSelect={(u) => setTarget(u)}
+            enabled={open && !target}
+            limit={8}
+            requireEmail
+            autoFocus
+          />
         ) : (
           <div className="space-y-3">
             <div className="flex items-center gap-2.5 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
