@@ -10,7 +10,7 @@
  * per-scope conversation memory keep matching.
  */
 import { queryOptions } from '@tanstack/react-query'
-import type { ConversationId } from '@quackback/ids'
+import type { ConversationId, CompanyId } from '@quackback/ids'
 import { listConversationsFn, getConversationFn } from '@/lib/server/functions/conversation'
 import { fetchConversationTagsWithCountsFn } from '@/lib/server/functions/conversation-tags'
 import { fetchInboxSegmentsWithCountsFn } from '@/lib/server/functions/conversation-segments'
@@ -24,17 +24,30 @@ import { conversationKeys } from '@/lib/client/queries/conversation-keys'
 import type { ConversationPriority } from '@/lib/shared/conversation/types'
 
 export const conversationInboxQueries = {
-  /** The conversation list for a scope + status/priority/search refinement. */
+  /** The conversation list for a scope + status/priority/search refinement,
+   *  optionally narrowed to one company. The base key stays byte-identical to
+   *  the unfiltered inline key (so the loader's SSR prefetch still hydrates);
+   *  a company appends to it, staying under the agentConversations() prefix so
+   *  SSE invalidations keep matching. */
   conversationList: (
     nav: InboxNavItem,
     status: StatusFilter,
     priority: ConversationPriority | 'all',
-    search: string
-  ) =>
-    queryOptions({
-      queryKey: conversationKeys.agentConversationList(inboxNavKey(nav), status, priority, search),
-      queryFn: () => listConversationsFn({ data: buildListParams(nav, status, priority, search) }),
-    }),
+    search: string,
+    companyId?: CompanyId
+  ) => {
+    const baseKey = conversationKeys.agentConversationList(
+      inboxNavKey(nav),
+      status,
+      priority,
+      search
+    )
+    return queryOptions({
+      queryKey: companyId ? [...baseKey, companyId] : baseKey,
+      queryFn: () =>
+        listConversationsFn({ data: buildListParams(nav, status, priority, search, companyId) }),
+    })
+  },
 
   /** A single conversation's thread (conversation DTO + first page of messages). */
   thread: (conversationId: ConversationId) =>

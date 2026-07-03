@@ -46,6 +46,25 @@ describe('conversationInboxQueries key parity', () => {
     ).toEqual(['admin', 'inbox', 'conversations', `segment:${segId}`, 'open', 'all', ''])
   })
 
+  it('appends the companyId to the base key only when a company is selected', () => {
+    const base = conversationInboxQueries.conversationList(
+      { kind: 'view', view: 'all' },
+      'open',
+      'all',
+      ''
+    ).queryKey
+    expect(base).toEqual(['admin', 'inbox', 'conversations', 'view:all', 'open', 'all', ''])
+    expect(
+      conversationInboxQueries.conversationList(
+        { kind: 'view', view: 'all' },
+        'open',
+        'all',
+        '',
+        'company_z' as never
+      ).queryKey
+    ).toEqual([...base, 'company_z'])
+  })
+
   it('thread key matches the legacy thread key', () => {
     expect(conversationInboxQueries.thread(convId).queryKey).toEqual([
       'admin',

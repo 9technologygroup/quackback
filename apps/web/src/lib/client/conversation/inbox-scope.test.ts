@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import type { ConversationTagId, SegmentId } from '@quackback/ids'
+import type { ConversationTagId, SegmentId, CompanyId } from '@quackback/ids'
 import { navFromSearch, buildListParams, type InboxNavItem } from './inbox-scope'
 
 const tagId = 'conversation_tag_x' as ConversationTagId
 const segId = 'segment_y' as SegmentId
+const companyId = 'company_z' as CompanyId
 
 describe('navFromSearch', () => {
   it('resolves a tag scope', () => {
@@ -80,6 +81,17 @@ describe('buildListParams', () => {
       priority: undefined,
       assignee: 'all',
       search: undefined,
+    })
+  })
+
+  it('carries the optional company refinement across scopes', () => {
+    expect(buildListParams(view('all'), 'open', 'all', '', companyId)).toMatchObject({
+      assignee: 'all',
+      companyId,
+    })
+    expect(buildListParams({ kind: 'tag', tagId }, 'open', 'all', '', companyId)).toMatchObject({
+      tagIds: [tagId],
+      companyId,
     })
   })
 })

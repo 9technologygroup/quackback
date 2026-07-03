@@ -8,9 +8,9 @@ import { getCompanyForPrincipalFn } from '@/lib/server/functions/companies'
  * its plan / MRR, so an agent sees account value inline. Renders nothing when
  * the visitor has no company.
  *
- * Company-scoped conversation LISTS and a dedicated company detail page are
- * deferred; the name links to the People directory (where companies are edited)
- * for now.
+ * The name links to the People directory (where companies are edited); "View
+ * conversations" deep-links the inbox filtered to this company. A dedicated
+ * company detail page is still deferred.
  */
 export function CompanyCard({
   principalId,
@@ -63,6 +63,13 @@ export function CompanyCard({
           </div>
         )}
       </div>
+      <Link
+        to="/admin/inbox"
+        search={{ company: company.id }}
+        className="block text-xs font-medium text-primary hover:underline"
+      >
+        View conversations →
+      </Link>
     </div>
   )
 }

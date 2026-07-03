@@ -39,6 +39,7 @@ import type {
   ConversationTagId,
   ConversationMessageId,
   SegmentId,
+  CompanyId,
 } from '@quackback/ids'
 import { aggregateReactions } from '@/lib/shared'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
@@ -696,6 +697,8 @@ export interface ConversationListFilter {
    *  (OR semantics). Exclusive-scope today sends a single id, but the array keeps
    *  it symmetric with tagIds. */
   segmentIds?: SegmentId[]
+  /** Restrict to conversations whose visitor principal belongs to this company. */
+  companyId?: CompanyId
   /** Restrict to a single visitor's conversations (the admin user profile). */
   visitorPrincipalId?: PrincipalId
   /** "Mentions" view: only conversations whose internal notes @-mention this
@@ -808,6 +811,19 @@ export async function listConversationsForAgent(
                     isNull(segments.deletedAt)
                   )
                 )
+            )
+          : undefined,
+        // Company filter: conversations whose visitor principal belongs to the
+        // given company. A subquery over principal (served by
+        // principal_company_id_idx) keeps the outer select shape (conversations
+        // only) — same idiom as the segment filter above.
+        filter.companyId
+          ? inArray(
+              conversations.visitorPrincipalId,
+              db
+                .select({ id: principal.id })
+                .from(principal)
+                .where(eq(principal.companyId, filter.companyId))
             )
           : undefined,
         // Mentions view: conversations carrying an internal note that @-mentions

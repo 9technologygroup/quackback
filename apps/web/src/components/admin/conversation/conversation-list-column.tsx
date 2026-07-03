@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { ConversationId } from '@quackback/ids'
 import type {
   ConversationDTO,
@@ -57,6 +57,9 @@ interface ConversationListColumnProps {
   nav: InboxNavItem
   onSelectNav: (item: InboxNavItem) => void
   scopeLabel: string
+  /** Optional content rendered directly under the header (e.g. the company
+   *  filter), above the search + refinement chips. */
+  headerSlot?: ReactNode
   /** Whether to show the status/priority filter chips (hidden for the Mentions feed). */
   showRefinements: boolean
   /** Search input, mirrored from the nav sidebar (the list keeps a copy for the
@@ -82,6 +85,7 @@ export function ConversationListColumn({
   nav,
   onSelectNav,
   scopeLabel,
+  headerSlot,
   showRefinements,
   searchInput,
   onSearchInput,
@@ -123,6 +127,7 @@ export function ConversationListColumn({
           <PencilSquareIcon className="size-4" />
         </button>
       </div>
+      {headerSlot}
       <NewConversationDialog open={composeOpen} onOpenChange={setComposeOpen} />
       {/* Search is owned by the nav pane at lg+; the list keeps a copy for the
           sub-lg layout where that pane is hidden. */}

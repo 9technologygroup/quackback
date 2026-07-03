@@ -1,9 +1,10 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/solid'
+import { ChatBubbleLeftRightIcon, ChevronDownIcon } from '@heroicons/react/24/solid'
+import { BuildingOffice2Icon } from '@heroicons/react/24/outline'
 import { isValidTypeId } from '@quackback/ids'
-import type { ConversationId, ConversationMessageId } from '@quackback/ids'
+import type { ConversationId, ConversationMessageId, CompanyId } from '@quackback/ids'
 import type { ConversationPriority } from '@/lib/shared/conversation/types'
 import { AgentConversationThread } from '@/components/conversation/agent-conversation-thread'
 import {
@@ -30,10 +31,17 @@ import {
   type StatusFilter,
 } from '@/lib/client/conversation/inbox-scope'
 import { conversationInboxQueries } from '@/lib/client/queries/conversation-inbox'
+import { listCompaniesFn } from '@/lib/server/functions/companies'
 import { useConversationStream } from '@/lib/client/hooks/use-conversation-stream'
 import { useConversationTyping } from '@/lib/client/hooks/use-conversation-typing'
 import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
 import { EmptyState } from '@/components/shared/empty-state'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
@@ -84,6 +92,13 @@ export const Route = createFileRoute('/admin/inbox')({
       typeof search.post === 'string' && isValidTypeId(search.post, 'post')
         ? search.post
         : undefined,
+    // Company refinement (deep-linked from the conversation CompanyCard). Only a
+    // well-formed company id is accepted — a malformed `?company=` would reach a
+    // uuid-backed subquery and 500 the conversation list.
+    company:
+      typeof search.company === 'string' && isValidTypeId(search.company, 'company')
+        ? search.company
+        : undefined,
   }),
   // Re-run the prefetch when the scope / filters / open conversation change, so
   // a client-side navigation re-warms the cache too. ensureQueryData is a no-op
@@ -96,6 +111,7 @@ export const Route = createFileRoute('/admin/inbox')({
     priority: search.priority,
     q: search.q,
     c: search.c,
+    company: search.company,
   }),
   loader: async ({ deps, context }) => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
@@ -109,6 +125,9 @@ export const Route = createFileRoute('/admin/inbox')({
     const priority = deps.priority ?? 'all'
     const search = (deps.q ?? '').trim()
     const isSaved = nav.kind === 'view' && nav.view === 'saved'
+    // A `?company=` deep link SSR-prefetches the FILTERED list under the same
+    // factory key the component reads, so the filtered view hydrates too.
+    const company = deps.company as CompanyId | undefined
     // Best-effort: a failed prefetch (e.g. a stale `?c=`) must never break the
     // page — each is caught independently and the component's useQuery still
     // fetches client-side, degrading to today's behavior.
@@ -118,7 +137,7 @@ export const Route = createFileRoute('/admin/inbox')({
         ? undefined
         : warm(
             queryClient.ensureQueryData(
-              conversationInboxQueries.conversationList(nav, status, priority, search)
+              conversationInboxQueries.conversationList(nav, status, priority, search, company)
             )
           ),
       warm(queryClient.ensureQueryData(conversationInboxQueries.tagCounts())),
@@ -160,6 +179,7 @@ function InboxPage() {
     status: urlStatus,
     priority: urlPriority,
     q: urlQ,
+    company: urlCompany,
   } = Route.useSearch()
 
   // The URL is the single source of truth for the open conversation + filters,
@@ -265,8 +285,35 @@ function InboxPage() {
   // conversation-list query is idle there. The query options come from the shared
   // factory so the route loader's SSR prefetch (same key) hydrates this read.
   const isSaved = nav.kind === 'view' && nav.view === 'saved'
+
+  // Company refinement: a picker in the list header + the deep-link from the
+  // conversation CompanyCard. The picker only appears when companies exist.
+  const { data: companies } = useQuery({
+    queryKey: ['admin', 'companies'],
+    queryFn: () => listCompaniesFn(),
+    staleTime: 60_000,
+  })
+  // Drop a stale `?company=` (deleted / no longer visible) so the filter never
+  // strands the list on an unselectable company — mirrors the tag/segment
+  // scope-cleanup effect.
+  useEffect(() => {
+    if (urlCompany && companies && !companies.some((co) => co.id === urlCompany)) {
+      updateSearch({ company: undefined })
+    }
+  }, [urlCompany, companies, updateSearch])
+
+  // The list query comes straight from the shared factory: the unfiltered case
+  // keeps hydrating from the loader's SSR prefetch (identical key), and a
+  // selected company appends to the key + params without leaving the
+  // agentConversations() prefix that SSE invalidations target.
   const { data: listData, isLoading: listLoading } = useQuery({
-    ...conversationInboxQueries.conversationList(nav, status, priorityFilter, search),
+    ...conversationInboxQueries.conversationList(
+      nav,
+      status,
+      priorityFilter,
+      search,
+      urlCompany as CompanyId | undefined
+    ),
     refetchInterval: 30_000, // polling fallback if the stream drops
     enabled: !isSaved,
   })
@@ -365,6 +412,17 @@ function InboxPage() {
           onSelectNav={setNav}
           scopeLabel={scopeLabel}
           showRefinements={showRefinements}
+          // The company picker slots under the list header, appearing only when
+          // the workspace has companies to filter by.
+          headerSlot={
+            companies && companies.length > 0 ? (
+              <CompanyInboxFilter
+                companies={companies}
+                value={urlCompany}
+                onChange={(id) => updateSearch({ company: id, c: undefined, m: undefined })}
+              />
+            ) : undefined
+          }
           searchInput={searchInput}
           onSearchInput={setSearchInput}
           status={status}
@@ -402,6 +460,52 @@ function InboxPage() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * Compact company filter for the inbox list header: a dropdown over the
+ * workspace companies. "All companies" clears the refinement.
+ */
+function CompanyInboxFilter({
+  companies,
+  value,
+  onChange,
+}: {
+  companies: { id: string; name: string }[]
+  value: string | undefined
+  onChange: (companyId: string | undefined) => void
+}) {
+  const active = companies.find((co) => co.id === value)
+  return (
+    <div className="flex items-center gap-1.5 border-b border-border/50 px-3 py-2">
+      <BuildingOffice2Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="Filter by company"
+            className={cn(
+              'inline-flex min-w-0 shrink items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
+              value ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted'
+            )}
+          >
+            <span className="truncate">{active?.name ?? 'All companies'}</span>
+            <ChevronDownIcon className="h-3 w-3 shrink-0" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
+          <DropdownMenuItem onClick={() => onChange(undefined)} className="text-xs">
+            All companies
+          </DropdownMenuItem>
+          {companies.map((co) => (
+            <DropdownMenuItem key={co.id} onClick={() => onChange(co.id)} className="text-xs">
+              {co.name}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 }

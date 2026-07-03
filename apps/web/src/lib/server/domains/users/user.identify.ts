@@ -14,6 +14,7 @@ import {
   updatePrincipalFields,
 } from '@/lib/server/domains/principals/principal.factory'
 import { NotFoundError } from '@/lib/shared/errors'
+import { isUniqueViolation } from '@/lib/server/utils'
 import type {
   IdentifyPortalUserInput,
   IdentifyPortalUserResult,
@@ -140,7 +141,7 @@ export async function identifyPortalUser(
       created = true
     } catch (err) {
       // Handle concurrent insert race condition (unique constraint on email)
-      if ((err as { code?: string }).code === '23505') {
+      if (isUniqueViolation(err)) {
         userRecord = (await db.query.user.findFirst({
           where: eq(user.email, normalizedEmail),
           columns: USER_COLUMNS,

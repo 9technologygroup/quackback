@@ -21,6 +21,7 @@ import {
 } from '@/lib/server/db'
 import type { ConversationTagId, ConversationId } from '@quackback/ids'
 import { ValidationError, NotFoundError } from '@/lib/shared/errors'
+import { isUniqueViolation } from '@/lib/server/utils'
 import type { ConversationTagDTO } from '@/lib/shared/conversation/types'
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/
@@ -200,7 +201,7 @@ export async function updateConversationTag(
     // the DB. Translate the raw unique-violation into the same ValidationError
     // the pre-check throws (mirrors createConversationTag absorbing the constraint)
     // rather than surfacing a 500.
-    if ((err as { code?: string }).code === '23505') {
+    if (isUniqueViolation(err)) {
       throw new ValidationError('VALIDATION_ERROR', 'A tag with that name already exists')
     }
     throw err

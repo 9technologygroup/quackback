@@ -10,6 +10,7 @@
 import { db, eq, sql, companies, principal } from '@/lib/server/db'
 import type { PrincipalId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ConflictError } from '@/lib/shared/errors'
+import { isUniqueViolation } from '@/lib/server/utils'
 import { logger } from '@/lib/server/logger'
 import type {
   Company,
@@ -29,15 +30,10 @@ function nullableTrim(value: string | null | undefined): string | null {
 
 /** Map a Postgres unique violation on companies onto a typed ConflictError. */
 function translateUniqueError(err: unknown): never {
-  // Drizzle wraps the driver error; the pg fields live on `cause`.
-  const pgErr = (err as { cause?: unknown }).cause ?? err
-  const e = pgErr as {
-    code?: string
-    constraint?: string
-    constraint_name?: string
-    detail?: string
-  }
-  if (e.code === '23505') {
+  if (isUniqueViolation(err)) {
+    // Drizzle wraps the driver error; the pg fields live on `cause`.
+    const pgErr = (err as { cause?: unknown }).cause ?? err
+    const e = pgErr as { constraint?: string; constraint_name?: string; detail?: string }
     // The driver may expose the violated index as `constraint`, `constraint_name`,
     // or only in the `detail` text ("Key (external_id)=... already exists").
     const marker = `${e.constraint ?? ''} ${e.constraint_name ?? ''} ${e.detail ?? ''}`

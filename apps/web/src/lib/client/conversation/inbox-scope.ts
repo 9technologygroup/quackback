@@ -5,7 +5,7 @@
  * and lib/ may not import components/. Free of React/server imports so it's
  * unit-tested directly; the nav-sidebar component re-exports the nav types.
  */
-import type { ConversationTagId, SegmentId } from '@quackback/ids'
+import type { ConversationTagId, SegmentId, CompanyId } from '@quackback/ids'
 import type { ConversationStatus, ConversationPriority } from '@/lib/shared/conversation/types'
 
 export type InboxView = 'mine' | 'unassigned' | 'all' | 'mentions' | 'saved'
@@ -39,6 +39,9 @@ export interface InboxSearch {
   status?: StatusFilter
   priority?: ConversationPriority | 'all'
   q?: string
+  /** Company refinement (deep-linked from the conversation CompanyCard): restrict
+   *  the list to conversations whose visitor belongs to this company. */
+  company?: string
   /** Open post for the shared `?post=` modal (the whole admin layout mounts it).
    *  Set when an embedded post card in a conversation message is clicked; must be carried
    *  here or this route's validateSearch would strip it before the modal sees it. */
@@ -59,26 +62,36 @@ export function navFromSearch(search: InboxSearch): InboxNavItem {
  * Map the active nav scope + filter chips to the list-query params. The primary
  * views ARE the assignee queue (Mine / Unassigned / All); Mentions is a personal
  * feed; a Label/Segment scope refines by tag/segment. Status + priority are
- * optional chips ('all' = unset), applied within any non-Mentions scope.
+ * optional chips ('all' = unset), applied within any non-Mentions scope. The
+ * optional company refinement narrows any scope to one company's visitors.
  */
 export function buildListParams(
   nav: InboxNavItem,
   status: StatusFilter,
   priorityFilter: ConversationPriority | 'all',
-  search: string
+  search: string,
+  companyId?: CompanyId
 ) {
   const priority = priorityFilter === 'all' ? undefined : priorityFilter
   const statusParam = status === 'all' ? undefined : status
   const q = search || undefined
-  if (nav.kind === 'tag') return { tagIds: [nav.tagId], status: statusParam, priority, search: q }
+  const company = companyId || undefined
+  if (nav.kind === 'tag')
+    return { tagIds: [nav.tagId], status: statusParam, priority, search: q, companyId: company }
   if (nav.kind === 'segment')
-    return { segmentIds: [nav.segmentId], status: statusParam, priority, search: q }
-  if (nav.view === 'mentions') return { view: 'mentions' as const, search: q }
+    return {
+      segmentIds: [nav.segmentId],
+      status: statusParam,
+      priority,
+      search: q,
+      companyId: company,
+    }
+  if (nav.view === 'mentions') return { view: 'mentions' as const, search: q, companyId: company }
   const assignee =
     nav.view === 'mine'
       ? ('mine' as const)
       : nav.view === 'unassigned'
         ? ('unassigned' as const)
         : ('all' as const)
-  return { status: statusParam, priority, assignee, search: q }
+  return { status: statusParam, priority, assignee, search: q, companyId: company }
 }

@@ -30,6 +30,7 @@ import {
   isNull as _isNull,
   isNotNull as _isNotNull,
   exists as _exists,
+  notExists as _notExists,
   sql as _sql,
   desc as _desc,
   asc as _asc,
@@ -56,6 +57,7 @@ export const notInArray = _notInArray
 export const isNull = _isNull
 export const isNotNull = _isNotNull
 export const exists = _exists
+export const notExists = _notExists
 export const sql = _sql
 export const desc = _desc
 export const asc = _asc
@@ -198,6 +200,9 @@ export {
   conversationMessageReactionsRelations,
   conversationMessageFlags,
   conversationMessageFlagsRelations,
+  // Schema tables - channel identities + outbound-email threading
+  channelIdentities,
+  conversationOutboundEmails,
   // Schema tables - notifications
   inAppNotifications,
   inAppNotificationsRelations,

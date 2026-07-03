@@ -17,6 +17,7 @@ import type {
   BoardId,
   ConversationTagId,
   SegmentId,
+  CompanyId,
 } from '@quackback/ids'
 import {
   MAX_CONVERSATION_MESSAGE_LENGTH,
@@ -81,6 +82,8 @@ const listConversationsSchema = z.object({
   tagIds: z.array(z.string()).optional(),
   // Filter to conversations whose visitor is a member of ANY of these segments.
   segmentIds: z.array(z.string()).optional(),
+  // Restrict to conversations whose visitor belongs to this company.
+  companyId: z.string().optional(),
   // 'mentions' = only conversations whose internal notes @-mention the
   // requesting agent (the principal is resolved server-side from auth).
   view: z.enum(['all', 'mentions']).optional(),
@@ -619,6 +622,7 @@ export const listConversationsFn = createServerFn({ method: 'GET' })
         search: data.search,
         tagIds: data.tagIds as ConversationTagId[] | undefined,
         segmentIds: data.segmentIds as SegmentId[] | undefined,
+        companyId: data.companyId as CompanyId | undefined,
         // Always the requesting agent — never trust a client-supplied id here.
         mentionedPrincipalId: data.view === 'mentions' ? ctx.principal.id : undefined,
         before: data.before,
