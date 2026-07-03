@@ -12,6 +12,7 @@ vi.mock('@/lib/server/domains/assistant', () => ({
   retrieveKbArticles: (...args: unknown[]) => mockRetrieve(...args),
   synthesizeAnswer: (...args: unknown[]) => mockSynthesize(...args),
   isAskAiConfigured: (...args: unknown[]) => mockIsConfigured(...args),
+  RELATED_SIMILARITY_FLOOR: 0.3,
 }))
 
 const mockIncrementBucket = vi.fn()
@@ -47,6 +48,7 @@ beforeEach(() => {
   mockBucketRetryAfter.mockResolvedValue(42)
   mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
   mockSynthesize.mockResolvedValue({
+    kind: 'grounded',
     answer: 'Do the thing.',
     sources: [{ articleId: 'kb_article_1' }],
   })
@@ -123,7 +125,7 @@ describe('GET /api/widget/kb-ask', () => {
     mockSynthesize.mockImplementation(async (params: { onAnswerDelta?: (d: string) => void }) => {
       params.onAnswerDelta?.('Do the ')
       params.onAnswerDelta?.('thing.')
-      return { answer: 'Do the thing.', sources: [{ articleId: 'kb_article_1' }] }
+      return { kind: 'grounded', answer: 'Do the thing.', sources: [{ articleId: 'kb_article_1' }] }
     })
 
     const res = await handleKbAsk({ request: makeRequest({ q: 'how do I do the thing?' }) })
@@ -150,27 +152,65 @@ describe('GET /api/widget/kb-ask', () => {
       ],
     })
     expect(frames[3].data).toEqual({
+      kind: 'grounded',
       answer: 'Do the thing.',
       sources: [{ articleId: 'kb_article_1' }],
     })
   })
 
-  it('emits a no-answer final without calling the model when retrieval is empty', async () => {
-    mockRetrieve.mockResolvedValue([])
+  it('still calls the model on empty retrieval and returns a graceful miss with related', async () => {
+    // Primary retrieval finds nothing above the answer floor; the related
+    // lookup (softer floor, keyed by minScore) surfaces a near-miss to suggest.
+    mockRetrieve.mockImplementation(async (_q: string, opts?: { minScore?: number }) =>
+      opts?.minScore !== undefined ? [makeKbArticle('kb_article_9')] : []
+    )
+    mockSynthesize.mockResolvedValue({
+      kind: 'no_answer',
+      answer: "I couldn't find anything about that. Try rephrasing or contact the team.",
+      sources: [],
+    })
+
     const res = await handleKbAsk({ request: makeRequest({ q: 'gibberish' }) })
     const frames = parseSse(await res.text())
-    expect(frames).toEqual([{ event: 'kb-ask.v1.final', data: { answer: null, sources: [] } }])
-    expect(mockSynthesize).not.toHaveBeenCalled()
-  })
 
-  it('maps an empty model answer to the no-answer final payload', async () => {
-    mockSynthesize.mockResolvedValue({ answer: '', sources: [] })
-    const res = await handleKbAsk({ request: makeRequest({ q: 'off topic' }) })
-    const frames = parseSse(await res.text())
+    expect(mockSynthesize).toHaveBeenCalled()
     expect(frames.at(-1)).toEqual({
       event: 'kb-ask.v1.final',
-      data: { answer: null, sources: [] },
+      data: {
+        kind: 'no_answer',
+        answer: "I couldn't find anything about that. Try rephrasing or contact the team.",
+        sources: [],
+        related: [
+          {
+            articleId: 'kb_article_9',
+            title: 'Title kb_article_9',
+            slug: 'slug-kb_article_9',
+            categorySlug: 'general',
+            categoryName: 'General',
+          },
+        ],
+      },
     })
+  })
+
+  it('reuses the retrieved articles as related suggestions on a no-answer', async () => {
+    // Articles were retrieved but did not answer: they become the suggestions,
+    // with no extra retrieval round-trip.
+    mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
+    mockSynthesize.mockResolvedValue({
+      kind: 'no_answer',
+      answer: 'I could not find a specific answer to that.',
+      sources: [],
+    })
+
+    const res = await handleKbAsk({ request: makeRequest({ q: 'nearby topic' }) })
+    const frames = parseSse(await res.text())
+    const final = frames.at(-1)?.data as { kind: string; related: Array<{ articleId: string }> }
+
+    expect(final.kind).toBe('no_answer')
+    expect(final.related.map((r) => r.articleId)).toEqual(['kb_article_1'])
+    // The retrieved set was reused; no second retrieval call.
+    expect(mockRetrieve).toHaveBeenCalledTimes(1)
   })
 
   it('emits a versioned error event when synthesis fails', async () => {

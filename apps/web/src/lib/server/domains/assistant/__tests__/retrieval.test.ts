@@ -126,6 +126,20 @@ describe('retrieveKbArticles', () => {
     expect(trimCall).toContain(KB_ASK_CONTEXT_CHARS)
   })
 
+  it('uses the answer floor as the default semantic minimum score', async () => {
+    mockGenerateKbEmbedding.mockResolvedValue([0.5])
+    await retrieveKbArticles('anything')
+    const floorCall = vi.mocked(sql).mock.calls.find((c) => (c as unknown[]).includes(0.5))
+    expect(floorCall).toBeDefined()
+  })
+
+  it('lowers the semantic floor when minScore is given (related near-misses)', async () => {
+    mockGenerateKbEmbedding.mockResolvedValue([0.5])
+    await retrieveKbArticles('anything', { minScore: 0.3 })
+    const floorCall = vi.mocked(sql).mock.calls.find((c) => (c as unknown[]).includes(0.3))
+    expect(floorCall).toBeDefined()
+  })
+
   it('applies the public category predicate for the public audience', async () => {
     mockGenerateKbEmbedding.mockResolvedValue([0.5])
     await retrieveKbArticles('anything', { audience: 'public' })

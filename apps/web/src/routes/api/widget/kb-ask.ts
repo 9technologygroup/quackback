@@ -18,11 +18,14 @@ import {
   retrieveKbArticles,
   synthesizeAnswer,
   isAskAiConfigured,
+  RELATED_SIMILARITY_FLOOR,
+  type RetrievedKbArticle,
 } from '@/lib/server/domains/assistant'
 import {
   KB_ASK_EVENTS,
   type KbAskErrorPayload,
   type KbAskFinalPayload,
+  type KbAskSourceMeta,
   type KbAskSourcesPayload,
 } from '@/lib/shared/help-center/kb-ask-contract'
 import {
@@ -39,7 +42,40 @@ export const KB_ASK_MAX_QUERY_CHARS = 500
 export const KB_ASK_RATE_LIMIT = 10
 const RATE_WINDOW_SECONDS = 60
 
-const NO_ANSWER: KbAskFinalPayload = { answer: null, sources: [] }
+/** How many related near-miss articles to suggest alongside a no-answer. */
+const KB_ASK_RELATED_TOP_K = 3
+
+function toSourceMeta(a: RetrievedKbArticle): KbAskSourceMeta {
+  return {
+    articleId: a.id,
+    title: a.title,
+    slug: a.slug,
+    categorySlug: a.categorySlug,
+    categoryName: a.categoryName,
+  }
+}
+
+/**
+ * Near-miss suggestions to offer on a no-answer: reuse the articles already
+ * retrieved, or widen the net with a softer similarity floor when nothing
+ * cleared the answer floor. Never throws — suggestions are best-effort.
+ */
+async function relatedArticles(
+  query: string,
+  retrieved: RetrievedKbArticle[]
+): Promise<RetrievedKbArticle[]> {
+  if (retrieved.length > 0) return retrieved.slice(0, KB_ASK_RELATED_TOP_K)
+  try {
+    // topK already caps the row count in SQL, so no post-slice is needed.
+    return await retrieveKbArticles(query, {
+      audience: 'public',
+      minScore: RELATED_SIMILARITY_FLOOR,
+      topK: KB_ASK_RELATED_TOP_K,
+    })
+  } catch {
+    return []
+  }
+}
 
 export async function handleKbAsk({ request }: { request: Request }): Promise<Response> {
   const flags = await getFeatureFlags()
@@ -97,23 +133,16 @@ export async function handleKbAsk({ request }: { request: Request }): Promise<Re
 
   void (async () => {
     try {
-      // Nothing cleared the similarity floor: honest no-answer, zero model
-      // spend.
-      if (articles.length === 0) {
-        sse.send(KB_ASK_EVENTS.final, NO_ANSWER)
-        return
+      // Stream the grounded candidates up front so the surface can show which
+      // articles the answer will be built from while it streams.
+      if (articles.length > 0) {
+        sse.send(KB_ASK_EVENTS.sources, {
+          sources: articles.map(toSourceMeta),
+        } satisfies KbAskSourcesPayload)
       }
 
-      sse.send(KB_ASK_EVENTS.sources, {
-        sources: articles.map((a) => ({
-          articleId: a.id,
-          title: a.title,
-          slug: a.slug,
-          categorySlug: a.categorySlug,
-          categoryName: a.categoryName,
-        })),
-      } satisfies KbAskSourcesPayload)
-
+      // Always run the model — even with no articles it gives a graceful,
+      // contextual "couldn't find that" instead of a dead-end empty reply.
       const result = await synthesizeAnswer({
         query,
         articles,
@@ -121,14 +150,24 @@ export async function handleKbAsk({ request }: { request: Request }): Promise<Re
         onAnswerDelta: (text) => sse.send(KB_ASK_EVENTS.delta, { text }),
       })
 
-      if (result.answer.trim()) {
+      if (result.kind === 'grounded' && result.sources.length > 0) {
         sse.send(KB_ASK_EVENTS.final, {
+          kind: 'grounded',
           answer: result.answer,
           sources: result.sources,
         } satisfies KbAskFinalPayload)
-      } else {
-        sse.send(KB_ASK_EVENTS.final, NO_ANSWER)
+        return
       }
+
+      // Graceful miss: keep the model's contextual reply, and suggest related
+      // near-misses as clickable next steps.
+      const related = await relatedArticles(query, articles)
+      sse.send(KB_ASK_EVENTS.final, {
+        kind: 'no_answer',
+        answer: result.answer,
+        sources: [],
+        related: related.map(toSourceMeta),
+      } satisfies KbAskFinalPayload)
     } catch (error) {
       if (!request.signal.aborted) {
         log.error({ err: error }, 'kb ask synthesis failed')

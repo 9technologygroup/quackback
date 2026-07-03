@@ -32,10 +32,23 @@ export interface KbAskDeltaPayload {
   text: string
 }
 
-/** kb-ask.v1.final: the validated answer, or null for an honest no-answer. */
+/**
+ * Whether the final answer is grounded in cited articles, or an ungrounded
+ * graceful "couldn't find that" reply. A miss still carries prose (the model's
+ * contextual acknowledgement), so `answer` is null only on a hard failure.
+ */
+export type KbAskAnswerKind = 'grounded' | 'no_answer'
+
+/** kb-ask.v1.final: the validated answer. */
 export interface KbAskFinalPayload {
+  /** 'grounded' cites articles; 'no_answer' is a graceful, uncited miss. */
+  kind: KbAskAnswerKind
+  /** Answer or miss prose. Null only when the model could not be reached. */
   answer: string | null
+  /** Cited articles for a grounded answer, ordered to match inline [n]. */
   sources: Array<{ articleId: string }>
+  /** Related near-miss articles to suggest as next steps on a no_answer. */
+  related?: KbAskSourceMeta[]
 }
 
 /** kb-ask.v1.error: a terminal failure after the stream opened. */

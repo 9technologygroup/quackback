@@ -518,6 +518,7 @@
   "helpAskAi.noAnswer": "Wir konnten in unseren Hilfeartikeln keine Antwort finden. Versuche andere Suchbegriffe oder stöbere in den Artikeln.",
   "helpAskAi.error": "Wir konnten gerade keine Antwort erstellen. Bitte versuche es erneut.",
   "helpAskAi.sources": "Quellen",
+  "helpAskAi.related": "Ähnliche Artikel",
   "helpAskAi.searchPlaceholder": "Frag die KI oder durchsuche unsere Hilfeartikel, um eine Antwort zu finden",
   "helpAskAi.rowTitle": "KI zu \"{query}\" fragen",
   "helpAskAi.rowSubtitle": "Lass dir deine Frage in Sekunden von der KI beantworten",

@@ -518,6 +518,7 @@
   "helpAskAi.noAnswer": "我們沒有在說明文章中找到答案。請嘗試其他關鍵字或瀏覽文章。",
   "helpAskAi.error": "目前無法產生答案，請再試一次。",
   "helpAskAi.sources": "來源",
+  "helpAskAi.related": "相關文章",
   "helpAskAi.searchPlaceholder": "詢問 AI，或搜尋我們的說明文章尋找答案",
   "helpAskAi.rowTitle": "向 AI 詢問「{query}」",
   "helpAskAi.rowSubtitle": "讓 AI 在幾秒內回答你的問題",

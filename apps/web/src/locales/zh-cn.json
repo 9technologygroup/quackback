@@ -518,6 +518,7 @@
   "helpAskAi.noAnswer": "我们没有在帮助文章中找到答案。请尝试其他关键词或浏览文章。",
   "helpAskAi.error": "暂时无法生成答案，请稍后重试。",
   "helpAskAi.sources": "来源",
+  "helpAskAi.related": "相关文章",
   "helpAskAi.searchPlaceholder": "问问 AI，或搜索我们的帮助文章寻找答案",
   "helpAskAi.rowTitle": "向 AI 询问\"{query}\"",
   "helpAskAi.rowSubtitle": "让 AI 在几秒钟内回答你的问题",

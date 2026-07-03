@@ -21,6 +21,13 @@ import {
   type HelpCenterAudience,
 } from '@/lib/server/domains/help-center/help-center-search.service'
 
+/**
+ * A softer cosine floor for "related" near-misses. Below the answer floor, so
+ * these articles are not good enough to answer from, but relevant enough to
+ * suggest as next steps when Ask AI can't answer. Semantic path only.
+ */
+export const RELATED_SIMILARITY_FLOOR = 0.3
+
 export interface RetrievedKbArticle {
   id: string
   slug: string
@@ -35,6 +42,12 @@ export interface RetrievedKbArticle {
 export interface RetrieveKbArticlesOptions {
   audience?: HelpCenterAudience
   topK?: number
+  /**
+   * Minimum cosine similarity for the semantic path (default: the answer
+   * floor). Lower it to surface "related" near-misses for suggestions.
+   * Ignored on the keyword fallback, whose ts_rank scale is unrelated.
+   */
+  minScore?: number
 }
 
 /** Default number of articles stuffed into the synthesis context. */
@@ -61,13 +74,14 @@ export async function retrieveKbArticles(
 ): Promise<RetrievedKbArticle[]> {
   const audience = options.audience ?? 'public'
   const topK = options.topK ?? KB_ASK_TOP_K
+  const minScore = options.minScore ?? SEMANTIC_SIMILARITY_FLOOR
 
   const embedding = await generateKbEmbedding(query, {
     pipelineStep: 'kb_retrieval_query_embedding',
   })
 
   const rows = embedding
-    ? await semanticQuery(embedding, audience, topK)
+    ? await semanticQuery(embedding, audience, topK, minScore)
     : await keywordQuery(query, audience, topK)
 
   return rows.map((r) => ({
@@ -96,7 +110,8 @@ interface RetrievalRow {
 async function semanticQuery(
   embedding: number[],
   audience: HelpCenterAudience,
-  topK: number
+  topK: number,
+  minScore: number
 ): Promise<RetrievalRow[]> {
   const vectorStr = `[${embedding.join(',')}]`
   const similarity = sql<number>`1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector)`
@@ -121,7 +136,7 @@ async function semanticQuery(
       and(
         ...helpCenterVisibilityConditions(audience),
         sql`${helpCenterArticles.embedding} IS NOT NULL`,
-        sql`1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector) > ${SEMANTIC_SIMILARITY_FLOOR}`
+        sql`1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector) > ${minScore}`
       )
     )
     .orderBy(sql`score DESC`)

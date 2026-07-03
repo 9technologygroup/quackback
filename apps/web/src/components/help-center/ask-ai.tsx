@@ -3,8 +3,9 @@
  * panel used by the widget Help tab and the /hc hero search.
  *
  * Consumes the versioned kb-ask.v1.* event contract. The answer is rendered
- * as plain text (no HTML injection surface); citations are chips resolved
- * from the sources event.
+ * through the shared AssistantAnswer component, so its inline [n] citation
+ * dots and hover source cards match the messenger assistant exactly. A miss
+ * ('no_answer') streams a graceful reply plus related-article suggestions.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FormattedMessage, useIntl } from 'react-intl'
@@ -12,10 +13,13 @@ import { useQuery } from '@tanstack/react-query'
 import { SparklesIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import {
   KB_ASK_EVENTS,
+  type KbAskAnswerKind,
   type KbAskFinalPayload,
   type KbAskSourceMeta,
 } from '@/lib/shared/help-center/kb-ask-contract'
-import { splitByTerms, parseMarkdownLite, type InlineSpan } from './ask-ai-text'
+import { AssistantAnswer } from '@/components/shared/conversation/assistant-turn'
+import type { ConversationMessageCitation } from '@/lib/shared/conversation/types'
+import { splitByTerms } from './ask-ai-text'
 
 // ============================================================================
 // Stream contract (kb-ask.v1.*)
@@ -131,11 +135,38 @@ interface AskAiState {
   status: AskAiStatus
   question: string
   answer: string
-  /** Sources cited by the final answer, resolved to display metadata. */
+  /** 'grounded' cites sources; 'no_answer' offers related suggestions. */
+  kind: KbAskAnswerKind
+  /** Sources cited by a grounded answer, resolved to display metadata. */
   citedSources: AskAiSourceMeta[]
+  /** Related near-miss articles suggested on a no_answer. */
+  related: AskAiSourceMeta[]
 }
 
-const IDLE_STATE: AskAiState = { status: 'idle', question: '', answer: '', citedSources: [] }
+const IDLE_STATE: AskAiState = {
+  status: 'idle',
+  question: '',
+  answer: '',
+  kind: 'grounded',
+  citedSources: [],
+  related: [],
+}
+
+/** In-app two-segment help-center article path (category + article slug). */
+function articleHref(source: AskAiSourceMeta): string {
+  return `/hc/articles/${source.categorySlug}/${source.slug}`
+}
+
+/** Present cited sources as the shared assistant citation shape so the answer
+ *  renders with the same inline citation dots the messenger uses. */
+function toCitations(sources: AskAiSourceMeta[]): ConversationMessageCitation[] {
+  return sources.map((s) => ({
+    type: 'article',
+    id: s.articleId,
+    title: s.title,
+    url: articleHref(s),
+  }))
+}
 
 /** Drive one Ask AI question at a time; re-asking aborts the previous run. */
 export function useAskAi() {
@@ -156,7 +187,18 @@ export function useAskAi() {
     const controller = new AbortController()
     abortRef.current = controller
 
-    setState({ status: 'loading', question: q, answer: '', citedSources: [] })
+    // A result-less state (loading, error, hard no-answer): the answer/source
+    // fields are all empty and unread until a terminal event replaces them.
+    const blank = (status: AskAiStatus): AskAiState => ({
+      status,
+      question: q,
+      answer: '',
+      kind: 'grounded',
+      citedSources: [],
+      related: [],
+    })
+
+    setState(blank('loading'))
 
     let retrieved: AskAiSourceMeta[] = []
     try {
@@ -164,7 +206,7 @@ export function useAskAi() {
         signal: controller.signal,
       })
       if (!res.ok || !res.body) {
-        setState({ status: 'error', question: q, answer: '', citedSources: [] })
+        setState(blank('error'))
         return
       }
 
@@ -180,8 +222,21 @@ export function useAskAi() {
           }))
         },
         onFinal: (final) => {
+          // Hard failure fallback: the model could not be reached at all.
           if (final.answer === null) {
-            setState({ status: 'no-answer', question: q, answer: '', citedSources: [] })
+            setState(blank('no-answer'))
+            return
+          }
+          // Graceful miss: keep the streamed reply, offer related articles.
+          if (final.kind === 'no_answer') {
+            setState({
+              status: 'done',
+              question: q,
+              answer: final.answer,
+              kind: 'no_answer',
+              citedSources: [],
+              related: final.related ?? [],
+            })
             return
           }
           const byId = new Map(retrieved.map((s) => [s.articleId, s]))
@@ -189,10 +244,17 @@ export function useAskAi() {
             const meta = byId.get(s.articleId)
             return meta ? [meta] : []
           })
-          setState({ status: 'done', question: q, answer: final.answer, citedSources: cited })
+          setState({
+            status: 'done',
+            question: q,
+            answer: final.answer,
+            kind: 'grounded',
+            citedSources: cited,
+            related: [],
+          })
         },
         onError: () => {
-          setState({ status: 'error', question: q, answer: '', citedSources: [] })
+          setState(blank('error'))
         },
       })
 
@@ -205,7 +267,7 @@ export function useAskAi() {
       )
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return
-      setState({ status: 'error', question: q, answer: '', citedSources: [] })
+      setState(blank('error'))
     }
   }, [])
 
@@ -359,130 +421,44 @@ export function HighlightedText({ text, query }: { text: string; query: string }
 }
 
 /**
- * A Wikipedia-style inline citation: a superscript `[n]` that links to the
- * n-th cited source. Until the final sources arrive (mid-stream) or when the
- * number has no matching source, it renders as an inert marker.
+ * A numbered list of articles under the answer: cited "Sources" for a grounded
+ * reply, or "Related articles" suggestions for a no-answer miss.
  */
-function CitationMark({
-  n,
-  citedSources,
+function SourceList({
+  titleId,
+  titleDefault,
+  sources,
   onSourceClick,
 }: {
-  n: number
-  citedSources: AskAiSourceMeta[]
+  titleId: string
+  titleDefault: string
+  sources: AskAiSourceMeta[]
   onSourceClick: (source: AskAiSourceMeta) => void
 }) {
-  const source = citedSources[n - 1]
-  if (!source) {
-    return <sup className="text-[0.65em] font-medium text-muted-foreground/60">[{n}]</sup>
-  }
+  if (sources.length === 0) return null
   return (
-    <sup>
-      <button
-        type="button"
-        onClick={() => onSourceClick(source)}
-        aria-label={source.title}
-        className="text-[0.65em] font-semibold text-primary align-super hover:underline underline-offset-2 cursor-pointer"
-      >
-        [{n}]
-      </button>
-    </sup>
-  )
-}
-
-interface InlineRenderProps {
-  spans: InlineSpan[]
-  citedSources: AskAiSourceMeta[]
-  onSourceClick: (source: AskAiSourceMeta) => void
-}
-
-/** Render one line's inline spans: plain text, **bold**, and [n] citations. */
-function InlineSpans({ spans, citedSources, onSourceClick }: InlineRenderProps) {
-  return (
-    <>
-      {spans.map((span, k) =>
-        span.cite !== undefined ? (
-          <CitationMark
-            key={k}
-            n={span.cite}
-            citedSources={citedSources}
-            onSourceClick={onSourceClick}
-          />
-        ) : span.bold ? (
-          <strong key={k}>{span.text}</strong>
-        ) : (
-          <span key={k}>{span.text}</span>
-        )
-      )}
-    </>
-  )
-}
-
-interface AskAiMarkdownProps {
-  text: string
-  citedSources: AskAiSourceMeta[]
-  onSourceClick: (source: AskAiSourceMeta) => void
-  /** Render a streaming caret inline at the end of the last line. */
-  caret?: boolean
-}
-
-/** Thin, square typing caret that trails the streamed answer text. */
-function AnswerCaret() {
-  return (
-    <span
-      aria-hidden="true"
-      className="ms-0.5 inline-block h-[1em] w-px animate-pulse bg-primary/80 align-[-0.15em]"
-    />
-  )
-}
-
-/**
- * Markdown-lite answer rendering: paragraphs, ordered/bullet lists, bold, and
- * inline `[n]` citation links. No raw HTML.
- */
-function AskAiMarkdown({ text, citedSources, onSourceClick, caret = false }: AskAiMarkdownProps) {
-  const blocks = parseMarkdownLite(text)
-  const lastBlock = blocks.length - 1
-  return (
-    <div className="space-y-2.5 text-sm text-foreground leading-relaxed">
-      {blocks.length === 0 && caret && <AnswerCaret />}
-      {blocks.map((block, i) => {
-        const isLast = i === lastBlock
-        if (block.kind === 'list') {
-          const lastItem = block.items.length - 1
-          const items = block.items.map((item, j) => (
-            <li key={j} className="ps-0.5">
-              <InlineSpans spans={item} citedSources={citedSources} onSourceClick={onSourceClick} />
-              {caret && isLast && j === lastItem && <AnswerCaret />}
-            </li>
-          ))
-          return block.ordered ? (
-            <ol key={i} className="list-decimal ps-5 space-y-1 marker:text-muted-foreground/60">
-              {items}
-            </ol>
-          ) : (
-            <ul key={i} className="list-disc ps-5 space-y-1 marker:text-muted-foreground/50">
-              {items}
-            </ul>
-          )
-        }
-        const lastLine = block.lines.length - 1
-        return (
-          <p key={i}>
-            {block.lines.map((line, j) => (
-              <span key={j}>
-                {j > 0 && <br />}
-                <InlineSpans
-                  spans={line}
-                  citedSources={citedSources}
-                  onSourceClick={onSourceClick}
-                />
-                {caret && isLast && j === lastLine && <AnswerCaret />}
+    <div className="pt-2 mt-1 border-t border-border/40">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60 mb-1.5">
+        <FormattedMessage id={titleId} defaultMessage={titleDefault} />
+      </p>
+      <ol className="space-y-0.5">
+        {sources.map((source, i) => (
+          <li key={source.articleId}>
+            <button
+              type="button"
+              onClick={() => onSourceClick(source)}
+              className="group flex w-full items-baseline gap-2 rounded-md px-1.5 py-1 text-start hover:bg-muted/50 transition-colors cursor-pointer"
+            >
+              <span className="shrink-0 text-xs font-semibold text-primary tabular-nums">
+                {i + 1}.
               </span>
-            ))}
-          </p>
-        )
-      })}
+              <span className="min-w-0 flex-1 text-sm text-foreground line-clamp-1 group-hover:text-primary group-hover:underline underline-offset-2">
+                {source.title}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ol>
     </div>
   )
 }
@@ -535,13 +511,22 @@ interface AskAiAnswerPanelProps {
 
 /**
  * The in-place answer panel that replaces the autocomplete results:
- * question header with spinner while streaming, dismiss control, the
- * streamed answer (markdown-lite), and citation links.
+ * question header with spinner while streaming, dismiss control, the streamed
+ * answer with the shared assistant citation dots, and the source/related list.
  */
 export function AskAiAnswerPanel({ state, onDismiss, onSourceClick }: AskAiAnswerPanelProps) {
   const intl = useIntl()
   if (state.status === 'idle') return null
   const busy = state.status === 'loading' || state.status === 'streaming'
+
+  // Resolve a clicked citation dot back to its article metadata for in-app nav.
+  const sourceById = new Map<string, AskAiSourceMeta>(
+    [...state.citedSources, ...state.related].map((s) => [s.articleId, s])
+  )
+  const openCitation = (citation: ConversationMessageCitation) => {
+    const source = sourceById.get(citation.id)
+    if (source) onSourceClick(source)
+  }
 
   return (
     <div className="rounded-xl border border-border/60 bg-muted/20 px-3.5 py-3 space-y-2.5">
@@ -570,14 +555,12 @@ export function AskAiAnswerPanel({ state, onDismiss, onSourceClick }: AskAiAnswe
       )}
 
       {(state.status === 'streaming' || state.status === 'done') && (
-        <div>
-          <AskAiMarkdown
-            text={state.answer}
-            citedSources={state.citedSources}
-            onSourceClick={onSourceClick}
-            caret={state.status === 'streaming'}
-          />
-        </div>
+        <AssistantAnswer
+          text={state.answer}
+          citations={toCitations(state.citedSources)}
+          caret={state.status === 'streaming'}
+          onCitationOpen={openCitation}
+        />
       )}
 
       {state.status === 'no-answer' && (
@@ -598,30 +581,22 @@ export function AskAiAnswerPanel({ state, onDismiss, onSourceClick }: AskAiAnswe
         </p>
       )}
 
-      {state.status === 'done' && state.citedSources.length > 0 && (
-        <div className="pt-2 mt-1 border-t border-border/40">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60 mb-1.5">
-            <FormattedMessage id="helpAskAi.sources" defaultMessage="Sources" />
-          </p>
-          <ol className="space-y-0.5">
-            {state.citedSources.map((source, i) => (
-              <li key={source.articleId}>
-                <button
-                  type="button"
-                  onClick={() => onSourceClick(source)}
-                  className="group flex w-full items-baseline gap-2 rounded-md px-1.5 py-1 text-start hover:bg-muted/50 transition-colors cursor-pointer"
-                >
-                  <span className="shrink-0 text-xs font-semibold text-primary tabular-nums">
-                    {i + 1}.
-                  </span>
-                  <span className="min-w-0 flex-1 text-sm text-foreground line-clamp-1 group-hover:text-primary group-hover:underline underline-offset-2">
-                    {source.title}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ol>
-        </div>
+      {state.status === 'done' && state.kind === 'grounded' && (
+        <SourceList
+          titleId="helpAskAi.sources"
+          titleDefault="Sources"
+          sources={state.citedSources}
+          onSourceClick={onSourceClick}
+        />
+      )}
+
+      {state.status === 'done' && state.kind === 'no_answer' && (
+        <SourceList
+          titleId="helpAskAi.related"
+          titleDefault="Related articles"
+          sources={state.related}
+          onSourceClick={onSourceClick}
+        />
       )}
     </div>
   )

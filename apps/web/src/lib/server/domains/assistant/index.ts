@@ -11,6 +11,7 @@ export {
   retrieveKbArticles,
   KB_ASK_TOP_K,
   KB_ASK_CONTEXT_CHARS,
+  RELATED_SIMILARITY_FLOOR,
   type RetrievedKbArticle,
   type RetrieveKbArticlesOptions,
 } from './retrieval'
@@ -19,7 +20,9 @@ export {
   isAskAiConfigured,
   buildAskAiSystemPrompts,
   AskAiNotConfiguredError,
+  ASK_AI_MISS_FALLBACK,
   type AskAiAnswer,
+  type AskAiAnswerKind,
   type AskAiSource,
   type SynthesizeAnswerParams,
 } from './synthesis'

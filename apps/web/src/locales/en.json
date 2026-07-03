@@ -518,6 +518,7 @@
   "helpAskAi.noAnswer": "Sorry, we couldn't find any information about that in our help articles. Try rephrasing your question or browse the articles.",
   "helpAskAi.error": "We couldn't generate an answer right now. Please try again.",
   "helpAskAi.sources": "Sources",
+  "helpAskAi.related": "Related articles",
   "helpAskAi.searchPlaceholder": "Ask AI or search our help articles to find an answer",
   "helpAskAi.rowTitle": "Ask AI about \"{query}\"",
   "helpAskAi.rowSubtitle": "Use AI to answer your question in seconds",

@@ -518,6 +518,7 @@
   "helpAskAi.noAnswer": "No encontramos una respuesta en nuestros artículos de ayuda. Prueba con otras palabras clave o explora los artículos.",
   "helpAskAi.error": "No pudimos generar una respuesta en este momento. Inténtalo de nuevo.",
   "helpAskAi.sources": "Fuentes",
+  "helpAskAi.related": "Artículos relacionados",
   "helpAskAi.searchPlaceholder": "Pregunta a la IA o busca en nuestros artículos de ayuda para encontrar una respuesta",
   "helpAskAi.rowTitle": "Preguntar a la IA sobre \"{query}\"",
   "helpAskAi.rowSubtitle": "Usa la IA para responder tu pregunta en segundos",

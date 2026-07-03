@@ -55,20 +55,47 @@ function citationHost(url: string): string {
   }
 }
 
+/** Open behaviour for a citation. Callback-driven surfaces (the help-center
+ *  Ask AI) navigate in-app; without one, the dot is a new-tab link. */
+export type CitationOpen = (citation: ConversationMessageCitation) => void
+
+const CITATION_DOT_CLASS =
+  'mx-0.5 inline-grid h-[18px] w-[18px] place-items-center rounded-full bg-foreground/10 text-[10.5px] font-bold tabular-nums text-muted-foreground no-underline transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:bg-primary focus-visible:text-primary-foreground'
+
 /** A single inline citation dot with a hover/focus source card (Fibi-style). */
-function CitationDot({ n, citation }: { n: number; citation: ConversationMessageCitation }) {
+function CitationDot({
+  n,
+  citation,
+  onOpen,
+}: {
+  n: number
+  citation: ConversationMessageCitation
+  onOpen?: CitationOpen
+}) {
   const source = citationHost(citation.url) || citation.title
+  const label = `Source ${n}: ${citation.title}`
   return (
     <span className="group relative inline-block align-[1px]">
-      <a
-        href={citation.url}
-        target="_blank"
-        rel="noreferrer"
-        aria-label={`Source ${n}: ${citation.title}`}
-        className="mx-0.5 inline-grid h-[18px] w-[18px] place-items-center rounded-full bg-foreground/10 text-[10.5px] font-bold tabular-nums text-muted-foreground no-underline transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:bg-primary focus-visible:text-primary-foreground"
-      >
-        {n}
-      </a>
+      {onOpen ? (
+        <button
+          type="button"
+          onClick={() => onOpen(citation)}
+          aria-label={label}
+          className={cn(CITATION_DOT_CLASS, 'cursor-pointer')}
+        >
+          {n}
+        </button>
+      ) : (
+        <a
+          href={citation.url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={label}
+          className={CITATION_DOT_CLASS}
+        >
+          {n}
+        </a>
+      )}
       <span className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-30 w-56 -translate-x-1/2 translate-y-1 rounded-xl border border-border bg-popover p-3 text-left opacity-0 shadow-xl transition-all group-hover:pointer-events-auto group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-y-0 group-focus-within:opacity-100">
         <span className="mb-1.5 block text-[13px] font-semibold leading-snug text-foreground">
           {citation.title}
@@ -97,16 +124,20 @@ function AnswerCaret() {
 function InlineSpans({
   spans,
   citations,
+  onOpen,
 }: {
   spans: InlineSpan[]
   citations: ConversationMessageCitation[]
+  onOpen?: CitationOpen
 }) {
   return (
     <>
       {spans.map((span, k) => {
         if (span.cite !== undefined) {
           const citation = citations[span.cite - 1]
-          return citation ? <CitationDot key={k} n={span.cite} citation={citation} /> : null
+          return citation ? (
+            <CitationDot key={k} n={span.cite} citation={citation} onOpen={onOpen} />
+          ) : null
         }
         return span.bold ? <strong key={k}>{span.text}</strong> : <span key={k}>{span.text}</span>
       })}
@@ -123,10 +154,13 @@ export function AssistantAnswer({
   text,
   citations,
   caret = false,
+  onCitationOpen,
 }: {
   text: string
   citations: ConversationMessageCitation[]
   caret?: boolean
+  /** When set, citation dots become in-app buttons instead of new-tab links. */
+  onCitationOpen?: CitationOpen
 }) {
   const blocks = parseMarkdownLite(text)
   const lastBlock = blocks.length - 1
@@ -139,7 +173,7 @@ export function AssistantAnswer({
           const lastItem = block.items.length - 1
           const items = block.items.map((item, j) => (
             <li key={j} className="ps-0.5">
-              <InlineSpans spans={item} citations={citations} />
+              <InlineSpans spans={item} citations={citations} onOpen={onCitationOpen} />
               {caret && isLast && j === lastItem && <AnswerCaret />}
             </li>
           ))
@@ -159,7 +193,7 @@ export function AssistantAnswer({
             {block.lines.map((line, j) => (
               <span key={j}>
                 {j > 0 && <br />}
-                <InlineSpans spans={line} citations={citations} />
+                <InlineSpans spans={line} citations={citations} onOpen={onCitationOpen} />
                 {caret && isLast && j === lastLine && <AnswerCaret />}
               </span>
             ))}

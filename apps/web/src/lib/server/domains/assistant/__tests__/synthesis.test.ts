@@ -45,6 +45,7 @@ import {
   isAskAiConfigured,
   buildAskAiSystemPrompts,
   AskAiNotConfiguredError,
+  ASK_AI_MISS_FALLBACK,
 } from '../synthesis'
 
 /** Build an async-iterable stream from a list of chunks. */
@@ -117,8 +118,15 @@ describe('buildAskAiSystemPrompts', () => {
     expect(joined.toLowerCase()).toContain('not instructions')
     expect(joined.toLowerCase()).toContain('same language')
     expect(joined.toLowerCase()).toContain('never invent an articleid')
-    // Hard no-answer instruction when the sources do not cover the question.
-    expect(joined.toLowerCase()).toContain('empty string for "answer"')
+  })
+
+  it('teaches the graceful no_answer mode instead of an empty reply', () => {
+    const joined = buildAskAiSystemPrompts([article('kb_article_1')]).join('\n')
+    // The model must always reply; a miss is a warm no_answer, never empty.
+    expect(joined.toLowerCase()).toContain('never return an empty answer')
+    expect(joined).toContain('no_answer')
+    // And must not fabricate product behaviour on a miss.
+    expect(joined.toLowerCase()).toContain('never invent product features')
   })
 })
 
@@ -131,7 +139,11 @@ describe('synthesizeAnswer', () => {
   })
 
   it('returns the validated answer and streams answer deltas', async () => {
-    const object = { answer: 'Use the invite button.', sources: [{ articleId: 'kb_article_1' }] }
+    const object = {
+      kind: 'grounded',
+      answer: 'Use the invite button.',
+      sources: [{ articleId: 'kb_article_1' }],
+    }
     mockChat.mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
 
     const deltas: string[] = []
@@ -145,8 +157,46 @@ describe('synthesizeAnswer', () => {
     expect(deltas.join('')).toBe('Use the invite button.')
   })
 
+  it('returns a graceful no_answer when the model declares a miss', async () => {
+    const object = {
+      kind: 'no_answer',
+      answer: "I couldn't find anything about dark mode. Try rephrasing or contact the team.",
+      sources: [],
+    }
+    mockChat.mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
+
+    const result = await synthesizeAnswer({
+      query: 'how do I enable dark mode?',
+      articles: [article('kb_article_1')],
+    })
+
+    expect(result).toEqual(object)
+  })
+
+  it('salvages a well-formed answer from raw text when no structured object arrives', async () => {
+    // Provider streamed valid-but-fenced JSON and never emitted the structured
+    // completion event: jsonrepair should recover it rather than failing.
+    const raw =
+      '```json\n{"kind":"grounded","answer":"Click save [1]","sources":[{"articleId":"kb_article_1"}]}\n```'
+    mockChat.mockReturnValueOnce(
+      chunkStream([
+        { type: 'TEXT_MESSAGE_CONTENT', delta: raw },
+        { type: 'RUN_FINISHED', usage: undefined },
+      ])
+    )
+
+    const result = await synthesizeAnswer({ query: 'q', articles: [article('kb_article_1')] })
+    expect(result).toEqual({
+      kind: 'grounded',
+      answer: 'Click save [1]',
+      sources: [{ articleId: 'kb_article_1' }],
+    })
+    expect(mockChat).toHaveBeenCalledTimes(1)
+  })
+
   it('drops cited ids that were not retrieved and dedupes', async () => {
     const object = {
+      kind: 'grounded',
       answer: 'Answer.',
       sources: [
         { articleId: 'kb_article_1' },
@@ -161,22 +211,31 @@ describe('synthesizeAnswer', () => {
       articles: [article('kb_article_1'), article('kb_article_2')],
     })
 
+    expect(result.kind).toBe('grounded')
     expect(result.sources).toEqual([{ articleId: 'kb_article_1' }])
   })
 
-  it('treats an answer with no surviving citations as a no-answer', async () => {
-    // Model produced prose but cited nothing retrievable: no grounding, so we
-    // return an empty answer and the surface apologises.
-    const object = { answer: 'A confident but uncited claim.', sources: [{ articleId: 'nope' }] }
+  it('demotes a grounded answer with no surviving citations to a safe miss', async () => {
+    // Model claimed a grounded answer but cited nothing retrievable: the prose
+    // may be fabricated, so we discard it for the canned miss fallback.
+    const object = {
+      kind: 'grounded',
+      answer: 'A confident but uncited claim.',
+      sources: [{ articleId: 'nope' }],
+    }
     mockChat.mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
 
     const result = await synthesizeAnswer({ query: 'q', articles: [article('kb_article_1')] })
 
-    expect(result).toEqual({ answer: '', sources: [] })
+    expect(result).toEqual({ kind: 'no_answer', answer: ASK_AI_MISS_FALLBACK, sources: [] })
   })
 
   it('passes numbered sources and the user query to chat()', async () => {
-    const object = { answer: 'A.', sources: [] }
+    const object = {
+      kind: 'grounded',
+      answer: 'A. [1]',
+      sources: [{ articleId: 'kb_article_1' }],
+    }
     mockChat.mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
 
     await synthesizeAnswer({ query: 'my question', articles: [article('kb_article_1')] })
@@ -190,7 +249,11 @@ describe('synthesizeAnswer', () => {
   })
 
   it('retries once when the stream yields no validated object', async () => {
-    const object = { answer: 'Second try.', sources: [{ articleId: 'kb_article_1' }] }
+    const object = {
+      kind: 'grounded',
+      answer: 'Second try.',
+      sources: [{ articleId: 'kb_article_1' }],
+    }
     mockChat
       .mockReturnValueOnce(chunkStream([{ type: 'RUN_FINISHED', usage: undefined }]))
       .mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
@@ -224,7 +287,7 @@ describe('synthesizeAnswer', () => {
   it('forwards a caller abort to the chat abort controller mid-run', async () => {
     const abort = new AbortController()
     let observedDuringRun: boolean | undefined
-    const object = { answer: 'A.', sources: [] }
+    const object = { kind: 'no_answer', answer: 'A.', sources: [] }
     mockChat.mockImplementationOnce((opts: { abortController: AbortController }) =>
       (async function* () {
         yield { type: 'TEXT_MESSAGE_CONTENT', delta: '{"answer": "A' }
@@ -248,7 +311,7 @@ describe('synthesizeAnswer', () => {
   })
 
   it('logs usage with the retrieved article ids in metadata', async () => {
-    const object = { answer: 'A.', sources: [] }
+    const object = { kind: 'no_answer', answer: 'A.', sources: [] }
     mockChat.mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
 
     await synthesizeAnswer({ query: 'q', articles: [article('kb_article_1')] })
