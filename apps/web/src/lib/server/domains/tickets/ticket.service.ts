@@ -381,6 +381,44 @@ export async function setTicketStatus(
 }
 
 /**
+ * A requester reply reopens a ticket that was awaiting them or closed (§4.2, the
+ * ticket-axis analogue of conversation reopen): from an `awaiting_requester`-
+ * projecting status OR a `closed` category, move to the first open-category status
+ * (clearing resolved_at + counting the reopen when leaving closed). No-op
+ * otherwise. No permission check — the trigger is a requester reply on their own
+ * ticket, verified upstream. Returns whether it moved.
+ */
+export async function autoReopenOnRequesterReply(id: TicketId): Promise<boolean> {
+  const existing = await loadTicketOr404(id)
+  const [current] = await db
+    .select({ category: ticketStatuses.category, publicStage: ticketStatuses.publicStage })
+    .from(ticketStatuses)
+    .where(eq(ticketStatuses.id, existing.statusId))
+    .limit(1)
+  if (!current) return false
+  const awaiting = resolveStage(current) === 'awaiting_requester'
+  if (!awaiting && current.category !== 'closed') return false
+
+  const [firstOpen] = await db
+    .select({ id: ticketStatuses.id })
+    .from(ticketStatuses)
+    .where(and(eq(ticketStatuses.category, 'open'), isNull(ticketStatuses.deletedAt)))
+    .orderBy(asc(ticketStatuses.position))
+    .limit(1)
+  if (!firstOpen || firstOpen.id === existing.statusId) return false
+
+  const now = new Date()
+  const transition = statusTransition(current.category, 'open', now)
+  const patch: Partial<Ticket> = { statusId: firstOpen.id, updatedAt: now }
+  if (transition.resolvedAt !== undefined) patch.resolvedAt = transition.resolvedAt
+  if (transition.reopenedIncrement) {
+    patch.reopenedCount = sql`${tickets.reopenedCount} + 1` as unknown as number
+  }
+  await db.update(tickets).set(patch).where(eq(tickets.id, id))
+  return true
+}
+
+/**
  * Assign a ticket to a teammate and/or a team. Polymorphic and independent: an
  * absent key leaves that side untouched (no clearing rule — mirrors the
  * conversation team assignment). Pass an explicit null to clear one side.

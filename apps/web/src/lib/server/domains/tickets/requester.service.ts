@@ -15,6 +15,7 @@ import {
   buildTicketContext,
   ticketToDTO,
   createTicketCore,
+  autoReopenOnRequesterReply,
 } from './ticket.service'
 import {
   insertTicketMessage,
@@ -113,10 +114,10 @@ export async function replyToMyTicket(
   const message = await insertTicketMessage(input, principalId, {
     senderType: 'visitor',
     isInternal: false,
-    // A requester reply is not an agent "first response". The requester-reply
-    // auto-transition (moving an awaiting_requester/closed ticket back to open)
-    // arrives with the notification slice.
+    // A requester reply is not an agent "first response".
     stampFirstResponse: false,
   })
+  // A reply from a waiting/closed requester reopens the ticket (§4.2).
+  await autoReopenOnRequesterReply(input.ticketId)
   return { message }
 }

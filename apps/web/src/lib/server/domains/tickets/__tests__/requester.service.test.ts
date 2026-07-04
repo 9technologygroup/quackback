@@ -97,6 +97,62 @@ async function seedWorld() {
   return { me, other, mine, theirs, myBackOffice }
 }
 
+/** A first-open + an awaiting-requester + a closed status, for reopen tests. */
+async function seedStagedStatuses() {
+  await testDb
+    .update(ticketStatuses)
+    .set({ isDefault: false })
+    .where(eq(ticketStatuses.isDefault, true))
+  const [firstOpen] = await testDb
+    .insert(ticketStatuses)
+    .values({
+      name: 'New',
+      slug: `open_${suffix()}`,
+      category: 'open',
+      position: 0,
+      isDefault: true,
+      publicStage: 'received',
+    })
+    .returning()
+  const [awaiting] = await testDb
+    .insert(ticketStatuses)
+    .values({
+      name: 'Waiting',
+      slug: `wait_${suffix()}`,
+      category: 'pending',
+      position: 5,
+      publicStage: 'awaiting_requester',
+    })
+    .returning()
+  const [closed] = await testDb
+    .insert(ticketStatuses)
+    .values({
+      name: 'Done',
+      slug: `closed_${suffix()}`,
+      category: 'closed',
+      position: 9,
+      publicStage: 'resolved',
+    })
+    .returning()
+  return { firstOpen, awaiting, closed }
+}
+
+async function readTicketRow(id: TicketId) {
+  const [row] = await testDb.select().from(tickets).where(eq(tickets.id, id)).limit(1)
+  return row
+}
+
+/** The category of the ticket's current status (the reopen may land on any of
+ *  several seeded/committed open statuses, so tests assert the category). */
+async function currentStatusCategory(ticketId: TicketId): Promise<string> {
+  const row = await readTicketRow(ticketId)
+  const [status] = await testDb
+    .select({ category: ticketStatuses.category })
+    .from(ticketStatuses)
+    .where(eq(ticketStatuses.id, row.statusId))
+  return status.category
+}
+
 describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled back)', () => {
   beforeEach(fixture.begin)
   afterEach(fixture.rollback)
@@ -170,5 +226,63 @@ describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled b
     const page = await getMyTicketThread(requesterActor(me), dto.id)
     expect(page.messages.map((m) => m.senderType)).toEqual(['visitor'])
     expect(page.messages[0].content).toBe('It really broke')
+  })
+
+  it('a requester reply reopens an awaiting-requester ticket to the first open status', async () => {
+    await testDb
+      .insert(settings)
+      .values({ name: 'WS', slug: `ws_${suffix()}`, createdAt: new Date() })
+    const s = await seedStagedStatuses()
+    const me = await seedPrincipal()
+    const ticketId = createId('ticket') as TicketId
+    await testDb.insert(tickets).values({
+      id: ticketId,
+      title: 'T',
+      statusId: s.awaiting.id,
+      type: 'customer',
+      requesterPrincipalId: me,
+    })
+    await replyToMyTicket(requesterActor(me), { ticketId, content: 'still broken' })
+    expect(await currentStatusCategory(ticketId)).toBe('open')
+  })
+
+  it('a requester reply reopens a closed ticket, clearing resolvedAt + counting the reopen', async () => {
+    await testDb
+      .insert(settings)
+      .values({ name: 'WS', slug: `ws_${suffix()}`, createdAt: new Date() })
+    const s = await seedStagedStatuses()
+    const me = await seedPrincipal()
+    const ticketId = createId('ticket') as TicketId
+    await testDb.insert(tickets).values({
+      id: ticketId,
+      title: 'T',
+      statusId: s.closed.id,
+      type: 'customer',
+      requesterPrincipalId: me,
+      resolvedAt: new Date(),
+    })
+    await replyToMyTicket(requesterActor(me), { ticketId, content: 'reopen please' })
+    const row = await readTicketRow(ticketId)
+    expect(await currentStatusCategory(ticketId)).toBe('open')
+    expect(row.resolvedAt).toBeNull()
+    expect(row.reopenedCount).toBe(1)
+  })
+
+  it('a requester reply on an already-open ticket does not change its status', async () => {
+    await testDb
+      .insert(settings)
+      .values({ name: 'WS', slug: `ws_${suffix()}`, createdAt: new Date() })
+    const s = await seedStagedStatuses()
+    const me = await seedPrincipal()
+    const ticketId = createId('ticket') as TicketId
+    await testDb.insert(tickets).values({
+      id: ticketId,
+      title: 'T',
+      statusId: s.firstOpen.id,
+      type: 'customer',
+      requesterPrincipalId: me,
+    })
+    await replyToMyTicket(requesterActor(me), { ticketId, content: 'thanks' })
+    expect((await readTicketRow(ticketId)).statusId).toBe(s.firstOpen.id)
   })
 })
