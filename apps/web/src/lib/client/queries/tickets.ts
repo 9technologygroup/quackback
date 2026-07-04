@@ -11,6 +11,7 @@ import {
   getTicketFn,
   listTicketStatusesFn,
   getTicketStageLabelsFn,
+  listTicketMessagesFn,
 } from '@/lib/server/functions/tickets'
 import type { TicketListFilter } from '@/lib/server/domains/tickets'
 
@@ -42,6 +43,8 @@ export const ticketKeys = {
   statuses: () => [...ticketKeys.all(), 'statuses'] as const,
   /** The workspace's customer-facing stage labels. */
   stageLabels: () => [...ticketKeys.all(), 'stage-labels'] as const,
+  /** A single ticket's message thread. */
+  thread: (id: TicketId) => [...ticketKeys.all(), 'thread', id] as const,
 }
 
 export const ticketQueries = {
@@ -76,5 +79,14 @@ export const ticketQueries = {
       queryKey: ticketKeys.stageLabels(),
       queryFn: () => getTicketStageLabelsFn(),
       staleTime: 60_000,
+    }),
+
+  /** A ticket's message thread (oldest-first). No live SSE yet, so a short
+   *  staleTime + refetch-on-focus keeps it reasonably fresh for the agent. */
+  thread: (id: TicketId) =>
+    queryOptions({
+      queryKey: ticketKeys.thread(id),
+      queryFn: () => listTicketMessagesFn({ data: { ticketId: id } }),
+      staleTime: 10_000,
     }),
 }

@@ -75,13 +75,17 @@ export function UnreadDivider() {
 
 interface AgentMessageBubbleProps {
   message: AgentConversationMessageDTO
-  onDelete: () => void
+  /** Hide the hover toolbar (reactions / flag / mark-unread / delete) and render
+   *  the message read-only. Ticket threads reuse the bubble without those inbox
+   *  affordances (7C). Defaults to false so the conversation inbox is unchanged. */
+  readOnly?: boolean
+  onDelete?: () => void
   /** Toggle the caller's reaction with `emoji` (hasReacted = current state). */
-  onToggleReaction: (emoji: string, hasReacted: boolean) => void
+  onToggleReaction?: (emoji: string, hasReacted: boolean) => void
   /** Set/clear the team-wide flag (next = the desired flagged state). */
-  onToggleFlag: (next: boolean) => void
+  onToggleFlag?: (next: boolean) => void
   /** Mark the conversation unread from this message. */
-  onMarkUnread: () => void
+  onMarkUnread?: () => void
   /** Visitor-only: open the picker to share an existing post in the conversation. */
   onSharePost?: () => void
   /** Visitor-only: open the full dialog prefilled from this message. */
@@ -121,10 +125,11 @@ interface VisitorMessageBubbleProps {
 
 export function AgentMessageBubble({
   message,
-  onDelete,
-  onToggleReaction,
-  onToggleFlag,
-  onMarkUnread,
+  readOnly = false,
+  onDelete = () => {},
+  onToggleReaction = () => {},
+  onToggleFlag = () => {},
+  onMarkUnread = () => {},
   onSharePost,
   onTrackAsPost,
   onTrackSuggestion,
@@ -299,102 +304,104 @@ export function AgentMessageBubble({
         )}
       </div>
 
-      {/* Hover toolbar */}
-      <div
-        className={cn(
-          'absolute -top-3 right-2 z-10 flex items-center gap-0.5 rounded-lg border border-border bg-card p-0.5 shadow-sm transition-opacity',
-          toolbarPinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-        )}
-      >
-        <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              aria-label="Add reaction"
-            >
-              <FaceSmileIcon className="h-4 w-4" />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-auto p-1">
-            <div className="flex gap-0.5">
-              {REACTION_EMOJIS.map((emoji) => {
-                const has = message.reactions.some((r) => r.emoji === emoji && r.hasReacted)
-                return (
-                  <button
-                    key={emoji}
-                    type="button"
-                    aria-label={`React with ${emoji}`}
-                    aria-pressed={has}
-                    onClick={() => {
-                      onToggleReaction(emoji, has)
-                      setEmojiOpen(false)
-                    }}
-                    className={cn(
-                      'flex size-8 items-center justify-center rounded text-lg leading-none hover:bg-muted',
-                      has && 'bg-primary/10'
-                    )}
-                  >
-                    {emoji}
-                  </button>
-                )
-              })}
-            </div>
-          </PopoverContent>
-        </Popover>
-
-        <button
-          type="button"
-          onClick={() => onToggleFlag(!isFlagged)}
+      {/* Hover toolbar: inbox affordances, hidden in read-only ticket threads. */}
+      {!readOnly && (
+        <div
           className={cn(
-            'flex size-7 items-center justify-center rounded transition-colors hover:bg-muted',
-            isFlagged ? 'text-amber-500' : 'text-muted-foreground hover:text-foreground'
+            'absolute -top-3 right-2 z-10 flex items-center gap-0.5 rounded-lg border border-border bg-card p-0.5 shadow-sm transition-opacity',
+            toolbarPinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
           )}
-          aria-label={isFlagged ? 'Remove flag' : 'Flag message'}
-          aria-pressed={isFlagged}
         >
-          {isFlagged ? (
-            <BookmarkSolidIcon className="h-4 w-4" />
-          ) : (
-            <BookmarkIcon className="h-4 w-4" />
-          )}
-        </button>
+          <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="Add reaction"
+              >
+                <FaceSmileIcon className="h-4 w-4" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-auto p-1">
+              <div className="flex gap-0.5">
+                {REACTION_EMOJIS.map((emoji) => {
+                  const has = message.reactions.some((r) => r.emoji === emoji && r.hasReacted)
+                  return (
+                    <button
+                      key={emoji}
+                      type="button"
+                      aria-label={`React with ${emoji}`}
+                      aria-pressed={has}
+                      onClick={() => {
+                        onToggleReaction(emoji, has)
+                        setEmojiOpen(false)
+                      }}
+                      className={cn(
+                        'flex size-8 items-center justify-center rounded text-lg leading-none hover:bg-muted',
+                        has && 'bg-primary/10'
+                      )}
+                    >
+                      {emoji}
+                    </button>
+                  )
+                })}
+              </div>
+            </PopoverContent>
+          </Popover>
 
-        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              aria-label="More actions"
-            >
-              <EllipsisVerticalIcon className="h-4 w-4" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={onMarkUnread}>
-              <EnvelopeIcon className="h-4 w-4" /> Mark unread
-            </DropdownMenuItem>
-            <DropdownMenuItem variant="destructive" onClick={onDelete}>
-              <TrashIcon className="h-4 w-4" /> Delete
-            </DropdownMenuItem>
-            {showTrackActions && (
-              <>
-                <DropdownMenuSeparator />
-                {onSharePost && (
-                  <DropdownMenuItem onClick={onSharePost}>
-                    <ChatBubbleLeftRightIcon className="h-4 w-4" /> Share a post…
-                  </DropdownMenuItem>
-                )}
-                {onTrackAsPost && (
-                  <DropdownMenuItem onClick={onTrackAsPost}>
-                    <AdjustmentsHorizontalIcon className="h-4 w-4" /> Track as feedback…
-                  </DropdownMenuItem>
-                )}
-              </>
+          <button
+            type="button"
+            onClick={() => onToggleFlag(!isFlagged)}
+            className={cn(
+              'flex size-7 items-center justify-center rounded transition-colors hover:bg-muted',
+              isFlagged ? 'text-amber-500' : 'text-muted-foreground hover:text-foreground'
             )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+            aria-label={isFlagged ? 'Remove flag' : 'Flag message'}
+            aria-pressed={isFlagged}
+          >
+            {isFlagged ? (
+              <BookmarkSolidIcon className="h-4 w-4" />
+            ) : (
+              <BookmarkIcon className="h-4 w-4" />
+            )}
+          </button>
+
+          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="More actions"
+              >
+                <EllipsisVerticalIcon className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={onMarkUnread}>
+                <EnvelopeIcon className="h-4 w-4" /> Mark unread
+              </DropdownMenuItem>
+              <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                <TrashIcon className="h-4 w-4" /> Delete
+              </DropdownMenuItem>
+              {showTrackActions && (
+                <>
+                  <DropdownMenuSeparator />
+                  {onSharePost && (
+                    <DropdownMenuItem onClick={onSharePost}>
+                      <ChatBubbleLeftRightIcon className="h-4 w-4" /> Share a post…
+                    </DropdownMenuItem>
+                  )}
+                  {onTrackAsPost && (
+                    <DropdownMenuItem onClick={onTrackAsPost}>
+                      <AdjustmentsHorizontalIcon className="h-4 w-4" /> Track as feedback…
+                    </DropdownMenuItem>
+                  )}
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
     </div>
   )
 }

@@ -6,15 +6,15 @@ import { ticketQueries } from '@/lib/client/queries/tickets'
 import { TicketTypeBadge, TicketStageChip } from '@/components/admin/tickets/ticket-chips'
 import { TicketStatusControl } from '@/components/admin/tickets/ticket-controls'
 import { TicketDetailPanel } from '@/components/admin/tickets/ticket-detail-panel'
+import { TicketThread } from '@/components/admin/tickets/ticket-thread'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Spinner } from '@/components/shared/spinner'
 
 /**
  * The ticket detail: a center panel with the ticket header (title, reference,
- * type, status) and a quiet empty-state, plus the right PROPERTIES panel.
- *
- * 7A is properties-only. The message thread + composer arrive with ticket
- * messaging (7B), so the center deliberately shows no reply surface.
+ * type, status) + the message thread + composer, plus the right PROPERTIES panel.
+ * The thread reuses the shared conversation thread core over the polymorphic
+ * message table (§4.2).
  */
 export function TicketDetail({
   ticketId,
@@ -48,7 +48,7 @@ export function TicketDetail({
 
   return (
     <div className="flex min-w-0 flex-1">
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Header */}
         <div className="flex items-start gap-3 border-b border-border/50 px-4 py-3">
           <button
@@ -72,14 +72,8 @@ export function TicketDetail({
           </div>
         </div>
 
-        {/* Center: no thread in 7A */}
-        <div className="flex flex-1 items-center justify-center p-6">
-          <EmptyState
-            icon={ChatBubbleLeftRightIcon}
-            title="Ticket messaging coming soon"
-            description="Replies and the full thread arrive with ticket messaging. For now this ticket tracks its properties and status."
-          />
-        </div>
+        {/* Center: the ticket message thread + reply/note composer. */}
+        <TicketThread ticketId={ticketId} />
       </div>
 
       <TicketDetailPanel ticket={ticket} onChanged={onChanged} />
