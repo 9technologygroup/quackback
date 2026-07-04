@@ -399,11 +399,15 @@ export type ConversationSystemEventKind =
   | 'chat_reopened'
   | 'assigned'
   | 'assistant_handoff'
+  | 'ticket_status_changed'
 
 export interface ConversationSystemEvent {
   kind: ConversationSystemEventKind
   /** Assignee display name for 'assigned'. */
   agentName?: string
+  /** Customer-facing stage label for 'ticket_status_changed' (never the raw
+   *  internal status name). */
+  stageLabel?: string
 }
 
 // An agent-only suggestion (carried on an internal note) to track a resolved

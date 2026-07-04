@@ -177,6 +177,42 @@ describe.skipIf(!fixture.available)('ticket.service (real DB, rolled back)', () 
     expect(page.messages).toHaveLength(0)
   })
 
+  it('a public_stage crossing posts a status event into the ticket thread', async () => {
+    await seedSettings()
+    const { closed } = await seedStatuses() // default open projects 'received'; closed projects 'resolved'
+    const actor = adminActor()
+    const created = await createTicket({ type: 'customer', title: 'Crossing' }, actor)
+    await setTicketStatus(created.id, closed.id, actor) // received -> resolved
+    const page = await listTicketMessages(created.id, { includeInternal: true })
+    const event = page.messages.find((m) => m.systemEvent?.kind === 'ticket_status_changed')
+    expect(event).toBeDefined()
+    expect(event?.systemEvent?.stageLabel).toBeTruthy()
+    expect(event?.senderType).toBe('system')
+  })
+
+  it('a same-stage status change stays silent', async () => {
+    await seedSettings()
+    await seedStatuses() // default open projects 'received'
+    const actor = adminActor()
+    // Another open status projecting the SAME public stage.
+    const [sameStage] = await testDb
+      .insert(ticketStatuses)
+      .values({
+        name: 'Triaging',
+        slug: `tri_${suffix()}`,
+        category: 'open',
+        position: 3,
+        publicStage: 'received',
+      })
+      .returning()
+    const created = await createTicket({ type: 'customer', title: 'Quiet' }, actor)
+    await setTicketStatus(created.id, sameStage.id, actor) // received -> received
+    const page = await listTicketMessages(created.id, { includeInternal: true })
+    expect(
+      page.messages.find((m) => m.systemEvent?.kind === 'ticket_status_changed')
+    ).toBeUndefined()
+  })
+
   it('closing stamps resolvedAt + firstResponseAt; reopening clears resolvedAt and counts the reopen', async () => {
     await seedSettings()
     const { open, closed } = await seedStatuses()

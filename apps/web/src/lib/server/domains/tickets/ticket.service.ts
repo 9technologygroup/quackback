@@ -354,12 +354,12 @@ export async function setTicketStatus(
   // its category to compute the transition.
   const [[target], [current]] = await Promise.all([
     db
-      .select({ category: ticketStatuses.category })
+      .select({ category: ticketStatuses.category, publicStage: ticketStatuses.publicStage })
       .from(ticketStatuses)
       .where(and(eq(ticketStatuses.id, statusId), isNull(ticketStatuses.deletedAt)))
       .limit(1),
     db
-      .select({ category: ticketStatuses.category })
+      .select({ category: ticketStatuses.category, publicStage: ticketStatuses.publicStage })
       .from(ticketStatuses)
       .where(eq(ticketStatuses.id, existing.statusId))
       .limit(1),
@@ -377,7 +377,32 @@ export async function setTicketStatus(
   if (stamp) patch.firstResponseAt = stamp
 
   const [updated] = await db.update(tickets).set(patch).where(eq(tickets.id, id)).returning()
+
+  // A public_stage crossing to a visible stage is the single customer-facing
+  // signal (§4.2): post a status event into the ticket thread. Null-stage and
+  // same-stage churn stay silent (customers hear stage progress, not internal
+  // churn). The requester bell/email + conversation echo ride this same crossing
+  // in a later slice.
+  const newStage = resolveStage(target)
+  const oldStage = current ? resolveStage(current) : null
+  if (newStage && newStage !== oldStage) {
+    const labels = await getStageLabels()
+    await postTicketStatusEvent(id, labels[newStage])
+  }
+
   return ticketRowToDTO(updated)
+}
+
+/** Post a customer-visible status event into a ticket's thread (never the raw
+ *  internal status name — only the public stage label). */
+async function postTicketStatusEvent(ticketId: TicketId, stageLabel: string): Promise<void> {
+  await db.insert(conversationMessages).values({
+    ticketId,
+    principalId: null,
+    senderType: 'system',
+    content: `Status updated to ${stageLabel}`,
+    metadata: { systemEvent: { kind: 'ticket_status_changed', stageLabel } },
+  })
 }
 
 /**
