@@ -427,6 +427,14 @@ export interface ConversationMessageMetadata {
   source?: 'email'
   /** Provider Message-ID for an inbound email, used to dedupe webhook retries. */
   emailMessageId?: string
+  /** RFC 5322 threading of an inbound email message: the parent it replied to
+   *  and the full References chain (bare ids). Populated on the email channel. */
+  inReplyTo?: string
+  references?: string[]
+  /** The email Subject + Cc participants at the time this message arrived
+   *  (§4.8). Bcc is never stored — it is stripped at ingest. */
+  subject?: string
+  cc?: string[]
   /** For 'system' messages: the structured event, so clients can localize the
    *  notice instead of rendering the stored (English) content. */
   systemEvent?: ConversationSystemEvent

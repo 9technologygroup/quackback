@@ -10,6 +10,9 @@
 export interface ParsedInboundEmail {
   /** Recipient addresses (one is our plus-addressed `reply+<id>@domain`). */
   toAddresses: string[]
+  /** Cc addresses. Cold-inbound (§4.8) turns these into group participants;
+   *  the reply path ignores them. Bcc never appears on a received message. */
+  ccAddresses: string[]
   from: string | null
   subject: string | null
   text: string | null
@@ -140,16 +143,17 @@ function readThreadingHeaders(
   }
 }
 
+/** Normalize a provider recipient field (array of strings or a single string). */
+function addressArray(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((t): t is string => typeof t === 'string')
+  return typeof raw === 'string' ? [raw] : []
+}
+
 export function parseInboundEmail(data: unknown): ParsedInboundEmail {
   const d = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>
-  const rawTo = d.to
-  const toAddresses = Array.isArray(rawTo)
-    ? rawTo.filter((t): t is string => typeof t === 'string')
-    : typeof rawTo === 'string'
-      ? [rawTo]
-      : []
   return {
-    toAddresses,
+    toAddresses: addressArray(d.to),
+    ccAddresses: addressArray(d.cc),
     from: asString(d.from),
     subject: asString(d.subject),
     text: asString(d.text),
@@ -260,16 +264,17 @@ function extractTextBody(headers: RawHeader[], body: string): string {
 export function parseRawEmail(raw: string): ParsedInboundEmail {
   const { headerBlock, body } = splitHeadersAndBody(raw)
   const headers = parseRawHeaders(headerBlock)
-  const toValue = headers
-    .filter((h) => h.name.toLowerCase() === 'to')
-    .map((h) => h.value)
-    .join(', ')
-  const toAddresses = toValue
-    .split(',')
-    .map((a) => a.trim())
-    .filter(Boolean)
+  const headerAddresses = (name: string): string[] =>
+    headers
+      .filter((h) => h.name.toLowerCase() === name)
+      .map((h) => h.value)
+      .join(', ')
+      .split(',')
+      .map((a) => a.trim())
+      .filter(Boolean)
   return {
-    toAddresses,
+    toAddresses: headerAddresses('to'),
+    ccAddresses: headerAddresses('cc'),
     from: readHeader(headers, 'from'),
     subject: readHeader(headers, 'subject'),
     text: extractTextBody(headers, body),
