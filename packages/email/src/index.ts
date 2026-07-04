@@ -232,9 +232,12 @@ async function sendEmail(
     react: React.ReactElement
     /** Conversation-specific reply address (e.g. plus-addressed inbound). */
     replyTo?: string
+    /** Override the workspace EMAIL_FROM (e.g. a per-team sending address). */
+    from?: string
   } & ThreadingOptions
 ): Promise<EmailResult> {
-  return dispatch({ from: getEmailFrom(), ...options })
+  const { from, ...rest } = options
+  return dispatch({ from: from ?? getEmailFrom(), ...rest })
 }
 
 /** A prerendered, custom-From email (no template). */
@@ -622,6 +625,9 @@ interface SendConversationMessageEmailParams {
   inReplyTo?: string
   /** RFC 5322 threading: the full References chain (oldest first). */
   references?: string[]
+  /** Send from a per-team sending address (§4.8) instead of the branded
+   *  EMAIL_FROM. Absent = the workspace default. */
+  from?: string
 }
 
 /**
@@ -644,6 +650,7 @@ export async function sendConversationMessageEmail(
     messageId,
     inReplyTo,
     references,
+    from,
   } = params
 
   const isReply = direction === 'agent_reply'
@@ -697,6 +704,7 @@ export async function sendConversationMessageEmail(
     messageId,
     inReplyTo,
     references,
+    from,
   })
 }
 

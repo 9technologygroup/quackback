@@ -8,7 +8,8 @@
  *    identified (anonymous visitors have no deliverable address; the widget's
  *    unread badge covers the online case).
  */
-import { db, eq, inArray, principal, user, teamMembers } from '@/lib/server/db'
+import { db, eq, inArray, principal, user, teamMembers, conversations } from '@/lib/server/db'
+import { resolveSendingAddress } from '@/lib/server/domains/channel-accounts/channel-account.service'
 import type { Conversation } from '@/lib/server/db'
 import type { PrincipalId, ConversationId, TeamId } from '@quackback/ids'
 import { isAnyAgentOnline, isPrincipalOnline } from '@/lib/server/realtime/presence'
@@ -197,6 +198,14 @@ async function sendVisitorConversationEmail(opts: {
     ? (inboundReplyToAddress(opts.conversationId) ?? undefined)
     : undefined
   const threading = await outboundThreading(opts.conversationId)
+  // Send as the conversation's team sending address (§4.8) when configured, else
+  // the branded workspace default (EMAIL_FROM).
+  const [conv] = await db
+    .select({ assignedTeamId: conversations.assignedTeamId })
+    .from(conversations)
+    .where(eq(conversations.id, opts.conversationId))
+    .limit(1)
+  const from = (await resolveSendingAddress(conv?.assignedTeamId ?? null)) ?? undefined
   const { sendConversationMessageEmail } = await import('@quackback/email')
   const result = await sendConversationMessageEmail({
     to: opts.recipient,
@@ -207,6 +216,7 @@ async function sendVisitorConversationEmail(opts: {
     workspaceName: opts.ctx.workspaceName,
     logoUrl: opts.ctx.logoUrl ?? undefined,
     replyTo,
+    from,
     ...threading,
   })
   if (result && result.sent === false) {
