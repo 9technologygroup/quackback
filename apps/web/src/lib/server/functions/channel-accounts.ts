@@ -15,12 +15,14 @@ import {
   getInboundRoute,
   listChannelAccounts,
   listSendingDomains,
+  getSendingDomain,
   createInboundRoute,
   createSendingAddress,
   createSendingDomain,
   markSendingDomainVerified,
   softDeleteChannelAccount,
 } from '@/lib/server/domains/channel-accounts/channel-account.service'
+import { verifySendingDomainDns } from '@/lib/server/domains/channel-accounts/domain-verification'
 
 type DnsRecord = { type: string; host: string; value: string; purpose: string }
 
@@ -156,7 +158,12 @@ export const verifySendingDomainFn = createServerFn({ method: 'POST' })
   .validator(z.object({ id: z.string() }))
   .handler(async ({ data }) => {
     await requireAuth({ permission: PERMISSIONS.CHANNEL_ACCOUNT_MANAGE })
-    // v0: mark verified on request (real DNS lookup is a follow-up).
+    const domain = await getSendingDomain(data.id as SendingDomainId)
+    if (!domain) throw new Error('Sending domain not found')
+    // Only mark verified once the published SPF/DKIM records actually resolve;
+    // otherwise leave it pending so the admin can propagate DNS and retry.
+    const ok = await verifySendingDomainDns(domain.domain, domain.dnsRecords ?? [])
+    if (!ok) return toDomain(domain)
     return toDomain(await markSendingDomainVerified(data.id as SendingDomainId))
   })
 
