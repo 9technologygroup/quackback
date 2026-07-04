@@ -17,17 +17,53 @@ import {
   lte,
   sql,
 } from '@/lib/server/db'
-import { generateKbEmbedding } from './help-center-embedding.service'
+import { generateKbQueryEmbedding } from './help-center-embedding.service'
 
-const KEYWORD_WEIGHT = 0.4
-const SEMANTIC_WEIGHT = 0.6
+export const KEYWORD_WEIGHT = 0.4
+export const SEMANTIC_WEIGHT = 0.6
 
 /**
- * Cosine-similarity floor for semantic matches: rows below it are simply
- * absent from results. Shared with the assistant's retrieval module so
- * search and AI answers agree on what "relevant" means.
+ * Cosine-similarity floor for semantic matches: rows below it are simply absent
+ * from results. Shared with the assistant's retrieval module so search and AI
+ * answers agree on what "relevant" means. Tuned for text-embedding-3-small,
+ * whose clearly-relevant matches sit around 0.4+ and unrelated ones below 0.3;
+ * the earlier 0.5 cut valid matches (e.g. paraphrased questions) while adding no
+ * precision. Stays above RELATED_SIMILARITY_FLOOR so near-misses can still be
+ * suggested on a no-answer.
  */
-export const SEMANTIC_SIMILARITY_FLOOR = 0.5
+export const SEMANTIC_SIMILARITY_FLOOR = 0.35
+
+/**
+ * ts_rank floor for keyword matches. OR-of-terms matching (see {@link orTermsTsQuery})
+ * trades AND's precision for recall, so a lone incidental term ("password" in an
+ * unrelated query) would otherwise linger; this floor drops those weak matches so
+ * an empty keyword result still means "nothing relevant". Tuned empirically.
+ */
+export const KEYWORD_RANK_FLOOR = 0.3
+
+/**
+ * Corpus-specific stopwords: the product's own name appears in nearly every
+ * article, so as a query term it is pure noise that inflates the keyword score
+ * of unrelated articles. Dropped before building the tsquery.
+ */
+const CORPUS_STOPWORDS = new Set(['quackback'])
+
+/**
+ * Build an OR-of-terms tsquery. websearch_to_tsquery ANDs every term by default,
+ * so one extra word a natural-language question carries that the article lacks
+ * ("How do I *actually*…") drops the whole match. Joining terms with websearch's
+ * "or" operator matches on ANY term and lets ts_rank reward articles that hit
+ * more of them. English stopwords, stemming, and punctuation are handled by
+ * websearch; an empty query yields a match-nothing tsquery.
+ */
+export function orTermsTsQuery(query: string) {
+  const orQuery = query
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w && !CORPUS_STOPWORDS.has(w.toLowerCase().replace(/[^a-z0-9]/g, '')))
+    .join(' or ')
+  return sql`websearch_to_tsquery('english', ${orQuery})`
+}
 
 /** Which slice of the knowledge base a caller may see. */
 export type HelpCenterAudience = 'public' | 'team'
@@ -93,7 +129,7 @@ export function computeHybridScore(
  * 3. If embedding is unavailable: falls back to keyword-only search
  */
 export async function hybridSearch(query: string, limit = 10): Promise<HybridSearchResult[]> {
-  const queryEmbedding = await generateKbEmbedding(query, {
+  const queryEmbedding = await generateKbQueryEmbedding(query, {
     pipelineStep: 'kb_search_query_embedding',
   })
 
@@ -113,7 +149,7 @@ async function hybridQuery(
   limit: number
 ): Promise<HybridSearchResult[]> {
   const vectorStr = `[${embedding.join(',')}]`
-  const tsQuery = sql`websearch_to_tsquery('english', ${query})`
+  const tsQuery = orTermsTsQuery(query)
 
   const results = await db
     .select({
@@ -141,8 +177,14 @@ async function hybridQuery(
         // search must match direct lookup or a hidden slug becomes
         // discoverable via search even when direct lookup denies.
         ...helpCenterVisibilityConditions('public'),
+        // A keyword hit must clear the ts_rank floor (OR-of-terms otherwise
+        // admits a lone incidental term); a semantic hit above the cosine
+        // floor always qualifies.
         sql`(
-          ${helpCenterArticles.searchVector} @@ ${tsQuery}
+          (
+            ${helpCenterArticles.searchVector} @@ ${tsQuery}
+            AND ts_rank(${helpCenterArticles.searchVector}, ${tsQuery}) > ${KEYWORD_RANK_FLOOR}
+          )
           OR (
             ${helpCenterArticles.embedding} IS NOT NULL
             AND 1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector) > ${SEMANTIC_SIMILARITY_FLOOR}
@@ -209,10 +251,15 @@ export async function searchArticleIdsRanked(
     }
   }
 
-  const tsQuery = sql`websearch_to_tsquery('english', ${query})`
-  const queryEmbedding = await generateKbEmbedding(query, {
+  const tsQuery = orTermsTsQuery(query)
+  const queryEmbedding = await generateKbQueryEmbedding(query, {
     pipelineStep: 'kb_search_query_embedding',
   })
+
+  const keywordMatch = sql`(
+    ${helpCenterArticles.searchVector} @@ ${tsQuery}
+    AND ts_rank(${helpCenterArticles.searchVector}, ${tsQuery}) > ${KEYWORD_RANK_FLOOR}
+  )`
 
   let scoreExpr
   let matchCondition
@@ -223,7 +270,7 @@ export async function searchArticleIdsRanked(
       ${SEMANTIC_WEIGHT} * COALESCE(1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector), 0)
     )`.as('rank_score')
     matchCondition = sql`(
-      ${helpCenterArticles.searchVector} @@ ${tsQuery}
+      ${keywordMatch}
       OR (
         ${helpCenterArticles.embedding} IS NOT NULL
         AND 1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector) > ${SEMANTIC_SIMILARITY_FLOOR}
@@ -233,7 +280,7 @@ export async function searchArticleIdsRanked(
     scoreExpr = sql<number>`ts_rank(${helpCenterArticles.searchVector}, ${tsQuery})`.as(
       'rank_score'
     )
-    matchCondition = sql`${helpCenterArticles.searchVector} @@ ${tsQuery}`
+    matchCondition = keywordMatch
   }
 
   const rows = await db
@@ -254,7 +301,7 @@ export async function searchArticleIdsRanked(
  * Keyword-only fallback when embedding generation is unavailable.
  */
 async function keywordOnlyQuery(query: string, limit: number): Promise<HybridSearchResult[]> {
-  const tsQuery = sql`websearch_to_tsquery('english', ${query})`
+  const tsQuery = orTermsTsQuery(query)
 
   const results = await db
     .select({
@@ -276,7 +323,8 @@ async function keywordOnlyQuery(query: string, limit: number): Promise<HybridSea
     .where(
       and(
         ...helpCenterVisibilityConditions('public'),
-        sql`${helpCenterArticles.searchVector} @@ ${tsQuery}`
+        sql`${helpCenterArticles.searchVector} @@ ${tsQuery}`,
+        sql`ts_rank(${helpCenterArticles.searchVector}, ${tsQuery}) > ${KEYWORD_RANK_FLOOR}`
       )
     )
     .orderBy(sql`score DESC`)

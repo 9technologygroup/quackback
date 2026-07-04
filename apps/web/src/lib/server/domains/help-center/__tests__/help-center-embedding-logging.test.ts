@@ -22,7 +22,11 @@ vi.mock('@/lib/server/db', () => ({
   sql: vi.fn(),
 }))
 
-import { generateKbEmbedding } from '../help-center-embedding.service'
+import {
+  generateKbEmbedding,
+  generateKbQueryEmbedding,
+  clearQueryEmbeddingCache,
+} from '../help-center-embedding.service'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -90,5 +94,31 @@ describe('generateKbEmbedding usage logging', () => {
     mockWithUsageLogging.mockRejectedValue(new Error('boom'))
     const result = await generateKbEmbedding('some text')
     expect(result).toBeNull()
+  })
+})
+
+describe('generateKbQueryEmbedding cache', () => {
+  beforeEach(() => clearQueryEmbeddingCache())
+
+  it('serves repeats from cache without a second provider call', async () => {
+    const a = await generateKbQueryEmbedding('how do I vote')
+    const b = await generateKbQueryEmbedding('how do I vote')
+    expect(a).toEqual([0.1, 0.2])
+    expect(b).toEqual([0.1, 0.2])
+    expect(mockWithUsageLogging).toHaveBeenCalledOnce()
+  })
+
+  it('misses on different query text', async () => {
+    await generateKbQueryEmbedding('how do I vote')
+    await generateKbQueryEmbedding('how do I comment')
+    expect(mockWithUsageLogging).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not cache failures', async () => {
+    mockWithUsageLogging.mockRejectedValueOnce(new Error('boom'))
+    expect(await generateKbQueryEmbedding('flaky query')).toBeNull()
+    // Second call retries the provider instead of returning a cached null.
+    expect(await generateKbQueryEmbedding('flaky query')).toEqual([0.1, 0.2])
+    expect(mockWithUsageLogging).toHaveBeenCalledTimes(2)
   })
 })

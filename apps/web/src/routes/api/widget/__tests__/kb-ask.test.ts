@@ -8,11 +8,13 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
 const mockRetrieve = vi.fn()
 const mockSynthesize = vi.fn()
 const mockIsConfigured = vi.fn()
+const { MISS_FALLBACK } = vi.hoisted(() => ({ MISS_FALLBACK: 'No reliable answer found.' }))
 vi.mock('@/lib/server/domains/assistant', () => ({
   retrieveKbArticles: (...args: unknown[]) => mockRetrieve(...args),
   synthesizeAnswer: (...args: unknown[]) => mockSynthesize(...args),
   isAskAiConfigured: (...args: unknown[]) => mockIsConfigured(...args),
   RELATED_SIMILARITY_FLOOR: 0.3,
+  ASK_AI_MISS_FALLBACK: MISS_FALLBACK,
 }))
 
 const mockIncrementBucket = vi.fn()
@@ -158,27 +160,26 @@ describe('GET /api/widget/kb-ask', () => {
     })
   })
 
-  it('still calls the model on empty retrieval and returns a graceful miss with related', async () => {
-    // Primary retrieval finds nothing above the answer floor; the related
-    // lookup (softer floor, keyed by minScore) surfaces a near-miss to suggest.
+  it('short-circuits on empty retrieval: skips the model, returns a graceful miss with related', async () => {
+    // Nothing cleared the answer floor. The model must NOT run on empty context:
+    // with no articles it can only answer from training, and those ungrounded
+    // deltas would stream to the client before the final no_answer lands. The
+    // related lookup (softer floor, keyed by minScore) still surfaces a near-miss.
     mockRetrieve.mockImplementation(async (_q: string, opts?: { minScore?: number }) =>
       opts?.minScore !== undefined ? [makeKbArticle('kb_article_9')] : []
     )
-    mockSynthesize.mockResolvedValue({
-      kind: 'no_answer',
-      answer: "I couldn't find anything about that. Try rephrasing or contact the team.",
-      sources: [],
-    })
 
     const res = await handleKbAsk({ request: makeRequest({ q: 'gibberish' }) })
     const frames = parseSse(await res.text())
 
-    expect(mockSynthesize).toHaveBeenCalled()
+    expect(mockSynthesize).not.toHaveBeenCalled()
+    // No sources event (nothing retrieved) and no deltas: a single final miss.
+    expect(frames.map((f) => f.event)).toEqual(['kb-ask.v1.final'])
     expect(frames.at(-1)).toEqual({
       event: 'kb-ask.v1.final',
       data: {
         kind: 'no_answer',
-        answer: "I couldn't find anything about that. Try rephrasing or contact the team.",
+        answer: MISS_FALLBACK,
         sources: [],
         related: [
           {

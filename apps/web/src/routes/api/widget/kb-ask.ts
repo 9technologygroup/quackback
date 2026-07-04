@@ -18,6 +18,7 @@ import {
   retrieveKbArticles,
   synthesizeAnswer,
   isAskAiConfigured,
+  ASK_AI_MISS_FALLBACK,
   RELATED_SIMILARITY_FLOOR,
   type RetrievedKbArticle,
 } from '@/lib/server/domains/assistant'
@@ -133,16 +134,27 @@ export async function handleKbAsk({ request }: { request: Request }): Promise<Re
 
   void (async () => {
     try {
-      // Stream the grounded candidates up front so the surface can show which
-      // articles the answer will be built from while it streams.
-      if (articles.length > 0) {
-        sse.send(KB_ASK_EVENTS.sources, {
-          sources: articles.map(toSourceMeta),
-        } satisfies KbAskSourcesPayload)
+      // Nothing cleared the answer floor: skip the model entirely. On empty
+      // context it can only answer from training, and those ungrounded deltas
+      // would stream to the client before the final no_answer overrides them.
+      // Emit a graceful miss with related near-misses instead.
+      if (articles.length === 0) {
+        const related = await relatedArticles(query, articles)
+        sse.send(KB_ASK_EVENTS.final, {
+          kind: 'no_answer',
+          answer: ASK_AI_MISS_FALLBACK,
+          sources: [],
+          related: related.map(toSourceMeta),
+        } satisfies KbAskFinalPayload)
+        return
       }
 
-      // Always run the model — even with no articles it gives a graceful,
-      // contextual "couldn't find that" instead of a dead-end empty reply.
+      // Stream the grounded candidates up front so the surface can show which
+      // articles the answer will be built from while it streams.
+      sse.send(KB_ASK_EVENTS.sources, {
+        sources: articles.map(toSourceMeta),
+      } satisfies KbAskSourcesPayload)
+
       const result = await synthesizeAnswer({
         query,
         articles,

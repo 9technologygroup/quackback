@@ -4,6 +4,7 @@ const mockGenerateKbEmbedding = vi.fn()
 
 vi.mock('@/lib/server/domains/help-center/help-center-embedding.service', () => ({
   generateKbEmbedding: (...args: unknown[]) => mockGenerateKbEmbedding(...args),
+  generateKbQueryEmbedding: (...args: unknown[]) => mockGenerateKbEmbedding(...args),
 }))
 
 // Terminal `.limit()` resolves with whatever rows the test seeded.
@@ -56,6 +57,7 @@ vi.mock('@/lib/server/db', () => ({
 }))
 
 import { eq, sql } from '@/lib/server/db'
+import { SEMANTIC_SIMILARITY_FLOOR } from '@/lib/server/domains/help-center/help-center-search.service'
 import { retrieveKbArticles, KB_ASK_CONTEXT_CHARS } from '../retrieval'
 
 function row(id: string, content = 'body text') {
@@ -127,9 +129,11 @@ describe('retrieveKbArticles', () => {
   })
 
   it('uses the answer floor as the default semantic minimum score', async () => {
-    mockGenerateKbEmbedding.mockResolvedValue([0.5])
+    mockGenerateKbEmbedding.mockResolvedValue([0.9])
     await retrieveKbArticles('anything')
-    const floorCall = vi.mocked(sql).mock.calls.find((c) => (c as unknown[]).includes(0.5))
+    const floorCall = vi
+      .mocked(sql)
+      .mock.calls.find((c) => (c as unknown[]).includes(SEMANTIC_SIMILARITY_FLOOR))
     expect(floorCall).toBeDefined()
   })
 

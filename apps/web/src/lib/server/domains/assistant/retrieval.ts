@@ -14,10 +14,14 @@
  */
 
 import { db, helpCenterArticles, helpCenterCategories, and, sql } from '@/lib/server/db'
-import { generateKbEmbedding } from '@/lib/server/domains/help-center/help-center-embedding.service'
+import { generateKbQueryEmbedding } from '@/lib/server/domains/help-center/help-center-embedding.service'
 import {
   helpCenterVisibilityConditions,
+  KEYWORD_WEIGHT,
+  SEMANTIC_WEIGHT,
   SEMANTIC_SIMILARITY_FLOOR,
+  KEYWORD_RANK_FLOOR,
+  orTermsTsQuery,
   type HelpCenterAudience,
 } from '@/lib/server/domains/help-center/help-center-search.service'
 
@@ -48,6 +52,13 @@ export interface RetrieveKbArticlesOptions {
    * Ignored on the keyword fallback, whose ts_rank scale is unrelated.
    */
   minScore?: number
+  /**
+   * Minimum ts_rank for the keyword path (default {@link KEYWORD_RANK_FLOOR}).
+   * Keyword matching is OR-of-terms, so a single incidental term keeps an
+   * off-topic article in the pool; this floor drops those weak matches to keep
+   * an empty result meaningful ("nothing relevant") on the keyword-only path.
+   */
+  keywordRankFloor?: number
 }
 
 /** Default number of articles stuffed into the synthesis context. */
@@ -75,14 +86,15 @@ export async function retrieveKbArticles(
   const audience = options.audience ?? 'public'
   const topK = options.topK ?? KB_ASK_TOP_K
   const minScore = options.minScore ?? SEMANTIC_SIMILARITY_FLOOR
+  const keywordRankFloor = options.keywordRankFloor ?? KEYWORD_RANK_FLOOR
 
-  const embedding = await generateKbEmbedding(query, {
+  const embedding = await generateKbQueryEmbedding(query, {
     pipelineStep: 'kb_retrieval_query_embedding',
   })
 
   const rows = embedding
-    ? await semanticQuery(embedding, audience, topK, minScore)
-    : await keywordQuery(query, audience, topK)
+    ? await hybridQuery(query, embedding, audience, topK, minScore, keywordRankFloor)
+    : await keywordQuery(query, audience, topK, keywordRankFloor)
 
   return rows.map((r) => ({
     id: r.id,
@@ -107,14 +119,29 @@ interface RetrievalRow {
   score: number
 }
 
-async function semanticQuery(
+/**
+ * Hybrid retrieval: an article matches on a keyword hit OR a semantic hit above
+ * the floor, and is ranked by the same weighted blend the help-center search box
+ * uses (keyword ts_rank + cosine similarity). Pure-semantic retrieval missed
+ * natural-language questions whose phrasing scored just under the cosine floor
+ * even when the exact article existed; the keyword arm and blended ranking
+ * recover those without lowering the grounding bar. The floor still gates the
+ * semantic arm, so `minScore` (0.3 for "related" near-misses) widens recall the
+ * same way it did before.
+ */
+async function hybridQuery(
+  query: string,
   embedding: number[],
   audience: HelpCenterAudience,
   topK: number,
-  minScore: number
+  minScore: number,
+  rankFloor: number
 ): Promise<RetrievalRow[]> {
   const vectorStr = `[${embedding.join(',')}]`
-  const similarity = sql<number>`1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector)`
+  const tsQuery = orTermsTsQuery(query)
+  const semantic = sql<number>`COALESCE(1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector), 0)`
+  const keyword = sql<number>`COALESCE(ts_rank(${helpCenterArticles.searchVector}, ${tsQuery}), 0)`
+  const combined = sql<number>`(${KEYWORD_WEIGHT} * ${keyword} + ${SEMANTIC_WEIGHT} * ${semantic})`
 
   return db
     .select({
@@ -125,7 +152,7 @@ async function semanticQuery(
       categoryId: helpCenterArticles.categoryId,
       categorySlug: helpCenterCategories.slug,
       categoryName: helpCenterCategories.name,
-      score: similarity.as('score'),
+      score: combined.as('score'),
     })
     .from(helpCenterArticles)
     .innerJoin(
@@ -135,8 +162,19 @@ async function semanticQuery(
     .where(
       and(
         ...helpCenterVisibilityConditions(audience),
-        sql`${helpCenterArticles.embedding} IS NOT NULL`,
-        sql`1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector) > ${minScore}`
+        // A keyword match must clear the same ts_rank floor as the keyword-only
+        // path (OR-of-terms otherwise admits a lone incidental term); a semantic
+        // match above the cosine floor always qualifies.
+        sql`(
+          (
+            ${helpCenterArticles.searchVector} @@ ${tsQuery}
+            AND ts_rank(${helpCenterArticles.searchVector}, ${tsQuery}) > ${rankFloor}
+          )
+          OR (
+            ${helpCenterArticles.embedding} IS NOT NULL
+            AND 1 - (${helpCenterArticles.embedding} <=> ${vectorStr}::vector) > ${minScore}
+          )
+        )`
       )
     )
     .orderBy(sql`score DESC`)
@@ -146,9 +184,11 @@ async function semanticQuery(
 async function keywordQuery(
   query: string,
   audience: HelpCenterAudience,
-  topK: number
+  topK: number,
+  rankFloor: number
 ): Promise<RetrievalRow[]> {
-  const tsQuery = sql`websearch_to_tsquery('english', ${query})`
+  const tsQuery = orTermsTsQuery(query)
+  const rank = sql<number>`ts_rank(${helpCenterArticles.searchVector}, ${tsQuery})`
 
   return db
     .select({
@@ -159,7 +199,7 @@ async function keywordQuery(
       categoryId: helpCenterArticles.categoryId,
       categorySlug: helpCenterCategories.slug,
       categoryName: helpCenterCategories.name,
-      score: sql<number>`ts_rank(${helpCenterArticles.searchVector}, ${tsQuery})`.as('score'),
+      score: rank.as('score'),
     })
     .from(helpCenterArticles)
     .innerJoin(
@@ -169,7 +209,8 @@ async function keywordQuery(
     .where(
       and(
         ...helpCenterVisibilityConditions(audience),
-        sql`${helpCenterArticles.searchVector} @@ ${tsQuery}`
+        sql`${helpCenterArticles.searchVector} @@ ${tsQuery}`,
+        sql`ts_rank(${helpCenterArticles.searchVector}, ${tsQuery}) > ${rankFloor}`
       )
     )
     .orderBy(sql`score DESC`)
