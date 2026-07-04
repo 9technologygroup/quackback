@@ -74,6 +74,22 @@ export const saveAuthProviderCredentialsFn = createServerFn({ method: 'POST' })
         }
       }
 
+      // SSRF defense in depth: any URL the server will later fetch (custom-OIDC
+      // discovery / authorization / token endpoints) must not resolve to internal
+      // infrastructure. Validate at save so a poisoned URL is never stored. The
+      // runtime fetch inside Better-Auth is a separate follow-up; this closes the
+      // stored-URL vector for an admin pointing an IdP endpoint at the metadata IP.
+      const { checkUrlSafety } = await import('@/lib/server/content/ssrf-guard')
+      for (const field of provider.platformCredentials) {
+        if (!field.url) continue
+        const value = cleaned[field.key]
+        if (!value) continue
+        const verdict = await checkUrlSafety(value)
+        if (!verdict.safe) {
+          throw new Error(`${field.label} must be a valid public URL`)
+        }
+      }
+
       await savePlatformCredentials({
         integrationType: data.credentialType,
         credentials: cleaned,

@@ -36,6 +36,9 @@ export interface PlatformCredentialField {
   helpText?: string
   /** Link to provider docs for setting up credentials */
   helpUrl?: string
+  /** true → the value is a URL the server will fetch; validated against the
+   *  SSRF guard at save so an admin can't point it at internal infrastructure. */
+  url?: boolean
 }
 
 export interface IntegrationOAuthConfig {
