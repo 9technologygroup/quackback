@@ -122,6 +122,21 @@ export const WEBHOOK_EVENT_CONFIG = [
     label: 'Message Deleted',
     description: 'When a public message is deleted',
   },
+  {
+    id: 'ticket.created',
+    label: 'Ticket Created',
+    description: 'When a ticket is opened',
+  },
+  {
+    id: 'ticket.status_changed',
+    label: 'Ticket Status Changed',
+    description: 'When a ticket moves between open, pending, and closed',
+  },
+  {
+    id: 'ticket.assigned',
+    label: 'Ticket Assigned',
+    description: 'When a ticket is assigned to (or unassigned from) an agent or team',
+  },
 ] as const satisfies ReadonlyArray<{ id: WebhookEventType; label: string; description: string }>
 
 // ============================================

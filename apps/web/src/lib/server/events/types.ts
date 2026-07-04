@@ -29,6 +29,9 @@ export const EVENT_TYPES = [
   'message.created',
   'message.note_created',
   'message.deleted',
+  'ticket.created',
+  'ticket.status_changed',
+  'ticket.assigned',
 ] as const
 
 export type EventType = (typeof EVENT_TYPES)[number]
@@ -234,6 +237,55 @@ export interface MessageDeletedPayload {
   conversation: EventConversationRef
 }
 
+// Ticket events (support platform §4.2). A ticket is a tracked-work peer of the
+// conversation; these are the agent/integration-facing lifecycle signals (the
+// customer-facing signal is the in-app bell + thread status event, not a hook).
+export type EventTicketType = 'customer' | 'back_office' | 'tracker'
+
+/** Minimal ticket reference. The ticket row does not denormalize its status
+ *  category or public stage (both live on ticket_statuses), so the ref carries
+ *  neither — status.created reports them once, status_changed reports the move. */
+export interface EventTicketRef {
+  id: string
+  number: number
+  type: EventTicketType
+  priority: 'none' | 'low' | 'medium' | 'high' | 'urgent'
+  assignedPrincipalId?: string | null
+  assignedTeamId?: string | null
+}
+
+export interface EventTicketData extends EventTicketRef {
+  title: string
+  /** Internal status category — the ticket's lifecycle axis. */
+  status: 'open' | 'pending' | 'closed'
+  /** Customer-facing public stage, or null when the status projects no stage. */
+  stage: string | null
+  requesterPrincipalId: string | null
+  companyId: string | null
+  createdAt: string
+  updatedAt: string
+  resolvedAt: string | null
+}
+
+export interface TicketCreatedPayload {
+  ticket: EventTicketData
+}
+export interface TicketStatusChangedPayload {
+  ticket: EventTicketRef
+  /** Internal status category, not the raw status name. */
+  previousStatus: string
+  newStatus: string
+  /** The new public stage projection (null when hidden). */
+  stage: string | null
+}
+export interface TicketAssignedPayload {
+  ticket: EventTicketRef
+  assignedPrincipalId: string | null
+  previousPrincipalId: string | null
+  assignedTeamId: string | null
+  previousTeamId: string | null
+}
+
 // ============================================================================
 // Event Data (Discriminated Union)
 // ============================================================================
@@ -320,6 +372,15 @@ export interface MessageNoteCreatedEvent extends EventBase<'message.note_created
 export interface MessageDeletedEvent extends EventBase<'message.deleted'> {
   data: MessageDeletedPayload
 }
+export interface TicketCreatedEvent extends EventBase<'ticket.created'> {
+  data: TicketCreatedPayload
+}
+export interface TicketStatusChangedEvent extends EventBase<'ticket.status_changed'> {
+  data: TicketStatusChangedPayload
+}
+export interface TicketAssignedEvent extends EventBase<'ticket.assigned'> {
+  data: TicketAssignedPayload
+}
 
 /**
  * Event data - discriminated union of all event types.
@@ -352,3 +413,6 @@ export type EventData =
   | MessageCreatedEvent
   | MessageNoteCreatedEvent
   | MessageDeletedEvent
+  | TicketCreatedEvent
+  | TicketStatusChangedEvent
+  | TicketAssignedEvent

@@ -22,6 +22,8 @@ import type {
   EventData,
   EventMessageData,
   EventPostRef,
+  EventTicketData,
+  EventTicketRef,
 } from './types.js'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import { logger } from '@/lib/server/logger'
@@ -419,5 +421,45 @@ export async function dispatchMessageDeleted(
     ...eventEnvelope(actor),
     type: 'message.deleted',
     data: { message, conversation },
+  })
+}
+
+export async function dispatchTicketCreated(
+  actor: EventActor,
+  ticket: EventTicketData
+): Promise<void> {
+  await dispatchEvent({
+    ...eventEnvelope(actor),
+    type: 'ticket.created',
+    data: { ticket },
+  })
+}
+
+export async function dispatchTicketStatusChanged(
+  actor: EventActor,
+  ticket: EventTicketRef,
+  previousStatus: string,
+  newStatus: string,
+  stage: string | null
+): Promise<void> {
+  await dispatchEvent({
+    ...eventEnvelope(actor),
+    type: 'ticket.status_changed',
+    data: { ticket, previousStatus, newStatus, stage },
+  })
+}
+
+export async function dispatchTicketAssigned(
+  actor: EventActor,
+  ticket: EventTicketRef,
+  assignedPrincipalId: string | null,
+  previousPrincipalId: string | null,
+  assignedTeamId: string | null,
+  previousTeamId: string | null
+): Promise<void> {
+  await dispatchEvent({
+    ...eventEnvelope(actor),
+    type: 'ticket.assigned',
+    data: { ticket, assignedPrincipalId, previousPrincipalId, assignedTeamId, previousTeamId },
   })
 }

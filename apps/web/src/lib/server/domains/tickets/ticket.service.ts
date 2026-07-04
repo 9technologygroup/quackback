@@ -44,6 +44,7 @@ import { loadAuthors, fallbackAuthor } from '../principals/principal-display'
 import { priorityRankSql } from '@/lib/server/utils/priority-rank'
 import { getStageLabels } from '../settings/settings.tickets'
 import { createNotification } from '../notifications/notification.service'
+import { emitTicketCreated, emitTicketStatusChanged, emitTicketAssigned } from './ticket.webhooks'
 import { statusTransition, firstResponseStamp, resolveStage } from './ticket.lifecycle'
 import type {
   CreateTicketInput,
@@ -286,7 +287,11 @@ export async function createTicketCore(input: CreateTicketInput, actor: Actor): 
   }
 
   const [defaultStatus] = await db
-    .select({ id: ticketStatuses.id })
+    .select({
+      id: ticketStatuses.id,
+      category: ticketStatuses.category,
+      publicStage: ticketStatuses.publicStage,
+    })
     .from(ticketStatuses)
     .where(and(eq(ticketStatuses.isDefault, true), isNull(ticketStatuses.deletedAt)))
     .limit(1)
@@ -328,6 +333,10 @@ export async function createTicketCore(input: CreateTicketInput, actor: Actor): 
   })
 
   log.info({ ticket_id: created.id, type: created.type }, 'ticket created')
+  void emitTicketCreated(actor, created, {
+    category: defaultStatus.category,
+    stage: resolveStage(defaultStatus),
+  })
   return ticketRowToDTO(created)
 }
 
@@ -378,6 +387,16 @@ export async function setTicketStatus(
   if (stamp) patch.firstResponseAt = stamp
 
   const [updated] = await db.update(tickets).set(patch).where(eq(tickets.id, id)).returning()
+
+  // Agent/integration-facing signal: every internal status move fires a hook
+  // (mirrors conversation.status_changed), reporting the category axis.
+  void emitTicketStatusChanged(
+    actor,
+    updated,
+    current?.category ?? 'open',
+    target.category,
+    resolveStage(target)
+  )
 
   // A public_stage crossing to a visible stage is the single customer-facing
   // signal (§4.2): post a status event into the ticket thread. Null-stage and
@@ -493,6 +512,19 @@ export async function assignTicket(
   if (stamp) patch.firstResponseAt = stamp
 
   const [updated] = await db.update(tickets).set(patch).where(eq(tickets.id, id)).returning()
+
+  // Only signal when an assignee actually moved (a no-op re-assign must not fire).
+  if (
+    existing.assigneePrincipalId !== updated.assigneePrincipalId ||
+    existing.assigneeTeamId !== updated.assigneeTeamId
+  ) {
+    void emitTicketAssigned(
+      actor,
+      updated,
+      existing.assigneePrincipalId ?? null,
+      existing.assigneeTeamId ?? null
+    )
+  }
   return ticketRowToDTO(updated)
 }
 

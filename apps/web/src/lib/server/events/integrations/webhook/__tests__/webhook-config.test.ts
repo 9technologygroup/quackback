@@ -11,6 +11,13 @@ describe('WEBHOOK_EVENT_CONFIG', () => {
     for (const t of conversationTypes) expect(configIds.has(t)).toBe(true)
   })
 
+  it('exposes every ticket event type (no drift on the ticket family)', () => {
+    const configIds = new Set<string>(WEBHOOK_EVENT_CONFIG.map((c) => c.id))
+    const ticketTypes = EVENT_TYPES.filter((t) => t.startsWith('ticket.'))
+    expect(ticketTypes.length).toBeGreaterThan(0)
+    for (const t of ticketTypes) expect(configIds.has(t)).toBe(true)
+  })
+
   it('only references valid event types', () => {
     const valid = new Set<string>(EVENT_TYPES)
     for (const c of WEBHOOK_EVENT_CONFIG) expect(valid.has(c.id)).toBe(true)

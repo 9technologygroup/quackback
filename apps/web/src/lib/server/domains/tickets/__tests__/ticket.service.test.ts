@@ -25,6 +25,15 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
   db: (await import('@/lib/server/__tests__/db-test-fixture')).testDb,
 }))
 
+// Neutralize the fire-and-forget webhook bridge (it would otherwise resolve
+// hook targets against Redis/db mid-rollback) and assert the service wires it.
+const webhooks = vi.hoisted(() => ({
+  emitTicketCreated: vi.fn().mockResolvedValue(undefined),
+  emitTicketStatusChanged: vi.fn().mockResolvedValue(undefined),
+  emitTicketAssigned: vi.fn().mockResolvedValue(undefined),
+}))
+vi.mock('../ticket.webhooks', () => webhooks)
+
 import { createTicket, setTicketStatus, assignTicket } from '../ticket.service'
 import { listTicketMessages } from '../ticket-message.service'
 import { resolveActorPermissions } from '@/lib/server/policy/permissions'
@@ -114,6 +123,7 @@ async function readTicket(id: TicketId) {
 
 describe.skipIf(!fixture.available)('ticket.service (real DB, rolled back)', () => {
   beforeEach(fixture.begin)
+  beforeEach(() => Object.values(webhooks).forEach((m) => m.mockClear()))
   afterEach(fixture.rollback)
   afterAll(fixture.close)
 
@@ -304,5 +314,44 @@ describe.skipIf(!fixture.available)('ticket.service (real DB, rolled back)', () 
     await expect(assignTicket(created.id, { assigneePrincipalId: endUser }, actor)).rejects.toThrow(
       /team member/i
     )
+  })
+
+  it('createTicket fires the ticket.created hook with the resolved status category + stage', async () => {
+    await seedSettings()
+    await seedStatuses() // default open projects 'received'
+    const created = await createTicket({ type: 'customer', title: 'Hook me' }, adminActor())
+    expect(webhooks.emitTicketCreated).toHaveBeenCalledTimes(1)
+    const [, ticketArg, statusArg] = webhooks.emitTicketCreated.mock.calls[0]
+    expect(ticketArg.id).toBe(created.id)
+    expect(statusArg).toEqual({ category: 'open', stage: 'received' })
+  })
+
+  it('setTicketStatus fires the ticket.status_changed hook with the category move', async () => {
+    await seedSettings()
+    const { closed } = await seedStatuses()
+    const actor = adminActor()
+    const created = await createTicket({ type: 'customer', title: 'Move me' }, actor)
+    webhooks.emitTicketStatusChanged.mockClear() // ignore any create-time noise
+    await setTicketStatus(created.id, closed.id, actor)
+    expect(webhooks.emitTicketStatusChanged).toHaveBeenCalledTimes(1)
+    const [, , previousStatus, newStatus, stage] = webhooks.emitTicketStatusChanged.mock.calls[0]
+    expect(previousStatus).toBe('open')
+    expect(newStatus).toBe('closed')
+    expect(stage).toBe('resolved')
+  })
+
+  it('assignTicket fires ticket.assigned on a change but stays silent on a no-op re-assign', async () => {
+    await seedSettings()
+    await seedStatuses()
+    const actor = adminActor()
+    const teammate = await seedTeammate()
+    const created = await createTicket({ type: 'back_office', title: 'Assign me' }, actor)
+
+    await assignTicket(created.id, { assigneePrincipalId: teammate }, actor)
+    expect(webhooks.emitTicketAssigned).toHaveBeenCalledTimes(1)
+
+    // Re-assigning the identical teammate changes nothing → no second hook.
+    await assignTicket(created.id, { assigneePrincipalId: teammate }, actor)
+    expect(webhooks.emitTicketAssigned).toHaveBeenCalledTimes(1)
   })
 })
