@@ -3,7 +3,6 @@ import {
   CalendarIcon,
   ClockIcon,
   FlagIcon,
-  LinkIcon,
   Squares2X2Icon,
   UserCircleIcon,
 } from '@heroicons/react/24/outline'
@@ -14,6 +13,7 @@ import {
   TicketAssigneeControl,
   TicketPriorityControl,
 } from '@/components/admin/tickets/ticket-controls'
+import { TicketLinks } from '@/components/admin/tickets/ticket-links'
 import { Avatar } from '@/components/ui/avatar'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { DetailRow as Row, formatDate } from '@/components/shared/detail-row'
@@ -94,11 +94,9 @@ export function TicketDetailPanel({
             </Row>
           </div>
 
-          {/* Linked (arrives with ticket messaging + relations) */}
+          {/* Tracker links (§4.9) */}
           <div className="space-y-2 border-t border-border/30 pt-4">
-            <Row icon={LinkIcon} label="Linked">
-              <span className="text-sm text-muted-foreground">None yet</span>
-            </Row>
+            <TicketLinks ticket={ticket} onChanged={onChanged} />
           </div>
 
           {/* Timeline */}

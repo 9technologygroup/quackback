@@ -12,6 +12,7 @@ import {
   listTicketStatusesFn,
   getTicketStageLabelsFn,
   listTicketMessagesFn,
+  getTicketLinksFn,
 } from '@/lib/server/functions/tickets'
 import type { TicketListFilter } from '@/lib/server/domains/tickets'
 
@@ -45,6 +46,8 @@ export const ticketKeys = {
   stageLabels: () => [...ticketKeys.all(), 'stage-labels'] as const,
   /** A single ticket's message thread. */
   thread: (id: TicketId) => [...ticketKeys.all(), 'thread', id] as const,
+  /** A single ticket's tracker links (the tracker it belongs to, or its linked tickets). */
+  links: (id: TicketId) => [...ticketKeys.all(), 'links', id] as const,
 }
 
 export const ticketQueries = {
@@ -88,5 +91,14 @@ export const ticketQueries = {
       queryKey: ticketKeys.thread(id),
       queryFn: () => listTicketMessagesFn({ data: { ticketId: id } }),
       staleTime: 10_000,
+    }),
+
+  /** A ticket's tracker links: for a tracker, the customer tickets it tracks;
+   *  for a customer ticket, the tracker it belongs to (or null). */
+  links: (id: TicketId) =>
+    queryOptions({
+      queryKey: ticketKeys.links(id),
+      queryFn: () => getTicketLinksFn({ data: { ticketId: id } }),
+      staleTime: 30_000,
     }),
 }
