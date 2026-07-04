@@ -94,7 +94,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 376 surfaces
+### Server functions (`requireAuth`) — 379 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -413,6 +413,9 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/tickets.ts`::setTicketStageLabelsFn | ticket.manage_types |
 | `lib/server/functions/tickets.ts`::getTicketFormsFn | ticket.view |
 | `lib/server/functions/tickets.ts`::setTicketFormFn | ticket.manage_types |
+| `lib/server/functions/tickets.ts`::sendTicketMessageFn | ticket.reply |
+| `lib/server/functions/tickets.ts`::addTicketNoteFn | ticket.note |
+| `lib/server/functions/tickets.ts`::listTicketMessagesFn | ticket.view |
 | `lib/server/functions/uploads.ts`::getPresignedUploadUrlFn | post.create |
 | `lib/server/functions/uploads.ts`::getChangelogImageUploadUrlFn | changelog.manage |
 | `lib/server/functions/uploads.ts`::getPostImageUploadUrlFn | post.create |
@@ -630,7 +633,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-150 of 609 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+150 of 612 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 

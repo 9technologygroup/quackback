@@ -26,6 +26,7 @@ import type {
   TicketAssigneeFilter,
 } from '@/lib/server/domains/tickets'
 import { requireAuth, policyActorFromAuth } from './auth-helpers'
+import type { ConversationAttachment } from '@/lib/shared/db-types'
 
 const ticketTypeSchema = z.enum(TICKET_TYPES)
 const statusCategorySchema = z.enum(TICKET_STATUS_CATEGORIES)
@@ -281,4 +282,65 @@ export const setTicketFormFn = createServerFn({ method: 'POST' })
     await requireAuth({ permission: PERMISSIONS.TICKET_MANAGE_TYPES })
     const { setTicketForm } = await import('@/lib/server/domains/settings/settings.tickets')
     return setTicketForm(data.type, data.fields as TicketFormField[])
+  })
+
+// ---------------------------------------------------------------------------
+// Ticket thread messages (§4.2)
+// ---------------------------------------------------------------------------
+
+const ticketAttachmentSchema = z.object({
+  url: z.string(),
+  name: z.string().optional(),
+  contentType: z.string().optional(),
+  size: z.number(),
+})
+
+const sendTicketMessageSchema = z.object({
+  ticketId: z.string(),
+  // Empty is valid for an image/embed-only rich message; the service re-validates.
+  content: z.string().default(''),
+  contentJson: z.any().nullable().optional(),
+  attachments: z.array(ticketAttachmentSchema).optional(),
+})
+
+export const sendTicketMessageFn = createServerFn({ method: 'POST' })
+  .validator(sendTicketMessageSchema)
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_REPLY })
+    const actor = await policyActorFromAuth(ctx)
+    const { sendTicketMessage } =
+      await import('@/lib/server/domains/tickets/ticket-message.service')
+    return sendTicketMessage(actor, {
+      ticketId: data.ticketId as TicketId,
+      content: data.content,
+      contentJson: data.contentJson ?? null,
+      attachments: data.attachments as ConversationAttachment[] | undefined,
+    })
+  })
+
+export const addTicketNoteFn = createServerFn({ method: 'POST' })
+  .validator(sendTicketMessageSchema)
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_NOTE })
+    const actor = await policyActorFromAuth(ctx)
+    const { addTicketNote } = await import('@/lib/server/domains/tickets/ticket-message.service')
+    return addTicketNote(actor, {
+      ticketId: data.ticketId as TicketId,
+      content: data.content,
+      contentJson: data.contentJson ?? null,
+      attachments: data.attachments as ConversationAttachment[] | undefined,
+    })
+  })
+
+export const listTicketMessagesFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ ticketId: z.string(), before: z.string().optional() }))
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_VIEW })
+    const { isTeamMember } = await import('@/lib/shared/roles')
+    const { listTicketMessages } =
+      await import('@/lib/server/domains/tickets/ticket-message.service')
+    return listTicketMessages(data.ticketId as TicketId, {
+      before: data.before,
+      includeInternal: isTeamMember(ctx.principal.role),
+    })
   })

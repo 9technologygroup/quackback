@@ -231,6 +231,9 @@ export const INLINE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/conversation.ts::listConversationMessagesFn::isTeamMember': NOT_A_GATE(
     'internal notes are agent-only; visitors never see them'
   ),
+  'lib/server/functions/tickets.ts::listTicketMessagesFn::isTeamMember': NOT_A_GATE(
+    'internal notes are agent-only; requesters never see them'
+  ),
   'lib/server/functions/link-preview.ts::unfurlLinkFn::isTeamMember': NOT_A_GATE(
     'team bypasses the portal-access check; entry is the bare requireAuth'
   ),
