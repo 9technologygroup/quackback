@@ -235,6 +235,12 @@ export async function processEvent(event: EventData): Promise<void> {
     .then((m) => m.dispatchWorkflowsForEvent(event))
     .catch((err) => log.error({ err, event_type: event.type }, 'workflow dispatch failed to load'))
 
+  // Settle SLA breach clocks off the same event (first-response / time-to-close).
+  // Same fire-and-forget + lazy-import isolation as the workflow dispatch.
+  void import('@/lib/server/domains/sla/sla.event-hooks')
+    .then((m) => m.recordSlaFromEvent(event))
+    .catch((err) => log.error({ err, event_type: event.type }, 'SLA hook failed to load'))
+
   const targets = await getHookTargets(event)
   if (targets.length === 0) return
 
