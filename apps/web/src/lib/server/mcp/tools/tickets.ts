@@ -11,12 +11,20 @@ import type { TicketId, PrincipalId, CompanyId } from '@quackback/ids'
 import type { TicketType, TicketStatusCategory, TicketStage } from '@/lib/server/db'
 import type { TicketSort } from '@/lib/server/domains/tickets/ticket.types'
 import type { McpAuthContext } from '../types'
-import { registerTool, mcpAgentActor, jsonResult, compactJsonResult, READ_ONLY } from './helpers'
+import {
+  registerTool,
+  mcpAgentActor,
+  jsonResult,
+  compactJsonResult,
+  READ_ONLY,
+  WRITE,
+} from './helpers'
 
 const TICKET_TYPES = ['customer', 'back_office', 'tracker'] as const
 const TICKET_CATEGORIES = ['open', 'pending', 'closed'] as const
 const TICKET_STAGES = ['received', 'in_progress', 'awaiting_requester', 'resolved'] as const
 const TICKET_SORTS = ['recent', 'oldest', 'created', 'priority'] as const
+const TICKET_PRIORITIES = ['none', 'low', 'medium', 'high', 'urgent'] as const
 
 export function registerTicketTools(server: McpServer, auth: McpAuthContext) {
   registerTool<{
@@ -154,6 +162,111 @@ Example: get_ticket({ ticketId: "ticket_01abc...", includeInternal: true })`,
         })),
         hasMore: page.hasMore,
         nextCursor,
+      })
+    },
+  })
+
+  registerTool<{
+    type: TicketType
+    title: string
+    description?: string
+    priority?: 'none' | 'low' | 'medium' | 'high' | 'urgent'
+    requesterPrincipalId?: string
+    companyId?: string
+  }>(server, auth, {
+    name: 'create_ticket',
+    description: `Open a support ticket. type is customer (a requester's request), back_office (an internal task), or tracker (an umbrella others link to). A description opens the thread. Returns the created ticket.
+
+Example: create_ticket({ type: "customer", title: "Refund not received", description: "Customer reports a missing refund from last week." })`,
+    schema: {
+      type: z.enum(TICKET_TYPES).describe('Ticket object type'),
+      title: z.string().min(1).max(300).describe('Short summary'),
+      description: z.string().max(10000).optional().describe('Opening message body (optional)'),
+      priority: z.enum(TICKET_PRIORITIES).optional().describe('Triage priority (default none)'),
+      requesterPrincipalId: z
+        .string()
+        .optional()
+        .describe('The requester principal TypeID (optional)'),
+      companyId: z.string().optional().describe('Associated company TypeID (optional)'),
+    },
+    annotations: WRITE,
+    scope: 'write:chat',
+    teamOnly: true,
+    handler: async (args) => {
+      const { createTicket } = await import('@/lib/server/domains/tickets/ticket.service')
+      const dto = await createTicket(
+        {
+          type: args.type,
+          title: args.title,
+          description: args.description,
+          priority: args.priority,
+          requesterPrincipalId: args.requesterPrincipalId as PrincipalId | undefined,
+          companyId: args.companyId as CompanyId | undefined,
+        },
+        mcpAgentActor(auth)
+      )
+      return jsonResult({
+        id: dto.id,
+        number: dto.number,
+        reference: dto.reference,
+        type: dto.type,
+        title: dto.title,
+        status: { name: dto.status.name, category: dto.status.category },
+        stage: dto.stage.slot,
+        priority: dto.priority,
+      })
+    },
+  })
+
+  registerTool<{ ticketId: string; content: string }>(server, auth, {
+    name: 'reply_to_ticket',
+    description: `Post a reply on a ticket thread (visible to the requester). Stamps the first-response time on the first reply.
+
+Example: reply_to_ticket({ ticketId: "ticket_01abc...", content: "We've issued your refund; it should arrive in 3-5 days." })`,
+    schema: {
+      ticketId: z.string().describe('Ticket TypeID'),
+      content: z.string().min(1).max(10000).describe('Reply text, visible to the requester'),
+    },
+    annotations: WRITE,
+    scope: 'write:chat',
+    teamOnly: true,
+    handler: async (args) => {
+      const { sendTicketMessage } =
+        await import('@/lib/server/domains/tickets/ticket-message.service')
+      const { message } = await sendTicketMessage(mcpAgentActor(auth), {
+        ticketId: args.ticketId as TicketId,
+        content: args.content,
+      })
+      return jsonResult({
+        id: message.id,
+        ticketId: message.ticketId,
+        createdAt: message.createdAt,
+      })
+    },
+  })
+
+  registerTool<{ ticketId: string; content: string }>(server, auth, {
+    name: 'add_ticket_note',
+    description: `Add an internal note to a ticket thread. Never visible to the requester — only the support team sees it.
+
+Example: add_ticket_note({ ticketId: "ticket_01abc...", content: "Confirmed the refund with billing; awaiting bank processing." })`,
+    schema: {
+      ticketId: z.string().describe('Ticket TypeID'),
+      content: z.string().min(1).max(10000).describe('Internal note text (team-only)'),
+    },
+    annotations: WRITE,
+    scope: 'write:chat',
+    teamOnly: true,
+    handler: async (args) => {
+      const { addTicketNote } = await import('@/lib/server/domains/tickets/ticket-message.service')
+      const { message } = await addTicketNote(mcpAgentActor(auth), {
+        ticketId: args.ticketId as TicketId,
+        content: args.content,
+      })
+      return jsonResult({
+        id: message.id,
+        ticketId: message.ticketId,
+        createdAt: message.createdAt,
       })
     },
   })

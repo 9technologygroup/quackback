@@ -3,14 +3,20 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 
 const mockListTickets = vi.fn()
 const mockGetTicket = vi.fn()
+const mockCreateTicket = vi.fn()
 const mockListMessages = vi.fn()
+const mockSendMessage = vi.fn()
+const mockAddNote = vi.fn()
 
 vi.mock('@/lib/server/domains/tickets/ticket.service', () => ({
   listTickets: (...a: unknown[]) => mockListTickets(...a),
   getTicket: (...a: unknown[]) => mockGetTicket(...a),
+  createTicket: (...a: unknown[]) => mockCreateTicket(...a),
 }))
 vi.mock('@/lib/server/domains/tickets/ticket-message.service', () => ({
   listTicketMessages: (...a: unknown[]) => mockListMessages(...a),
+  sendTicketMessage: (...a: unknown[]) => mockSendMessage(...a),
+  addTicketNote: (...a: unknown[]) => mockAddNote(...a),
 }))
 
 import { registerTicketTools } from '../tickets'
@@ -37,7 +43,7 @@ const teamAuth = {
   email: 'agent@acme.com',
   role: 'admin' as const,
   authMethod: 'api-key' as const,
-  scopes: ['read:chat'],
+  scopes: ['read:chat', 'write:chat'],
 } as unknown as McpAuthContext
 
 const parse = (r: CallToolResult) => JSON.parse((r.content[0] as { text: string }).text)
@@ -65,9 +71,15 @@ const ticketDTO = {
 beforeEach(() => vi.clearAllMocks())
 
 describe('ticket MCP tools', () => {
-  it('registers list_tickets and get_ticket', () => {
+  it('registers the read + write ticket tools', () => {
     const handlers = collect(teamAuth)
-    expect([...handlers.keys()].sort()).toEqual(['get_ticket', 'list_tickets'])
+    expect([...handlers.keys()].sort()).toEqual([
+      'add_ticket_note',
+      'create_ticket',
+      'get_ticket',
+      'list_tickets',
+      'reply_to_ticket',
+    ])
   })
 
   it('list_tickets maps filters, passes an actor, and returns a compact shape', async () => {
@@ -132,6 +144,60 @@ describe('ticket MCP tools', () => {
     expect(body.messages.map((m: { id: string }) => m.id)).toEqual(['m_old', 'm_new'])
     expect(body.hasMore).toBe(true)
     expect(body.nextCursor).toBe('m_old')
+  })
+
+  it('create_ticket maps the input and returns the created ticket', async () => {
+    mockCreateTicket.mockResolvedValue(ticketDTO)
+    const out = await collect(teamAuth).get('create_ticket')!({
+      type: 'customer',
+      title: 'Refund not received',
+      description: 'Missing refund',
+    })
+    const [input, actor] = mockCreateTicket.mock.calls[0]
+    expect(input).toMatchObject({
+      type: 'customer',
+      title: 'Refund not received',
+      description: 'Missing refund',
+    })
+    expect(actor.principalId).toBe('principal_key')
+    expect(parse(out)).toMatchObject({ id: 'ticket_1', reference: '#42' })
+  })
+
+  it('reply_to_ticket sends a visitor-visible message', async () => {
+    mockSendMessage.mockResolvedValue({
+      message: { id: 'm_1', ticketId: 'ticket_1', createdAt: '2026-07-04T00:02:00.000Z' },
+    })
+    const out = await collect(teamAuth).get('reply_to_ticket')!({
+      ticketId: 'ticket_1',
+      content: 'On it.',
+    })
+    const [actor, input] = mockSendMessage.mock.calls[0]
+    expect(actor.principalId).toBe('principal_key')
+    expect(input).toEqual({ ticketId: 'ticket_1', content: 'On it.' })
+    expect(parse(out)).toEqual({
+      id: 'm_1',
+      ticketId: 'ticket_1',
+      createdAt: '2026-07-04T00:02:00.000Z',
+    })
+  })
+
+  it('add_ticket_note routes to the note path, not the reply path', async () => {
+    mockAddNote.mockResolvedValue({
+      message: { id: 'm_2', ticketId: 'ticket_1', createdAt: '2026-07-04T00:03:00.000Z' },
+    })
+    await collect(teamAuth).get('add_ticket_note')!({ ticketId: 'ticket_1', content: 'internal' })
+    expect(mockAddNote).toHaveBeenCalledTimes(1)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('write tools require the write:chat scope, not just read:chat', async () => {
+    const readOnly = { ...teamAuth, scopes: ['read:chat'] } as unknown as McpAuthContext
+    const out = await collect(readOnly).get('reply_to_ticket')!({
+      ticketId: 'ticket_1',
+      content: 'x',
+    })
+    expect(out.isError).toBe(true)
+    expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
   it('denies a caller lacking the read:chat scope', async () => {
