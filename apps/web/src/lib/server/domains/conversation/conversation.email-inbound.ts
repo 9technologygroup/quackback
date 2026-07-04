@@ -30,6 +30,9 @@ export interface ParsedInboundEmail {
   precedence: string | null
   /** Whether any `List-*` header is present (mailing-list / bulk mail). */
   hasListHeaders: boolean
+  /** `Authentication-Results` header the receiving MTA stamped (SPF/DKIM/DMARC),
+   *  or null — the cold-inbound trust gate (§4.8) reads it. */
+  authenticationResults: string | null
 }
 
 function asString(v: unknown): string | null {
@@ -132,6 +135,7 @@ function readThreadingHeaders(
   | 'autoResponseSuppress'
   | 'precedence'
   | 'hasListHeaders'
+  | 'authenticationResults'
 > {
   return {
     inReplyTo: parseMessageIdList(readHeader(headers, 'in-reply-to'))[0] ?? null,
@@ -140,6 +144,7 @@ function readThreadingHeaders(
     autoResponseSuppress: readHeader(headers, 'x-auto-response-suppress'),
     precedence: readHeader(headers, 'precedence'),
     hasListHeaders: headersIncludeList(headers),
+    authenticationResults: readHeader(headers, 'authentication-results'),
   }
 }
 

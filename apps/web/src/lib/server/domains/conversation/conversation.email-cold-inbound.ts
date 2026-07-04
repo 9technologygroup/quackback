@@ -15,14 +15,17 @@
  *
  * Resolution only touches identity; the caller owns creating the conversation.
  */
-import { db, sql, eq, user } from '@/lib/server/db'
-import type { PrincipalId } from '@quackback/ids'
+import { db, sql, eq, user, conversations, conversationMessages } from '@/lib/server/db'
+import type { PrincipalId, ChannelAccountId, ConversationId } from '@quackback/ids'
+import type { Actor } from '@/lib/server/policy/types'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import {
   createPrincipal,
   ensurePrincipalForUser,
 } from '@/lib/server/domains/principals/principal.factory'
 import { evaluateInboundAuth, type InboundAuthResult } from './email-auth'
+import type { ParsedInboundEmail } from './conversation.email-inbound'
+import { emitConversationCreated } from './conversation.webhooks'
 
 export type ColdInboundResolution =
   | { action: 'drop'; verdict: InboundAuthResult }
@@ -71,4 +74,59 @@ export async function resolveColdInboundSender(
     unverified: verdict.verdict !== 'pass',
     verdict,
   }
+}
+
+/**
+ * Create a fresh email conversation from a cold inbound message: the conversation
+ * (channel='email', source='email', pinned to the inbound route, waiting on a
+ * reply, unverified-sender badge when the auth was weak) + its first visitor
+ * message, then fire conversation.created so workflows + notifications run. Direct
+ * inserts (the visitor-message create path hardcodes channel='messenger'); the
+ * emit bridge is error-isolated.
+ */
+export async function createEmailConversation(input: {
+  parsed: ParsedInboundEmail
+  channelAccountId: ChannelAccountId
+  principalId: PrincipalId
+  unverified: boolean
+  content: string
+}): Promise<ConversationId> {
+  const { parsed, channelAccountId, principalId, unverified, content } = input
+  const now = new Date()
+  const [conversation] = await db
+    .insert(conversations)
+    .values({
+      visitorPrincipalId: principalId,
+      channel: 'email',
+      source: 'email',
+      channelAccountId,
+      status: 'open',
+      subject: parsed.subject?.slice(0, 200) ?? null,
+      lastMessagePreview: content.slice(0, 200),
+      lastMessageAt: now,
+      // The customer is waiting on the first reply from the moment it lands.
+      waitingSince: now,
+      visitorEmail: realEmail(parsed.from)?.toLowerCase() ?? null,
+      customAttributes: unverified ? { unverifiedSender: true } : {},
+    })
+    .returning()
+
+  await db.insert(conversationMessages).values({
+    conversationId: conversation.id,
+    principalId,
+    senderType: 'visitor',
+    content,
+    metadata: { source: 'email', emailMessageId: parsed.messageId ?? undefined },
+  })
+
+  // A customer-initiated event: the visitor is the actor so it counts as human.
+  const actor: Actor = {
+    principalId,
+    role: 'user',
+    principalType: 'anonymous',
+    segmentIds: new Set(),
+  }
+  await emitConversationCreated(actor, { principalId, displayName: null }, conversation)
+
+  return conversation.id
 }

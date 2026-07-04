@@ -34,6 +34,11 @@ import {
 } from './conversation.email-store'
 import { assertConversationSendRate, ConversationRateLimitError } from './conversation.ratelimit'
 import { sendVisitorMessage } from './conversation.service'
+import { resolveChannelAccountByRecipient } from '@/lib/server/domains/channel-accounts/channel-account.service'
+import {
+  resolveColdInboundSender,
+  createEmailConversation,
+} from './conversation.email-cold-inbound'
 
 export type IngestInboundResult =
   | { status: 'ingested'; conversationId: ConversationId }
@@ -71,7 +76,9 @@ export async function ingestParsedEmail(parsed: ParsedInboundEmail): Promise<Ing
     )
     conversationId = await resolveConversationByMessageIds(candidates)
   }
-  if (!conversationId) return { status: 'no_conversation' }
+  // Not a reply to any existing conversation: it may be a fresh email to one of
+  // our inbound routes (§4.8 Layer 2 cold inbound), else there's nothing to do.
+  if (!conversationId) return ingestColdInbound(parsed)
 
   // Idempotency first: a redelivered Message-ID short-circuits before any other
   // read (the common retry case). The partial unique index on
@@ -156,6 +163,44 @@ export async function ingestParsedEmail(parsed: ParsedInboundEmail): Promise<Ing
     actor
   )
 
+  return { status: 'ingested', conversationId }
+}
+
+/**
+ * Cold inbound (§4.8 Layer 2): an email that isn't a reply. Only ingest it when
+ * it's addressed to one of our inbound routes; otherwise it's not ours. The
+ * DMARC-gated sender resolution decides drop / attach / create-lead, then a fresh
+ * email conversation is opened. Dedup + empty-body guards mirror the reply path.
+ */
+async function ingestColdInbound(parsed: ParsedInboundEmail): Promise<IngestInboundResult> {
+  const channelAccount = await resolveChannelAccountByRecipient([
+    ...parsed.toAddresses,
+    ...parsed.ccAddresses,
+  ])
+  if (!channelAccount || channelAccount.role !== 'inbound') return { status: 'no_conversation' }
+
+  if (parsed.messageId) {
+    const [dupe] = await db
+      .select({ id: conversationMessages.id })
+      .from(conversationMessages)
+      .where(sql`${conversationMessages.metadata} ->> 'emailMessageId' = ${parsed.messageId}`)
+      .limit(1)
+    if (dupe) return { status: 'duplicate' }
+  }
+
+  const content = extractReplyText(parsed.text ?? '')
+  if (!content) return { status: 'empty' }
+
+  const resolution = await resolveColdInboundSender(parsed.from, parsed.authenticationResults)
+  if (resolution.action === 'drop') return { status: 'suppressed' }
+
+  const conversationId = await createEmailConversation({
+    parsed,
+    channelAccountId: channelAccount.id,
+    principalId: resolution.principalId,
+    unverified: resolution.unverified,
+    content,
+  })
   return { status: 'ingested', conversationId }
 }
 
