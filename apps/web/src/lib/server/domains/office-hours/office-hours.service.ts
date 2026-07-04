@@ -80,6 +80,109 @@ export function isWithinOfficeHours(
 }
 
 // ---------------------------------------------------------------------------
+// Office-hours-aware duration math (the SLA clock)
+// ---------------------------------------------------------------------------
+
+/** The timezone's UTC offset in ms at an instant (local ahead of UTC = positive),
+ *  read AT that instant via Intl so it is DST-correct. */
+function tzOffsetMs(timeZone: string, at: Date): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(at)
+  const g = (t: string): number => Number(parts.find((p) => p.type === t)?.value ?? 0)
+  const asUtc = Date.UTC(g('year'), g('month') - 1, g('day'), g('hour'), g('minute'), g('second'))
+  return asUtc - at.getTime()
+}
+
+/** The UTC epoch-ms of a local wall-clock time in a timezone. One refinement pass
+ *  handles the offset shift across a DST boundary; office-hours windows never
+ *  span the transition hour, so the gap/overlap ambiguities don't arise here. */
+function localToUtcMs(
+  tz: string,
+  y: number,
+  month0: number,
+  d: number,
+  hh: number,
+  mm: number
+): number {
+  const guess = Date.UTC(y, month0, d, hh, mm)
+  const off1 = tzOffsetMs(tz, new Date(guess))
+  let utc = guess - off1
+  const off2 = tzOffsetMs(tz, new Date(utc))
+  if (off2 !== off1) utc = guess - off2
+  return utc
+}
+
+/** The local calendar date + weekday of an instant in a timezone. */
+function localDateParts(
+  tz: string,
+  at: Date
+): { year: number; month0: number; day: number; weekday: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hourCycle: 'h23',
+  }).formatToParts(at)
+  const g = (t: string): string => parts.find((p) => p.type === t)?.value ?? ''
+  return {
+    year: Number(g('year')),
+    month0: Number(g('month')) - 1,
+    day: Number(g('day')),
+    weekday: WEEKDAY_INDEX[g('weekday')] ?? 0,
+  }
+}
+
+/**
+ * Advance `start` by `seconds` of OPEN office-hours time and return the resulting
+ * instant — the office-hours-aware SLA clock. Time outside the schedule's windows
+ * does not count; an empty (24/7) schedule falls back to plain wall-clock. Walks
+ * forward window-by-window, waiting through closed spans, DST-correct throughout.
+ */
+export function addOfficeHoursSeconds(
+  schedule: Pick<OfficeHoursSchedule, 'timezone' | 'intervals'>,
+  start: Date,
+  seconds: number
+): Date {
+  const windows = validIntervals(schedule.intervals)
+  if (windows.length === 0) return new Date(start.getTime() + seconds * 1000)
+  if (seconds <= 0) return new Date(start.getTime())
+
+  const tz = schedule.timezone
+  let remaining = seconds * 1000
+  let cursor = start.getTime()
+
+  // A non-empty schedule always has open time, so this converges quickly; the
+  // bound is only a backstop against a pathological input.
+  for (let iter = 0; iter < 400 && remaining > 0; iter++) {
+    const { year, month0, day, weekday } = localDateParts(tz, new Date(cursor))
+    const todays = windows.filter((w) => w.day === weekday).sort((a, b) => a.s - b.s)
+    for (const w of todays) {
+      const openUtc = localToUtcMs(tz, year, month0, day, Math.floor(w.s / 60), w.s % 60)
+      const closeUtc = localToUtcMs(tz, year, month0, day, Math.floor(w.e / 60), w.e % 60)
+      if (cursor >= closeUtc) continue // window already elapsed today
+      const from = Math.max(cursor, openUtc) // wait for open if we're early
+      const available = closeUtc - from
+      if (available >= remaining) return new Date(from + remaining)
+      remaining -= available
+      cursor = closeUtc
+    }
+    // Nothing (more) open today — jump to the next local midnight.
+    cursor = Math.max(cursor, localToUtcMs(tz, year, month0, day + 1, 0, 0))
+  }
+  return new Date(cursor)
+}
+
+// ---------------------------------------------------------------------------
 // The one workspace schedule (v1)
 // ---------------------------------------------------------------------------
 
