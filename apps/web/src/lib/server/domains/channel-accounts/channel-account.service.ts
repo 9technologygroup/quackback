@@ -12,8 +12,11 @@ import {
   db,
   eq,
   and,
+  or,
   isNull,
+  inArray,
   desc,
+  sql,
   channelAccounts,
   emailSendingDomains,
   type ChannelAccount,
@@ -162,6 +165,36 @@ export async function listChannelAccounts(owningTeamId: TeamId): Promise<Channel
     .from(channelAccounts)
     .where(and(eq(channelAccounts.owningTeamId, owningTeamId), isNull(channelAccounts.deletedAt)))
     .orderBy(desc(channelAccounts.createdAt))
+}
+
+/**
+ * Match a set of inbound recipient addresses to the channel account they landed
+ * on — a `sending` address the mail was to/cc'd, or the `inbound` route's
+ * forwarding target. The cold-inbound create path (§4.8) uses this to bind a new
+ * email conversation to its inbox + owning team. Caller passes already-extracted,
+ * lowercased addr-specs (no display names); returns the first match or null.
+ */
+export async function resolveChannelAccountByRecipient(
+  addresses: string[]
+): Promise<ChannelAccount | null> {
+  const addrs = [...new Set(addresses.map((a) => a.trim().toLowerCase()).filter(Boolean))]
+  if (addrs.length === 0) return null
+  const [row] = await db
+    .select()
+    .from(channelAccounts)
+    .where(
+      and(
+        isNull(channelAccounts.deletedAt),
+        or(
+          // A sending address is set only on 'sending' rows, so this can't
+          // false-match an inbound route.
+          inArray(channelAccounts.address, addrs),
+          inArray(sql`(${channelAccounts.config} ->> 'forwardingTarget')`, addrs)
+        )
+      )
+    )
+    .limit(1)
+  return row ?? null
 }
 
 export async function getChannelAccount(id: ChannelAccountId): Promise<ChannelAccount | null> {

@@ -25,6 +25,7 @@ import {
   markSendingDomainVerified,
   listChannelAccounts,
   softDeleteChannelAccount,
+  resolveChannelAccountByRecipient,
 } from '../channel-account.service'
 
 const fixture = await createDbTestFixture({
@@ -107,6 +108,31 @@ describe.skipIf(!fixture.available)('channel-account.service (real DB, rolled ba
     expect(verified.status).toBe('verified')
     expect(verified.verifiedAt).not.toBeNull()
     expect((await getSendingDomain(domain.id))?.status).toBe('verified')
+  })
+
+  it('resolves a channel account by a sending address or the inbound forwarding target', async () => {
+    const teamId = await seedTeam()
+    await createInboundRoute({
+      owningTeamId: teamId,
+      config: { forwardingTarget: 'inbound@acme.com', provider: 'resend' },
+    })
+    const sending = await createSendingAddress({
+      owningTeamId: teamId,
+      address: 'support@acme.com',
+      module: 'support',
+    })
+
+    // Match a sending address (case-insensitive, display name stripped by caller).
+    const bySending = await resolveChannelAccountByRecipient(['Support@Acme.com', 'other@x.com'])
+    expect(bySending?.id).toBe(sending.id)
+
+    // Match the inbound route's forwarding target.
+    const byInbound = await resolveChannelAccountByRecipient(['inbound@acme.com'])
+    expect(byInbound?.role).toBe('inbound')
+
+    // No match, and empty input.
+    expect(await resolveChannelAccountByRecipient(['nobody@x.com'])).toBeNull()
+    expect(await resolveChannelAccountByRecipient([])).toBeNull()
   })
 
   it('soft-delete hides an account from the resolver + list', async () => {
