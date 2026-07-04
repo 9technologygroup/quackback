@@ -47,8 +47,8 @@ Edges (17):
 
 ## 3. Server domains (lib/server/domains)
 
-Nodes (39): activity, ai, analytics, api, api-keys, assistant, boards, changelog, channel-accounts, comments, companies, conversation, conversation-views, embeddings, feedback, help-center, import, macros, merge-suggestions, notifications, office-hours, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, segments, sentiment, settings, sla, statuses, subscriptions, summary, teams, tickets, user-attributes, users, webhooks
-Edges (60):
+Nodes (40): activity, ai, analytics, api, api-keys, assistant, boards, changelog, channel-accounts, comments, companies, conversation, conversation-views, embeddings, feedback, help-center, import, macros, merge-suggestions, notifications, office-hours, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, segments, sentiment, settings, sla, statuses, subscriptions, summary, teams, tickets, user-attributes, users, webhooks, workflows
+Edges (66):
 
 - analytics -> api
 - analytics -> settings
@@ -67,6 +67,7 @@ Edges (60):
 - comments -> settings
 - comments -> subscriptions
 - conversation -> assistant
+- conversation -> channel-accounts
 - conversation -> comments
 - conversation -> notifications
 - conversation -> posts
@@ -85,7 +86,7 @@ Edges (60):
 - feedback -> subscriptions
 - help-center -> ai
 - import -> principals
-- macros -> conversation
+- macros -> workflows
 - merge-suggestions -> ai
 - merge-suggestions -> posts
 - merge-suggestions -> settings
@@ -101,6 +102,7 @@ Edges (60):
 - sentiment -> settings
 - settings -> ai
 - settings -> platform-credentials
+- sla -> office-hours
 - summary -> ai
 - summary -> settings
 - tickets -> notifications
@@ -110,6 +112,10 @@ Edges (60):
 - users -> principals
 - users -> user-attributes
 - webhooks -> settings
+- workflows -> conversation
+- workflows -> office-hours
+- workflows -> segments
+- workflows -> sla
 
 ### Cycles
 

@@ -94,7 +94,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 389 surfaces
+### Server functions (`requireAuth`) — 407 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -162,6 +162,12 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/changelog.ts`::getChangelogFn | changelog.view_draft |
 | `lib/server/functions/changelog.ts`::listChangelogsFn | changelog.view_draft |
 | `lib/server/functions/changelog.ts`::searchShippedPostsFn | changelog.manage |
+| `lib/server/functions/channel-accounts.ts`::getEmailChannelConfigFn | channel_account.manage |
+| `lib/server/functions/channel-accounts.ts`::createInboundRouteFn | channel_account.manage |
+| `lib/server/functions/channel-accounts.ts`::createSendingAddressFn | channel_account.manage |
+| `lib/server/functions/channel-accounts.ts`::createSendingDomainFn | channel_account.manage |
+| `lib/server/functions/channel-accounts.ts`::verifySendingDomainFn | channel_account.manage |
+| `lib/server/functions/channel-accounts.ts`::deleteChannelAccountFn | channel_account.manage |
 | `lib/server/functions/comments.ts`::createCommentFn | END_USER (any authenticated) |
 | `lib/server/functions/comments.ts`::addReactionFn | END_USER (any authenticated) |
 | `lib/server/functions/comments.ts`::removeReactionFn | END_USER (any authenticated) |
@@ -194,6 +200,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/conversation-views.ts`::unpinConversationViewFn | conversation.view |
 | `lib/server/functions/conversation.ts`::sendConversationMessageFn | END_USER (any authenticated) |
 | `lib/server/functions/conversation.ts`::listConversationMessagesFn | END_USER (any authenticated) |
+| `lib/server/functions/conversation.ts`::exportConversationTranscriptFn | conversation.view |
+| `lib/server/functions/conversation.ts`::exportConversationTranscriptFn | TEAM-ONLY (~conversation.view) |
 | `lib/server/functions/conversation.ts`::markConversationReadFn | END_USER (any authenticated) |
 | `lib/server/functions/conversation.ts`::sendConversationTypingFn | END_USER (any authenticated) |
 | `lib/server/functions/conversation.ts`::submitCsatFn | END_USER (any authenticated) |
@@ -389,6 +397,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/subscriptions.ts`::unsubscribeFromPostFn | END_USER (any authenticated) |
 | `lib/server/functions/subscriptions.ts`::updateSubscriptionLevelFn | END_USER (any authenticated) |
 | `lib/server/functions/subscriptions.ts`::adminUpdateVoterSubscriptionFn | post.vote_on_behalf |
+| `lib/server/functions/support-reporting.ts`::slaAttainmentFn | analytics.view |
+| `lib/server/functions/support-reporting.ts`::workflowEffectivenessFn | analytics.view |
 | `lib/server/functions/teams.ts`::listTeamsFn | conversation.view |
 | `lib/server/functions/teams.ts`::listTeamsAdminFn | team.manage |
 | `lib/server/functions/teams.ts`::listTeamMembersFn | team.manage |
@@ -419,6 +429,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/tickets.ts`::sendTicketMessageFn | ticket.reply |
 | `lib/server/functions/tickets.ts`::addTicketNoteFn | ticket.note |
 | `lib/server/functions/tickets.ts`::listTicketMessagesFn | ticket.view |
+| `lib/server/functions/tickets.ts`::exportTicketTranscriptFn | ticket.view |
+| `lib/server/functions/tickets.ts`::exportTicketTranscriptFn | TEAM-ONLY (~ticket.view) |
 | `lib/server/functions/tickets.ts`::listMyTicketsFn | END_USER (any authenticated) |
 | `lib/server/functions/tickets.ts`::getMyTicketFn | END_USER (any authenticated) |
 | `lib/server/functions/tickets.ts`::getMyTicketThreadFn | END_USER (any authenticated) |
@@ -441,6 +453,12 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/webhooks.ts`::updateWebhookFn | webhook.manage |
 | `lib/server/functions/webhooks.ts`::deleteWebhookFn | webhook.manage |
 | `lib/server/functions/webhooks.ts`::rotateWebhookSecretFn | webhook.manage |
+| `lib/server/functions/workflows.ts`::listWorkflowsFn | routing.manage |
+| `lib/server/functions/workflows.ts`::getWorkflowFn | routing.manage |
+| `lib/server/functions/workflows.ts`::createWorkflowFn | routing.manage |
+| `lib/server/functions/workflows.ts`::updateWorkflowFn | routing.manage |
+| `lib/server/functions/workflows.ts`::setWorkflowStatusFn | routing.manage |
+| `lib/server/functions/workflows.ts`::deleteWorkflowFn | routing.manage |
 | `lib/server/integrations/asana/functions.ts`::getAsanaConnectUrl | integration.manage |
 | `lib/server/integrations/asana/functions.ts`::fetchAsanaProjectsFn | integration.manage |
 | `lib/server/integrations/azure-devops/functions.ts`::connectAzureDevOpsFn | integration.manage |
@@ -653,7 +671,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-150 of 625 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+152 of 643 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
@@ -669,6 +687,7 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `lib/server/functions/comments.ts`::canPinCommentFn | server-fn |
 | `lib/server/functions/comments.ts`::getCommentPermissionsFn | server-fn |
 | `lib/server/functions/conversation.ts`::getConversationPresenceFn | server-fn |
+| `lib/server/functions/conversation.ts`::getMessengerUnreadFn | server-fn |
 | `lib/server/functions/conversation.ts`::getMyConversationFn | server-fn |
 | `lib/server/functions/conversation.ts`::getMyConversationsFn | server-fn |
 | `lib/server/functions/conversation.ts`::getWidgetTeamAvatarsFn | server-fn |
@@ -740,6 +759,7 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `lib/server/functions/user.ts`::updateNotificationPreferencesFn | server-fn |
 | `lib/server/functions/user.ts`::updateProfileNameFn | server-fn |
 | `lib/server/functions/version.ts`::getLatestVersion | server-fn |
+| `lib/server/functions/widget-capabilities.ts`::getWidgetCapabilitiesFn | server-fn |
 | `lib/server/functions/workspace-utils.ts`::requireWorkspaceRole | server-fn |
 | `lib/server/functions/workspace.ts`::getCurrentUserRole | server-fn |
 | `lib/server/functions/workspace.ts`::getSettings | server-fn |

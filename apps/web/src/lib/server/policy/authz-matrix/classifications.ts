@@ -248,9 +248,24 @@ export const INLINE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/conversation.ts::listConversationMessagesFn::isTeamMember': NOT_A_GATE(
     'internal notes are agent-only; visitors never see them'
   ),
+  'lib/server/functions/conversation.ts::getMessengerUnreadFn::isTeamMember': NOT_A_GATE(
+    'non-team callers gated behind portal access; team reads from the admin inbox'
+  ),
+  'lib/server/functions/conversation.ts::exportConversationTranscriptFn::isTeamMember': {
+    intent: 'SECONDARY_GATE',
+    roleBar: 'team',
+    resolvesTo: PERMISSIONS.CONVERSATION_VIEW,
+    why: 'transcript export carries internal notes; team-only on top of the CONVERSATION_VIEW permission gate',
+  },
   'lib/server/functions/tickets.ts::listTicketMessagesFn::isTeamMember': NOT_A_GATE(
     'internal notes are agent-only; requesters never see them'
   ),
+  'lib/server/functions/tickets.ts::exportTicketTranscriptFn::isTeamMember': {
+    intent: 'SECONDARY_GATE',
+    roleBar: 'team',
+    resolvesTo: PERMISSIONS.TICKET_VIEW,
+    why: 'transcript export carries internal notes; team-only on top of the TICKET_VIEW permission gate',
+  },
   'lib/server/functions/link-preview.ts::unfurlLinkFn::isTeamMember': NOT_A_GATE(
     'team bypasses the portal-access check; entry is the bare requireAuth'
   ),
