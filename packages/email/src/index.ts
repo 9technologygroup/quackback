@@ -115,29 +115,42 @@ function angleId(id: string): string {
   return `<${bare}>`
 }
 
-/**
- * Send an email using the configured transport (SMTP or Resend).
- * Falls back to console logging if neither is configured.
- */
-async function sendEmail(options: {
-  to: string
-  subject: string
-  react: React.ReactElement
-  /** Conversation-specific reply address (e.g. plus-addressed inbound). */
-  replyTo?: string
-  /** RFC 5322 threading: our deterministic Message-ID for this mail. */
+/** RFC 5322 threading headers (Message-ID / In-Reply-To / References). */
+interface ThreadingOptions {
   messageId?: string
-  /** RFC 5322 threading: the parent Message-ID this mail replies to. */
   inReplyTo?: string
-  /** RFC 5322 threading: the full References chain (oldest first). */
   references?: string[]
-}): Promise<EmailResult> {
-  const threadingHeaders: Record<string, string> = {}
-  if (options.messageId) threadingHeaders['Message-ID'] = angleId(options.messageId)
-  if (options.inReplyTo) threadingHeaders['In-Reply-To'] = angleId(options.inReplyTo)
+}
+
+function buildThreadingHeaders(options: ThreadingOptions): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (options.messageId) headers['Message-ID'] = angleId(options.messageId)
+  if (options.inReplyTo) headers['In-Reply-To'] = angleId(options.inReplyTo)
   if (options.references && options.references.length > 0) {
-    threadingHeaders['References'] = options.references.map(angleId).join(' ')
+    headers['References'] = options.references.map(angleId).join(' ')
   }
+  return headers
+}
+
+/**
+ * The single low-level send: provider selection (SMTP → Resend → console), the
+ * anon-address guard, and RFC 5322 threading. Takes an explicit From and EITHER
+ * a prerendered `html` body or a `react` element (the branded senders pass
+ * `react`; the raw sender passes `html`). Falls back to console when unconfigured.
+ */
+async function dispatch(
+  options: {
+    from: string
+    to: string
+    subject: string
+    html?: string
+    react?: React.ReactElement
+    text?: string
+    replyTo?: string
+  } & ThreadingOptions
+): Promise<EmailResult> {
+  const threadingHeaders = buildThreadingHeaders(options)
+
   // Defense in depth: the synthetic anonymous placeholder domain
   // (temp-<id>@anon.quackback.io) is never deliverable. Callers sanitize via
   // realEmail(), but if one slips through, drop it here rather than bounce.
@@ -149,13 +162,14 @@ async function sendEmail(options: {
   const provider = getProvider()
 
   if (provider === 'smtp') {
-    const html = await render(options.react)
+    const html = options.html ?? (options.react ? await render(options.react) : undefined)
     try {
       const result = await getSmtpTransporter().sendMail({
-        from: getEmailFrom(),
+        from: options.from,
         to: options.to,
         subject: options.subject,
         html,
+        text: options.text,
         replyTo: options.replyTo,
         messageId: threadingHeaders['Message-ID'],
         inReplyTo: threadingHeaders['In-Reply-To'],
@@ -178,11 +192,15 @@ async function sendEmail(options: {
   }
 
   if (provider === 'resend') {
+    // Resend renders `react` itself; a raw send supplies `html` (+ optional text).
+    const body = options.react
+      ? { react: options.react }
+      : { html: options.html ?? '', ...(options.text ? { text: options.text } : {}) }
     const result = await getResend().emails.send({
-      from: getEmailFrom(),
+      from: options.from,
       to: options.to,
       subject: options.subject,
-      react: options.react,
+      ...body,
       replyTo: options.replyTo,
       // Resend may reassign its own Message-ID, in which case plus-address
       // routing carries the reply; In-Reply-To/References still thread the client.
@@ -201,6 +219,43 @@ async function sendEmail(options: {
 
   // Console mode - caller handles logging
   return { sent: false }
+}
+
+/**
+ * Send a branded email (rendered React template) from the workspace identity
+ * (`EMAIL_FROM`). The transactional notifier — invites, notifications, alerts.
+ */
+async function sendEmail(
+  options: {
+    to: string
+    subject: string
+    react: React.ReactElement
+    /** Conversation-specific reply address (e.g. plus-addressed inbound). */
+    replyTo?: string
+  } & ThreadingOptions
+): Promise<EmailResult> {
+  return dispatch({ from: getEmailFrom(), ...options })
+}
+
+/** A prerendered, custom-From email (no template). */
+export interface RawEmailOptions extends ThreadingOptions {
+  /** Sender identity — e.g. a verified support sending address, not EMAIL_FROM. */
+  from: string
+  to: string
+  subject: string
+  html: string
+  text?: string
+  replyTo?: string
+}
+
+/**
+ * Send a plain, prerendered email from an explicit sender address — the seam the
+ * conversation email channel uses to reply as the inbox identity
+ * (`channel_accounts.address`), rather than the branded `EMAIL_FROM` notifier.
+ * Same provider selection, anon guard, and threading as the branded path.
+ */
+export async function sendRawEmail(options: RawEmailOptions): Promise<EmailResult> {
+  return dispatch(options)
 }
 
 // ============================================================================
