@@ -1,9 +1,9 @@
 /**
  * Workflows manager (AI & Automation, support platform §4.6). Lists workflows
- * with their trigger + class + lifecycle, and a functional editor: the trigger,
- * class, and the graph as JSON (the server validates it via the shared schema).
- * The auto-layout canvas is the fast-follow; this is the form-based v0 the engine
- * is already live behind.
+ * with their trigger + class + lifecycle, and the editor: name, trigger, class,
+ * and the step graph on the auto-layout canvas (WorkflowGraphEditor), with an
+ * edit-as-JSON escape hatch. The graph JSON stays the source of truth; the
+ * server re-validates it via the shared schema on save.
  */
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -17,9 +17,10 @@ import {
   useSetWorkflowStatus,
   useDeleteWorkflow,
 } from '@/lib/client/mutations/workflows'
+import { WorkflowGraphEditor } from './workflow-canvas'
+import { initialGraphDraft, draftToGraphJson, type GraphDraft } from './workflow-graph'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -56,8 +57,6 @@ const STATUS_VARIANT: Record<string, 'default' | 'secondary' | 'outline'> = {
   paused: 'secondary',
   draft: 'outline',
 }
-
-const EMPTY_GRAPH = JSON.stringify({ nodes: [{ id: 't', type: 'trigger' }], edges: [] }, null, 2)
 
 const triggerLabel = (v: string) => TRIGGERS.find((t) => t.value === v)?.label ?? v
 
@@ -162,30 +161,26 @@ function WorkflowEditor({
     (workflow?.class as (typeof CLASSES)[number]['value']) ?? 'background'
   )
   const [triggerType, setTriggerType] = useState(workflow?.triggerType ?? TRIGGERS[0].value)
-  const [graphText, setGraphText] = useState(
-    workflow ? JSON.stringify(workflow.graph, null, 2) : EMPTY_GRAPH
-  )
+  const [draft, setDraft] = useState<GraphDraft>(() => initialGraphDraft(workflow?.graph))
   const [graphError, setGraphError] = useState<string | null>(null)
   const saving = create.isPending || update.isPending
 
   const save = () => {
-    let graph: unknown
-    try {
-      graph = JSON.parse(graphText)
-    } catch {
-      setGraphError('The graph is not valid JSON.')
+    const graph = draftToGraphJson(draft)
+    if (!graph.ok) {
+      setGraphError(graph.error)
       return
     }
     setGraphError(null)
-    const onError = () => toast.error('The workflow could not be saved. Check the graph.')
+    const onError = () => toast.error('The workflow could not be saved. Check the steps.')
     if (workflow) {
       update.mutate(
-        { id: workflow.id, name, class: cls, triggerType, graph: graph as never },
+        { id: workflow.id, name, class: cls, triggerType, graph: graph.value },
         { onSuccess: onClose, onError }
       )
     } else {
       create.mutate(
-        { name, class: cls, triggerType, graph: graph as never },
+        { name, class: cls, triggerType, graph: graph.value },
         { onSuccess: onClose, onError }
       )
     }
@@ -193,7 +188,7 @@ function WorkflowEditor({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>{workflow ? 'Edit workflow' : 'New workflow'}</DialogTitle>
         </DialogHeader>
@@ -239,17 +234,15 @@ function WorkflowEditor({
               </Select>
             </div>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="wf-graph">Graph</Label>
-            <Textarea
-              id="wf-graph"
-              value={graphText}
-              onChange={(e) => setGraphText(e.target.value)}
-              className="h-48 font-mono text-xs"
-              spellCheck={false}
-            />
-            {graphError && <p className="text-xs text-destructive">{graphError}</p>}
-          </div>
+          <WorkflowGraphEditor
+            draft={draft}
+            onDraftChange={(d) => {
+              setGraphError(null)
+              setDraft(d)
+            }}
+            triggerLabel={triggerLabel(triggerType)}
+            error={graphError}
+          />
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={saving}>
