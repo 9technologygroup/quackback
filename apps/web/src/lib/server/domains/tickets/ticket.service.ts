@@ -308,9 +308,55 @@ export async function setTicketStatus(
         metadata: { ticketId: id },
       })
     }
+
+    // A tracker fans its stage progress onto the customer tickets it tracks
+    // (§4.9): each linked ticket takes the tracker's status and runs its own
+    // crossing (its requester's bell + thread event). Trackers carry no
+    // requester of their own, so the bell above never fires for them.
+    if (existing.type === 'tracker') {
+      await cascadeTrackerStatus(id, statusId, actor)
+    }
   }
 
   return ticketRowToDTO(updated)
+}
+
+/**
+ * Fan a tracker's new status onto the customer tickets it tracks (§4.9). Each
+ * linked ticket takes the tracker's status via setTicketStatus, so it runs its
+ * own transition + requester notification. A linked ticket already in a closed
+ * category is skipped — the cascade never regresses a resolved ticket. Per-link
+ * best-effort: the tracker's own update already committed, so one failing link
+ * is logged, not fatal. The dynamic import breaks the ticket.service <->
+ * ticket-links static cycle.
+ */
+async function cascadeTrackerStatus(
+  trackerId: TicketId,
+  statusId: TicketStatusId,
+  actor: Actor
+): Promise<void> {
+  const { listLinkedTicketIds } = await import('./ticket-links.service')
+  const linkedIds = await listLinkedTicketIds(trackerId)
+  for (const linkedId of linkedIds) {
+    try {
+      const linked = await db
+        .select({ statusId: tickets.statusId })
+        .from(tickets)
+        .where(and(eq(tickets.id, linkedId), isNull(tickets.deletedAt)))
+        .limit(1)
+        .then((r) => r[0])
+      if (!linked || linked.statusId === statusId) continue
+      const [current] = await db
+        .select({ category: ticketStatuses.category })
+        .from(ticketStatuses)
+        .where(eq(ticketStatuses.id, linked.statusId))
+        .limit(1)
+      if (current?.category === 'closed') continue // never regress a resolved ticket
+      await setTicketStatus(linkedId, statusId, actor)
+    } catch (err) {
+      log.warn({ err, tracker_id: trackerId, linked_id: linkedId }, 'tracker cascade: link failed')
+    }
+  }
 }
 
 /** Post a customer-visible status event into a ticket's thread (never the raw

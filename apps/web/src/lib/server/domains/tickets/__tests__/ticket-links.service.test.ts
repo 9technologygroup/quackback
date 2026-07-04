@@ -5,7 +5,13 @@
  * records a team-only 'ticket_linked' note. Runs inside the fixture rollback.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
-import { createId, type PrincipalId, type TicketId, type UserId } from '@quackback/ids'
+import {
+  createId,
+  type PrincipalId,
+  type TicketId,
+  type TicketStatusId,
+  type UserId,
+} from '@quackback/ids'
 
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
 import {
@@ -31,7 +37,7 @@ vi.mock('../ticket.webhooks', () => ({
   emitTicketAssigned: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { createTicket } from '../ticket.service'
+import { createTicket, setTicketStatus } from '../ticket.service'
 import {
   linkTicketToTracker,
   unlinkTicketFromTracker,
@@ -91,6 +97,42 @@ async function seedDefaultStatus(): Promise<void> {
 async function makeTicket(type: 'customer' | 'tracker', actor: Actor): Promise<TicketId> {
   const dto = await createTicket({ type, title: `${type} ${suffix()}` }, actor)
   return dto.id
+}
+
+/** An in-progress + a closed status, beyond the seeded default 'received' open. */
+async function seedCascadeStatuses(): Promise<{
+  inProgress: TicketStatusId
+  closed: TicketStatusId
+}> {
+  const [inProgress] = await testDb
+    .insert(ticketStatuses)
+    .values({
+      name: 'In Progress',
+      slug: `t_ip_${suffix()}`,
+      category: 'open',
+      position: 200,
+      publicStage: 'in_progress',
+    })
+    .returning()
+  const [closed] = await testDb
+    .insert(ticketStatuses)
+    .values({
+      name: 'Resolved',
+      slug: `t_res_${suffix()}`,
+      category: 'closed',
+      position: 300,
+      publicStage: 'resolved',
+    })
+    .returning()
+  return { inProgress: inProgress.id, closed: closed.id }
+}
+
+async function statusOf(ticketId: TicketId): Promise<TicketStatusId> {
+  const [row] = await testDb
+    .select({ statusId: tickets.statusId })
+    .from(tickets)
+    .where(eq(tickets.id, ticketId))
+  return row.statusId
 }
 
 describe.skipIf(!fixture.available)('ticket-links.service (real DB, rolled back)', () => {
@@ -169,6 +211,43 @@ describe.skipIf(!fixture.available)('ticket-links.service (real DB, rolled back)
     await linkTicketToTracker(tracker, customer, actor)
     await unlinkTicketFromTracker(tracker, customer, actor)
     expect(await listLinkedTicketIds(tracker)).toEqual([])
+  })
+
+  it('a tracker stage crossing cascades its status onto the linked customer tickets', async () => {
+    await seedSettings()
+    await seedDefaultStatus()
+    const { inProgress } = await seedCascadeStatuses()
+    const actor = await seedActor()
+    const tracker = await makeTicket('tracker', actor)
+    const a = await makeTicket('customer', actor)
+    const b = await makeTicket('customer', actor)
+    await linkTicketToTracker(tracker, a, actor)
+    await linkTicketToTracker(tracker, b, actor)
+
+    // Tracker crosses received -> in_progress; both linked tickets follow.
+    await setTicketStatus(tracker, inProgress, actor)
+
+    expect(await statusOf(a)).toBe(inProgress)
+    expect(await statusOf(b)).toBe(inProgress)
+  })
+
+  it('the cascade never regresses a linked ticket already closed', async () => {
+    await seedSettings()
+    await seedDefaultStatus()
+    const { inProgress, closed } = await seedCascadeStatuses()
+    const actor = await seedActor()
+    const tracker = await makeTicket('tracker', actor)
+    const openTicket = await makeTicket('customer', actor)
+    const closedTicket = await makeTicket('customer', actor)
+    await linkTicketToTracker(tracker, openTicket, actor)
+    await linkTicketToTracker(tracker, closedTicket, actor)
+    await setTicketStatus(closedTicket, closed, actor) // resolve one first
+
+    // Tracker moves to in_progress: the open one follows, the closed one holds.
+    await setTicketStatus(tracker, inProgress, actor)
+
+    expect(await statusOf(openTicket)).toBe(inProgress)
+    expect(await statusOf(closedTicket)).toBe(closed)
   })
 
   it('refuses a caller without ticket.assign', async () => {
