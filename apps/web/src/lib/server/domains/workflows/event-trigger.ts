@@ -11,6 +11,7 @@ import type { ConversationId, PrincipalId } from '@quackback/ids'
 import type { PrincipalType } from '@/lib/server/policy/types'
 import { logger } from '@/lib/server/logger'
 import { dispatchWorkflowTrigger, type WorkflowTrigger } from './dispatcher'
+import { interruptWaitingRuns } from './workflow.engine'
 
 const log = logger.child({ component: 'workflow-event-trigger' })
 
@@ -63,15 +64,31 @@ export function eventToWorkflowTrigger(event: EventData): WorkflowTrigger | null
   }
 }
 
+/** A reply (any message) or a close ends pending waits on the conversation. */
+function isInterruptingEvent(event: EventData): boolean {
+  return (
+    event.type === 'message.created' ||
+    (event.type === 'conversation.status_changed' && event.data.newStatus === 'closed')
+  )
+}
+
 /**
  * Fire workflow triggers for a dispatched event. Safe to call fire-and-forget:
  * it maps + dispatches and swallows every error, so a workflow fault never
  * touches the event pipeline or the request that produced the event.
+ *
+ * A reply or close first interrupts any pending waits on the conversation — done
+ * BEFORE the new dispatch (and sequentially, not on the racy fire-and-forget bus)
+ * so a wait-bearing run the customer already answered doesn't fire, while the run
+ * this same event triggers is created afterwards and never caught by its own
+ * event's interrupt.
  */
 export async function dispatchWorkflowsForEvent(event: EventData): Promise<void> {
   try {
     const trigger = eventToWorkflowTrigger(event)
-    if (trigger) await dispatchWorkflowTrigger(trigger)
+    if (!trigger) return
+    if (isInterruptingEvent(event)) await interruptWaitingRuns(trigger.conversationId)
+    await dispatchWorkflowTrigger(trigger)
   } catch (err) {
     log.error({ err, eventType: event.type }, 'workflow dispatch failed')
   }
