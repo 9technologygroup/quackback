@@ -7,7 +7,7 @@
  * the types so the two can't silently drift.
  */
 import { z } from 'zod'
-import type { WorkflowCondition } from './condition.evaluator'
+import { CONDITION_FIELDS, type WorkflowCondition } from './condition.evaluator'
 
 const conditionOperator = z.enum([
   'eq',
@@ -25,19 +25,24 @@ const conditionOperator = z.enum([
 ])
 
 const conditionLeaf = z.object({
-  field: z.string().min(1),
+  // Validated against the evaluator's field catalogue so a typo is caught on save.
+  field: z.enum(CONDITION_FIELDS),
   op: conditionOperator,
   value: z.unknown().optional(),
 })
 
-// Recursive: a group nests conditions under all / any.
+// Recursive: a group nests conditions under all / any. The group is strict so a
+// typo'd leaf (bad field) can't slip through as an empty group when its unknown
+// keys would otherwise be stripped.
 const conditionSchema: z.ZodType<WorkflowCondition> = z.lazy(() =>
   z.union([
     conditionLeaf,
-    z.object({
-      all: z.array(conditionSchema).optional(),
-      any: z.array(conditionSchema).optional(),
-    }),
+    z
+      .object({
+        all: z.array(conditionSchema).optional(),
+        any: z.array(conditionSchema).optional(),
+      })
+      .strict(),
   ])
 )
 

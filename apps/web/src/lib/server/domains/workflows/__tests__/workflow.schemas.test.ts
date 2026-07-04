@@ -68,6 +68,20 @@ describe('workflowGraphSchema', () => {
     expect(workflowGraphSchema.safeParse(badWait).success).toBe(false)
   })
 
+  it('rejects a condition with a typo/unknown field', () => {
+    const typo = {
+      nodes: [
+        {
+          id: 'g',
+          type: 'condition',
+          condition: { field: 'conversation.stattus', op: 'eq', value: 'open' },
+        },
+      ],
+      edges: [],
+    }
+    expect(workflowGraphSchema.safeParse(typo).success).toBe(false)
+  })
+
   it('rejects a node missing its id and a malformed edge', () => {
     const noId = { nodes: [{ type: 'trigger' }], edges: [] }
     expect(workflowGraphSchema.safeParse(noId).success).toBe(false)

@@ -60,6 +60,25 @@ export interface ConditionGroup {
 
 export type WorkflowCondition = ConditionLeaf | ConditionGroup
 
+/**
+ * The condition fields the evaluator knows — the single catalogue the authoring
+ * validation (workflow.schemas) derives its allowed set from, so a typo'd field
+ * (conversation.stattus) is rejected on save instead of silently never matching.
+ * Keep in sync with resolveField's switch.
+ */
+export const CONDITION_FIELDS = [
+  'conversation.status',
+  'conversation.channel',
+  'conversation.priority',
+  'conversation.waiting_minutes',
+  'conversation.tags',
+  'message.body',
+  'message.sender',
+  'person.segments',
+  'office_hours',
+  'csat.rating',
+] as const
+
 /** Pull the value a `field` names out of the resolved context (undefined = the
  *  field isn't known, which every operator treats as a non-match). */
 function resolveField(field: string, ctx: ConditionContext): unknown {
