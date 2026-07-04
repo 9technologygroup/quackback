@@ -1,18 +1,20 @@
 /**
- * Apply a macro's bundled actions to the conversation it was used in, by
- * delegating to the existing conversation services (assign / tag / priority /
- * snooze / close). Each action is applied best-effort and independently; a
- * failure is logged and skipped so one bad action never blocks the reply.
+ * A macro is "a bundle of actions with no trigger": its bundled actions run
+ * through the shared workflow action executor (§4.6, Slice 3), so macros and
+ * workflows apply the same catalogue the same way. This layer only adapts the
+ * macro's stored shape to the executor — resolving snooze presets to a wake time
+ * and casting the stored string ids to branded ids — then applies best-effort so
+ * one bad action never blocks the reply.
  *
- * Deferred shape: `set_attribute` needs a general conversation custom-attribute
- * setter that does not exist yet (conversation.set_attributes is a reserved
- * permission). It is accepted and stored but no-ops here until that lands.
+ * `set_attribute` is accepted and stored but no-ops until a general conversation
+ * custom-attribute setter exists (see applyAction).
  */
 import type { ConversationId, PrincipalId, ConversationTagId, TeamId } from '@quackback/ids'
 import type { MacroAction, MacroSnoozePreset } from '@/lib/server/db'
 import type { Actor } from '@/lib/server/policy/types'
 import { tomorrowAt } from '@/lib/shared/utils/date'
 import { logger } from '@/lib/server/logger'
+import { applyAction, type WorkflowAction } from '@/lib/server/domains/workflows/action.executor'
 
 const log = logger.child({ component: 'macro-actions' })
 
@@ -32,6 +34,27 @@ function snoozeUntil(preset: MacroSnoozePreset): Date | null {
   }
 }
 
+/** Adapt a stored macro action to an executor action (presets → wake time, string
+ *  ids → branded ids). Returns null for a shape the executor doesn't take. */
+function toWorkflowAction(action: MacroAction): WorkflowAction | null {
+  switch (action.type) {
+    case 'assign_agent':
+      return { type: 'assign_agent', principalId: action.principalId as PrincipalId }
+    case 'assign_team':
+      return { type: 'assign_team', teamId: action.teamId as TeamId }
+    case 'add_tag':
+      return { type: 'add_tag', tagId: action.tagId as ConversationTagId }
+    case 'set_priority':
+      return { type: 'set_priority', priority: action.priority }
+    case 'snooze':
+      return { type: 'snooze', until: snoozeUntil(action.preset) }
+    case 'close':
+      return { type: 'close' }
+    case 'set_attribute':
+      return { type: 'set_attribute', key: action.key, value: action.value }
+  }
+}
+
 /**
  * Run each action against the conversation. Returns the labels of the actions
  * that were actually applied (deferred/failed ones are excluded), so the caller
@@ -43,40 +66,13 @@ export async function applyMacroActions(
   actor: Actor
 ): Promise<string[]> {
   if (actions.length === 0) return []
-  const service = await import('@/lib/server/domains/conversation/conversation.service')
-  const tags = await import('@/lib/server/domains/conversation/conversation-tag.service')
   const applied: string[] = []
   for (const action of actions) {
+    const workflowAction = toWorkflowAction(action)
+    if (!workflowAction) continue
     try {
-      switch (action.type) {
-        case 'assign_agent':
-          await service.assignConversation(conversationId, action.principalId as PrincipalId, actor)
-          applied.push('assigned')
-          break
-        case 'assign_team':
-          await service.assignTeam(conversationId, action.teamId as TeamId, actor)
-          applied.push('assigned to team')
-          break
-        case 'add_tag':
-          await tags.attachTag(conversationId, action.tagId as ConversationTagId)
-          applied.push('tagged')
-          break
-        case 'set_priority':
-          await service.setConversationPriority(conversationId, action.priority, actor)
-          applied.push(`priority ${action.priority}`)
-          break
-        case 'snooze':
-          await service.snoozeConversation(conversationId, snoozeUntil(action.preset), actor)
-          applied.push('snoozed')
-          break
-        case 'close':
-          await service.setConversationStatus(conversationId, 'closed', actor)
-          applied.push('closed')
-          break
-        case 'set_attribute':
-          // Deferred: no general conversation custom-attribute setter yet.
-          break
-      }
+      const label = await applyAction(workflowAction, { conversationId, actor })
+      if (label) applied.push(label)
     } catch (err) {
       log.error({ err, action: action.type, conversationId }, 'macro action failed')
     }

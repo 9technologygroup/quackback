@@ -3,12 +3,23 @@ import type { ConversationId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
 import type { MacroAction } from '@/lib/server/db'
 
-const assignConversation = vi.fn()
-const assignTeam = vi.fn()
-const setConversationPriority = vi.fn()
-const snoozeConversation = vi.fn()
-const setConversationStatus = vi.fn()
-const attachTag = vi.fn()
+// vi.hoisted so the fns exist when the (statically-imported, via the shared
+// action executor) mock factories run at module load.
+const {
+  assignConversation,
+  assignTeam,
+  setConversationPriority,
+  snoozeConversation,
+  setConversationStatus,
+  attachTag,
+} = vi.hoisted(() => ({
+  assignConversation: vi.fn(),
+  assignTeam: vi.fn(),
+  setConversationPriority: vi.fn(),
+  snoozeConversation: vi.fn(),
+  setConversationStatus: vi.fn(),
+  attachTag: vi.fn(),
+}))
 
 vi.mock('@/lib/server/domains/conversation/conversation.service', () => ({
   assignConversation,
