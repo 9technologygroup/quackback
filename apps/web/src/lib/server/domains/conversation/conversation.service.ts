@@ -35,7 +35,6 @@ import type {
   TeamId,
 } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
-import { isTrustedAttachmentUrl } from '@/lib/server/storage/trusted-url'
 import {
   canSendVisitorMessage,
   canStartConversation,
@@ -45,7 +44,6 @@ import {
 } from '@/lib/server/policy/conversation'
 import type { Actor } from '@/lib/server/policy/types'
 import {
-  MAX_CONVERSATION_MESSAGE_LENGTH,
   MAX_CONVERSATION_ATTACHMENTS,
   HANDOFF_REASON_LABELS,
   type ConversationStatus,
@@ -68,7 +66,12 @@ import {
   publishConversationUpdate,
   publishTyping,
 } from '@/lib/server/realtime/conversation-channels'
-import { truncate } from '@/lib/shared/utils/string'
+import {
+  validateAttachments,
+  validateContent,
+  preview,
+  richMessageFallbackLabel,
+} from '@/lib/server/messages/message-core'
 import {
   notifyVisitorMessage,
   notifyAgentReply,
@@ -118,61 +121,11 @@ function systemActor(): Actor {
   }
 }
 
-const PREVIEW_LENGTH = 120
-// Matches the 5 MB cap enforced by the upload endpoints.
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
-
-function validateAttachments(attachments?: ConversationAttachment[]): ConversationAttachment[] {
-  if (!attachments || attachments.length === 0) return []
-  if (attachments.length > MAX_CONVERSATION_ATTACHMENTS) {
-    throw new ValidationError(
-      'VALIDATION_ERROR',
-      `Too many attachments (max ${MAX_CONVERSATION_ATTACHMENTS})`
-    )
-  }
-  return attachments.map((a) => {
-    if (!isTrustedAttachmentUrl(a?.url)) {
-      throw new ValidationError('VALIDATION_ERROR', 'Invalid attachment')
-    }
-    const size = Number(a.size)
-    if (!Number.isFinite(size) || size < 0 || size > MAX_ATTACHMENT_BYTES) {
-      throw new ValidationError('VALIDATION_ERROR', 'Attachment too large')
-    }
-    return {
-      url: a.url,
-      name: String(a.name ?? '').slice(0, 255),
-      contentType: String(a.contentType ?? '').slice(0, 128),
-      size,
-    }
-  })
-}
-
-/** Validate text content; allow empty only when attachments are present. */
-function validateContent(raw: string, hasAttachments = false): string {
-  const content = raw?.trim() ?? ''
-  if (!content && !hasAttachments) {
-    throw new ValidationError('VALIDATION_ERROR', 'Message cannot be empty')
-  }
-  if (content.length > MAX_CONVERSATION_MESSAGE_LENGTH) {
-    throw new ValidationError(
-      'VALIDATION_ERROR',
-      `Message must be ${MAX_CONVERSATION_MESSAGE_LENGTH.toLocaleString()} characters or less`
-    )
-  }
-  return content
-}
-
 /** Normalize a captured email; returns undefined when it isn't plausibly one. */
 function normalizeEmail(raw: string | undefined): string | undefined {
   const email = raw?.trim().toLowerCase() ?? ''
   if (!email || email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return undefined
   return email
-}
-
-function preview(content: string, attachments: ConversationAttachment[] = []): string {
-  if (content) return truncate(content, PREVIEW_LENGTH)
-  if (attachments.length > 0) return `📎 ${attachments[0].name || 'Attachment'}`
-  return ''
 }
 
 async function loadConversationOr404(conversationId: ConversationId): Promise<Conversation> {
@@ -404,22 +357,6 @@ export async function sendVisitorMessage(
   // visitorEmail back to the visitor in the send response.
   const conversationDTO = await conversationToDTO(txResult.conversation, 'visitor')
   return { conversation: conversationDTO, message: messageDTO, created }
-}
-
-/**
- * A short preview label for a rich message that has no typed text — an inline
- * image or shared post still needs a non-blank conversation-list snippet +
- * notification body. Returns '' when the doc carries no such node (so a truly
- * empty doc is treated as no content, not a sendable blank message).
- */
-function richMessageFallbackLabel(doc: TiptapContent | null | undefined): string {
-  for (const node of doc?.content ?? []) {
-    if (node.type === 'chatImage') return '📷 Image'
-    if (node.type === 'quackbackEmbed') {
-      return node.attrs?.kind === 'changelog' ? '🔗 Shared an update' : '🔗 Shared a post'
-    }
-  }
-  return ''
 }
 
 export interface StartAgentConversationInput {

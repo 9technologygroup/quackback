@@ -49,6 +49,7 @@ import type { ConversationSort } from '@/lib/shared/conversation/views'
 import { getAssistantPrincipal } from '@/lib/server/domains/assistant/assistant.principal'
 import { priorityRankSql } from '@/lib/server/utils/priority-rank'
 import { loadAuthors, fallbackAuthor } from '../principals/principal-display'
+import { toMessageDTO } from '@/lib/server/messages/message-core'
 import { aggregateReactions } from '@/lib/shared'
 import { truncate } from '@/lib/shared/utils/string'
 import type {
@@ -107,28 +108,10 @@ export async function resolveAuthor(input: {
   }
 }
 
-export function toMessageDTO(
-  message: ConversationMessage,
-  author: ConversationAuthorDTO | null,
-  assistantPrincipalId?: PrincipalId | null
-): ConversationMessageDTO {
-  return {
-    id: message.id,
-    conversationId: message.conversationId,
-    ticketId: message.ticketId,
-    senderType: message.senderType as MessageSenderType,
-    content: message.content,
-    createdAt: message.createdAt.toISOString(),
-    author,
-    attachments: message.attachments ?? [],
-    citations: message.citations ?? [],
-    isAssistant: assistantPrincipalId != null && message.principalId === assistantPrincipalId,
-    isInternal: message.isInternal,
-    contentJson: message.contentJson ?? null,
-    viaEmail: message.metadata?.source === 'email',
-    systemEvent: message.metadata?.systemEvent ?? null,
-  }
-}
+// toMessageDTO now lives in the shared message core (a message is a peer concern
+// of conversations and tickets). Re-exported here because the inbox, message
+// stream, and their test mocks reference it from this module.
+export { toMessageDTO }
 
 /** Batch-load reactions for a page of messages, aggregated per message with the
  *  viewing agent's `hasReacted`. Agent-only — never called on a visitor path. */
