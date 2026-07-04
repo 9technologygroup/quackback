@@ -106,6 +106,8 @@ export type {
   AssistantInvolvementId,
   TicketId,
   TicketStatusId,
+  ChannelAccountId,
+  SendingDomainId,
   // Feedback aggregation entities
   FeedbackSourceId,
   RawFeedbackItemId,

@@ -1065,6 +1065,13 @@
       "when": 1784765580000,
       "tag": "0151_message_polymorphism",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1784765640000,
+      "tag": "0152_email_channel",
+      "breakpoints": true
     }
   ]
 }

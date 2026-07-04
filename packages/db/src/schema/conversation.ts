@@ -16,6 +16,7 @@ import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
 import { principal } from './auth'
 import { teams } from './teams'
+import { channelAccounts } from './channel-accounts'
 // conversation <-> tickets is a mutual import cycle (tickets FKs conversations,
 // and conversation_messages FKs tickets). It is safe only because every
 // cross-table reference lives inside drizzle's deferred FK/relation callbacks;
@@ -115,6 +116,10 @@ export const conversations = pgTable(
     // Optional contact email captured from an anonymous visitor for offline
     // follow-up. Agent-only; the principal itself stays anonymous.
     visitorEmail: text('visitor_email'),
+    // The email inbound route this conversation arrived on (§4.8/§4.9). Null for
+    // messenger/web_form; set to the workspace's inbound channel_account for
+    // email. `set null` so a removed inbox leaves history rather than orphaning it.
+    channelAccountId: typeIdColumnNullable('channel_account')('channel_account_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }),
   },
@@ -135,6 +140,12 @@ export const conversations = pgTable(
       columns: [table.assignedTeamId],
       foreignColumns: [teams.id],
     }).onDelete('set null'),
+    foreignKey({
+      name: 'conversations_channel_account_id_fkey',
+      columns: [table.channelAccountId],
+      foreignColumns: [channelAccounts.id],
+    }).onDelete('set null'),
+    index('conversations_channel_account_id_idx').on(table.channelAccountId),
     // Inbox feed: list by status, newest activity first.
     index('conversations_status_last_message_idx').on(table.status, table.lastMessageAt),
     // Cross-status keyset feed (D17): last activity first with an id tiebreak, so

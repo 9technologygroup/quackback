@@ -183,6 +183,9 @@ export {
   ticketLinks,
   ticketLinksRelations,
   DEFAULT_TICKET_STATUSES,
+  // Schema tables - email channel (support platform §4.8)
+  channelAccounts,
+  emailSendingDomains,
   // Schema tables - integrations
   integrationEventMappings,
   integrationEventMappingsRelations,
@@ -348,6 +351,12 @@ export type {
 export type { ServiceMetadata } from '@quackback/db'
 export type { IdentityProviderAttributeMapping } from '@quackback/db'
 export type { PermissionKey, PermissionCategory, SystemRoleKey } from '@quackback/db'
+export type {
+  ChannelAccount,
+  EmailSendingDomain,
+  ChannelAccountConfig,
+  SendingDomainDnsRecord,
+} from '@quackback/db'
 
 // Re-export types (for client components that need types without side effects)
 export * from '@quackback/db/types'

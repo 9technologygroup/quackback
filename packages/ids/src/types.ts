@@ -148,6 +148,12 @@ export type TicketId = TypeId<'ticket'>
 /** Ticket status ID - e.g., ticket_status_01h455vb4pex5vsknk084sn02q */
 export type TicketStatusId = TypeId<'ticket_status'>
 
+/** Channel account ID (§4.8) - e.g., channel_account_01h455vb4pex5vsknk084sn02q */
+export type ChannelAccountId = TypeId<'channel_account'>
+
+/** Sending domain ID (§4.8) - e.g., sending_domain_01h455vb4pex5vsknk084sn02q */
+export type SendingDomainId = TypeId<'sending_domain'>
+
 /** Team ID - e.g., team_01h455vb4pex5vsknk084sn02q */
 export type TeamId = TypeId<'team'>
 
@@ -283,6 +289,8 @@ export interface EntityIdMap {
   assistant_involvement: AssistantInvolvementId
   ticket: TicketId
   ticket_status: TicketStatusId
+  channel_account: ChannelAccountId
+  sending_domain: SendingDomainId
   team: TeamId
   team_member: TeamMemberId
   macro: MacroId
