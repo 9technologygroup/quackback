@@ -550,6 +550,35 @@ export async function listConversationsForVisitor(
   return Promise.all(rows.map((c) => conversationToDTO(c, side)))
 }
 
+/**
+ * Total unread across ALL of a visitor's conversations — the aggregate the
+ * messenger launcher/tab badge needs (`conversationToDTO`'s per-thread
+ * `unreadCount` only covers one conversation, so a badge built from the
+ * most-recent thread silently misses unread replies in older ones). One query:
+ * agent messages newer than each conversation's visitor read watermark, summed.
+ * A never-read conversation (null watermark) counts all its agent messages,
+ * mirroring `unreadCountFor`; internal notes and deleted rows never count.
+ */
+export async function countVisitorUnreadMessages(visitorPrincipalId: PrincipalId): Promise<number> {
+  const [row] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(conversationMessages)
+    .innerJoin(conversations, eq(conversationMessages.conversationId, conversations.id))
+    .where(
+      and(
+        eq(conversations.visitorPrincipalId, visitorPrincipalId),
+        eq(conversationMessages.senderType, 'agent'),
+        eq(conversationMessages.isInternal, false),
+        isNull(conversationMessages.deletedAt),
+        or(
+          isNull(conversations.visitorLastReadAt),
+          gt(conversationMessages.createdAt, conversations.visitorLastReadAt)
+        )
+      )
+    )
+  return row?.c ?? 0
+}
+
 export interface MessagePage {
   messages: ConversationMessageDTO[]
   hasMore: boolean

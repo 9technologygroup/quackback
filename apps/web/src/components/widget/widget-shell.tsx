@@ -19,6 +19,7 @@ import { UserStatsBar } from '@/components/shared/user-stats'
 import { getWidgetAuthHeaders, generateOneTimeToken } from '@/lib/client/widget-auth'
 import { sendToHost } from '@/lib/client/widget-bridge'
 import { useWidgetAuth } from './widget-auth-provider'
+import { useMessengerUnread } from './use-messenger-unread'
 
 import { type WidgetTab, type EnabledTabs, visibleTabs } from './widget-nav'
 export type { WidgetTab }
@@ -121,6 +122,9 @@ export function WidgetShell({
   const intl = useIntl()
   const tabsToShow = visibleTabs(enabledTabs)
   const showTabBar = tabsToShow.length > 1 && !hideTabBar
+  // Total unread across all the visitor's conversations, for the Messages tab
+  // badge (only fetched when that tab is actually shown).
+  const messengerUnread = useMessengerUnread(enabledTabs.messages ?? false)
   const reduceMotion = useReducedMotion()
   // When the bar was hidden for an EXPANDED view, its return waits for the
   // host panel's shrink transition (~520ms) before fading in; returning from
@@ -387,7 +391,23 @@ export function WidgetShell({
                           : 'text-muted-foreground/60 hover:text-muted-foreground'
                       )}
                     >
-                      <Icon className="w-5 h-5" />
+                      <div className="relative">
+                        <Icon className="w-5 h-5" />
+                        {tab === 'messages' && messengerUnread > 0 && (
+                          <span
+                            className="absolute -top-1 -end-1.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold leading-none text-primary-foreground"
+                            aria-label={intl.formatMessage(
+                              {
+                                id: 'widget.shell.tab.messages.unread',
+                                defaultMessage: '{count} unread',
+                              },
+                              { count: messengerUnread }
+                            )}
+                          >
+                            {messengerUnread > 9 ? '9+' : messengerUnread}
+                          </span>
+                        )}
+                      </div>
                       <span className="text-xs font-medium">
                         <FormattedMessage id={cfg.labelId} defaultMessage={cfg.defaultLabel} />
                       </span>

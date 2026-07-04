@@ -495,6 +495,41 @@ export const getMyConversationsFn = createServerFn({ method: 'GET' }).handler(as
   }
 })
 
+/**
+ * Total unread across ALL of the caller's conversations — the messenger badge
+ * aggregate (the launcher/tab shows one number, not the most-recent thread's).
+ * Same gating as getMyConversationsFn: portal access for non-team callers;
+ * returns 0 when conversations are off or the caller is unauthenticated. `total`
+ * is a separate field so ticket/other unread can fold in later without a shape
+ * change.
+ */
+export const getMessengerUnreadFn = createServerFn({ method: 'GET' }).handler(async () => {
+  const zero = { conversations: 0, total: 0 }
+  try {
+    const { isConversationsEnabled } =
+      await import('@/lib/server/domains/settings/settings.support')
+    if (!(await isConversationsEnabled()) || !hasAuthCredentials()) return zero
+
+    const ctx = await getOptionalAuth()
+    if (!ctx?.principal) return zero
+
+    // Non-team callers must hold portal access (mirrors getMyConversationsFn).
+    if (!isTeamMember(ctx.principal.role)) {
+      const { resolvePortalAccessForRequest } = await import('./portal-access')
+      const access = await resolvePortalAccessForRequest()
+      if (!access.granted) return zero
+    }
+
+    const { countVisitorUnreadMessages } =
+      await import('@/lib/server/domains/conversation/conversation.query')
+    const conversationUnread = await countVisitorUnreadMessages(ctx.principal.id)
+    return { conversations: conversationUnread, total: conversationUnread }
+  } catch (error) {
+    log.error({ err: error }, 'get messenger unread failed')
+    throw error
+  }
+})
+
 /** Older messages for a conversation the caller can view (keyset pagination). */
 export const listConversationMessagesFn = createServerFn({ method: 'GET' })
   .validator(listMessagesSchema)
