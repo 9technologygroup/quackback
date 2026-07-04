@@ -28,11 +28,16 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
 
 // Spy the executor — the engine only orchestrates; action effects are tested
 // against the real services elsewhere. vi.hoisted so it exists at mock-factory time.
-const { applyAction } = vi.hoisted(() => ({ applyAction: vi.fn().mockResolvedValue('ok') }))
+const { applyAction, scheduleWorkflowResume } = vi.hoisted(() => ({
+  applyAction: vi.fn().mockResolvedValue('ok'),
+  scheduleWorkflowResume: vi.fn().mockResolvedValue(undefined),
+}))
 vi.mock('../action.executor', () => ({ applyAction }))
+// The durable-wait timer is BullMQ; the engine's scheduling call is spied here.
+vi.mock('../workflow-wait-queue', () => ({ scheduleWorkflowResume }))
 
 import { createWorkflow } from '../workflow.service'
-import { runWorkflow } from '../workflow.engine'
+import { runWorkflow, resumeWorkflowRun, interruptWaitingRuns } from '../workflow.engine'
 
 const fixture = await createDbTestFixture({
   probe: async (db) => {
@@ -134,15 +139,75 @@ describe.skipIf(!fixture.available)('runWorkflow (real DB, rolled back)', () => 
     const run = await runWorkflow(wf, ctx(), { conversationId })
     expect(run?.state).toBe('waiting')
     expect(run?.cursor).toMatchObject({ resumeNodeId: 'a2', waitSeconds: 3600 })
-    // Only the pre-wait action ran; the post-wait one waits for resume (Slice 5e).
+    // Only the pre-wait action ran; the post-wait one waits for resume.
     expect(applyAction).toHaveBeenCalledTimes(1)
     expect(applyAction.mock.calls[0][0]).toEqual({ type: 'set_priority', priority: 'urgent' })
+    // The durable timer was scheduled for this run.
+    expect(scheduleWorkflowResume).toHaveBeenCalledWith(run!.id, 3600)
 
     const events = await testDb
       .select()
       .from(workflowRunEvents)
       .where(eq(workflowRunEvents.runId, run!.id))
     expect(events.map((e) => e.kind).sort()).toEqual(['started', 'waiting'])
+  })
+
+  it('resumes a waiting run from its cursor and completes it', async () => {
+    const conversationId = await seedConversation()
+    const wf = await createWorkflow({
+      name: 'wait then close',
+      class: 'background',
+      triggerType: 'conversation.created',
+      graph: {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          { id: 'w', type: 'wait', seconds: 60 },
+          { id: 'a', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 't', to: 'w' },
+          { from: 'w', to: 'a' },
+        ],
+      },
+    })
+    const waiting = await runWorkflow(wf, ctx(), { conversationId })
+    expect(waiting?.state).toBe('waiting')
+    expect(applyAction).not.toHaveBeenCalled() // nothing before the wait
+
+    // The timer fires -> resume walks from the cursor and runs the tail.
+    const resumed = await resumeWorkflowRun(waiting!.id)
+    expect(resumed?.state).toBe('done')
+    expect(resumed?.endedAt).not.toBeNull()
+    expect(applyAction).toHaveBeenCalledTimes(1)
+    expect(applyAction.mock.calls[0][0]).toEqual({ type: 'close' })
+  })
+
+  it('does not resume a run that was interrupted while waiting', async () => {
+    const conversationId = await seedConversation()
+    const wf = await createWorkflow({
+      name: 'wait then close',
+      class: 'background',
+      triggerType: 'conversation.created',
+      graph: {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          { id: 'w', type: 'wait', seconds: 60 },
+          { id: 'a', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 't', to: 'w' },
+          { from: 'w', to: 'a' },
+        ],
+      },
+    })
+    const waiting = await runWorkflow(wf, ctx(), { conversationId })
+
+    // A reply/close interrupts every waiting run on the conversation.
+    expect(await interruptWaitingRuns(conversationId)).toBe(1)
+
+    // A late timer resolves to a no-op: the tail never runs.
+    expect(await resumeWorkflowRun(waiting!.id)).toBeNull()
+    expect(applyAction).not.toHaveBeenCalled()
   })
 
   it('is a silent no-op (no run, no dispatch) when the entry gate matches nothing', async () => {

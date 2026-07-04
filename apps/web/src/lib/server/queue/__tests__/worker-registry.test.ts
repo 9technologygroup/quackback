@@ -22,6 +22,7 @@ const WORKER_MODULES = [
   'domains/feedback/queues/feedback-ai-queue.ts',
   'domains/feedback/queues/feedback-ingest-queue.ts',
   'domains/principals/anon-sweep-queue.ts',
+  'domains/workflows/workflow-wait-queue.ts',
   'events/process.ts',
   'events/segment-scheduler.ts',
 ]

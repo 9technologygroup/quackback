@@ -110,6 +110,18 @@ export const WORKER_REGISTRY: readonly WorkerEntry[] = [
         m.closeEmailImapQueue()
       ),
   },
+  {
+    // Durable workflow waits (§4.6). Resumes parked runs when their timer fires.
+    name: 'workflow-wait',
+    init: () =>
+      import('@/lib/server/domains/workflows/workflow-wait-queue').then((m) =>
+        m.initWorkflowWaitWorker()
+      ),
+    close: () =>
+      import('@/lib/server/domains/workflows/workflow-wait-queue').then((m) =>
+        m.closeWorkflowWaitQueue()
+      ),
+  },
 ]
 
 type WorkerBootState = 'pending' | 'running' | 'failed'

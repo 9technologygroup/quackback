@@ -14,7 +14,9 @@
  */
 import {
   db,
+  and,
   eq,
+  inArray,
   workflowRuns,
   workflowRunEvents,
   type Workflow,
@@ -25,8 +27,11 @@ import type { Actor } from '@/lib/server/policy/types'
 import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { logger } from '@/lib/server/logger'
 import { applyAction } from './action.executor'
-import { walkWorkflow, type WorkflowGraph } from './graph'
+import { walkWorkflow, type WorkflowGraph, type WalkResult } from './graph'
 import type { ConditionContext } from './condition.evaluator'
+import { getWorkflow } from './workflow.service'
+import { resolveConditionContext } from './condition.context'
+import { scheduleWorkflowResume } from './workflow-wait-queue'
 
 const log = logger.child({ component: 'workflow-engine' })
 
@@ -99,10 +104,25 @@ export async function runWorkflow(
     .returning()
   await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'started')
 
+  return applyPlanAndSettle(run, workflow, plan, opts.conversationId, subjectPrincipalId)
+}
+
+/**
+ * Run the actions of a walk plan (best-effort) then settle the run: on a wait,
+ * persist the resume cursor + schedule the durable timer and stay 'waiting'; else
+ * mark it done. Shared by a fresh run and a resumed one.
+ */
+async function applyPlanAndSettle(
+  run: WorkflowRun,
+  workflow: Workflow,
+  plan: WalkResult,
+  conversationId: ConversationId,
+  subjectPrincipalId: PrincipalId | null
+): Promise<WorkflowRun> {
   const actor = workflowActor()
   for (const action of plan.actions) {
     try {
-      await applyAction(action, { conversationId: opts.conversationId, actor })
+      await applyAction(action, { conversationId, actor })
     } catch (err) {
       log.error({ err, action: action.type, workflowId: workflow.id }, 'workflow action failed')
       await logRunEvent(run.id, workflow.id, subjectPrincipalId, `action_failed:${action.type}`)
@@ -110,15 +130,14 @@ export async function runWorkflow(
   }
 
   if (plan.status === 'waiting') {
+    const waitSeconds = plan.waitSeconds ?? 0
     const [waiting] = await db
       .update(workflowRuns)
-      .set({
-        state: 'waiting',
-        cursor: { resumeNodeId: plan.resumeNodeId ?? null, waitSeconds: plan.waitSeconds ?? 0 },
-      })
+      .set({ state: 'waiting', cursor: { resumeNodeId: plan.resumeNodeId ?? null, waitSeconds } })
       .where(eq(workflowRuns.id, run.id))
       .returning()
     await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'waiting')
+    await scheduleWorkflowResume(run.id, waitSeconds)
     return waiting
   }
 
@@ -129,4 +148,54 @@ export async function runWorkflow(
     .returning()
   await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'completed')
   return done
+}
+
+/**
+ * Resume a waiting run when its timer fires (called by the wait worker). Re-loads
+ * the run's state first: a run interrupted by a reply/close, already done, or
+ * whose workflow/conversation is gone does not resume. Otherwise it re-resolves
+ * the snapshot and walks on from the cursor. The original triggering message is
+ * not available post-wait, so a post-wait message condition sees none.
+ */
+export async function resumeWorkflowRun(runId: WorkflowRun['id']): Promise<WorkflowRun | null> {
+  const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).limit(1)
+  if (!run || run.state !== 'waiting') return null // interrupted / already handled
+
+  const resumeNodeId = (run.cursor as { resumeNodeId?: string | null }).resumeNodeId
+  const workflow = run.conversationId ? await getWorkflow(run.workflowId) : null
+  const ctx = run.conversationId ? await resolveConditionContext(run.conversationId) : null
+  if (!resumeNodeId || !workflow || !run.conversationId || !ctx) {
+    // Nothing left to run, or the workflow/conversation vanished — settle it.
+    const state = !resumeNodeId ? 'done' : 'interrupted'
+    const [ended] = await db
+      .update(workflowRuns)
+      .set({ state, endedAt: new Date() })
+      .where(eq(workflowRuns.id, run.id))
+      .returning()
+    return ended
+  }
+
+  await db.update(workflowRuns).set({ state: 'running' }).where(eq(workflowRuns.id, run.id))
+  const plan = walkWorkflow(readGraph(workflow), ctx, resumeNodeId)
+  return applyPlanAndSettle(run, workflow, plan, run.conversationId, run.subjectPrincipalId)
+}
+
+/**
+ * End every waiting run on a conversation (a reply or close interrupts pending
+ * waits, per §4.6). Returns how many were interrupted. Wired into the reply/close
+ * paths as a follow-up; the wait worker also re-checks state, so a late timer on
+ * an interrupted run is already a no-op.
+ */
+export async function interruptWaitingRuns(conversationId: ConversationId): Promise<number> {
+  const interrupted = await db
+    .update(workflowRuns)
+    .set({ state: 'interrupted', endedAt: new Date() })
+    .where(
+      and(
+        eq(workflowRuns.conversationId, conversationId),
+        inArray(workflowRuns.state, ['running', 'waiting'])
+      )
+    )
+    .returning({ id: workflowRuns.id })
+  return interrupted.length
 }
