@@ -148,6 +148,14 @@ describe('isPrivateAddress', () => {
     expect(isPrivateAddress('2001:0db8:1234::1')).toBe(true)
   })
 
+  it('blocks IPv6 transition/tunneling ranges (NAT64, 6to4, Teredo)', () => {
+    expect(isPrivateAddress('64:ff9b::0a00:0001')).toBe(true) // NAT64 embedding 10.0.0.1
+    expect(isPrivateAddress('2002:0a00:0001::')).toBe(true) // 6to4 embedding 10.0.0.1
+    expect(isPrivateAddress('2001:0000:4136:e378::1')).toBe(true) // Teredo (2nd hextet zero)
+    // A routable global 2001: (non-zero second hextet) stays allowed.
+    expect(isPrivateAddress('2001:4860:4860::8888')).toBe(false) // Google public DNS
+  })
+
   it('blocks hextet-form IPv4-mapped IPv6 private addresses', () => {
     // ::ffff:7f00:1 encodes 127.0.0.1
     expect(isPrivateAddress('::ffff:7f00:1')).toBe(true)
