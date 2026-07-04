@@ -32,7 +32,7 @@ vi.mock('@/lib/server/content/ssrf-guard', async (orig) => {
   const actual = await orig<typeof import('@/lib/server/content/ssrf-guard')>()
   return { ...actual, safeFetch: (...a: unknown[]) => h.safeFetch(...a) }
 })
-vi.mock('../hook-idempotency', () => ({ claimHookDelivery: (...a: unknown[]) => h.claim(...a) }))
+vi.mock('../hook-idempotency', () => ({ claimHookDelivery: () => h.claim() }))
 
 import { webhookHook } from '../handlers/webhook'
 import { SsrfError, TimeoutError } from '@/lib/server/content/ssrf-guard'
