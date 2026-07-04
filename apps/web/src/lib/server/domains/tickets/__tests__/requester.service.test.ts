@@ -25,6 +25,7 @@ import {
   principal,
   user,
   settings,
+  eq,
   PERMISSIONS,
   type PermissionKey,
 } from '@/lib/server/db'
@@ -34,6 +35,7 @@ import {
   getMyTicket,
   getMyTicketThread,
   replyToMyTicket,
+  createMyTicket,
 } from '../requester.service'
 import { sendTicketMessage, addTicketNote } from '../ticket-message.service'
 
@@ -142,5 +144,31 @@ describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled b
     await expect(
       replyToMyTicket(requesterActor(w.me), { ticketId: w.theirs, content: 'sneaky' })
     ).rejects.toThrow(/not found/i)
+  })
+
+  it('createMyTicket opens a customer ticket owned by me with a visitor opening message', async () => {
+    await testDb
+      .insert(settings)
+      .values({ name: 'WS', slug: `ws_${suffix()}`, createdAt: new Date() })
+    // A single default status the creation resolves to.
+    await testDb
+      .update(ticketStatuses)
+      .set({ isDefault: false })
+      .where(eq(ticketStatuses.isDefault, true))
+    await testDb
+      .insert(ticketStatuses)
+      .values({ name: 'New', slug: `def_${suffix()}`, isDefault: true })
+    const me = await seedPrincipal()
+
+    const dto = await createMyTicket(requesterActor(me), {
+      title: 'Broken',
+      description: 'It really broke',
+    })
+    expect(dto.type).toBe('customer')
+    expect(dto.requester?.principalId).toBe(me)
+
+    const page = await getMyTicketThread(requesterActor(me), dto.id)
+    expect(page.messages.map((m) => m.senderType)).toEqual(['visitor'])
+    expect(page.messages[0].content).toBe('It really broke')
   })
 })

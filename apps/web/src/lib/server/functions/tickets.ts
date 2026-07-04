@@ -27,6 +27,7 @@ import type {
 } from '@/lib/server/domains/tickets'
 import { requireAuth, policyActorFromAuth } from './auth-helpers'
 import type { ConversationAttachment } from '@/lib/shared/db-types'
+import { ForbiddenError } from '@/lib/shared/errors'
 
 const ticketTypeSchema = z.enum(TICKET_TYPES)
 const statusCategorySchema = z.enum(TICKET_STATUS_CATEGORIES)
@@ -390,4 +391,21 @@ export const replyToMyTicketFn = createServerFn({ method: 'POST' })
       contentJson: data.contentJson ?? null,
       attachments: data.attachments as ConversationAttachment[] | undefined,
     })
+  })
+
+export const createMyTicketFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({ title: z.string().min(1).max(300), description: z.string().max(4000).optional() })
+  )
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth()
+    // Self-creation is opt-in: gate on the support-tickets flag being enabled.
+    const { isSupportTicketsEnabled } =
+      await import('@/lib/server/domains/settings/settings.support')
+    if (!(await isSupportTicketsEnabled())) {
+      throw new ForbiddenError('FORBIDDEN', 'Ticket creation is not available')
+    }
+    const actor = await policyActorFromAuth(ctx)
+    const { createMyTicket } = await import('@/lib/server/domains/tickets/requester.service')
+    return createMyTicket(actor, { title: data.title, description: data.description })
   })

@@ -10,7 +10,12 @@ import type { TicketId, PrincipalId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
 import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
 import { NotFoundError, ForbiddenError } from '@/lib/shared/errors'
-import { loadTicketOr404, buildTicketContext, ticketToDTO } from './ticket.service'
+import {
+  loadTicketOr404,
+  buildTicketContext,
+  ticketToDTO,
+  createTicketCore,
+} from './ticket.service'
 import {
   insertTicketMessage,
   listTicketMessages,
@@ -75,6 +80,27 @@ export async function getMyTicketThread(
   const principalId = requireRequester(actor)
   await loadOwnedTicketOr404(ticketId, principalId)
   return listTicketMessages(ticketId, { before: opts.before, includeInternal: false })
+}
+
+/**
+ * The requester opens their own ticket. Forced to the `customer` type and to the
+ * caller as requester, so it can never file for someone else or raise an internal
+ * type. The opt-in enablement (support tickets on) is gated at the fn layer.
+ */
+export async function createMyTicket(
+  actor: Actor,
+  input: { title: string; description?: string }
+): Promise<TicketDTO> {
+  const principalId = requireRequester(actor)
+  return createTicketCore(
+    {
+      type: 'customer',
+      title: input.title,
+      description: input.description,
+      requesterPrincipalId: principalId,
+    },
+    actor
+  )
 }
 
 /** The requester replies on their own ticket thread (a customer-visible message). */

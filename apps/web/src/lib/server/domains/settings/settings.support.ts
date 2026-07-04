@@ -26,3 +26,12 @@ export async function isConversationsEnabled(): Promise<boolean> {
   const [widget, portal] = await Promise.all([isMessengerEnabled(), isPortalSupportEnabled()])
   return widget || portal
 }
+
+/**
+ * Whether the support-tickets surface is enabled (the `supportTickets` feature
+ * flag). Fail-closed. Gates customer ticket creation and the portal Tickets surface.
+ */
+export async function isSupportTicketsEnabled(): Promise<boolean> {
+  const { isFeatureEnabled } = await import('./settings.service')
+  return isFeatureEnabled('supportTickets')
+}

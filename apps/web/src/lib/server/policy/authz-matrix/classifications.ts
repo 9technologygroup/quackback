@@ -104,6 +104,9 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/tickets.ts::replyToMyTicketFn': END_USER(
     'requester replies on their own ticket'
   ),
+  'lib/server/functions/tickets.ts::createMyTicketFn': END_USER(
+    'requester opens their own customer ticket (gated on the support-tickets flag)'
+  ),
 
   // Comments / reactions: end-user create + own-edit/delete.
   'lib/server/functions/comments.ts::createCommentFn': END_USER('end-user posts a comment'),

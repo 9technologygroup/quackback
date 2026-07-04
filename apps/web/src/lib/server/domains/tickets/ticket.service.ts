@@ -269,9 +269,12 @@ export async function listTickets(filter: TicketListFilter, actor: Actor): Promi
 // Writes
 // ---------------------------------------------------------------------------
 
-/** Open a ticket. Resolves the default status; `number` auto-increments. */
-export async function createTicket(input: CreateTicketInput, actor: Actor): Promise<TicketDTO> {
-  assertCan(actor, PERMISSIONS.TICKET_CREATE, 'create a ticket')
+/**
+ * Open a ticket WITHOUT a permission check — the caller authorizes (agent
+ * TICKET_CREATE via createTicket, or requester self-creation via createMyTicket).
+ * Resolves the default status; `number` auto-increments.
+ */
+export async function createTicketCore(input: CreateTicketInput, actor: Actor): Promise<TicketDTO> {
   const title = input.title?.trim()
   if (!title) throw new ValidationError('VALIDATION_ERROR', 'Title is required')
   if (title.length > MAX_TITLE_LENGTH) {
@@ -325,6 +328,12 @@ export async function createTicket(input: CreateTicketInput, actor: Actor): Prom
 
   log.info({ ticket_id: created.id, type: created.type }, 'ticket created')
   return ticketRowToDTO(created)
+}
+
+/** Open a ticket as an agent (any type, optional requester). */
+export async function createTicket(input: CreateTicketInput, actor: Actor): Promise<TicketDTO> {
+  assertCan(actor, PERMISSIONS.TICKET_CREATE, 'create a ticket')
+  return createTicketCore(input, actor)
 }
 
 /**
