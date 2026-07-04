@@ -15,6 +15,7 @@ export type OutboundMessage =
   | { type: 'quackback:identify-result'; success: boolean; user?: unknown; error?: string }
   | { type: 'quackback:auth-change'; user: unknown }
   | { type: 'quackback:event'; name: string; payload: unknown }
+  | { type: 'quackback:unread'; count: number }
 
 export interface BridgeOptions {
   getIframe: () => HTMLIFrameElement | null

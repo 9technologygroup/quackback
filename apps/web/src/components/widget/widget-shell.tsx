@@ -125,6 +125,11 @@ export function WidgetShell({
   // Total unread across all the visitor's conversations, for the Messages tab
   // badge (only fetched when that tab is actually shown).
   const messengerUnread = useMessengerUnread(enabledTabs.messages ?? false)
+  // Mirror it to the host so the floating launcher shows the same badge while
+  // the widget is closed (the iframe keeps polling even when hidden).
+  useEffect(() => {
+    sendToHost({ type: 'quackback:unread', count: messengerUnread })
+  }, [messengerUnread])
   const reduceMotion = useReducedMotion()
   // When the bar was hidden for an EXPANDED view, its return waits for the
   // host panel's shrink transition (~520ms) before fading in; returning from

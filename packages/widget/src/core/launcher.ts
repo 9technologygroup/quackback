@@ -8,6 +8,10 @@ export interface LauncherHandle {
   setOpen(open: boolean): void
   /** Replace the button colors (typically called after server config fetch). */
   setColors(colors: { backgroundColor?: string; foregroundColor?: string }): void
+  /** Show an unread-count badge on the button (hidden at 0). Driven by the
+   *  iframe's `quackback:unread` messages so a visitor sees waiting replies
+   *  without opening the widget. */
+  setUnread(count: number): void
   /** Fade the button in. Called after initial colors are set to avoid a color flash. */
   reveal(): void
   remove(): void
@@ -26,6 +30,10 @@ const CLOSE_ICON =
 export function createLauncher(opts: LauncherOptions): LauncherHandle {
   let bg = DEFAULT_BG
   let fg = DEFAULT_FG
+  // The badge shows unread only while the widget is CLOSED — an alert on the
+  // close (X) icon would be nonsensical, and an open widget is already read.
+  let unreadCount = 0
+  let isOpen = false
 
   const btn = document.createElement('button')
   Object.assign(btn.style, {
@@ -92,6 +100,37 @@ export function createLauncher(opts: LauncherOptions): LauncherHandle {
   wrapper.appendChild(iconClose)
   btn.appendChild(wrapper)
 
+  // Unread-count badge, top-right of the button. Its own colors (not the theme
+  // fg/bg) so it always reads as an alert against any launcher color.
+  const badge = document.createElement('span')
+  Object.assign(badge.style, {
+    position: 'absolute',
+    top: '-2px',
+    right: '-2px',
+    display: 'none',
+    minWidth: '20px',
+    height: '20px',
+    padding: '0 5px',
+    boxSizing: 'border-box',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: '10px',
+    backgroundColor: '#ef4444',
+    color: '#ffffff',
+    fontSize: '11px',
+    fontWeight: '700',
+    lineHeight: '1',
+    boxShadow: '0 0 0 2px rgba(255,255,255,0.9)',
+    pointerEvents: 'none',
+  })
+  btn.appendChild(badge)
+
+  const renderBadge = () => {
+    const show = unreadCount > 0 && !isOpen
+    badge.textContent = unreadCount > 9 ? '9+' : String(unreadCount)
+    badge.style.display = show ? 'flex' : 'none'
+  }
+
   btn.addEventListener('mouseenter', () => {
     btn.style.transform = 'translateY(-2px)'
     btn.style.boxShadow = '0 6px 20px rgba(0,0,0,0.2)'
@@ -107,12 +146,14 @@ export function createLauncher(opts: LauncherOptions): LauncherHandle {
   return {
     el: btn,
     setOpen(open) {
+      isOpen = open
       btn.setAttribute('aria-expanded', open ? 'true' : 'false')
       btn.setAttribute('aria-label', open ? 'Close feedback widget' : 'Open feedback widget')
       iconMessenger.style.opacity = open ? '0' : '1'
       iconMessenger.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)'
       iconClose.style.opacity = open ? '1' : '0'
       iconClose.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)'
+      renderBadge()
     },
     setColors(colors) {
       if (colors.backgroundColor) {
@@ -123,6 +164,10 @@ export function createLauncher(opts: LauncherOptions): LauncherHandle {
         fg = colors.foregroundColor
         btn.style.color = fg
       }
+    },
+    setUnread(count) {
+      unreadCount = Math.max(0, Math.floor(count))
+      renderBadge()
     },
     reveal() {
       btn.style.opacity = '1'
