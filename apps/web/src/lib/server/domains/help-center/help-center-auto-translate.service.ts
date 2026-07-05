@@ -158,13 +158,11 @@ export async function queueAutoTranslateOnPublish(
     const additionalLocales = config.locales?.additional ?? []
     if (additionalLocales.length === 0) return
 
-    const { enqueueFeedbackAiJob } = await import(
-      '@/lib/server/domains/feedback/queues/feedback-ai-queue'
-    )
+    const { enqueueHelpCenterTranslateJob } = await import('./help-center-translate-queue')
     await Promise.all(
       additionalLocales.map((locale) =>
-        enqueueFeedbackAiJob({
-          type: 'help-center-translate-article',
+        enqueueHelpCenterTranslateJob({
+          type: 'translate-article',
           articleId: article.id,
           locale,
         })

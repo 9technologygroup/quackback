@@ -95,7 +95,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 443 surfaces
+### Server functions (`requireAuth`) — 450 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -157,16 +157,6 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/boards.ts`::deleteBoardFn | board.manage |
 | `lib/server/functions/boards.ts`::createBoardsBatchFn | board.manage |
 | `lib/server/functions/boards.ts`::updateBoardAccessFn | board.manage |
-| `lib/server/functions/changelog-categories.ts`::createChangelogCategoryFn | changelog.manage |
-| `lib/server/functions/changelog-categories.ts`::updateChangelogCategoryFn | changelog.manage |
-| `lib/server/functions/changelog-categories.ts`::deleteChangelogCategoryFn | changelog.manage |
-| `lib/server/functions/changelog-categories.ts`::reorderChangelogCategoriesFn | changelog.manage |
-| `lib/server/functions/changelog-subscriptions.ts`::subscribeToChangelogFn | END_USER (any authenticated) |
-| `lib/server/functions/changelog-subscriptions.ts`::unsubscribeFromChangelogFn | END_USER (any authenticated) |
-| `lib/server/functions/changelog-subscriptions.ts`::getMyChangelogSubscriptionFn | END_USER (any authenticated) |
-| `lib/server/functions/changelog-subscriptions.ts`::getChangelogSubscriptionStatusFn | people.view |
-| `lib/server/functions/changelog-subscriptions.ts`::setChangelogSubscriptionFn | people.manage |
-| `lib/server/functions/changelog-subscriptions.ts`::importChangelogSubscribersFn | changelog.manage |
 | `lib/server/functions/changelog.ts`::createChangelogFn | changelog.manage |
 | `lib/server/functions/changelog.ts`::updateChangelogFn | changelog.manage |
 | `lib/server/functions/changelog.ts`::deleteChangelogFn | changelog.manage |
@@ -272,9 +262,28 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/feedback.ts`::createFeedbackSourceFn | integration.manage |
 | `lib/server/functions/feedback.ts`::updateFeedbackSourceFn | integration.manage |
 | `lib/server/functions/feedback.ts`::deleteFeedbackSourceFn | integration.manage |
+| `lib/server/functions/help-center-domain.ts`::updateHelpCenterDomainFn | help_center.manage |
+| `lib/server/functions/help-center-domain.ts`::verifyHelpCenterDomainFn | help_center.manage |
+| `lib/server/functions/help-center-domain.ts`::getHelpCenterDomainStatusFn | help_center.manage |
+| `lib/server/functions/help-center-redirect-rules.ts`::listRedirectRulesFn | help_center.manage |
+| `lib/server/functions/help-center-redirect-rules.ts`::createRedirectRuleFn | help_center.manage |
+| `lib/server/functions/help-center-redirect-rules.ts`::deleteRedirectRuleFn | help_center.manage |
 | `lib/server/functions/help-center-settings.ts`::getHelpCenterConfigFn | help_center.manage |
 | `lib/server/functions/help-center-settings.ts`::updateHelpCenterConfigFn | help_center.manage |
 | `lib/server/functions/help-center-settings.ts`::updateHelpCenterSeoFn | help_center.manage |
+| `lib/server/functions/help-center-settings.ts`::enableHelpCenterLocaleFn | help_center.manage |
+| `lib/server/functions/help-center-settings.ts`::disableHelpCenterLocaleFn | help_center.manage |
+| `lib/server/functions/help-center-settings.ts`::updateHelpCenterLocaleChromeFn | help_center.manage |
+| `lib/server/functions/help-center-settings.ts`::updateHelpCenterAutoTranslateFn | help_center.manage |
+| `lib/server/functions/help-center-translations.ts`::listArticleTranslationsFn | help_center.manage |
+| `lib/server/functions/help-center-translations.ts`::getArticleTranslationStatusesFn | help_center.manage |
+| `lib/server/functions/help-center-translations.ts`::upsertArticleTranslationFn | help_center.manage |
+| `lib/server/functions/help-center-translations.ts`::setArticleTranslationStatusFn | help_center.manage |
+| `lib/server/functions/help-center-translations.ts`::deleteArticleTranslationFn | help_center.manage |
+| `lib/server/functions/help-center-translations.ts`::listCategoryTranslationsFn | help_center.manage |
+| `lib/server/functions/help-center-translations.ts`::getCategoryTranslationStatusesFn | help_center.manage |
+| `lib/server/functions/help-center-translations.ts`::upsertCategoryTranslationFn | help_center.manage |
+| `lib/server/functions/help-center-translations.ts`::deleteCategoryTranslationFn | help_center.manage |
 | `lib/server/functions/help-center.ts`::listCategoriesFn | help_center.manage |
 | `lib/server/functions/help-center.ts`::getCategoryFn | help_center.manage |
 | `lib/server/functions/help-center.ts`::createCategoryFn | help_center.manage |
@@ -396,8 +405,6 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/settings.ts`::regenerateWidgetSecretFn | settings.manage |
 | `lib/server/functions/settings.ts`::fetchOfficeHoursFn | settings.manage |
 | `lib/server/functions/settings.ts`::updateOfficeHoursFn | settings.manage |
-| `lib/server/functions/settings.ts`::fetchChangelogSettingsFn | changelog.manage |
-| `lib/server/functions/settings.ts`::updateChangelogSettingsFn | changelog.manage |
 | `lib/server/functions/settings.ts`::getEmailChannelStatusFn | settings.manage |
 | `lib/server/functions/settings.ts`::updateModerationDefaultFn | settings.moderation |
 | `lib/server/functions/sla.ts`::listSlaPoliciesFn | sla.manage |
@@ -543,13 +550,12 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/integrations/zendesk/functions.ts`::getZendeskConnectUrl | integration.manage |
 | `lib/server/integrations/zendesk/functions.ts`::searchZendeskUserFn | integration.view |
 
-### Public REST API (`withApiKeyAuth`) — 91 surfaces
+### Public REST API (`withApiKeyAuth`) — 90 surfaces
 
 | Surface | Enforces |
 | --- | --- |
 | `routes/api/admin/assistant/sandbox.ts`::handleSandbox | settings.manage |
 | `routes/api/export.companies.ts`::GET | company.view |
-| `routes/api/export.users.ts`::handleExportUsers | people.view |
 | `routes/api/v1/apps/boards.ts`::GET | PUBLIC (any valid key) |
 | `routes/api/v1/apps/link.ts`::POST | integration.manage |
 | `routes/api/v1/apps/linked.ts`::GET | integration.view |
@@ -710,7 +716,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-157 of 686 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+153 of 688 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
@@ -721,7 +727,6 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `lib/server/functions/admin.ts`::getPublicAuthConfig | server-fn |
 | `lib/server/functions/auth.ts`::lookupAuthMethodsFn | server-fn |
 | `lib/server/functions/bootstrap.ts`::getBootstrapData | server-fn |
-| `lib/server/functions/changelog-categories.ts`::listChangelogCategoriesFn | server-fn |
 | `lib/server/functions/changelog.ts`::getPublicChangelogFn | server-fn |
 | `lib/server/functions/changelog.ts`::listPublicChangelogsFn | server-fn |
 | `lib/server/functions/comments.ts`::canPinCommentFn | server-fn |
@@ -732,6 +737,7 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `lib/server/functions/conversation.ts`::getMyConversationsFn | server-fn |
 | `lib/server/functions/conversation.ts`::getWidgetTeamAvatarsFn | server-fn |
 | `lib/server/functions/embeds.ts`::getEmbedPreviewFn | server-fn |
+| `lib/server/functions/help-center-redirect-rules.ts`::resolveHelpCenterRedirectFn | server-fn |
 | `lib/server/functions/help-center.ts`::getPublicArticleBySlugFn | server-fn |
 | `lib/server/functions/help-center.ts`::getPublicCategoryBySlugFn | server-fn |
 | `lib/server/functions/help-center.ts`::listPopularPublicArticlesFn | server-fn |
@@ -815,15 +821,11 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `routes/api/chat/stream.ts`::GET | route |
 | `routes/api/devices.ts`::DELETE | route |
 | `routes/api/devices.ts`::POST | route |
-| `routes/api/export.conversations.ts`::GET | route |
 | `routes/api/export.ts`::GET | route |
 | `routes/api/health.live.ts`::GET | route |
 | `routes/api/health.ready.ts`::GET | route |
 | `routes/api/health.ts`::GET | route |
-| `routes/api/import/detect.ts`::POST | route |
 | `routes/api/import/index.ts`::POST | route |
-| `routes/api/import/runs.$runId.ts`::GET | route |
-| `routes/api/import/runs.ts`::GET | route |
 | `routes/api/integrations/$type/identify.ts`::POST | route |
 | `routes/api/integrations/$type/webhook.ts`::POST | route |
 | `routes/api/integrations/slack/events.ts`::POST | route |

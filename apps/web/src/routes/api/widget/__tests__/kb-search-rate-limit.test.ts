@@ -1,13 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockIsFeatureEnabled = vi.fn()
+const mockGetHelpCenterConfig = vi.fn()
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
+  getHelpCenterConfig: (...args: unknown[]) => mockGetHelpCenterConfig(...args),
 }))
 
 const mockHybridSearch = vi.fn()
 vi.mock('@/lib/server/domains/help-center/help-center-search.service', () => ({
-  hybridSearch: (...args: unknown[]) => mockHybridSearch(...args),
+  hybridSearchForLocale: (query: string, _locale: string, limit: number) =>
+    mockHybridSearch(query, limit),
+  resolveSearchLocale: (
+    requested: string | undefined,
+    enabled: string[],
+    defaultLocale: string
+  ) => (requested && enabled.includes(requested) ? requested : defaultLocale),
 }))
 
 const mockIncrementBucket = vi.fn()
@@ -28,6 +36,7 @@ function makeRequest(q?: string, ip = '203.0.113.9'): Request {
 beforeEach(() => {
   vi.clearAllMocks()
   mockIsFeatureEnabled.mockResolvedValue(true)
+  mockGetHelpCenterConfig.mockResolvedValue({ locales: { additional: [], default: 'en' } })
   mockIncrementBucket.mockResolvedValue({ count: 1 })
   mockBucketRetryAfter.mockResolvedValue(30)
   mockHybridSearch.mockResolvedValue([])

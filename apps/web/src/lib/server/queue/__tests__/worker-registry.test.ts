@@ -21,6 +21,7 @@ const WORKER_MODULES = [
   'domains/conversation/snooze-sweep-queue.ts',
   'domains/feedback/queues/feedback-ai-queue.ts',
   'domains/feedback/queues/feedback-ingest-queue.ts',
+  'domains/help-center/help-center-translate-queue.ts',
   'domains/import/import-queue.ts',
   'domains/principals/anon-sweep-queue.ts',
   'domains/workflows/workflow-wait-queue.ts',

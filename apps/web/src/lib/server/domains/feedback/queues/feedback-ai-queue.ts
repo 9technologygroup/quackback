@@ -8,7 +8,7 @@ import { Queue, Worker, UnrecoverableError } from 'bullmq'
 import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-config'
 import { logger } from '@/lib/server/logger'
 import type { FeedbackAiJob } from '../types'
-import type { RawFeedbackItemId, FeedbackSignalId, KbArticleId } from '@quackback/ids'
+import type { RawFeedbackItemId, FeedbackSignalId } from '@quackback/ids'
 
 const log = logger.child({ component: 'feedback-ai-queue' })
 
@@ -68,13 +68,6 @@ async function initializeQueue() {
         case 'retention-cleanup': {
           const { cleanupExpiredLogs } = await import('../../ai/usage-log')
           await cleanupExpiredLogs()
-          break
-        }
-        case 'help-center-translate-article': {
-          const { translateArticleForLocale } = await import(
-            '../../help-center/help-center-auto-translate.service'
-          )
-          await translateArticleForLocale(data.articleId as KbArticleId, data.locale)
           break
         }
         default:

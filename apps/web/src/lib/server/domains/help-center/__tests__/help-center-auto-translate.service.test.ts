@@ -6,7 +6,7 @@ const mockGetChatModel = vi.fn()
 const mockGetHelpCenterConfig = vi.fn()
 const mockGetArticleById = vi.fn()
 const mockUpsertArticleTranslation = vi.fn()
-const mockEnqueueFeedbackAiJob = vi.fn()
+const mockEnqueueHelpCenterTranslateJob = vi.fn()
 const mockCreate = vi.fn()
 
 vi.mock('@/lib/server/domains/ai/config', () => ({
@@ -37,8 +37,8 @@ vi.mock('../help-center.article.service', () => ({
 vi.mock('../help-center-translations.service', () => ({
   upsertArticleTranslation: (...args: unknown[]) => mockUpsertArticleTranslation(...args),
 }))
-vi.mock('@/lib/server/domains/feedback/queues/feedback-ai-queue', () => ({
-  enqueueFeedbackAiJob: (...args: unknown[]) => mockEnqueueFeedbackAiJob(...args),
+vi.mock('../help-center-translate-queue', () => ({
+  enqueueHelpCenterTranslateJob: (...args: unknown[]) => mockEnqueueHelpCenterTranslateJob(...args),
 }))
 
 const { buildTranslationPrompt, translateArticleForLocale, queueAutoTranslateOnPublish } =
@@ -50,7 +50,7 @@ beforeEach(() => {
   mockGetHelpCenterConfig.mockReset()
   mockGetArticleById.mockReset()
   mockUpsertArticleTranslation.mockReset()
-  mockEnqueueFeedbackAiJob.mockReset()
+  mockEnqueueHelpCenterTranslateJob.mockReset()
   mockCreate.mockReset()
 })
 
@@ -173,7 +173,7 @@ describe('queueAutoTranslateOnPublish', () => {
 
     await queueAutoTranslateOnPublish({ id: 'kb_article_1' } as never)
 
-    expect(mockEnqueueFeedbackAiJob).not.toHaveBeenCalled()
+    expect(mockEnqueueHelpCenterTranslateJob).not.toHaveBeenCalled()
   })
 
   it('does nothing when no additional locale is enabled', async () => {
@@ -184,7 +184,7 @@ describe('queueAutoTranslateOnPublish', () => {
 
     await queueAutoTranslateOnPublish({ id: 'kb_article_1' } as never)
 
-    expect(mockEnqueueFeedbackAiJob).not.toHaveBeenCalled()
+    expect(mockEnqueueHelpCenterTranslateJob).not.toHaveBeenCalled()
   })
 
   it('queues one job per enabled additional locale', async () => {
@@ -195,14 +195,14 @@ describe('queueAutoTranslateOnPublish', () => {
 
     await queueAutoTranslateOnPublish({ id: 'kb_article_1' } as never)
 
-    expect(mockEnqueueFeedbackAiJob).toHaveBeenCalledTimes(2)
-    expect(mockEnqueueFeedbackAiJob).toHaveBeenCalledWith({
-      type: 'help-center-translate-article',
+    expect(mockEnqueueHelpCenterTranslateJob).toHaveBeenCalledTimes(2)
+    expect(mockEnqueueHelpCenterTranslateJob).toHaveBeenCalledWith({
+      type: 'translate-article',
       articleId: 'kb_article_1',
       locale: 'de',
     })
-    expect(mockEnqueueFeedbackAiJob).toHaveBeenCalledWith({
-      type: 'help-center-translate-article',
+    expect(mockEnqueueHelpCenterTranslateJob).toHaveBeenCalledWith({
+      type: 'translate-article',
       articleId: 'kb_article_1',
       locale: 'fr',
     })

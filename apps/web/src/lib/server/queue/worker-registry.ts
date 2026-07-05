@@ -59,6 +59,15 @@ export const WORKER_REGISTRY: readonly WorkerEntry[] = [
       ),
   },
   {
+    // Help-center auto-translate (domains/languages §H3). Initializes on
+    // first enqueue (article publish with autoTranslate.enabled).
+    name: 'help-center-translate',
+    close: () =>
+      import('@/lib/server/domains/help-center/help-center-translate-queue').then((m) =>
+        m.closeHelpCenterTranslateQueue()
+      ),
+  },
+  {
     name: 'analytics',
     init: () =>
       import('@/lib/server/domains/analytics/analytics-queue').then((m) => m.initAnalyticsWorker()),
