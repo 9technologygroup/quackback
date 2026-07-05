@@ -22,6 +22,7 @@ import {
   user,
   type Conversation,
   type ConversationSystemEvent,
+  type AssistantPendingActionSurface,
 } from '@/lib/server/db'
 import { isTeamMember } from '@/lib/shared/roles'
 import type { ConversationAttachment, ConversationMessageCitation, Team } from '@/lib/server/db'
@@ -1491,6 +1492,43 @@ export async function appendAssistantHandoffNote(
     .returning()
   const messageDTO = toMessageDTO(message, authorFromInput(author), author.principalId)
   publishAgentConversationEvent({ kind: 'message', conversationId, message: messageDTO })
+}
+
+/**
+ * Post an agent-only internal note (authored by Quinn) announcing a write-tool
+ * proposal awaiting a teammate's approval. Inbox channel only, mirroring
+ * `appendAssistantHandoffNote`; the note is a point-in-time snapshot, the
+ * pending action row (not this message) drives the actual approve/reject.
+ */
+export async function appendAssistantPendingActionNote(
+  conversationId: ConversationId,
+  pendingAction: AssistantPendingActionSurface,
+  author: ConversationAuthorInput
+): Promise<void> {
+  const [message] = await db
+    .insert(conversationMessages)
+    .values({
+      conversationId,
+      principalId: author.principalId,
+      senderType: 'agent',
+      isInternal: true,
+      content: `Requested approval: ${pendingAction.summary}`,
+      metadata: { assistantPendingAction: pendingAction },
+    })
+    .returning()
+  const messageDTO = toMessageDTO(message, authorFromInput(author), author.principalId)
+  publishAgentConversationEvent({ kind: 'message', conversationId, message: messageDTO })
+}
+
+/** "This request timed out…" customer-visible notice when a pending action expires unattended. */
+export async function emitAssistantActionExpiredSystemMessage(
+  conversationId: ConversationId
+): Promise<void> {
+  await emitSystemMessage(
+    conversationId,
+    'This request timed out before a teammate could review it.',
+    { kind: 'assistant_action_expired' }
+  )
 }
 
 /**

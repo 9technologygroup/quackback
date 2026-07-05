@@ -56,6 +56,20 @@ async function initializeQueue() {
         } catch (err) {
           log.warn({ err }, 'assistant assumed-resolution sweep failed')
         }
+        // Also expire pending actions nobody approved in time, and let the
+        // customer know the request timed out rather than leaving them
+        // hanging. Best-effort, same as the involvement sweep above.
+        try {
+          const { sweepAndNotifyExpiredPendingActions } = await import(
+            '@/lib/server/domains/assistant/pending-actions.service'
+          )
+          const expired = await sweepAndNotifyExpiredPendingActions()
+          if (expired.length > 0) {
+            log.debug({ expired: expired.length }, 'assistant pending-action expiry sweep complete')
+          }
+        } catch (err) {
+          log.warn({ err }, 'assistant pending-action expiry sweep failed')
+        }
       }
     },
     { connection, concurrency: CONCURRENCY }

@@ -401,6 +401,7 @@ export type ConversationSystemEventKind =
   | 'assistant_handoff'
   | 'ticket_status_changed'
   | 'ticket_linked'
+  | 'assistant_action_expired'
 
 export interface ConversationSystemEvent {
   kind: ConversationSystemEventKind
@@ -422,6 +423,16 @@ export interface PostSuggestion {
   content: string
 }
 
+// A write-tool call Quinn proposed but has not executed, surfaced on an
+// internal note (conversation_messages.metadata) so the team sees it without
+// polling. A point-in-time snapshot only — the pending action row is the live
+// source of truth an agent approves/rejects from.
+export interface AssistantPendingActionSurface {
+  pendingActionId: string
+  toolName: string
+  summary: string
+}
+
 export interface ConversationMessageMetadata {
   /** The channel this message arrived through, when not the in-app messenger. */
   source?: 'email'
@@ -441,6 +452,9 @@ export interface ConversationMessageMetadata {
   /** Agent-only suggestion (on an internal note) to track this conversation as a
    *  feedback post. Surfaced only via the agent DTO, never to the visitor. */
   postSuggestion?: PostSuggestion
+  /** Agent-only snapshot (on an internal note) of a write-tool proposal Quinn
+   *  surfaced for approval. Surfaced only via the agent DTO, never to the visitor. */
+  assistantPendingAction?: AssistantPendingActionSurface
 }
 
 // Support-inbox conversation row types

@@ -14,6 +14,10 @@ import type {
   PrincipalId,
 } from '@quackback/ids'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
+import { getAssistantPrincipal } from './assistant.principal'
+import { logger } from '@/lib/server/logger'
+
+const log = logger.child({ component: 'assistant-pending-actions' })
 
 export type AssistantPendingAction = typeof assistantPendingActions.$inferSelect
 
@@ -47,7 +51,44 @@ export async function proposePendingAction(
       expiresAt,
     })
     .returning()
+  await surfacePendingActionNote(row)
   return row
+}
+
+/**
+ * Announce a fresh proposal in the inbox thread so the team sees it without
+ * polling. Best-effort: a note failure (or Quinn not yet provisioned) must
+ * never fail the proposal itself, since the pending action row is already the
+ * source of truth an agent can act on from the approval queue.
+ */
+async function surfacePendingActionNote(row: AssistantPendingAction): Promise<void> {
+  try {
+    const assistant = await getAssistantPrincipal()
+    if (!assistant) return
+    const { appendAssistantPendingActionNote } = await import(
+      '@/lib/server/domains/conversation/conversation.service'
+    )
+    await appendAssistantPendingActionNote(
+      row.conversationId,
+      { pendingActionId: row.id, toolName: row.toolName, summary: row.summary },
+      { principalId: assistant.id, displayName: assistant.displayName }
+    )
+  } catch (err) {
+    log.warn({ err, pendingActionId: row.id }, 'assistant pending action note failed')
+  }
+}
+
+/** Load a pending action by id, or null when it does not exist. */
+export async function getPendingActionById(
+  id: AssistantPendingActionId,
+  exec: Executor = db
+): Promise<AssistantPendingAction | null> {
+  const [row] = await exec
+    .select()
+    .from(assistantPendingActions)
+    .where(eq(assistantPendingActions.id, id))
+    .limit(1)
+  return row ?? null
 }
 
 /**
@@ -110,8 +151,9 @@ export async function markPendingActionFailed(
 
 /**
  * Sweep proposals nobody decided in time. Set-based UPDATE, called from the
- * periodic sweep tick (the sweeper's system message + wiring is a later
- * task); this just flips the rows and returns them.
+ * periodic sweep tick; this just flips the rows and returns them. Pure
+ * primitive — `sweepAndNotifyExpiredPendingActions` is what the sweeper
+ * actually calls, so the customer notice stays a separate, best-effort step.
  */
 export async function expireStalePendingActions(
   exec: Executor = db
@@ -126,4 +168,24 @@ export async function expireStalePendingActions(
       )
     )
     .returning()
+}
+
+/**
+ * Sweep + announce: expire stale proposals, then drop a customer-visible
+ * notice on each affected conversation so nobody is left thinking Quinn is
+ * still waiting on a teammate. Called from the periodic sweep tick alongside
+ * the other assistant sweeps (snooze-sweep-queue). The notice itself is
+ * best-effort inside `emitAssistantActionExpiredSystemMessage` — a publish
+ * failure there must not stop the rest of the batch from being announced.
+ */
+export async function sweepAndNotifyExpiredPendingActions(
+  exec: Executor = db
+): Promise<AssistantPendingAction[]> {
+  const expired = await expireStalePendingActions(exec)
+  if (expired.length === 0) return expired
+  const { emitAssistantActionExpiredSystemMessage } = await import(
+    '@/lib/server/domains/conversation/conversation.service'
+  )
+  await Promise.all(expired.map((row) => emitAssistantActionExpiredSystemMessage(row.conversationId)))
+  return expired
 }
