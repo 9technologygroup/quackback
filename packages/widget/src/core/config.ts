@@ -19,6 +19,8 @@ export interface ServerConfig {
   visitorAnalytics?: boolean
   /** Durable device id (layer-2 identity); minted only when true. */
   visitorDeviceTracking?: boolean
+  /** Proactive greeting shown beside the closed launcher; empty/unset hides it. */
+  launcherGreeting?: string
 }
 
 export async function fetchServerConfig(instanceUrl: string): Promise<ServerConfig> {

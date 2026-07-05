@@ -61,6 +61,13 @@ describe('Widget Config Types', () => {
       }
       expect(config.position).toBe('bottom-left')
     })
+
+    it('carries the proactive launcher greeting through config and updates', () => {
+      const config: WidgetConfig = { enabled: true, launcherGreeting: 'Need a hand?' }
+      const update: UpdateWidgetConfigInput = { launcherGreeting: 'Need a hand?' }
+      expect(config.launcherGreeting).toBe('Need a hand?')
+      expect(update.launcherGreeting).toBe('Need a hand?')
+    })
   })
 
   describe('UpdateWidgetConfigInput', () => {

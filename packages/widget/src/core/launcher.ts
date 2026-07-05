@@ -12,6 +12,10 @@ export interface LauncherHandle {
    *  iframe's `quackback:unread` messages so a visitor sees waiting replies
    *  without opening the widget. */
   setUnread(count: number): void
+  /** Proactive greeting bubble beside the button (empty/unset hides it). Shown
+   *  only while closed and not dismissed this browser session; clicking it opens
+   *  the widget. Driven by the server config. */
+  setGreeting(text: string | null | undefined): void
   /** Fade the button in. Called after initial colors are set to avoid a color flash. */
   reveal(): void
   remove(): void
@@ -34,6 +38,17 @@ export function createLauncher(opts: LauncherOptions): LauncherHandle {
   // close (X) icon would be nonsensical, and an open widget is already read.
   let unreadCount = 0
   let isOpen = false
+  // Proactive greeting bubble state. Dismissal persists per browser session so
+  // the bubble invites once without nagging on every page.
+  let greetingText: string | null = null
+  const GREETING_DISMISS_KEY = 'quackback:launcher-greeting-dismissed'
+  const greetingDismissed = (): boolean => {
+    try {
+      return sessionStorage.getItem(GREETING_DISMISS_KEY) === '1'
+    } catch {
+      return false
+    }
+  }
 
   const btn = document.createElement('button')
   Object.assign(btn.style, {
@@ -131,6 +146,66 @@ export function createLauncher(opts: LauncherOptions): LauncherHandle {
     badge.style.display = show ? 'flex' : 'none'
   }
 
+  // Proactive greeting bubble — a fixed card sitting just above the button on
+  // the same side. Clicking the text opens the widget; the × dismisses it for
+  // the session. Its own light card colors so it reads over any launcher color.
+  const side = opts.placement === 'left' ? 'left' : 'right'
+  const bubble = document.createElement('div')
+  Object.assign(bubble.style, {
+    position: 'fixed',
+    bottom: '84px',
+    [side]: '24px',
+    zIndex: '2147483646',
+    display: 'none',
+    alignItems: 'center',
+    gap: '8px',
+    maxWidth: '260px',
+    padding: '10px 12px',
+    borderRadius: '14px',
+    backgroundColor: '#ffffff',
+    color: '#111827',
+    fontSize: '13px',
+    lineHeight: '1.35',
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    boxShadow: '0 12px 32px rgba(0,0,0,0.22), 0 4px 12px rgba(0,0,0,0.12)',
+  })
+  const bubbleText = document.createElement('span')
+  Object.assign(bubbleText.style, { cursor: 'pointer', flex: '1' })
+  bubbleText.addEventListener('click', () => opts.onClick())
+  const bubbleClose = document.createElement('button')
+  bubbleClose.type = 'button'
+  bubbleClose.setAttribute('aria-label', 'Dismiss')
+  bubbleClose.textContent = '×'
+  Object.assign(bubbleClose.style, {
+    flexShrink: '0',
+    width: '18px',
+    height: '18px',
+    padding: '0',
+    border: 'none',
+    borderRadius: '50%',
+    background: 'transparent',
+    color: '#9ca3af',
+    fontSize: '16px',
+    lineHeight: '1',
+    cursor: 'pointer',
+  })
+  const renderGreeting = () => {
+    const show = !!greetingText && !isOpen && !greetingDismissed()
+    bubble.style.display = show ? 'flex' : 'none'
+  }
+  bubbleClose.addEventListener('click', () => {
+    try {
+      sessionStorage.setItem(GREETING_DISMISS_KEY, '1')
+    } catch {
+      /* private mode — dismiss for this page load only */
+      greetingText = null
+    }
+    renderGreeting()
+  })
+  bubble.appendChild(bubbleText)
+  bubble.appendChild(bubbleClose)
+  document.body.appendChild(bubble)
+
   btn.addEventListener('mouseenter', () => {
     btn.style.transform = 'translateY(-2px)'
     btn.style.boxShadow = '0 6px 20px rgba(0,0,0,0.2)'
@@ -154,6 +229,7 @@ export function createLauncher(opts: LauncherOptions): LauncherHandle {
       iconClose.style.opacity = open ? '1' : '0'
       iconClose.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)'
       renderBadge()
+      renderGreeting()
     },
     setColors(colors) {
       if (colors.backgroundColor) {
@@ -169,11 +245,17 @@ export function createLauncher(opts: LauncherOptions): LauncherHandle {
       unreadCount = Math.max(0, Math.floor(count))
       renderBadge()
     },
+    setGreeting(text) {
+      greetingText = text?.trim() || null
+      bubbleText.textContent = greetingText ?? ''
+      renderGreeting()
+    },
     reveal() {
       btn.style.opacity = '1'
     },
     remove() {
       btn.remove()
+      bubble.remove()
     },
   }
 }

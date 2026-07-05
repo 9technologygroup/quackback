@@ -253,6 +253,7 @@ function ModulesCard({
 }: {
   config: {
     defaultBoard?: string
+    launcherGreeting?: string
     tabs?: {
       feedback?: boolean
       changelog?: boolean
@@ -416,6 +417,27 @@ function ModulesCard({
             <SelectItem value="bottom-left">Bottom Left</SelectItem>
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        <Label htmlFor="launcher-greeting" className="text-xs text-muted-foreground">
+          Launcher greeting
+        </Label>
+        <Input
+          id="launcher-greeting"
+          defaultValue={config.launcherGreeting ?? ''}
+          maxLength={120}
+          placeholder="e.g. Need a hand?"
+          disabled={isBusy}
+          onBlur={(e) => {
+            const value = e.target.value.trim()
+            if (value === (config.launcherGreeting ?? '')) return
+            void save({ launcherGreeting: value })
+          }}
+        />
+        <p className="text-[11px] text-muted-foreground/70">
+          Shown in a bubble beside the closed launcher to invite a chat. Leave blank for none.
+        </p>
       </div>
 
       <div className="mt-4 space-y-2">

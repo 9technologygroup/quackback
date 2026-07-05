@@ -563,6 +563,10 @@ export interface WidgetConfig {
   defaultBoard?: string
   /** Trigger button position */
   position?: 'bottom-right' | 'bottom-left'
+  /** Proactive one-line greeting shown in a bubble beside the closed launcher
+   *  (e.g. "Need a hand?"). Empty/unset shows no bubble. Dismissible per browser
+   *  session; clicking it opens the widget. */
+  launcherGreeting?: string
   /** Which tabs to show in the widget bottom bar */
   tabs?: {
     feedback?: boolean
@@ -585,7 +589,7 @@ export interface WidgetConfig {
  */
 export type PublicWidgetConfig = Pick<
   WidgetConfig,
-  'enabled' | 'defaultBoard' | 'position' | 'tabs' | 'home'
+  'enabled' | 'defaultBoard' | 'position' | 'tabs' | 'home' | 'launcherGreeting'
 > & {
   /** Always true: identify requires a backend-signed ssoToken (GH issue #300). */
   hmacRequired?: boolean
@@ -621,6 +625,7 @@ export interface UpdateWidgetConfigInput {
   enabled?: boolean
   defaultBoard?: string
   position?: 'bottom-right' | 'bottom-left'
+  launcherGreeting?: string
   tabs?: {
     feedback?: boolean
     changelog?: boolean

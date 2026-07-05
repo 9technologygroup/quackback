@@ -83,6 +83,7 @@ export async function getPublicWidgetConfig(): Promise<PublicWidgetConfig> {
       enabled: config.enabled,
       defaultBoard: config.defaultBoard,
       position: config.position,
+      launcherGreeting: config.launcherGreeting,
       tabs: {
         feedback: config.tabs?.feedback,
         changelog: config.tabs?.changelog,

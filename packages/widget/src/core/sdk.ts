@@ -241,6 +241,7 @@ export function createSDK(): SDK {
         void fetchServerConfig(config.instanceUrl)
           .then((serverConfig) => {
             applyServerTheme(serverConfig)
+            launcher?.setGreeting(serverConfig.launcherGreeting)
             // Host-page pageview tracking is instance-controlled: it starts
             // only when the server config enables visitor analytics, and only
             // if this init is still the live one. The durable device id is a

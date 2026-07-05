@@ -21,6 +21,8 @@ interface ServerConfig {
   hmacRequired?: boolean
   visitorAnalytics?: boolean
   visitorDeviceTracking?: boolean
+  /** Proactive greeting shown beside the closed launcher; empty/unset hides it. */
+  launcherGreeting?: string
 }
 
 function jsonResponse(body: unknown, maxAge: number): Response {
@@ -135,6 +137,7 @@ export const Route = createFileRoute('/api/widget/config.json')({
           // The durable device id is only meaningful with analytics on.
           visitorDeviceTracking:
             visitorAnalytics && (await isFeatureEnabled('visitorDeviceTracking')),
+          launcherGreeting: widgetConfig.launcherGreeting?.trim() || undefined,
         }
 
         return jsonResponse(config, 3600)

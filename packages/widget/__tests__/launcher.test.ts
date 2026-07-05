@@ -60,3 +60,69 @@ describe('launcher unread badge', () => {
     expect(badgeOf(l.el).textContent).toBe('2')
   })
 })
+
+const bubbleOf = () => document.querySelector('body > div') as HTMLElement
+
+describe('launcher greeting bubble', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    try {
+      sessionStorage.clear()
+    } catch {
+      /* ignore */
+    }
+  })
+
+  it('is hidden until a greeting is set', () => {
+    make()
+    expect(bubbleOf().style.display).toBe('none')
+  })
+
+  it('shows the greeting text while closed', () => {
+    const l = make()
+    l.setGreeting('Need a hand?')
+    const bubble = bubbleOf()
+    expect(bubble.style.display).toBe('flex')
+    expect(bubble.textContent).toContain('Need a hand?')
+  })
+
+  it('hides for an empty or whitespace greeting', () => {
+    const l = make()
+    l.setGreeting('   ')
+    expect(bubbleOf().style.display).toBe('none')
+    l.setGreeting('Hi')
+    expect(bubbleOf().style.display).toBe('flex')
+    l.setGreeting(null)
+    expect(bubbleOf().style.display).toBe('none')
+  })
+
+  it('hides while the widget is open, returns on close', () => {
+    const l = make()
+    l.setGreeting('Hi there')
+    l.setOpen(true)
+    expect(bubbleOf().style.display).toBe('none')
+    l.setOpen(false)
+    expect(bubbleOf().style.display).toBe('flex')
+  })
+
+  it('clicking the text opens the widget', () => {
+    let opened = 0
+    const l = createLauncher({ placement: 'right', onClick: () => (opened += 1) })
+    l.setGreeting('Hi')
+    ;(bubbleOf().firstElementChild as HTMLElement).click() // the text span
+    expect(opened).toBe(1)
+  })
+
+  it('dismiss hides it and persists for the session', () => {
+    const l = make()
+    l.setGreeting('Hi')
+    const bubble = bubbleOf()
+    ;(bubble.lastElementChild as HTMLElement).click() // the × button
+    expect(bubble.style.display).toBe('none')
+    // A fresh launcher in the same session stays dismissed.
+    document.body.innerHTML = ''
+    const l2 = make()
+    l2.setGreeting('Hi again')
+    expect(bubbleOf().style.display).toBe('none')
+  })
+})
