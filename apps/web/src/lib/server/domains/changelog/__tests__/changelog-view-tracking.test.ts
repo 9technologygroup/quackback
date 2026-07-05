@@ -6,6 +6,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ChangelogId } from '@quackback/ids'
+// Static SUT import (vi.mock below is hoisted above it) so the module's
+// transform is paid at file load, not inside a 5s-timed test — which it blew
+// under a saturated parallel run via the per-test `await import()`.
+import { getPublicChangelogById } from '../changelog.public'
 
 const mockFindFirst = vi.fn()
 const mockSelect = vi.fn()
@@ -83,7 +87,6 @@ describe('getPublicChangelogById — view tracking', () => {
       contentJson: null,
       publishedAt: new Date('2026-01-01'),
     })
-    const { getPublicChangelogById } = await import('../changelog.public')
 
     await getPublicChangelogById('cl_1' as ChangelogId)
 
@@ -93,7 +96,6 @@ describe('getPublicChangelogById — view tracking', () => {
 
   it('does not increment when the entry is not found', async () => {
     mockFindFirst.mockResolvedValue(undefined)
-    const { getPublicChangelogById } = await import('../changelog.public')
 
     await expect(getPublicChangelogById('cl_missing' as ChangelogId)).rejects.toBeDefined()
 
