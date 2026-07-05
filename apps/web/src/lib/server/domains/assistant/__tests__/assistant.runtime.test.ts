@@ -52,6 +52,25 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
 }))
 
+/**
+ * `isFeatureEnabled` gates assistantActions (read here and inside the real
+ * assembleAssistantTools this suite exercises) and, inside the real
+ * resolveToolSpecs, dataConnectors too. A flat `mockResolvedValue(true)`
+ * would flip both and pull the real (DB-backed) connectors domain into these
+ * prompt-assembly tests; discriminate by flag name so dataConnectors stays
+ * off unless a test opts in.
+ */
+function mockActionsFlag(enabled: boolean) {
+  mockIsFeatureEnabled.mockImplementation(async (flag: string) => flag === 'assistantActions' && enabled)
+}
+
+// Defensive: with mockActionsFlag in place dataConnectors always resolves
+// false, so resolveToolSpecs never reaches for the real connectors domain in
+// this file — stub it anyway so that stays true if a test ever flips it on.
+vi.mock('@/lib/server/domains/connectors/connector.toolspec', () => ({
+  listEnabledConnectorToolSpecs: vi.fn().mockResolvedValue([]),
+}))
+
 // Surface instructions + guidance rules are only read when actions are on
 // (asserted explicitly below); default to nothing saved.
 const mockGetAssistantSurfaces = vi.fn()
@@ -639,7 +658,7 @@ describe('runAssistantTurn: prompt assembly (surface instructions + guidance)', 
   })
 
   it('flag on but nothing saved: still byte-identical to the base prompt', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantSurfaces.mockResolvedValue({})
     mockListGuidanceRules.mockResolvedValue([])
     mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
@@ -650,7 +669,7 @@ describe('runAssistantTurn: prompt assembly (surface instructions + guidance)', 
   })
 
   it('assembles base -> surface instructions -> guidance, in that order', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantSurfaces.mockResolvedValue({ widget: { instructions: 'Be extra warm.' } })
     mockListGuidanceRules.mockResolvedValue([{ title: 'Refunds', body: 'Mention the policy.' }])
     mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
@@ -665,7 +684,7 @@ describe('runAssistantTurn: prompt assembly (surface instructions + guidance)', 
   })
 
   it('scopes the guidance query to the turn surface, defaulting to widget', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
 
     await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
@@ -676,7 +695,7 @@ describe('runAssistantTurn: prompt assembly (surface instructions + guidance)', 
   })
 
   it('fetches surfaces + guidance in parallel, once per turn, before the attempt loop', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     // First stream yields nothing structured, forcing the documented retry.
     mockChat
       .mockReturnValueOnce(chunkStream([{ type: 'RUN_FINISHED', usage: undefined }]))

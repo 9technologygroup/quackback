@@ -112,6 +112,7 @@ export type {
   AssistantGuidanceRuleId,
   AssistantPendingActionId,
   AssistantToolCallId,
+  DataConnectorId,
   TicketId,
   TicketStatusId,
   ChannelAccountId,

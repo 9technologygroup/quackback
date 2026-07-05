@@ -21,7 +21,7 @@ import { can } from '@/lib/server/policy/authorize'
 import { logger } from '@/lib/server/logger'
 import type { ConversationId } from '@quackback/ids'
 import type { AssistantToolContext, AssistantToolSpec, ToolControlMode } from './assistant.toolspec'
-import { resolveToolSpecs } from './assistant.toolspec'
+import { ASSISTANT_TOOL_SPECS, resolveToolSpecs } from './assistant.toolspec'
 import { claimToolCall, finalizeToolCall, recordDeniedToolCall, type AssistantToolCall } from './tool-audit'
 import { proposePendingAction, type AssistantPendingAction } from './pending-actions.service'
 
@@ -230,28 +230,35 @@ function toLegacyServerTool(spec: AssistantToolSpec, ctx: AssistantToolContext) 
 /**
  * Build this turn's tool set. Assistant actions off means every catalogue
  * tool runs exactly as before the pipeline existed, with no settings read
- * beyond the flag. Actions on resolves each spec's saved-or-default mode,
- * drops disabled tools, and wraps the rest in the control-mode pipeline.
+ * beyond the flag — that legacy branch uses the static registry directly and
+ * never resolves connector tools, even if dataConnectors is on: every
+ * connector's defaultMode is 'disabled' and the legacy branch does not
+ * consult control modes at all, so a connector must never reach it unwrapped.
+ * Actions on resolves the full catalogue (static + connector, via
+ * `resolveToolSpecs`) and each spec's saved-or-default mode, drops disabled
+ * tools, and wraps the rest in the control-mode pipeline.
  *
  * `specs` defaults to the live catalogue; tests inject a fixed list to
  * exercise write-risk behavior the current catalogue doesn't ship yet.
  */
 export async function assembleAssistantTools(
   ctx: AssistantToolContext,
-  specs: readonly AssistantToolSpec[] = resolveToolSpecs()
+  specs?: readonly AssistantToolSpec[]
 ) {
   const actionsEnabled = await isFeatureEnabled('assistantActions')
   if (!actionsEnabled) {
+    const legacySpecs = specs ?? Object.values(ASSISTANT_TOOL_SPECS)
     // Flag off exposes ONLY the read tools, unwrapped. Write specs must never
     // register without the pipeline, so a growing catalogue cannot widen the
     // legacy surface on its own.
-    return specs
+    return legacySpecs
       .filter((spec) => spec.risk === 'read')
       .map((spec) => toLegacyServerTool(spec, ctx))
   }
 
+  const resolvedSpecs = specs ?? (await resolveToolSpecs())
   const controls = await getAssistantToolControls()
-  return specs
+  return resolvedSpecs
     .map((spec) => ({ spec, mode: resolveMode(spec, controls[spec.name]) }))
     .filter((entry) => entry.mode !== 'disabled')
     .map(({ spec, mode }) =>

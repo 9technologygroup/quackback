@@ -26,7 +26,7 @@ import {
   type AssistantPendingAction,
 } from '@/lib/server/domains/assistant/pending-actions.service'
 import {
-  ASSISTANT_TOOL_SPECS,
+  getToolSpecByName,
   makeAssistantToolContext,
   type AssistantToolContext,
 } from '@/lib/server/domains/assistant/assistant.toolspec'
@@ -115,7 +115,7 @@ async function decideAssistantAction(
   const pending = await getPendingActionById(pendingActionId)
   if (!pending) throw new NotFoundError('PENDING_ACTION_NOT_FOUND', 'Pending action not found')
 
-  const spec = ASSISTANT_TOOL_SPECS[pending.toolName]
+  const spec = await getToolSpecByName(pending.toolName)
   if (!spec) throw new ToolSpecGoneError(pending.toolName)
 
   for (const permission of spec.permissions) {

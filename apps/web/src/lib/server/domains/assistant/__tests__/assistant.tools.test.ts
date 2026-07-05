@@ -21,9 +21,29 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
 }))
 
+/**
+ * `isFeatureEnabled` gates two independent flags in this pipeline
+ * (assistantActions here, dataConnectors inside the real resolveToolSpecs
+ * these tests call by default): a flat `mockResolvedValue(true)` would flip
+ * both at once and pull the real connectors domain (and its DB access) into
+ * a fully-mocked pipeline test. Discriminate by flag name instead so
+ * dataConnectors stays off unless a test opts in.
+ */
+function mockActionsFlag(enabled: boolean) {
+  mockIsFeatureEnabled.mockImplementation(async (flag: string) => flag === 'assistantActions' && enabled)
+}
+
 const mockGetAssistantToolControls = vi.fn()
 vi.mock('@/lib/server/domains/settings/settings.assistant', () => ({
   getAssistantToolControls: (...args: unknown[]) => mockGetAssistantToolControls(...args),
+}))
+
+// Defensive: with mockActionsFlag in place dataConnectors always resolves
+// false, so resolveToolSpecs never takes the dynamic-import branch in these
+// tests — but stub the module anyway so a future test that flips it on
+// doesn't reach for the real (DB-backed) connectors domain.
+vi.mock('@/lib/server/domains/connectors/connector.toolspec', () => ({
+  listEnabledConnectorToolSpecs: vi.fn().mockResolvedValue([]),
 }))
 
 const mockClaimToolCall = vi.fn()
@@ -224,24 +244,29 @@ describe('assembleAssistantTools: assistant actions flag', () => {
   })
 
   it('reads the flag and controls exactly once per assembly when the flag is on', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({})
     await assembleAssistantTools(ctx())
-    expect(mockIsFeatureEnabled).toHaveBeenCalledTimes(1)
+    // Twice, not once: assistantActions here plus dataConnectors inside the
+    // real resolveToolSpecs this call falls through to (no explicit specs) —
+    // each flag is still read exactly once, not re-read redundantly.
+    expect(mockIsFeatureEnabled).toHaveBeenCalledTimes(2)
+    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantActions')
+    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('dataConnectors')
     expect(mockGetAssistantToolControls).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('assembleAssistantTools: control-mode gating', () => {
   it('does not register a disabled tool', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'disabled' })
     const tools = await assembleAssistantTools(ctx(), [makeFakeWriteSpec()])
     expect(tools).toHaveLength(0)
   })
 
   it('fails closed to disabled (with a warning) when the saved mode is not supported', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     const spec = makeFakeWriteSpec({ supportedModes: ['disabled', 'approval'] })
     const tools = await assembleAssistantTools(ctx(), [spec])
@@ -250,7 +275,7 @@ describe('assembleAssistantTools: control-mode gating', () => {
   })
 
   it('read tools still respect disabled mode when actions are on', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({ search_knowledge: 'disabled' })
     const tools = await assembleAssistantTools(ctx())
     expect(tools.map((t) => t.name)).not.toContain('search_knowledge')
@@ -260,7 +285,7 @@ describe('assembleAssistantTools: control-mode gating', () => {
 
 describe('assembleAssistantTools: write-tool pipeline (approval mode)', () => {
   it('proposes a pending action, returns a pending_approval note, and never executes', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'approval' })
     mockProposePendingAction.mockResolvedValue({ id: 'assistant_action_1' })
 
@@ -291,7 +316,7 @@ describe('assembleAssistantTools: write-tool pipeline (autonomous mode)', () => 
   }
 
   it('denies a call missing a required permission, records the denial, and never executes', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     const spec = makeFakeWriteSpec({ permissions: [PERMISSIONS.SETTINGS_MANAGE] })
 
@@ -314,7 +339,7 @@ describe('assembleAssistantTools: write-tool pipeline (autonomous mode)', () => 
   })
 
   it('claims, executes, and finalizes succeeded with latency on the happy path', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     mockClaimToolCall.mockResolvedValue({ id: 'assistant_tool_call_1', status: 'started' })
     mockWriteExecute.mockResolvedValue({ closed: true })
@@ -339,7 +364,7 @@ describe('assembleAssistantTools: write-tool pipeline (autonomous mode)', () => 
   })
 
   it('skips a duplicate claim and never executes', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     mockClaimToolCall.mockResolvedValue(null)
 
@@ -353,7 +378,7 @@ describe('assembleAssistantTools: write-tool pipeline (autonomous mode)', () => 
   })
 
   it('finalizes failed and returns a graceful note when execute throws (never crashes the turn)', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     mockClaimToolCall.mockResolvedValue({ id: 'assistant_tool_call_1', status: 'started' })
     mockWriteExecute.mockRejectedValue(new Error('boom'))
@@ -370,7 +395,7 @@ describe('assembleAssistantTools: write-tool pipeline (autonomous mode)', () => 
   })
 
   it('skips claim and audit entirely for a read-risk tool', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({})
     mockRetrieve.mockResolvedValue([])
 
@@ -385,7 +410,7 @@ describe('assembleAssistantTools: write-tool pipeline (autonomous mode)', () => 
 
 describe('assembleAssistantTools: sandbox simulate mode', () => {
   it('skips claim, execute, and audit for a write tool and returns a simulated summary', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
 
     const c = ctx({ conversationId: null, simulate: true })
@@ -399,7 +424,7 @@ describe('assembleAssistantTools: sandbox simulate mode', () => {
   })
 
   it('still executes a read tool normally in simulate mode', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({})
     mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
 

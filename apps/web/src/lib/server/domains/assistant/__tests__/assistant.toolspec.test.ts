@@ -1,17 +1,29 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   ASSISTANT_TOOL_SPECS,
   resolveToolSpecs,
   type ToolControlMode,
+  type AssistantToolSpec,
 } from '../assistant.toolspec'
+
+// resolveToolSpecs checks the dataConnectors flag before merging in
+// connector-backed tools; this suite is about the fixed catalogue's shape, so
+// the flag stays off and the static registry is the whole story (matches the
+// exact-name-list assertion below).
+vi.mock('@/lib/server/domains/settings/settings.service', () => ({
+  isFeatureEnabled: vi.fn().mockResolvedValue(false),
+}))
 
 const SNAKE_CASE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/
 const VALID_RISKS = ['read', 'write']
 const VALID_MODES: ToolControlMode[] = ['disabled', 'approval', 'autonomous']
 
 describe('assistant.toolspec registry completeness', () => {
-  const specs = resolveToolSpecs()
+  let specs: AssistantToolSpec[]
+  beforeAll(async () => {
+    specs = await resolveToolSpecs()
+  })
 
   it('is non-empty', () => {
     expect(specs.length).toBeGreaterThan(0)
@@ -136,8 +148,8 @@ describe('get_conversation_context spec', () => {
 })
 
 describe('resolveToolSpecs', () => {
-  it('returns exactly the read and write specs that exist today', () => {
-    const names = resolveToolSpecs()
+  it('returns exactly the read and write specs that exist today', async () => {
+    const names = (await resolveToolSpecs())
       .map((s) => s.name)
       .sort()
     expect(names).toEqual([

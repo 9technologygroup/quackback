@@ -68,10 +68,12 @@ export { buildAssistantHandoverMessage } from './assistant.handover'
 export {
   ASSISTANT_TOOL_SPECS,
   resolveToolSpecs,
+  getToolSpecByName,
   searchKnowledgeTool,
   getConversationContextTool,
   makeAssistantToolContext,
   assistantGateEnvelopeSchema,
+  withGateEnvelope,
   SEARCH_BUDGET_PER_TURN,
   type ToolRiskClass,
   type ToolControlMode,

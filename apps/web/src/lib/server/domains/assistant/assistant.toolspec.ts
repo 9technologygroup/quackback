@@ -31,6 +31,7 @@ import { setConversationStatus } from '@/lib/server/domains/conversation/convers
 import { createTicket } from '@/lib/server/domains/tickets/ticket.service'
 import { createPostFromConversation } from '@/lib/server/domains/conversation/conversation.convert'
 import { quinnActor } from './assistant.actor'
+import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service'
 
 /** A structured citation — the only citation contract; never free-form markdown. */
 export interface AssistantCitation {
@@ -146,7 +147,13 @@ export const assistantGateEnvelopeSchema = z.union([
   z.object({ simulated: z.literal(true), summary: z.string() }),
 ])
 
-function withGateEnvelope<T extends z.ZodTypeAny>(schema: T) {
+/**
+ * Compose a tool's outputSchema so it also admits the pipeline's gate
+ * envelopes (pending-approval/denied/duplicate/failed/simulated). Exported so
+ * connector.toolspec.ts (a connector's outputSchema needs the same admission)
+ * doesn't reimplement the union.
+ */
+export function withGateEnvelope<T extends z.ZodTypeAny>(schema: T) {
   return z.union([schema, assistantGateEnvelopeSchema])
 }
 
@@ -642,19 +649,45 @@ const SPECS: readonly AssistantToolSpec[] = [
 ]
 
 /**
- * Static registry of Quinn's tools, keyed by name. Connector-backed tools
- * join this catalogue in a later task; for now it holds the read tools plus
- * the write tools that act on the conversation, a ticket, or a feedback post.
+ * Static registry of Quinn's built-in tools, keyed by name: the read tools
+ * plus the write tools that act on the conversation, a ticket, or a feedback
+ * post. Connector-backed tools are NOT in this registry — they are
+ * per-workspace, DB-backed, and gated by the dataConnectors flag, so they only
+ * ever appear via `resolveToolSpecs`. Tests and the settings UI that only
+ * care about the fixed catalogue use this directly (sync, no DB read).
  */
 export const ASSISTANT_TOOL_SPECS: Record<string, AssistantToolSpec> = Object.fromEntries(
   SPECS.map((s) => [s.name, s])
 )
 
 /**
- * Resolve the active tool catalogue. Today this is just the static registry;
- * per-workspace connector tools join the list here in a later task without
- * changing callers.
+ * Resolve the active tool catalogue: the static registry plus, when the
+ * dataConnectors flag is on, one tool per enabled connector. The connectors
+ * domain is imported dynamically so this module (and everything that
+ * statically imports it) never pulls in the connectors domain at load time —
+ * connector.toolspec.ts imports types and `withGateEnvelope` from here, and a
+ * static import back would be circular.
  */
-export function resolveToolSpecs(): AssistantToolSpec[] {
-  return Object.values(ASSISTANT_TOOL_SPECS)
+export async function resolveToolSpecs(): Promise<AssistantToolSpec[]> {
+  const staticSpecs = Object.values(ASSISTANT_TOOL_SPECS)
+  const connectorsEnabled = await isFeatureEnabled('dataConnectors')
+  if (!connectorsEnabled) return staticSpecs
+  const { listEnabledConnectorToolSpecs } = await import(
+    '@/lib/server/domains/connectors/connector.toolspec'
+  )
+  return [...staticSpecs, ...(await listEnabledConnectorToolSpecs())]
+}
+
+/**
+ * Look up one tool spec by name, static or connector-backed. Static names
+ * resolve without touching the DB; a `connector_*` name (or any name absent
+ * from the static registry) falls back to the full resolved catalogue. Used
+ * by the approve/reject seam (functions/assistant-actions.ts), which only
+ * knows a tool by the name stored on the pending action.
+ */
+export async function getToolSpecByName(name: string): Promise<AssistantToolSpec | null> {
+  const staticSpec = ASSISTANT_TOOL_SPECS[name]
+  if (staticSpec) return staticSpec
+  const specs = await resolveToolSpecs()
+  return specs.find((s) => s.name === name) ?? null
 }

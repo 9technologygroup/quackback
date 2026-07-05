@@ -75,6 +75,13 @@ vi.mock('@/lib/server/domains/assistant/assistant.toolspec', () => ({
     const specs = (hoisted.resolveToolSpecs() ?? []) as Array<{ name: string }>
     return Object.fromEntries(specs.map((s) => [s.name, s]))
   },
+  // Faithful pure replica of the real lookup (async over the same mocked
+  // list — the fn under test now calls this instead of indexing
+  // ASSISTANT_TOOL_SPECS directly, so a connector_* name resolves too).
+  getToolSpecByName: async (name: string) => {
+    const specs = ((await hoisted.resolveToolSpecs()) ?? []) as Array<{ name: string }>
+    return specs.find((s) => s.name === name) ?? null
+  },
   // Faithful pure replica of the real factory (the module is fully mocked to
   // keep its heavy import graph out of this test).
   makeAssistantToolContext: (init: Record<string, unknown>) => ({
