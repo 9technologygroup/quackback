@@ -60,7 +60,9 @@ function createTxSelectChain(result: unknown[]) {
   return chain
 }
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       feedbackSuggestions: {
@@ -85,24 +87,6 @@ vi.mock('@/lib/server/db', () => ({
   eq: vi.fn(),
   and: vi.fn(),
   isNull: vi.fn(),
-  boards: {
-    id: 'id',
-    deletedAt: 'deleted_at',
-  },
-  feedbackSuggestions: {
-    id: 'id',
-    status: 'status',
-    createdAt: 'created_at',
-  },
-  posts: {
-    id: 'id',
-    voteCount: 'vote_count',
-  },
-  postVotes: {},
-  rawFeedbackItems: {},
-  postStatuses: {
-    isDefault: 'is_default',
-  },
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
     strings,
     values,

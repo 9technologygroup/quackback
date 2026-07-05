@@ -61,20 +61,15 @@ vi.mock('../registry', () => ({
 }))
 
 // db mock: inline to avoid hoisting issues. Access via import for assertions.
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     update: vi.fn(() => ({
       set: vi.fn(() => ({
         where: vi.fn().mockResolvedValue(undefined),
       })),
     })),
-  },
-  webhooks: {
-    id: 'id',
-    failureCount: 'failureCount',
-    status: 'status',
-    lastTriggeredAt: 'lastTriggeredAt',
-    lastError: 'lastError',
   },
   eq: vi.fn(),
   sql: vi.fn(),

@@ -19,7 +19,9 @@ const mockRoadmapFindFirst = vi.fn()
 const mockSelect = vi.fn()
 const mockBoardViewFilter = vi.fn(() => ({ kind: 'boardViewFilter-sql' }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: { roadmaps: { findFirst: (...a: unknown[]) => mockRoadmapFindFirst(...a) } },
     select: (...a: unknown[]) => mockSelect(...a),
@@ -31,23 +33,6 @@ vi.mock('@/lib/server/db', () => ({
   asc: vi.fn(),
   desc: vi.fn(),
   sql: Object.assign(vi.fn(), { raw: vi.fn() }),
-  roadmaps: { id: 'roadmaps.id' },
-  posts: {
-    id: 'posts.id',
-    boardId: 'posts.boardId',
-    deletedAt: 'posts.deletedAt',
-    moderationState: 'posts.moderationState',
-    statusId: 'posts.statusId',
-    voteCount: 'posts.voteCount',
-    title: 'posts.title',
-    createdAt: 'posts.createdAt',
-    principalId: 'posts.principalId',
-    searchVector: 'posts.searchVector',
-  },
-  postRoadmaps: { roadmapId: 'pr.roadmapId', postId: 'pr.postId' },
-  postTagAssignments: { postId: 'pt.postId', tagId: 'pt.tagId' },
-  boards: { id: 'boards.id', name: 'boards.name', slug: 'boards.slug' },
-  userSegments: { principalId: 'us.principalId', segmentId: 'us.segmentId' },
 }))
 
 // Spy on the policy export so we can assert it was invoked.

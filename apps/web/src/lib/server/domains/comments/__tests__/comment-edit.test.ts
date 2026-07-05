@@ -11,7 +11,9 @@ const mockDispatchCommentUpdated = vi.fn()
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       postComments: {
@@ -25,9 +27,6 @@ vi.mock('@/lib/server/db', () => ({
   and: vi.fn(),
   isNull: vi.fn(),
   sql: vi.fn(),
-  postComments: { id: 'id', parentId: 'parent_id' },
-  postCommentEditHistory: {},
-  posts: {},
 }))
 
 vi.mock('@/lib/server/events/dispatch', () => ({

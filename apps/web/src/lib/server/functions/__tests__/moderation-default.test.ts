@@ -66,7 +66,9 @@ vi.mock('@/lib/server/storage/s3', () => ({ getPublicUrlOrNull: vi.fn() }))
 
 vi.mock('@/lib/server/auth/session', () => ({ getSession: vi.fn() }))
 
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: { findMany: vi.fn(), findFirst: vi.fn() },
@@ -76,12 +78,6 @@ vi.mock('@/lib/server/db', () => ({
     },
     select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn() })) })),
   },
-  principal: {},
-  user: {},
-  invitation: {},
-  account: {},
-  session: {},
-  settings: {},
   eq: vi.fn(),
   ne: vi.fn(),
   and: vi.fn(),

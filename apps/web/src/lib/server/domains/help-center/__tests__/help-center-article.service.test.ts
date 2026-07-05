@@ -43,7 +43,9 @@ const mockArticleFindFirst = vi.fn()
 const mockFeedbackFindFirst = vi.fn()
 const mockPrincipalFindFirst = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       helpCenterCategories: {
@@ -75,34 +77,6 @@ vi.mock('@/lib/server/db', () => ({
       return fn(self)
     }),
   },
-  helpCenterCategories: {
-    id: 'id',
-    slug: 'slug',
-    name: 'name',
-  },
-  helpCenterArticles: {
-    id: 'id',
-    slug: 'slug',
-    title: 'title',
-    description: 'description',
-    position: 'position',
-    content: 'content',
-    categoryId: 'category_id',
-    deletedAt: 'deleted_at',
-    publishedAt: 'published_at',
-    createdAt: 'created_at',
-    viewCount: 'view_count',
-    helpfulCount: 'helpful_count',
-    notHelpfulCount: 'not_helpful_count',
-    principalId: 'principal_id',
-  },
-  helpCenterArticleFeedback: {
-    id: 'id',
-    articleId: 'article_id',
-    principalId: 'principal_id',
-    helpful: 'helpful',
-  },
-  principal: { id: 'id', displayName: 'display_name', avatarUrl: 'avatar_url', role: 'role' },
   eq: vi.fn(),
   and: vi.fn(),
   or: vi.fn(),

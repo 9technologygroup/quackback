@@ -11,15 +11,15 @@ import type { PrincipalId, UserId } from '@quackback/ids'
 const mockSessionFindFirst = vi.fn()
 const mockPrincipalFindFirst = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       session: { findFirst: (...args: unknown[]) => mockSessionFindFirst(...args) },
       principal: { findFirst: (...args: unknown[]) => mockPrincipalFindFirst(...args) },
     },
   },
-  session: { token: 'token', expiresAt: 'expiresAt', userId: 'userId' },
-  principal: { userId: 'userId', id: 'id' },
   eq: vi.fn(),
   and: vi.fn(),
   gt: vi.fn(),

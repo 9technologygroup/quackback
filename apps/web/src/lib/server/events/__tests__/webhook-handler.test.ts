@@ -13,7 +13,9 @@ import crypto from 'crypto'
 const h = vi.hoisted(() => ({ safeFetch: vi.fn(), claim: vi.fn(async () => true) }))
 
 // Mock the db import before importing the handler
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -21,7 +23,6 @@ vi.mock('@/lib/server/db', () => ({
       })),
     })),
   },
-  webhooks: { id: 'id', failureCount: 'failureCount', status: 'status' },
   eq: vi.fn(),
   sql: vi.fn(),
 }))

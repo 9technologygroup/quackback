@@ -29,7 +29,9 @@ const mockEntryFindMany = vi.fn()
 const mockStatusesFindMany = vi.fn()
 const mockSelect = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       changelogEntries: {
@@ -44,29 +46,6 @@ vi.mock('@/lib/server/db', () => ({
     // getPublicChangelogById records a view via a fire-and-forget update.
     update: () => ({ set: () => ({ where: () => ({ catch: () => {} }) }) }),
   },
-  changelogEntries: {
-    id: 'id',
-    publishedAt: 'published_at',
-    deletedAt: 'deleted_at',
-    viewCount: 'view_count',
-  },
-  changelogEntryPosts: { changelogEntryId: 'changelog_entry_id', postId: 'post_id' },
-  posts: {
-    id: 'posts.id',
-    title: 'posts.title',
-    voteCount: 'posts.voteCount',
-    boardId: 'posts.boardId',
-    statusId: 'posts.statusId',
-    deletedAt: 'posts.deletedAt',
-    moderationState: 'posts.moderationState',
-  },
-  boards: {
-    id: 'boards.id',
-    slug: 'boards.slug',
-    access: 'boards.access',
-    deletedAt: 'boards.deletedAt',
-  },
-  postStatuses: { id: 'id' },
   eq: vi.fn((col, val) => ({ kind: 'eq', col, val })),
   and: vi.fn((...args: unknown[]) => ({ kind: 'and', args })),
   or: vi.fn((...args: unknown[]) => ({ kind: 'or', args })),

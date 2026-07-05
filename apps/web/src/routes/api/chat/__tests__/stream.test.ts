@@ -21,7 +21,9 @@ const mockClearPresence = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: vi.fn(() => (opts: unknown) => ({ options: opts })),
 }))
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: { findFirst: (...a: unknown[]) => mockPrincipalFindFirst(...a) },
@@ -34,9 +36,6 @@ vi.mock('@/lib/server/db', () => ({
   or: vi.fn(),
   gt: vi.fn(),
   isNull: vi.fn(),
-  conversations: {},
-  conversationMessages: {},
-  principal: {},
 }))
 vi.mock('@/lib/server/auth', () => ({
   auth: { api: { getSession: (...a: unknown[]) => mockGetSession(...a) } },

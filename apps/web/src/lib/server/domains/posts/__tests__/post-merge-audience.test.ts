@@ -29,7 +29,9 @@ const mockSelectChain = {
   limit: vi.fn(),
 }
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       posts: {
@@ -37,20 +39,6 @@ vi.mock('@/lib/server/db', () => ({
       },
     },
     select: vi.fn(() => mockSelectChain),
-  },
-  posts: {
-    id: 'posts.id',
-    title: 'posts.title',
-    boardId: 'posts.boardId',
-    deletedAt: 'posts.deletedAt',
-    moderationState: 'posts.moderationState',
-    principalId: 'posts.principalId',
-  },
-  boards: {
-    id: 'boards.id',
-    slug: 'boards.slug',
-    access: 'boards.access',
-    deletedAt: 'boards.deletedAt',
   },
   eq: vi.fn((col, val) => ({ eq: [col, val] })),
   and: vi.fn((...parts) => ({ and: parts })),

@@ -9,7 +9,7 @@ import type { PrincipalId } from '@quackback/ids'
 let findFirstRow: Record<string, unknown> | undefined
 const setPayloads: Record<string, unknown>[] = []
 
-vi.mock('@/lib/server/db', () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   function chain(): Record<string, unknown> {
     const c: Record<string, unknown> = {}
     c.where = () => c
@@ -19,14 +19,15 @@ vi.mock('@/lib/server/db', () => {
     }
     return c
   }
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       update: () => chain(),
       query: { principal: { findFirst: async () => findFirstRow } },
     },
     eq: vi.fn(),
     sql: (() => 'now()') as unknown,
-    principal: { __name: 'principal', id: 'id', blockedAt: 'blocked_at' },
   }
 })
 

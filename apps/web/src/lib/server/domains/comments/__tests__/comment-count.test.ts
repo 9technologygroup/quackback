@@ -69,7 +69,7 @@ function createTx() {
 }
 
 // Mock @/lib/server/db
-vi.mock('@/lib/server/db', async () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const mockDb = {
     query: {
       postComments: {
@@ -139,19 +139,14 @@ vi.mock('@/lib/server/db', async () => {
   const { sql: realSql } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm')
 
   return {
+    // Spread the real db module so tables/operators stay current; override only what this suite drives.
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: mockDb,
     eq: vi.fn(),
     and: vi.fn(),
     asc: vi.fn(),
     isNull: vi.fn(),
     sql: realSql,
-    postComments: { id: 'id', postId: 'postId', parentId: 'parentId' },
-    postCommentReactions: {},
-    postCommentEditHistory: {},
-    posts: { id: 'id', commentCount: 'comment_count' },
-    boards: { id: 'id' },
-    postStatuses: { id: 'id' },
-    postActivity: {},
   }
 })
 

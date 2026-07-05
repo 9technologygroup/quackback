@@ -34,7 +34,9 @@ const mockInnerJoin = vi.fn()
 const mockDbWhere = vi.fn()
 const mockFindMany = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     select: (...args: unknown[]) => mockSelect(...args),
     query: {
@@ -43,30 +45,10 @@ vi.mock('@/lib/server/db', () => ({
       },
     },
   },
-  integrations: {
-    id: 'id',
-    integrationType: 'integrationType',
-    secrets: 'secrets',
-    config: 'config',
-    status: 'status',
-  },
-  integrationEventMappings: {
-    integrationId: 'integrationId',
-    eventType: 'eventType',
-    actionConfig: 'actionConfig',
-    filters: 'filters',
-    enabled: 'enabled',
-  },
-  webhooks: {
-    status: 'status',
-    deletedAt: 'deletedAt',
-    $inferSelect: {},
-  },
   eq: vi.fn(),
   and: vi.fn(),
   isNull: vi.fn(),
   inArray: vi.fn(),
-  principal: {},
 }))
 
 // --- Other mocks ---

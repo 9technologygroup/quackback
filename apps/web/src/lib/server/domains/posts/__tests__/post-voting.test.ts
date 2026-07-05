@@ -8,26 +8,15 @@ import type { PostId, PrincipalId } from '@quackback/ids'
 // --- Mock tracking ---
 const mockDbExecute = vi.fn()
 
-vi.mock('@/lib/server/db', async () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const { sql: realSql } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm')
 
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       execute: (...args: unknown[]) => mockDbExecute(...args),
     },
-    posts: { id: 'post_id' },
-    postVotes: {
-      postId: 'post_id',
-      principalId: 'principal_id',
-      sourceType: 'source_type',
-      sourceExternalUrl: 'source_external_url',
-      feedbackSuggestionId: 'feedback_suggestion_id',
-      addedByPrincipalId: 'added_by_principal_id',
-    },
-    postSubscriptions: { id: 'id', postId: 'post_id', principalId: 'principal_id' },
-    boards: { id: 'board_id' },
-    principal: { id: 'principal_id' },
-    user: { id: 'user_id' },
     sql: realSql,
     eq: vi.fn(),
     and: vi.fn(),

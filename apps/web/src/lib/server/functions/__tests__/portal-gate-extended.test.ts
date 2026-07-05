@@ -151,15 +151,15 @@ vi.mock('@/lib/server/functions/auth-helpers', () => ({
   policyActorFromAuth: vi.fn().mockResolvedValue({ type: 'anonymous', role: 'user' }),
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: { findFirst: vi.fn().mockResolvedValue(null) },
       user: { findFirst: vi.fn().mockResolvedValue(null) },
     },
   },
-  principal: { id: 'id', userId: 'userId' },
-  user: { id: 'id' },
   eq: vi.fn(),
   inArray: vi.fn(),
 }))

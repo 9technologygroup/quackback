@@ -3,10 +3,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Table sentinels + operator stubs; the service passes an explicit `exec`, so
 // the mocked `db` is only a fallback and the operators just need to not throw.
 const notExistsSpy = vi.fn((q: unknown) => ({ notExists: q }))
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {},
-  assistantInvolvements: { __t: 'inv' },
-  conversationMessages: { __t: 'cm' },
   and: (...a: unknown[]) => ({ and: a }),
   eq: (...a: unknown[]) => ({ eq: a }),
   gt: (...a: unknown[]) => ({ gt: a }),

@@ -39,7 +39,9 @@ vi.mock('@/lib/server/domains/comments/comment.query', () => ({
   getCommentById: (...args: unknown[]) => mockGetCommentById(...args),
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: {
@@ -47,7 +49,6 @@ vi.mock('@/lib/server/db', () => ({
       },
     },
   },
-  principal: { id: 'id', userId: 'user_id' },
   eq: vi.fn(),
 }))
 

@@ -36,7 +36,9 @@ function createInsertChain() {
   return chain
 }
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     select: (...args: unknown[]) => mockSelect(...args),
     insert: vi.fn(() => createInsertChain()),
@@ -55,9 +57,6 @@ vi.mock('@/lib/server/db', () => ({
     raw: strings.join(' '),
     values,
   })),
-  user: { email: 'email' },
-  principal: { id: 'principal_id', userId: 'user_id' },
-  externalUserMappings: {},
 }))
 
 vi.mock('@quackback/ids', async () => {

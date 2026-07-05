@@ -22,7 +22,9 @@ const mockSignalFindFirst = vi.fn()
 const mockRawItemFindFirst = vi.fn()
 const mockSignalFindMany = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       feedbackSignals: {
@@ -41,16 +43,6 @@ vi.mock('@/lib/server/db', () => ({
     update: vi.fn(() => createUpdateChain()),
   },
   eq: vi.fn(),
-  feedbackSignals: {
-    id: 'id',
-    processingState: 'processing_state',
-    rawFeedbackItemId: 'raw_feedback_item_id',
-  },
-  rawFeedbackItems: {
-    id: 'id',
-    processingState: 'processing_state',
-  },
-  boards: {},
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
     strings,
     values,

@@ -54,9 +54,10 @@ function mockValidSegmentRows() {
   return hoisted.mockValidSegmentRowsState.rows
 }
 
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: { select: hoisted.mockSegmentExistenceSelect },
-  segments: { id: 'segments.id', deletedAt: 'segments.deleted_at' },
   inArray: vi.fn((col, vals) => ({ kind: 'inArray', col, vals })),
   isNull: vi.fn((col) => ({ kind: 'isNull', col })),
   and: vi.fn((...parts) => ({ kind: 'and', parts })),

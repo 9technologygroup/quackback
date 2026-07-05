@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/server/config', () => ({ config: {} }))
 
 const mockLimit = vi.fn()
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     select: () => ({
       from: () => ({
@@ -11,7 +13,6 @@ vi.mock('@/lib/server/db', () => ({
       }),
     }),
   },
-  principal: { type: 'type', serviceMetadata: 'service_metadata' },
   and: (...a: unknown[]) => ({ op: 'and', a }),
   eq: (...a: unknown[]) => ({ op: 'eq', a }),
   sql: (strings: TemplateStringsArray, ...v: unknown[]) => ({ op: 'sql', strings, v }),

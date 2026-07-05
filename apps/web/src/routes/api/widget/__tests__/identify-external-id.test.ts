@@ -19,7 +19,9 @@ vi.mock('@tanstack/react-router', () => ({
   createFileRoute: vi.fn(() => (opts: unknown) => ({ options: opts })),
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       user: { findFirst: (...args: unknown[]) => mockUserFindFirst(...args) },
@@ -45,11 +47,6 @@ vi.mock('@/lib/server/db', () => ({
       },
     }),
   },
-  user: { externalId: 'external_id' },
-  session: {},
-  principal: {},
-  segments: {},
-  widgetIdentifiedSession: { sessionId: 'session_id' },
   eq: vi.fn(),
   and: vi.fn(),
   gt: vi.fn(),

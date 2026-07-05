@@ -7,7 +7,9 @@ const mockUpdateSet = vi.fn()
 const mockUpdateWhere = vi.fn()
 const mockChangelogEntryPostsFindMany = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       changelogEntries: {
@@ -27,11 +29,6 @@ vi.mock('@/lib/server/db', () => ({
     }),
     delete: () => ({ where: vi.fn().mockResolvedValue(undefined) }),
   },
-  changelogEntries: { id: 'id', publishedAt: 'published_at', deletedAt: 'deleted_at' },
-  changelogEntryPosts: { changelogEntryId: 'changelog_entry_id', postId: 'post_id' },
-  posts: { id: 'posts.id' },
-  principal: { id: 'principal.id' },
-  postStatuses: { id: 'postStatuses.id' },
   eq: vi.fn(),
   and: vi.fn(),
   isNull: vi.fn(),

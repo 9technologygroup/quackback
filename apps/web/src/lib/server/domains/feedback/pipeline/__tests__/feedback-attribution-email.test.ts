@@ -10,7 +10,9 @@ const mockUserFindFirst = vi.fn()
 const mockPostFindFirst = vi.fn()
 const mockSettingsFindFirst = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: { findFirst: (...args: unknown[]) => mockPrincipalFindFirst(...args) },
@@ -20,9 +22,6 @@ vi.mock('@/lib/server/db', () => ({
     },
   },
   eq: vi.fn(),
-  principal: { id: 'id' },
-  user: { id: 'id' },
-  posts: { id: 'id' },
 }))
 
 vi.mock('@/lib/server/config', () => ({

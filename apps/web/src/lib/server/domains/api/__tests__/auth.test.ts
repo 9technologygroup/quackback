@@ -14,7 +14,9 @@ vi.mock('@/lib/server/domains/api-keys/api-key.service', () => ({
 const { mockFindFirst } = vi.hoisted(() => ({
   mockFindFirst: vi.fn().mockResolvedValue({ role: 'admin' }),
 }))
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: {
@@ -23,8 +25,6 @@ vi.mock('@/lib/server/db', () => ({
     },
     select: () => ({ from: () => ({ limit: () => Promise.resolve([]) }) }),
   },
-  principal: { id: 'id' },
-  settings: { tierLimits: 'tier_limits' },
   eq: vi.fn(),
 }))
 

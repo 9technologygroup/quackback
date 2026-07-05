@@ -14,45 +14,15 @@ vi.mock('@/lib/server/redis', () => ({
   },
 }))
 
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     select: vi.fn(),
     query: {
       webhooks: { findMany: vi.fn() },
     },
   },
-  integrations: {
-    id: 'id',
-    integrationType: 'integrationType',
-    secrets: 'secrets',
-    config: 'config',
-    status: 'status',
-  },
-  integrationEventMappings: {
-    integrationId: 'integrationId',
-    eventType: 'eventType',
-    actionConfig: 'actionConfig',
-    filters: 'filters',
-    enabled: 'enabled',
-  },
-  webhooks: { status: 'status', deletedAt: 'deletedAt', $inferSelect: {} },
-  principal: {
-    id: 'principal.id',
-    userId: 'principal.userId',
-    role: 'principal.role',
-    type: 'principal.type',
-    displayName: 'principal.displayName',
-  },
-  user: { id: 'user.id', email: 'user.email' },
-  posts: {
-    id: 'posts.id',
-    boardId: 'posts.boardId',
-    moderationState: 'posts.moderationState',
-    principalId: 'posts.principalId',
-    deletedAt: 'posts.deletedAt',
-  },
-  boards: { id: 'boards.id', access: 'boards.access', deletedAt: 'boards.deletedAt' },
-  userSegments: { principalId: 'userSegments.principalId', segmentId: 'userSegments.segmentId' },
   eq: vi.fn((a: unknown, b: unknown) => ({ _eq: [a, b] })),
   and: vi.fn((...args: unknown[]) => ({ _and: args })),
   or: vi.fn(),

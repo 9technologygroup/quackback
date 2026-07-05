@@ -50,7 +50,7 @@ const conversationRow: Record<string, unknown> = {
   csatSubmittedAt: null,
 }
 
-vi.mock('@/lib/server/db', () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   function chain(): Record<string, unknown> {
     const c: Record<string, unknown> = {}
     c.from = () => c
@@ -66,7 +66,9 @@ vi.mock('@/lib/server/db', () => {
     return c
   }
   const tx = { select: () => chain(), update: () => chain() }
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       select: () => chain(),
       update: () => chain(),
@@ -75,12 +77,6 @@ vi.mock('@/lib/server/db', () => {
     eq: vi.fn(),
     and: vi.fn(),
     isNull: vi.fn(),
-    conversations: {
-      __name: 'conversations',
-      id: 'id',
-      csatRating: 'csat_rating',
-      csatComment: 'csat_comment',
-    },
   }
 })
 

@@ -57,7 +57,7 @@ vi.mock('../conversation.query', () => ({
   resolveAuthor: vi.fn(async (a: { principalId: string }) => ({ principalId: a.principalId })),
 }))
 
-vi.mock('@/lib/server/db', () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   function chain(label: string): Record<string, unknown> {
     const c: Record<string, unknown> = {}
     c.from = (t: { __name?: string }) => chain(t?.__name ?? label)
@@ -70,7 +70,9 @@ vi.mock('@/lib/server/db', () => {
     c.returning = async () => updateReturns
     return c
   }
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       select: () => chain('select'),
       update: (t: { __name?: string }) => chain(t?.__name ?? 'unknown'),
@@ -81,15 +83,6 @@ vi.mock('@/lib/server/db', () => {
     isNotNull: vi.fn(),
     lte: vi.fn(),
     inArray: vi.fn(),
-    conversations: {
-      __name: 'conversations',
-      id: 'id',
-      status: 'status',
-      snoozedUntil: 'snoozed_until',
-    },
-    conversationMessages: { __name: 'conversation_messages', id: 'id' },
-    principal: { __name: 'principal' },
-    user: { __name: 'user' },
   }
 })
 

@@ -23,19 +23,12 @@ vi.mock('@/lib/server/domains/ai/models', () => ({
   getEmbeddingModel: () => 'test-embedding-model',
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: { posts: { findFirst: (...a: unknown[]) => hoisted.mockedFindFirst(...a) } },
     select: () => ({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) }),
-  },
-  posts: { id: 'p' },
-  postComments: {
-    id: 'c',
-    postId: 'pid',
-    content: 'co',
-    isTeamMember: 'itm',
-    createdAt: 'ca',
-    deletedAt: 'da',
   },
   eq: vi.fn(),
   and: vi.fn(),

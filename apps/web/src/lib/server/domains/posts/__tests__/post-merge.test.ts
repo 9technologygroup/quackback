@@ -28,10 +28,12 @@ function createUpdateChain() {
   return chain
 }
 
-vi.mock('@/lib/server/db', async () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const { sql: realSql } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm')
 
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       query: {
         posts: { findFirst: (...args: unknown[]) => mockPostsFindFirst(...args) },
@@ -56,10 +58,6 @@ vi.mock('@/lib/server/db', async () => {
           execute: (...args: unknown[]) => mockDbExecute(...args),
         }),
     },
-    posts: { id: 'post_id', canonicalPostId: 'canonical_post_id' },
-    postVotes: { principalId: 'principal_id', postId: 'post_id' },
-    boards: { id: 'board_id', slug: 'board_slug' },
-    principal: { id: 'principal_id', displayName: 'display_name' },
     eq: vi.fn(),
     and: vi.fn(),
     isNull: vi.fn(),

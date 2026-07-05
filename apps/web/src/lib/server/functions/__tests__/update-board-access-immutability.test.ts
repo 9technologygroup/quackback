@@ -56,17 +56,14 @@ vi.mock('@/lib/server/domains/settings/settings.helpers', () => ({
 }))
 
 // --- DB mock: db.update must NOT be called by updateBoardFn ---
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     update: (...args: unknown[]) => hoisted.mockDbUpdate(...args),
     query: {
       boards: { findFirst: vi.fn() },
     },
-  },
-  settings: {},
-  boards: {
-    id: { __col: 'id' },
-    deletedAt: { __col: 'deletedAt' },
   },
   eq: vi.fn((col: { __col: string }, val: unknown) => ({ kind: 'eq', col: col.__col, val })),
   and: vi.fn((...conds: unknown[]) => ({ kind: 'and', conds })),

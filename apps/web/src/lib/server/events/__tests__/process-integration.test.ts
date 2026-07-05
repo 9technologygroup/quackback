@@ -32,20 +32,15 @@ vi.mock('@/lib/server/config', () => ({
 }))
 
 // Stub db import so updateWebhookFailureCount doesn't crash
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     update: vi.fn(() => ({
       set: vi.fn(() => ({
         where: vi.fn().mockResolvedValue(undefined),
       })),
     })),
-  },
-  webhooks: {
-    id: 'id',
-    failureCount: 'failureCount',
-    status: 'status',
-    lastTriggeredAt: 'lastTriggeredAt',
-    lastError: 'lastError',
   },
   eq: vi.fn(),
   sql: vi.fn(),

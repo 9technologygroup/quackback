@@ -50,7 +50,9 @@ function createUpdateChain() {
 const mockFindFirst = vi.fn()
 const mockSelectFrom = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       user: { findFirst: (...args: unknown[]) => mockFindFirst(...args) },
@@ -75,25 +77,6 @@ vi.mock('@/lib/server/db', () => ({
   desc: vi.fn(),
   asc: vi.fn(),
   sql: vi.fn(),
-  principal: { id: 'id', userId: 'user_id', role: 'role' },
-  user: {
-    id: 'id',
-    name: 'name',
-    email: 'email',
-    image: 'image',
-    emailVerified: 'email_verified',
-    metadata: 'metadata',
-    createdAt: 'created_at',
-    updatedAt: 'updated_at',
-  },
-  posts: {},
-  postComments: {},
-  postVotes: {},
-  postStatuses: {},
-  boards: {},
-  userSegments: {},
-  segments: {},
-  userAttributeDefinitions: 'user_attribute_definitions',
 }))
 
 vi.mock('@quackback/ids', () => ({

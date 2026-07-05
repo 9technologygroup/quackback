@@ -138,7 +138,9 @@ mockInnerJoin.mockReturnValue({
     limit: mockBoardRowLimit,
   }),
 })
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -150,10 +152,6 @@ vi.mock('@/lib/server/db', () => ({
     }),
     query: { principal: { findFirst: vi.fn().mockResolvedValue(null) } },
   },
-  posts: {},
-  boards: {},
-  postStatuses: {},
-  principal: { userId: 'userId' },
   eq: vi.fn(),
   inArray: vi.fn(),
   and: vi.fn(),

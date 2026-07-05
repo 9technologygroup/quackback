@@ -35,13 +35,15 @@ type CredTx = {
   update: (...args: unknown[]) => unknown
 }
 
-vi.mock('@/lib/server/db', () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const tx: CredTx = {
     insert: (...args: unknown[]) => mockInsert(...args),
     delete: (...args: unknown[]) => mockDelete(...args),
     update: vi.fn(() => ({ set: () => ({ where: () => Promise.resolve() }) })),
   }
   return {
+    // Spread the real db module so tables/operators stay current; override only what this suite drives.
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       insert: (...args: unknown[]) => mockInsert(...args),
       delete: (...args: unknown[]) => mockDelete(...args),
@@ -52,10 +54,6 @@ vi.mock('@/lib/server/db', () => {
       },
       transaction: async (fn: (tx: CredTx) => unknown) => fn(tx),
     },
-    integrationPlatformCredentials: {
-      integrationType: 'integrationType',
-    },
-    settings: { authConfigVersion: 'auth_config_version' },
     eq: vi.fn(),
   }
 })

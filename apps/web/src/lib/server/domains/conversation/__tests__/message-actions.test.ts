@@ -32,7 +32,7 @@ vi.mock('../conversation.query', () => ({
   })),
 }))
 
-vi.mock('@/lib/server/db', () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   function chain(): Record<string, unknown> {
     const c: Record<string, unknown> = {}
     c.from = () => c
@@ -45,7 +45,9 @@ vi.mock('@/lib/server/db', () => {
     c.then = (resolve: (v: unknown) => unknown) => resolve(undefined)
     return c
   }
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       select: () => chain(),
       insert: () => chain(),
@@ -53,9 +55,6 @@ vi.mock('@/lib/server/db', () => {
     },
     eq: vi.fn(),
     and: vi.fn(),
-    conversationMessages: { __name: 'conversation_messages' },
-    conversationMessageReactions: { __name: 'conversation_message_reactions' },
-    conversationMessageFlags: { __name: 'conversation_message_flags' },
   }
 })
 

@@ -25,13 +25,12 @@ const dbDelete = vi.fn(() => ({ where: deleteWhere }))
 const insertValues = vi.fn()
 const dbInsert = vi.fn(() => ({ values: insertValues }))
 
-vi.mock('@/lib/server/db', async () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const { sql: realSql } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm')
 
-  const postTagsTable = { postId: 'post_id', tagId: 'tag_id', __name: 'postTagAssignments' }
-  const tagsTable = { id: 'tag_id', name: 'tag_name', __name: 'post_tags' }
-
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       query: {
         posts: { findFirst: (...args: unknown[]) => mockPostsFindFirst(...args) },
@@ -44,14 +43,8 @@ vi.mock('@/lib/server/db', async () => {
       delete: dbDelete,
       insert: dbInsert,
     },
-    boards: { id: 'board_id' },
     eq: vi.fn(),
     inArray: vi.fn(),
-    postStatuses: { id: 'status_id' },
-    posts: { id: 'post_id' },
-    postTagAssignments: postTagsTable,
-    postTags: tagsTable,
-    principal: { id: 'principal_id' },
     sql: realSql,
   }
 })

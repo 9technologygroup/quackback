@@ -35,7 +35,9 @@ const mockSet = vi.fn()
 const mockWhere = vi.fn()
 const mockReturning = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       settings: {
@@ -51,9 +53,6 @@ vi.mock('@/lib/server/db', () => ({
     }),
   },
   eq: vi.fn(),
-  settings: { id: 'id' },
-  ssoVerifiedDomain: { id: 'id', createdAt: 'created_at' },
-  identityProvider: { id: 'id', createdAt: 'created_at' },
 }))
 
 // --- S3 mock ---

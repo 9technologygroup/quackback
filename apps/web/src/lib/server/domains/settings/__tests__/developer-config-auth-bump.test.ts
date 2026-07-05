@@ -24,16 +24,17 @@ const mockUpdate = vi.fn((..._args: unknown[]) => ({
 
 type SettingsTx = { update: (...args: unknown[]) => unknown }
 
-vi.mock('@/lib/server/db', () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const tx: SettingsTx = { update: (...args: unknown[]) => mockUpdate(...args) }
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       query: { settings: { findFirst: (...args: unknown[]) => mockFindFirst(...args) } },
       update: (...args: unknown[]) => mockUpdate(...args),
       transaction: async (fn: (tx: SettingsTx) => unknown) => fn(tx),
     },
     eq: vi.fn(),
-    settings: { id: 'id', authConfigVersion: 'auth_config_version' },
   }
 })
 

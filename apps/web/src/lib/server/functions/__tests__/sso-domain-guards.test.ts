@@ -149,19 +149,20 @@ vi.mock('@/lib/server/auth/recovery-codes-status', () => ({
   hasActiveRecoveryCodes: hoisted.mockHasActiveRecoveryCodes,
 }))
 
-vi.mock('@/lib/server/db', () => {
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
   const updateMock = vi.fn().mockReturnValue({ set: setMock })
   const txMock = { update: updateMock }
   hoisted.mockDbUpdate.mockImplementation(updateMock)
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       transaction: async (fn: (tx: typeof txMock) => Promise<void>) => {
         hoisted.mockDbTransaction()
         await fn(txMock)
       },
     },
-    settings: { id: 'settings_id' },
   }
 })
 

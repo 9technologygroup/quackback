@@ -38,12 +38,14 @@ type SettingsTx = {
   update: (...args: unknown[]) => unknown
 }
 
-vi.mock('@/lib/server/db', () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const tx: SettingsTx = {
     query: { settings: { findFirst: (...args: unknown[]) => mockFindFirst(...args) } },
     update: (...args: unknown[]) => mockUpdate(...args),
   }
   return {
+    // Spread the real db module so tables/operators stay current; override only what this suite drives.
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       query: {
         settings: {
@@ -60,9 +62,6 @@ vi.mock('@/lib/server/db', () => {
       transaction: async (fn: (tx: SettingsTx) => unknown) => fn(tx),
     },
     eq: vi.fn(),
-    settings: { id: 'id', tierLimits: 'tier_limits', authConfigVersion: 'auth_config_version' },
-    ssoVerifiedDomain: { id: 'id', createdAt: 'created_at' },
-    identityProvider: { id: 'id', createdAt: 'created_at' },
   }
 })
 
