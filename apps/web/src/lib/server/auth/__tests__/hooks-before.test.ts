@@ -26,16 +26,17 @@ const mockPrincipalFindFirst = vi.fn()
 const mockGetTenantSettings = vi.fn()
 const mockGetPublicPortalConfig = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module (tables + operators stay current as new ones are
+// added) and override only the `db` handle with the query stubs this suite
+// drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       user: { findFirst: (...a: unknown[]) => mockUserFindFirst(...a) },
       principal: { findFirst: (...a: unknown[]) => mockPrincipalFindFirst(...a) },
     },
   },
-  user: { id: 'user_id', email: 'user_email' },
-  principal: { userId: 'principal_userId', role: 'role' },
-  eq: vi.fn(),
 }))
 
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
