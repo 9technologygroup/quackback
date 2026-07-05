@@ -124,7 +124,7 @@ function ArticleDetailPage() {
       )}
 
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
-        <div className="relative flex justify-center gap-8 xl:gap-12">
+        <div className="relative flex gap-8 xl:gap-12">
           {/* Article */}
           <article className="min-w-0 max-w-2xl flex-1 py-10">
             <HelpCenterBreadcrumbs items={breadcrumbs.slice(0, -1)} />
