@@ -23,6 +23,7 @@ export type {
   FeatureFlags,
   WidgetHomeCard,
   WidgetHomeCardType,
+  WidgetCardAudience,
   WidgetHomeConfig,
 } from '@/lib/server/domains/settings/settings.types'
 

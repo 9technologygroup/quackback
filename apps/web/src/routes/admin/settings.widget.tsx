@@ -54,6 +54,7 @@ import type {
   FeatureFlags,
   WidgetHomeCard,
   WidgetHomeCardType,
+  WidgetCardAudience,
   WidgetHomeConfig,
 } from '@/lib/shared/types/settings'
 import { DEFAULT_WIDGET_HOME_CARDS } from '@/lib/shared/types/settings'
@@ -883,6 +884,23 @@ function HomeCustomizationCard({
                     disabled={isBusy}
                   />
                 )}
+
+                <Select
+                  value={card.audience ?? 'everyone'}
+                  onValueChange={(val: WidgetCardAudience) =>
+                    updateCard(index, { audience: val === 'everyone' ? undefined : val })
+                  }
+                  disabled={isBusy}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="everyone">Show to everyone</SelectItem>
+                    <SelectItem value="anonymous">Signed-out visitors only</SelectItem>
+                    <SelectItem value="identified">Signed-in users only</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             ))}
           </div>

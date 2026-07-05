@@ -13,6 +13,7 @@ import { Avatar } from '@/components/ui/avatar'
 import { cn } from '@/lib/shared/utils'
 import type { WidgetHomeCard, WidgetHomeConfig } from '@/lib/shared/types/settings'
 import { DEFAULT_WIDGET_HOME_CARDS } from '@/lib/shared/types/settings'
+import { cardVisibleToVisitor } from '@/lib/shared/widget/home-cards'
 import { useConversationSummary } from './use-messenger-summary'
 import { useWidgetAuth } from './widget-auth-provider'
 import { firstNameOf } from '@/lib/shared/conversation/personalize'
@@ -85,7 +86,7 @@ export function WidgetOverview({
   onSeeChangelog,
   onOpenChangelogEntry,
 }: WidgetOverviewProps) {
-  const { user } = useWidgetAuth()
+  const { user, isIdentified } = useWidgetAuth()
   const firstName = firstNameOf(user?.name)
   const reduceMotion = useReducedMotion()
 
@@ -104,6 +105,7 @@ export function WidgetOverview({
   // default copy rather than rendering an empty card.
   const cards = (home?.cards?.length ? home.cards : DEFAULT_WIDGET_HOME_CARDS)
     .filter((c) => c.enabled !== false)
+    .filter((c) => cardVisibleToVisitor(c.audience, isIdentified))
     .map((c) => ({
       ...c,
       title: c.title?.trim() ? c.title : undefined,

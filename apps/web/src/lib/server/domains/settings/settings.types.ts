@@ -507,12 +507,19 @@ export type WidgetHomeCardType =
   | 'latest_updates'
   | 'link'
 
+/** Which visitors a Home card is shown to (visitor-vs-user content). */
+export type WidgetCardAudience = 'everyone' | 'anonymous' | 'identified'
+
 /** An ordered, admin-configurable card on the widget Home surface. */
 export interface WidgetHomeCard {
   id: string
   type: WidgetHomeCardType
   /** Hidden without being removed (defaults to shown). */
   enabled?: boolean
+  /** Show only to a segment of visitors — everyone (default), signed-out
+   *  visitors, or identified users. Lets a "Sign in" card target anonymous
+   *  visitors and account content target identified ones. */
+  audience?: WidgetCardAudience
   /** Override the card's default title (built-in types have default copy). */
   title?: string
   /** Override the card's default subtitle. */

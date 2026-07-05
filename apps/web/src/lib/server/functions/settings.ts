@@ -788,6 +788,7 @@ const widgetHomeConfigSchema = z.object({
             'link',
           ]),
           enabled: z.boolean().optional(),
+          audience: z.enum(['everyone', 'anonymous', 'identified']).optional(),
           title: z.string().max(80).optional(),
           subtitle: z.string().max(160).optional(),
           url: z.string().url().max(2000).optional(),
