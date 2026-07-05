@@ -96,9 +96,12 @@ describe('conversation_messages schema', () => {
     )
   })
 
-  it('conversationId, senderType, content are not null', () => {
+  it('senderType and content are not null; parents are nullable (polymorphic)', () => {
     const cols = getTableColumns(conversationMessages)
-    expect(cols.conversationId.notNull).toBe(true)
+    // A message belongs to exactly ONE parent (conversation or ticket); both
+    // columns are nullable and a num_nonnulls CHECK enforces the invariant.
+    expect(cols.conversationId.notNull).toBe(false)
+    expect(cols.ticketId.notNull).toBe(false)
     expect(cols.senderType.notNull).toBe(true)
     expect(cols.content.notNull).toBe(true)
   })
