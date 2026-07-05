@@ -10,6 +10,7 @@ import { createServerFn } from '@tanstack/react-start'
 import type { PrincipalId } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { toIsoString } from '@/lib/shared/utils'
+import type { JsonValue } from '@/lib/shared/json'
 import { requireAuth } from './auth-helpers'
 import {
   createCompany,
@@ -17,6 +18,8 @@ import {
   deleteCompany,
   getCompany,
   listCompanies,
+  listMembers,
+  getActivityCounts,
   getForPrincipal,
   attachPrincipal,
   detachPrincipal,
@@ -40,6 +43,7 @@ export interface CompanyDTO {
   externalId: string | null
   plan: string | null
   mrrCents: number | null
+  customAttributes: Record<string, JsonValue>
   createdAt: string
   updatedAt: string
 }
@@ -48,8 +52,6 @@ export interface CompanyWithMemberCountDTO extends CompanyDTO {
   memberCount: number
 }
 
-// customAttributes (jsonb) is intentionally not surfaced over the client
-// boundary yet; no UI consumes it and it keeps the serialized type clean.
 function serializeCompany(company: Company): CompanyDTO {
   return {
     id: company.id,
@@ -58,6 +60,8 @@ function serializeCompany(company: Company): CompanyDTO {
     externalId: company.externalId,
     plan: company.plan,
     mrrCents: company.mrrCents,
+    // jsonb round-trips as JSON; the cast narrows drizzle's `unknown` values.
+    customAttributes: company.customAttributes as Record<string, JsonValue>,
     createdAt: toIsoString(company.createdAt),
     updatedAt: toIsoString(company.updatedAt),
   }
@@ -86,11 +90,45 @@ const updateCompanySchema = z.object({
   customAttributes: z.record(z.string(), z.unknown()).optional(),
 })
 
-export const listCompaniesFn = createServerFn({ method: 'GET' }).handler(async () => {
-  await requireAuth({ permission: PERMISSIONS.COMPANY_VIEW })
-  const companies = await listCompanies()
-  return companies.map(serializeCompanyWithCount)
-})
+/** Directory filters — mirrors the People tab's URL-encodable shapes. */
+const listCompaniesSchema = z
+  .object({
+    search: z.string().max(200).optional(),
+    plan: z.string().max(100).optional(),
+    mrr: z.object({ op: z.enum(['gt', 'gte', 'lt', 'lte', 'eq']), value: z.number() }).optional(),
+    attrs: z
+      .array(
+        z.object({ key: z.string().max(64), op: z.string().max(16), value: z.string().max(200) })
+      )
+      .max(10)
+      .optional(),
+  })
+  .optional()
+
+export const listCompaniesFn = createServerFn({ method: 'GET' })
+  .validator(listCompaniesSchema)
+  .handler(async ({ data }) => {
+    await requireAuth({ permission: PERMISSIONS.COMPANY_VIEW })
+    const companies = await listCompanies(data ?? {})
+    return companies.map(serializeCompanyWithCount)
+  })
+
+/** The people attached to a company (directory profile roster). */
+export const listCompanyMembersFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ companyId: z.string() }))
+  .handler(async ({ data }) => {
+    await requireAuth({ permission: PERMISSIONS.COMPANY_VIEW })
+    const members = await listMembers(data.companyId as CompanyId)
+    return members.map((m) => ({ ...m, createdAt: toIsoString(m.createdAt) }))
+  })
+
+/** Activity rollup counts for the company profile. */
+export const getCompanyActivityFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ companyId: z.string() }))
+  .handler(async ({ data }) => {
+    await requireAuth({ permission: PERMISSIONS.COMPANY_VIEW })
+    return getActivityCounts(data.companyId as CompanyId)
+  })
 
 export const getCompanyFn = createServerFn({ method: 'GET' })
   .validator(z.object({ id: z.string() }))

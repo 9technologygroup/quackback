@@ -30,3 +30,38 @@ export interface UpdateCompanyInput {
 export interface CompanyWithMemberCount extends Company {
   memberCount: number
 }
+
+/** One custom-attribute predicate over the companies.custom_attributes jsonb. */
+export interface CompanyAttrFilter {
+  key: string
+  op: string
+  value: string
+}
+
+/** Directory filters. Mirrors the People-side list semantics (ILIKE search,
+ *  typed jsonb predicates) so both tabs of /admin/users behave alike. */
+export interface CompanyListFilter {
+  /** Matches name or domain, case-insensitively. */
+  search?: string
+  /** Plan label, matched case-insensitively. */
+  plan?: string
+  /** Monthly spend in whole currency units, compared against mrr_cents / 100. */
+  mrr?: { op: 'gt' | 'gte' | 'lt' | 'lte' | 'eq'; value: number }
+  /** Custom attribute predicates over the jsonb blob. */
+  attrs?: CompanyAttrFilter[]
+}
+
+/** A person on a company's roster (directory profile members list). */
+export interface CompanyMember {
+  principalId: string
+  displayName: string | null
+  email: string | null
+  type: string
+  createdAt: Date
+}
+
+/** Activity rollup counts for the company profile. */
+export interface CompanyActivityCounts {
+  conversations: number
+  tickets: number
+}

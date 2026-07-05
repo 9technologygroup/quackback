@@ -11,6 +11,7 @@ import {
   ArrowPathIcon,
   EnvelopeIcon,
   GlobeAltIcon,
+  BuildingOffice2Icon,
 } from '@heroicons/react/24/solid'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FilterSection } from '@/components/shared/filter-section'
@@ -40,6 +41,10 @@ interface UsersSegmentNavProps {
   inLeadsMode?: boolean
   /** Lead count for the All-leads entry badge. */
   totalLeadCount?: number
+  /** `?lifecycle=companies` is set: the Companies entry renders active. */
+  inCompaniesMode?: boolean
+  /** Company count for the Companies entry badge. */
+  totalCompanyCount?: number
   /** 30d unique visitors (top of funnel); null hides the line. */
   visitorCount?: number | null
 }
@@ -65,6 +70,8 @@ export function UsersSegmentNav({
   invitesPendingCount,
   inLeadsMode,
   totalLeadCount,
+  inCompaniesMode,
+  totalCompanyCount,
   visitorCount,
 }: UsersSegmentNavProps) {
   const hasSelection = selectedSegmentIds.length > 0
@@ -89,7 +96,7 @@ export function UsersSegmentNav({
           <button
             type="button"
             onClick={() => {
-              if (!inInvitesMode && !hasSelection && !inLeadsMode) return
+              if (!inInvitesMode && !hasSelection && !inLeadsMode && !inCompaniesMode) return
               void navigate({
                 from: '/admin/users',
                 search: (prev) => ({
@@ -97,13 +104,14 @@ export function UsersSegmentNav({
                   invites: undefined,
                   segments: undefined,
                   lifecycle: undefined,
+                  company: undefined,
                 }),
                 replace: true,
               })
             }}
             className={cn(
               'w-full text-left px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-2',
-              !hasSelection && !inInvitesMode && !inLeadsMode
+              !hasSelection && !inInvitesMode && !inLeadsMode && !inCompaniesMode
                 ? 'bg-muted text-foreground'
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
             )}
@@ -129,6 +137,7 @@ export function UsersSegmentNav({
                   invites: undefined,
                   segments: undefined,
                   lifecycle: 'leads' as const,
+                  company: undefined,
                 }),
                 replace: true,
               })
@@ -145,6 +154,41 @@ export function UsersSegmentNav({
             {totalLeadCount !== undefined && (
               <span className="text-xs text-muted-foreground/60 shrink-0 tabular-nums">
                 {totalLeadCount}
+              </span>
+            )}
+          </button>
+
+          {/* All companies — the directory tab over the B2B company object.
+              A lifecycle view like leads: it swaps the pane's population, so
+              segments and invites mode are cleared with it. */}
+          <button
+            type="button"
+            onClick={() => {
+              if (inCompaniesMode) return
+              void navigate({
+                from: '/admin/users',
+                search: (prev) => ({
+                  ...prev,
+                  invites: undefined,
+                  segments: undefined,
+                  lifecycle: 'companies' as const,
+                  company: undefined,
+                }),
+                replace: true,
+              })
+            }}
+            className={cn(
+              'w-full text-left px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-2',
+              inCompaniesMode
+                ? 'bg-muted text-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+            )}
+          >
+            <BuildingOffice2Icon className="h-3.5 w-3.5 shrink-0" />
+            <span className="flex-1 truncate">All companies</span>
+            {totalCompanyCount !== undefined && (
+              <span className="text-xs text-muted-foreground/60 shrink-0 tabular-nums">
+                {totalCompanyCount}
               </span>
             )}
           </button>

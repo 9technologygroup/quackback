@@ -18,9 +18,14 @@ const searchSchema = z.object({
   voteCount: z.string().optional(),
   commentCount: z.string().optional(),
   customAttrs: z.string().optional(),
+  // Companies-tab filters, "key:op:value" parts (reserved keys: plan, mrr).
+  companyAttrs: z.string().optional(),
   // Lifecycle view: absent = identified users, 'leads' = engaged anonymous
-  // principals (the "All leads" nav entry).
-  lifecycle: z.enum(['leads']).optional(),
+  // principals (the "All leads" nav entry), 'companies' = the companies
+  // directory tab.
+  lifecycle: z.enum(['leads', 'companies']).optional(),
+  // Selected company id — flips the companies view to the company profile.
+  company: z.string().optional(),
   sort: z
     .enum([
       'newest',
@@ -88,7 +93,9 @@ function parseSearchToQueryParams(deps: SearchParams) {
     page: 1,
     limit: 20,
     segmentIds,
-    lifecycle: deps.lifecycle,
+    // 'companies' swaps the whole pane to the companies directory — the
+    // people query underneath falls back to the default users population.
+    lifecycle: deps.lifecycle === 'companies' ? undefined : deps.lifecycle,
   }
 }
 

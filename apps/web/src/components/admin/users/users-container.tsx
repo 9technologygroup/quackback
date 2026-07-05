@@ -7,6 +7,8 @@ import { UsersLayout } from '@/components/admin/users/users-layout'
 import { UsersSegmentNav } from '@/components/admin/users/users-segment-nav'
 import { UsersList } from '@/components/admin/users/users-list'
 import { UserDetail } from '@/components/admin/users/user-detail'
+import { CompaniesView } from '@/components/admin/users/companies-view'
+import { CompanyDetail } from '@/components/admin/users/company-detail'
 import { InvitationsView } from '@/components/admin/users/invitations-view'
 import { useUsersFilters } from '@/components/admin/users/use-users-filters'
 import { usePortalInvites } from '@/components/admin/users/use-portal-invites'
@@ -33,6 +35,8 @@ import {
   serializeCondition,
   deserializeCondition,
 } from '@/components/admin/segments/segment-utils'
+import { parseCompanyFilterParts } from '@/lib/shared/company-filters'
+import { listCompaniesFn } from '@/lib/server/functions/companies'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import type { PortalUserListResultView } from '@/lib/shared/types'
 import type { PrincipalId, SegmentId } from '@quackback/ids'
@@ -45,8 +49,16 @@ interface UsersContainerProps {
 
 export function UsersContainer({ initialUsers, currentMemberRole }: UsersContainerProps) {
   // URL-based filter state
-  const { filters, setFilters, clearFilters, selectedUserId, setSelectedUserId, hasActiveFilters } =
-    useUsersFilters()
+  const {
+    filters,
+    setFilters,
+    clearFilters,
+    selectedUserId,
+    setSelectedUserId,
+    selectedCompanyId,
+    setSelectedCompanyId,
+    hasActiveFilters,
+  } = useUsersFilters()
 
   // The `?invites=<status>` param flips the entire main pane to the
   // Invitations view. Reading it via the route's typed search keeps
@@ -87,6 +99,36 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
   const { data: totalUserCount } = useTotalUserCount()
   const { data: totalLeadCount } = useTotalUserCount('leads')
   const inLeadsMode = filters.lifecycle === 'leads'
+  const inCompaniesMode = filters.lifecycle === 'companies'
+
+  // Companies directory (the Companies lifecycle tab). Fetched only for team
+  // roles — the server fn is gated on company.view, which both presets hold.
+  const companyFilterParts = parseCompanyFilterParts(filters.companyAttrs)
+  const { data: companies, isLoading: isLoadingCompanies } = useQuery({
+    queryKey: [
+      'admin',
+      'companies',
+      { search: filters.search, companyAttrs: filters.companyAttrs },
+    ],
+    queryFn: () =>
+      listCompaniesFn({
+        data: {
+          search: filters.search,
+          plan: companyFilterParts.plan,
+          mrr: companyFilterParts.mrr,
+          attrs: companyFilterParts.attrs,
+        },
+      }),
+    enabled: currentMemberRole === 'admin' || currentMemberRole === 'member',
+    staleTime: 30_000,
+  })
+  // Unfiltered total for the nav badge (cheap: companies lists are small).
+  const { data: allCompanies } = useQuery({
+    queryKey: ['admin', 'companies'],
+    queryFn: () => listCompaniesFn(),
+    enabled: currentMemberRole === 'admin' || currentMemberRole === 'member',
+    staleTime: 60_000,
+  })
 
   // Top-of-funnel context: 30d unique visitors from the analytics rollup.
   // Visitors are not directory rows (no principal yet), so this is a
@@ -248,12 +290,33 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
             invitesPendingCount={invitesPendingCount}
             inLeadsMode={inLeadsMode}
             totalLeadCount={totalLeadCount}
+            inCompaniesMode={inCompaniesMode}
+            totalCompanyCount={allCompanies?.length}
             visitorCount={visitorCount}
           />
         }
       >
         {inInvitesMode ? (
           <InvitationsView status={invitesStatus ?? 'pending'} />
+        ) : inCompaniesMode ? (
+          selectedCompanyId ? (
+            <CompanyDetail
+              companyId={selectedCompanyId}
+              onClose={() => setSelectedCompanyId(null)}
+              canManage={currentMemberRole === 'admin'}
+            />
+          ) : (
+            <CompaniesView
+              companies={companies}
+              isLoading={isLoadingCompanies}
+              search={filters.search}
+              onSearchChange={(value) => setFilters({ search: value })}
+              companyAttrs={filters.companyAttrs}
+              onCompanyAttrsChange={(encoded) => setFilters({ companyAttrs: encoded })}
+              onSelectCompany={setSelectedCompanyId}
+              canManage={currentMemberRole === 'admin'}
+            />
+          )
         ) : selectedUserId ? (
           <UserDetail
             user={selectedUser ?? null}

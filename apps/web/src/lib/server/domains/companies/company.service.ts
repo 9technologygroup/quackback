@@ -7,15 +7,32 @@
  * the source of truth, so a duplicate surfaces as a ConflictError from the
  * unique-violation handler rather than a racy pre-check.
  */
-import { db, eq, sql, companies, principal } from '@/lib/server/db'
+import {
+  db,
+  eq,
+  and,
+  asc,
+  isNull,
+  sql,
+  companies,
+  principal,
+  user,
+  conversations,
+  tickets,
+} from '@/lib/server/db'
 import type { PrincipalId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ConflictError } from '@/lib/shared/errors'
 import { isUniqueViolation } from '@/lib/server/utils'
+import { realEmail } from '@/lib/shared/anonymous-email'
 import { logger } from '@/lib/server/logger'
 import type {
   Company,
   CompanyId,
   CompanyWithMemberCount,
+  CompanyListFilter,
+  CompanyAttrFilter,
+  CompanyMember,
+  CompanyActivityCounts,
   CreateCompanyInput,
   UpdateCompanyInput,
 } from './company.types'
@@ -119,8 +136,67 @@ export async function getCompany(id: CompanyId): Promise<Company> {
   return row
 }
 
-/** List every company with its linked-people count, ordered by name. */
-export async function listCompanies(): Promise<CompanyWithMemberCount[]> {
+/** One jsonb predicate over companies.custom_attributes — same operator set as
+ *  the People directory's metadata filters so the two tabs behave alike. */
+function attrConditionSql(attr: CompanyAttrFilter): ReturnType<typeof sql> | null {
+  const jsonVal = sql`(${companies.customAttributes}::jsonb->>${attr.key})`
+  switch (attr.op) {
+    case 'eq':
+      return sql`${jsonVal} = ${attr.value}`
+    case 'neq':
+      return sql`${jsonVal} != ${attr.value}`
+    case 'contains':
+      return sql`${jsonVal} ILIKE ${'%' + attr.value + '%'}`
+    case 'starts_with':
+      return sql`${jsonVal} ILIKE ${attr.value + '%'}`
+    case 'ends_with':
+      return sql`${jsonVal} ILIKE ${'%' + attr.value}`
+    case 'gt':
+      return sql`(${jsonVal})::numeric > ${Number(attr.value)}`
+    case 'gte':
+      return sql`(${jsonVal})::numeric >= ${Number(attr.value)}`
+    case 'lt':
+      return sql`(${jsonVal})::numeric < ${Number(attr.value)}`
+    case 'lte':
+      return sql`(${jsonVal})::numeric <= ${Number(attr.value)}`
+    case 'is_set':
+      return sql`${jsonVal} IS NOT NULL`
+    case 'is_not_set':
+      return sql`${jsonVal} IS NULL`
+    default:
+      return null
+  }
+}
+
+const MRR_OPERATOR_SQL = { eq: '=', gt: '>', gte: '>=', lt: '<', lte: '<=' } as const
+
+/** List companies with their linked-people counts, ordered by name. */
+export async function listCompanies(
+  filter: CompanyListFilter = {}
+): Promise<CompanyWithMemberCount[]> {
+  const conditions: ReturnType<typeof sql>[] = []
+
+  const search = filter.search?.trim()
+  if (search) {
+    const pattern = `%${search}%`
+    conditions.push(
+      sql`(${companies.name} ILIKE ${pattern} OR ${companies.domain} ILIKE ${pattern})`
+    )
+  }
+  if (filter.plan?.trim()) {
+    conditions.push(sql`LOWER(${companies.plan}) = LOWER(${filter.plan.trim()})`)
+  }
+  if (filter.mrr) {
+    const op = MRR_OPERATOR_SQL[filter.mrr.op]
+    // The filter speaks whole currency units (what agents see in the list);
+    // the column stores minor units.
+    conditions.push(sql`(${companies.mrrCents} / 100.0) ${sql.raw(op)} ${Number(filter.mrr.value)}`)
+  }
+  for (const attr of filter.attrs ?? []) {
+    const cond = attrConditionSql(attr)
+    if (cond) conditions.push(cond)
+  }
+
   const rows = await db
     .select({
       company: companies,
@@ -128,9 +204,41 @@ export async function listCompanies(): Promise<CompanyWithMemberCount[]> {
     })
     .from(companies)
     .leftJoin(principal, eq(principal.companyId, companies.id))
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
     .groupBy(companies.id)
     .orderBy(companies.name)
   return rows.map((r) => ({ ...r.company, memberCount: r.memberCount }))
+}
+
+/** The people attached to a company, oldest first (directory profile roster). */
+export async function listMembers(companyId: CompanyId): Promise<CompanyMember[]> {
+  const rows = await db
+    .select({
+      principalId: principal.id,
+      displayName: principal.displayName,
+      email: user.email,
+      type: principal.type,
+      createdAt: principal.createdAt,
+    })
+    .from(principal)
+    .leftJoin(user, eq(user.id, principal.userId))
+    .where(eq(principal.companyId, companyId))
+    .orderBy(asc(principal.createdAt))
+  return rows.map((r) => ({ ...r, email: realEmail(r.email) }))
+}
+
+/** Activity rollup counts: member conversations + tickets linked to the company. */
+export async function getActivityCounts(companyId: CompanyId): Promise<CompanyActivityCounts> {
+  const [conv] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(conversations)
+    .innerJoin(principal, eq(principal.id, conversations.visitorPrincipalId))
+    .where(eq(principal.companyId, companyId))
+  const [tick] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(tickets)
+    .where(and(eq(tickets.companyId, companyId), isNull(tickets.deletedAt)))
+  return { conversations: conv?.count ?? 0, tickets: tick?.count ?? 0 }
 }
 
 /** The company a person belongs to, or null. */

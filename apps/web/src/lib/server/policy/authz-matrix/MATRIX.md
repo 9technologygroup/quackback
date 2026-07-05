@@ -90,12 +90,11 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | sla.manage | support | ✓ | · |
 | routing.manage | support | ✓ | · |
 | team.manage | support | ✓ | · |
-| workflow.manage | support | ✓ | · |
 | channel_account.manage | support | ✓ | · |
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 424 surfaces
+### Server functions (`requireAuth`) — 409 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -178,6 +177,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/comments.ts`::pinCommentFn | comment.pin |
 | `lib/server/functions/comments.ts`::unpinCommentFn | comment.pin |
 | `lib/server/functions/companies.ts`::listCompaniesFn | company.view |
+| `lib/server/functions/companies.ts`::listCompanyMembersFn | company.view |
+| `lib/server/functions/companies.ts`::getCompanyActivityFn | company.view |
 | `lib/server/functions/companies.ts`::getCompanyFn | company.view |
 | `lib/server/functions/companies.ts`::getCompanyForPrincipalFn | company.view |
 | `lib/server/functions/companies.ts`::createCompanyFn | company.manage |
@@ -185,21 +186,12 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/companies.ts`::deleteCompanyFn | company.manage |
 | `lib/server/functions/companies.ts`::attachPrincipalToCompanyFn | company.manage |
 | `lib/server/functions/companies.ts`::detachPrincipalFromCompanyFn | company.manage |
-| `lib/server/functions/conversation-attributes.ts`::listConversationAttributesFn | conversation.view |
-| `lib/server/functions/conversation-attributes.ts`::createConversationAttributeFn | conversation.manage |
-| `lib/server/functions/conversation-attributes.ts`::updateConversationAttributeFn | conversation.manage |
-| `lib/server/functions/conversation-attributes.ts`::archiveConversationAttributeFn | conversation.manage |
-| `lib/server/functions/conversation-attributes.ts`::restoreConversationAttributeFn | conversation.manage |
-| `lib/server/functions/conversation-attributes.ts`::setConversationAttributeValueFn | conversation.set_attributes |
 | `lib/server/functions/conversation-segments.ts`::fetchInboxSegmentsWithCountsFn | conversation.view |
 | `lib/server/functions/conversation-tags.ts`::fetchConversationTagsFn | conversation.view |
 | `lib/server/functions/conversation-tags.ts`::fetchConversationTagsWithCountsFn | conversation.view |
 | `lib/server/functions/conversation-tags.ts`::createConversationTagFn | conversation.manage_tags |
 | `lib/server/functions/conversation-tags.ts`::updateConversationTagFn | conversation.manage_tags |
 | `lib/server/functions/conversation-tags.ts`::deleteConversationTagFn | conversation.manage_tags |
-| `lib/server/functions/conversation-tags.ts`::listConversationTagsForSettingsFn | conversation.manage_tags |
-| `lib/server/functions/conversation-tags.ts`::restoreConversationTagFn | conversation.manage_tags |
-| `lib/server/functions/conversation-tags.ts`::hardDeleteConversationTagFn | conversation.manage_tags |
 | `lib/server/functions/conversation-tags.ts`::addConversationTagFn | conversation.set_tags |
 | `lib/server/functions/conversation-tags.ts`::removeConversationTagFn | conversation.set_tags |
 | `lib/server/functions/conversation-views.ts`::listConversationViewsFn | conversation.view |
@@ -381,14 +373,6 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/settings.ts`::updateOfficeHoursFn | settings.manage |
 | `lib/server/functions/settings.ts`::getEmailChannelStatusFn | settings.manage |
 | `lib/server/functions/settings.ts`::updateModerationDefaultFn | settings.moderation |
-| `lib/server/functions/sla.ts`::listSlaPoliciesFn | sla.manage |
-| `lib/server/functions/sla.ts`::listSlaPolicyOptionsFn | conversation.view |
-| `lib/server/functions/sla.ts`::listSlaScheduleOptionsFn | sla.manage |
-| `lib/server/functions/sla.ts`::createSlaPolicyFn | sla.manage |
-| `lib/server/functions/sla.ts`::updateSlaPolicyFn | sla.manage |
-| `lib/server/functions/sla.ts`::archiveSlaPolicyFn | sla.manage |
-| `lib/server/functions/sla.ts`::restoreSlaPolicyFn | sla.manage |
-| `lib/server/functions/sla.ts`::removeConversationSlaFn | conversation.set_status |
 | `lib/server/functions/sso-test.ts`::startSsoTestFn | auth.manage |
 | `lib/server/functions/sso-test.ts`::getSsoTestResultFn | auth.manage |
 | `lib/server/functions/sso.ts`::clearSsoClientSecretFn | auth.manage |
@@ -473,10 +457,10 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/webhooks.ts`::rotateWebhookSecretFn | webhook.manage |
 | `lib/server/functions/workflows.ts`::listWorkflowsFn | routing.manage |
 | `lib/server/functions/workflows.ts`::getWorkflowFn | routing.manage |
-| `lib/server/functions/workflows.ts`::createWorkflowFn | workflow.manage |
-| `lib/server/functions/workflows.ts`::updateWorkflowFn | workflow.manage |
-| `lib/server/functions/workflows.ts`::setWorkflowStatusFn | workflow.manage |
-| `lib/server/functions/workflows.ts`::deleteWorkflowFn | workflow.manage |
+| `lib/server/functions/workflows.ts`::createWorkflowFn | routing.manage |
+| `lib/server/functions/workflows.ts`::updateWorkflowFn | routing.manage |
+| `lib/server/functions/workflows.ts`::setWorkflowStatusFn | routing.manage |
+| `lib/server/functions/workflows.ts`::deleteWorkflowFn | routing.manage |
 | `lib/server/integrations/asana/functions.ts`::getAsanaConnectUrl | integration.manage |
 | `lib/server/integrations/asana/functions.ts`::fetchAsanaProjectsFn | integration.manage |
 | `lib/server/integrations/azure-devops/functions.ts`::connectAzureDevOpsFn | integration.manage |
@@ -524,11 +508,12 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/integrations/zendesk/functions.ts`::getZendeskConnectUrl | integration.manage |
 | `lib/server/integrations/zendesk/functions.ts`::searchZendeskUserFn | integration.view |
 
-### Public REST API (`withApiKeyAuth`) — 89 surfaces
+### Public REST API (`withApiKeyAuth`) — 90 surfaces
 
 | Surface | Enforces |
 | --- | --- |
 | `routes/api/admin/assistant/sandbox.ts`::handleSandbox | settings.manage |
+| `routes/api/export.companies.ts`::GET | company.view |
 | `routes/api/v1/apps/boards.ts`::GET | PUBLIC (any valid key) |
 | `routes/api/v1/apps/link.ts`::POST | integration.manage |
 | `routes/api/v1/apps/linked.ts`::GET | integration.view |
@@ -689,7 +674,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-152 of 660 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+152 of 646 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
