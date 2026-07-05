@@ -662,6 +662,12 @@ export interface HelpCenterSeoConfig {
   sitemapEnabled: boolean
   structuredDataEnabled: boolean
   ogImageKey: string | null
+  /**
+   * "Allow search engines to index" toggle (domains/languages §1). Off adds
+   * a noindex meta tag to every /hc page, excludes /hc from the sitemap, and
+   * disallows /hc in robots.txt.
+   */
+  indexable: boolean
 }
 
 export const DEFAULT_HELP_CENTER_SEO_CONFIG: HelpCenterSeoConfig = {
@@ -669,6 +675,31 @@ export const DEFAULT_HELP_CENTER_SEO_CONFIG: HelpCenterSeoConfig = {
   sitemapEnabled: true,
   structuredDataEnabled: true,
   ogImageKey: null,
+  indexable: true,
+}
+
+/**
+ * A custom domain for the help center (domains/languages §1). Self-host
+ * reality: OSS does not automate TLS or DNS. The operator CNAMEs the domain
+ * to their instance and terminates TLS in their own proxy; this config only
+ * tracks the domain name and whether the "Verify" check has ever passed
+ * (DNS resolves + the instance answers on it).
+ *
+ * `verifiedAt: null` -- unverified, no behaviour change (the default host
+ * keeps serving /hc as normal). `verifiedAt: <ISO>` -- the default host's
+ * /hc/* pages 301 to this domain (full coverage) and canonical/OG URLs use
+ * it instead of BASE_URL.
+ */
+export interface HelpCenterDomainConfig {
+  /** Canonical lowercase ASCII FQDN, or null when unset. */
+  domain: string | null
+  /** ISO-8601 UTC. Null = unverified (or verification broke and was cleared). */
+  verifiedAt: string | null
+}
+
+export const DEFAULT_HELP_CENTER_DOMAIN_CONFIG: HelpCenterDomainConfig = {
+  domain: null,
+  verifiedAt: null,
 }
 
 /**
@@ -679,6 +710,7 @@ export interface HelpCenterConfig {
   enabled: boolean
   homepageTitle: string
   homepageDescription: string
+  domain: HelpCenterDomainConfig
   seo: HelpCenterSeoConfig
 }
 
@@ -686,6 +718,7 @@ export const DEFAULT_HELP_CENTER_CONFIG: HelpCenterConfig = {
   enabled: false,
   homepageTitle: 'How can we help?',
   homepageDescription: 'Search our knowledge base or browse by category',
+  domain: DEFAULT_HELP_CENTER_DOMAIN_CONFIG,
   seo: DEFAULT_HELP_CENTER_SEO_CONFIG,
 }
 

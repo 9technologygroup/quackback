@@ -230,6 +230,7 @@ describe('updateHelpCenterConfig', () => {
         sitemapEnabled: false,
         structuredDataEnabled: true,
         ogImageKey: null,
+        indexable: true,
       },
     })
 

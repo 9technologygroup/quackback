@@ -14,6 +14,7 @@ import type { KbCategoryId } from '@quackback/ids'
 import { NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { slugify } from '@/lib/shared/utils'
 import { uniqueHelpCenterSlug } from './help-center.slug'
+import { deleteRedirectRulesForTarget } from './help-center-redirect-rules.service'
 import type {
   HelpCenterCategory,
   HelpCenterCategoryWithCount,
@@ -325,16 +326,26 @@ export async function deleteCategory(id: KbCategoryId): Promise<void> {
   const ids = [...toDelete] as KbCategoryId[]
   const now = new Date()
 
-  await db.transaction(async (tx) => {
+  const deletedArticleIds = await db.transaction(async (tx) => {
     await tx
       .update(helpCenterCategories)
       .set({ deletedAt: now })
       .where(and(inArray(helpCenterCategories.id, ids), isNull(helpCenterCategories.deletedAt)))
-    await tx
+    const deletedArticles = await tx
       .update(helpCenterArticles)
       .set({ deletedAt: now })
       .where(and(inArray(helpCenterArticles.categoryId, ids), isNull(helpCenterArticles.deletedAt)))
+      .returning({ id: helpCenterArticles.id })
+    return deletedArticles.map((a) => a.id)
   })
+
+  // No DB-level FK on redirect rules (polymorphic target) -- remove any rule
+  // pointing at these categories or the articles cascaded with them
+  // (domains/languages §2).
+  await Promise.all([
+    ...ids.map((categoryId) => deleteRedirectRulesForTarget('category', categoryId)),
+    ...deletedArticleIds.map((articleId) => deleteRedirectRulesForTarget('article', articleId)),
+  ])
 }
 
 export async function restoreCategory(id: KbCategoryId): Promise<HelpCenterCategory> {

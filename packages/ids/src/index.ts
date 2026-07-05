@@ -130,6 +130,7 @@ export type {
   KbCategoryId,
   KbArticleId,
   KbArticleFeedbackId,
+  HcRedirectRuleId,
   // Auth entities
   WorkspaceId,
   UserId,

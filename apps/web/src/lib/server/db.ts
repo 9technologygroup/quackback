@@ -332,6 +332,7 @@ export {
   helpCenterArticlesRelations,
   helpCenterArticleFeedback,
   helpCenterArticleFeedbackRelations,
+  helpCenterRedirectRules,
   // Schema tables - push devices
   pushDevices,
   // Schema tables - assistant (Quinn) involvement record

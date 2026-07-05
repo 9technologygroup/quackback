@@ -137,6 +137,36 @@ export const updateHelpCenterSeoSchema = z.object({
   metaDescription: z.string().max(500).optional(),
   sitemapEnabled: z.boolean().optional(),
   structuredDataEnabled: z.boolean().optional(),
+  indexable: z.boolean().optional(),
+})
+
+// ============================================================================
+// Domain Schemas (domains/languages §1)
+// ============================================================================
+
+/** Setting the domain to null clears it (and any verification). */
+export const updateHelpCenterDomainSchema = z.object({
+  domain: z.string().max(253).nullable(),
+})
+
+// ============================================================================
+// Redirect Rule Schemas (domains/languages §2)
+// ============================================================================
+
+const redirectRulePath = z
+  .string()
+  .min(1, 'Path is required')
+  .max(500)
+  .refine((v) => v.startsWith('/'), 'Path must start with /')
+
+export const createRedirectRuleSchema = z.object({
+  path: redirectRulePath,
+  targetType: z.enum(['article', 'category']),
+  targetId: z.string().min(1),
+})
+
+export const deleteRedirectRuleSchema = z.object({
+  id: z.string().min(1),
 })
 
 // ============================================================================

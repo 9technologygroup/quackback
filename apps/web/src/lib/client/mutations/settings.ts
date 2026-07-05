@@ -22,7 +22,18 @@ import {
   updateThemeFn,
   updateCustomCssFn,
 } from '@/lib/server/functions/settings'
-import { updateHelpCenterConfigFn } from '@/lib/server/functions/help-center-settings'
+import {
+  updateHelpCenterConfigFn,
+  updateHelpCenterSeoFn,
+} from '@/lib/server/functions/help-center-settings'
+import {
+  updateHelpCenterDomainFn,
+  verifyHelpCenterDomainFn,
+} from '@/lib/server/functions/help-center-domain'
+import {
+  createRedirectRuleFn,
+  deleteRedirectRuleFn,
+} from '@/lib/server/functions/help-center-redirect-rules'
 import {
   getLogoUploadUrlFn,
   getHeaderLogoUploadUrlFn,
@@ -274,6 +285,66 @@ export function useUpdateHelpCenterConfig() {
       updateHelpCenterConfigFn({ data }),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: settingsQueries.helpCenterConfig().queryKey }),
+  })
+}
+
+export function useUpdateHelpCenterSeo() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (data: Parameters<typeof updateHelpCenterSeoFn>[0]['data']) =>
+      updateHelpCenterSeoFn({ data }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: settingsQueries.helpCenterConfig().queryKey }),
+  })
+}
+
+export function useUpdateHelpCenterDomain() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (domain: string | null) => updateHelpCenterDomainFn({ data: { domain } }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: settingsQueries.helpCenterConfig().queryKey }),
+  })
+}
+
+export function useVerifyHelpCenterDomain() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: () => verifyHelpCenterDomainFn({ data: {} }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: settingsQueries.helpCenterConfig().queryKey })
+      queryClient.invalidateQueries({
+        queryKey: settingsQueries.helpCenterDomainStatus().queryKey,
+      })
+    },
+  })
+}
+
+export function useCreateHelpCenterRedirectRule() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (data: Parameters<typeof createRedirectRuleFn>[0]['data']) =>
+      createRedirectRuleFn({ data }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: settingsQueries.helpCenterRedirectRules().queryKey,
+      }),
+  })
+}
+
+export function useDeleteHelpCenterRedirectRule() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (id: string) => deleteRedirectRuleFn({ data: { id } }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: settingsQueries.helpCenterRedirectRules().queryKey,
+      }),
   })
 }
 

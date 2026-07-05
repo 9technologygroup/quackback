@@ -127,6 +127,31 @@ export const helpCenterArticleFeedback = pgTable(
 )
 
 // ============================================
+// Redirect Rules (domains/languages §2)
+// ============================================
+
+/**
+ * Admin-defined path -> published article|category 301s for the /hc site.
+ * `targetType`/`targetId` is a polymorphic reference with no FK constraint
+ * (a single FK can't span kb_articles and kb_categories) -- the owning
+ * article/category service deletes orphaned rules explicitly on hard delete.
+ */
+export const helpCenterRedirectRules = pgTable(
+  'hc_redirect_rules',
+  {
+    id: typeIdWithDefault('hc_redirect_rule')('id').primaryKey(),
+    path: text('path').notNull(),
+    targetType: text('target_type').$type<'article' | 'category'>().notNull(),
+    targetId: text('target_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('hc_redirect_rules_path_idx').on(table.path),
+    index('hc_redirect_rules_target_idx').on(table.targetType, table.targetId),
+  ]
+)
+
+// ============================================
 // Relations
 // ============================================
 

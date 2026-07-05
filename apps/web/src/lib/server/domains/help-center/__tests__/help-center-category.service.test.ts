@@ -71,6 +71,8 @@ vi.mock('@/lib/server/db', () => ({
     },
     insert: vi.fn(() => createInsertChain()),
     update: vi.fn(() => createUpdateChain()),
+    // Redirect-rule cascade cleanup on delete (domains/languages §2) hits this.
+    delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
     transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
       const self = (await import('@/lib/server/db')).db
       return fn(self)
@@ -78,6 +80,12 @@ vi.mock('@/lib/server/db', () => ({
     select: vi.fn(() => ({
       from: (...args: unknown[]) => mockSelectFrom(...args),
     })),
+  },
+  helpCenterRedirectRules: {
+    id: 'id',
+    path: 'path',
+    targetType: 'target_type',
+    targetId: 'target_id',
   },
   helpCenterCategories: {
     id: 'id',

@@ -125,11 +125,13 @@ const getBootstrapDataInternal = createServerOnlyFn(async (): Promise<BootstrapD
     { getRegisteredAuthProviders },
     { config },
     { getRequestHeaders, setResponseHeader },
+    { resolveHelpCenterBaseUrl },
   ] = await Promise.all([
     import('@/lib/server/domains/settings/settings.service'),
     import('@/lib/server/auth/registered-providers'),
     import('@/lib/server/config'),
     import('@tanstack/react-start/server'),
+    import('@/lib/server/domains/help-center/help-center-domain.service'),
   ])
 
   // Single principal read returns both session.principalType + userRole;
@@ -169,14 +171,25 @@ const getBootstrapDataInternal = createServerOnlyFn(async (): Promise<BootstrapD
   setResponseHeader('Critical-CH', 'Sec-CH-Prefers-Color-Scheme')
   // This document is keyed on every input we render into it: the `theme` cookie
   // (and the session/role embedded in the dehydrated context), Accept-Language
-  // for `<html lang>`/`dir`, and the color-scheme hint. List them all so a
-  // shared cache can never serve e.g. a dark-cookie document to a no-cookie
-  // visitor that happens to share the same hint.
-  setResponseHeader('Vary', 'Cookie, Accept-Language, Sec-CH-Prefers-Color-Scheme')
+  // for `<html lang>`/`dir`, the color-scheme hint, and now Host (below,
+  // baseUrl switches to the help center's verified custom domain when the
+  // request arrives on it). List them all so a shared cache can never serve
+  // e.g. a dark-cookie document to a no-cookie visitor that happens to share
+  // the same hint.
+  setResponseHeader('Vary', 'Cookie, Accept-Language, Sec-CH-Prefers-Color-Scheme, Host')
   const prefersColorScheme = parsePrefersColorScheme(headers.get('sec-ch-prefers-color-scheme'))
 
+  // Canonical URLs switch to the help center's custom domain when the
+  // request actually arrived on it (domains/languages §1) -- everywhere else
+  // (boards, changelog, etc.) this is a no-op and baseUrl is just BASE_URL.
+  const baseUrl = resolveHelpCenterBaseUrl({
+    domainConfig: settings?.helpCenterConfig?.domain,
+    currentHost: headers.get('host'),
+    fallback: config.baseUrl,
+  })
+
   return {
-    baseUrl: config.baseUrl,
+    baseUrl,
     session,
     settings,
     userRole,

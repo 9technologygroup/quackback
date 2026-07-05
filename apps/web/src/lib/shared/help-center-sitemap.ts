@@ -15,7 +15,10 @@ export interface SitemapArticle {
 }
 
 /**
- * Build sitemap URLs for the help center.
+ * Build sitemap URLs for the help center. `baseUrl` is the site origin (no
+ * path) -- every canonical /hc page lives under the `/hc` prefix on both the
+ * default host and the (v1 fallback-shape) custom domain, so every entry
+ * here does too.
  * - Landing page (no lastmod)
  * - Each category page (no lastmod)
  * - Each article page (with lastmod from updatedAt)
@@ -28,17 +31,17 @@ export function buildHelpCenterSitemapUrls(
   const urls: SitemapUrl[] = []
 
   // Landing page
-  urls.push({ loc: baseUrl })
+  urls.push({ loc: `${baseUrl}/hc` })
 
   // Category pages
   for (const cat of categories) {
-    urls.push({ loc: `${baseUrl}/categories/${cat.slug}` })
+    urls.push({ loc: `${baseUrl}/hc/categories/${cat.slug}` })
   }
 
   // Article pages
   for (const article of articles) {
     urls.push({
-      loc: `${baseUrl}/articles/${article.category.slug}/${article.slug}`,
+      loc: `${baseUrl}/hc/articles/${article.category.slug}/${article.slug}`,
       lastmod: article.updatedAt.split('T')[0],
     })
   }

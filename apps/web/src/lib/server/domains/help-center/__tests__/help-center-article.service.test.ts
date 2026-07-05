@@ -72,6 +72,8 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
       return chain
     }),
     update: vi.fn(() => createUpdateChain()),
+    // Redirect-rule cascade cleanup on delete (domains/languages §2) hits this.
+    delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
     transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
       const self = (await import('@/lib/server/db')).db
       return fn(self)

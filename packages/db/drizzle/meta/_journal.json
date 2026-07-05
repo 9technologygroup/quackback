@@ -1116,6 +1116,13 @@
       "breakpoints": true
     },
     {
+      "idx": 159,
+      "version": "7",
+      "when": 1784766060000,
+      "tag": "0159_hc_redirect_rules",
+      "breakpoints": true
+    },
+    {
       "idx": 160,
       "version": "7",
       "when": 1784766120000,

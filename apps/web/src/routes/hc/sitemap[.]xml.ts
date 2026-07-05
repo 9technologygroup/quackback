@@ -6,7 +6,7 @@ export const Route = createFileRoute('/hc/sitemap.xml')({
     handlers: {
       GET: async ({ request }) => {
         const [
-          { isFeatureEnabled },
+          { isFeatureEnabled, getHelpCenterConfig },
           { listPublicCategories, listPublicArticles },
           { buildHelpCenterSitemapUrls },
           { renderSitemap },
@@ -18,6 +18,13 @@ export const Route = createFileRoute('/hc/sitemap.xml')({
         ])
 
         if (!(await isFeatureEnabled('helpCenter'))) {
+          return new Response('Not Found', { status: 404 })
+        }
+
+        // Indexing toggle (domains/languages §1): an operator that turned off
+        // "allow search engines to index" doesn't want a sitemap advertised either.
+        const helpCenterConfig = await getHelpCenterConfig()
+        if (helpCenterConfig.seo?.indexable === false) {
           return new Response('Not Found', { status: 404 })
         }
 

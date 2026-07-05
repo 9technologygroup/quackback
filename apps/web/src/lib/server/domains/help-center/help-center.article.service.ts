@@ -16,6 +16,7 @@ import { markdownToTiptapJson, contentJsonToMarkdown } from '@/lib/server/markdo
 import { rehostExternalImages } from '@/lib/server/content/rehost-images'
 import { slugify } from '@/lib/shared/utils'
 import { uniqueHelpCenterSlug } from './help-center.slug'
+import { deleteRedirectRulesForTarget } from './help-center-redirect-rules.service'
 import type {
   HelpCenterArticleWithCategory,
   CreateArticleInput,
@@ -299,6 +300,10 @@ export async function deleteArticle(id: KbArticleId): Promise<void> {
   if (result.length === 0) {
     throw new NotFoundError('ARTICLE_NOT_FOUND', `Article ${id} not found`)
   }
+
+  // No DB-level FK on redirect rules (polymorphic target) -- remove any rule
+  // pointing at this article explicitly (domains/languages §2).
+  await deleteRedirectRulesForTarget('article', id)
 }
 
 export async function restoreArticle(id: KbArticleId): Promise<HelpCenterArticleWithCategory> {

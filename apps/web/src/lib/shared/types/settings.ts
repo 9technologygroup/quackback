@@ -14,6 +14,8 @@ export type {
   PortalWelcomeCard,
   TenantSettings,
   HelpCenterConfig,
+  HelpCenterDomainConfig,
+  HelpCenterSeoConfig,
   AuthConfig,
   VerifiedDomain,
 } from '@/lib/server/domains/settings'

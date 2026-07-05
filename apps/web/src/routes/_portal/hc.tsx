@@ -1,8 +1,23 @@
-import { createFileRoute, notFound, Outlet } from '@tanstack/react-router'
+import { createFileRoute, notFound, redirect, Outlet } from '@tanstack/react-router'
+import { resolveHelpCenterDomainRedirect } from '@/lib/server/domains/help-center/help-center-domain.service'
 import type { FeatureFlags, HelpCenterConfig } from '@/lib/shared/types/settings'
 
+/**
+ * Only meaningful during SSR -- request headers aren't available on the
+ * client, and a client-side nav that's already on the right host has
+ * nothing to redirect. Swallow failures rather than block the page.
+ */
+async function currentRequestHost(): Promise<string | null> {
+  try {
+    const { getRequestHeaders } = await import('@tanstack/react-start/server')
+    return getRequestHeaders().get('host')
+  } catch {
+    return null
+  }
+}
+
 export const Route = createFileRoute('/_portal/hc')({
-  beforeLoad: ({ context }) => {
+  beforeLoad: async ({ context, location }) => {
     const { settings } = context
 
     const flags = settings?.featureFlags as FeatureFlags | undefined
@@ -10,14 +25,30 @@ export const Route = createFileRoute('/_portal/hc')({
 
     const helpCenterConfig = settings?.helpCenterConfig as HelpCenterConfig | undefined
     if (!helpCenterConfig?.enabled) throw notFound()
+
+    // Full-coverage 301: every /hc/* route is nested under this layout, so
+    // this is the single place the default-host -> verified-custom-domain
+    // redirect needs to live (domains/languages §1).
+    const currentHost = await currentRequestHost()
+    const target = resolveHelpCenterDomainRedirect({
+      domainConfig: helpCenterConfig.domain,
+      currentHost,
+      pathname: location.pathname,
+      // `searchStr` already includes the leading `?` when non-empty.
+      search: location.searchStr ?? '',
+    })
+    if (target) throw redirect({ href: target, statusCode: 301 })
   },
   loader: async ({ context }) => {
     const { settings } = context
     const helpCenterConfig = (settings?.helpCenterConfig as HelpCenterConfig | null) ?? null
     return { helpCenterConfig }
   },
-  head: () => {
-    return { meta: [] }
+  head: ({ loaderData }) => {
+    const indexable = loaderData?.helpCenterConfig?.seo?.indexable !== false
+    return {
+      meta: indexable ? [] : [{ name: 'robots', content: 'noindex, nofollow' }],
+    }
   },
   component: HelpCenterLayoutRoute,
 })

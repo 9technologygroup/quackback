@@ -31,6 +31,7 @@ export type {
   UpdateWidgetConfigInput,
   HelpCenterConfig,
   HelpCenterSeoConfig,
+  HelpCenterDomainConfig,
 } from './settings.types'
 
 // Welcome card constants (no DB dependency)
