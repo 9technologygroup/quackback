@@ -24,9 +24,25 @@ vi.mock('@/lib/server/utils/redis-rate-bucket', () => ({
   bucketRetryAfter: (...args: unknown[]) => mockBucketRetryAfter(...args),
 }))
 
+const mockEnforceAiTokenBudget = vi.fn()
+vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
+  enforceAiTokenBudget: (...args: unknown[]) => mockEnforceAiTokenBudget(...args),
+}))
+
+const mockLogAiUsage = vi.fn()
+vi.mock('@/lib/server/domains/ai/usage-log', () => ({
+  logAiUsage: (...args: unknown[]) => mockLogAiUsage(...args),
+}))
+
+const mockGetChatModel = vi.fn()
+vi.mock('@/lib/server/domains/ai/models', () => ({
+  getChatModel: (...args: unknown[]) => mockGetChatModel(...args),
+}))
+
 import { handleKbAsk, KB_ASK_MAX_QUERY_CHARS, KB_ASK_RATE_LIMIT } from '../kb-ask'
 import { parseAskAiSseBlock } from '@/components/help-center/ask-ai'
 import { makeKbArticle } from '@/lib/server/domains/assistant/__tests__/kb-fixtures'
+import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 
 function makeRequest(params: Record<string, string> = {}, ip = '203.0.113.9'): Request {
   const url = new URL('http://localhost/api/widget/kb-ask')
@@ -48,6 +64,9 @@ beforeEach(() => {
   mockIsConfigured.mockReturnValue(true)
   mockIncrementBucket.mockResolvedValue({ count: 1 })
   mockBucketRetryAfter.mockResolvedValue(42)
+  mockEnforceAiTokenBudget.mockResolvedValue(undefined)
+  mockLogAiUsage.mockResolvedValue(undefined)
+  mockGetChatModel.mockReturnValue('gpt-test')
   mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
   mockSynthesize.mockResolvedValue({
     kind: 'grounded',
@@ -123,6 +142,26 @@ describe('GET /api/widget/kb-ask', () => {
     expect(body.error.code).toBe('AI_NOT_CONFIGURED')
   })
 
+  it('responds with the tier-limit error when the ai token budget is exceeded', async () => {
+    mockEnforceAiTokenBudget.mockRejectedValue(
+      new TierLimitError({ limit: 'aiTokensPerMonth', message: "You've used your AI budget" })
+    )
+    const res = await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    expect(res.status).toBe(402)
+    const body = await res.json()
+    expect(body.error.code).toBe('TIER_LIMIT_EXCEEDED')
+    expect(body.error.message).toBe("You've used your AI budget")
+    // No streamed model answer: retrieval and synthesis never run.
+    expect(mockRetrieve).not.toHaveBeenCalled()
+    expect(mockSynthesize).not.toHaveBeenCalled()
+  })
+
+  it('checks the ai token budget after the rate limit but before retrieval', async () => {
+    mockIncrementBucket.mockResolvedValue({ count: KB_ASK_RATE_LIMIT + 1 })
+    await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    expect(mockEnforceAiTokenBudget).not.toHaveBeenCalled()
+  })
+
   it('streams versioned sources, delta, and final events', async () => {
     mockSynthesize.mockImplementation(async (params: { onAnswerDelta?: (d: string) => void }) => {
       params.onAnswerDelta?.('Do the ')
@@ -192,6 +231,28 @@ describe('GET /api/widget/kb-ask', () => {
         ],
       },
     })
+  })
+
+  it('logs a no_sources ai usage entry on the empty-retrieval short-circuit', async () => {
+    mockRetrieve.mockImplementation(async (_q: string, opts?: { minScore?: number }) =>
+      opts?.minScore !== undefined ? [makeKbArticle('kb_article_9')] : []
+    )
+    const res = await handleKbAsk({ request: makeRequest({ q: 'gibberish' }) })
+    await res.text()
+
+    expect(mockSynthesize).not.toHaveBeenCalled()
+    expect(mockLogAiUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipelineStep: 'help_center_answers',
+        callType: 'chat_completion',
+        model: 'gpt-test',
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        status: 'success',
+        metadata: { answerKind: 'no_sources', query: 'gibberish' },
+      })
+    )
   })
 
   it('reuses the retrieved articles as related suggestions on a no-answer', async () => {

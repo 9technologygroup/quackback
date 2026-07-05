@@ -48,6 +48,13 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
 }
 
 /**
+ * Outcome classification AI answer surfaces record in metadata.answerKind.
+ * Per model call — unrelated to the assistant_involvements status vocabulary,
+ * which classifies whole conversations rather than individual attempts.
+ */
+export type AiAnswerKind = 'answered' | 'no_answer' | 'no_sources' | 'escalated' | 'invalid_output'
+
+/**
  * Wraps a withRetry call to automatically log AI usage.
  *
  * Usage:
@@ -56,6 +63,10 @@ export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
  *     () => withRetry(() => openai.chat.completions.create(...)),
  *     (result) => ({ inputTokens: ..., outputTokens: ..., totalTokens: ... })
  *   )
+ *
+ * `fn` may return `metadata` for outcome fields only known after the call
+ * resolves (e.g. answerKind); it is merged over the params metadata in the
+ * logged row.
  */
 export async function withUsageLogging<T>(
   params: Omit<
@@ -68,17 +79,18 @@ export async function withUsageLogging<T>(
     | 'error'
     | 'retryCount'
   >,
-  fn: () => Promise<{ result: T; retryCount: number }>,
+  fn: () => Promise<{ result: T; retryCount: number; metadata?: Record<string, unknown> }>,
   extractUsage: (result: T) => { inputTokens: number; outputTokens?: number; totalTokens: number }
 ): Promise<T> {
   const start = Date.now()
   try {
-    const { result, retryCount } = await fn()
+    const { result, retryCount, metadata: outcomeMetadata } = await fn()
     const usage = extractUsage(result)
     const durationMs = Date.now() - start
 
     void logAiUsage({
       ...params,
+      ...(outcomeMetadata ? { metadata: { ...params.metadata, ...outcomeMetadata } } : {}),
       ...usage,
       durationMs,
       retryCount,

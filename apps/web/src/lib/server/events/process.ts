@@ -12,7 +12,7 @@ import { getHookTargets } from './targets'
 import { isRetryableError } from './hook-utils'
 import type { HookResult } from './hook-types'
 import type { EventData } from './types'
-import type { WebhookId } from '@quackback/ids'
+import type { ConversationId, WebhookId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'event-process' })
@@ -240,6 +240,22 @@ export async function processEvent(event: EventData): Promise<void> {
   void import('@/lib/server/domains/sla/sla.event-hooks')
     .then((m) => m.recordSlaFromEvent(event))
     .catch((err) => log.error({ err, event_type: event.type }, 'SLA hook failed to load'))
+
+  // Confirm the assistant's resolution off a positive first CSAT rating. The
+  // event only fires on the first submission, so the confirm runs at most once
+  // per survey. Same fire-and-forget + lazy-import isolation as above.
+  if (event.type === 'conversation.csat_submitted') {
+    void import('@/lib/server/domains/assistant/assistant.involvement')
+      .then((m) =>
+        m.confirmResolutionFromCsat(
+          event.data.conversation.id as ConversationId,
+          event.data.rating
+        )
+      )
+      .catch((err) =>
+        log.error({ err, event_type: event.type }, 'assistant CSAT hook failed to load')
+      )
+  }
 
   const targets = await getHookTargets(event)
   if (targets.length === 0) return

@@ -25,7 +25,10 @@ import {
   type AssistantHandoffReason,
 } from '@/lib/server/db'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
+import { logger } from '@/lib/server/logger'
 import type { AssistantInvolvementId, ConversationId } from '@quackback/ids'
+
+const log = logger.child({ component: 'assistant-involvement' })
 
 export type AssistantInvolvement = typeof assistantInvolvements.$inferSelect
 
@@ -224,6 +227,38 @@ export async function recordOutcome(
     )
     .returning()
   return row ?? null
+}
+
+/**
+ * Positive end of the 1-5 CSAT scale — the threshold treated as the customer's
+ * explicit affirmation of Quinn's answer.
+ */
+const POSITIVE_CSAT_RATING = 4
+
+/**
+ * Resolve Quinn's active involvement as confirmed off a positive CSAT rating
+ * when it already gave a real answer. Subscribed to conversation.csat_submitted
+ * (events/process.ts), which fires only on the first submission — a later
+ * rating change does not re-run it. No-op without an active involvement, one
+ * Quinn hasn't yet answered, or a rating below the positive threshold.
+ * Best-effort: a failure never surfaces to the CSAT submission that raised it.
+ */
+export async function confirmResolutionFromCsat(
+  conversationId: ConversationId,
+  rating: number
+): Promise<void> {
+  try {
+    const involvement = await getActiveInvolvement(conversationId)
+    if (!involvement?.lastAssistantAnswerAt) return
+    const eligible = confirmedResolutionEligible({
+      gaveRealAnswer: true,
+      explicitAffirmation: rating >= POSITIVE_CSAT_RATING,
+    })
+    if (!eligible) return
+    await recordOutcome(involvement.id, 'confirmed')
+  } catch (err) {
+    log.warn({ err }, 'confirm resolution from csat failed')
+  }
 }
 
 /**

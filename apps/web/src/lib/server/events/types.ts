@@ -32,6 +32,7 @@ export const EVENT_TYPES = [
   'ticket.created',
   'ticket.status_changed',
   'ticket.assigned',
+  'assistant.handed_off',
 ] as const
 
 export type EventType = (typeof EVENT_TYPES)[number]
@@ -286,6 +287,15 @@ export interface TicketAssignedPayload {
   previousTeamId: string | null
 }
 
+/**
+ * Payload for assistant.handed_off — fired when Quinn escalates a conversation
+ * to the human team, once per hand-off decision.
+ */
+export interface AssistantHandedOffPayload {
+  conversationId: string
+  reason: string
+}
+
 // ============================================================================
 // Event Data (Discriminated Union)
 // ============================================================================
@@ -382,6 +392,10 @@ export interface TicketAssignedEvent extends EventBase<'ticket.assigned'> {
   data: TicketAssignedPayload
 }
 
+export interface AssistantHandedOffEvent extends EventBase<'assistant.handed_off'> {
+  data: AssistantHandedOffPayload
+}
+
 /**
  * Event data - discriminated union of all event types.
  *
@@ -416,3 +430,4 @@ export type EventData =
   | TicketCreatedEvent
   | TicketStatusChangedEvent
   | TicketAssignedEvent
+  | AssistantHandedOffEvent

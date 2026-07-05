@@ -20,7 +20,7 @@ import {
   structuredOutputProviderOptions,
 } from '@/lib/server/domains/ai/config'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
+import { withUsageLogging, type AiAnswerKind } from '@/lib/server/domains/ai/usage-log'
 import { logger } from '@/lib/server/logger'
 import type { RetrievedKbArticle } from './retrieval'
 
@@ -148,25 +148,31 @@ export async function synthesizeAnswer(params: SynthesizeAnswerParams): Promise<
   // One usage-logged model run. Null means the stream produced no validated
   // object (a known constrained-decoding failure mode) and is retryable.
   const attemptOnce = async (attempt: number): Promise<AskAiAnswer | null> => {
-    const object = await withUsageLogging(
+    const { validated } = await withUsageLogging(
       {
         pipelineStep: 'help_center_answers',
         callType: 'chat_completion',
         model,
-        metadata: { kbArticleIds: articleIds, attempt },
+        metadata: { kbArticleIds: articleIds, attempt, query: params.query },
       },
-      async () => ({ result: await runAttempt(model, systemPrompts, params), retryCount: 0 }),
-      (result) => ({
-        inputTokens: result.usage?.promptTokens ?? 0,
-        outputTokens: result.usage?.completionTokens ?? 0,
-        totalTokens: result.usage?.totalTokens ?? 0,
+      async () => {
+        const object = await runAttempt(model, systemPrompts, params)
+        // Prefer the validated structured object; if the stream never produced
+        // one, try to salvage a well-formed object from the raw text before
+        // giving up on the attempt.
+        const final = object.final ?? salvageAnswer(object.raw)
+        const validated = final !== null ? validateAnswer(final, retrievedIds) : null
+        const answerKind: AiAnswerKind =
+          validated === null ? 'invalid_output' : validated.kind === 'grounded' ? 'answered' : 'no_answer'
+        return { result: { object, validated }, retryCount: 0, metadata: { answerKind } }
+      },
+      ({ object }) => ({
+        inputTokens: object.usage?.promptTokens ?? 0,
+        outputTokens: object.usage?.completionTokens ?? 0,
+        totalTokens: object.usage?.totalTokens ?? 0,
       })
     )
-    // Prefer the validated structured object; if the stream never produced
-    // one, try to salvage a well-formed object from the raw text before giving
-    // up on the attempt.
-    const final = object.final ?? salvageAnswer(object.raw)
-    return final !== null ? validateAnswer(final, retrievedIds) : null
+    return validated
   }
 
   let lastError: Error | null = null

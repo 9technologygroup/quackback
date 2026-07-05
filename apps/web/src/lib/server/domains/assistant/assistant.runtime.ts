@@ -24,7 +24,7 @@ import {
   stripCodeFences,
 } from '@/lib/server/domains/ai/config'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
+import { withUsageLogging, type AiAnswerKind } from '@/lib/server/domains/ai/usage-log'
 import { logger } from '@/lib/server/logger'
 import type { AssistantHandoffReason } from '@/lib/server/db'
 import type { PrincipalId, ConversationId } from '@quackback/ids'
@@ -361,6 +361,21 @@ interface AttemptResult {
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number }
 }
 
+/**
+ * Classify an attempt for the usage log: escalated when the model set an
+ * escalation reason, no_sources when retrieval never surfaced a citation
+ * candidate this attempt, otherwise a normal answer.
+ */
+function deriveAnswerKind(
+  attempt: AttemptResult,
+  toolContext: AssistantToolContext
+): AiAnswerKind {
+  const final = attempt.final as { escalation?: unknown } | null
+  if (final?.escalation) return 'escalated'
+  if (toolContext.sources.size === 0) return 'no_sources'
+  return 'answered'
+}
+
 async function runAttempt(
   model: string,
   systemPrompts: string[],
@@ -511,10 +526,14 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
         model,
         metadata: { conversationId: input.conversationId ?? null, attempt },
       },
-      async () => ({
-        result: await runAttempt(model, systemPrompts, toolContext, input),
-        retryCount: 0,
-      }),
+      async () => {
+        const attemptResult = await runAttempt(model, systemPrompts, toolContext, input)
+        return {
+          result: attemptResult,
+          retryCount: 0,
+          metadata: { answerKind: deriveAnswerKind(attemptResult, toolContext) },
+        }
+      },
       (r) => ({
         inputTokens: r.usage?.promptTokens ?? 0,
         outputTokens: r.usage?.completionTokens ?? 0,

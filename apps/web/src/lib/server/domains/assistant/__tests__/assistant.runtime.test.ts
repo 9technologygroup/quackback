@@ -39,6 +39,8 @@ vi.mock('@/lib/server/domains/conversation/conversation.query', () => ({
 }))
 
 const mockWithUsageLogging = vi.fn()
+/** The merged metadata of the most recent usage-log row (params + fn outcome). */
+let lastLoggedMetadata: Record<string, unknown> | undefined
 vi.mock('@/lib/server/domains/ai/usage-log', () => ({
   withUsageLogging: (...args: unknown[]) => mockWithUsageLogging(...args),
 }))
@@ -89,14 +91,18 @@ beforeEach(() => {
   mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   mockConfig.aiChatModel = 'test-model'
   mockConfig.aiHelpCenterModel = undefined
+  lastLoggedMetadata = undefined
   mockWithUsageLogging.mockImplementation(
     async (
-      _params: unknown,
-      fn: () => Promise<{ result: unknown; retryCount: number }>,
+      params: { metadata?: Record<string, unknown> },
+      fn: () => Promise<{ result: unknown; retryCount: number; metadata?: Record<string, unknown> }>,
       extract: (result: unknown) => unknown
     ) => {
-      const { result } = await fn()
+      const { result, metadata } = await fn()
       extract(result)
+      // Mirror the real wrapper's contract: outcome metadata returned by fn is
+      // merged over the params metadata in the logged row.
+      lastLoggedMetadata = { ...params.metadata, ...metadata }
       return result
     }
   )
@@ -406,6 +412,82 @@ describe('runAssistantTurn', () => {
     await expect(
       runAssistantTurn({ ...baseInput, messages: customerAsks('q'), signal: controller.signal })
     ).rejects.toThrow()
+  })
+
+  it('logs answerKind "answered" in the usage-log metadata for a normal grounded reply', async () => {
+    mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
+    mockChat.mockImplementation(
+      (opts: {
+        tools: Array<{ name: string; execute: (args: unknown, o: unknown) => Promise<unknown> }>
+        context: unknown
+      }) =>
+        (async function* () {
+          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          await search.execute(
+            { query: 'reset password' },
+            { context: opts.context, emitCustomEvent: () => {} }
+          )
+          const object = {
+            text: 'Use the reset link.',
+            citations: [{ type: 'article', id: 'kb_article_1' }],
+          }
+          yield { type: 'TEXT_MESSAGE_CONTENT', delta: JSON.stringify(object) }
+          yield { type: 'CUSTOM', name: 'structured-output.complete', value: { object } }
+          yield {
+            type: 'RUN_FINISHED',
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          }
+        })()
+    )
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('how do I reset my password?'),
+    })
+
+    expect(mockWithUsageLogging).toHaveBeenCalledTimes(1)
+    expect(lastLoggedMetadata?.answerKind).toBe('answered')
+  })
+
+  it('logs answerKind "no_sources" when retrieval never surfaced a citation candidate', async () => {
+    mockRetrieve.mockResolvedValue([])
+    mockChat.mockImplementation(
+      (opts: {
+        tools: Array<{ name: string; execute: (args: unknown, o: unknown) => Promise<unknown> }>
+        context: unknown
+      }) =>
+        (async function* () {
+          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          await search.execute(
+            { query: 'obscure' },
+            { context: opts.context, emitCustomEvent: () => {} }
+          )
+          const object = { text: 'I could not find that.', citations: [] }
+          yield { type: 'CUSTOM', name: 'structured-output.complete', value: { object } }
+          yield { type: 'RUN_FINISHED', usage: undefined }
+        })()
+    )
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('something obscure') })
+
+    expect(lastLoggedMetadata?.answerKind).toBe('no_sources')
+  })
+
+  it('logs answerKind "escalated" when the model sets an escalation reason', async () => {
+    const object = {
+      text: 'Let me get a teammate.',
+      citations: [],
+      escalation: { reason: 'frustration' },
+    }
+    mockChat.mockImplementation(() => chunkStream(completeRun(object)))
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('this is broken and I am furious'),
+      escalationAlreadyOffered: false,
+    })
+
+    expect(lastLoggedMetadata?.answerKind).toBe('escalated')
   })
 
   it('salvages a schema answer from prose the weak model wrapped around the JSON', async () => {

@@ -30,6 +30,11 @@ vi.mock('@/lib/server/domains/assistant', () => assistantMock)
 
 const getMessengerConfig = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/server/domains/settings/settings.widget', () => ({ getMessengerConfig }))
+
+const mockEnforceAiTokenBudget = vi.hoisted(() => vi.fn(async () => {}))
+vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
+  enforceAiTokenBudget: mockEnforceAiTokenBudget,
+}))
 vi.mock('@/lib/server/domains/settings/settings.office-hours', () => ({
   getOfficeHoursSchedule: vi.fn(async () => ({ enabled: false, timezone: 'UTC', intervals: [] })),
 }))
@@ -141,6 +146,7 @@ import {
   runAssistantTurnForConversation,
   __resetAssistantPrincipalMemo,
 } from '@/lib/server/domains/assistant/assistant.orchestrator'
+import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 
 const CONV = 'conversation_1' as ConversationId
 
@@ -164,6 +170,7 @@ beforeEach(() => {
   assistantMock.getActiveInvolvement.mockResolvedValue(null)
   assistantMock.openInvolvement.mockResolvedValue({ id: 'assistant_involvement_1' })
   getMessengerConfig.mockResolvedValue({ assistant: { respond: true, name: 'Quinn' } })
+  mockEnforceAiTokenBudget.mockResolvedValue(undefined)
 })
 
 describe('shouldConsiderAssistant', () => {
@@ -202,6 +209,21 @@ describe('runAssistantTurnForConversation gate', () => {
     await runAssistantTurnForConversation(CONV)
     expect(assistantMock.openInvolvement).not.toHaveBeenCalled()
     expect(insertedMessages).toHaveLength(0)
+  })
+
+  it('returns silently without calling the model when the ai token budget is exceeded', async () => {
+    mockEnforceAiTokenBudget.mockRejectedValue(
+      new TierLimitError({ limit: 'aiTokensPerMonth', message: 'over budget' })
+    )
+    await expect(runAssistantTurnForConversation(CONV)).resolves.toBeUndefined()
+    expect(getMessengerConfig).not.toHaveBeenCalled()
+    expect(assistantMock.runAssistantTurn).not.toHaveBeenCalled()
+    expect(insertedMessages).toHaveLength(0)
+  })
+
+  it('propagates a non-tier-limit error from the budget check', async () => {
+    mockEnforceAiTokenBudget.mockRejectedValue(new Error('db unavailable'))
+    await expect(runAssistantTurnForConversation(CONV)).rejects.toThrow('db unavailable')
   })
 })
 

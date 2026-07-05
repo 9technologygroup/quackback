@@ -34,6 +34,10 @@ import {
   widgetCorsHeaders,
   widgetJsonError,
 } from '@/lib/server/widget/public-endpoint'
+import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
+import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
+import { logAiUsage, type AiAnswerKind } from '@/lib/server/domains/ai/usage-log'
+import { getChatModel } from '@/lib/server/domains/ai/models'
 import { createSseStream, SSE_RESPONSE_HEADERS } from '@/lib/server/utils/sse'
 import { logger } from '@/lib/server/logger'
 
@@ -122,6 +126,16 @@ export async function handleKbAsk({ request }: { request: Request }): Promise<Re
   })
   if (limited) return limited
 
+  try {
+    await enforceAiTokenBudget()
+  } catch (error) {
+    if (error instanceof TierLimitError) {
+      return widgetJsonError(error.statusCode, error.code, error.message)
+    }
+    throw error
+  }
+
+  const retrievalStartedAt = Date.now()
   let articles
   try {
     articles = await retrieveKbArticles(query, { audience: 'public' })
@@ -140,6 +154,17 @@ export async function handleKbAsk({ request }: { request: Request }): Promise<Re
       // Emit a graceful miss with related near-misses instead.
       if (articles.length === 0) {
         const related = await relatedArticles(query, articles)
+        void logAiUsage({
+          pipelineStep: 'help_center_answers',
+          callType: 'chat_completion',
+          model: getChatModel('helpCenterAnswers') ?? 'none',
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          durationMs: Date.now() - retrievalStartedAt,
+          status: 'success',
+          metadata: { answerKind: 'no_sources' satisfies AiAnswerKind, query },
+        }).catch((err) => log.warn({ err }, 'failed to log ai usage for kb-ask no_sources'))
         sse.send(KB_ASK_EVENTS.final, {
           kind: 'no_answer',
           answer: ASK_AI_MISS_FALLBACK,

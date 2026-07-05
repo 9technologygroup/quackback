@@ -97,6 +97,7 @@ import {
   emitConversationCsatSubmitted,
   emitConversationCsatCommentAdded,
 } from './conversation.webhooks'
+import { dispatchAssistantHandedOff, buildEventActor } from '@/lib/server/events/dispatch'
 import { extractMentions } from '@/lib/server/domains/posts/extract-mentions'
 import { syncConversationMessageMentions } from './sync-conversation-mentions'
 import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
@@ -1281,7 +1282,10 @@ export async function recordCsat(
   if (commentJustAdded) void emitConversationCsatCommentAdded(actor, updated)
 
   // Mirror the CSAT rating onto Quinn's involvement when it was the last handler
-  // (best-effort — never fails the rating; the assistant domain owns it).
+  // (best-effort — never fails the rating; the assistant domain owns it). The
+  // resolved_confirmed trigger rides the csat_submitted event instead: the
+  // assistant subscriber in events/process.ts confirms the involvement off the
+  // first submission, keeping cross-domain outcome logic on the bus.
   void import('@/lib/server/domains/assistant/assistant.orchestrator')
     .then((m) => m.attributeCsatIfLastHandler(conversationId, rating))
     .catch((err) => log.warn({ err }, 'attribute csat to assistant involvement failed'))
@@ -1498,7 +1502,8 @@ export async function appendAssistantHandoffNote(
  */
 export async function executeAssistantHandoff(
   conversationId: ConversationId,
-  reason: string
+  reason: string,
+  author: ConversationAuthorInput
 ): Promise<void> {
   const existing = await loadConversationOr404(conversationId)
   const nextAttributes = {
@@ -1521,4 +1526,15 @@ export async function executeAssistantHandoff(
   if (!assigned) {
     publishConversationUpdate(updated.id, await conversationToDTO(updated, 'agent'))
   }
+  // Let workflows/webhooks react to the hand-off — Quinn (the assistant service
+  // principal) performed it, so the actor mirrors other service-authored events.
+  // The caller already holds Quinn's identity; no principal lookup needed here.
+  void dispatchAssistantHandedOff(
+    buildEventActor({
+      principalId: author.principalId,
+      displayName: author.displayName ?? undefined,
+    }),
+    conversationId,
+    reason
+  )
 }

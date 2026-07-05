@@ -463,3 +463,15 @@ export async function dispatchTicketAssigned(
     data: { ticket, assignedPrincipalId, previousPrincipalId, assignedTeamId, previousTeamId },
   })
 }
+
+export async function dispatchAssistantHandedOff(
+  actor: EventActor,
+  conversationId: string,
+  reason: string
+): Promise<void> {
+  await dispatchEvent({
+    ...eventEnvelope(actor),
+    type: 'assistant.handed_off',
+    data: { conversationId, reason },
+  })
+}

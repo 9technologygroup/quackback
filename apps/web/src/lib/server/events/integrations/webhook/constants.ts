@@ -108,6 +108,11 @@ export const WEBHOOK_EVENT_CONFIG = [
     description: 'When a visitor adds the optional comment to a satisfaction rating',
   },
   {
+    id: 'assistant.handed_off',
+    label: 'Assistant Handed Off',
+    description: 'When the AI assistant hands a conversation to the team',
+  },
+  {
     id: 'message.created',
     label: 'New Message',
     description: 'When a visitor or agent sends a public message',

@@ -16,6 +16,8 @@ import {
   runAssistantTurn,
   ensureAssistantPrincipal,
 } from '@/lib/server/domains/assistant'
+import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
+import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import { createSseStream, SSE_RESPONSE_HEADERS } from '@/lib/server/utils/sse'
 import { logger } from '@/lib/server/logger'
 import { SANDBOX_EVENTS } from '@/lib/shared/assistant/sandbox-contract'
@@ -41,7 +43,7 @@ function jsonError(status: number, code: string, message: string): Response {
   return Response.json({ error: { code, message } }, { status })
 }
 
-async function handleSandbox({ request }: { request: Request }): Promise<Response> {
+export async function handleSandbox({ request }: { request: Request }): Promise<Response> {
   try {
     await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
   } catch {
@@ -57,6 +59,15 @@ async function handleSandbox({ request }: { request: Request }): Promise<Respons
 
   if (!isAssistantConfigured()) {
     return jsonError(503, 'AI_NOT_CONFIGURED', 'The assistant is not configured')
+  }
+
+  try {
+    await enforceAiTokenBudget()
+  } catch (err) {
+    if (err instanceof TierLimitError) {
+      return jsonError(err.statusCode, err.code, err.message)
+    }
+    throw err
   }
 
   // Provisioning Quinn's identity is idempotent and is not a conversation,

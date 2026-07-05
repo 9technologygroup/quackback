@@ -34,6 +34,9 @@ export {
   ASSISTANT_DEFAULT_NAME,
 } from './assistant.principal'
 
+// Quinn — bounded actor
+export { quinnActor, ASSISTANT_PERMISSIONS } from './assistant.actor'
+
 // Quinn — involvement record + outcome semantics
 export {
   openInvolvement,
@@ -61,14 +64,20 @@ export {
 } from './assistant.thread'
 export { buildAssistantHandoverMessage } from './assistant.handover'
 
-// Quinn — tools + runtime
+// Quinn — tool catalogue
 export {
-  searchKnowledgeTool,
-  getConversationContextTool,
-  createAssistantTools,
+  ASSISTANT_TOOL_SPECS,
+  resolveToolSpecs,
+  SEARCH_BUDGET_PER_TURN,
+  type ToolRiskClass,
+  type ToolControlMode,
+  type AssistantToolSpec,
   type AssistantCitation,
   type AssistantToolContext,
-} from './assistant.tools'
+} from './assistant.toolspec'
+
+// Quinn — tools + runtime
+export { searchKnowledgeTool, getConversationContextTool, createAssistantTools } from './assistant.tools'
 export {
   runAssistantTurn,
   isAssistantConfigured,

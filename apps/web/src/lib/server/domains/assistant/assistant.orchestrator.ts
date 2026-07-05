@@ -19,6 +19,8 @@ import {
   executeAssistantHandoff,
 } from '@/lib/server/domains/conversation/conversation.service'
 import { publishConversationOnlyEvent } from '@/lib/server/realtime/conversation-channels'
+import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
+import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import {
   ensureAssistantPrincipal,
   getAssistantPrincipal,
@@ -68,6 +70,16 @@ export async function runAssistantTurnForConversation(
   conversationId: ConversationId
 ): Promise<void> {
   if (!isAssistantConfigured()) return
+
+  try {
+    await enforceAiTokenBudget()
+  } catch (err) {
+    if (err instanceof TierLimitError) {
+      log.info({ conversationId }, 'assistant turn skipped: ai token budget exceeded')
+      return
+    }
+    throw err
+  }
 
   // Messenger config is read uncached, but only past the sync AI-configured gate
   // above — so it costs a settings round trip solely when AI is set up.
@@ -167,7 +179,7 @@ export async function runAssistantTurnForConversation(
     await Promise.all([
       recordHandoff(involvement.id, result.escalation.reason),
       appendAssistantHandoffNote(conversationId, result.escalation.reason, author),
-      executeAssistantHandoff(conversationId, result.escalation.reason),
+      executeAssistantHandoff(conversationId, result.escalation.reason, author),
     ])
     return
   }
