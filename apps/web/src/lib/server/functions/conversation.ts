@@ -1084,6 +1084,13 @@ export const setConversationStatusFn = createServerFn({ method: 'POST' })
     try {
       const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_SET_STATUS })
       const actor = await policyActorFromAuth(ctx)
+      // Required-to-close applies ONLY here and in the bulk close — the
+      // teammate inbox paths. Workflow/AI/API closes call the service directly.
+      if (data.status === 'closed') {
+        const { assertRequiredAttributesForClose } =
+          await import('@/lib/server/domains/conversation-attributes/close-guard')
+        await assertRequiredAttributesForClose(data.conversationId as ConversationId)
+      }
       const { setConversationStatus } =
         await import('@/lib/server/domains/conversation/conversation.service')
       await setConversationStatus(data.conversationId as ConversationId, data.status, actor)
@@ -1303,6 +1310,8 @@ export const bulkUpdateConversationsFn = createServerFn({ method: 'POST' })
         setConversationStatus,
         snoozeConversation,
       } = await import('@/lib/server/domains/conversation/conversation.service')
+      const { assertRequiredAttributesForClose } =
+        await import('@/lib/server/domains/conversation-attributes/close-guard')
 
       // Resolve the action into a single per-conversation op once, up front — the
       // acting agent, snooze wake-time, and assignee are computed a single time,
@@ -1326,7 +1335,12 @@ export const bulkUpdateConversationsFn = createServerFn({ method: 'POST' })
             return (id) => snoozeConversation(id, until, actor)
           }
           case 'close':
-            return (id) => setConversationStatus(id, 'closed', actor)
+            // Teammate bulk close honors required-to-close per conversation;
+            // a blocked thread lands in `failed` without aborting the batch.
+            return async (id) => {
+              await assertRequiredAttributesForClose(id)
+              return setConversationStatus(id, 'closed', actor)
+            }
           case 'reopen':
             return (id) => setConversationStatus(id, 'open', actor)
         }

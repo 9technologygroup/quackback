@@ -50,6 +50,7 @@ export const ID_PREFIXES = {
   // Inbox productivity
   macro: 'macro',
   conversation_view: 'conversation_view',
+  conversation_attribute: 'conv_attr',
 
   // Assistant (in-product AI agent)
   assistant_involvement: 'assistant_involvement',

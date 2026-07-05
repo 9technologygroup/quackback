@@ -48,6 +48,8 @@ import {
   useConversationViews,
 } from '@/components/admin/conversation/inbox-nav-sidebar'
 import { ConversationViewDialog } from '@/components/admin/conversation/conversation-view-dialog'
+import { RequiredAttributesDialog } from '@/components/admin/conversation/required-attributes-dialog'
+import { isMissingRequiredAttributesMessage } from '@/lib/shared/conversation/attribute-values'
 import {
   inboxNavKey,
   navFromSearch,
@@ -581,6 +583,9 @@ function InboxPage() {
   // Which value menu the floating bar shows open — driven by the command bar /
   // keyboard so a single keypress can pop the right picker.
   const [bulkMenu, setBulkMenu] = useState<BulkMenuId | null>(null)
+  // Close refusals from required-to-close enforcement (single or bulk): the
+  // reasons shown in the blocking prompt, or null when nothing is blocked.
+  const [closeBlocked, setCloseBlocked] = useState<string[] | null>(null)
   const [commandOpen, setCommandOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   // Anchor for shift-click range selection.
@@ -727,13 +732,49 @@ function InboxPage() {
   )
 
   const applyClose = useCallback(async () => {
-    if (hasSelection) return runBulk({ type: 'close' }, 'Closed')
+    if (hasSelection) {
+      const ids = [...selectedIds]
+      if (ids.length === 0) return
+      try {
+        const res = await bulk.mutateAsync({ conversationIds: ids, action: { type: 'close' } })
+        // Required-to-close refusals get the blocking prompt (one line per
+        // distinct reason); other failures keep the generic summary toast.
+        const blocked = [
+          ...new Set(
+            res.failed
+              .map((f) => f.reason)
+              .filter((reason) => isMissingRequiredAttributesMessage(reason))
+          ),
+        ]
+        if (blocked.length > 0) {
+          const count = res.failed.filter((f) =>
+            isMissingRequiredAttributesMessage(f.reason)
+          ).length
+          setCloseBlocked([
+            `${count} ${count === 1 ? 'conversation is' : 'conversations are'} missing required attributes.`,
+            ...blocked,
+          ])
+        }
+        summarize('Closed', res.succeeded.length, res.failed.length)
+        if (res.failed.length === 0) clearSelection()
+        else setBulkMenu(null)
+      } catch {
+        toast.error('Bulk action failed')
+      }
+      return
+    }
     if (!selectedId) return
-    return runSolo(
-      () => setConversationStatusFn({ data: { conversationId: selectedId, status: 'closed' } }),
-      { success: 'Conversation closed', error: 'Failed to close conversation' }
-    )
-  }, [hasSelection, selectedId, runBulk, runSolo])
+    setBulkMenu(null)
+    try {
+      await setConversationStatusFn({ data: { conversationId: selectedId, status: 'closed' } })
+      refreshInbox()
+      toast.success('Conversation closed')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : null
+      if (message && isMissingRequiredAttributesMessage(message)) setCloseBlocked([message])
+      else toast.error('Failed to close conversation')
+    }
+  }, [hasSelection, selectedId, selectedIds, bulk, summarize, clearSelection, refreshInbox])
 
   const applyReopen = useCallback(async () => {
     if (hasSelection) return runBulk({ type: 'reopen' }, 'Reopened')
@@ -851,6 +892,7 @@ function InboxPage() {
         editing={editingView}
         onSaved={(viewId) => setNav({ kind: 'custom', viewId })}
       />
+      <RequiredAttributesDialog messages={closeBlocked} onClose={() => setCloseBlocked(null)} />
       {isSaved ? (
         <SavedMessagesColumn selectedConversationId={selectedId} onSelect={selectSavedMessage} />
       ) : (

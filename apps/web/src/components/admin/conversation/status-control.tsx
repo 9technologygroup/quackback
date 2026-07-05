@@ -4,7 +4,9 @@ import { ChevronDownIcon } from '@heroicons/react/24/solid'
 import { toast } from 'sonner'
 import type { ConversationId } from '@quackback/ids'
 import type { ConversationStatus } from '@/lib/shared/conversation/types'
+import { isMissingRequiredAttributesMessage } from '@/lib/shared/conversation/attribute-values'
 import { setConversationStatusFn, snoozeConversationFn } from '@/lib/server/functions/conversation'
+import { RequiredAttributesDialog } from './required-attributes-dialog'
 import { tomorrowAt, inHours, nextMondayAt } from '@/lib/shared/utils'
 import { DateTimePicker } from '@/components/ui/datetime-picker'
 import { Button } from '@/components/ui/button'
@@ -56,6 +58,9 @@ export function StatusControl({
   const queryClient = useQueryClient()
   const [customOpen, setCustomOpen] = useState(false)
   const [customDate, setCustomDate] = useState<Date | undefined>(() => tomorrowAt(9))
+  // Required-to-close refusal from the server: raise the blocking prompt
+  // instead of a generic error toast.
+  const [closeBlocked, setCloseBlocked] = useState<string[] | null>(null)
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['admin', 'inbox', 'thread', conversationId] })
     onChanged()
@@ -64,7 +69,13 @@ export function StatusControl({
     mutationFn: (next: ConversationStatus) =>
       setConversationStatusFn({ data: { conversationId, status: next } }),
     onSuccess: invalidate,
-    onError: () => toast.error('Failed to update status'),
+    onError: (error) => {
+      if (error instanceof Error && isMissingRequiredAttributesMessage(error.message)) {
+        setCloseBlocked([error.message])
+      } else {
+        toast.error('Failed to update status')
+      }
+    },
   })
   const snoozeMut = useMutation({
     mutationFn: (until: string | null) => snoozeConversationFn({ data: { conversationId, until } }),
@@ -136,6 +147,8 @@ export function StatusControl({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <RequiredAttributesDialog messages={closeBlocked} onClose={() => setCloseBlocked(null)} />
 
       <Dialog open={customOpen} onOpenChange={setCustomOpen}>
         <DialogContent className="sm:max-w-sm">

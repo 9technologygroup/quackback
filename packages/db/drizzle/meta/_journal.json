@@ -1093,6 +1093,13 @@
       "when": 1784765820000,
       "tag": "0155_workflows",
       "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "7",
+      "when": 1784765880000,
+      "tag": "0156_conversation_attributes",
+      "breakpoints": true
     }
   ]
 }

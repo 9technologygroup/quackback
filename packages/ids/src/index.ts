@@ -103,6 +103,7 @@ export type {
   TeamMemberId,
   MacroId,
   ConversationViewId,
+  ConversationAttributeId,
   AssistantInvolvementId,
   TicketId,
   TicketStatusId,

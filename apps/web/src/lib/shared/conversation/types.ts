@@ -21,6 +21,7 @@ import type {
   ConversationEndReason,
 } from '@/lib/shared/db-types'
 import { CONVERSATION_END_REASONS } from '@/lib/shared/db-types'
+import type { JsonValue } from '@/lib/shared/json'
 export type { ConversationStatus, ConversationSystemEvent, ConversationEndReason }
 export { CONVERSATION_END_REASONS }
 export type ConversationPriority = 'none' | 'low' | 'medium' | 'high' | 'urgent'
@@ -241,6 +242,10 @@ export interface ConversationDTO {
   /** The active SLA's clocks (agent-only); null when no policy is applied.
    *  Stripped on visitor-facing payloads. */
   sla: ConversationSlaDTO | null
+  /** Custom attribute values keyed by definition key (values are `{ v, src, at }`
+   *  envelopes or bare legacy values — read via readAttributeValue). Agent-only;
+   *  empty on visitor-facing payloads. */
+  customAttributes: Record<string, JsonValue>
 }
 
 /** Human labels for each end reason, for the end-conversation dialog + the

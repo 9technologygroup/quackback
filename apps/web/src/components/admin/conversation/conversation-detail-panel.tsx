@@ -32,6 +32,7 @@ import { PriorityControl } from './priority-control'
 import { AssigneeControl } from './assignee-control'
 import { ExportTranscriptButton } from './export-transcript-button'
 import { ConversationTagsEditor } from './conversation-tags-editor'
+import { ConversationAttributesEditor } from './conversation-attributes-editor'
 import { StatusControl } from './status-control'
 import { NoEmailBadge } from './channel-badge'
 import { CompanyCard } from './company-card'
@@ -343,6 +344,15 @@ export function ConversationDetailPanel({
               />
             )}
           </div>
+
+          {/* Attributes — typed inline editors for the admin-defined registry;
+              renders nothing while no definitions exist. */}
+          <ConversationAttributesEditor
+            conversationId={conversation.id}
+            customAttributes={conversation.customAttributes}
+            onChanged={onChanged}
+            enabled={isVisible}
+          />
 
           {/* Quinn AI activity — outcome, escalation reason, sources, CSAT. */}
           {aiActivity && (

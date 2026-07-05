@@ -229,6 +229,11 @@ export {
   // Schema tables - custom saved inbox views + per-user pins
   conversationViews,
   conversationViewPins,
+  // Schema tables - conversation attribute definitions
+  conversationAttributeDefinitions,
+  type ConversationAttributeFieldType,
+  type ConversationAttributeOption,
+  type ConversationAttributeSourceHint,
   // Schema tables - channel identities + outbound-email threading
   channelIdentities,
   conversationOutboundEmails,

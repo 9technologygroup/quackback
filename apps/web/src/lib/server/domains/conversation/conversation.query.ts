@@ -54,6 +54,7 @@ import { loadAuthors, fallbackAuthor } from '../principals/principal-display'
 import { toMessageDTO } from '@/lib/server/messages/message-core'
 import { aggregateReactions } from '@/lib/shared'
 import { truncate } from '@/lib/shared/utils/string'
+import type { JsonValue } from '@/lib/shared/json'
 import type {
   ConversationAuthorDTO,
   ConversationMessageDTO,
@@ -317,7 +318,10 @@ export function toConversationDTO(
   snoozedUntil: string | null = null,
   assignedTeamId: string | null = null,
   // Active-SLA clocks (agent-only); callers pass null on visitor paths.
-  sla: ConversationSlaDTO | null = null
+  sla: ConversationSlaDTO | null = null,
+  // Custom attribute values (agent-only); callers pass {} on visitor paths.
+  // jsonb is JSON-safe by construction, hence the serializable value type.
+  customAttributes: Record<string, JsonValue> = {}
 ): ConversationDTO {
   return {
     id: conversation.id,
@@ -345,6 +349,7 @@ export function toConversationDTO(
     assignedTeamId,
     tags,
     sla,
+    customAttributes,
   }
 }
 
@@ -440,7 +445,8 @@ export async function conversationToDTO(
     side === 'agent' ? (conversation.endNote ?? null) : null,
     side === 'agent' ? (conversation.snoozedUntil?.toISOString() ?? null) : null,
     side === 'agent' ? (conversation.assignedTeamId ?? null) : null,
-    side === 'agent' ? slaDtoFor(conversation) : null
+    side === 'agent' ? slaDtoFor(conversation) : null,
+    side === 'agent' ? ((conversation.customAttributes ?? {}) as Record<string, JsonValue>) : {}
   )
 }
 

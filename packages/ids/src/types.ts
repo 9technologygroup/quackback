@@ -163,6 +163,9 @@ export type SlaPolicyId = TypeId<'sla_policy'>
 /** SLA event ID (§4.6) - e.g., sla_event_01h455vb4pex5vsknk084sn02q */
 export type SlaEventId = TypeId<'sla_event'>
 
+/** Conversation attribute definition ID - e.g., conv_attr_01h455vb4pex5vsknk084sn02q */
+export type ConversationAttributeId = TypeId<'conv_attr'>
+
 /** Workflow ID (§4.6) - e.g., workflow_01h455vb4pex5vsknk084sn02q */
 export type WorkflowId = TypeId<'workflow'>
 
@@ -319,6 +322,7 @@ export interface EntityIdMap {
   team_member: TeamMemberId
   macro: MacroId
   conversation_view: ConversationViewId
+  conversation_attribute: ConversationAttributeId
   feedback_source: FeedbackSourceId
   raw_feedback: RawFeedbackItemId
   feedback_signal: FeedbackSignalId

@@ -39,6 +39,7 @@ const hoisted = vi.hoisted(() => ({
   setConversationPriority: vi.fn(),
   setConversationStatus: vi.fn(),
   snoozeConversation: vi.fn(),
+  assertRequiredAttributesForClose: vi.fn(),
   log: {
     trace: vi.fn(),
     debug: vi.fn(),
@@ -77,6 +78,10 @@ vi.mock('@/lib/server/domains/conversation/conversation.service', () => ({
   snoozeConversation: hoisted.snoozeConversation,
 }))
 
+vi.mock('@/lib/server/domains/conversation-attributes/close-guard', () => ({
+  assertRequiredAttributesForClose: hoisted.assertRequiredAttributesForClose,
+}))
+
 import { bulkUpdateConversationsFn } from '../conversation'
 
 const AUTH = {
@@ -99,6 +104,7 @@ beforeEach(() => {
   hoisted.setConversationPriority.mockResolvedValue({})
   hoisted.setConversationStatus.mockResolvedValue({})
   hoisted.snoozeConversation.mockResolvedValue({})
+  hoisted.assertRequiredAttributesForClose.mockResolvedValue(undefined)
 })
 
 describe('bulkUpdateConversationsFn — per-item isolation', () => {
@@ -158,6 +164,23 @@ describe('bulkUpdateConversationsFn — summary shape', () => {
       succeeded: [],
       failed: [{ id: 'conversation_c1', reason: 'Unknown error' }],
     })
+  })
+
+  it('a required-to-close refusal fails that item without closing it', async () => {
+    hoisted.assertRequiredAttributesForClose.mockImplementation(async (id: string) => {
+      if (id === 'conversation_c1') throw new Error('Missing required attributes: Plan')
+    })
+    const result = await call({
+      conversationIds: ['conversation_c1', 'conversation_c2'],
+      action: { type: 'close' },
+    })
+    expect(result).toEqual({
+      succeeded: ['conversation_c2'],
+      failed: [{ id: 'conversation_c1', reason: 'Missing required attributes: Plan' }],
+    })
+    // The blocked conversation was never closed.
+    expect(hoisted.setConversationStatus).toHaveBeenCalledTimes(1)
+    expect(hoisted.setConversationStatus).toHaveBeenCalledWith('conversation_c2', 'closed', ACTOR)
   })
 })
 
