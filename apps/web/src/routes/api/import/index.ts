@@ -16,14 +16,20 @@ const MAX_REQUEST_SIZE = MAX_FILE_SIZE + 64 * 1024
 const MAX_ROWS = 10000
 
 /**
- * POST /api/import - upload and process a CSV import inline.
+ * POST /api/import - upload a CSV and enqueue it for async processing.
  * Authenticates before touching the body: a cheap Content-Length pre-check
  * rejects oversized uploads with 413 before the multipart body is buffered.
+ *
+ * Async since §I1: the pipeline used to run in-request and return counts
+ * synchronously. It now creates an `import_runs` row, enqueues the commit
+ * job, and returns the run id immediately (202) — the caller polls
+ * GET /api/import/runs/{id} for status, totals, and the error report.
  */
 export async function handleImportPost(request: Request): Promise<Response> {
   const { validateApiWorkspaceAccess } = await import('@/lib/server/functions/workspace')
   const { canAccess } = await import('@/lib/server/auth')
-  const { processImport } = await import('@/lib/server/domains/import/import-service')
+  const { createImportRun } = await import('@/lib/server/domains/import/import-run.service')
+  const { enqueueImportCommitJob } = await import('@/lib/server/domains/import/import-queue')
   const { getBoardById, listBoards } = await import('@/lib/server/domains/boards/board.service')
 
   try {
@@ -135,12 +141,11 @@ export async function handleImportPost(request: Request): Promise<Response> {
       return Response.json({ error: `File exceeds maximum of ${MAX_ROWS} rows` }, { status: 400 })
     }
 
-    log.info({ total_rows: totalRows }, 'processing import rows')
+    log.info({ total_rows: totalRows }, 'queuing import rows')
 
     // Encode CSV as base64 for the import service
     const csvContent = Buffer.from(csvText).toString('base64')
 
-    // Create import data
     const importData: ImportInput = {
       boardId: targetBoardId!,
       csvContent,
@@ -148,17 +153,16 @@ export async function handleImportPost(request: Request): Promise<Response> {
       initiatedByPrincipalId: validation.principal.id,
     }
 
-    // Process import inline (synchronous)
-    const result = await processImport(importData)
-
-    log.info({ imported: result.imported, skipped: result.skipped }, 'csv import complete')
-    return Response.json({
-      imported: result.imported,
-      skipped: result.skipped,
-      errors: result.errors,
-      createdTags: result.createdTags,
-      totalRows,
+    const run = await createImportRun({
+      source: 'csv',
+      fileName: file.name,
+      initiatedByPrincipalId: validation.principal.id,
     })
+
+    await enqueueImportCommitJob({ runId: run.id, source: 'csv', input: importData })
+
+    log.info({ run_id: run.id }, 'csv import enqueued')
+    return Response.json({ runId: run.id, status: run.status, totalRows }, { status: 202 })
   } catch (error) {
     log.error({ err: error }, 'csv import failed')
     const errorMessage = error instanceof Error ? error.message : 'Internal server error'

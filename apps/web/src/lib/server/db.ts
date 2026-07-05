@@ -206,6 +206,9 @@ export {
   // Schema tables - external links
   postExternalLinks,
   postExternalLinksRelations,
+  // Schema tables - import runs (imports & exports hub)
+  importRuns,
+  importRunsRelations,
   // Schema tables - changelog
   changelogEntries,
   changelogEntriesRelations,
@@ -374,6 +377,12 @@ export type {
 } from '@quackback/db'
 export type { OfficeHoursSchedule, OfficeHoursInterval } from '@quackback/db'
 export type { SlaPolicy, SlaEvent } from '@quackback/db'
+export type {
+  ImportRunSource,
+  ImportRunStatus,
+  ImportRunTotals,
+  ImportRunErrorEntry,
+} from '@quackback/db'
 export type {
   Workflow,
   WorkflowRun,

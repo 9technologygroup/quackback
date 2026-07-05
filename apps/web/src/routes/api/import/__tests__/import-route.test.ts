@@ -4,12 +4,17 @@
  * Pins the hardened request order: authenticate first, then a cheap
  * Content-Length pre-check (413 before the body is buffered), then the
  * multipart parse with the post-parse file-size check as the backstop.
+ *
+ * Async since §I1: the route creates an import_runs row and enqueues a
+ * commit job rather than processing inline, so these tests assert against
+ * the { runId, status } 202 contract instead of inline counts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const hoisted = vi.hoisted(() => ({
   mockValidateAccess: vi.fn(),
-  mockProcessImport: vi.fn(),
+  mockCreateImportRun: vi.fn(),
+  mockEnqueueImportCommitJob: vi.fn(),
   mockGetBoardById: vi.fn(),
   mockListBoards: vi.fn(),
 }))
@@ -22,8 +27,12 @@ vi.mock('@/lib/server/auth', () => ({
   canAccess: (role: string, allowed: string[]) => allowed.includes(role),
 }))
 
-vi.mock('@/lib/server/domains/import/import-service', () => ({
-  processImport: hoisted.mockProcessImport,
+vi.mock('@/lib/server/domains/import/import-run.service', () => ({
+  createImportRun: hoisted.mockCreateImportRun,
+}))
+
+vi.mock('@/lib/server/domains/import/import-queue', () => ({
+  enqueueImportCommitJob: hoisted.mockEnqueueImportCommitJob,
 }))
 
 vi.mock('@/lib/server/domains/boards/board.service', () => ({
@@ -62,12 +71,8 @@ beforeEach(() => {
     principal: { id: 'principal_admin', role: 'admin' },
   })
   hoisted.mockListBoards.mockResolvedValue([{ id: 'board_1' }])
-  hoisted.mockProcessImport.mockResolvedValue({
-    imported: 1,
-    skipped: 0,
-    errors: [],
-    createdTags: [],
-  })
+  hoisted.mockCreateImportRun.mockResolvedValue({ id: 'import_run_1', status: 'pending' })
+  hoisted.mockEnqueueImportCommitJob.mockResolvedValue(undefined)
 })
 
 describe('POST /api/import — auth before body parse', () => {
@@ -112,10 +117,11 @@ describe('POST /api/import — Content-Length pre-check', () => {
     const body = (await res.json()) as { error: string }
     expect(body.error).toContain('10MB')
     expect(formData).not.toHaveBeenCalled()
-    expect(hoisted.mockProcessImport).not.toHaveBeenCalled()
+    expect(hoisted.mockCreateImportRun).not.toHaveBeenCalled()
+    expect(hoisted.mockEnqueueImportCommitJob).not.toHaveBeenCalled()
   })
 
-  it('processes a request whose Content-Length is within the limit', async () => {
+  it('enqueues a request whose Content-Length is within the limit and returns the run id', async () => {
     const { request } = makeRequest({
       contentLength: VALID_CSV.length + 200,
       file: csvFile(VALID_CSV),
@@ -123,10 +129,17 @@ describe('POST /api/import — Content-Length pre-check', () => {
 
     const res = await handleImportPost(request)
 
-    expect(res.status).toBe(200)
-    const body = (await res.json()) as { imported: number; totalRows: number }
-    expect(body.imported).toBe(1)
+    expect(res.status).toBe(202)
+    const body = (await res.json()) as { runId: string; status: string; totalRows: number }
+    expect(body.runId).toBe('import_run_1')
+    expect(body.status).toBe('pending')
     expect(body.totalRows).toBe(1)
+    expect(hoisted.mockCreateImportRun).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'csv', fileName: 'import.csv' })
+    )
+    expect(hoisted.mockEnqueueImportCommitJob).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'import_run_1', source: 'csv' })
+    )
   })
 })
 
@@ -145,7 +158,7 @@ describe('POST /api/import — post-parse backstop', () => {
     expect(res.status).toBe(400)
     const body = (await res.json()) as { error: string }
     expect(body.error).toContain('10MB')
-    expect(hoisted.mockProcessImport).not.toHaveBeenCalled()
+    expect(hoisted.mockCreateImportRun).not.toHaveBeenCalled()
   })
 
   it('returns 400 when no file is provided', async () => {

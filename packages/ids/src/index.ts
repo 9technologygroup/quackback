@@ -87,6 +87,7 @@ export type {
   PlatformCredentialId,
   EventMappingId,
   PostExternalLinkId,
+  ImportRunId,
   PostSubscriptionId,
   NotifPrefId,
   UnsubTokenId,
@@ -186,6 +187,7 @@ export {
   inviteIdSchema,
   domainIdSchema,
   segmentIdSchema,
+  importRunIdSchema,
   // Pre-built strict schemas - feedback aggregation
   feedbackSourceIdSchema,
   rawFeedbackItemIdSchema,

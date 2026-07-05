@@ -139,7 +139,8 @@ export async function processBatch(
   defaultBoardId: BoardId,
   startIndex: number,
   userResolver: ImportUserResolver,
-  fallbackPrincipalId: PrincipalId
+  fallbackPrincipalId: PrincipalId,
+  batchTagId?: PostTagId | null
 ): Promise<BatchResult> {
   const result: BatchResult = {
     imported: 0,
@@ -297,6 +298,12 @@ export async function processBatch(
         postTagsToInsert.push({ postId, tagId: tag.id })
       }
     }
+
+    // Auto-tag: every post the run creates also carries the run's batch tag
+    // (import-{source}-{date}), so the batch is findable and reversible.
+    if (batchTagId) {
+      postTagsToInsert.push({ postId, tagId: batchTagId })
+    }
   }
 
   // Execute sequential inserts (no interactive transaction needed)
@@ -354,7 +361,8 @@ export async function processImport(data: ImportInput): Promise<ImportResult> {
       data.boardId,
       i,
       userResolver,
-      data.initiatedByPrincipalId
+      data.initiatedByPrincipalId,
+      data.batchTagId
     )
     result = mergeResults(result, batchResult)
   }

@@ -1,4 +1,4 @@
-import type { BoardId, PrincipalId } from '@quackback/ids'
+import type { BoardId, PrincipalId, PostTagId } from '@quackback/ids'
 
 /**
  * CSV import input
@@ -12,6 +12,11 @@ export interface ImportInput {
   totalRows: number
   /** Member ID of the user who initiated the import */
   initiatedByPrincipalId: PrincipalId
+  /**
+   * Auto-tag applied to every post the run creates (§I1). Absent for the
+   * legacy per-board synchronous path and for dry runs, which never write.
+   */
+  batchTagId?: PostTagId | null
 }
 
 /**

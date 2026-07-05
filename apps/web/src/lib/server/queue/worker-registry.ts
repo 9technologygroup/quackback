@@ -122,6 +122,11 @@ export const WORKER_REGISTRY: readonly WorkerEntry[] = [
         m.closeWorkflowWaitQueue()
       ),
   },
+  {
+    // Async import commit (Imports & exports hub §I1). Initializes on first enqueue.
+    name: 'import',
+    close: () => import('@/lib/server/domains/import/import-queue').then((m) => m.closeImportQueue()),
+  },
 ]
 
 type WorkerBootState = 'pending' | 'running' | 'failed'

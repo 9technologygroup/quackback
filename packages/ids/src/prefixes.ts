@@ -78,6 +78,9 @@ export const ID_PREFIXES = {
   post_external_link: 'post_external_link',
   slack_monitor: 'slack_monitor',
 
+  // Imports & exports hub
+  import_run: 'import_run',
+
   // Notifications
   post_subscription: 'post_sub',
   notif_pref: 'notif_pref',

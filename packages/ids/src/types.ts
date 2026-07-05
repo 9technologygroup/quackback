@@ -79,6 +79,9 @@ export type PostExternalLinkId = TypeId<'post_external_link'>
 /** Slack channel monitor ID - e.g., slack_monitor_01h455vb4pex5vsknk084sn02q */
 export type SlackMonitorId = TypeId<'slack_monitor'>
 
+/** Import run ID - e.g., import_run_01h455vb4pex5vsknk084sn02q */
+export type ImportRunId = TypeId<'import_run'>
+
 /** Post subscription ID - e.g., post_sub_01h455vb4pex5vsknk084sn02q */
 export type PostSubscriptionId = TypeId<'post_sub'>
 
@@ -346,6 +349,7 @@ export interface EntityIdMap {
   event_mapping: EventMappingId
   post_external_link: PostExternalLinkId
   slack_monitor: SlackMonitorId
+  import_run: ImportRunId
   post_subscription: PostSubscriptionId
   notif_pref: NotifPrefId
   unsub_token: UnsubTokenId
