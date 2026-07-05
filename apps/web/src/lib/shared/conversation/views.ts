@@ -15,8 +15,15 @@ import type { ConversationStatus, ConversationPriority } from './types'
 
 // ── Sorts ──────────────────────────────────────────────────────────────────
 
-/** The five inbox sorts. 'recent' (last activity, newest first) is the default. */
-export const CONVERSATION_SORTS = ['recent', 'oldest', 'created', 'waiting', 'priority'] as const
+/** The inbox sorts. 'recent' (last activity, newest first) is the default. */
+export const CONVERSATION_SORTS = [
+  'recent',
+  'oldest',
+  'created',
+  'waiting',
+  'priority',
+  'sla',
+] as const
 export type ConversationSort = (typeof CONVERSATION_SORTS)[number]
 export const DEFAULT_CONVERSATION_SORT: ConversationSort = 'recent'
 
@@ -31,6 +38,7 @@ export const CONVERSATION_SORT_LABELS: Record<ConversationSort, string> = {
   created: 'Recently created',
   waiting: 'Waiting longest',
   priority: 'Priority',
+  sla: 'SLA breach soonest',
 }
 
 // ── Rules ────────────────────────────────────────────────────────────────────

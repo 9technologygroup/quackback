@@ -15,6 +15,7 @@ import {
   PencilSquareIcon,
   ChevronLeftIcon,
   ChevronDownIcon,
+  EllipsisHorizontalIcon,
 } from '@heroicons/react/24/solid'
 import { toast } from 'sonner'
 import type { ConversationId, ConversationMessageId } from '@quackback/ids'
@@ -27,6 +28,7 @@ import {
   setMessageFlagFn,
   markConversationUnreadFromMessageFn,
 } from '@/lib/server/functions/conversation'
+import { removeConversationSlaFn } from '@/lib/server/functions/sla'
 import type {
   ConversationAttachment,
   ConversationMessageDTO,
@@ -56,6 +58,7 @@ import { MacroPicker } from '@/components/conversation/macro-picker'
 import { PriorityControl } from '@/components/admin/conversation/priority-control'
 import { AssigneeControl } from '@/components/admin/conversation/assignee-control'
 import { ChannelBadge } from '@/components/admin/conversation/channel-badge'
+import { SlaChip } from '@/components/admin/conversation/sla-chip'
 import { ConversationTagsEditor } from '@/components/admin/conversation/conversation-tags-editor'
 import { StatusControl } from '@/components/admin/conversation/status-control'
 import { ConversationDetailPanel } from '@/components/admin/conversation/conversation-detail-panel'
@@ -86,6 +89,12 @@ import { TypingDots } from '@/components/shared/typing-dots'
 import { EmojiPicker } from '@/components/shared/emoji-picker'
 import { Avatar } from '@/components/ui/avatar'
 import { Spinner } from '@/components/shared/spinner'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
@@ -481,6 +490,17 @@ export function AgentConversationThread({
     },
   })
 
+  // Remove the active SLA (overflow menu); the thread refetch drops the chip
+  // and other agents' inboxes update off the broadcast.
+  const removeSlaMutation = useMutation({
+    mutationFn: () => removeConversationSlaFn({ data: { conversationId } }),
+    onSuccess: () => {
+      toast.success('SLA removed')
+      refreshThread()
+    },
+    onError: () => toast.error('Failed to remove SLA'),
+  })
+
   // Mark the conversation unread from a message. onChanged refreshes the inbox
   // badge; the thread stays open (the auto-read effect's deps are stable, so it
   // won't immediately re-mark read).
@@ -627,6 +647,7 @@ export function AgentConversationThread({
                   conversation?.status
                 )}
                 {conversation && <ChannelBadge channel={conversation.channel} />}
+                {conversation && <SlaChip sla={conversation.sla} status={conversation.status} />}
                 {conversation?.csatRating != null && (
                   <span className="ml-1.5 text-amber-500">
                     {'★'.repeat(conversation.csatRating)}
@@ -703,6 +724,30 @@ export function AgentConversationThread({
                 onChanged={refreshThread}
               />
             </div>
+          )}
+          {/* Overflow: rarer conversation-level actions. Only shown while it
+              has something to offer (Remove SLA today). */}
+          {conversation?.sla && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="More conversation actions"
+                  className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <EllipsisHorizontalIcon className="h-5 w-5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() => removeSlaMutation.mutate()}
+                  disabled={removeSlaMutation.isPending}
+                  className="text-xs"
+                >
+                  Remove SLA ({conversation.sla.policyName})
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
         {/* Conversation labels — xl+ shows them in the detail panel. */}

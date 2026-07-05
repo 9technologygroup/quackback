@@ -27,6 +27,7 @@ import {
   type ConversationAttachment,
   type ConversationAssistantActivity,
 } from '@/lib/shared/conversation/types'
+import { CONVERSATION_SORTS } from '@/lib/shared/conversation/views'
 import { officeHoursSnapshot } from '@/lib/shared/office-hours'
 import type { ConversationPresence } from '@/lib/shared/conversation/presence'
 import { realEmail } from '@/lib/shared/anonymous-email'
@@ -91,8 +92,9 @@ const listConversationsSchema = z.object({
   source: z.string().max(32).optional(),
   // "Waiting" scope: only conversations a customer is currently waiting on.
   waitingOnly: z.boolean().optional(),
-  // Inbox ordering; omitted = 'recent'.
-  sort: z.enum(['recent', 'oldest', 'created', 'waiting', 'priority']).optional(),
+  // Inbox ordering; omitted = 'recent'. The canonical list lives in shared
+  // views so the sort menu and this boundary can never drift.
+  sort: z.enum(CONVERSATION_SORTS).optional(),
   search: z.string().max(200).optional(),
   // Filter to conversations carrying ANY of these labels.
   tagIds: z.array(z.string()).optional(),

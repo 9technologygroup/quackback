@@ -15,6 +15,7 @@ import { NewConversationDialog } from '@/components/admin/conversation/new-conve
 import { priorityMeta } from '@/lib/shared/conversation/priority-meta'
 import { PriorityDot, PriorityMenuItems } from '@/components/admin/conversation/priority-control'
 import { ChannelBadge } from '@/components/admin/conversation/channel-badge'
+import { SlaChip } from '@/components/admin/conversation/sla-chip'
 import {
   InboxScopeMenu,
   type InboxNavItem,
@@ -344,8 +345,9 @@ export function ConversationListColumn({
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
                     {c.lastMessagePreview ?? c.subject ?? 'No messages yet'}
                   </p>
-                  {(c.channel !== 'messenger' || c.tags.length > 0) && (
+                  {(c.channel !== 'messenger' || c.tags.length > 0 || c.sla) && (
                     <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <SlaChip sla={c.sla} status={c.status} />
                       {c.channel !== 'messenger' && <ChannelBadge channel={c.channel} />}
                       {c.tags.map((t) => (
                         <TagChip

@@ -102,6 +102,8 @@ import {
   resolveVisitorConversation,
   enrichMessagesForAgent,
   sortDescriptorFor,
+  slaDueAtFor,
+  slaDtoFor,
 } from '../conversation.query'
 import { isNull, isNotNull, eq } from '@/lib/server/db'
 
@@ -453,10 +455,77 @@ describe('sortDescriptorFor', () => {
       primary: 'priorityRank',
       direction: 'desc',
     })
+    expect(sortDescriptorFor('sla')).toEqual({
+      primary: 'slaDueAt',
+      direction: 'asc',
+    })
   })
 
   it('defaults to the recent sort', () => {
     expect(sortDescriptorFor()).toEqual(sortDescriptorFor('recent'))
+  })
+})
+
+describe('slaDueAtFor / slaDtoFor', () => {
+  const stamp = {
+    policyId: 'sla_policy_1',
+    policyName: 'Gold',
+    appliedAt: '2026-01-03T09:00:00.000Z',
+    firstResponseDueAt: '2026-01-03T13:00:00.000Z',
+    nextResponseTargetSecs: 8 * 3600,
+    timeToCloseDueAt: '2026-01-06T09:00:00.000Z',
+    firstResponseAt: null,
+    pauseOnSnooze: false,
+  }
+
+  it('is null without an applied SLA', () => {
+    expect(slaDueAtFor(makeConversation())).toBeNull()
+    expect(slaDtoFor(makeConversation())).toBeNull()
+  })
+
+  it('uses the first-response deadline while that clock is open', () => {
+    const c = makeConversation({ slaApplied: stamp } as Partial<Conversation>)
+    expect(slaDueAtFor(c)?.toISOString()).toBe('2026-01-03T13:00:00.000Z')
+  })
+
+  it('arms next-response from waiting_since only after the first reply', () => {
+    const waiting = new Date('2026-01-03T14:00:00.000Z')
+    const settled = { ...stamp, firstResponseAt: '2026-01-03T10:00:00.000Z' }
+    const c = makeConversation({
+      slaApplied: settled,
+      waitingSince: waiting,
+    } as Partial<Conversation>)
+    // waiting_since + 8h beats the close deadline.
+    expect(slaDueAtFor(c)?.toISOString()).toBe('2026-01-03T22:00:00.000Z')
+    // While the first-response clock is still open, waiting_since must NOT arm
+    // a second (double-counted) clock.
+    const early = makeConversation({
+      slaApplied: stamp,
+      waitingSince: waiting,
+    } as Partial<Conversation>)
+    expect(slaDueAtFor(early)?.toISOString()).toBe('2026-01-03T13:00:00.000Z')
+  })
+
+  it('falls back to the close deadline once replies are settled, and null once resolved', () => {
+    const settled = { ...stamp, firstResponseAt: '2026-01-03T10:00:00.000Z' }
+    const c = makeConversation({ slaApplied: settled } as Partial<Conversation>)
+    expect(slaDueAtFor(c)?.toISOString()).toBe('2026-01-06T09:00:00.000Z')
+    const resolved = makeConversation({
+      slaApplied: { ...settled, resolvedAt: '2026-01-05T00:00:00.000Z' },
+    } as Partial<Conversation>)
+    expect(slaDueAtFor(resolved)).toBeNull()
+  })
+
+  it('projects the stamp into the DTO, defaulting the pre-field pause rule to true', () => {
+    const legacy = { ...stamp, pauseOnSnooze: undefined }
+    const dto = slaDtoFor(makeConversation({ slaApplied: legacy } as Partial<Conversation>))
+    expect(dto).toMatchObject({
+      policyId: 'sla_policy_1',
+      policyName: 'Gold',
+      firstResponseDueAt: '2026-01-03T13:00:00.000Z',
+      nextResponseDueAt: null,
+      pauseOnSnooze: true,
+    })
   })
 })
 

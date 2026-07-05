@@ -86,6 +86,7 @@ function conversation(overrides: Partial<ConversationDTO> = {}): ConversationDTO
     endReason: null,
     endNote: null,
     tags: [],
+    sla: null,
     ...overrides,
   }
 }

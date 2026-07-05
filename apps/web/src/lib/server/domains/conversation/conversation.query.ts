@@ -46,6 +46,8 @@ import {
   type TeamId,
 } from '@quackback/ids'
 import type { ConversationSort } from '@/lib/shared/conversation/views'
+import { nextSlaDue } from '@/lib/shared/conversation/sla'
+import type { SlaApplied } from '@/lib/server/domains/sla/sla.service'
 import { getAssistantPrincipal } from '@/lib/server/domains/assistant/assistant.principal'
 import { priorityRankSql } from '@/lib/server/utils/priority-rank'
 import { loadAuthors, fallbackAuthor } from '../principals/principal-display'
@@ -59,6 +61,7 @@ import type {
   MessageReactionCount,
   FlaggedMessageDTO,
   ConversationDTO,
+  ConversationSlaDTO,
   ConversationTagDTO,
   MessageSenderType,
   ConversationStatus,
@@ -263,6 +266,42 @@ export async function listFlaggedMessages(
   }))
 }
 
+/**
+ * Project the engine's applied-SLA stamp into the agent-only DTO field. The
+ * next-response deadline is derived from waiting_since (the clock's re-arm
+ * anchor) as a wall-clock approximation until the next-response evaluator
+ * lands office-hours math; it only arms after the first teammate reply so it
+ * never doubles the first-response clock.
+ */
+export function slaDtoFor(conversation: Conversation): ConversationSlaDTO | null {
+  const stamp = conversation.slaApplied as SlaApplied | null
+  if (!stamp) return null
+  const nextResponseDueAt =
+    stamp.nextResponseTargetSecs && stamp.firstResponseAt && conversation.waitingSince
+      ? new Date(
+          conversation.waitingSince.getTime() + stamp.nextResponseTargetSecs * 1000
+        ).toISOString()
+      : null
+  return {
+    policyId: stamp.policyId,
+    policyName: stamp.policyName,
+    appliedAt: stamp.appliedAt,
+    firstResponseDueAt: stamp.firstResponseDueAt,
+    firstResponseAt: stamp.firstResponseAt ?? null,
+    nextResponseDueAt,
+    timeToCloseDueAt: stamp.timeToCloseDueAt,
+    resolvedAt: stamp.resolvedAt ?? null,
+    pauseOnSnooze: stamp.pauseOnSnooze ?? true,
+  }
+}
+
+/** The nearest unmet SLA deadline for the 'sla' sort's keyset cursor — the JS
+ *  twin of `slaDueExpr` (the two MUST agree or pages dupe/skip). */
+export function slaDueAtFor(conversation: Conversation): Date | null {
+  const dto = slaDtoFor(conversation)
+  return dto ? (nextSlaDue(dto)?.dueAt ?? null) : null
+}
+
 export function toConversationDTO(
   conversation: Conversation,
   visitor: ConversationAuthorDTO,
@@ -276,7 +315,9 @@ export function toConversationDTO(
   endNote: string | null = null,
   // Snooze wake time (agent-only); callers pass null on visitor paths.
   snoozedUntil: string | null = null,
-  assignedTeamId: string | null = null
+  assignedTeamId: string | null = null,
+  // Active-SLA clocks (agent-only); callers pass null on visitor paths.
+  sla: ConversationSlaDTO | null = null
 ): ConversationDTO {
   return {
     id: conversation.id,
@@ -303,6 +344,7 @@ export function toConversationDTO(
     snoozedUntil,
     assignedTeamId,
     tags,
+    sla,
   }
 }
 
@@ -397,7 +439,8 @@ export async function conversationToDTO(
     tagMap.get(conversation.id) ?? [],
     side === 'agent' ? (conversation.endNote ?? null) : null,
     side === 'agent' ? (conversation.snoozedUntil?.toISOString() ?? null) : null,
-    side === 'agent' ? (conversation.assignedTeamId ?? null) : null
+    side === 'agent' ? (conversation.assignedTeamId ?? null) : null,
+    side === 'agent' ? slaDtoFor(conversation) : null
   )
 }
 
@@ -748,7 +791,7 @@ export interface ConversationListFilter {
  * unit-testable without a database.
  */
 export interface SortDescriptor {
-  primary: 'lastMessageAt' | 'createdAt' | 'waitingSince' | 'priorityRank'
+  primary: 'lastMessageAt' | 'createdAt' | 'waitingSince' | 'priorityRank' | 'slaDueAt'
   direction: 'asc' | 'desc'
 }
 
@@ -762,6 +805,8 @@ export function sortDescriptorFor(sort: ConversationSort = 'recent'): SortDescri
       return { primary: 'waitingSince', direction: 'asc' }
     case 'priority':
       return { primary: 'priorityRank', direction: 'desc' }
+    case 'sla':
+      return { primary: 'slaDueAt', direction: 'asc' }
     case 'recent':
     default:
       return { primary: 'lastMessageAt', direction: 'desc' }
@@ -771,6 +816,23 @@ export function sortDescriptorFor(sort: ConversationSort = 'recent'): SortDescri
 /** Numeric priority rank (text enum → orderable int) for the priority sort. */
 const PRIORITY_RANK: Record<string, number> = { urgent: 5, high: 4, medium: 3, low: 2, none: 1 }
 const priorityRankExpr = priorityRankSql(conversations.priority)
+
+/**
+ * Nearest unmet SLA deadline for the 'sla' sort — the SQL twin of
+ * `slaDueAtFor` (keep the arms in lockstep). LEAST ignores NULL arms, so a
+ * settled or untracked clock simply drops out; no applied SLA (or nothing
+ * unmet) yields NULL and sorts last. The next-response arm mirrors the DTO's
+ * wall-clock approximation over waiting_since.
+ */
+const slaDueExpr = sql`LEAST(
+  CASE WHEN ${conversations.slaApplied} ->> 'firstResponseAt' IS NULL
+       THEN (${conversations.slaApplied} ->> 'firstResponseDueAt')::timestamptz END,
+  CASE WHEN ${conversations.slaApplied} ->> 'firstResponseAt' IS NOT NULL
+       THEN ${conversations.waitingSince}
+            + ((${conversations.slaApplied} ->> 'nextResponseTargetSecs')::int * interval '1 second') END,
+  CASE WHEN ${conversations.slaApplied} ->> 'resolvedAt' IS NULL
+       THEN (${conversations.slaApplied} ->> 'timeToCloseDueAt')::timestamptz END
+)`
 
 /** ORDER BY clause list for a sort. `id` breaks ties so keyset never dupes/skips. */
 function orderByForSort(sort: ConversationSort) {
@@ -785,6 +847,9 @@ function orderByForSort(sort: ConversationSort) {
     case 'waitingSince':
       // Longest-waiting first; nobody-waiting (NULL) rows sit at the end.
       return [sql`${conversations.waitingSince} ASC NULLS LAST`, asc(conversations.id)]
+    case 'slaDueAt':
+      // Soonest breach first; rows with no active SLA clock sit at the end.
+      return [sql`${slaDueExpr} ASC NULLS LAST`, asc(conversations.id)]
     case 'createdAt':
       return [
         d.direction === 'asc' ? asc(conversations.createdAt) : desc(conversations.createdAt),
@@ -834,6 +899,20 @@ function cursorConditionForSort(sort: ConversationSort, c: Conversation) {
         gt(conversations.waitingSince, c.waitingSince),
         and(eq(conversations.waitingSince, c.waitingSince), gt(conversations.id, c.id)),
         isNull(conversations.waitingSince)
+      )
+    }
+    case 'slaDueAt': {
+      // slaDueExpr ASC NULLS LAST, id ASC — same NULLS-LAST boundary shape as
+      // the waiting sort, with the cursor's due derived by the JS twin. The
+      // ISO string is bound (not a Date) and cast, matching the timestamptz
+      // the expression yields.
+      const due = slaDueAtFor(c)
+      if (!due) return and(sql`${slaDueExpr} IS NULL`, gt(conversations.id, c.id))
+      const iso = due.toISOString()
+      return or(
+        sql`${slaDueExpr} > ${iso}::timestamptz`,
+        and(sql`${slaDueExpr} = ${iso}::timestamptz`, gt(conversations.id, c.id)),
+        sql`${slaDueExpr} IS NULL`
       )
     }
     case 'createdAt':
@@ -1085,7 +1164,8 @@ export async function listConversationsForAgent(
         tagMap.get(c.id) ?? [],
         c.endNote ?? null,
         c.snoozedUntil?.toISOString() ?? null,
-        c.assignedTeamId ?? null
+        c.assignedTeamId ?? null,
+        slaDtoFor(c)
       )
     ),
     hasMore,

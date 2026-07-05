@@ -43,6 +43,17 @@ const agentDto = {
   endReason: null,
   endNote: 'internal end note',
   tags: [{ id: 'conversation_tag_1', name: 'VIP', color: '#ff0000' }],
+  sla: {
+    policyId: 'sla_policy_1',
+    policyName: 'Gold',
+    appliedAt: '2026-01-01T00:00:00.000Z',
+    firstResponseDueAt: '2026-01-01T04:00:00.000Z',
+    firstResponseAt: null,
+    nextResponseDueAt: null,
+    timeToCloseDueAt: null,
+    resolvedAt: null,
+    pauseOnSnooze: true,
+  },
 } as unknown as ConversationDTO
 
 beforeEach(() => vi.clearAllMocks())
@@ -83,12 +94,14 @@ describe('publishConversationUpdate', () => {
     expect(inboxConv.visitorEmail).toBe('visitor@example.com')
     expect(inboxConv.tags).toHaveLength(1)
     expect(inboxConv.endNote).toBe('internal end note')
+    expect(inboxConv.sla?.policyName).toBe('Gold')
 
     // ...the visitor copy must have every agent-only field stripped.
     const visitorConv = (visitor![1] as { conversation: ConversationDTO }).conversation
     expect(visitorConv.visitorEmail).toBeNull()
     expect(visitorConv.tags).toEqual([])
     expect(visitorConv.endNote).toBeNull()
+    expect(visitorConv.sla).toBeNull()
   })
 })
 
