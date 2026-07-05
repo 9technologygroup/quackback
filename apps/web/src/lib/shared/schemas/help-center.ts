@@ -145,6 +145,15 @@ export const updateHelpCenterSeoSchema = z.object({
 })
 
 // ============================================================================
+// Auto-translate Schema (domains/languages §H3)
+// ============================================================================
+
+export const updateHelpCenterAutoTranslateSchema = z.object({
+  enabled: z.boolean().optional(),
+  protectedTerms: z.array(z.string().min(1).max(100)).max(100).optional(),
+})
+
+// ============================================================================
 // Domain Schemas (domains/languages §1)
 // ============================================================================
 

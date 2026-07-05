@@ -20,6 +20,7 @@ export type ChatFeature =
   | 'interpretation'
   | 'merge'
   | 'helpCenterAnswers'
+  | 'helpCenterTranslate'
   // The in-product AI agent (Quinn). No per-feature model override today: it
   // rides the chat role default so BYOK config stays one dial.
   | 'assistant'
@@ -52,6 +53,7 @@ export function getChatModel(feature: ChatFeature): string | null {
     interpretation: config.aiInterpretationModel,
     merge: config.aiMergeModel,
     helpCenterAnswers: config.aiHelpCenterModel,
+    helpCenterTranslate: config.aiHelpCenterTranslateModel,
     assistant: config.aiAssistantModel,
   }
   return resolveModel(overrides[feature], config.aiChatModel)

@@ -743,12 +743,31 @@ export const DEFAULT_HELP_CENTER_LOCALES_CONFIG: HelpCenterLocalesConfig = {
   chrome: {},
 }
 
+/**
+ * Auto-translate (domains/languages §H3, fast-follow). Off by default. When
+ * on, publishing a base-locale article queues a per-additional-locale
+ * translation job through the BYOK AI client; results are written as DRAFT
+ * translations only (an editor must publish them). `protectedTerms` are
+ * glossary entries (product name, technical terms) the translation prompt
+ * is instructed never to translate.
+ */
+export interface HelpCenterAutoTranslateConfig {
+  enabled: boolean
+  protectedTerms: string[]
+}
+
+export const DEFAULT_HELP_CENTER_AUTO_TRANSLATE_CONFIG: HelpCenterAutoTranslateConfig = {
+  enabled: false,
+  protectedTerms: [],
+}
+
 export interface HelpCenterConfig {
   enabled: boolean
   homepageTitle: string
   homepageDescription: string
   domain: HelpCenterDomainConfig
   locales: HelpCenterLocalesConfig
+  autoTranslate: HelpCenterAutoTranslateConfig
   seo: HelpCenterSeoConfig
 }
 
@@ -758,6 +777,7 @@ export const DEFAULT_HELP_CENTER_CONFIG: HelpCenterConfig = {
   homepageDescription: 'Search our knowledge base or browse by category',
   domain: DEFAULT_HELP_CENTER_DOMAIN_CONFIG,
   locales: DEFAULT_HELP_CENTER_LOCALES_CONFIG,
+  autoTranslate: DEFAULT_HELP_CENTER_AUTO_TRANSLATE_CONFIG,
   seo: DEFAULT_HELP_CENTER_SEO_CONFIG,
 }
 

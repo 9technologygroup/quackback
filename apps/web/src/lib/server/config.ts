@@ -113,6 +113,7 @@ const configSchema = z.object({
   aiInterpretationModel: z.string().optional(),
   aiMergeModel: z.string().optional(),
   aiHelpCenterModel: z.string().optional(),
+  aiHelpCenterTranslateModel: z.string().optional(),
   aiAssistantModel: z.string().optional(),
 
   // Telemetry (optional)
@@ -176,6 +177,7 @@ function buildConfigFromEnv(): unknown {
     aiInterpretationModel: env('AI_INTERPRETATION_MODEL'),
     aiMergeModel: env('AI_MERGE_MODEL'),
     aiHelpCenterModel: env('AI_HELP_CENTER_MODEL'),
+    aiHelpCenterTranslateModel: env('AI_HELP_CENTER_TRANSLATE_MODEL'),
     aiAssistantModel: env('AI_ASSISTANT_MODEL'),
 
     // Telemetry
@@ -336,6 +338,9 @@ export const config = {
   },
   get aiHelpCenterModel() {
     return loadConfig().aiHelpCenterModel
+  },
+  get aiHelpCenterTranslateModel() {
+    return loadConfig().aiHelpCenterTranslateModel
   },
   get aiAssistantModel() {
     return loadConfig().aiAssistantModel

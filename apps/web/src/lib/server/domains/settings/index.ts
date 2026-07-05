@@ -34,6 +34,7 @@ export type {
   HelpCenterDomainConfig,
   HelpCenterLocalesConfig,
   HelpCenterLocaleChromeStrings,
+  HelpCenterAutoTranslateConfig,
 } from './settings.types'
 
 // Welcome card constants (no DB dependency)

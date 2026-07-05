@@ -277,7 +277,14 @@ export async function publishArticle(id: KbArticleId): Promise<HelpCenterArticle
     .where(and(eq(helpCenterArticles.id, id), isNull(helpCenterArticles.deletedAt)))
     .returning()
   if (!updated) throw new NotFoundError('ARTICLE_NOT_FOUND', `Article ${id} not found`)
-  return resolveArticleWithCategory(updated)
+  const resolved = await resolveArticleWithCategory(updated)
+
+  // Auto-translate (domains/languages §H3): fire-and-forget, off by default.
+  import('./help-center-auto-translate.service')
+    .then((m) => m.queueAutoTranslateOnPublish(resolved))
+    .catch((err) => log.error({ article_id: id, err }, 'auto-translate queue import failed'))
+
+  return resolved
 }
 
 export async function unpublishArticle(id: KbArticleId): Promise<HelpCenterArticleWithCategory> {

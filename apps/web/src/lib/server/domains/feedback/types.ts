@@ -78,10 +78,17 @@ export type FeedbackIngestJob =
   | { type: 'poll-source'; sourceId: string; cursor?: string }
   | { type: 'parse-batch'; sourceId: string; importId: string }
 
+/**
+ * This is the general low-concurrency AI-jobs queue (deliberately named after
+ * its first user). `help-center-translate-article` (domains/languages §H3)
+ * reuses it rather than standing up a second BullMQ queue+worker for one
+ * more lightweight, rate-limit-sensitive OpenAI-compatible call.
+ */
 export type FeedbackAiJob =
   | { type: 'extract-signals'; rawItemId: string }
   | { type: 'interpret-signal'; signalId: string }
   | { type: 'retention-cleanup' }
+  | { type: 'help-center-translate-article'; articleId: string; locale: string }
 
 export type FeedbackMaintenanceJob =
   | { type: 'recover-stuck-items' }

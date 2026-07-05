@@ -25,7 +25,9 @@ import {
   useEnableHelpCenterLocale,
   useDisableHelpCenterLocale,
   useUpdateHelpCenterLocaleChrome,
+  useUpdateHelpCenterAutoTranslate,
 } from '@/lib/client/mutations/settings'
+import { Textarea } from '@/components/ui/textarea'
 import { listArticlesFn } from '@/lib/server/functions/help-center'
 import { SUPPORTED_LOCALES, type SupportedLocale } from '@/lib/shared/i18n'
 import type { HelpCenterConfig } from '@/lib/shared/types/settings'
@@ -53,6 +55,7 @@ export function DomainsLanguagesTab({ config }: DomainsLanguagesTabProps) {
       <RedirectRulesCard />
       <IndexingCard indexable={config.seo.indexable} />
       <LocalesCard locales={config.locales} />
+      <AutoTranslateCard autoTranslate={config.autoTranslate} />
     </div>
   )
 }
@@ -497,5 +500,82 @@ function LocaleRow({
         </div>
       )}
     </li>
+  )
+}
+
+// ============================================================================
+// Auto-translate (domains/languages §H3)
+// ============================================================================
+
+function AutoTranslateCard({
+  autoTranslate,
+}: {
+  autoTranslate: HelpCenterConfig['autoTranslate']
+}) {
+  const updateAutoTranslate = useUpdateHelpCenterAutoTranslate()
+  const [enabled, setEnabled] = useState(autoTranslate.enabled)
+  const [protectedTermsText, setProtectedTermsText] = useState(
+    autoTranslate.protectedTerms.join('\n')
+  )
+
+  function handleToggle(next: boolean) {
+    setEnabled(next)
+    updateAutoTranslate.mutate({ enabled: next })
+  }
+
+  function handleSaveTerms() {
+    const terms = protectedTermsText
+      .split('\n')
+      .map((t) => t.trim())
+      .filter(Boolean)
+    updateAutoTranslate.mutate({ protectedTerms: terms })
+  }
+
+  return (
+    <SettingsCard
+      title="Auto-translate"
+      description="Queue an AI translation draft for each enabled language when you publish an article"
+    >
+      <div className="space-y-4">
+        <div className="flex items-center justify-between rounded-lg border border-border/50 p-4">
+          <div>
+            <Label htmlFor="hc-auto-translate" className="text-sm font-medium cursor-pointer">
+              Auto-translate on publish
+            </Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Writes a draft translation per enabled language -- never auto-published
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <InlineSpinner visible={updateAutoTranslate.isPending} />
+            <Switch
+              id="hc-auto-translate"
+              checked={enabled}
+              onCheckedChange={handleToggle}
+              disabled={updateAutoTranslate.isPending}
+              aria-label="Auto-translate on publish"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="hc-protected-terms">Protected terms</Label>
+          <p className="text-xs text-muted-foreground">
+            One per line. Never translated (product name, technical terms).
+          </p>
+          <Textarea
+            id="hc-protected-terms"
+            value={protectedTermsText}
+            onChange={(e) => setProtectedTermsText(e.target.value)}
+            rows={4}
+            placeholder="Quackback&#10;API&#10;webhook"
+          />
+          <Button size="sm" disabled={updateAutoTranslate.isPending} onClick={handleSaveTerms}>
+            <InlineSpinner visible={updateAutoTranslate.isPending} />
+            Save
+          </Button>
+        </div>
+      </div>
+    </SettingsCard>
   )
 }

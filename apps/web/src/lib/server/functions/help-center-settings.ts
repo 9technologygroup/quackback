@@ -19,6 +19,7 @@ import {
   enableHelpCenterLocaleSchema,
   disableHelpCenterLocaleSchema,
   updateHelpCenterLocaleChromeSchema,
+  updateHelpCenterAutoTranslateSchema,
 } from '@/lib/shared/schemas/help-center'
 
 // ============================================================================
@@ -72,4 +73,18 @@ export const updateHelpCenterLocaleChromeFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
     return updateHelpCenterLocaleChrome(data)
+  })
+
+// ============================================================================
+// Auto-translate Server Function (domains/languages §H3)
+// ============================================================================
+
+export const updateHelpCenterAutoTranslateFn = createServerFn({ method: 'POST' })
+  .validator(updateHelpCenterAutoTranslateSchema)
+  .handler(async ({ data }) => {
+    await requireAuth({ permission: PERMISSIONS.HELP_CENTER_MANAGE })
+    const current = await getHelpCenterConfig()
+    return updateHelpCenterConfig({
+      autoTranslate: { ...current.autoTranslate, ...data },
+    })
   })
