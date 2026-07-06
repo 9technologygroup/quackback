@@ -1,9 +1,10 @@
 'use client'
 
-import { Link, useRouterState } from '@tanstack/react-router'
+import { Link } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
 import { cn } from '@/lib/shared/utils'
 import { getNotificationTypeConfig } from './notification-type-config'
+import { getNotificationTarget } from './notification-target'
 import type { SerializedNotification } from '@/lib/client/hooks/use-notifications-queries'
 
 interface NotificationItemProps {
@@ -20,8 +21,6 @@ export function NotificationItem({
   onClick,
   variant = 'compact',
 }: NotificationItemProps) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
-
   const config = getNotificationTypeConfig(notification.type)
   const Icon = config.icon
   const isUnread = !notification.readAt
@@ -52,11 +51,15 @@ export function NotificationItem({
     />
   )
 
-  if (notification.post && notification.postId) {
+  const target = getNotificationTarget(notification)
+
+  if (target) {
     return (
       <Link
-        to="/b/$slug/posts/$postId"
-        params={{ slug: notification.post.boardSlug, postId: notification.postId }}
+        to={target.to}
+        params={target.params}
+        search={target.search}
+        hash={target.hash}
         onClick={handleClick}
       >
         {content}
@@ -64,46 +67,7 @@ export function NotificationItem({
     )
   }
 
-  // Conversation mentions deep-link into the inbox conversation. Recipients are always
-  // team members (the mention sync is admin/member-only), so /admin/inbox is
-  // the correct target in both the dropdown and the full notifications page.
-  if (notification.type === 'chat_mention' && notification.conversationId) {
-    return (
-      <Link to="/admin/inbox" search={{ c: notification.conversationId }} onClick={handleClick}>
-        {content}
-      </Link>
-    )
-  }
-
-  // A ticket-stage change notifies the requester (portal); deep-link to the thread.
-  if (notification.type === 'ticket_status_changed' && notification.ticketId) {
-    return (
-      <Link
-        to="/support/ticket/$ticketId"
-        params={{ ticketId: notification.ticketId }}
-        onClick={handleClick}
-      >
-        {content}
-      </Link>
-    )
-  }
-
-  const isAdminContext = pathname.startsWith('/admin')
-  const fallbackTo = isAdminContext ? '/admin/notifications' : '/notifications'
-
-  if (isFullVariant) {
-    return (
-      <div onClick={handleClick} className="cursor-pointer">
-        {content}
-      </div>
-    )
-  }
-
-  return (
-    <Link to={fallbackTo} onClick={handleClick}>
-      {content}
-    </Link>
-  )
+  return <div onClick={handleClick}>{content}</div>
 }
 
 interface ContentProps {
