@@ -382,6 +382,7 @@ export async function sendVisitorMessage(
 export interface StartAgentConversationInput {
   targetPrincipalId: PrincipalId
   content: string
+  contentJson?: TiptapContent | null
 }
 
 /**
@@ -401,7 +402,19 @@ export async function startAgentConversation(
   const decision = canActAsAgent(actor)
   if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
 
-  const content = validateContent(input.content, false)
+  // Rich-composer doc (inline embeds/images): sanitized on write like the
+  // agent-reply path, but no origin restriction — this message is always
+  // agent-authored, never a visitor upload.
+  const safeContentJson = input.contentJson ? sanitizeTiptapContent(input.contentJson) : null
+  // A text-less rich message is valid only when it carries an inline image or
+  // a shared post; this label also backs the subject/preview/notification body.
+  const fallbackLabel = richMessageFallbackLabel(safeContentJson)
+  // resolveMessageContent derives a plaintext mirror from the doc when the
+  // caller sent blank content alongside a text-bearing one.
+  const content = validateContent(
+    resolveMessageContent(input.content, safeContentJson),
+    !!fallbackLabel
+  )
 
   const [target] = await db
     .select({
@@ -448,7 +461,7 @@ export async function startAgentConversation(
         // The composer owns the thread from the start — it lands in "Mine".
         assignedAgentPrincipalId: agent.principalId,
         status: 'open',
-        subject: preview(content, []),
+        subject: preview(content || fallbackLabel, []),
       })
       .returning()
 
@@ -459,6 +472,7 @@ export async function startAgentConversation(
         principalId: agent.principalId,
         senderType: 'agent',
         content,
+        contentJson: safeContentJson,
       })
       .returning()
 
@@ -466,7 +480,7 @@ export async function startAgentConversation(
       .update(conversations)
       .set({
         lastMessageAt: message.createdAt,
-        lastMessagePreview: preview(content, []),
+        lastMessagePreview: preview(content || fallbackLabel, []),
         // Composing counts as reading on the agent side.
         agentLastReadAt: message.createdAt,
         updatedAt: message.createdAt,
@@ -493,7 +507,7 @@ export async function startAgentConversation(
   void notifyConversationStarted({
     conversationId: txResult.conversation.id,
     visitorPrincipalId: txResult.conversation.visitorPrincipalId,
-    content: preview(content, []),
+    content: preview(content || fallbackLabel, []),
     agentName: agent.displayName ?? 'Support',
   })
 

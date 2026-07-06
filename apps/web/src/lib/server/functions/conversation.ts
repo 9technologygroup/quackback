@@ -130,7 +130,10 @@ const agentSendSchema = z.object({
 
 const startConversationSchema = z.object({
   targetPrincipalId: z.string(),
-  content: z.string().min(1).max(MAX_CONVERSATION_MESSAGE_LENGTH),
+  content: z.string().max(MAX_CONVERSATION_MESSAGE_LENGTH).default(''),
+  // Rich-composer TipTap doc (inline embeds / images). Sanitized server-side;
+  // the plain `content` is the doc's text, kept for previews/notifications/search.
+  contentJson: z.unknown().nullable().optional(),
 })
 
 const agentNoteSchema = z.object({
@@ -952,6 +955,9 @@ export const startAgentConversationFn = createServerFn({ method: 'POST' })
         {
           targetPrincipalId: data.targetPrincipalId as PrincipalId,
           content: data.content,
+          contentJson: (data.contentJson ?? null) as
+            | import('@/lib/shared/db-types').TiptapContent
+            | null,
         },
         {
           principalId: ctx.principal.id,

@@ -310,3 +310,85 @@ describe('startAgentConversation happy path', () => {
     expect(notify.notifyVisitorMessage).not.toHaveBeenCalled()
   })
 })
+
+describe('startAgentConversation rich content', () => {
+  it('stores contentJson as null when the caller sends plain text only', async () => {
+    await startAgentConversation(
+      { targetPrincipalId, content: 'Hello from support' },
+      agent,
+      agentActor
+    )
+    expect(insertedMessages[0]).toMatchObject({ content: 'Hello from support', contentJson: null })
+  })
+
+  it('persists the rich doc as contentJson and derives content from it when content is blank', async () => {
+    const contentJson = {
+      type: 'doc' as const,
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Hello from the doc.' }] }],
+    }
+    const result = await startAgentConversation(
+      { targetPrincipalId, content: '', contentJson },
+      agent,
+      agentActor
+    )
+    expect(result.created).toBe(true)
+    expect(insertedMessages[0]).toMatchObject({
+      content: 'Hello from the doc.',
+      contentJson,
+    })
+  })
+
+  it('sanitizes the doc before storing it (strips disallowed nodes)', async () => {
+    // Same Layer-1 sanitizer as every other TipTap-doc write path, so a
+    // tampered client can't store hostile nodes on an outbound compose.
+    const contentJson = {
+      type: 'doc' as const,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'hi' }] },
+        { type: 'evilCustomNode', attrs: { onclick: 'steal()' } },
+      ],
+    }
+    await startAgentConversation(
+      { targetPrincipalId, content: 'hi', contentJson },
+      agent,
+      agentActor
+    )
+    const stored = insertedMessages[0].contentJson as { content: { type: string }[] }
+    expect(stored.content.some((n) => n.type === 'evilCustomNode')).toBe(false)
+  })
+
+  it('does not restrict inline image origins (agent-authored, unlike the visitor path)', async () => {
+    const contentJson = {
+      type: 'doc' as const,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'see:' }] },
+        {
+          type: 'resizableImage',
+          attrs: { src: 'https://elsewhere.example.com/image.png', alt: 'x' },
+        },
+      ],
+    }
+    await startAgentConversation(
+      { targetPrincipalId, content: 'see:', contentJson },
+      agent,
+      agentActor
+    )
+    const stored = insertedMessages[0].contentJson as {
+      content: { type: string; attrs?: Record<string, unknown> }[]
+    }
+    const resizable = stored.content.find((n) => n.type === 'resizableImage')
+    expect(resizable?.attrs?.src).toBe('https://elsewhere.example.com/image.png')
+  })
+
+  it('rejects a blank message even with contentJson carrying no text (empty doc)', async () => {
+    const emptyDoc = { type: 'doc' as const, content: [{ type: 'paragraph' }] }
+    await expect(
+      startAgentConversation(
+        { targetPrincipalId, content: '', contentJson: emptyDoc },
+        agent,
+        agentActor
+      )
+    ).rejects.toBeInstanceOf(ValidationError)
+    expect(insertedConversations).toHaveLength(0)
+  })
+})
