@@ -260,56 +260,62 @@ export async function listFlaggedMessages(actor: Actor): Promise<FlaggedMessageD
   const viewerPrincipalId = actor.principalId
   if (!viewerPrincipalId) return []
 
-  const conversationRows = await db
-    .select({
-      messageId: conversationMessages.id,
-      conversationId: conversationMessages.conversationId,
-      content: conversationMessages.content,
-      senderType: conversationMessages.senderType,
-      authorName: principal.displayName,
-      visitorPrincipalId: conversations.visitorPrincipalId,
-      flaggedAt: conversationMessageFlags.flaggedAt,
-    })
-    .from(conversationMessageFlags)
-    .innerJoin(
-      conversationMessages,
-      and(
-        eq(conversationMessages.id, conversationMessageFlags.conversationMessageId),
-        isNull(conversationMessages.deletedAt)
+  // The two branches are independent reads (different parent table joins,
+  // same flag-ownership predicate) — run them concurrently rather than
+  // awaiting one after the other.
+  const [{ tickets }, { ticketFilter }] = await Promise.all([
+    import('@/lib/server/db'),
+    import('@/lib/server/policy/tickets'),
+  ])
+  const [conversationRows, ticketRows] = await Promise.all([
+    db
+      .select({
+        messageId: conversationMessages.id,
+        conversationId: conversationMessages.conversationId,
+        content: conversationMessages.content,
+        senderType: conversationMessages.senderType,
+        authorName: principal.displayName,
+        visitorPrincipalId: conversations.visitorPrincipalId,
+        flaggedAt: conversationMessageFlags.flaggedAt,
+      })
+      .from(conversationMessageFlags)
+      .innerJoin(
+        conversationMessages,
+        and(
+          eq(conversationMessages.id, conversationMessageFlags.conversationMessageId),
+          isNull(conversationMessages.deletedAt)
+        )
       )
-    )
-    .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
-    .leftJoin(principal, eq(principal.id, conversationMessages.principalId))
-    .where(eq(conversationMessageFlags.principalId, viewerPrincipalId))
-    .orderBy(desc(conversationMessageFlags.flaggedAt))
-    .limit(100)
-
-  const { tickets } = await import('@/lib/server/db')
-  const { ticketFilter } = await import('@/lib/server/policy/tickets')
-  const ticketRows = await db
-    .select({
-      messageId: conversationMessages.id,
-      ticketId: conversationMessages.ticketId,
-      content: conversationMessages.content,
-      senderType: conversationMessages.senderType,
-      authorName: principal.displayName,
-      ticketTitle: tickets.title,
-      ticketNumber: tickets.number,
-      flaggedAt: conversationMessageFlags.flaggedAt,
-    })
-    .from(conversationMessageFlags)
-    .innerJoin(
-      conversationMessages,
-      and(
-        eq(conversationMessages.id, conversationMessageFlags.conversationMessageId),
-        isNull(conversationMessages.deletedAt)
+      .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
+      .leftJoin(principal, eq(principal.id, conversationMessages.principalId))
+      .where(eq(conversationMessageFlags.principalId, viewerPrincipalId))
+      .orderBy(desc(conversationMessageFlags.flaggedAt))
+      .limit(100),
+    db
+      .select({
+        messageId: conversationMessages.id,
+        ticketId: conversationMessages.ticketId,
+        content: conversationMessages.content,
+        senderType: conversationMessages.senderType,
+        authorName: principal.displayName,
+        ticketTitle: tickets.title,
+        ticketNumber: tickets.number,
+        flaggedAt: conversationMessageFlags.flaggedAt,
+      })
+      .from(conversationMessageFlags)
+      .innerJoin(
+        conversationMessages,
+        and(
+          eq(conversationMessages.id, conversationMessageFlags.conversationMessageId),
+          isNull(conversationMessages.deletedAt)
+        )
       )
-    )
-    .innerJoin(tickets, and(eq(tickets.id, conversationMessages.ticketId), ticketFilter(actor)))
-    .leftJoin(principal, eq(principal.id, conversationMessages.principalId))
-    .where(eq(conversationMessageFlags.principalId, viewerPrincipalId))
-    .orderBy(desc(conversationMessageFlags.flaggedAt))
-    .limit(100)
+      .innerJoin(tickets, and(eq(tickets.id, conversationMessages.ticketId), ticketFilter(actor)))
+      .leftJoin(principal, eq(principal.id, conversationMessages.principalId))
+      .where(eq(conversationMessageFlags.principalId, viewerPrincipalId))
+      .orderBy(desc(conversationMessageFlags.flaggedAt))
+      .limit(100),
+  ])
 
   const visitorNames = await loadAuthors(conversationRows.map((r) => r.visitorPrincipalId))
   const fromConversations: FlaggedMessageDTO[] = conversationRows.map((r) => ({

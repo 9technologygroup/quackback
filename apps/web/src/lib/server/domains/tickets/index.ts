@@ -19,4 +19,6 @@ export type {
   TicketCompanyRef,
   TicketDTO,
   TicketListPage,
+  BulkTicketAction,
+  BulkTicketResult,
 } from './ticket.types'

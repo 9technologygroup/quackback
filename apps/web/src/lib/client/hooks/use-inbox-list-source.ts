@@ -80,7 +80,10 @@ export function useInboxListSource({
     ...inboxQueries.itemList(
       buildInboxListParams(nav, facet, priorityFilter, search, companyId, sort, activeViewFilters)
     ),
-    refetchInterval: 30_000, // polling fallback until ticket SSE lands (M3)
+    // Ticket SSE has landed (M3) and drives real-time updates via
+    // `patchTicketInInboxLists` — this is now just the safety-net cadence for
+    // a dropped/reconnecting stream, so it can be slower than a live poll.
+    refetchInterval: 60_000,
     enabled: useUnified && !isSaved,
   })
   const { data: legacyData, isLoading: legacyLoading } = useQuery({

@@ -67,6 +67,8 @@ import type {
   TicketSort,
   TicketDTO,
   TicketListPage,
+  BulkTicketAction,
+  BulkTicketResult,
 } from './ticket.types'
 
 export { resolveStage }
@@ -693,6 +695,51 @@ export async function setTicketPriority(
   const [updated] = await db.update(tickets).set(patch).where(eq(tickets.id, id)).returning()
   // Realtime signal (unified inbox §3.2, M3).
   return publishTicketUpdated(updated)
+}
+
+// ---------------------------------------------------------------------------
+// Bulk mutation (support platform §4.6, ticket axis)
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply one action to many tickets (support platform §4.6's ticket-axis
+ * counterpart of the conversation bulk actions). Loops the SAME
+ * single-ticket ops (`assignTicket`/`setTicketPriority`/`setTicketStatus`)
+ * their individual server fns call — never a bypass of their `assertCan`
+ * checks, realtime publish, or webhook — so a bulk apply is exactly N
+ * individual applies. Per-item isolation: one ticket's failure (missing,
+ * forbidden, an invalid target) lands in `failed` and never aborts the rest
+ * of the batch.
+ */
+export async function bulkUpdateTickets(
+  ticketIds: TicketId[],
+  action: BulkTicketAction,
+  actor: Actor
+): Promise<BulkTicketResult> {
+  const apply: (id: TicketId) => Promise<unknown> = (() => {
+    switch (action.type) {
+      case 'assign':
+        return (id) => assignTicket(id, { assigneePrincipalId: action.assignTo }, actor)
+      case 'assign_team':
+        return (id) => assignTicket(id, { assigneeTeamId: action.teamId }, actor)
+      case 'priority':
+        return (id) => setTicketPriority(id, action.priority, actor)
+      case 'set_status':
+        return (id) => setTicketStatus(id, action.statusId, actor)
+    }
+  })()
+
+  const succeeded: TicketId[] = []
+  const failed: { id: TicketId; reason: string }[] = []
+  for (const id of ticketIds) {
+    try {
+      await apply(id)
+      succeeded.push(id)
+    } catch (error) {
+      failed.push({ id, reason: error instanceof Error ? error.message : 'Unknown error' })
+    }
+  }
+  return { succeeded, failed }
 }
 
 /**

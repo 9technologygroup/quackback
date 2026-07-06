@@ -175,22 +175,33 @@ function sortValue(item: InboxItemDTO, sort: InboxSort): number {
   return new Date(itemActivityAt(item)).getTime()
 }
 
+/** An item paired with its precomputed sort key, so the comparator below never
+ *  re-parses a date (or re-derives a priority rank) per comparison — the key
+ *  is computed once per item up front instead of O(n log n) times during the
+ *  sort. */
+interface KeyedInboxItem {
+  item: InboxItemDTO
+  key: number
+}
+
 /**
  * Total ordering across both branches for one sort: primary value per
  * direction (desc for recent/created/priority, asc for oldest), tie-broken by
  * kind then id so the comparator is deterministic (required for a stable
- * merge + reproducible cursor derivation).
+ * merge + reproducible cursor derivation). Takes each side's precomputed
+ * `key` (see `sortValue`) rather than the raw item, so no date parsing
+ * happens inside the comparator itself.
  */
-function compareInboxItems(a: InboxItemDTO, b: InboxItemDTO, sort: InboxSort): number {
-  const av = sortValue(a, sort)
-  const bv = sortValue(b, sort)
-  if (av !== bv) {
+function compareKeyedInboxItems(a: KeyedInboxItem, b: KeyedInboxItem, sort: InboxSort): number {
+  if (a.key !== b.key) {
     const ascending = sort === 'oldest'
-    return ascending ? av - bv : bv - av
+    return ascending ? a.key - b.key : b.key - a.key
   }
-  if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1
-  const aId = itemId(a)
-  const bId = itemId(b)
+  const aItem = a.item
+  const bItem = b.item
+  if (aItem.kind !== bItem.kind) return aItem.kind < bItem.kind ? -1 : 1
+  const aId = itemId(aItem)
+  const bId = itemId(bItem)
   return aId < bId ? -1 : aId > bId ? 1 : 0
 }
 
@@ -211,9 +222,15 @@ function lastIdOfKind(items: InboxItemDTO[], kind: 'conversation' | 'ticket'): s
  */
 export function mergeInboxBranches(input: MergeInboxBranchesInput): MergeInboxBranchesResult {
   const { conversation, ticket, sort, limit } = input
-  const combined = [...conversation.items, ...ticket.items].sort((a, b) =>
-    compareInboxItems(a, b, sort)
-  )
+  // Precompute each item's numeric sort key once (up front) rather than
+  // re-deriving it (a `new Date(...).getTime()` or priority-rank lookup) on
+  // every comparator call during the sort.
+  const keyed: KeyedInboxItem[] = [...conversation.items, ...ticket.items].map((item) => ({
+    item,
+    key: sortValue(item, sort),
+  }))
+  keyed.sort((a, b) => compareKeyedInboxItems(a, b, sort))
+  const combined = keyed.map((k) => k.item)
   const truncated = combined.length > limit ? combined.slice(0, limit) : combined
   const overflowed = combined.length > limit
 

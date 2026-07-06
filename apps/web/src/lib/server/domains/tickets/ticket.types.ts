@@ -162,3 +162,23 @@ export interface TicketListPage {
   tickets: TicketDTO[]
   hasMore: boolean
 }
+
+// ---------------------------------------------------------------------------
+// Bulk mutation (support platform §4.6, ticket axis)
+// ---------------------------------------------------------------------------
+
+/** One inbox bulk action for tickets, discriminated on `type`. Each variant
+ *  maps 1:1 onto the single-ticket service op its non-bulk fn calls, mirroring
+ *  the conversation domain's bulk action shape. */
+export type BulkTicketAction =
+  | { type: 'assign'; assignTo: PrincipalId | null }
+  | { type: 'assign_team'; teamId: TeamId | null }
+  | { type: 'priority'; priority: ConversationPriority }
+  | { type: 'set_status'; statusId: TicketStatusId }
+
+/** The result of `bulkUpdateTickets`: which tickets updated, and why any
+ *  didn't — mirrors the conversation bulk fn's succeeded/failed shape. */
+export interface BulkTicketResult {
+  succeeded: TicketId[]
+  failed: { id: TicketId; reason: string }[]
+}

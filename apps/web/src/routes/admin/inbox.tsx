@@ -1,5 +1,5 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { ChatBubbleLeftRightIcon, ChevronDownIcon, TicketIcon } from '@heroicons/react/24/solid'
@@ -20,6 +20,7 @@ import {
 } from '@/lib/shared/conversation/views'
 import { AgentConversationThread } from '@/components/conversation/agent-conversation-thread'
 import {
+  agentEventChangesInboxCounts,
   agentEventChangesInboxList,
   applyAgentThreadEvent,
   applyTicketThreadEvent,
@@ -49,11 +50,7 @@ import {
   snoozeConversationFn,
 } from '@/lib/server/functions/conversation'
 import { assignConversationTeamFn } from '@/lib/server/functions/teams'
-import {
-  assignTicketFn,
-  setTicketPriorityFn,
-  setTicketStatusFn,
-} from '@/lib/server/functions/tickets'
+import { bulkUpdateTicketsFn, type BulkTicketActionInput } from '@/lib/server/functions/tickets'
 import {
   useAssignTicket,
   useSetTicketPriority,
@@ -93,6 +90,7 @@ import {
   type InboxTriageFacet,
 } from '@/lib/shared/inbox/items'
 import { listCompaniesFn } from '@/lib/server/functions/companies'
+import type { TicketDTO } from '@/lib/server/domains/tickets'
 import { useConversationStream } from '@/lib/client/hooks/use-conversation-stream'
 import { useConversationTyping } from '@/lib/client/hooks/use-conversation-typing'
 import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
@@ -360,22 +358,45 @@ function itemRefId(item: InboxItemDTO): string {
   return item.kind === 'conversation' ? item.conversation.id : item.ticket.id
 }
 
-/** Bulk-apply `fn` to each ticket id independently (no server-side bulk ticket
- *  endpoint exists yet), summarized in the same succeeded/failed shape the
- *  conversation bulk mutation returns. */
-async function runTicketBulk(
-  ids: TicketId[],
-  fn: (id: TicketId) => Promise<unknown>
-): Promise<BulkConversationSummary> {
-  const results = await Promise.allSettled(ids.map((id) => fn(id)))
-  const succeeded: string[] = []
-  const failed: { id: string; reason: string }[] = []
-  results.forEach((r, idx) => {
-    if (r.status === 'fulfilled') succeeded.push(ids[idx])
-    else
-      failed.push({ id: ids[idx], reason: r.reason instanceof Error ? r.reason.message : 'Failed' })
-  })
-  return { succeeded, failed }
+/**
+ * `ticket_updated` carries the full, fresh `TicketDTO` — rather than
+ * invalidating the whole unified item-list (every scope/filter combo has its
+ * own cache entry under `inboxKeys.items()`), patch the ONE row across all of
+ * them directly: a standalone ticket row's own `ticket` field, or a plain
+ * conversation row's `linkedTicket` chip when it points at this ticket. Rows
+ * that don't reference this ticket, and any other cached list, come back
+ * untouched (same array/object references) so unrelated list rows never
+ * re-render off this event either (see conversation-list-column.tsx's row
+ * memoization).
+ */
+function patchTicketInInboxLists(queryClient: QueryClient, ticket: TicketDTO): void {
+  queryClient.setQueriesData<{ items: InboxItemDTO[]; cursor: string | null }>(
+    { queryKey: inboxKeys.items() },
+    (prev) => {
+      if (!prev) return prev
+      let changed = false
+      const items = prev.items.map((item) => {
+        if (item.kind === 'ticket' && item.ticket.id === ticket.id) {
+          changed = true
+          return { ...item, ticket }
+        }
+        if (item.kind === 'conversation' && item.linkedTicket?.id === ticket.id) {
+          changed = true
+          return {
+            ...item,
+            linkedTicket: {
+              id: ticket.id,
+              number: ticket.number,
+              statusName: ticket.status.name,
+              statusCategory: ticket.status.category,
+            },
+          }
+        }
+        return item
+      })
+      return changed ? { ...prev, items } : prev
+    }
+  )
 }
 
 function InboxPage() {
@@ -633,19 +654,30 @@ function InboxPage() {
     }
   }, [nav, navTags, navSegments, navTeams, navViews, updateSearch])
 
-  // Live updates for the whole inbox over one cookie-authenticated stream.
-  // Invalidates every surface a mutation might have touched: the legacy
-  // conversation lists, the ticket domain's own caches (detail/lists — read
-  // directly by TicketDetail), and the new unified item-list + nav counts.
-  // Ticket SSE (publish sites + a ticket-scoped stream branch) lands in M3;
-  // until then this is invalidate-on-conversation-event plus the unified
-  // list's own 30s poll.
-  const refreshInbox = useCallback(() => {
+  // Targeted cache refresh, split so each surface only pays for what actually
+  // moved (a broad invalidate-everything on every SSE event/solo mutation was
+  // measurably wasteful — see the perf review). `refreshInboxList` covers
+  // both list surfaces (the legacy per-scope conversation list + the unified
+  // item list); `refreshInboxCounts` is the separate nav-badge counts. A solo
+  // mutation (assign/priority/snooze/close/reopen/create-ticket) always
+  // touches both — the actor just made exactly that kind of change, and a
+  // ticket mutation already seeds its own detail/list caches directly (see
+  // the `assignTicketMutation`/etc comment below) — so `refreshInbox` below
+  // stays their one call. The SSE handler is pickier: it reuses the reducer's
+  // own predicates to invalidate only when an event could actually have
+  // moved that surface, and patches `ticket_updated` directly instead of
+  // invalidating at all (see `patchTicketInInboxLists`).
+  const refreshInboxList = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: conversationKeys.agentConversations() })
-    void queryClient.invalidateQueries({ queryKey: ticketKeys.all() })
     void queryClient.invalidateQueries({ queryKey: inboxKeys.items() })
+  }, [queryClient])
+  const refreshInboxCounts = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: inboxKeys.counts() })
   }, [queryClient])
+  const refreshInbox = useCallback(() => {
+    refreshInboxList()
+    refreshInboxCounts()
+  }, [refreshInboxList, refreshInboxCounts])
 
   // Track whether the visitor of the selected conversation is currently typing.
   const {
@@ -671,9 +703,29 @@ function InboxPage() {
     buildUrl: async () => '/api/chat/stream?scope=inbox',
     onReconnect: refreshInbox,
     onEvent: (evt) => {
-      // Refetch the inbox list only for events that change its ordering /
-      // preview / unread badge (the reducer module owns the predicate).
-      if (agentEventChangesInboxList(evt)) refreshInbox()
+      // A ticket's live properties (status/assignee/priority/stage/type) name
+      // their own cache keys precisely, so this patches them directly instead
+      // of invalidating anything: the detail cache any open thread/panel
+      // reads (`inboxQueries.ticketDetail`, keyed under `ticketKeys.detail`,
+      // regardless of whether THIS ticket is the active item — it may be the
+      // active conversation's linked ticket instead), and the matching row(s)
+      // in every cached item-list page (`patchTicketInInboxLists`). No
+      // membership/order invalidation follows for this event — the patch IS
+      // the up-to-date row.
+      if (evt.kind === 'ticket_updated') {
+        queryClient.setQueryData(ticketKeys.detail(evt.ticket.id), evt.ticket)
+        patchTicketInInboxLists(queryClient, evt.ticket)
+      } else if (agentEventChangesInboxList(evt)) {
+        // Every other membership/order/preview-changing event (a new message,
+        // a conversation's status/assignee/tags, an agent-side read move) —
+        // the reducer's own predicate decides, so this can't drift from what
+        // the thread-cache reducers already treat as list-affecting.
+        refreshInboxList()
+      }
+      // Nav-badge counts only move on an assignment/status/type change, never
+      // on a message/reaction/flag/typing/read event — see the predicate's
+      // own doc comment for why it's a separate check from the list one above.
+      if (agentEventChangesInboxCounts(evt)) refreshInboxCounts()
 
       // Typing indicators are component state, not cache: a visitor message
       // clears the visitor dots; agent activity clears the collision notice
@@ -686,15 +738,6 @@ function InboxPage() {
       } else if (evt.kind === 'typing' && evt.conversationId === activeConversationId) {
         if (evt.side === 'visitor') onRemoteTyping()
         else if (evt.side === 'agent') onOtherAgentTyping()
-      }
-
-      // A ticket's live properties (status/assignee/priority/stage/type)
-      // — patched directly onto the same cache key the unified thread's
-      // header and its `InboxDetailPanel` both read (`inboxQueries.ticketDetail`,
-      // keyed under `ticketKeys.detail`), so a change from another agent/tab
-      // shows up without a refetch.
-      if (evt.kind === 'ticket_updated' && evt.ticket.id === activeTicketId) {
-        queryClient.setQueryData(ticketKeys.detail(activeTicketId), evt.ticket)
       }
 
       // Everything cache-shaped (message/read/updated/deleted/conversation)
@@ -838,16 +881,15 @@ function InboxPage() {
   )
 
   /** Apply a bulk action to a mixed selection: conversation ids via the shared
-   *  bulk mutation, ticket ids via an allSettled loop over the per-ticket fn
-   *  (no server-side bulk ticket endpoint exists yet), summarized together.
-   *  Returns each kind's own result too — `applyClose` reuses this for its
-   *  required-attributes blocking prompt, which only ever reads conversation
-   *  failures. */
+   *  bulk mutation, ticket ids via the bulk ticket server fn, summarized
+   *  together. Returns each kind's own result too — `applyClose` reuses this
+   *  for its required-attributes blocking prompt, which only ever reads
+   *  conversation failures. */
   const runMixedBulk = useCallback(
     async (
       verb: string,
       conversationAction: BulkConversationAction | null,
-      ticketFn: ((id: TicketId) => Promise<unknown>) | null
+      ticketAction: BulkTicketActionInput | null
     ): Promise<{
       conversationResult: BulkConversationSummary
       ticketResult: BulkConversationSummary
@@ -857,8 +899,8 @@ function InboxPage() {
         conversationIds.length && conversationAction
           ? bulk.mutateAsync({ conversationIds, action: conversationAction })
           : Promise.resolve<BulkConversationSummary>({ succeeded: [], failed: [] }),
-        ticketIds.length && ticketFn
-          ? runTicketBulk(ticketIds, ticketFn)
+        ticketIds.length && ticketAction
+          ? bulkUpdateTicketsFn({ data: { ticketIds, action: ticketAction } })
           : Promise.resolve<BulkConversationSummary>({ succeeded: [], failed: [] }),
       ])
       const succeeded = [...conversationResult.succeeded, ...ticketResult.succeeded]
@@ -903,7 +945,7 @@ function InboxPage() {
       opts: {
         verb: string
         bulkAction: (args: TArgs) => BulkConversationAction
-        ticketBulkFn: (id: TicketId, args: TArgs) => Promise<unknown>
+        ticketBulkAction: (args: TArgs) => BulkTicketActionInput
         soloTicket: (ticketId: TicketId, args: TArgs) => Promise<unknown>
         soloConversation: (conversationId: ConversationId, args: TArgs) => Promise<unknown>
         messages: {
@@ -913,7 +955,7 @@ function InboxPage() {
       }
     ) => {
       if (hasSelection) {
-        await runMixedBulk(opts.verb, opts.bulkAction(args), (id) => opts.ticketBulkFn(id, args))
+        await runMixedBulk(opts.verb, opts.bulkAction(args), opts.ticketBulkAction(args))
         return
       }
       if (!selectedRef) return
@@ -930,7 +972,7 @@ function InboxPage() {
       applyVerb(assignTo, {
         verb: 'Assigned',
         bulkAction: (a) => ({ type: 'assign', assignTo: a }),
-        ticketBulkFn: (id, a) => assignTicketFn({ data: { ticketId: id, assigneePrincipalId: a } }),
+        ticketBulkAction: (a) => ({ type: 'assign', assignTo: a }),
         soloTicket: (id, a) =>
           assignTicketMutation.mutateAsync({ ticketId: id, assigneePrincipalId: a }),
         soloConversation: (id, a) =>
@@ -951,7 +993,7 @@ function InboxPage() {
       applyVerb(teamId, {
         verb: 'Assigned',
         bulkAction: (t) => ({ type: 'assign_team', teamId: t }),
-        ticketBulkFn: (id, t) => assignTicketFn({ data: { ticketId: id, assigneeTeamId: t } }),
+        ticketBulkAction: (t) => ({ type: 'assign_team', teamId: t }),
         soloTicket: (id, t) =>
           assignTicketMutation.mutateAsync({ ticketId: id, assigneeTeamId: t }),
         soloConversation: (id, t) =>
@@ -969,7 +1011,7 @@ function InboxPage() {
       applyVerb(priority, {
         verb: 'Updated',
         bulkAction: (p) => ({ type: 'priority', priority: p }),
-        ticketBulkFn: (id, p) => setTicketPriorityFn({ data: { ticketId: id, priority: p } }),
+        ticketBulkAction: (p) => ({ type: 'priority', priority: p }),
         soloTicket: (id, p) => priorityTicketMutation.mutateAsync({ ticketId: id, priority: p }),
         soloConversation: (id, p) =>
           setConversationPriorityFn({ data: { conversationId: id, priority: p } }),
@@ -1017,9 +1059,7 @@ function InboxPage() {
         const { conversationResult } = await runMixedBulk(
           'Closed',
           { type: 'close' },
-          closedStatusId
-            ? (id) => setTicketStatusFn({ data: { ticketId: id, statusId: closedStatusId } })
-            : null
+          closedStatusId ? { type: 'set_status', statusId: closedStatusId } : null
         )
         // Required-to-close refusals get the blocking prompt (one line per
         // distinct reason); other failures keep the generic summary toast.

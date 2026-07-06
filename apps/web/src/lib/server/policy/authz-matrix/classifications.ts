@@ -205,6 +205,14 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
     'bulk action — assign/assign_team require conversation.assign, the rest conversation.set_status'
   ),
 
+  // Ticket-axis counterpart of the bulk inbox action above: same dynamic
+  // per-action gate (assign/assign_team require ticket.assign; priority/
+  // set_status require ticket.set_status).
+  'lib/server/functions/tickets.ts::bulkUpdateTicketsFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.TICKET_ASSIGN, PERMISSIONS.TICKET_SET_STATUS],
+    'bulk action — assign/assign_team require ticket.assign, the rest ticket.set_status'
+  ),
+
   // Attribute-value write: the permission depends on the target (conversation
   // vs ticket), so the gate is bare and the per-target permission is asserted
   // at runtime. There is no dedicated ticket-attribute permission in the

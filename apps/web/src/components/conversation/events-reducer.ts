@@ -118,6 +118,18 @@ export function agentEventChangesInboxList(evt: ConversationStreamEvent): boolea
   )
 }
 
+/** Whether an inbox-stream event moves the nav-badge counts (mine/unassigned/
+ *  tickets-by-type): only a property change on the item itself — assignment,
+ *  status, team, or ticket type/stage. A new message, a reaction/flag, typing,
+ *  or a read-watermark move never changes who a conversation/ticket is
+ *  assigned to or its status, so those don't move a count — unlike
+ *  `agentEventChangesInboxList` above, which also cares about ordering/preview
+ *  and so is true for new messages too. Kept as its own predicate (rather than
+ *  reusing that one) precisely because the two diverge on message events. */
+export function agentEventChangesInboxCounts(evt: ConversationStreamEvent): boolean {
+  return evt.kind === 'conversation' || evt.kind === 'ticket_updated'
+}
+
 /** Apply one inbox-stream event to the open agent thread's cache. Events for
  *  other conversations (the inbox stream is multiplexed) and typing return
  *  prev untouched. */

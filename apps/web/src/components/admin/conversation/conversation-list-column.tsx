@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import type { ConversationPriority } from '@/lib/shared/conversation/types'
 import type { InboxItemDTO, InboxTriageFacet } from '@/lib/shared/inbox/items'
 import { ChevronDownIcon, PencilSquareIcon, BarsArrowDownIcon } from '@heroicons/react/24/solid'
@@ -391,25 +391,32 @@ export function ConversationListColumn({
         ) : (
           items.map((item) => {
             const id = itemId(item)
+            // `onSelect`/`onToggleSelect` are passed straight through (the
+            // SAME stable reference every row gets, id-taking) rather than
+            // wrapped in a per-row closure here — a fresh `() => onSelect(id)`
+            // built on every list render would give each `memo`'d row a new
+            // prop reference every time and defeat the memo (perf review).
             return item.kind === 'conversation' ? (
               <ConversationRow
                 key={id}
+                id={id}
                 item={item}
                 selected={selectedId === id}
                 checked={selectedIds.has(id)}
                 selectionActive={selectionActive}
-                onSelect={() => onSelect(id)}
-                onToggleSelect={(range) => onToggleSelect(id, { range })}
+                onSelect={onSelect}
+                onToggleSelect={onToggleSelect}
               />
             ) : (
               <TicketRow
                 key={id}
+                id={id}
                 item={item}
                 selected={selectedId === id}
                 checked={selectedIds.has(id)}
                 selectionActive={selectionActive}
-                onSelect={() => onSelect(id)}
-                onToggleSelect={(range) => onToggleSelect(id, { range })}
+                onSelect={onSelect}
+                onToggleSelect={onToggleSelect}
               />
             )
           })
@@ -461,8 +468,9 @@ function RowShell({
   )
 }
 
-function ConversationRow({
+const ConversationRow = memo(function ConversationRow({
   item,
+  id,
   selected,
   checked,
   selectionActive,
@@ -470,11 +478,15 @@ function ConversationRow({
   onToggleSelect,
 }: {
   item: Extract<InboxItemDTO, { kind: 'conversation' }>
+  /** The row's own TypeID — `onSelect`/`onToggleSelect` are the SAME stable,
+   *  id-taking callbacks every row in the list gets (see the `.map()` call
+   *  site's comment); this row binds its own id when calling them. */
+  id: string
   selected: boolean
   checked: boolean
   selectionActive: boolean
-  onSelect: () => void
-  onToggleSelect: (range: boolean) => void
+  onSelect: (id: string) => void
+  onToggleSelect: (id: string, opts?: { range?: boolean }) => void
 }) {
   const c = item.conversation
   return (
@@ -483,11 +495,11 @@ function ConversationRow({
       selected={selected}
       selectionActive={selectionActive}
       ariaLabel={`Select conversation from ${c.visitor.displayName ?? 'Visitor'}`}
-      onToggleSelect={onToggleSelect}
+      onToggleSelect={(range) => onToggleSelect(id, { range })}
     >
       <button
         type="button"
-        onClick={onSelect}
+        onClick={() => onSelect(id)}
         className="flex min-w-0 flex-1 items-start gap-2.5 py-3 pl-1.5 pr-3 text-left"
       >
         <Avatar
@@ -538,10 +550,11 @@ function ConversationRow({
       </button>
     </RowShell>
   )
-}
+})
 
-function TicketRow({
+const TicketRow = memo(function TicketRow({
   item,
+  id,
   selected,
   checked,
   selectionActive,
@@ -549,11 +562,12 @@ function TicketRow({
   onToggleSelect,
 }: {
   item: Extract<InboxItemDTO, { kind: 'ticket' }>
+  id: string
   selected: boolean
   checked: boolean
   selectionActive: boolean
-  onSelect: () => void
-  onToggleSelect: (range: boolean) => void
+  onSelect: (id: string) => void
+  onToggleSelect: (id: string, opts?: { range?: boolean }) => void
 }) {
   const t = item.ticket
   return (
@@ -562,11 +576,11 @@ function TicketRow({
       selected={selected}
       selectionActive={selectionActive}
       ariaLabel={`Select ticket ${t.reference}`}
-      onToggleSelect={onToggleSelect}
+      onToggleSelect={(range) => onToggleSelect(id, { range })}
     >
       <button
         type="button"
-        onClick={onSelect}
+        onClick={() => onSelect(id)}
         className="flex min-w-0 flex-1 items-start gap-2.5 py-3 pl-1.5 pr-3 text-left"
       >
         <TicketTypeGlyph type={t.type} />
@@ -599,4 +613,4 @@ function TicketRow({
       </button>
     </RowShell>
   )
-}
+})

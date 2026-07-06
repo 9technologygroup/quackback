@@ -32,8 +32,9 @@ import type {
   AssignTicketInput,
   TicketListFilter,
   TicketAssigneeFilter,
+  BulkTicketAction,
 } from '@/lib/server/domains/tickets'
-import { requireAuth, policyActorFromAuth } from './auth-helpers'
+import { requireAuth, policyActorFromAuth, assertPermission } from './auth-helpers'
 import type { ConversationAttachment } from '@/lib/shared/db-types'
 import { ForbiddenError } from '@/lib/shared/errors'
 
@@ -212,6 +213,81 @@ export const setTicketPriorityFn = createServerFn({ method: 'POST' })
     const actor = await policyActorFromAuth(ctx)
     const { setTicketPriority } = await import('@/lib/server/domains/tickets/ticket.service')
     return setTicketPriority(data.ticketId as TicketId, data.priority, actor)
+  })
+
+// ---------------------------------------------------------------------------
+// Bulk mutation (support platform §4.6, ticket axis — mirrors
+// bulkUpdateConversationsFn's contract in functions/conversation.ts)
+// ---------------------------------------------------------------------------
+
+const bulkTicketActionSchema = z.discriminatedUnion('type', [
+  // assignTo: 'me' = the acting agent, a principal id, or null to unassign.
+  z.object({ type: z.literal('assign'), assignTo: z.string().nullable() }),
+  z.object({ type: z.literal('assign_team'), teamId: z.string().nullable() }),
+  z.object({ type: z.literal('priority'), priority: prioritySchema }),
+  z.object({ type: z.literal('set_status'), statusId: z.string() }),
+])
+
+/** Client-facing action shape (plain strings; the handler narrows to branded
+ *  TypeIDs after validation) — what inbox callers build against. */
+export type BulkTicketActionInput = z.infer<typeof bulkTicketActionSchema>
+
+const bulkUpdateTicketsSchema = z.object({
+  // Cap the batch so a single call can't fan out unbounded writes/publishes.
+  ticketIds: z.array(z.string()).min(1).max(200),
+  action: bulkTicketActionSchema,
+})
+
+/** Gate a bulk action on the SAME permission its single-ticket fn uses:
+ *  (re)assignment mirrors assignTicketFn (ticket.assign); priority/status
+ *  mirror the set-status fns — same split as the conversation bulk fn's
+ *  `permissionForBulkAction`. */
+function permissionForBulkTicketAction(type: BulkTicketActionInput['type']) {
+  return type === 'assign' || type === 'assign_team'
+    ? PERMISSIONS.TICKET_ASSIGN
+    : PERMISSIONS.TICKET_SET_STATUS
+}
+
+/**
+ * Apply one inbox action to many tickets in a single call (support platform
+ * §4.6, ticket axis: assign, assign_team, priority, set_status). The required
+ * permission depends on the action (assign vs status), so the gate is bare
+ * and the per-action permission is asserted at runtime, mirroring
+ * bulkUpdateConversationsFn. Unlike that fn (which loops the single-
+ * conversation ops itself), the per-item loop + isolation here lives in the
+ * domain-level `bulkUpdateTickets` (ticket.service.ts), which reuses the same
+ * single-ticket ops (`assignTicket`/`setTicketPriority`/`setTicketStatus`)
+ * their individual server fns call — this fn only resolves input ('me',
+ * team-id) and delegates.
+ */
+export const bulkUpdateTicketsFn = createServerFn({ method: 'POST' })
+  .validator(bulkUpdateTicketsSchema)
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth()
+    assertPermission(ctx.principal.role, permissionForBulkTicketAction(data.action.type))
+    const actor = await policyActorFromAuth(ctx)
+    const { bulkUpdateTickets } = await import('@/lib/server/domains/tickets/ticket.service')
+
+    const action = data.action
+    const resolvedAction: BulkTicketAction = (() => {
+      switch (action.type) {
+        case 'assign': {
+          const assignTo: PrincipalId | null =
+            action.assignTo === 'me'
+              ? ctx.principal.id
+              : ((action.assignTo as PrincipalId | null) ?? null)
+          return { type: 'assign', assignTo }
+        }
+        case 'assign_team':
+          return { type: 'assign_team', teamId: (action.teamId as TeamId | null) ?? null }
+        case 'priority':
+          return { type: 'priority', priority: action.priority }
+        case 'set_status':
+          return { type: 'set_status', statusId: action.statusId as TicketStatusId }
+      }
+    })()
+
+    return bulkUpdateTickets(data.ticketIds as TicketId[], resolvedAction, actor)
   })
 
 // ---------------------------------------------------------------------------

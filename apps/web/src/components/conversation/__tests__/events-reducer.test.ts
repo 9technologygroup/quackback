@@ -14,6 +14,7 @@ import type {
   ConversationStreamEvent,
 } from '@/lib/shared/conversation/types'
 import {
+  agentEventChangesInboxCounts,
   agentEventChangesInboxList,
   appendSentAgentMessage,
   appendSentTicketMessage,
@@ -224,6 +225,27 @@ describe('agentEventChangesInboxList', () => {
     [{ kind: 'ticket_read', ticketId: TICKET_ID, side: 'visitor', at: 'x' }, false],
   ] as Array<[ConversationStreamEvent, boolean]>)('%j -> %s', (evt, expected) => {
     expect(agentEventChangesInboxList(evt)).toBe(expected)
+  })
+})
+
+describe('agentEventChangesInboxCounts', () => {
+  const msg = baseMessage('m10')
+  const ticketMsg = baseMessage('tm10', { conversationId: null, ticketId: TICKET_ID })
+  it.each([
+    [{ kind: 'conversation', conversation: conversation() }, true],
+    [{ kind: 'ticket_updated', ticket: { id: TICKET_ID } as never }, true],
+    // A new message never moves an assignment/status/type-based count, even
+    // though it DOES change the list's ordering/preview (see the predicate
+    // above) — this is exactly where the two predicates diverge.
+    [{ kind: 'message', conversationId: CONV_ID, message: msg }, false],
+    [{ kind: 'ticket_message', ticketId: TICKET_ID, message: ticketMsg }, false],
+    [{ kind: 'message_deleted', conversationId: CONV_ID, messageId: msg.id }, false],
+    [{ kind: 'read', conversationId: CONV_ID, side: 'agent', at: 'x' }, false],
+    [{ kind: 'typing', conversationId: CONV_ID, side: 'visitor', at: 'x' }, false],
+    [{ kind: 'message_updated', conversationId: CONV_ID, message: agentMessage('m10') }, false],
+    [{ kind: 'ticket_read', ticketId: TICKET_ID, side: 'agent', at: 'x' }, false],
+  ] as Array<[ConversationStreamEvent, boolean]>)('%j -> %s', (evt, expected) => {
+    expect(agentEventChangesInboxCounts(evt)).toBe(expected)
   })
 })
 

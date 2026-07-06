@@ -456,6 +456,15 @@ export function AgentConversationThread({
   const trackConvoTitle =
     conversation?.subject ?? firstVisitorMessage?.content.trim().slice(0, 200) ?? ''
   const trackConvoContent = firstVisitorMessage?.content ?? ''
+  // Stable handlers for the (now `memo`'d) InboxDetailPanel — an inline arrow
+  // here would be a fresh prop every render and defeat the memo outright.
+  // trackConvoTitle/trackConvoContent only change when the conversation/first
+  // visitor message actually does, so this rarely recreates in practice.
+  const handleTrackAsFeedback = useCallback(
+    () => setConvertSeed({ title: trackConvoTitle, content: trackConvoContent }),
+    [trackConvoTitle, trackConvoContent]
+  )
+  const handleCreateTicketFromPanel = useCallback(() => setCreateTicketOpen(true), [])
 
   // The conversation DTO carries no principal type, so treat "no captured
   // contact email on file" as the anonymous-visitor signal — exactly when the
@@ -900,6 +909,37 @@ export function AgentConversationThread({
     onError: () => toast.error('Failed to mark unread'),
   })
 
+  // Stable per-message dispatchers for AgentMessageBubble (perf review): each
+  // bubble is `memo`'d, so passing a FRESH closure per message per render
+  // (the pre-refactor shape — e.g. `() => deleteMutation.mutate(m.id)` built
+  // fresh inside renderRow for every row on every render) would defeat the
+  // memo outright, since a new function reference always fails the prop
+  // equality check. These read the message id (or the whole message, where
+  // the handler needs its content) as an argument instead, so the SAME
+  // top-level reference is handed to every row; `mutate`/`mutateAsync` from
+  // `useMutation` are themselves stable across renders, so these only need to
+  // be recreated if the mutation's `.mutate` identity ever changed (it
+  // doesn't in practice).
+  const handleToggleReaction = useCallback(
+    (messageId: ConversationMessageId, emoji: string, hasReacted: boolean) =>
+      reactionMutation.mutate({ messageId, emoji, hasReacted }),
+    [reactionMutation.mutate]
+  )
+  const handleToggleFlag = useCallback(
+    (messageId: ConversationMessageId, next: boolean) =>
+      flagMutation.mutate({ messageId, flagged: next }),
+    [flagMutation.mutate]
+  )
+  const handleSharePost = useCallback((message: AgentConversationMessageDTO) => {
+    setShareMsg(message)
+  }, [])
+  const handleTrackAsPost = useCallback((message: AgentConversationMessageDTO) => {
+    setConvertSeed({ title: message.content.trim().slice(0, 200), content: message.content })
+  }, [])
+  const handleTrackSuggestion = useCallback((message: AgentConversationMessageDTO) => {
+    if (message.postSuggestion) setConvertSeed(message.postSuggestion)
+  }, [])
+
   // ── Header action bar (§2.7) ─────────────────────────────────────────────
 
   // Create-ticket dialog (conversations only): opened from the header icon,
@@ -1176,20 +1216,13 @@ export function AgentConversationThread({
             message={m}
             highlighted={m.id === highlightId}
             onOpenPost={onOpenPost}
-            onDelete={() => deleteMutation.mutate(m.id)}
-            onToggleReaction={(emoji, hasReacted) =>
-              reactionMutation.mutate({ messageId: m.id, emoji, hasReacted })
-            }
-            onToggleFlag={(next) => flagMutation.mutate({ messageId: m.id, flagged: next })}
-            onMarkUnread={() => markUnreadMutation.mutate(m.id)}
-            onSharePost={capabilities.convertToPost ? () => setShareMsg(m) : undefined}
-            onTrackAsPost={
-              capabilities.convertToPost
-                ? () =>
-                    setConvertSeed({ title: m.content.trim().slice(0, 200), content: m.content })
-                : undefined
-            }
-            onTrackSuggestion={capabilities.convertToPost ? (s) => setConvertSeed(s) : undefined}
+            onDelete={deleteMutation.mutate}
+            onToggleReaction={handleToggleReaction}
+            onToggleFlag={handleToggleFlag}
+            onMarkUnread={markUnreadMutation.mutate}
+            onSharePost={capabilities.convertToPost ? handleSharePost : undefined}
+            onTrackAsPost={capabilities.convertToPost ? handleTrackAsPost : undefined}
+            onTrackSuggestion={capabilities.convertToPost ? handleTrackSuggestion : undefined}
             linkPreviews={linkPreviewsEnabled}
             translation={inboxTranslation.translationFor(m)}
           />
@@ -1836,10 +1869,8 @@ export function AgentConversationThread({
           ticket={panelTicket}
           onChanged={refreshThread}
           onSelectItem={onSelectItem}
-          onTrackAsFeedback={() =>
-            setConvertSeed({ title: trackConvoTitle, content: trackConvoContent })
-          }
-          onCreateTicket={() => setCreateTicketOpen(true)}
+          onTrackAsFeedback={handleTrackAsFeedback}
+          onCreateTicket={handleCreateTicketFromPanel}
           onInsertFromCopilot={insertFromCopilot}
           getComposerText={getComposerText}
           onReplaceComposerText={replaceComposerText}

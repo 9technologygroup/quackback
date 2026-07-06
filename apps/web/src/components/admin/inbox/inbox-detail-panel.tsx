@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useRouteContext } from '@tanstack/react-router'
 import {
@@ -164,7 +164,7 @@ export interface InboxDetailPanelProps {
  * (conversation-only), Links, Quinn activity (conversation-only). Details/
  * Copilot tabs unchanged from the pre-M5 conversation-only panel.
  */
-export function InboxDetailPanel({
+export const InboxDetailPanel = memo(function InboxDetailPanel({
   item,
   conversation,
   ticket,
@@ -229,7 +229,10 @@ export function InboxDetailPanel({
 
   const email = detail?.email ?? (isTicketItem ? null : (conversation?.visitorEmail ?? null))
   const currentConversationId = !isTicketItem ? conversation?.id : undefined
-  const previous = (history?.conversations ?? []).filter((c) => c.id !== currentConversationId)
+  const previous = useMemo(
+    () => (history?.conversations ?? []).filter((c) => c.id !== currentConversationId),
+    [history, currentConversationId]
+  )
   // `detail` is non-null only for identified portal users, so it doubles as the
   // identified-vs-anonymous signal (anonymous visitors aren't portal users).
   const isIdentified = !!detail
@@ -662,4 +665,4 @@ export function InboxDetailPanel({
       </Tabs>
     </aside>
   )
-}
+})

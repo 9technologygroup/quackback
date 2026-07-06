@@ -19,6 +19,7 @@ import {
   assignTicket,
   setTicketPriority,
   softDeleteTicket,
+  bulkUpdateTickets,
 } from '../ticket.service'
 import type { Actor } from '@/lib/server/policy/types'
 
@@ -62,5 +63,51 @@ describe('ticket service permission guards', () => {
     await expect(softDeleteTicket(ticketId, powerless)).rejects.toThrow(
       /cannot delete this ticket/i
     )
+  })
+})
+
+describe('bulkUpdateTickets: does not bypass the single-item authz it loops', () => {
+  it('captures every item Forbidden in `failed` rather than throwing or silently succeeding', async () => {
+    const otherId = createId('ticket') as TicketId
+    const result = await bulkUpdateTickets(
+      [ticketId, otherId],
+      { type: 'assign', assignTo: null },
+      powerless
+    )
+    expect(result.succeeded).toEqual([])
+    expect(result.failed).toHaveLength(2)
+    expect(result.failed.map((f) => f.id)).toEqual([ticketId, otherId])
+    for (const f of result.failed) {
+      expect(f.reason).toMatch(/cannot assign this ticket/i)
+    }
+  })
+
+  it('assign_team is denied by the same ticket.assign guard as assign', async () => {
+    const result = await bulkUpdateTickets(
+      [ticketId],
+      { type: 'assign_team', teamId: null },
+      powerless
+    )
+    expect(result.failed).toEqual([
+      { id: ticketId, reason: expect.stringMatching(/cannot assign this ticket/i) },
+    ])
+  })
+
+  it('priority is denied by the ticket.set_status guard', async () => {
+    const result = await bulkUpdateTickets(
+      [ticketId],
+      { type: 'priority', priority: 'high' },
+      powerless
+    )
+    expect(result.failed).toEqual([
+      { id: ticketId, reason: expect.stringMatching(/cannot change this ticket priority/i) },
+    ])
+  })
+
+  it('set_status is denied by the ticket.set_status guard', async () => {
+    const result = await bulkUpdateTickets([ticketId], { type: 'set_status', statusId }, powerless)
+    expect(result.failed).toEqual([
+      { id: ticketId, reason: expect.stringMatching(/cannot change this ticket status/i) },
+    ])
   })
 })

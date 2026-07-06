@@ -75,6 +75,7 @@ import {
   listTickets,
   getTicket,
   assertTicketVisible,
+  bulkUpdateTickets,
 } from '../ticket.service'
 import { NotFoundError } from '@/lib/shared/errors'
 import { listTicketMessages, sendTicketMessage, addTicketNote } from '../ticket-message.service'
@@ -1016,6 +1017,106 @@ describe.skipIf(!fixture.available)('ticket.service (real DB, rolled back)', () 
       await expect(
         assertTicketVisible(createId('ticket') as TicketId, adminActor())
       ).rejects.toThrow(NotFoundError)
+    })
+  })
+
+  describe('bulkUpdateTickets (support platform §4.6 bulk actions, ticket axis)', () => {
+    it('routes an assign action to assignTicket, resolving each ticket', async () => {
+      await seedSettings()
+      await seedStatuses()
+      const actor = adminActor()
+      const teammate = await seedTeammate()
+      const t1 = await createTicket({ type: 'back_office', title: 'Bulk 1' }, actor)
+      const t2 = await createTicket({ type: 'back_office', title: 'Bulk 2' }, actor)
+
+      const result = await bulkUpdateTickets(
+        [t1.id, t2.id],
+        { type: 'assign', assignTo: teammate },
+        actor
+      )
+
+      expect(result).toEqual({ succeeded: [t1.id, t2.id], failed: [] })
+      expect((await readTicket(t1.id)).assigneePrincipalId).toBe(teammate)
+      expect((await readTicket(t2.id)).assigneePrincipalId).toBe(teammate)
+    })
+
+    it('routes an assign_team action to assignTicket with the team id', async () => {
+      await seedSettings()
+      await seedStatuses()
+      const actor = adminActor()
+      const teamId = await seedTeam()
+      const created = await createTicket({ type: 'back_office', title: 'Bulk team' }, actor)
+
+      const result = await bulkUpdateTickets([created.id], { type: 'assign_team', teamId }, actor)
+
+      expect(result).toEqual({ succeeded: [created.id], failed: [] })
+      expect((await readTicket(created.id)).assigneeTeamId).toBe(teamId)
+    })
+
+    it('routes a priority action to setTicketPriority', async () => {
+      await seedSettings()
+      await seedStatuses()
+      const actor = adminActor()
+      const created = await createTicket({ type: 'customer', title: 'Bulk priority' }, actor)
+
+      const result = await bulkUpdateTickets(
+        [created.id],
+        { type: 'priority', priority: 'urgent' },
+        actor
+      )
+
+      expect(result).toEqual({ succeeded: [created.id], failed: [] })
+      expect((await readTicket(created.id)).priority).toBe('urgent')
+    })
+
+    it('routes a set_status action to setTicketStatus', async () => {
+      await seedSettings()
+      const { closed } = await seedStatuses()
+      const actor = adminActor()
+      const created = await createTicket({ type: 'customer', title: 'Bulk status' }, actor)
+
+      const result = await bulkUpdateTickets(
+        [created.id],
+        { type: 'set_status', statusId: closed.id },
+        actor
+      )
+
+      expect(result).toEqual({ succeeded: [created.id], failed: [] })
+      expect((await readTicket(created.id)).statusId).toBe(closed.id)
+    })
+
+    it('isolates a per-item failure (unknown ticket id) without aborting the rest of the batch', async () => {
+      await seedSettings()
+      await seedStatuses()
+      const actor = adminActor()
+      const t1 = await createTicket({ type: 'customer', title: 'Bulk isolate 1' }, actor)
+      const missing = createId('ticket') as TicketId
+      const t3 = await createTicket({ type: 'customer', title: 'Bulk isolate 3' }, actor)
+
+      const result = await bulkUpdateTickets(
+        [t1.id, missing, t3.id],
+        { type: 'priority', priority: 'high' },
+        actor
+      )
+
+      expect(result.succeeded).toEqual([t1.id, t3.id])
+      expect(result.failed).toHaveLength(1)
+      expect(result.failed[0].id).toBe(missing)
+      expect((await readTicket(t1.id)).priority).toBe('high')
+      expect((await readTicket(t3.id)).priority).toBe('high')
+    })
+
+    it('reuses the single-item op, so a successful bulk assign still fires ticket.assigned', async () => {
+      await seedSettings()
+      await seedStatuses()
+      const actor = adminActor()
+      const teammate = await seedTeammate()
+      const created = await createTicket({ type: 'back_office', title: 'Bulk hook' }, actor)
+      webhooks.emitTicketAssigned.mockClear()
+
+      await bulkUpdateTickets([created.id], { type: 'assign', assignTo: teammate }, actor)
+
+      expect(webhooks.emitTicketAssigned).toHaveBeenCalledTimes(1)
     })
   })
 })

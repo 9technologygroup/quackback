@@ -15,7 +15,7 @@
  * tokens both bubbles render from (UNIFIED-INBOX-SPEC.md §2.6) — geometry
  * and fill live in one place so the two idioms cannot drift apart.
  */
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { FormattedMessage } from 'react-intl'
 import {
   EllipsisVerticalIcon,
@@ -50,6 +50,7 @@ import {
 import { REACTION_EMOJIS } from '@/lib/shared/db-types'
 import { cn } from '@/lib/shared/utils'
 import type { TiptapContent } from '@/lib/shared/db-types'
+import type { ConversationMessageId } from '@quackback/ids'
 import type {
   AgentConversationMessageDTO,
   ConversationAttachment,
@@ -113,20 +114,26 @@ export function UnreadDivider() {
 
 interface AgentMessageBubbleProps {
   message: AgentConversationMessageDTO
-  onDelete?: () => void
+  /** All callbacks below take the message's own id (or the whole message,
+   *  where the caller needs its content) rather than being pre-bound to this
+   *  row — so the parent can pass one stable, top-level `useCallback`
+   *  dispatcher to every row instead of a fresh closure per message per
+   *  render. That's what lets `memo` below actually skip unrelated rows on a
+   *  re-render (perf review). */
+  onDelete?: (messageId: ConversationMessageId) => void
   /** Toggle the caller's reaction with `emoji` (hasReacted = current state). */
-  onToggleReaction?: (emoji: string, hasReacted: boolean) => void
+  onToggleReaction?: (messageId: ConversationMessageId, emoji: string, hasReacted: boolean) => void
   /** Set/clear the team-wide flag (next = the desired flagged state). */
-  onToggleFlag?: (next: boolean) => void
+  onToggleFlag?: (messageId: ConversationMessageId, next: boolean) => void
   /** Mark the conversation unread from this message. */
-  onMarkUnread?: () => void
+  onMarkUnread?: (messageId: ConversationMessageId) => void
   /** Visitor-only: open the picker to share an existing post in the conversation. */
-  onSharePost?: () => void
+  onSharePost?: (message: AgentConversationMessageDTO) => void
   /** Visitor-only: open the full dialog prefilled from this message. */
-  onTrackAsPost?: () => void
+  onTrackAsPost?: (message: AgentConversationMessageDTO) => void
   /** Internal-note only: act on the AI's `suggest_post` suggestion — opens the
    *  convert dialog seeded with the suggested board/title/content. */
-  onTrackSuggestion?: (s: { boardId: string; title: string; content: string }) => void
+  onTrackSuggestion?: (message: AgentConversationMessageDTO) => void
   /** Open an embedded post in the inbox's in-place `?post=` modal (the host owns
    *  the route-bound navigation so the agent never leaves the conversation). */
   onOpenPost?: (postId: string) => void
@@ -166,7 +173,7 @@ interface VisitorMessageBubbleProps {
   embedOpenMode?: EmbedOpenMode
 }
 
-export function AgentMessageBubble({
+export const AgentMessageBubble = memo(function AgentMessageBubble({
   message,
   onDelete = () => {},
   onToggleReaction = () => {},
@@ -354,7 +361,7 @@ export function AgentMessageBubble({
                         aria-label={`React with ${emoji}`}
                         aria-pressed={has}
                         onClick={() => {
-                          onToggleReaction(emoji, has)
+                          onToggleReaction(message.id, emoji, has)
                           setEmojiOpen(false)
                         }}
                         className={cn(
@@ -372,7 +379,7 @@ export function AgentMessageBubble({
 
             <button
               type="button"
-              onClick={() => onToggleFlag(!isFlagged)}
+              onClick={() => onToggleFlag(message.id, !isFlagged)}
               className={cn(
                 'flex size-7 items-center justify-center rounded transition-colors hover:bg-muted',
                 isFlagged ? 'text-amber-500' : 'text-muted-foreground hover:text-foreground'
@@ -398,22 +405,22 @@ export function AgentMessageBubble({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={onMarkUnread}>
+                <DropdownMenuItem onClick={() => onMarkUnread(message.id)}>
                   <EnvelopeIcon className="h-4 w-4" /> Mark unread
                 </DropdownMenuItem>
-                <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                <DropdownMenuItem variant="destructive" onClick={() => onDelete(message.id)}>
                   <TrashIcon className="h-4 w-4" /> Delete
                 </DropdownMenuItem>
                 {showTrackActions && (
                   <>
                     <DropdownMenuSeparator />
                     {onSharePost && (
-                      <DropdownMenuItem onClick={onSharePost}>
+                      <DropdownMenuItem onClick={() => onSharePost(message)}>
                         <ChatBubbleLeftRightIcon className="h-4 w-4" /> Share a post…
                       </DropdownMenuItem>
                     )}
                     {onTrackAsPost && (
-                      <DropdownMenuItem onClick={onTrackAsPost}>
+                      <DropdownMenuItem onClick={() => onTrackAsPost(message)}>
                         <AdjustmentsHorizontalIcon className="h-4 w-4" /> Track as feedback…
                       </DropdownMenuItem>
                     )}
@@ -434,7 +441,7 @@ export function AgentMessageBubble({
             </span>
             <button
               type="button"
-              onClick={() => onTrackSuggestion(suggestion)}
+              onClick={() => onTrackSuggestion(message)}
               className="ml-auto inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
               <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" /> Track as feedback
@@ -459,7 +466,7 @@ export function AgentMessageBubble({
                 count={r.count}
                 hasReacted={r.hasReacted}
                 reactors={r.reactors}
-                onToggle={() => onToggleReaction(r.emoji, r.hasReacted)}
+                onToggle={() => onToggleReaction(message.id, r.emoji, r.hasReacted)}
               />
             ))}
           </div>
@@ -505,7 +512,7 @@ export function AgentMessageBubble({
       </div>
     </div>
   )
-}
+})
 
 /**
  * A single visitor-facing message: a rounded bubble — muted on the left for the
