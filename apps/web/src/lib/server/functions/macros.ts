@@ -89,6 +89,30 @@ export const createMacroFn = createServerFn({ method: 'POST' })
     })
   })
 
+const saveCopilotAnswerAsMacroSchema = z.object({
+  name: z.string().min(1).max(120),
+  body: z.string().min(1).max(8000),
+})
+
+/**
+ * Save a Copilot answer as a reusable macro (Quinn Copilot P2-C.2: the answer
+ * card's "..." menu "Save as macro" row). Same authoring gate as the manager,
+ * since macros are team content, with no bundled actions and a fixed
+ * 'support' scope, as Copilot answers surface in the support inbox.
+ */
+export const saveCopilotAnswerAsMacroFn = createServerFn({ method: 'POST' })
+  .validator(saveCopilotAnswerAsMacroSchema)
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+    return createMacro({
+      name: data.name.trim(),
+      body: data.body,
+      scope: 'support',
+      actions: [],
+      createdByPrincipalId: ctx.principal.id,
+    })
+  })
+
 export const updateMacroFn = createServerFn({ method: 'POST' })
   .validator(updateMacroSchema)
   .handler(async ({ data }) => {

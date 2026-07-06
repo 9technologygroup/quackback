@@ -22,6 +22,16 @@
  * (unconfigured AI, a malformed model response, a DB error) is caught and
  * logged here, so it never throws into its caller — the event hook
  * (events/process.ts) that fires it fire-and-forget.
+ *
+ * `generateConversationSummaryText` (P2-C.3, the Copilot panel's manual
+ * Summarize chip) shares this service's config-gated guard, transcript load,
+ * and char-budget truncation via the private `loadConversationSummaryInput`
+ * helper, but asks the model for a distinct Question/Summary-bullets shape
+ * (the note a teammate inserts) instead of the on-close grounding sentence,
+ * and never persists anything: on-close remains the only writer of
+ * `conversation_summaries`. Unlike the on-close path it does not swallow
+ * errors: it's an explicit, interactive request, so a failure should surface
+ * to the teammate rather than silently no-op.
  */
 import { db, conversations, conversationSummaries, eq, sql } from '@/lib/server/db'
 import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
@@ -58,6 +68,25 @@ interface ConversationSummaryJson {
   summary: string
 }
 
+const NOW_SYSTEM_PROMPT = `You are a support analyst producing a hand-off brief for a teammate about to read this open conversation.
+
+Return strict JSON only:
+{
+  "question": "string",
+  "bullets": ["string", ...]
+}
+
+Rules:
+- "question" is a single short line naming what the customer needs or the problem they raised, written as a label, not a full-sentence quote.
+- "bullets" are 2-5 short bullet points: the key facts, what has been tried or decided, and where things currently stand.
+- Do not invent information that is not in the transcript.
+- Write for a teammate who has not read the thread yet and needs to catch up fast.`
+
+export interface ConversationSummaryNow {
+  question: string
+  bullets: string[]
+}
+
 /**
  * Render the customer-visible transcript as plain "Speaker: content" lines.
  * System status events (already excluded from `loadConversationThread`'s
@@ -77,6 +106,44 @@ function buildTranscript(messages: ConversationMessageDTO[]): string {
 }
 
 /**
+ * Shared prep for both the on-close summary and the on-demand Summarize
+ * action (P2-C.3): the config-gated no-op guard, the customer-visible
+ * transcript load, and the char-budget truncation. Returns `null` when AI
+ * isn't configured or there's nothing customer-visible to summarize yet
+ * (or the conversation itself can't be found); every caller treats `null`
+ * as "nothing to summarize" rather than an error.
+ */
+async function loadConversationSummaryInput(conversationId: ConversationId) {
+  await enforceAiTokenBudget()
+
+  const openai = getOpenAI()
+  const model = getChatModel('summary')
+  if (!openai || !model) return null
+
+  const [conversationRow, messages] = await Promise.all([
+    db.query.conversations.findFirst({
+      where: eq(conversations.id, conversationId),
+      columns: { visitorPrincipalId: true },
+    }),
+    loadConversationThread(conversationId),
+  ])
+  if (!conversationRow) {
+    log.warn({ conversation_id: conversationId }, 'conversation not found for summary')
+    return null
+  }
+
+  const transcript = buildTranscript(messages)
+  if (!transcript) return null // nothing customer-visible happened; no summary to write
+
+  const truncated =
+    transcript.length > TRANSCRIPT_CHAR_BUDGET
+      ? transcript.slice(0, TRANSCRIPT_CHAR_BUDGET) + '\n\n[truncated]'
+      : transcript
+
+  return { openai, model, conversationRow, transcript: truncated }
+}
+
+/**
  * Summarize a just-closed conversation and upsert the result (one row per
  * conversation, keyed on `conversationId`). No-ops when the AI client or the
  * `summary` chat model isn't configured — mirrors
@@ -87,38 +154,16 @@ function buildTranscript(messages: ConversationMessageDTO[]): string {
  */
 export async function summarizeConversationOnClose(conversationId: ConversationId): Promise<void> {
   try {
-    await enforceAiTokenBudget()
-
-    const openai = getOpenAI()
-    const model = getChatModel('summary')
-    if (!openai || !model) return
-
-    const [conversationRow, messages] = await Promise.all([
-      db.query.conversations.findFirst({
-        where: eq(conversations.id, conversationId),
-        columns: { visitorPrincipalId: true },
-      }),
-      loadConversationThread(conversationId),
-    ])
-    if (!conversationRow) {
-      log.warn({ conversation_id: conversationId }, 'conversation not found for summary')
-      return
-    }
-
-    const transcript = buildTranscript(messages)
-    if (!transcript) return // nothing customer-visible happened; no summary to write
-
-    const truncated =
-      transcript.length > TRANSCRIPT_CHAR_BUDGET
-        ? transcript.slice(0, TRANSCRIPT_CHAR_BUDGET) + '\n\n[truncated]'
-        : transcript
+    const input = await loadConversationSummaryInput(conversationId)
+    if (!input) return
+    const { openai, model, conversationRow, transcript } = input
 
     const { result: completion } = await withRetry(() =>
       openai.chat.completions.create({
         model,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: truncated },
+          { role: 'user', content: transcript },
         ],
         response_format: { type: 'json_object' },
         temperature: 0.2,
@@ -181,4 +226,70 @@ export async function summarizeConversationOnClose(conversationId: ConversationI
   } catch (err) {
     log.error({ err, conversation_id: conversationId }, 'conversation summary generation failed')
   }
+}
+
+/**
+ * On-demand summary of the CURRENT (possibly still-open) conversation for the
+ * Copilot panel's Summarize chip (P2-C.3, manual half). Never persists
+ * anything: no `conversation_summaries` row, no conversation message, no
+ * assistant_involvements row. On-close remains the only writer of that
+ * table. Returns `null` when AI isn't configured or there's nothing
+ * customer-visible to summarize yet (see `loadConversationSummaryInput`); the
+ * caller (`summarizeConversationNowFn`) turns that into an error for the
+ * teammate. Unlike `summarizeConversationOnClose`, this does not catch model
+ * or parse failures: this path is an explicit, interactive request, so a
+ * failure should surface rather than silently no-op.
+ */
+export async function generateConversationSummaryText(
+  conversationId: ConversationId
+): Promise<ConversationSummaryNow | null> {
+  const input = await loadConversationSummaryInput(conversationId)
+  if (!input) return null
+  const { openai, model, transcript } = input
+
+  const { result: completion } = await withRetry(() =>
+    openai.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: NOW_SYSTEM_PROMPT },
+        { role: 'user', content: transcript },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      max_completion_tokens: 400,
+    })
+  )
+
+  const responseText = completion.choices[0]?.message?.content
+  if (!responseText) {
+    log.error({ conversation_id: conversationId }, 'empty on-demand conversation summary response')
+    return null
+  }
+
+  let parsed: Partial<ConversationSummaryNow>
+  try {
+    parsed = JSON.parse(stripCodeFences(responseText))
+  } catch {
+    log.error(
+      { conversation_id: conversationId, response_length: responseText.length },
+      'failed to parse on-demand conversation summary json'
+    )
+    return null
+  }
+
+  const question = typeof parsed.question === 'string' ? parsed.question.trim() : ''
+  const bullets = Array.isArray(parsed.bullets)
+    ? parsed.bullets
+        .filter(
+          (bullet): bullet is string => typeof bullet === 'string' && bullet.trim().length > 0
+        )
+        .map((bullet) => bullet.trim())
+    : []
+
+  if (!question || bullets.length === 0) {
+    log.error({ conversation_id: conversationId }, 'invalid on-demand conversation summary shape')
+    return null
+  }
+
+  return { question, bullets }
 }

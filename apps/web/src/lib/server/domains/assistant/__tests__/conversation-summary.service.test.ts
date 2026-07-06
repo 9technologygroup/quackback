@@ -76,7 +76,10 @@ vi.mock('@/lib/server/logger', () => ({
   },
 }))
 
-import { summarizeConversationOnClose } from '../conversation-summary.service'
+import {
+  summarizeConversationOnClose,
+  generateConversationSummaryText,
+} from '../conversation-summary.service'
 
 const CONVERSATION_ID = 'conversation_1' as ConversationId
 const VISITOR_PRINCIPAL_ID = 'principal_visitor_1' as PrincipalId
@@ -236,5 +239,101 @@ describe('summarizeConversationOnClose', () => {
     )
     const values = mockInsertValues.mock.calls[0][0] as Record<string, unknown>
     expect(values.embedding).toBeUndefined()
+  })
+})
+
+describe('generateConversationSummaryText', () => {
+  beforeEach(() => {
+    mockOpenAI.chat.completions.create.mockResolvedValue(
+      jsonCompletion({
+        question: 'Duplicate March invoice charge',
+        bullets: [
+          'Customer was charged twice for their March invoice.',
+          'Refunded the duplicate charge.',
+        ],
+      })
+    )
+  })
+
+  it('returns a question and bullets built from the live transcript', async () => {
+    const result = await generateConversationSummaryText(CONVERSATION_ID)
+
+    expect(result).toEqual({
+      question: 'Duplicate March invoice charge',
+      bullets: [
+        'Customer was charged twice for their March invoice.',
+        'Refunded the duplicate charge.',
+      ],
+    })
+    const call = mockOpenAI.chat.completions.create.mock.calls[0][0] as {
+      response_format: { type: string }
+      messages: Array<{ role: string; content: string }>
+    }
+    expect(call.response_format).toEqual({ type: 'json_object' })
+    expect(call.messages.at(-1)?.content).toContain('My March invoice charged me twice.')
+  })
+
+  it('never writes to conversation_summaries or generates an embedding', async () => {
+    await generateConversationSummaryText(CONVERSATION_ID)
+
+    expect(mockInsertValues).not.toHaveBeenCalled()
+    expect(mockGenerateEmbedding).not.toHaveBeenCalled()
+  })
+
+  it('returns null when the AI client is not configured', async () => {
+    mockGetOpenAI.mockReturnValue(null as unknown as never)
+
+    const result = await generateConversationSummaryText(CONVERSATION_ID)
+
+    expect(result).toBeNull()
+    expect(mockLoadConversationThread).not.toHaveBeenCalled()
+  })
+
+  it('returns null when the summary chat model is not configured', async () => {
+    mockGetChatModel.mockReturnValue(null)
+
+    const result = await generateConversationSummaryText(CONVERSATION_ID)
+
+    expect(result).toBeNull()
+    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+  })
+
+  it('returns null when there is no customer-visible transcript yet', async () => {
+    mockLoadConversationThread.mockResolvedValue([
+      msg({ senderType: 'system', content: 'chat_started' }),
+    ])
+
+    const result = await generateConversationSummaryText(CONVERSATION_ID)
+
+    expect(result).toBeNull()
+    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+  })
+
+  it('returns null on an invalid model response shape', async () => {
+    mockOpenAI.chat.completions.create.mockResolvedValue(
+      jsonCompletion({ question: 'Only a question, no bullets' })
+    )
+
+    const result = await generateConversationSummaryText(CONVERSATION_ID)
+
+    expect(result).toBeNull()
+  })
+
+  it('returns null when the model response is not valid JSON', async () => {
+    mockOpenAI.chat.completions.create.mockResolvedValue({
+      choices: [{ message: { content: 'not json at all' } }],
+    })
+
+    const result = await generateConversationSummaryText(CONVERSATION_ID)
+
+    expect(result).toBeNull()
+  })
+
+  it('propagates a model-call failure instead of swallowing it (unlike the on-close path)', async () => {
+    mockOpenAI.chat.completions.create.mockRejectedValue(new Error('upstream unavailable'))
+
+    await expect(generateConversationSummaryText(CONVERSATION_ID)).rejects.toThrow(
+      'upstream unavailable'
+    )
   })
 })

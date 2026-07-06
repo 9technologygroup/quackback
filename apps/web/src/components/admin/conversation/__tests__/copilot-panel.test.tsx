@@ -7,7 +7,7 @@
  * placeholder swap, and "New chat".
  */
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ConversationId } from '@quackback/ids'
@@ -37,6 +37,23 @@ vi.mock('@/lib/client/queries/settings', () => ({
       queryFn: async () => ({ messenger: { assistant: { name: 'Quinn', avatarUrl: '' } } }),
     }),
   },
+}))
+
+const hoisted = vi.hoisted(() => ({
+  saveCopilotAnswerAsMacroFn: vi.fn(),
+  summarizeConversationNowFn: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+}))
+
+vi.mock('@/lib/server/functions/macros', () => ({
+  saveCopilotAnswerAsMacroFn: hoisted.saveCopilotAnswerAsMacroFn,
+}))
+vi.mock('@/lib/server/functions/copilot-summary', () => ({
+  summarizeConversationNowFn: hoisted.summarizeConversationNowFn,
+}))
+vi.mock('sonner', () => ({
+  toast: { success: hoisted.toastSuccess, error: hoisted.toastError },
 }))
 
 import { CopilotPanel } from '../copilot-panel'
@@ -357,5 +374,161 @@ describe('<CopilotPanel> Answer-sources popover', () => {
     const checkbox = screen.getByRole('checkbox')
     expect(checkbox).toHaveAttribute('data-state', 'checked')
     vi.unstubAllGlobals()
+  })
+})
+
+describe('<CopilotPanel> Save as macro', () => {
+  async function askAndGetAnswer(internalSourced = false) {
+    const frames = sseFrame(COPILOT_EVENTS.final, {
+      text: 'Refunds are processed within 30 days [1].',
+      citations: [
+        {
+          type: 'article',
+          id: 'article_1',
+          title: 'Refund policy',
+          url: 'https://help.example.com/refunds',
+        },
+      ],
+      internalSourced,
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
+    renderPanel()
+    await ask('What is the refund window?')
+    await screen.findByText(/Refunds are processed within 30 days/)
+  }
+
+  async function openSaveAsMacroDialog() {
+    // Radix DropdownMenuTrigger opens on pointerDown, not click.
+    fireEvent.pointerDown(screen.getByRole('button', { name: /more answer actions/i }), {
+      button: 0,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Save as macro' }))
+  }
+
+  it('opens a dialog prefilled with the question and the citation-stripped answer', async () => {
+    await askAndGetAnswer()
+    await openSaveAsMacroDialog()
+
+    expect(await screen.findByText('Save as macro')).toBeInTheDocument()
+    expect(screen.getByLabelText('Name')).toHaveValue('What is the refund window?')
+    expect(screen.getByLabelText('Body')).toHaveValue('Refunds are processed within 30 days.')
+    vi.unstubAllGlobals()
+  })
+
+  it('shows an internal-source leak note without blocking save', async () => {
+    await askAndGetAnswer(true)
+    await openSaveAsMacroDialog()
+
+    expect(await screen.findByText(/This answer used internal sources/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled()
+    vi.unstubAllGlobals()
+  })
+
+  it('shows no leak note for a public answer', async () => {
+    await askAndGetAnswer(false)
+    await openSaveAsMacroDialog()
+    await screen.findByText('Save as macro')
+
+    expect(screen.queryByText(/This answer used internal sources/i)).not.toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+
+  it('saves the (possibly edited) name and citation-stripped body, then toasts success', async () => {
+    hoisted.saveCopilotAnswerAsMacroFn.mockResolvedValue({ id: 'macro_1' })
+    await askAndGetAnswer()
+    await openSaveAsMacroDialog()
+    const nameInput = await screen.findByLabelText('Name')
+    fireEvent.change(nameInput, { target: { value: 'Refund window macro' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(hoisted.saveCopilotAnswerAsMacroFn).toHaveBeenCalledWith({
+        data: { name: 'Refund window macro', body: 'Refunds are processed within 30 days.' },
+      })
+    })
+    expect(hoisted.toastSuccess).toHaveBeenCalledWith('Macro saved')
+    vi.unstubAllGlobals()
+  })
+
+  it('shows an error toast when saving fails', async () => {
+    hoisted.saveCopilotAnswerAsMacroFn.mockRejectedValue(new Error('Access denied'))
+    await askAndGetAnswer()
+    await openSaveAsMacroDialog()
+    await screen.findByText('Save as macro')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(hoisted.toastError).toHaveBeenCalledWith('Access denied')
+    })
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('<CopilotPanel> Summarize chip', () => {
+  it('inserts a formatted Question/Summary block as an internal note on success', async () => {
+    hoisted.summarizeConversationNowFn.mockResolvedValue({
+      question: 'Refund window',
+      bullets: ['Customer asked about refunds.', 'Explained the 30-day window.'],
+    })
+    const onInsert = vi.fn()
+    renderPanel({ onInsert })
+
+    fireEvent.click(screen.getByRole('button', { name: /^summarize$/i }))
+
+    await waitFor(() => {
+      expect(onInsert).toHaveBeenCalledWith(
+        'Question\nRefund window\n\nSummary\n- Customer asked about refunds.\n- Explained the 30-day window.',
+        'note'
+      )
+    })
+    expect(hoisted.summarizeConversationNowFn).toHaveBeenCalledWith({
+      data: { conversationId: CONVERSATION_ID },
+    })
+  })
+
+  it('shows an error toast on failure and inserts nothing', async () => {
+    hoisted.summarizeConversationNowFn.mockRejectedValue(
+      new Error('The assistant is not configured')
+    )
+    const onInsert = vi.fn()
+    renderPanel({ onInsert })
+
+    fireEvent.click(screen.getByRole('button', { name: /^summarize$/i }))
+
+    await waitFor(() => {
+      expect(hoisted.toastError).toHaveBeenCalledWith('The assistant is not configured')
+    })
+    expect(onInsert).not.toHaveBeenCalled()
+  })
+
+  it('disables the chip while a copilot answer is streaming', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise(() => {}))
+    )
+    renderPanel()
+    await ask('Still thinking...')
+
+    expect(screen.getByRole('button', { name: /^summarize$/i })).toBeDisabled()
+    vi.unstubAllGlobals()
+  })
+
+  it('disables the chip and swaps the label while a summarize is in flight', async () => {
+    let resolveSummary: (value: { question: string; bullets: string[] }) => void = () => {}
+    hoisted.summarizeConversationNowFn.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSummary = resolve
+        })
+    )
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: /^summarize$/i }))
+
+    const summarizingButton = await screen.findByRole('button', { name: /summarizing/i })
+    expect(summarizingButton).toBeDisabled()
+    resolveSummary({ question: 'Q', bullets: ['B'] })
   })
 })

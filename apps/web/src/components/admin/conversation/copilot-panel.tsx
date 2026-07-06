@@ -12,11 +12,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { useRouteContext } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import {
   ArrowPathIcon,
   BoltIcon,
   BookOpenIcon,
   ChatBubbleLeftRightIcon,
+  ClipboardDocumentListIcon,
   DocumentTextIcon,
   EllipsisHorizontalIcon,
   FunnelIcon,
@@ -29,6 +31,8 @@ import { PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid'
 import type { ConversationId } from '@quackback/ids'
 import { Avatar } from '@/components/ui/avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -36,6 +40,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -46,6 +51,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   AssistantAnswer,
   AssistantWorkingTrace,
@@ -63,7 +75,13 @@ import {
   type CopilotFinalPayload,
   type CopilotHistoryEntry,
 } from '@/lib/shared/assistant/copilot-contract'
+import {
+  stripCitationMarkers,
+  formatConversationSummaryNote,
+} from '@/lib/shared/assistant/copilot-format'
 import type { AssistantActivityStatus } from '@/lib/shared/conversation/types'
+import { saveCopilotAnswerAsMacroFn } from '@/lib/server/functions/macros'
+import { summarizeConversationNowFn } from '@/lib/server/functions/copilot-summary'
 
 const MAX_QUESTION_CHARS = 4000
 const MAX_HISTORY_ENTRIES = 20
@@ -232,11 +250,14 @@ export function CopilotPanel({
   const [turns, setTurns] = useState<CopilotTurn[]>([])
   const [input, setInput] = useState('')
   const [leakGateTurnId, setLeakGateTurnId] = useState<string | null>(null)
+  const [saveMacroTurnId, setSaveMacroTurnId] = useState<string | null>(null)
+  const [summarizing, setSummarizing] = useState(false)
   const { start, stop } = useSseTurn()
   const nextIdRef = useRef(0)
 
   const busy = turns.some((t) => t.status === 'streaming')
   const leakGateTurn = turns.find((t) => t.id === leakGateTurnId) ?? null
+  const saveMacroTurn = turns.find((t) => t.id === saveMacroTurnId) ?? null
 
   useEffect(() => stop, [stop])
 
@@ -373,6 +394,19 @@ export function CopilotPanel({
     [onInsert]
   )
 
+  const summarizeNow = useCallback(async () => {
+    if (busy || summarizing) return
+    setSummarizing(true)
+    try {
+      const result = await summarizeConversationNowFn({ data: { conversationId } })
+      onInsert(formatConversationSummaryNote(result.question, result.bullets), 'note')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to summarize the conversation')
+    } finally {
+      setSummarizing(false)
+    }
+  }, [busy, summarizing, conversationId, onInsert])
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between border-b border-border/50 px-3 py-2">
@@ -403,6 +437,7 @@ export function CopilotPanel({
                 turn={turn}
                 onAddToComposer={() => handleAddToComposer(turn)}
                 onAddAsNote={() => onInsert(turn.answer, 'note')}
+                onSaveAsMacro={() => setSaveMacroTurnId(turn.id)}
                 onRetry={() => retry(turn.id)}
               />
             ))}
@@ -420,6 +455,13 @@ export function CopilotPanel({
         sourceOptions={sourceOptions}
         checked={checked}
         onToggleSource={toggle}
+        onSummarize={() => void summarizeNow()}
+        summarizing={summarizing}
+      />
+
+      <SaveAsMacroDialog
+        turn={saveMacroTurn}
+        onOpenChange={(open) => !open && setSaveMacroTurnId(null)}
       />
 
       <AlertDialog open={!!leakGateTurn} onOpenChange={(open) => !open && setLeakGateTurnId(null)}>
@@ -494,11 +536,13 @@ function CopilotTurnView({
   turn,
   onAddToComposer,
   onAddAsNote,
+  onSaveAsMacro,
   onRetry,
 }: {
   turn: CopilotTurn
   onAddToComposer: () => void
   onAddAsNote: () => void
+  onSaveAsMacro: () => void
   onRetry: () => void
 }) {
   const streaming = turn.status === 'streaming'
@@ -543,6 +587,8 @@ function CopilotTurnView({
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={onAddAsNote}>Add as note</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={onSaveAsMacro}>Save as macro</DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -638,6 +684,8 @@ function CopilotAskInput({
   sourceOptions,
   checked,
   onToggleSource,
+  onSummarize,
+  summarizing,
 }: {
   value: string
   onChange: (value: string) => void
@@ -648,10 +696,29 @@ function CopilotAskInput({
   sourceOptions: SourceOption[]
   checked: Set<SourceType>
   onToggleSource: (type: SourceType) => void
+  /** Chips row above the input (COPILOT-SIDEBAR-UX.md P2-C): [Summarize] for
+   *  now; [AI Format] joins it in C.1. */
+  onSummarize: () => void
+  summarizing: boolean
 }) {
   const placeholder = hasAskedBefore ? 'Ask a follow-up question...' : 'Ask a question...'
   return (
     <div className="border-t border-border/50 p-3">
+      <div className="mb-2 flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={onSummarize}
+          disabled={busy || summarizing}
+          className="flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+        >
+          {summarizing ? (
+            <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <ClipboardDocumentListIcon className="h-3.5 w-3.5" />
+          )}
+          {summarizing ? 'Summarizing…' : 'Summarize'}
+        </button>
+      </div>
       <div className="relative rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-primary/20">
         <Textarea
           value={value}
@@ -724,5 +791,93 @@ function CopilotAskInput({
         </div>
       </div>
     </div>
+  )
+}
+
+/** First few words of a question, used to prefill the macro name field. */
+function firstWords(text: string, count: number): string {
+  return text.trim().split(/\s+/).filter(Boolean).slice(0, count).join(' ')
+}
+
+/** The answer card "..." menu's "Save as macro" dialog (P2-C.2). Keyed on the
+ *  turn's id so switching to a different turn's dialog remounts the form with
+ *  a fresh name/body instead of carrying over stale edits. */
+function SaveAsMacroDialog({
+  turn,
+  onOpenChange,
+}: {
+  turn: CopilotTurn | null
+  onOpenChange: (open: boolean) => void
+}) {
+  return (
+    <Dialog open={!!turn} onOpenChange={onOpenChange}>
+      <DialogContent>
+        {turn && <SaveAsMacroForm key={turn.id} turn={turn} onClose={() => onOpenChange(false)} />}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function SaveAsMacroForm({ turn, onClose }: { turn: CopilotTurn; onClose: () => void }) {
+  const [name, setName] = useState(() => firstWords(turn.question, 6))
+  const [saving, setSaving] = useState(false)
+  const body = useMemo(() => stripCitationMarkers(turn.answer), [turn.answer])
+
+  const save = useCallback(async () => {
+    const trimmedName = name.trim()
+    if (!trimmedName || saving) return
+    setSaving(true)
+    try {
+      await saveCopilotAnswerAsMacroFn({ data: { name: trimmedName, body } })
+      toast.success('Macro saved')
+      onClose()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to save macro')
+    } finally {
+      setSaving(false)
+    }
+  }, [name, body, saving, onClose])
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Save as macro</DialogTitle>
+      </DialogHeader>
+      <div className="space-y-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="copilot-macro-name">Name</Label>
+          <Input
+            id="copilot-macro-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={120}
+            autoFocus
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="copilot-macro-body">Body</Label>
+          <Textarea
+            id="copilot-macro-body"
+            value={body}
+            readOnly
+            rows={6}
+            className="max-h-40 resize-none overflow-y-auto"
+          />
+        </div>
+        {turn.internalSourced && (
+          <p className="text-xs text-amber-700 dark:text-amber-300">
+            This answer used internal sources. Review before saving it as a reusable reply.
+          </p>
+        )}
+      </div>
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button type="button" onClick={() => void save()} disabled={saving || !name.trim()}>
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+      </DialogFooter>
+    </>
   )
 }

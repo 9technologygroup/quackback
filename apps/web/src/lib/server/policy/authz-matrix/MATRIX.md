@@ -98,7 +98,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 497 surfaces
+### Server functions (`requireAuth`) — 501 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -284,6 +284,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/conversation.ts`::listFlaggedMessagesFn | conversation.view |
 | `lib/server/functions/conversation.ts`::getLinkedPostsForConversationFn | conversation.view |
 | `lib/server/functions/conversation.ts`::getLinkedConversationsForPostFn | conversation.view |
+| `lib/server/functions/copilot-summary.ts`::summarizeConversationNowFn | copilot.use |
 | `lib/server/functions/data-connectors.ts`::fetchDataConnectorsFn | connector.manage |
 | `lib/server/functions/data-connectors.ts`::fetchDataConnectorFn | connector.manage |
 | `lib/server/functions/data-connectors.ts`::createDataConnectorFn | connector.manage |
@@ -350,6 +351,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/link-preview.ts`::unfurlLinkFn | END_USER (any authenticated) |
 | `lib/server/functions/macros.ts`::listMacrosFn | conversation.reply |
 | `lib/server/functions/macros.ts`::createMacroFn | conversation.manage |
+| `lib/server/functions/macros.ts`::saveCopilotAnswerAsMacroFn | conversation.manage |
 | `lib/server/functions/macros.ts`::updateMacroFn | conversation.manage |
 | `lib/server/functions/macros.ts`::deleteMacroFn | conversation.manage |
 | `lib/server/functions/macros.ts`::applyMacroFn | conversation.reply |
@@ -394,6 +396,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/post-tags.ts`::createPostTagFn | tag.manage |
 | `lib/server/functions/post-tags.ts`::updatePostTagFn | tag.manage |
 | `lib/server/functions/post-tags.ts`::deletePostTagFn | tag.manage |
+| `lib/server/functions/post-voters-context.ts`::listPostVotersForVoteManagerFn | post.vote_on_behalf |
 | `lib/server/functions/posts.ts`::fetchInboxPostsForAdmin | post.view_private |
 | `lib/server/functions/posts.ts`::fetchPostWithDetails | post.view_private |
 | `lib/server/functions/posts.ts`::fetchPostVotersFn | post.view_private |
@@ -415,6 +418,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/public-posts.ts`::userDeletePostFn | END_USER (any authenticated) |
 | `lib/server/functions/public-posts.ts`::toggleVoteFn | END_USER (any authenticated) |
 | `lib/server/functions/public-posts.ts`::createPublicPostFn | END_USER (any authenticated) |
+| `lib/server/functions/public-profile.ts`::getProfileTeamContextFn | people.view |
 | `lib/server/functions/recovery-codes.ts`::generateRecoveryCodesFn | auth.manage |
 | `lib/server/functions/recovery-codes.ts`::listRecoveryCodesFn | auth.manage |
 | `lib/server/functions/roadmaps.ts`::fetchRoadmaps | roadmap.manage |
@@ -768,7 +772,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-159 of 742 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+160 of 747 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
@@ -837,6 +841,7 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `lib/server/functions/public-posts.ts`::getVoteSidebarDataFn | server-fn |
 | `lib/server/functions/public-posts.ts`::listPublicPostsFn | server-fn |
 | `lib/server/functions/public-posts.ts`::listPublicRoadmapsFn | server-fn |
+| `lib/server/functions/public-profile.ts`::getPublicUserProfileFn | server-fn |
 | `lib/server/functions/recovery-codes-consume.ts`::consumeRecoveryCodeFn | server-fn |
 | `lib/server/functions/settings-utils.ts`::fetchSettingsBrandingData | server-fn |
 | `lib/server/functions/settings-utils.ts`::fetchSettingsFaviconData | server-fn |
