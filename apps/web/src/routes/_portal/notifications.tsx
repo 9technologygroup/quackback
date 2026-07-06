@@ -4,7 +4,7 @@ import { BellIcon, InboxIcon, CheckIcon } from '@heroicons/react/24/outline'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Spinner } from '@/components/shared/spinner'
 import { Button } from '@/components/ui/button'
-import { useNotifications } from '@/lib/client/hooks/use-notifications-queries'
+import { useInfiniteNotifications } from '@/lib/client/hooks/use-notifications-queries'
 import { useMarkNotificationAsRead, useMarkAllNotificationsAsRead } from '@/lib/client/mutations'
 import { NotificationItem } from '@/components/notifications/notification-item'
 import { groupNotificationsByDate } from '@/components/notifications/group-by-date'
@@ -15,12 +15,13 @@ export const Route = createFileRoute('/_portal/notifications')({
 
 function NotificationsPage() {
   const intl = useIntl()
-  const { data, isLoading } = useNotifications({ limit: 50 })
+  const { data, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } =
+    useInfiniteNotifications()
   const markAsRead = useMarkNotificationAsRead()
   const markAllAsRead = useMarkAllNotificationsAsRead()
 
-  const notifications = data?.notifications ?? []
-  const unreadCount = data?.unreadCount ?? 0
+  const notifications = data?.pages.flatMap((page) => page.notifications) ?? []
+  const unreadCount = data?.pages[0]?.unreadCount ?? 0
   const groups = groupNotificationsByDate(notifications)
 
   const groupLabels: Record<string, string> = {
@@ -118,6 +119,20 @@ function NotificationsPage() {
               </div>
             </section>
           ))}
+          {hasNextPage && (
+            <div className="flex justify-center pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => fetchNextPage()}
+                disabled={isFetchingNextPage}
+                className="gap-1.5"
+              >
+                {isFetchingNextPage && <Spinner size="sm" />}
+                <FormattedMessage id="portal.notifications.loadMore" defaultMessage="Load more" />
+              </Button>
+            </div>
+          )}
         </div>
       ) : (
         <div

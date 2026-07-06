@@ -235,6 +235,7 @@
   "portal.notifications.subtitle": "تحديثات حول المنشورات التي اشتركت فيها",
   "portal.notifications.markAllRead": "تحديد الكل كمقروء",
   "portal.notifications.readAll": "قراءة الكل",
+  "portal.notifications.loadMore": "تحميل المزيد",
   "portal.notifications.groupToday": "اليوم",
   "portal.notifications.groupYesterday": "أمس",
   "portal.notifications.groupEarlier": "سابقًا",

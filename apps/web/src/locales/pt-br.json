@@ -235,6 +235,7 @@
   "portal.notifications.subtitle": "Atualizações sobre os posts que você assinou",
   "portal.notifications.markAllRead": "Marcar tudo como lido",
   "portal.notifications.readAll": "Ler tudo",
+  "portal.notifications.loadMore": "Carregar mais",
   "portal.notifications.groupToday": "Hoje",
   "portal.notifications.groupYesterday": "Ontem",
   "portal.notifications.groupEarlier": "Anteriores",

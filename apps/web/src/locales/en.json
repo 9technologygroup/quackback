@@ -235,6 +235,7 @@
   "portal.notifications.subtitle": "Updates on posts you've subscribed to",
   "portal.notifications.markAllRead": "Mark all read",
   "portal.notifications.readAll": "Read all",
+  "portal.notifications.loadMore": "Load more",
   "portal.notifications.groupToday": "Today",
   "portal.notifications.groupYesterday": "Yesterday",
   "portal.notifications.groupEarlier": "Earlier",

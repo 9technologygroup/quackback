@@ -235,6 +235,7 @@
   "portal.notifications.subtitle": "Mises à jour sur les publications auxquelles vous êtes abonné",
   "portal.notifications.markAllRead": "Tout marquer comme lu",
   "portal.notifications.readAll": "Tout lire",
+  "portal.notifications.loadMore": "Charger plus",
   "portal.notifications.groupToday": "Aujourd'hui",
   "portal.notifications.groupYesterday": "Hier",
   "portal.notifications.groupEarlier": "Plus ancien",

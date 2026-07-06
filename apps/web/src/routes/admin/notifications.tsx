@@ -6,7 +6,7 @@ import { Spinner } from '@/components/shared/spinner'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { NotificationItem } from '@/components/notifications/notification-item'
-import { useNotifications } from '@/lib/client/hooks/use-notifications-queries'
+import { useInfiniteNotifications } from '@/lib/client/hooks/use-notifications-queries'
 import { useMarkNotificationAsRead, useMarkAllNotificationsAsRead } from '@/lib/client/mutations'
 import {
   groupNotificationsByDate,
@@ -24,13 +24,14 @@ export const Route = createFileRoute('/admin/notifications')({
 })
 
 function NotificationsPage() {
-  const { data, isLoading } = useNotifications({ limit: 50 })
+  const { data, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } =
+    useInfiniteNotifications()
   const markAsRead = useMarkNotificationAsRead()
   const markAllAsRead = useMarkAllNotificationsAsRead()
 
-  const notifications = data?.notifications ?? []
-  const unreadCount = data?.unreadCount ?? 0
-  const total = data?.total ?? 0
+  const notifications = data?.pages.flatMap((page) => page.notifications) ?? []
+  const unreadCount = data?.pages[0]?.unreadCount ?? 0
+  const total = data?.pages[0]?.total ?? 0
   const groups = groupNotificationsByDate(notifications)
 
   return (
@@ -89,6 +90,19 @@ function NotificationsPage() {
                 </div>
               </div>
             ))}
+            {hasNextPage && (
+              <div className="flex justify-center pt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fetchNextPage()}
+                  disabled={isFetchingNextPage}
+                >
+                  {isFetchingNextPage && <Spinner size="sm" />}
+                  Load more
+                </Button>
+              </div>
+            )}
           </div>
         </ScrollArea>
       ) : (

@@ -235,6 +235,7 @@
   "portal.notifications.subtitle": "Neuigkeiten zu Beiträgen, die Sie abonniert haben",
   "portal.notifications.markAllRead": "Alle als gelesen markieren",
   "portal.notifications.readAll": "Alle lesen",
+  "portal.notifications.loadMore": "Mehr laden",
   "portal.notifications.groupToday": "Heute",
   "portal.notifications.groupYesterday": "Gestern",
   "portal.notifications.groupEarlier": "Älter",

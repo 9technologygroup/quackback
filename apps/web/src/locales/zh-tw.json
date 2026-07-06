@@ -235,6 +235,7 @@
   "portal.notifications.subtitle": "你已訂閱貼文的更新",
   "portal.notifications.markAllRead": "全部標示為已讀",
   "portal.notifications.readAll": "全部已讀",
+  "portal.notifications.loadMore": "載入更多",
   "portal.notifications.groupToday": "今天",
   "portal.notifications.groupYesterday": "昨天",
   "portal.notifications.groupEarlier": "更早之前",

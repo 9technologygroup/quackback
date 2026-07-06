@@ -235,6 +235,7 @@
   "portal.notifications.subtitle": "Обновления по предложениям, на которые вы подписаны",
   "portal.notifications.markAllRead": "Отметить всё прочитанным",
   "portal.notifications.readAll": "Прочитать всё",
+  "portal.notifications.loadMore": "Загрузить ещё",
   "portal.notifications.groupToday": "Сегодня",
   "portal.notifications.groupYesterday": "Вчера",
   "portal.notifications.groupEarlier": "Ранее",
