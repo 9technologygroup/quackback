@@ -9,6 +9,7 @@ import { AssistantIdentityCard } from '@/components/admin/automation/assistant-i
 import { SupportPerformanceCard } from '@/components/admin/automation/support-performance-card'
 import { QuinnPerformanceCard } from '@/components/admin/automation/quinn-performance-card'
 import { QuinnToolsCard } from '@/components/admin/automation/quinn-tools-card'
+import { CopilotUsageCard } from '@/components/admin/automation/copilot-usage-card'
 import { AssistantBasicsCard } from '@/components/admin/automation/assistant-basics-card'
 import { GuidanceRulesCard } from '@/components/admin/automation/guidance-rules-card'
 import { ToolControlsCard } from '@/components/admin/automation/tool-controls-card'
@@ -61,6 +62,7 @@ function AssistantPage() {
 
       {flags?.assistantActions ? (
         <>
+          <CopilotUsageCard />
           <AssistantBasicsCard />
           <GuidanceRulesCard />
           <ToolControlsCard />

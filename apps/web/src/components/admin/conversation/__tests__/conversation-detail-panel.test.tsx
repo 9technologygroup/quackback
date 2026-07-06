@@ -89,6 +89,7 @@ function makeConversation(overrides: Partial<ConversationDTO> = {}): Conversatio
     tags: [],
     sla: null,
     customAttributes: {},
+    translation: null,
     ...overrides,
   }
 }

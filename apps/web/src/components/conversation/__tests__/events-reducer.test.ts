@@ -59,6 +59,7 @@ function agentMessage(id: string, overrides: Partial<AgentConversationMessageDTO
     reactions: [],
     flaggedAt: null,
     postSuggestion: null,
+    translatedFrom: null,
     ...overrides,
   } satisfies AgentConversationMessageDTO
 }
@@ -88,6 +89,7 @@ function conversation(overrides: Partial<ConversationDTO> = {}): ConversationDTO
     tags: [],
     sla: null,
     customAttributes: {},
+    translation: null,
     ...overrides,
   }
 }

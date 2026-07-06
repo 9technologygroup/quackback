@@ -1021,7 +1021,7 @@ describe('runAssistantTurn', () => {
     ])
   })
 
-  it('omits guidanceRuleIds from the usage-log metadata (byte-identical) when actions are off', async () => {
+  it('omits guidanceRuleIds from the usage-log metadata when actions are off', async () => {
     mockIsFeatureEnabled.mockResolvedValue(false)
     mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
 
@@ -1030,6 +1030,7 @@ describe('runAssistantTurn', () => {
     expect(lastLoggedMetadata).not.toHaveProperty('guidanceRuleIds')
     expect(lastLoggedMetadata).toEqual({
       conversationId: null,
+      surface: 'widget',
       attempt: 0,
       answerKind: 'no_sources',
     })
@@ -1044,6 +1045,43 @@ describe('runAssistantTurn', () => {
     await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
 
     expect(lastLoggedMetadata).not.toHaveProperty('guidanceRuleIds')
+  })
+
+  it('records the deploy surface in the usage-log metadata, defaulting to widget', async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
+
+    expect(lastLoggedMetadata?.surface).toBe('widget')
+  })
+
+  it('records surface: copilot for a copilot-surface turn, distinguishing it from every other surface', async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi'), surface: 'copilot' })
+
+    expect(lastLoggedMetadata?.surface).toBe('copilot')
+  })
+
+  it('records the asking teammate as principalId when actorPrincipalId is set (copilot)', async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('hi'),
+      surface: 'copilot',
+      actorPrincipalId: 'principal_teammate_1' as never,
+    })
+
+    expect(lastLoggedMetadata?.principalId).toBe('principal_teammate_1')
+  })
+
+  it('omits principalId from the usage-log metadata when no actorPrincipalId is given (widget)', async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
+
+    expect(lastLoggedMetadata).not.toHaveProperty('principalId')
   })
 
   it('salvages a schema answer from prose the weak model wrapped around the JSON', async () => {

@@ -123,6 +123,20 @@ export const conversations = pgTable(
     // The one active SLA applied to this conversation (§4.6 reserved seam), or
     // null. The Apply-SLA workflow action (a later slice) owns the shape.
     slaApplied: jsonb('sla_applied').$type<Record<string, unknown>>(),
+    // Two-way inbox translation (P2-D.1). Detected once (best-effort, from the
+    // visitor's recent messages) and cached here rather than re-run on every
+    // read; null until a detection attempt has succeeded. Plain columns, not a
+    // bundled jsonb blob, mirroring how the conversation row already stores
+    // other per-conversation UI state (priority, snoozedUntil, assignedTeamId).
+    detectedCustomerLanguage: text('detected_customer_language'),
+    // Per-conversation manual activation toggle. Independent of detection: a
+    // teammate can turn translation on/off regardless of whether (or what)
+    // language was detected.
+    translationEnabled: boolean('translation_enabled').notNull().default(false),
+    // Set when a teammate dismisses the auto-suggest banner ("This customer
+    // writes in French. Translate this conversation?") so it never resurfaces
+    // for this conversation. Null = never dismissed (or translation already on).
+    translationDismissedAt: timestamp('translation_dismissed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }),
   },
@@ -276,6 +290,48 @@ export const conversationMessages = pgTable(
     uniqueIndex('conversation_messages_email_message_id_idx')
       .using('btree', sql`(metadata ->> 'emailMessageId')`)
       .where(sql`(metadata ->> 'emailMessageId') IS NOT NULL`),
+  ]
+)
+
+/**
+ * Per-(message, locale) translation cache for the INCOMING direction of P2-D.1
+ * two-way inbox translation, mirroring kb_article_translations' (parentId,
+ * locale) -> content shape. `conversation_messages.content`/`content_json` are
+ * NEVER mutated by a display translation — this table is the only place a
+ * translated rendering of a customer message lives. Keyed by locale (not just
+ * "the" translation) because different teammates viewing the same message may
+ * have different preferred languages. The OUTGOING direction (a teammate's
+ * reply translated to the customer's language before sending) does not use
+ * this table: the translation IS the stored message content there, and the
+ * teammate's pre-translation original is preserved on that message's own
+ * `metadata.translatedFrom` instead — a per-viewer-language cache row makes no
+ * sense for a value that's always read back in the one customer language.
+ */
+export const conversationMessageTranslations = pgTable(
+  'conversation_message_translations',
+  {
+    id: typeIdWithDefault('conversation_msg_translation')('id').primaryKey(),
+    conversationMessageId: typeIdColumn('conversation_msg')('conversation_message_id').notNull(),
+    locale: text('locale').notNull(),
+    content: text('content').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Named explicitly (rather than inline .references()) because the
+    // conventional auto-derived name for this table+column combination is
+    // over Postgres's 63-byte identifier limit and gets silently truncated —
+    // an explicit short name keeps the schema and the hand-written SQL
+    // migration in exact agreement.
+    foreignKey({
+      name: 'conversation_message_translations_message_id_fkey',
+      columns: [table.conversationMessageId],
+      foreignColumns: [conversationMessages.id],
+    }).onDelete('cascade'),
+    uniqueIndex('conversation_message_translations_unique_idx').on(
+      table.conversationMessageId,
+      table.locale
+    ),
   ]
 )
 
@@ -520,4 +576,15 @@ export const conversationMessagesRelations = relations(conversationMessages, ({ 
   mentions: many(conversationMessageMentions),
   reactions: many(conversationMessageReactions),
   flags: many(conversationMessageFlags),
+  translations: many(conversationMessageTranslations),
 }))
+
+export const conversationMessageTranslationsRelations = relations(
+  conversationMessageTranslations,
+  ({ one }) => ({
+    message: one(conversationMessages, {
+      fields: [conversationMessageTranslations.conversationMessageId],
+      references: [conversationMessages.id],
+    }),
+  })
+)

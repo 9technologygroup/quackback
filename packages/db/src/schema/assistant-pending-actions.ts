@@ -92,6 +92,12 @@ export const assistantPendingActions = pgTable(
     index('assistant_pending_actions_conversation_proposed_idx')
       .on(table.conversationId)
       .where(sql`${table.status} = 'proposed'`),
+    // Drives the Copilot usage report's actions-funnel date-range scan
+    // (analytics/copilot-usage.ts), which has no status predicate in its
+    // WHERE clause (the proposed/approved/rejected/expired split is a set of
+    // FILTER'd counts inside one aggregate) — plain, not partial or
+    // composite, since every row (regardless of status) is in scope.
+    index('assistant_pending_actions_proposed_at_idx').on(table.proposedAt),
     // See the column comment above for why this is scoped to `status =
     // 'proposed'` rather than the key alone.
     uniqueIndex('assistant_pending_actions_idempotency_key_idx')

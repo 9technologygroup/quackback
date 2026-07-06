@@ -95,7 +95,7 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
     'A valid conversationId and question are required'
   )
   if (!gate.ok) return gate.response
-  const { parsed, conversationId } = gate
+  const { auth, parsed, conversationId } = gate
 
   // Provisioning Quinn's identity is idempotent and, like the sandbox, not a
   // conversation write of its own.
@@ -117,6 +117,10 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
         // comment).
         conversationId,
         surface: 'copilot',
+        // Attributes this turn to the asking teammate in the usage log, for
+        // the per-teammate breakdown in analytics/copilot-usage.ts — Quinn's
+        // own principal id above never identifies the human on the other end.
+        actorPrincipalId: auth.principal.id,
         sourceTypes: parsed.sourceTypes,
         writeToolPolicy: 'propose',
         signal: request.signal,

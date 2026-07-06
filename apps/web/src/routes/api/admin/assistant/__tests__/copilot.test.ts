@@ -214,6 +214,14 @@ describe('POST /api/admin/assistant/copilot', () => {
     expect(mockRunAssistantTurn.mock.calls[0][0]).not.toHaveProperty('simulate')
   })
 
+  it('attributes the turn to the asking teammate for the Copilot usage report', async () => {
+    await handleCopilot({ request: makeRequest(validBody) })
+
+    expect(mockRunAssistantTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ actorPrincipalId: 'principal_1' })
+    )
+  })
+
   it('relays a turn that proposed a write-tool action: the pending action surfaces on the final payload untouched', async () => {
     mockRunAssistantTurn.mockResolvedValue({
       status: 'answered',

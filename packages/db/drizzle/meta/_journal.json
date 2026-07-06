@@ -1219,6 +1219,20 @@
       "when": 1784766900000,
       "tag": "0173_conversation_messages_style_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "7",
+      "when": 1784766960000,
+      "tag": "0174_copilot_usage_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1784767020000,
+      "tag": "0175_conversation_translation",
+      "breakpoints": true
     }
   ]
 }

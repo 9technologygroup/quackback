@@ -7,14 +7,20 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vites
 import type { ConversationId } from '@quackback/ids'
 
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
-import { assistantToolCalls, conversations, principal, eq } from '@/lib/server/db'
+import { assistantToolCalls, conversations, principal, eq, inArray } from '@/lib/server/db'
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: (await import('@/lib/server/__tests__/db-test-fixture')).testDb,
 }))
 
-import { claimToolCall, finalizeToolCall, recordDeniedToolCall } from '../tool-audit'
+import {
+  claimToolCall,
+  finalizeToolCall,
+  recordDeniedToolCall,
+  cleanupExpiredToolCalls,
+  ASSISTANT_TOOL_CALLS_RETENTION_DAYS,
+} from '../tool-audit'
 
 const fixture = await createDbTestFixture({
   probe: async (db) => {
@@ -122,5 +128,49 @@ describe.skipIf(!fixture.available)('tool-audit (real DB, rolled back)', () => {
     })
     expect(denied.status).toBe('denied')
     expect(denied.error).toBe('exceeds auto-approval limit')
+  })
+
+  describe('cleanupExpiredToolCalls', () => {
+    async function seedAt(toolName: string, createdAt: Date) {
+      const conversationId = await seedConversation()
+      const claimed = await claimToolCall({ conversationId, toolName, args: {} })
+      if (!claimed) throw new Error('expected a claim')
+      await testDb
+        .update(assistantToolCalls)
+        .set({ createdAt })
+        .where(eq(assistantToolCalls.id, claimed.id))
+      return claimed.id
+    }
+
+    it('deletes only rows older than the retention window', async () => {
+      const dayMs = 24 * 60 * 60 * 1000
+      const staleId = await seedAt(
+        '__cleanup_stale',
+        new Date(Date.now() - (ASSISTANT_TOOL_CALLS_RETENTION_DAYS + 1) * dayMs)
+      )
+      const freshId = await seedAt(
+        '__cleanup_fresh',
+        new Date(Date.now() - (ASSISTANT_TOOL_CALLS_RETENTION_DAYS - 1) * dayMs)
+      )
+
+      const { deleted } = await cleanupExpiredToolCalls()
+      expect(deleted).toBeGreaterThanOrEqual(1)
+
+      const rows = await testDb
+        .select({ id: assistantToolCalls.id })
+        .from(assistantToolCalls)
+        .where(inArray(assistantToolCalls.id, [staleId, freshId]))
+      expect(rows.map((r) => r.id)).toEqual([freshId])
+    })
+
+    it('leaves a row within the retention window untouched', async () => {
+      const freshId = await seedAt('__cleanup_recent', new Date())
+      await cleanupExpiredToolCalls()
+      const [row] = await testDb
+        .select({ id: assistantToolCalls.id })
+        .from(assistantToolCalls)
+        .where(eq(assistantToolCalls.id, freshId))
+      expect(row?.id).toBe(freshId)
+    })
   })
 })

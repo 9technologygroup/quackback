@@ -37,6 +37,7 @@ import { db, conversations, conversationSummaries, eq, sql } from '@/lib/server/
 import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
 import { getChatModel, getEmbeddingModel } from '@/lib/server/domains/ai/models'
 import { withRetry } from '@/lib/server/domains/ai/retry'
+import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { generateEmbedding } from '@/lib/server/domains/embeddings/embedding.service'
 import { loadConversationThread } from './assistant.thread'
@@ -239,6 +240,10 @@ export async function summarizeConversationOnClose(conversationId: ConversationI
  * teammate. Unlike `summarizeConversationOnClose`, this does not catch model
  * or parse failures: this path is an explicit, interactive request, so a
  * failure should surface rather than silently no-op.
+ *
+ * Usage-logged under `pipelineStep: 'copilot_summary'` (unlike the on-close
+ * path above, which predates usage logging and stays unlogged): this is the
+ * one entry point analytics/copilot-usage.ts counts as a Copilot "summary".
  */
 export async function generateConversationSummaryText(
   conversationId: ConversationId
@@ -247,16 +252,30 @@ export async function generateConversationSummaryText(
   if (!input) return null
   const { openai, model, transcript } = input
 
-  const { result: completion } = await withRetry(() =>
-    openai.chat.completions.create({
+  const completion = await withUsageLogging(
+    {
+      pipelineStep: 'copilot_summary',
+      callType: 'chat_completion',
       model,
-      messages: [
-        { role: 'system', content: NOW_SYSTEM_PROMPT },
-        { role: 'user', content: transcript },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-      max_completion_tokens: 400,
+      metadata: { conversationId },
+    },
+    () =>
+      withRetry(() =>
+        openai.chat.completions.create({
+          model,
+          messages: [
+            { role: 'system', content: NOW_SYSTEM_PROMPT },
+            { role: 'user', content: transcript },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.2,
+          max_completion_tokens: 400,
+        })
+      ),
+    (r) => ({
+      inputTokens: r.usage?.prompt_tokens ?? 0,
+      outputTokens: r.usage?.completion_tokens,
+      totalTokens: r.usage?.total_tokens ?? 0,
     })
   )
 

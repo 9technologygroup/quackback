@@ -23,6 +23,7 @@ import {
   type Conversation,
   type ConversationSystemEvent,
   type AssistantPendingActionSurface,
+  type ConversationMessageMetadata,
 } from '@/lib/server/db'
 import { isTeamMember } from '@/lib/shared/roles'
 import type { ConversationAttachment, ConversationMessageCitation, Team } from '@/lib/server/db'
@@ -529,7 +530,12 @@ export async function sendAgentMessage(
   agent: ConversationAuthorInput,
   actor: Actor,
   rawAttachments?: ConversationAttachment[],
-  contentJson?: TiptapContent | null
+  contentJson?: TiptapContent | null,
+  // P2-D.1 inbox translation: when the caller (sendAgentMessageFn) already
+  // translated `rawContent` into the customer's language before calling this,
+  // it passes the teammate's pre-translation original here so it lands on
+  // the new message's own metadata (agent-only, never sent to the visitor).
+  extraMetadata?: ConversationMessageMetadata
 ): Promise<SendAgentMessageResult> {
   const decision = canActAsAgent(actor)
   if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
@@ -570,6 +576,7 @@ export async function sendAgentMessage(
         content,
         contentJson: safeContentJson,
         attachments: attachments.length > 0 ? attachments : null,
+        metadata: extraMetadata ?? null,
       })
       .returning()
 

@@ -20,6 +20,7 @@ import type {
   conversationMessageMentions,
   conversationMessageReactions,
   conversationMessageFlags,
+  conversationMessageTranslations,
 } from './schema/conversation'
 import type { teams, teamMembers } from './schema/teams'
 import type { tickets, ticketStatuses, ticketConversations, ticketLinks } from './schema/tickets'
@@ -455,6 +456,25 @@ export interface ConversationMessageMetadata {
   /** Agent-only snapshot (on an internal note) of a write-tool proposal Quinn
    *  surfaced for approval. Surfaced only via the agent DTO, never to the visitor. */
   assistantPendingAction?: AssistantPendingActionSurface
+  /** Agent-only (P2-D.1 inbox translation): set on an OUTGOING reply sent while
+   *  translation was active for the conversation. `content`/`content_json` on
+   *  this row are the customer-language translation actually sent; this
+   *  preserves the teammate's pre-translation original so the team can toggle
+   *  back to "Show original". Surfaced only via the agent DTO, never to the
+   *  visitor. */
+  translatedFrom?: TranslatedFromMetadata
+}
+
+/** See `ConversationMessageMetadata.translatedFrom`. */
+export interface TranslatedFromMetadata {
+  /** The teammate's original, pre-translation text. */
+  originalContent: string
+  /** The teammate's own language at send time (their preference, or the
+   *  'en' fallback when unset). */
+  sourceLocale: string
+  /** The customer's language the reply was translated (and sent) into —
+   *  matches this message's actual stored `content`. */
+  targetLocale: string
 }
 
 // Support-inbox conversation row types
@@ -470,6 +490,12 @@ export type ConversationMessageReaction = InferSelectModel<typeof conversationMe
 export type NewConversationMessageReaction = InferInsertModel<typeof conversationMessageReactions>
 export type ConversationMessageFlag = InferSelectModel<typeof conversationMessageFlags>
 export type NewConversationMessageFlag = InferInsertModel<typeof conversationMessageFlags>
+export type ConversationMessageTranslation = InferSelectModel<
+  typeof conversationMessageTranslations
+>
+export type NewConversationMessageTranslation = InferInsertModel<
+  typeof conversationMessageTranslations
+>
 
 // Teams (§4.12) row types
 export type Team = InferSelectModel<typeof teams>

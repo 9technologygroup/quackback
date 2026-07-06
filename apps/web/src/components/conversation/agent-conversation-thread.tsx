@@ -16,6 +16,8 @@ import {
   ChevronLeftIcon,
   ChevronDownIcon,
   EllipsisHorizontalIcon,
+  LanguageIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/solid'
 import { toast } from 'sonner'
 import type { ConversationId, ConversationMessageId } from '@quackback/ids'
@@ -28,6 +30,8 @@ import {
   setMessageFlagFn,
   markConversationUnreadFromMessageFn,
 } from '@/lib/server/functions/conversation'
+import { useInboxTranslation } from '@/lib/client/hooks/use-inbox-translation'
+import { isTranslationUnavailableMessage } from '@/lib/shared/conversation/translation'
 import { removeConversationSlaFn } from '@/lib/server/functions/sla'
 import type {
   ConversationAttachment,
@@ -416,6 +420,9 @@ export function AgentConversationThread({
       content: string
       contentJson: JSONContent | null
       attachments?: ConversationAttachment[]
+      // P2-D.1: the explicit "Send untranslated" fallback offered after a
+      // TRANSLATION_FAILED error — bypasses translation for this one send.
+      skipTranslation?: boolean
     }) =>
       sendAgentMessageFn({
         data: {
@@ -423,6 +430,7 @@ export function AgentConversationThread({
           content: vars.content,
           contentJson: vars.contentJson,
           attachments: vars.attachments,
+          skipTranslation: vars.skipTranslation,
         },
       }),
     onSuccess: (res) => {
@@ -432,7 +440,21 @@ export function AgentConversationThread({
       pendingOwnSendScroll.current = true
       appendToThread(res)
     },
-    onError: () => toast.error('Failed to send message'),
+    onError: (error, vars) => {
+      // Translation failed and the send was BLOCKED (never sent untranslated
+      // silently) — offer the explicit fallback rather than a generic toast.
+      if (error instanceof Error && isTranslationUnavailableMessage(error.message)) {
+        toast.error('Could not translate your reply.', {
+          description: 'Send it in your own language instead, or try again.',
+          action: {
+            label: 'Send untranslated',
+            onClick: () => sendMutation.mutate({ ...vars, skipTranslation: true }),
+          },
+        })
+        return
+      }
+      toast.error('Failed to send message')
+    },
   })
 
   const noteMutation = useMutation({
@@ -466,6 +488,20 @@ export function AgentConversationThread({
     void queryClient.invalidateQueries({ queryKey: conversationKeys.agentUserConversations() })
     onChanged()
   }, [queryClient, conversationId, onChanged])
+
+  // P2-D.1 inbox translation: activation banner/toggle + per-message
+  // translation display, gated on the flag. A no-op hook (everything false/
+  // undefined) whenever the flag is off, so the thread's behavior is
+  // unchanged when the feature isn't enabled.
+  const inboxTranslationEnabled =
+    (settings?.featureFlags as FeatureFlags | undefined)?.inboxTranslation ?? false
+  const inboxTranslation = useInboxTranslation({
+    enabledFlag: inboxTranslationEnabled,
+    conversationId,
+    translationState: conversation?.translation,
+    messages,
+    onChanged: refreshThread,
+  })
 
   const deleteMutation = useMutation({
     mutationFn: (messageId: ConversationMessageId) =>
@@ -698,6 +734,7 @@ export function AgentConversationThread({
             }
             onTrackSuggestion={(s) => setConvertSeed(s)}
             linkPreviews={linkPreviewsEnabled}
+            translation={inboxTranslation.translationFor(m)}
           />
         )
       }
@@ -833,6 +870,29 @@ export function AgentConversationThread({
               />
             </div>
           )}
+          {/* P2-D.1 inbox translation: manual per-conversation toggle. */}
+          {inboxTranslationEnabled && conversation && (
+            <button
+              type="button"
+              onClick={inboxTranslation.toggleEnabled}
+              disabled={inboxTranslation.togglePending}
+              aria-pressed={inboxTranslation.enabled}
+              title={
+                inboxTranslation.enabled
+                  ? 'Translation is on for this conversation'
+                  : 'Turn on translation for this conversation'
+              }
+              className={cn(
+                'flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50',
+                inboxTranslation.enabled
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              <LanguageIcon className="h-4 w-4" />
+              <span className="hidden sm:inline">Translate</span>
+            </button>
+          )}
           {/* Overflow: rarer conversation-level actions. Only shown while it
               has something to offer (Remove SLA today). */}
           {conversation?.sla && (
@@ -906,6 +966,36 @@ export function AgentConversationThread({
             </button>
           )}
         </div>
+
+        {/* P2-D.1 inbox translation: dismissible auto-suggest banner, shown
+            above the composer when the customer's detected language differs
+            from the viewing teammate's own preference. */}
+        {inboxTranslation.showSuggestionBanner && (
+          <div className="flex items-center gap-2 border-t border-border/50 bg-primary/5 px-4 py-2 text-xs sm:px-5">
+            <LanguageIcon className="h-4 w-4 shrink-0 text-primary" />
+            <span className="flex-1 text-foreground/90">
+              This customer writes in {inboxTranslation.detectedLanguageLabel}. Translate this
+              conversation?
+            </span>
+            <button
+              type="button"
+              onClick={inboxTranslation.activateFromSuggestion}
+              disabled={inboxTranslation.togglePending}
+              className="rounded-md bg-primary px-2 py-1 font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            >
+              Translate
+            </button>
+            <button
+              type="button"
+              onClick={inboxTranslation.dismissSuggestion}
+              disabled={inboxTranslation.togglePending}
+              aria-label="Dismiss"
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            >
+              <XMarkIcon className="h-4 w-4" />
+            </button>
+          </div>
+        )}
 
         {/* Composer */}
         <div className="border-t border-border/50 p-3">

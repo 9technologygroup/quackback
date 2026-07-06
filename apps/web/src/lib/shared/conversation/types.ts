@@ -19,6 +19,7 @@ import type {
   ConversationSystemEvent,
   TiptapContent,
   ConversationEndReason,
+  TranslatedFromMetadata,
 } from '@/lib/shared/db-types'
 import { CONVERSATION_END_REASONS } from '@/lib/shared/db-types'
 import type { JsonValue } from '@/lib/shared/json'
@@ -166,6 +167,12 @@ export interface AgentConversationMessageDTO extends ConversationMessageDTO {
    *  without agent enrichment; a live-pushed note picks it up once the thread
    *  next reloads. Never on the base DTO, so it never reaches the visitor. */
   assistantPendingAction?: { pendingActionId: string; toolName: string; summary: string }
+  /** Agent-only (P2-D.1 inbox translation): set when this OUTGOING reply was
+   *  translated before sending — `content` is the translation actually sent;
+   *  this carries the teammate's pre-translation original for "Show original".
+   *  Null for every other message (including untranslated agent replies).
+   *  Never on the base DTO, so it never reaches the visitor. */
+  translatedFrom: TranslatedFromMetadata | null
 }
 
 /** A flagged ("Saved for later") message for the per-agent saved feed: enough
@@ -256,6 +263,28 @@ export interface ConversationDTO {
    *  envelopes or bare legacy values — read via readAttributeValue). Agent-only;
    *  empty on visitor-facing payloads. */
   customAttributes: Record<string, JsonValue>
+  /** Two-way inbox translation (P2-D.1) activation state; null when not
+   *  applicable. Agent-only — stripped (null) on visitor-facing payloads so
+   *  the customer widget never sees it (it has no UI for this feature). */
+  translation: ConversationTranslationStateDTO | null
+}
+
+/**
+ * Per-conversation inbox-translation activation state (P2-D.1), projected
+ * from the conversation row's translation_enabled / detected_customer_language
+ * / translation_dismissed_at columns. Agent-only.
+ */
+export interface ConversationTranslationStateDTO {
+  /** Manual activation toggle — when true, incoming messages render
+   *  translated and outgoing replies are translated before sending. */
+  enabled: boolean
+  /** Best-effort, once-detected primary language of the customer's messages
+   *  (a bare BCP-47 primary subtag, e.g. "fr"), or null before detection has
+   *  run (or found nothing to detect from). */
+  detectedCustomerLanguage: string | null
+  /** True once a teammate has dismissed the auto-suggest banner for this
+   *  conversation, so it stays dismissed rather than reappearing every load. */
+  suggestionDismissed: boolean
 }
 
 /** Human labels for each end reason, for the end-conversation dialog + the

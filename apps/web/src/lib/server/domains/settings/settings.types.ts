@@ -957,6 +957,9 @@ export interface FeatureFlags {
   assistantConversationGrounding: boolean
   /** Quinn Copilot: a private, teammate-facing Q&A sidebar in the inbox conversation panel */
   assistantCopilot: boolean
+  /** Two-way inbox translation: customer messages display in the teammate's
+   *  language and replies send in the customer's language, per conversation. */
+  inboxTranslation: boolean
 }
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -974,6 +977,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   assistantSnippets: false,
   assistantConversationGrounding: false,
   assistantCopilot: false,
+  inboxTranslation: false,
 }
 
 /**
@@ -1050,6 +1054,11 @@ export const FEATURE_FLAG_REGISTRY: Record<
     description:
       'Add a private Copilot tab to the inbox conversation panel where a teammate can ask Quinn questions about the conversation. Answers are visible only to the asking teammate.',
   },
+  inboxTranslation: {
+    label: 'Inbox translation',
+    description:
+      "Translate customer messages into a teammate's language and replies into the customer's language, per conversation. Requires an AI model to be configured.",
+  },
 }
 
 /**
@@ -1089,6 +1098,7 @@ export const LAB_SECTIONS: Array<{
       'assistantSnippets',
       'assistantConversationGrounding',
       'assistantCopilot',
+      'inboxTranslation',
     ],
   },
 ]

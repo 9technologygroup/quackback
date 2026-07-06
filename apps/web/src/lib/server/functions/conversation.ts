@@ -126,6 +126,20 @@ const agentSendSchema = z.object({
   // the plain `content` is the doc's text, kept for previews/notifications/search.
   contentJson: z.unknown().nullable().optional(),
   attachments: z.array(attachmentSchema).max(MAX_CONVERSATION_ATTACHMENTS).optional(),
+  // P2-D.1 inbox translation: the explicit "Send untranslated" fallback a
+  // teammate picks after a translated send is blocked (TRANSLATION_FAILED).
+  // Bypasses translation entirely for this one send.
+  skipTranslation: z.boolean().optional(),
+})
+
+const translateConversationMessagesSchema = z.object({
+  conversationId: z.string(),
+  messageIds: z.array(z.string()).min(1).max(50),
+})
+
+const setInboxTranslationEnabledSchema = z.object({
+  conversationId: z.string(),
+  enabled: z.boolean(),
 })
 
 const startConversationSchema = z.object({
@@ -559,12 +573,15 @@ export const listConversationMessagesFn = createServerFn({ method: 'GET' })
       await assertConversationViewable(data.conversationId as ConversationId, actor)
       const isTeam = isTeamMember(ctx.principal.role)
       // Agents keep seeing internal notes when paging older messages; visitors never do.
-      // The agent-only `postSuggestions`/`pendingActionPointers` maps are pulled out
-      // here so they're consumed by the enrichment and never serialized into the response.
-      const { postSuggestions, pendingActionPointers, ...page } = await listMessages(
-        data.conversationId as ConversationId,
-        { before: data.before, includeInternal: isTeam }
-      )
+      // The agent-only `postSuggestions`/`pendingActionPointers`/`translatedFromPointers`
+      // maps are pulled out here so they're consumed by the enrichment and never
+      // serialized into the response (translatedFromPointers especially — it carries
+      // a teammate's pre-translation original, never meant for the visitor).
+      const { postSuggestions, pendingActionPointers, translatedFromPointers, ...page } =
+        await listMessages(data.conversationId as ConversationId, {
+          before: data.before,
+          includeInternal: isTeam,
+        })
       // Team members get the agent-only reaction/flag/suggestion/pending-action
       // enrichment on older messages too; the visitor path returns the clean base DTOs.
       if (isTeam) {
@@ -574,7 +591,8 @@ export const listConversationMessagesFn = createServerFn({ method: 'GET' })
             page.messages,
             ctx.principal.id,
             postSuggestions,
-            pendingActionPointers
+            pendingActionPointers,
+            translatedFromPointers
           ),
         }
       }
@@ -881,24 +899,37 @@ export const getConversationFn = createServerFn({ method: 'GET' })
         await import('@/lib/server/domains/conversation/conversation.service')
       const { conversationToDTO, listMessages, enrichMessagesForAgent } =
         await import('@/lib/server/domains/conversation/conversation.query')
-      const conversation = await assertConversationViewable(
+      let conversation = await assertConversationViewable(
         data.conversationId as ConversationId,
         actor
       )
+      // P2-D.1 inbox translation: lazy, once-per-conversation customer-
+      // language detection, so the auto-suggest banner has something to
+      // compare against. A no-op after the first successful detection (the
+      // column is then non-null) and a silent no-op whenever the flag is off
+      // or AI isn't configured — never blocks opening the thread.
+      const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
+      if (await isFeatureEnabled('inboxTranslation')) {
+        const { maybeDetectCustomerLanguage } =
+          await import('@/lib/server/domains/conversation/conversation-translation.service')
+        conversation = await maybeDetectCustomerLanguage(conversation)
+      }
       const [dto, page] = await Promise.all([
         conversationToDTO(conversation, 'agent'),
         // Agents see internal notes inline.
         listMessages(conversation.id, { before: data.before, includeInternal: true }),
       ])
       // Upgrade to AgentConversationMessageDTO[] by attaching the agent-only reaction +
-      // flag + post-suggestion + pending-action fields. This enrichment runs ONLY on
-      // the agent thread path; no visitor path calls it, so those fields can't reach
-      // the widget. Both maps ride in-memory off `listMessages` (no re-read).
+      // flag + post-suggestion + pending-action + translated-from fields. This
+      // enrichment runs ONLY on the agent thread path; no visitor path calls it, so
+      // those fields can't reach the widget. All maps ride in-memory off
+      // `listMessages` (no re-read).
       const messages = await enrichMessagesForAgent(
         page.messages,
         ctx.principal.id,
         page.postSuggestions,
-        page.pendingActionPointers
+        page.pendingActionPointers,
+        page.translatedFromPointers
       )
       return { conversation: dto, messages, hasMore: page.hasMore }
     } catch (error) {
@@ -916,9 +947,39 @@ export const sendAgentMessageFn = createServerFn({ method: 'POST' })
       const actor = await policyActorFromAuth(ctx)
       const { sendAgentMessage } =
         await import('@/lib/server/domains/conversation/conversation.service')
+
+      let content = data.content
+      let contentJson = (data.contentJson ?? null) as
+        | import('@/lib/shared/db-types').TiptapContent
+        | null
+      let translatedFrom: import('@/lib/shared/db-types').TranslatedFromMetadata | undefined
+
+      // P2-D.1 inbox translation: translate the reply into the customer's
+      // language BEFORE sending, so the stored/broadcast/emailed content is
+      // always what the customer should see. `skipTranslation` is the
+      // explicit "Send untranslated" fallback a teammate picks after a
+      // TRANSLATION_FAILED error — it bypasses this block entirely.
+      const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
+      if (!data.skipTranslation && (await isFeatureEnabled('inboxTranslation'))) {
+        const { resolveOutgoingReplyTranslation } =
+          await import('@/lib/server/domains/conversation/conversation-translation.service')
+        // Any failure here (AI unconfigured, unparseable/empty response)
+        // throws TranslationUnavailableError, which propagates out of this
+        // handler and BLOCKS the send — never a silent untranslated fallback.
+        const resolved = await resolveOutgoingReplyTranslation({
+          conversationId: data.conversationId as ConversationId,
+          content,
+          contentJson,
+          teammateUserId: ctx.user.id,
+        })
+        content = resolved.content
+        contentJson = resolved.contentJson
+        translatedFrom = resolved.translatedFrom
+      }
+
       return await sendAgentMessage(
         data.conversationId as ConversationId,
-        data.content,
+        content,
         {
           principalId: ctx.principal.id,
           displayName: ctx.user.name,
@@ -926,7 +987,8 @@ export const sendAgentMessageFn = createServerFn({ method: 'POST' })
         },
         actor,
         data.attachments as ConversationAttachment[] | undefined,
-        (data.contentJson ?? null) as import('@/lib/shared/db-types').TiptapContent | null
+        contentJson,
+        translatedFrom ? { translatedFrom } : undefined
       )
     } catch (error) {
       log.error({ err: error }, 'send agent message failed')
@@ -1416,6 +1478,116 @@ export const getLinkedConversationsForPostFn = createServerFn({ method: 'GET' })
       return await getLinkedConversationsForPost(data.postId as PostId)
     } catch (error) {
       log.error({ err: error }, 'get linked conversations for post failed')
+      throw error
+    }
+  })
+
+// ============================================
+// P2-D.1: two-way inbox translation
+// ============================================
+
+/**
+ * Translate a page of INCOMING (customer) messages for display, cache-hit or
+ * fresh. Display-only: never mutates the underlying messages. Gated on the
+ * conversation's own translation being active — a per-conversation, on-demand
+ * read, never an eager backfill of the whole history.
+ */
+export const translateConversationMessagesFn = createServerFn({ method: 'GET' })
+  .validator(translateConversationMessagesSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_VIEW })
+      const actor = await policyActorFromAuth(ctx)
+      const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
+      if (!(await isFeatureEnabled('inboxTranslation'))) return {}
+
+      const { assertConversationViewable } =
+        await import('@/lib/server/domains/conversation/conversation.service')
+      const conversation = await assertConversationViewable(
+        data.conversationId as ConversationId,
+        actor
+      )
+      const { getInboxTranslationContext, translateIncomingMessage, TranslationUnavailableError } =
+        await import('@/lib/server/domains/conversation/conversation-translation.service')
+      const context = await getInboxTranslationContext(conversation.id)
+      if (!context?.enabled) return {}
+
+      const {
+        db: appDb,
+        user: userTable,
+        conversationMessages: messagesTable,
+        eq: eqOp,
+        inArray: inArrayOp,
+      } = await import('@/lib/server/db')
+
+      const teammate = await appDb.query.user.findFirst({
+        where: eqOp(userTable.id, ctx.user.id),
+        columns: { preferredLanguage: true },
+      })
+      const targetLocale = teammate?.preferredLanguage ?? 'en'
+
+      const messages = await appDb
+        .select({
+          id: messagesTable.id,
+          content: messagesTable.content,
+          conversationId: messagesTable.conversationId,
+        })
+        .from(messagesTable)
+        .where(inArrayOp(messagesTable.id, data.messageIds as ConversationMessageId[]))
+
+      const results: Record<string, { content: string; sourceLocale: string | null }> = {}
+      for (const message of messages) {
+        // Defense in depth: only translate messages that actually belong to
+        // the conversation the caller was authorized for.
+        if (message.conversationId !== conversation.id) continue
+        try {
+          const { content } = await translateIncomingMessage(message, targetLocale)
+          results[message.id] = { content, sourceLocale: context.customerLocale }
+        } catch (err) {
+          if (err instanceof TranslationUnavailableError) {
+            log.warn({ err, message_id: message.id }, 'inbox translation unavailable for message')
+            continue
+          }
+          throw err
+        }
+      }
+      return results
+    } catch (error) {
+      log.error({ err: error }, 'translate conversation messages failed')
+      throw error
+    }
+  })
+
+/** Manual per-conversation activation toggle (ACTIVATION). */
+export const setInboxTranslationEnabledFn = createServerFn({ method: 'POST' })
+  .validator(setInboxTranslationEnabledSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+      const actor = await policyActorFromAuth(ctx)
+      const { setInboxTranslationEnabled } =
+        await import('@/lib/server/domains/conversation/conversation-translation.service')
+      await setInboxTranslationEnabled(data.conversationId as ConversationId, data.enabled, actor)
+      return { ok: true }
+    } catch (error) {
+      log.error({ err: error }, 'set inbox translation enabled failed')
+      throw error
+    }
+  })
+
+/** Dismiss the auto-suggest translation banner for this conversation. */
+export const dismissInboxTranslationSuggestionFn = createServerFn({ method: 'POST' })
+  .validator(conversationIdSchema)
+  .handler(async ({ data }) => {
+    try {
+      const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_MANAGE })
+      const actor = await policyActorFromAuth(ctx)
+      const { dismissInboxTranslationSuggestion } =
+        await import('@/lib/server/domains/conversation/conversation-translation.service')
+      await dismissInboxTranslationSuggestion(data.conversationId as ConversationId, actor)
+      return { ok: true }
+    } catch (error) {
+      log.error({ err: error }, 'dismiss inbox translation suggestion failed')
       throw error
     }
   })

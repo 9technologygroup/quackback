@@ -49,6 +49,17 @@ vi.mock('@/lib/server/domains/ai/retry', () => ({
     fn().then((result: unknown) => ({ result, retryCount: 0 })),
 }))
 
+// Call through without touching ai_usage_log — mirrors extraction.service.test.ts's
+// precedent, and keeps `mockInsertValues` (the conversation_summaries assertion
+// below) from also observing the on-demand path's usage-log insert.
+const mockWithUsageLogging = vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
+  fn().then(({ result }) => result)
+)
+vi.mock('@/lib/server/domains/ai/usage-log', () => ({
+  withUsageLogging: (...args: [unknown, () => Promise<{ result: unknown }>]) =>
+    mockWithUsageLogging(...args),
+}))
+
 const mockEnforceAiTokenBudget = vi.fn().mockResolvedValue(undefined)
 vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
   enforceAiTokenBudget: (...args: unknown[]) => mockEnforceAiTokenBudget(...args),
@@ -278,6 +289,20 @@ describe('generateConversationSummaryText', () => {
 
     expect(mockInsertValues).not.toHaveBeenCalled()
     expect(mockGenerateEmbedding).not.toHaveBeenCalled()
+  })
+
+  it('usage-logs the call under pipelineStep copilot_summary, for the Copilot usage report', async () => {
+    await generateConversationSummaryText(CONVERSATION_ID)
+
+    expect(mockWithUsageLogging).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipelineStep: 'copilot_summary',
+        callType: 'chat_completion',
+        metadata: { conversationId: CONVERSATION_ID },
+      }),
+      expect.any(Function),
+      expect.any(Function)
+    )
   })
 
   it('returns null when the AI client is not configured', async () => {

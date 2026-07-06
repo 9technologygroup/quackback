@@ -51,6 +51,7 @@ import type {
   ConversationAttachment,
   ConversationMessageCitation,
 } from '@/lib/shared/conversation/types'
+import type { MessageTranslationDisplay } from '@/lib/shared/conversation/translation'
 import {
   AssistantSourcesTrace,
   AssistantAnswer,
@@ -101,6 +102,13 @@ interface AgentMessageBubbleProps {
   highlighted?: boolean
   /** When true, render external link preview cards below non-note messages. */
   linkPreviews?: boolean
+  /** P2-D.1 inbox translation: present only for a plain-text message (never a
+   *  note, never a contentJson/rich message) while translation is active for
+   *  the conversation. Lets the bubble show the translated text by default
+   *  with a "Show original" toggle, in both directions (a fetched translation
+   *  of an incoming customer message, or the teammate's pre-translation
+   *  original of an outgoing reply that was translated before sending). */
+  translation?: MessageTranslationDisplay
 }
 
 interface VisitorMessageBubbleProps {
@@ -139,6 +147,7 @@ export function AgentMessageBubble({
   onOpenPost,
   highlighted = false,
   linkPreviews = false,
+  translation,
 }: AgentMessageBubbleProps) {
   // Keep the hover toolbar visible while its emoji popover or overflow menu is
   // open (the pointer leaves the row to interact with the portal'd content).
@@ -290,9 +299,26 @@ export function AgentMessageBubble({
           </div>
         ) : (
           message.content && (
-            <div className="mt-0.5 whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
-              {message.content}
-            </div>
+            <>
+              <div className="mt-0.5 whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
+                {translation
+                  ? translation.showingOriginal
+                    ? translation.originalContent
+                    : translation.translatedContent
+                  : message.content}
+              </div>
+              {translation && (
+                <button
+                  type="button"
+                  onClick={translation.onToggleOriginal}
+                  className="mt-0.5 text-[11px] text-muted-foreground/60 underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground"
+                >
+                  {translation.showingOriginal
+                    ? 'Show translation'
+                    : `${translation.label} · Show original`}
+                </button>
+              )}
+            </>
           )
         )}
         {message.attachments.length > 0 && (

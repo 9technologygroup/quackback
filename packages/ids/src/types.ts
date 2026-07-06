@@ -73,6 +73,9 @@ export type ConversationMessageReactionId = TypeId<'conversation_msg_reaction'>
 /** Conversation summary ID (Quinn past-conversation grounding) - e.g., conversation_summary_01h455vb4pex5vsknk084sn02q */
 export type ConversationSummaryId = TypeId<'conversation_summary'>
 
+/** Conversation message translation ID (P2-D.1 inbox translation cache) - e.g., conversation_msg_translation_01h455vb4pex5vsknk084sn02q */
+export type ConversationMessageTranslationId = TypeId<'conversation_msg_translation'>
+
 /** Integration ID - e.g., integration_01h455vb4pex5vsknk084sn02q */
 export type IntegrationId = TypeId<'integration'>
 
@@ -385,6 +388,7 @@ export interface EntityIdMap {
   conversation_message_mention: ConversationMessageMentionId
   conversation_message_reaction: ConversationMessageReactionId
   conversation_summary: ConversationSummaryId
+  conversation_message_translation: ConversationMessageTranslationId
   integration: IntegrationId
   platform_cred: PlatformCredentialId
   event_mapping: EventMappingId

@@ -34,6 +34,7 @@ import {
   type PostSuggestion,
   type AssistantPendingActionSurface,
   type AssistantInvolvementStatus,
+  type TranslatedFromMetadata,
 } from '@/lib/server/db'
 import {
   toUuid,
@@ -68,6 +69,7 @@ import type {
   MessageSenderType,
   ConversationStatus,
   ConversationEndReason,
+  ConversationTranslationStateDTO,
 } from '@/lib/shared/conversation/types'
 
 const MESSAGE_PAGE_SIZE = 30
@@ -195,7 +197,12 @@ export async function enrichMessagesForAgent(
   messages: ConversationMessageDTO[],
   viewerPrincipalId: PrincipalId,
   postSuggestions: Map<ConversationMessageId, PostSuggestion>,
-  pendingActionPointers: Map<ConversationMessageId, AssistantPendingActionSurface> = new Map()
+  pendingActionPointers: Map<ConversationMessageId, AssistantPendingActionSurface> = new Map(),
+  // Agent-only (P2-D.1 inbox translation): the pre-translation original of an
+  // OUTGOING message sent while translation was active, carried in-memory off
+  // `metadata.translatedFrom` the same way postSuggestion/pendingAction are —
+  // no second `SELECT metadata` round-trip.
+  translatedFromPointers: Map<ConversationMessageId, TranslatedFromMetadata> = new Map()
 ): Promise<AgentConversationMessageDTO[]> {
   const ids = messages.map((m) => m.id)
   const [reactions, flags] = await Promise.all([
@@ -208,6 +215,7 @@ export async function enrichMessagesForAgent(
     flaggedAt: flags.get(m.id) ?? null,
     postSuggestion: postSuggestions.get(m.id) ?? null,
     assistantPendingAction: pendingActionPointers.get(m.id) ?? undefined,
+    translatedFrom: translatedFromPointers.get(m.id) ?? null,
   }))
 }
 
@@ -308,6 +316,21 @@ export function slaDueAtFor(conversation: Conversation): Date | null {
   return dto ? (nextSlaDue(dto)?.dueAt ?? null) : null
 }
 
+/**
+ * Project a conversation row's P2-D.1 inbox-translation columns into the
+ * client DTO shape. Defined here (rather than in
+ * conversation-translation.service.ts) so that service can import
+ * `conversationToDTO` from this module without a circular import —
+ * conversation-translation.service.ts re-exports this for convenience.
+ */
+export function translationStateFrom(conversation: Conversation): ConversationTranslationStateDTO {
+  return {
+    enabled: conversation.translationEnabled ?? false,
+    detectedCustomerLanguage: conversation.detectedCustomerLanguage ?? null,
+    suggestionDismissed: conversation.translationDismissedAt != null,
+  }
+}
+
 export function toConversationDTO(
   conversation: Conversation,
   visitor: ConversationAuthorDTO,
@@ -326,7 +349,10 @@ export function toConversationDTO(
   sla: ConversationSlaDTO | null = null,
   // Custom attribute values (agent-only); callers pass {} on visitor paths.
   // jsonb is JSON-safe by construction, hence the serializable value type.
-  customAttributes: Record<string, JsonValue> = {}
+  customAttributes: Record<string, JsonValue> = {},
+  // Two-way inbox translation state (agent-only); callers pass null on
+  // visitor paths — the widget has no UI for this feature.
+  translation: ConversationTranslationStateDTO | null = null
 ): ConversationDTO {
   return {
     id: conversation.id,
@@ -355,6 +381,7 @@ export function toConversationDTO(
     tags,
     sla,
     customAttributes,
+    translation,
   }
 }
 
@@ -451,7 +478,8 @@ export async function conversationToDTO(
     side === 'agent' ? (conversation.snoozedUntil?.toISOString() ?? null) : null,
     side === 'agent' ? (conversation.assignedTeamId ?? null) : null,
     side === 'agent' ? slaDtoFor(conversation) : null,
-    side === 'agent' ? ((conversation.customAttributes ?? {}) as Record<string, JsonValue>) : {}
+    side === 'agent' ? ((conversation.customAttributes ?? {}) as Record<string, JsonValue>) : {},
+    side === 'agent' ? translationStateFrom(conversation) : null
   )
 }
 
@@ -649,6 +677,13 @@ export interface MessagePage {
    *  query). Consumed by `enrichMessagesForAgent`; MUST NOT be serialized to a
    *  client response. Empty whenever internal notes aren't loaded. */
   pendingActionPointers: Map<ConversationMessageId, AssistantPendingActionSurface>
+  /** Agent-only (P2-D.1 inbox translation): the pre-translation original of
+   *  an OUTGOING message sent while translation was active, keyed by message
+   *  id — the same in-memory idiom as `postSuggestions`. Populated for every
+   *  message (not just internal notes) since a translated reply is an
+   *  ordinary agent message. Consumed by `enrichMessagesForAgent`; MUST NOT
+   *  be serialized to a client response. */
+  translatedFromPointers: Map<ConversationMessageId, TranslatedFromMetadata>
 }
 
 /**
@@ -740,11 +775,16 @@ export async function listMessages(
   // metadata, so this map is the only carrier — and it never leaves the server.
   const postSuggestions = new Map<ConversationMessageId, PostSuggestion>()
   const pendingActionPointers = new Map<ConversationMessageId, AssistantPendingActionSurface>()
+  const translatedFromPointers = new Map<ConversationMessageId, TranslatedFromMetadata>()
   for (const m of page) {
     const suggestion = m.metadata?.postSuggestion
     if (m.isInternal && suggestion) postSuggestions.set(m.id, suggestion)
     const pendingAction = m.metadata?.assistantPendingAction
     if (m.isInternal && pendingAction) pendingActionPointers.set(m.id, pendingAction)
+    // Not internal-note-gated (unlike the two above): a translated reply is
+    // an ordinary agent message, not a note.
+    const translatedFrom = m.metadata?.translatedFrom
+    if (translatedFrom) translatedFromPointers.set(m.id, translatedFrom)
   }
   return {
     messages: ordered.map((m) =>
@@ -759,6 +799,7 @@ export async function listMessages(
     nextCursor: page.length > 0 ? page[page.length - 1].id : null,
     postSuggestions,
     pendingActionPointers,
+    translatedFromPointers,
   }
 }
 
@@ -1185,7 +1226,11 @@ export async function listConversationsForAgent(
         c.endNote ?? null,
         c.snoozedUntil?.toISOString() ?? null,
         c.assignedTeamId ?? null,
-        slaDtoFor(c)
+        slaDtoFor(c),
+        // customAttributes intentionally omitted here (unchanged pre-existing
+        // behavior for the inbox list) — the caller's default (`{}`) applies.
+        undefined,
+        translationStateFrom(c)
       )
     ),
     hasMore,

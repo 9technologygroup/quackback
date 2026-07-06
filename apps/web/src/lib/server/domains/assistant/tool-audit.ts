@@ -7,7 +7,7 @@
  * stable idempotency key always land — the partial unique index only applies
  * where the key is non-null, so two NULLs never conflict.
  */
-import { db, eq, assistantToolCalls } from '@/lib/server/db'
+import { db, eq, sql, assistantToolCalls } from '@/lib/server/db'
 import type { AssistantToolCallStatus } from '@/lib/server/db'
 import type {
   AssistantToolCallId,
@@ -17,6 +17,9 @@ import type {
   PrincipalId,
 } from '@quackback/ids'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
+import { logger } from '@/lib/server/logger'
+
+const log = logger.child({ component: 'assistant-tool-calls-retention' })
 
 export type AssistantToolCall = typeof assistantToolCalls.$inferSelect
 
@@ -102,4 +105,33 @@ export async function recordDeniedToolCall(
     })
     .returning()
   return row
+}
+
+// ---------------------------------------------------------------------------
+// Retention cleanup
+// ---------------------------------------------------------------------------
+
+/** Mirrors ai_usage_log's PIPELINE_LOG_RETENTION_DAYS (usage-log.ts): a
+ *  tool-call audit row is kept twice as long as ai_usage_log's own 90-day
+ *  AI_USAGE_RETENTION_DAYS, since it's the audit trail for real side effects
+ *  (a refund issued, a conversation closed), not just spend/latency telemetry. */
+export const ASSISTANT_TOOL_CALLS_RETENTION_DAYS = 180
+
+/** Sweep assistant_tool_calls rows past retention. Registered alongside
+ *  usage-log.ts's cleanupExpiredLogs on the same daily BullMQ job
+ *  (feedback-ai-queue.ts's 'retention-cleanup' job type). */
+export async function cleanupExpiredToolCalls(exec: Executor = db): Promise<{ deleted: number }> {
+  const result = await exec.execute(
+    sql`DELETE FROM assistant_tool_calls WHERE created_at < now() - interval '${sql.raw(String(ASSISTANT_TOOL_CALLS_RETENTION_DAYS))} days'`
+  )
+  const deleted = (result as { count: number }).count ?? 0
+
+  if (deleted > 0) {
+    log.info(
+      { deleted, retention_days: ASSISTANT_TOOL_CALLS_RETENTION_DAYS },
+      'assistant tool call retention cleanup completed'
+    )
+  }
+
+  return { deleted }
 }

@@ -24,6 +24,9 @@ export type ChatFeature =
   // The in-product AI agent (Quinn). No per-feature model override today: it
   // rides the chat role default so BYOK config stays one dial.
   | 'assistant'
+  // Two-way inbox translation (P2-D.1): customer-language detection plus the
+  // incoming/outgoing translate calls all ride this one feature dial.
+  | 'inboxTranslation'
 
 /**
  * Resolve an effective model: per-feature override wins over the role default;
@@ -55,6 +58,7 @@ export function getChatModel(feature: ChatFeature): string | null {
     helpCenterAnswers: config.aiHelpCenterModel,
     helpCenterTranslate: config.aiHelpCenterTranslateModel,
     assistant: config.aiAssistantModel,
+    inboxTranslation: config.aiInboxTranslationModel,
   }
   return resolveModel(overrides[feature], config.aiChatModel)
 }

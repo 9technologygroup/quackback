@@ -49,6 +49,7 @@ export function asAgentMessage(
     reactions: 'reactions' in m ? m.reactions : [],
     flaggedAt: 'flaggedAt' in m ? m.flaggedAt : null,
     postSuggestion: 'postSuggestion' in m ? m.postSuggestion : null,
+    translatedFrom: 'translatedFrom' in m ? (m.translatedFrom ?? null) : null,
   }
 }
 

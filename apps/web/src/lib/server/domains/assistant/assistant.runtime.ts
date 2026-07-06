@@ -163,6 +163,16 @@ export interface AssistantTurnInput {
    * simulate-derived default for every other caller.
    */
   writeToolPolicy?: 'simulate' | 'controls' | 'propose'
+  /**
+   * The teammate who asked this turn's question — Copilot only.
+   * `assistantPrincipalId` always identifies Quinn itself, never the human on
+   * the other end, so per-teammate usage reporting (analytics/copilot-usage.ts)
+   * needs a separate field to attribute a turn to its asker. Rides the
+   * usage-log metadata as `principalId` when set; undefined for every other
+   * surface (a widget turn's asker is the customer in the conversation, not a
+   * teammate), so the metadata carries no `principalId` key in that case.
+   */
+  actorPrincipalId?: PrincipalId | null
   /** Tenant db handle for the tools; defaults to the app db. */
   db?: Executor
   /** Aborts the in-flight provider call. */
@@ -718,6 +728,11 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
       model,
       metadata: {
         conversationId: input.conversationId ?? null,
+        // The only signal that distinguishes a copilot turn from every other
+        // surface in ai_usage_log — see analytics/copilot-usage.ts, which
+        // counts questions and groups per-teammate activity off this field.
+        surface,
+        ...(input.actorPrincipalId ? { principalId: input.actorPrincipalId } : {}),
         ...(guidanceRuleIds.length > 0 ? { guidanceRuleIds } : {}),
       },
     },
