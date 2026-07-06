@@ -166,6 +166,12 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/user.ts::requirePrincipalId': END_USER(
     'own-profile helper — resolves the caller principal'
   ),
+  'lib/server/functions/teammate-preferences.ts::getMyLanguagePreferenceFn': END_USER(
+    'teammate reads their own language preference'
+  ),
+  'lib/server/functions/teammate-preferences.ts::setMyLanguagePreferenceFn': END_USER(
+    'teammate sets their own language preference'
+  ),
 
   // MCP transport entry: a valid key authenticates; per-tool scopes authorize
   // (see MCP_TOOLS). Not a permission gate on its own.

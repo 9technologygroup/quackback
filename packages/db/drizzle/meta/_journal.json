@@ -1184,6 +1184,13 @@
       "when": 1784766600000,
       "tag": "0168_assistant_analytics_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 169,
+      "version": "7",
+      "when": 1784766660000,
+      "tag": "0169_teammate_language_pref",
+      "breakpoints": true
     }
   ]
 }

@@ -122,6 +122,7 @@ export const PERMISSIONS = {
   // ai
   ASSISTANT_MANAGE: 'assistant.manage',
   CONNECTOR_MANAGE: 'connector.manage',
+  COPILOT_USE: 'copilot.use',
 } as const
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS]
@@ -208,6 +209,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {
     PERMISSIONS.CONVERSATION_ASSIGN,
     PERMISSIONS.CONVERSATION_SET_STATUS,
     PERMISSIONS.CONVERSATION_SET_TAGS,
+    PERMISSIONS.COPILOT_USE,
     PERMISSIONS.CHANGELOG_VIEW_DRAFT,
     PERMISSIONS.PEOPLE_VIEW,
     PERMISSIONS.COMPANY_VIEW,
@@ -324,4 +326,5 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   { key: PERMISSIONS.CHANNEL_ACCOUNT_MANAGE, category: 'support' },
   { key: PERMISSIONS.ASSISTANT_MANAGE, category: 'ai' },
   { key: PERMISSIONS.CONNECTOR_MANAGE, category: 'ai' },
+  { key: PERMISSIONS.COPILOT_USE, category: 'ai' },
 ]

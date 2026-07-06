@@ -134,6 +134,7 @@ export const PERMISSIONS = {
   // category 'ai'
   ASSISTANT_MANAGE: 'assistant.manage', // manage AI assistant behavior, guidance, and action controls
   CONNECTOR_MANAGE: 'connector.manage', // manage data connectors for external actions
+  COPILOT_USE: 'copilot.use', // use the agent-facing Copilot assistant in the inbox
 } as const
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS]
@@ -566,6 +567,11 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     category: 'ai',
     description: 'Manage data connectors for external actions',
   },
+  {
+    key: PERMISSIONS.COPILOT_USE,
+    category: 'ai',
+    description: 'Use the agent-facing Copilot assistant in the inbox',
+  },
 ]
 
 // --------------------------------------------------------------- presets ---
@@ -643,6 +649,7 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {
     PERMISSIONS.CONVERSATION_ASSIGN,
     PERMISSIONS.CONVERSATION_SET_STATUS,
     PERMISSIONS.CONVERSATION_SET_TAGS,
+    PERMISSIONS.COPILOT_USE,
     // reads + triage intake
     PERMISSIONS.CHANGELOG_VIEW_DRAFT,
     PERMISSIONS.PEOPLE_VIEW,

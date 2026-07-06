@@ -48,6 +48,13 @@ export const user = pgTable(
     // BCP-47 locale claim from OIDC (e.g. "en", "en-US"); NULL for
     // sign-up paths that don't carry one (magic-link, password).
     locale: text('locale'),
+    // Teammate-set language preference (BCP-47 tag, e.g. "en", "fr",
+    // "pt-BR"). Distinct from `locale` above: that's an IdP claim captured
+    // at sign-up, this is a value the teammate explicitly chooses via
+    // Settings. NULL means no preference / use the workspace default. Not
+    // constrained to a fixed catalogue -- inbox translation (P2-D) reads
+    // this to decide what language to translate into.
+    preferredLanguage: text('preferred_language'),
     // ISO-3166-1 alpha-2 country code captured from CDN-injected
     // headers (CF-IPCountry, X-Vercel-IP-Country, Fly-Client-IP-Country,
     // X-Country-Code) on session creation. NULL when no header is

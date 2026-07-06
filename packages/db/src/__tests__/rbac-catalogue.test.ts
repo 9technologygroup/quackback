@@ -179,4 +179,17 @@ describe('RBAC permission catalogue', () => {
     expect(SYSTEM_ROLE_PERMISSIONS.manager).toContain(PERMISSIONS.TICKET_REPLY)
     expect(SYSTEM_ROLE_PERMISSIONS.manager).toContain(PERMISSIONS.TICKET_MANAGE_TYPES)
   })
+
+  it('copilot.use is a user capability, not workspace-admin config', () => {
+    // Using the Copilot is a front-line inbox capability (like conversation.reply),
+    // not an admin-manage key, so it must NOT sit in the workspace-admin boundary.
+    expect(WORKSPACE_ADMIN_PERMISSIONS).not.toContain(PERMISSIONS.COPILOT_USE)
+    expect(PERMISSION_CATALOGUE.find((p) => p.key === PERMISSIONS.COPILOT_USE)?.category).toBe('ai')
+    // Manager = ALL_PERMISSIONS minus the workspace-admin boundary, so leaving
+    // copilot.use out of that boundary means Manager holds it automatically.
+    expect(SYSTEM_ROLE_PERMISSIONS.manager).toContain(PERMISSIONS.COPILOT_USE)
+    // The limited inbox-agent (Contributor) preset gets it explicitly alongside
+    // the other conversation.* operate keys.
+    expect(SYSTEM_ROLE_PERMISSIONS.contributor).toContain(PERMISSIONS.COPILOT_USE)
+  })
 })
