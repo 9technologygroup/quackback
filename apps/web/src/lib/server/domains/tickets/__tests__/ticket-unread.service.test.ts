@@ -13,7 +13,10 @@ import {
   type UserId,
   type TicketId,
   type TicketStatusId,
+  type ConversationMessageId,
 } from '@quackback/ids'
+import type { Actor } from '@/lib/server/policy/types'
+import { NotFoundError, ForbiddenError } from '@/lib/shared/errors'
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
@@ -27,6 +30,7 @@ import {
   ticketUnreadMapForAgent,
   markTicketReadForAgent,
   markTicketReadForRequester,
+  markTicketUnreadFromMessage,
 } from '../ticket-unread.service'
 
 // Realtime publish (unified inbox §3.2, M3): neutralize the real Redis-backed
@@ -34,6 +38,19 @@ import {
 // read writes wire it.
 const realtime = vi.hoisted(() => ({ publishTicketEvent: vi.fn() }))
 vi.mock('@/lib/server/realtime/conversation-channels', () => realtime)
+
+import { PERMISSIONS } from '@/lib/shared/permissions'
+
+function agentActor(overrides: Partial<Actor> = {}): Actor {
+  return {
+    principalId: createId('principal') as PrincipalId,
+    role: 'member',
+    principalType: 'user',
+    segmentIds: new Set(),
+    permissions: new Set([PERMISSIONS.TICKET_VIEW_ALL, PERMISSIONS.CONVERSATION_REPLY]),
+    ...overrides,
+  }
+}
 
 const fixture = await createDbTestFixture({
   probe: async (db) => {
@@ -262,6 +279,91 @@ describe.skipIf(!fixture.available)('ticket unread service (real DB, rolled back
       await markTicketReadForAgent(ticketId)
 
       expect(await unreadCountForTicket(ticketId, 'assignee')).toBe(0)
+    })
+  })
+
+  describe('markTicketUnreadFromMessage', () => {
+    it('moves assignee_last_read_at backward to just before the target message and publishes ticket_read', async () => {
+      const ticketId = await seedTicket()
+      const anchorCreatedAt = new Date(Date.now() - 60_000)
+      const anchor = await insertMessage({
+        ticketId,
+        senderType: 'visitor',
+        createdAt: anchorCreatedAt,
+      })
+      // The anchor was previously read (watermark sits after it) — marking
+      // unread from it must rewind the watermark to just before it.
+      await testDb
+        .update(tickets)
+        .set({ assigneeLastReadAt: new Date() })
+        .where(eq(tickets.id, ticketId))
+
+      await markTicketUnreadFromMessage(ticketId, anchor.id as ConversationMessageId, agentActor())
+
+      const after = await ticketReadWatermarks(ticketId)
+      const expected = new Date(anchorCreatedAt.getTime() - 1)
+      expect(after.assigneeLastReadAt?.toISOString()).toBe(expected.toISOString())
+      expect(realtime.publishTicketEvent).toHaveBeenCalledWith(ticketId, {
+        kind: 'ticket_read',
+        ticketId,
+        side: 'agent',
+        at: expected.toISOString(),
+      })
+    })
+
+    it('never advances the watermark forward (backward-only, per unreadWatermarkFromAnchor)', async () => {
+      const ticketId = await seedTicket()
+      // Never read (null watermark) — already fully unread, must stay null.
+      const anchor = await insertMessage({ ticketId, senderType: 'visitor' })
+
+      await markTicketUnreadFromMessage(ticketId, anchor.id as ConversationMessageId, agentActor())
+
+      const after = await ticketReadWatermarks(ticketId)
+      expect(after.assigneeLastReadAt).toBeNull()
+    })
+
+    it('404s when the message does not belong to the ticket', async () => {
+      const ticketId = await seedTicket()
+      const other = await seedTicket()
+      const otherMessage = await insertMessage({ ticketId: other, senderType: 'visitor' })
+
+      await expect(
+        markTicketUnreadFromMessage(
+          ticketId,
+          otherMessage.id as ConversationMessageId,
+          agentActor()
+        )
+      ).rejects.toThrow(NotFoundError)
+    })
+
+    it('refuses a non-agent actor (no conversation.reply permission)', async () => {
+      const ticketId = await seedTicket()
+      const anchor = await insertMessage({ ticketId, senderType: 'visitor' })
+      const nonAgent = agentActor({
+        role: 'user',
+        permissions: new Set([PERMISSIONS.TICKET_VIEW_ALL]),
+      })
+
+      await expect(
+        markTicketUnreadFromMessage(ticketId, anchor.id as ConversationMessageId, nonAgent)
+      ).rejects.toThrow(ForbiddenError)
+    })
+
+    it('404s when the ticket is not visible to the actor (assigned elsewhere, only ticket.view)', async () => {
+      const ticketId = await seedTicket()
+      const elsewhere = await seedAgentPrincipal()
+      await testDb
+        .update(tickets)
+        .set({ assigneePrincipalId: elsewhere })
+        .where(eq(tickets.id, ticketId))
+      const anchor = await insertMessage({ ticketId, senderType: 'visitor' })
+      const scopedActor = agentActor({
+        permissions: new Set([PERMISSIONS.TICKET_VIEW, PERMISSIONS.CONVERSATION_REPLY]),
+      })
+
+      await expect(
+        markTicketUnreadFromMessage(ticketId, anchor.id as ConversationMessageId, scopedActor)
+      ).rejects.toThrow(NotFoundError)
     })
   })
 })

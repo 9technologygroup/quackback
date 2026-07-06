@@ -10,9 +10,9 @@ import type { FeatureFlags } from '@/lib/shared/types/settings'
  * Customer scope. Mirrors the `c=` → `i=` alias `/admin/inbox` itself accepts.
  *
  * The standalone ticket components (`TicketListColumn`, `NewTicketDialog`, …)
- * are no longer imported here — `TicketDetail` still lives on disk for the
- * interim thread-fold in `routes/admin/inbox.tsx` (M2); the rest are unused
- * until M4-M6 finish the cleanup pass (§4).
+ * are no longer imported here. `TicketDetail`/`ticket-thread.tsx` were deleted
+ * in M4 (folded into the unified `agent-conversation-thread.tsx`); the rest
+ * are unused until M6 finishes the cleanup pass (§4).
  */
 interface TicketsRedirectSearch {
   t?: string

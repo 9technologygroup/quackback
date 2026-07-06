@@ -17,11 +17,16 @@ import { AgentConversationThread } from '@/components/conversation/agent-convers
 import {
   agentEventChangesInboxList,
   applyAgentThreadEvent,
+  applyTicketThreadEvent,
   type AgentThreadCache,
+  type TicketThreadCache,
 } from '@/components/conversation/events-reducer'
 import { conversationKeys } from '@/components/conversation/query-keys'
 import { ConversationListColumn } from '@/components/admin/conversation/conversation-list-column'
-import { SavedMessagesColumn } from '@/components/admin/conversation/saved-messages-column'
+import {
+  SavedMessagesColumn,
+  type SavedMessageTarget,
+} from '@/components/admin/conversation/saved-messages-column'
 import { BulkActionBar, type BulkMenuId } from '@/components/admin/conversation/bulk-action-bar'
 import { InboxCommandBar } from '@/components/admin/conversation/inbox-command-bar'
 import { ShortcutHelpPanel } from '@/components/admin/conversation/shortcut-help-panel'
@@ -44,7 +49,7 @@ import {
   setTicketPriorityFn,
   setTicketStatusFn,
 } from '@/lib/server/functions/tickets'
-import { TicketDetail } from '@/components/admin/tickets/ticket-detail'
+import { TicketDetailPanel } from '@/components/admin/tickets/ticket-detail-panel'
 import {
   InboxNavSidebar,
   isInboxView,
@@ -474,11 +479,15 @@ function InboxPage() {
     [updateSearch]
   )
   // Open a conversation AND deep-link a specific message (the "Saved for later"
-  // feed): the thread scrolls to it and flashes it on arrival.
+  // feed): the thread scrolls to it and flashes it on arrival. A ticket-parented
+  // flag has no message-level deep link yet (§2.5's `deepLinkJump` capability is
+  // off for tickets) — it just opens the ticket.
   const targetMessageId = (urlM as ConversationMessageId | undefined) ?? null
   const selectSavedMessage = useCallback(
-    (conversationId: ConversationId, messageId: ConversationMessageId) =>
-      updateSearch({ i: conversationId, m: messageId }),
+    (target: SavedMessageTarget) =>
+      'ticketId' in target
+        ? updateSearch({ i: target.ticketId, m: undefined })
+        : updateSearch({ i: target.conversationId, m: target.messageId }),
     [updateSearch]
   )
 
@@ -622,6 +631,18 @@ function InboxPage() {
     enabled: showTickets,
   })
 
+  // The open ticket's properties, for the interim `TicketDetailPanel` slot
+  // (§2.5 — M5 merges this into one unified detail panel). Same query the
+  // unified thread's header reads (`inboxQueries.ticketDetail`, keyed under
+  // `ticketKeys.detail`), so this is a cache hit, not a second network call,
+  // whenever the thread is also mounted.
+  const { data: openTicket } = useQuery({
+    ...inboxQueries.ticketDetail(
+      selectedRef?.kind === 'ticket' ? selectedRef.id : ('' as TicketId)
+    ),
+    enabled: selectedRef?.kind === 'ticket',
+  })
+
   // Keep the active scope's memory in sync with what's open, so it's current the
   // moment you switch away. Only remember an item that's actually IN this
   // scope's list — a cross-scope deep-link (`?i=X` paired with an unrelated
@@ -686,10 +707,10 @@ function InboxPage() {
     clearRemoteTyping: clearOtherAgentTyping,
   } = useConversationTyping(() => {})
 
-  // The open conversation id, or null when a ticket (or nothing) is selected —
-  // ticket SSE + thread-cache patching land in M3, so this stream stays
-  // conversation-only.
+  // The open conversation/ticket id, or null when the other kind (or nothing)
+  // is selected.
   const activeConversationId = selectedRef?.kind === 'conversation' ? selectedRef.id : null
+  const activeTicketId = selectedRef?.kind === 'ticket' ? selectedRef.id : null
 
   useConversationStream({
     enabled: true,
@@ -703,6 +724,8 @@ function InboxPage() {
       // Typing indicators are component state, not cache: a visitor message
       // clears the visitor dots; agent activity clears the collision notice
       // (self-echo is dropped server-side, so it's always another agent).
+      // Ticket threads carry no typing capability (§2.5), so there's no
+      // ticket-side equivalent to wire up here.
       if (evt.kind === 'message' && evt.conversationId === activeConversationId) {
         if (evt.message.senderType === 'visitor') clearRemoteTyping()
         if (evt.message.senderType === 'agent') clearOtherAgentTyping()
@@ -711,15 +734,29 @@ function InboxPage() {
         else if (evt.side === 'agent') onOtherAgentTyping()
       }
 
+      // A ticket's live properties (status/assignee/priority/stage/type)
+      // — patched directly onto the same cache key the unified thread's
+      // header and this route's `TicketDetailPanel` both read
+      // (`inboxQueries.ticketDetail`/`ticketQueries.detail` share
+      // `ticketKeys.detail`), so a change from another agent/tab shows up
+      // without a refetch.
+      if (evt.kind === 'ticket_updated' && evt.ticket.id === activeTicketId) {
+        queryClient.setQueryData(ticketKeys.detail(activeTicketId), evt.ticket)
+      }
+
       // Everything cache-shaped (message/read/updated/deleted/conversation)
-      // routes through the pure reducer against the open thread's cache — only
-      // for a conversation selection (a ticket selection has no thread cache
-      // to patch here yet).
+      // routes through the pure reducer against the open thread's cache — one
+      // branch per kind, since each has its own cache key + reducer.
       if (activeConversationId) {
         queryClient.setQueryData(
           conversationKeys.agentThread(activeConversationId),
           (prev: AgentThreadCache | undefined) =>
             applyAgentThreadEvent(prev, evt, activeConversationId)
+        )
+      } else if (activeTicketId) {
+        queryClient.setQueryData(
+          ticketKeys.thread(activeTicketId),
+          (prev: TicketThreadCache | undefined) => applyTicketThreadEvent(prev, evt, activeTicketId)
         )
       }
     },
@@ -1180,10 +1217,7 @@ function InboxPage() {
       />
       <RequiredAttributesDialog messages={closeBlocked} onClose={() => setCloseBlocked(null)} />
       {isSaved ? (
-        <SavedMessagesColumn
-          selectedConversationId={selectedId as ConversationId | null}
-          onSelect={selectSavedMessage}
-        />
+        <SavedMessagesColumn selectedId={selectedId} onSelect={selectSavedMessage} />
       ) : (
         <ConversationListColumn
           nav={nav}
@@ -1227,23 +1261,32 @@ function InboxPage() {
         />
       )}
 
-      {/* Thread / detail pane. A ticket selection renders the (interim, M2-era)
-          TicketDetail component; M4 folds it into this same container. */}
+      {/* Thread / detail pane. Both kinds render the unified thread; a ticket
+          selection additionally gets the interim `TicketDetailPanel` beside
+          it (M5 merges the two panels into one). */}
       <div
         ref={threadContainerRef}
         className={cn('min-w-0 flex-1', !selectedRef && 'hidden md:block')}
       >
         {selectedRef?.kind === 'ticket' ? (
-          <TicketDetail
-            key={selectedRef.id}
-            ticketId={selectedRef.id}
-            onBack={() => setSelectedId(null)}
-            onChanged={refreshInbox}
-          />
+          <div className="flex h-full">
+            <AgentConversationThread
+              key={selectedRef.id}
+              item={selectedRef}
+              targetMessageId={null}
+              onChanged={refreshInbox}
+              onBack={() => setSelectedId(null)}
+              onSelectConversation={setSelectedId}
+              onOpenPost={openPost}
+              isVisitorTyping={false}
+              isOtherAgentTyping={false}
+            />
+            {openTicket && <TicketDetailPanel ticket={openTicket} onChanged={refreshInbox} />}
+          </div>
         ) : selectedRef?.kind === 'conversation' ? (
           <AgentConversationThread
             key={selectedRef.id}
-            conversationId={selectedRef.id}
+            item={selectedRef}
             targetMessageId={targetMessageId}
             onChanged={refreshInbox}
             onBack={() => setSelectedId(null)}

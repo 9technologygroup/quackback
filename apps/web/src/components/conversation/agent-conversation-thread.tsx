@@ -1,13 +1,28 @@
 /**
- * The agent-facing conversation thread (moved out of routes/admin/inbox.tsx):
- * virtualized message list with unread divider + deep-link jump, the reply /
- * internal-note composer, per-message actions (reactions, flags, delete,
- * track-as-feedback), triage controls, and the detail panel. Built on the
- * shared thread core (thread.tsx) + AgentMessageBubble + the events reducer; the
- * route keeps the list/nav chrome and the inbox SSE wiring.
+ * The unified agent-facing thread (UNIFIED-INBOX-SPEC.md §2.5): one container
+ * for both a conversation and a ticket, built on the shared thread core
+ * (thread.tsx) + AgentMessageBubble + the events reducer. A `ThreadCapabilities`
+ * object (thread-capabilities.ts), derived from `item.kind` (and a ticket's
+ * `type`), gates every conversation-only extra — macros, CSAT, typing, convert-
+ * to-post, end-conversation, link previews, inbox translation, deep-link jump,
+ * the composer's emoji picker — while the inbox message actions (reactions,
+ * flags, mark-unread, delete) and the reply/note composer stay on for both
+ * kinds (a back_office/tracker ticket forces note-only). The conversation path
+ * is unchanged data-wise (same queries/mutations/caches as before the fold);
+ * the ticket path is new, mirroring it one-for-one against the ticket domain's
+ * equivalents. The route keeps the list/nav chrome, the inbox SSE wiring, and
+ * (until M5) the ticket-only detail panel rendered beside this component.
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { useRouteContext } from '@tanstack/react-router'
 import {
   PaperAirplaneIcon,
@@ -19,8 +34,9 @@ import {
   LanguageIcon,
   XMarkIcon,
 } from '@heroicons/react/24/solid'
+import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline'
 import { toast } from 'sonner'
-import type { ConversationId, ConversationMessageId } from '@quackback/ids'
+import type { ConversationId, ConversationMessageId, TicketId } from '@quackback/ids'
 import {
   sendAgentMessageFn,
   addConversationNoteFn,
@@ -30,6 +46,13 @@ import {
   setMessageFlagFn,
   markConversationUnreadFromMessageFn,
 } from '@/lib/server/functions/conversation'
+import {
+  sendTicketMessageFn,
+  addTicketNoteFn,
+  listTicketMessagesFn,
+  markTicketUnreadFromMessageFn,
+  markTicketReadFn,
+} from '@/lib/server/functions/tickets'
 import { useInboxTranslation } from '@/lib/client/hooks/use-inbox-translation'
 import {
   isTranslationUnavailableMessage,
@@ -42,6 +65,7 @@ import type {
   AgentConversationMessageDTO,
   ConversationDTO,
 } from '@/lib/shared/conversation/types'
+import type { InboxItemRef } from '@/lib/shared/inbox/items'
 import { AgentMessageBubble, UnreadDivider } from '@/components/conversation/message-bubble'
 import {
   ThreadViewport,
@@ -52,12 +76,22 @@ import {
 } from '@/components/conversation/thread'
 import {
   appendSentAgentMessage,
+  appendSentTicketMessage,
   prependOlderAgentMessages,
+  prependOlderTicketMessages,
   removeAgentThreadMessage,
+  removeTicketThreadMessage,
   toggleReactionLocal,
   updateAgentThreadMessage,
+  updateTicketThreadMessage,
   type AgentThreadCache,
+  type TicketThreadCache,
 } from '@/components/conversation/events-reducer'
+import {
+  CONVERSATION_CAPABILITIES,
+  ticketCapabilities,
+  type ThreadCapabilities,
+} from '@/components/conversation/thread-capabilities'
 import { conversationKeys } from '@/components/conversation/query-keys'
 import { MacroPicker } from '@/components/conversation/macro-picker'
 import { PriorityControl } from '@/components/admin/conversation/priority-control'
@@ -70,6 +104,12 @@ import { ConversationDetailPanel } from '@/components/admin/conversation/convers
 import { ConvertToPostDialog } from '@/components/admin/conversation/convert-to-post-dialog'
 import { EndConversationDialog } from '@/components/admin/conversation/end-conversation-dialog'
 import { SharePostDialog } from '@/components/admin/conversation/share-post-dialog'
+import { TicketTypeBadge, TicketStageChip } from '@/components/admin/tickets/ticket-chips'
+import {
+  TicketStatusControl,
+  TicketAssigneeControl,
+  TicketPriorityControl,
+} from '@/components/admin/tickets/ticket-controls'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import {
   CONVERSATION_EDITOR_FEATURES,
@@ -78,6 +118,8 @@ import {
 import { ComposerAttachmentTray } from '@/components/shared/composer-attachment-tray'
 import { LinkPreviews } from '@/components/shared/link-preview-card'
 import { conversationInboxQueries } from '@/lib/client/queries/conversation-inbox'
+import { inboxQueries } from '@/lib/client/queries/inbox'
+import { ticketKeys } from '@/lib/client/queries/tickets'
 import {
   buildAdminConversationRows,
   type AdminConversationRow,
@@ -94,6 +136,7 @@ import { TypingDots } from '@/components/shared/typing-dots'
 import { EmojiPicker } from '@/components/shared/emoji-picker'
 import { Avatar } from '@/components/ui/avatar'
 import { Spinner } from '@/components/shared/spinner'
+import { EmptyState } from '@/components/shared/empty-state'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -105,9 +148,16 @@ import type { FeatureFlags } from '@/lib/shared/types/settings'
 
 // "Jump to message" tuning: how long the flash plays (must match the
 // flash-highlight keyframe duration) and how many older pages we'll auto-pull
-// chasing a deep-linked message before giving up.
+// chasing a deep-linked message before giving up. Conversation-only
+// (`capabilities.deepLinkJump`) — a ticket selection never carries a `?m=`.
 const FLASH_MS = 2200
 const MAX_JUMP_PAGES = 20
+
+// Placeholder ids for the query that isn't active for the current item kind —
+// `enabled: false` means the query never runs, so these never reach the
+// server; they only exist to satisfy the branded-id parameter types.
+const INACTIVE_CONVERSATION_ID = '' as ConversationId
+const INACTIVE_TICKET_ID = '' as TicketId
 
 /** A composer's live draft: the rich doc (persisted as contentJson) plus the
  *  derived markdown mirror (stored as `content` for FTS/preview/transcripts). */
@@ -144,7 +194,7 @@ function textToDraft(text: string): ComposerDraft {
 }
 
 export function AgentConversationThread({
-  conversationId,
+  item,
   targetMessageId,
   onChanged,
   onBack,
@@ -153,27 +203,35 @@ export function AgentConversationThread({
   isVisitorTyping,
   isOtherAgentTyping,
 }: {
-  conversationId: ConversationId
-  /** Deep-link target: scroll to + flash this message once it's loaded. */
+  /** The open item, discriminated by kind — drives both the data adapter and
+   *  the derived `ThreadCapabilities`. */
+  item: InboxItemRef
+  /** Deep-link target: scroll to + flash this message once it's loaded.
+   *  Conversation-only (`capabilities.deepLinkJump`). */
   targetMessageId: ConversationMessageId | null
   onChanged: () => void
-  /** Mobile-only: return to the conversation list (single-column layout). */
+  /** Mobile-only: return to the list (single-column layout). */
   onBack: () => void
-  /** Open another conversation (e.g. from the detail panel's history). */
+  /** Open another conversation (e.g. from the detail panel's history).
+   *  Conversation-only — the ticket kind renders no detail panel here (the
+   *  route places `TicketDetailPanel` beside this component instead). */
   onSelectConversation: (id: ConversationId) => void
   /** Open an embedded post in the host's in-place `?post=` modal (the route owns
-   *  the search-param navigation so the agent never leaves the conversation). */
+   *  the search-param navigation so the agent never leaves the thread). */
   onOpenPost: (postId: string) => void
   isVisitorTyping: boolean
   isOtherAgentTyping: boolean
 }) {
   const queryClient = useQueryClient()
-  const threadKey = conversationKeys.agentThread(conversationId)
+  const isTicket = item.kind === 'ticket'
+  const conversationId = item.kind === 'conversation' ? item.id : null
+  const ticketId = item.kind === 'ticket' ? item.id : null
+  const threadKey = conversationKeys.agentThread(conversationId ?? INACTIVE_CONVERSATION_ID)
+  const ticketThreadKey = ticketKeys.thread(ticketId ?? INACTIVE_TICKET_ID)
   // The current agent's display name, for attributing optimistic reactions.
   const { session, settings } = useRouteContext({ from: '__root__' })
   const myName = session?.user?.name ?? 'You'
-  const linkPreviewsEnabled =
-    (settings?.featureFlags as FeatureFlags | undefined)?.linkPreviews ?? false
+  const flags = settings?.featureFlags as FeatureFlags | undefined
 
   // Reply and Note each hold an independent draft (the rich doc persisted as
   // contentJson + its markdown mirror), so toggling modes preserves each mode's
@@ -191,39 +249,34 @@ export function AgentConversationThread({
   const replyDraftRef = useRef(replyDraft)
   replyDraftRef.current = replyDraft
   const scrollRef = useRef<HTMLDivElement>(null)
-  // Live link-unfurl in the composer (the "preview tray"), debounced so it fires
-  // on a settled URL rather than every keystroke.
-  const debouncedComposerText = useDebouncedValue(
-    noteMode ? noteDraft.markdown : replyDraft.markdown,
-    500
-  )
 
   // The one controlled convert dialog's seed, built at whichever entry point
   // opened it: a per-message "Track as feedback" pick, an AI "Track as post"
   // suggestion accepted from a note chip (carries a board), or the
   // conversation-level button in the detail panel. Null = dialog closed.
+  // Convert-to-post is conversation-only (§2.5/§2.7 — deferred for tickets).
   const [convertSeed, setConvertSeed] = useState<{
     title: string
     content: string
     boardId?: string
   } | null>(null)
-  // The message driving the share-post picker.
+  // The message driving the share-post picker (conversation-only).
   const [shareMsg, setShareMsg] = useState<AgentConversationMessageDTO | null>(null)
-  // The end-conversation reason dialog (opened from the detail panel).
+  // The end-conversation reason dialog (conversation-only).
   const [endDialogOpen, setEndDialogOpen] = useState(false)
 
-  // "Jump to message" deep-link state. pendingTarget is the message we still
-  // need to scroll to (null once resolved); highlightId is the one currently
-  // flashing. pendingTargetRef mirrors pendingTarget so the auto-scroll-to-
-  // bottom effect can read it without listing it as a dep (which would re-fire
-  // a bottom-scroll the instant the jump resolves).
+  // "Jump to message" deep-link state (conversation-only). pendingTarget is the
+  // message we still need to scroll to (null once resolved); highlightId is the
+  // one currently flashing. pendingTargetRef mirrors pendingTarget so the
+  // auto-scroll-to-bottom effect can read it without listing it as a dep (which
+  // would re-fire a bottom-scroll the instant the jump resolves).
   const [pendingTarget, setPendingTarget] = useState<ConversationMessageId | null>(targetMessageId)
   const [highlightId, setHighlightId] = useState<ConversationMessageId | null>(null)
   const pendingTargetRef = useRef<ConversationMessageId | null>(targetMessageId)
   pendingTargetRef.current = pendingTarget
   const jumpPagesRef = useRef(0)
 
-  const sendTyping = useTypingSender(conversationId)
+  const sendTyping = useTypingSender(isTicket ? null : conversationId)
   const { onLocalInput } = useConversationTyping(sendTyping)
 
   const { upload } = useImageUpload({ endpoint: '/api/upload/image', prefix: 'chat-images' })
@@ -236,31 +289,71 @@ export function AgentConversationThread({
   } = useConversationComposerAttachments(upload)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Shared factory (same key as `threadKey`) so a `?c=` deep-link prefetched by
-  // the route loader hydrates this thread on first paint.
-  const { data, isLoading } = useQuery(conversationInboxQueries.thread(conversationId))
+  // Both kind's thread queries are always called (rules of hooks) but only one
+  // is ever `enabled` — the conversation adapter is unchanged from before the
+  // fold (same key/query the route loader's SSR prefetch warms); the ticket
+  // adapter reads the sibling factory in queries/inbox.ts.
+  const { data: convThread, isLoading: convLoading } = useQuery({
+    ...conversationInboxQueries.thread(conversationId ?? INACTIVE_CONVERSATION_ID),
+    enabled: !isTicket,
+  })
+  const { data: ticketThread, isLoading: ticketThreadLoading } = useQuery({
+    ...inboxQueries.ticketThread(ticketId ?? INACTIVE_TICKET_ID),
+    enabled: isTicket,
+  })
+  const { data: ticket, isLoading: ticketDetailLoading } = useQuery({
+    ...inboxQueries.ticketDetail(ticketId ?? INACTIVE_TICKET_ID),
+    enabled: isTicket,
+  })
 
-  const messages = data?.messages ?? []
-  const conversation = data?.conversation
-  const hasMoreOlder = data?.hasMore ?? false
+  const conversation = convThread?.conversation
+  const messages: AgentConversationMessageDTO[] = isTicket
+    ? (ticketThread?.messages ?? [])
+    : (convThread?.messages ?? [])
+  const hasMoreOlder = isTicket ? (ticketThread?.hasMore ?? false) : (convThread?.hasMore ?? false)
+  const isLoading = isTicket ? ticketThreadLoading || ticketDetailLoading : convLoading
+
+  // Derived once the ticket's type is known; a plain-object default while it's
+  // still loading (never rendered — the isLoading guard below returns first).
+  const capabilities: ThreadCapabilities = isTicket
+    ? ticketCapabilities(ticket?.type ?? 'customer')
+    : CONVERSATION_CAPABILITIES
+
+  // back_office/tracker tickets are note-only (§2.5) — force the mode once the
+  // ticket's type resolves (it may not be known yet on first render).
+  useEffect(() => {
+    if (!capabilities.reply) setNoteMode(true)
+  }, [capabilities.reply])
+
+  const linkPreviewsEnabled = capabilities.linkPreviews && (flags?.linkPreviews ?? false)
+  const debouncedComposerText = useDebouncedValue(
+    noteMode ? noteDraft.markdown : replyDraft.markdown,
+    500
+  )
 
   // The unread divider sits immediately above the first message newer than the
   // agent's read watermark — i.e. the first message that "mark unread" or new
-  // arrivals resurfaced. Null (no divider) when the thread is fully read.
+  // arrivals resurfaced. Conversation-only for now: a ticket's assignee
+  // watermark isn't exposed on `TicketDTO` yet, and `deepLinkJump`/an in-thread
+  // "New" divider aren't part of the ticket capability matrix this milestone —
+  // ticket unread is surfaced at the list level (`inboxQueries.itemList`'s
+  // per-row badge) instead.
   const agentLastReadAt = conversation?.agentLastReadAt
   const firstUnreadId = useMemo(() => {
-    if (!agentLastReadAt) return null
+    if (isTicket || !agentLastReadAt) return null
     const readMs = new Date(agentLastReadAt).getTime()
     const first = messages.find(
       (m) => m.senderType !== 'system' && new Date(m.createdAt).getTime() > readMs
     )
     return first?.id ?? null
-  }, [messages, agentLastReadAt])
+  }, [isTicket, messages, agentLastReadAt])
 
-  // Prepend an older page (keyset cursor = oldest loaded message id). Agents see
-  // internal notes here too (listConversationMessagesFn includes them by role).
-  const { loadingOlder, loadOlder } = useOlderMessages({
-    conversationId,
+  // Older-page backfill: the conversation path is the existing shared hook,
+  // parameterized to a no-op (`conversationId: null`) when a ticket is open;
+  // the ticket path is a small local mirror of it (listTicketMessagesFn's
+  // before-cursor + prependOlderTicketMessages), parameterized the same way.
+  const { loadingOlder: convLoadingOlder, loadOlder: loadOlderConversation } = useOlderMessages({
+    conversationId: isTicket ? null : conversationId,
     messages,
     onPage: (page) =>
       queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
@@ -268,6 +361,23 @@ export function AgentConversationThread({
       ),
     onError: () => toast.error('Failed to load older messages'),
   })
+  const [ticketLoadingOlder, setTicketLoadingOlder] = useState(false)
+  const loadOlderTicket = useCallback(async () => {
+    if (!ticketId || ticketLoadingOlder || messages.length === 0) return
+    setTicketLoadingOlder(true)
+    try {
+      const page = await listTicketMessagesFn({ data: { ticketId, before: messages[0].id } })
+      queryClient.setQueryData(ticketThreadKey, (prev: TicketThreadCache | undefined) =>
+        prependOlderTicketMessages(prev, page)
+      )
+    } catch {
+      toast.error('Failed to load older messages')
+    } finally {
+      setTicketLoadingOlder(false)
+    }
+  }, [ticketId, ticketLoadingOlder, messages, queryClient, ticketThreadKey])
+  const loadingOlder = isTicket ? ticketLoadingOlder : convLoadingOlder
+  const loadOlder = isTicket ? loadOlderTicket : loadOlderConversation
 
   // Default the convert/draft dialog to the conversation subject + the last thing the visitor said.
   const lastVisitorMessage = messages.findLast((m) => m.senderType === 'visitor')
@@ -289,7 +399,9 @@ export function AgentConversationThread({
   const visitorIsAnonymous = conversation != null && visitorContactEmail == null
 
   // The agent's latest message is "Seen" once the visitor read watermark
-  // reaches it.
+  // reaches it. Conversation-only (a ticket carries no visitor read watermark
+  // on its DTO yet) — `conversation` is undefined for a ticket, so this is
+  // naturally false there.
   const lastAgentMessage = messages.findLast((m) => m.senderType === 'agent')
   const lastAgentSeen =
     !!conversation?.visitorLastReadAt &&
@@ -310,9 +422,9 @@ export function AgentConversationThread({
         hasMoreOlder,
         firstUnreadId,
         showSeen: lastAgentSeen && !isVisitorTyping,
-        showTyping: isVisitorTyping,
+        showTyping: capabilities.typing && isVisitorTyping,
       }),
-    [messages, hasMoreOlder, firstUnreadId, lastAgentSeen, isVisitorTyping]
+    [messages, hasMoreOlder, firstUnreadId, lastAgentSeen, isVisitorTyping, capabilities.typing]
   )
 
   // A pending `?m=` jump owns the initial scroll, so consume the one-shot
@@ -364,6 +476,7 @@ export function AgentConversationThread({
 
   // Re-arm the jump whenever the URL target changes (e.g. clicking another
   // "Saved for later" message while this conversation is already open).
+  // Conversation-only — a ticket selection never carries a `?m=`.
   useEffect(() => {
     setPendingTarget(targetMessageId)
     jumpPagesRef.current = 0
@@ -374,7 +487,7 @@ export function AgentConversationThread({
   // measured); otherwise pull older pages (capped) until it appears or we run
   // out. Giving up clears pendingTarget so normal scrolling resumes.
   useEffect(() => {
-    if (!pendingTarget || isLoading) return
+    if (!capabilities.deepLinkJump || !pendingTarget || isLoading) return
     const index = rows.findIndex((r) => r.type === 'message' && r.message.id === pendingTarget)
     if (index >= 0) {
       virtualizer.scrollToIndex(index, { align: 'center' })
@@ -388,7 +501,16 @@ export function AgentConversationThread({
     } else if (!hasMoreOlder || jumpPagesRef.current >= MAX_JUMP_PAGES) {
       setPendingTarget(null)
     }
-  }, [pendingTarget, rows, isLoading, hasMoreOlder, loadingOlder, virtualizer])
+  }, [
+    capabilities.deepLinkJump,
+    pendingTarget,
+    rows,
+    isLoading,
+    hasMoreOlder,
+    loadingOlder,
+    virtualizer,
+    loadOlder,
+  ])
 
   // Clear the flash once it has played through.
   useEffect(() => {
@@ -399,22 +521,85 @@ export function AgentConversationThread({
 
   // Clear the agent-side unread badge when a thread is open and new visitor
   // messages arrive — opening + reading should mark read, not only replying.
+  // Conversation adapter: the existing shared hook, no-op'd (`conversationId:
+  // null`) while a ticket is open.
   useMarkReadOnIncoming({
-    conversationId,
+    conversationId: isTicket ? null : conversationId,
     messages,
     whenLastFrom: 'visitor',
     enabled: !isLoading,
     onMarked: onChanged,
   })
+  // Ticket adapter: mark read once the thread has loaded, and again whenever a
+  // new message lands while it's open — simpler than the conversation side's
+  // sender-side gating (an agent's own reply re-marking read is a harmless
+  // no-op here, and a ticket carries no per-message read nuance yet).
+  useEffect(() => {
+    if (!ticketId || isLoading) return
+    void markTicketReadFn({ data: { ticketId } })
+      .then(() => onChanged())
+      .catch(() => {})
+    // lastMessageId (declared above) re-fires this on every new arrival.
+  }, [ticketId, isLoading, lastMessageId, onChanged])
 
-  // Merge a freshly-sent message into the thread cache (dedup by id).
+  // Apply `update`/removal to the message with `messageId` in whichever thread
+  // cache is active. Reactions/flags/delete all resolve their target purely
+  // from `messageId` server-side (the fns take no conversationId/ticketId), so
+  // one message-level action can target either cache uniformly — only the
+  // cache WRITE needs to know which kind is open.
+  const patchActiveMessage = useCallback(
+    (
+      messageId: ConversationMessageId,
+      update: (m: AgentConversationMessageDTO) => AgentConversationMessageDTO
+    ) => {
+      if (isTicket) {
+        queryClient.setQueryData(ticketThreadKey, (prev: TicketThreadCache | undefined) =>
+          updateTicketThreadMessage(prev, messageId, update)
+        )
+      } else {
+        queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
+          updateAgentThreadMessage(prev, messageId, update)
+        )
+      }
+    },
+    [isTicket, queryClient, ticketThreadKey, threadKey]
+  )
+  const removeActiveMessage = useCallback(
+    (messageId: ConversationMessageId) => {
+      if (isTicket) {
+        queryClient.setQueryData(ticketThreadKey, (prev: TicketThreadCache | undefined) =>
+          removeTicketThreadMessage(prev, messageId)
+        )
+      } else {
+        queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
+          removeAgentThreadMessage(prev, messageId)
+        )
+      }
+    },
+    [isTicket, queryClient, ticketThreadKey, threadKey]
+  )
+  const invalidateActiveThread = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: isTicket ? ticketThreadKey : threadKey })
+  }, [isTicket, queryClient, ticketThreadKey, threadKey])
+
+  // Merge a freshly-sent message into the open thread's cache (dedup by id).
+  // `res.conversation` is only present on the conversation path's response.
   const appendToThread = (res: {
-    conversation: ConversationDTO
+    conversation?: ConversationDTO
     message: ConversationMessageDTO
   }) => {
-    queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
-      appendSentAgentMessage(prev, res)
-    )
+    if (isTicket) {
+      queryClient.setQueryData(ticketThreadKey, (prev: TicketThreadCache | undefined) =>
+        appendSentTicketMessage(prev, { message: res.message })
+      )
+    } else {
+      queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
+        appendSentAgentMessage(prev, {
+          conversation: res.conversation as ConversationDTO,
+          message: res.message,
+        })
+      )
+    }
     onChanged()
   }
 
@@ -425,17 +610,27 @@ export function AgentConversationThread({
       attachments?: ConversationAttachment[]
       // P2-D.1: the explicit "Send untranslated" fallback offered after a
       // TRANSLATION_FAILED error — bypasses translation for this one send.
+      // Conversation-only; the ticket send path never throws these errors.
       skipTranslation?: boolean
     }) =>
-      sendAgentMessageFn({
-        data: {
-          conversationId,
-          content: vars.content,
-          contentJson: vars.contentJson,
-          attachments: vars.attachments,
-          skipTranslation: vars.skipTranslation,
-        },
-      }),
+      isTicket
+        ? sendTicketMessageFn({
+            data: {
+              ticketId: ticketId ?? INACTIVE_TICKET_ID,
+              content: vars.content,
+              contentJson: vars.contentJson,
+              attachments: vars.attachments,
+            },
+          })
+        : sendAgentMessageFn({
+            data: {
+              conversationId: conversationId ?? INACTIVE_CONVERSATION_ID,
+              content: vars.content,
+              contentJson: vars.contentJson,
+              attachments: vars.attachments,
+              skipTranslation: vars.skipTranslation,
+            },
+          }),
     onSuccess: (res) => {
       clearAttachments()
       // Our own send always lands at the bottom (followOnAppend only follows
@@ -481,14 +676,23 @@ export function AgentConversationThread({
       contentJson: JSONContent | null
       attachments?: ConversationAttachment[]
     }) =>
-      addConversationNoteFn({
-        data: {
-          conversationId,
-          content: vars.content,
-          contentJson: vars.contentJson,
-          attachments: vars.attachments,
-        },
-      }),
+      isTicket
+        ? addTicketNoteFn({
+            data: {
+              ticketId: ticketId ?? INACTIVE_TICKET_ID,
+              content: vars.content,
+              contentJson: vars.contentJson,
+              attachments: vars.attachments,
+            },
+          })
+        : addConversationNoteFn({
+            data: {
+              conversationId: conversationId ?? INACTIVE_CONVERSATION_ID,
+              content: vars.content,
+              contentJson: vars.contentJson,
+              attachments: vars.attachments,
+            },
+          }),
     onSuccess: (res) => {
       clearAttachments()
       pendingOwnSendScroll.current = true
@@ -498,24 +702,29 @@ export function AgentConversationThread({
   })
 
   // Re-fetch the thread (priority/assignee/tags live on the conversation row)
-  // and the inbox after a metadata mutation handled by a child control.
+  // and the inbox after a metadata mutation handled by a child CONVERSATION
+  // control. Conversation-only — the ticket header's controls call `onChanged`
+  // (the route's own refresh) directly, mirroring the pre-fold TicketDetail:
+  // their mutations already seed `ticketKeys.detail`/`ticketKeys.list` caches
+  // themselves (lib/client/mutations/tickets.ts), so there's nothing extra to
+  // invalidate here for a ticket.
   const refreshThread = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: conversationKeys.agentThread(conversationId) })
+    void queryClient.invalidateQueries({ queryKey: threadKey })
     // The detail panel's "Previous conversations" list has its own cache key —
     // keep it fresh after a status/assignment/label change.
     void queryClient.invalidateQueries({ queryKey: conversationKeys.agentUserConversations() })
     onChanged()
-  }, [queryClient, conversationId, onChanged])
+  }, [queryClient, threadKey, onChanged])
 
   // P2-D.1 inbox translation: activation banner/toggle + per-message
-  // translation display, gated on the flag. A no-op hook (everything false/
-  // undefined) whenever the flag is off, so the thread's behavior is
-  // unchanged when the feature isn't enabled.
+  // translation display, gated on the flag AND the capability. A no-op hook
+  // (everything false/undefined) whenever either is off, so a ticket's
+  // behavior is unaffected.
   const inboxTranslationEnabled =
-    (settings?.featureFlags as FeatureFlags | undefined)?.inboxTranslation ?? false
+    capabilities.inboxTranslation && (flags?.inboxTranslation ?? false)
   const inboxTranslation = useInboxTranslation({
     enabledFlag: inboxTranslationEnabled,
-    conversationId,
+    conversationId: conversationId ?? INACTIVE_CONVERSATION_ID,
     translationState: conversation?.translation,
     messages,
     onChanged: refreshThread,
@@ -524,72 +733,66 @@ export function AgentConversationThread({
   const deleteMutation = useMutation({
     mutationFn: (messageId: ConversationMessageId) =>
       deleteConversationMessageFn({ data: { messageId } }),
-    onSuccess: (_r, messageId) => {
-      queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
-        removeAgentThreadMessage(prev, messageId)
-      )
-    },
+    onSuccess: (_r, messageId) => removeActiveMessage(messageId),
     onError: () => toast.error('Failed to delete message'),
   })
 
   // Toggle the caller's emoji reaction on a message (optimistic; the SSE
-  // message_updated reconciles counts across agents).
+  // message_updated reconciles counts across agents on the conversation side —
+  // a ticket-parented reaction has no live broadcast yet, see message.actions.ts,
+  // so this mutation's own onSuccess is the only reconciliation there). The
+  // server fn resolves the message's parent by id, so it's shared verbatim by
+  // both kinds.
   const reactionMutation = useMutation({
     mutationFn: (vars: { messageId: ConversationMessageId; emoji: string; hasReacted: boolean }) =>
       (vars.hasReacted ? removeMessageReactionFn : addMessageReactionFn)({
         data: { messageId: vars.messageId, emoji: vars.emoji },
       }),
-    onMutate: (vars) => {
-      queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
-        updateAgentThreadMessage(prev, vars.messageId, (m) =>
-          toggleReactionLocal(m, vars.emoji, vars.hasReacted, myName)
-        )
-      )
-    },
+    onMutate: (vars) =>
+      patchActiveMessage(vars.messageId, (m) =>
+        toggleReactionLocal(m, vars.emoji, vars.hasReacted, myName)
+      ),
     // Reconcile to the server's canonical reaction list (real reactor names +
     // authoritative counts) for just this message — no thread refetch, so loaded
     // history and scroll position are preserved.
-    onSuccess: (data, vars) => {
-      queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
-        updateAgentThreadMessage(prev, vars.messageId, (m) => ({ ...m, reactions: data.reactions }))
-      )
-    },
+    onSuccess: (data, vars) =>
+      patchActiveMessage(vars.messageId, (m) => ({ ...m, reactions: data.reactions })),
     onError: () => {
       toast.error('Failed to update reaction')
-      void queryClient.invalidateQueries({ queryKey: threadKey })
+      invalidateActiveThread()
     },
   })
 
   // Toggle the caller's personal "Saved for later" flag on a message
-  // (optimistic; reconciled to the server's flaggedAt; refreshes the saved feed).
+  // (optimistic; reconciled to the server's flaggedAt; refreshes the saved
+  // feed). Shared verbatim by both kinds — see reactionMutation's comment.
   const flagMutation = useMutation({
     mutationFn: (vars: { messageId: ConversationMessageId; flagged: boolean }) =>
       setMessageFlagFn({ data: { messageId: vars.messageId, flagged: vars.flagged } }),
-    onMutate: (vars) => {
-      queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
-        updateAgentThreadMessage(prev, vars.messageId, (m) => ({
-          ...m,
-          flaggedAt: vars.flagged ? (m.flaggedAt ?? new Date().toISOString()) : null,
-        }))
-      )
-    },
+    onMutate: (vars) =>
+      patchActiveMessage(vars.messageId, (m) => ({
+        ...m,
+        flaggedAt: vars.flagged ? (m.flaggedAt ?? new Date().toISOString()) : null,
+      })),
     onSuccess: (data, vars) => {
-      queryClient.setQueryData(threadKey, (prev: AgentThreadCache | undefined) =>
-        updateAgentThreadMessage(prev, vars.messageId, (m) => ({ ...m, flaggedAt: data.flaggedAt }))
-      )
+      patchActiveMessage(vars.messageId, (m) => ({ ...m, flaggedAt: data.flaggedAt }))
       // The "Saved for later" feed changed.
       void queryClient.invalidateQueries({ queryKey: conversationKeys.agentFlagged() })
     },
     onError: () => {
       toast.error('Failed to update flag')
-      void queryClient.invalidateQueries({ queryKey: threadKey })
+      invalidateActiveThread()
     },
   })
 
   // Remove the active SLA (overflow menu); the thread refetch drops the chip
-  // and other agents' inboxes update off the broadcast.
+  // and other agents' inboxes update off the broadcast. Conversation-only — a
+  // ticket has no SLA chip in this milestone's header.
   const removeSlaMutation = useMutation({
-    mutationFn: () => removeConversationSlaFn({ data: { conversationId } }),
+    mutationFn: () =>
+      removeConversationSlaFn({
+        data: { conversationId: conversationId ?? INACTIVE_CONVERSATION_ID },
+      }),
     onSuccess: () => {
       toast.success('SLA removed')
       refreshThread()
@@ -597,12 +800,21 @@ export function AgentConversationThread({
     onError: () => toast.error('Failed to remove SLA'),
   })
 
-  // Mark the conversation unread from a message. onChanged refreshes the inbox
+  // Mark unread from a message. The conversation and ticket fns each need their
+  // own parent id (unlike reactions/flags/delete, which resolve it from the
+  // message row) — see markConversationUnreadFromMessageFn/
+  // markTicketUnreadFromMessageFn's schemas. onChanged refreshes the inbox
   // badge; the thread stays open (the auto-read effect's deps are stable, so it
   // won't immediately re-mark read).
   const markUnreadMutation = useMutation({
     mutationFn: (messageId: ConversationMessageId) =>
-      markConversationUnreadFromMessageFn({ data: { conversationId, messageId } }),
+      isTicket
+        ? markTicketUnreadFromMessageFn({
+            data: { ticketId: ticketId ?? INACTIVE_TICKET_ID, messageId },
+          })
+        : markConversationUnreadFromMessageFn({
+            data: { conversationId: conversationId ?? INACTIVE_CONVERSATION_ID, messageId },
+          }),
     onSuccess: () => onChanged(),
     onError: () => toast.error('Failed to mark unread'),
   })
@@ -625,7 +837,8 @@ export function AgentConversationThread({
   // use-copilot-insert.ts for the mount-timing fix. It drives the editors through
   // insertable handles; with the unified editor those handles just seed the draft
   // (value + remount). Kept in stable refs so insertFromCopilot's identity — and
-  // therefore the detail panel — doesn't churn on every keystroke.
+  // therefore the detail panel — doesn't churn on every keystroke. Only reached
+  // when the conversation detail panel's Copilot tab renders (conversation-only).
   const replyInsertRef = useRef<{ insertText: (text: string) => void } | null>(null)
   const noteInsertRef = useRef<{ insertText: (text: string) => void } | null>(null)
   replyInsertRef.current = { insertText: insertIntoReply }
@@ -638,11 +851,12 @@ export function AgentConversationThread({
   })
 
   // The Copilot Format chip's read/replace seam onto the REPLY draft only
-  // (P2-C.1). `getComposerText` is a stable pull that reads the latest draft via
-  // a ref (no re-subscribe on every keystroke); `replaceComposerText` swaps the
-  // whole draft for the transform result (remount lands the cursor at the end)
-  // and offers an Undo that re-seeds the pre-format draft — the RichTextEditor
-  // has no undo handle, so we snapshot and restore instead.
+  // (P2-C.1, conversation-only). `getComposerText` is a stable pull that reads
+  // the latest draft via a ref (no re-subscribe on every keystroke);
+  // `replaceComposerText` swaps the whole draft for the transform result
+  // (remount lands the cursor at the end) and offers an Undo that re-seeds the
+  // pre-format draft — the RichTextEditor has no undo handle, so we snapshot
+  // and restore instead.
   const getComposerText = useCallback(() => replyDraftRef.current.markdown, [])
   const replaceComposerText = useCallback((text: string) => {
     const prev = replyDraftRef.current
@@ -660,15 +874,16 @@ export function AgentConversationThread({
   }, [])
 
   // Track each mode's draft from the editor's onChange (json + markdown mirror).
-  // The reply keystroke also drives the visitor-facing typing indicator; a note
-  // is internal, so it never signals typing. Both callbacks are stable so the
-  // editor's extensions aren't rebuilt on every render.
+  // The reply keystroke also drives the visitor-facing typing indicator (only
+  // when the capability is on — a ticket reply never signals typing); a note
+  // is internal, so it never signals typing either way. Both callbacks are
+  // stable so the editor's extensions aren't rebuilt on every render.
   const onReplyChange = useCallback(
     (json: JSONContent, _html: string, markdown: string) => {
       setReplyDraft({ json: json as TiptapContent, markdown })
-      onLocalInput()
+      if (capabilities.typing) onLocalInput()
     },
-    [onLocalInput]
+    [onLocalInput, capabilities.typing]
   )
   const onNoteChange = useCallback(
     (json: JSONContent, _html: string, markdown: string) =>
@@ -683,20 +898,22 @@ export function AgentConversationThread({
   // counts any non-text node as content), OR a file is staged in the tray;
   // `content` is the doc's markdown, `contentJson` the doc (null when it's only
   // an attachment). Text/doc clear optimistically; tray attachments clear in the
-  // mutation's onSuccess.
+  // mutation's onSuccess. `!capabilities.reply` forces note mode regardless of
+  // `noteMode`'s own state (defense in depth alongside the effect above).
   const sendRef = useRef<() => void>(() => {})
   sendRef.current = () => {
-    const draft = noteMode ? noteDraft : replyDraft
+    const useNote = noteMode || !capabilities.reply
+    const draft = useNote ? noteDraft : replyDraft
     const empty = isEmptyTiptapDoc(draft.json ?? undefined)
     const hasAttachments = pendingAttachments.length > 0
-    const mutation = noteMode ? noteMutation : sendMutation
+    const mutation = useNote ? noteMutation : sendMutation
     if ((empty && !hasAttachments) || mutation.isPending || uploading) return
     mutation.mutate({
       content: draft.markdown.trim(),
       contentJson: empty ? null : draft.json,
       attachments: hasAttachments ? pendingAttachments : undefined,
     })
-    if (noteMode) {
+    if (useNote) {
       setNoteDraft(EMPTY_DRAFT)
       setNoteKey((k) => k + 1)
     } else {
@@ -706,16 +923,17 @@ export function AgentConversationThread({
   }
   const onSend = useCallback(() => sendRef.current(), [])
 
-  const activeDraft = noteMode ? noteDraft : replyDraft
-  const activePending = noteMode ? noteMutation.isPending : sendMutation.isPending
+  const activeDraft = noteMode || !capabilities.reply ? noteDraft : replyDraft
+  const activePending =
+    noteMode || !capabilities.reply ? noteMutation.isPending : sendMutation.isPending
   const sendDisabled =
     (isEmptyTiptapDoc(activeDraft.json ?? undefined) && pendingAttachments.length === 0) ||
     activePending ||
     uploading
 
   // Render one virtualized row. AgentMessageBubble keeps all the agent-view
-  // behaviors (and its data-message-id root); the affordance rows mirror the
-  // old inline markup.
+  // behaviors (and its data-message-id root) — `readOnly` mirrors
+  // `capabilities.readOnlyBubbles`, false for every kind post-M4.
   const renderRow = (row: AdminConversationRow) => {
     switch (row.type) {
       case 'load-older':
@@ -738,6 +956,7 @@ export function AgentConversationThread({
         return (
           <AgentMessageBubble
             message={m}
+            readOnly={capabilities.readOnlyBubbles}
             highlighted={m.id === highlightId}
             onOpenPost={onOpenPost}
             onDelete={() => deleteMutation.mutate(m.id)}
@@ -746,18 +965,27 @@ export function AgentConversationThread({
             }
             onToggleFlag={(next) => flagMutation.mutate({ messageId: m.id, flagged: next })}
             onMarkUnread={() => markUnreadMutation.mutate(m.id)}
-            onSharePost={() => setShareMsg(m)}
-            onTrackAsPost={() =>
-              setConvertSeed({ title: m.content.trim().slice(0, 200), content: m.content })
+            onSharePost={capabilities.convertToPost ? () => setShareMsg(m) : undefined}
+            onTrackAsPost={
+              capabilities.convertToPost
+                ? () =>
+                    setConvertSeed({ title: m.content.trim().slice(0, 200), content: m.content })
+                : undefined
             }
-            onTrackSuggestion={(s) => setConvertSeed(s)}
+            onTrackSuggestion={capabilities.convertToPost ? (s) => setConvertSeed(s) : undefined}
             linkPreviews={linkPreviewsEnabled}
             translation={inboxTranslation.translationFor(m)}
           />
         )
       }
       case 'empty':
-        return <p className="py-8 text-center text-sm text-muted-foreground">No messages yet</p>
+        return (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            {isTicket
+              ? 'No replies yet. Send the first message to the requester.'
+              : 'No messages yet'}
+          </p>
+        )
       case 'seen':
         return <p className="pe-1 text-end text-[10px] text-muted-foreground/50">Seen</p>
       case 'typing':
@@ -778,166 +1006,184 @@ export function AgentConversationThread({
     )
   }
 
-  return (
-    <div className="flex h-full">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between gap-3 border-b border-border/50 px-4 py-3 sm:px-5">
-          <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            <button
-              type="button"
-              onClick={onBack}
-              className="-ml-1 flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted md:hidden"
-              aria-label="Back to conversations"
-            >
-              <ChevronLeftIcon className="h-5 w-5" />
-            </button>
-            <Avatar
-              src={conversation?.visitor.avatarUrl ?? null}
-              name={conversation?.visitor.displayName ?? 'Visitor'}
-              className="size-8 text-xs shrink-0"
-            />
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">
-                {conversation?.visitor.displayName ?? 'Visitor'}
-              </p>
-              <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground capitalize">
-                {isOtherAgentTyping ? (
-                  <span className="font-medium normal-case text-amber-600">
-                    Another agent is replying…
-                  </span>
-                ) : (
-                  conversation?.status
-                )}
-                {conversation && <ChannelBadge channel={conversation.channel} />}
-                {conversation && <SlaChip sla={conversation.sla} status={conversation.status} />}
-                {conversation?.csatRating != null && (
-                  <span className="ml-1.5 text-amber-500">
-                    {'★'.repeat(conversation.csatRating)}
-                    <span className="text-muted-foreground/50">
-                      {'★'.repeat(Math.max(0, 5 - conversation.csatRating))}
-                    </span>
-                  </span>
-                )}
-              </p>
-            </div>
+  // A ticket may 404 (deleted, or no longer visible) — mirrors the old
+  // ticket-detail.tsx's guard, which this component's ticket path replaces.
+  if (isTicket && !ticket) {
+    return (
+      <div className="flex h-full flex-1 min-w-0 items-center justify-center">
+        <EmptyState
+          icon={ChatBubbleLeftRightIcon}
+          title="Ticket not found"
+          description="It may have been deleted or you no longer have access."
+        />
+      </div>
+    )
+  }
+
+  // The header block differs by kind (§2.5): a conversation keeps its exact
+  // current header (visitor identity, status, channel, SLA, CSAT); a ticket
+  // renders title + reference + type/stage chips + status/assignee/priority
+  // controls in the same geometry (M5 restructures the action bar — this is
+  // parity, not a redesign).
+  const backButton = (
+    <button
+      type="button"
+      onClick={onBack}
+      className="-ml-1 flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted md:hidden"
+      aria-label="Back to list"
+    >
+      <ChevronLeftIcon className="h-5 w-5" />
+    </button>
+  )
+  const header: ReactNode =
+    isTicket && ticket ? (
+      <div className="flex items-center justify-between gap-3 border-b border-border/50 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          {backButton}
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">{ticket.title}</p>
+            <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <span className="font-mono">{ticket.reference}</span>
+              <TicketTypeBadge type={ticket.type} />
+              <TicketStageChip stage={ticket.stage} />
+            </p>
           </div>
-          {/* Conversation-level track entry for narrow viewports: at xl+ the
-              detail panel's bottom "Track as feedback" button takes over, so this
-              header trigger mirrors the triage controls' xl:hidden fallback. */}
-          {conversation && (
-            <div className="flex shrink-0 items-center gap-1.5 xl:hidden">
-              <ConvertToPostDialog
-                conversationId={conversationId}
-                defaultTitle={convertDefaultTitle}
-                defaultContent={convertDefaultContent}
-                visitorIsAnonymous={visitorIsAnonymous}
-                visitorContactEmail={visitorContactEmail}
-                onConverted={refreshThread}
-              />
-            </div>
-          )}
-          {/* One controlled convert dialog; each entry point (per-message pick,
-              AI note suggestion, the detail panel's conversation-level button)
-              builds its own convertSeed. */}
-          <ConvertToPostDialog
-            open={!!convertSeed}
-            onOpenChange={(o) => {
-              if (!o) setConvertSeed(null)
-            }}
-            conversationId={conversationId}
-            defaultTitle={convertSeed?.title ?? ''}
-            defaultContent={convertSeed?.content ?? ''}
-            defaultBoardId={convertSeed?.boardId}
-            visitorIsAnonymous={visitorIsAnonymous}
-            visitorContactEmail={visitorContactEmail}
-            onConverted={refreshThread}
-          />
-          <SharePostDialog
-            open={!!shareMsg}
-            onOpenChange={(o) => {
-              if (!o) setShareMsg(null)
-            }}
-            conversationId={conversationId}
-            onShared={refreshThread}
-          />
-          <EndConversationDialog
-            open={endDialogOpen}
-            onOpenChange={setEndDialogOpen}
-            conversationId={conversationId}
-            onEnded={refreshThread}
-          />
-          {/* Triage controls live in the detail panel at xl+; below that
-              (panel hidden) they stay in the header. */}
-          {conversation && (
-            <div className="flex shrink-0 items-center gap-1.5 xl:hidden">
-              <PriorityControl
-                conversationId={conversationId}
-                value={conversation.priority}
-                onChanged={refreshThread}
-              />
-              <AssigneeControl
-                conversationId={conversationId}
-                assignedAgent={conversation.assignedAgent}
-                onChanged={refreshThread}
-              />
-              <StatusControl
-                conversationId={conversationId}
-                status={conversation.status}
-                onChanged={refreshThread}
-              />
-            </div>
-          )}
-          {/* P2-D.1 inbox translation: manual per-conversation toggle. */}
-          {inboxTranslationEnabled && conversation && (
-            <button
-              type="button"
-              onClick={inboxTranslation.toggleEnabled}
-              disabled={inboxTranslation.togglePending}
-              aria-pressed={inboxTranslation.enabled}
-              title={
-                inboxTranslation.enabled
-                  ? 'Translation is on for this conversation'
-                  : 'Turn on translation for this conversation'
-              }
-              className={cn(
-                'flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50',
-                inboxTranslation.enabled
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <LanguageIcon className="h-4 w-4" />
-              <span className="hidden sm:inline">Translate</span>
-            </button>
-          )}
-          {/* Overflow: rarer conversation-level actions. Only shown while it
-              has something to offer (Remove SLA today). */}
-          {conversation?.sla && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  aria-label="More conversation actions"
-                  className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  <EllipsisHorizontalIcon className="h-5 w-5" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => removeSlaMutation.mutate()}
-                  disabled={removeSlaMutation.isPending}
-                  className="text-xs"
-                >
-                  Remove SLA ({conversation.sla.policyName})
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
         </div>
-        {/* Conversation labels — xl+ shows them in the detail panel. */}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <TicketPriorityControl ticket={ticket} onChanged={onChanged} />
+          <TicketAssigneeControl ticket={ticket} onChanged={onChanged} />
+          <TicketStatusControl ticket={ticket} onChanged={onChanged} />
+        </div>
+      </div>
+    ) : (
+      <div className="flex items-center justify-between gap-3 border-b border-border/50 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          {backButton}
+          <Avatar
+            src={conversation?.visitor.avatarUrl ?? null}
+            name={conversation?.visitor.displayName ?? 'Visitor'}
+            className="size-8 text-xs shrink-0"
+          />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">
+              {conversation?.visitor.displayName ?? 'Visitor'}
+            </p>
+            <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground capitalize">
+              {isOtherAgentTyping ? (
+                <span className="font-medium normal-case text-amber-600">
+                  Another agent is replying…
+                </span>
+              ) : (
+                conversation?.status
+              )}
+              {conversation && <ChannelBadge channel={conversation.channel} />}
+              {conversation && <SlaChip sla={conversation.sla} status={conversation.status} />}
+              {conversation?.csatRating != null && (
+                <span className="ml-1.5 text-amber-500">
+                  {'★'.repeat(conversation.csatRating)}
+                  <span className="text-muted-foreground/50">
+                    {'★'.repeat(Math.max(0, 5 - conversation.csatRating))}
+                  </span>
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+        {/* Conversation-level track entry for narrow viewports: at xl+ the
+            detail panel's bottom "Track as feedback" button takes over, so this
+            header trigger mirrors the triage controls' xl:hidden fallback. */}
+        {conversation && capabilities.convertToPost && conversationId && (
+          <div className="flex shrink-0 items-center gap-1.5 xl:hidden">
+            <ConvertToPostDialog
+              conversationId={conversationId}
+              defaultTitle={convertDefaultTitle}
+              defaultContent={convertDefaultContent}
+              visitorIsAnonymous={visitorIsAnonymous}
+              visitorContactEmail={visitorContactEmail}
+              onConverted={refreshThread}
+            />
+          </div>
+        )}
+        {/* Triage controls live in the detail panel at xl+; below that
+            (panel hidden) they stay in the header. */}
         {conversation && (
+          <div className="flex shrink-0 items-center gap-1.5 xl:hidden">
+            <PriorityControl
+              conversationId={conversationId ?? INACTIVE_CONVERSATION_ID}
+              value={conversation.priority}
+              onChanged={refreshThread}
+            />
+            <AssigneeControl
+              conversationId={conversationId ?? INACTIVE_CONVERSATION_ID}
+              assignedAgent={conversation.assignedAgent}
+              onChanged={refreshThread}
+            />
+            <StatusControl
+              conversationId={conversationId ?? INACTIVE_CONVERSATION_ID}
+              status={conversation.status}
+              onChanged={refreshThread}
+            />
+          </div>
+        )}
+        {/* P2-D.1 inbox translation: manual per-conversation toggle. */}
+        {inboxTranslationEnabled && conversation && (
+          <button
+            type="button"
+            onClick={inboxTranslation.toggleEnabled}
+            disabled={inboxTranslation.togglePending}
+            aria-pressed={inboxTranslation.enabled}
+            title={
+              inboxTranslation.enabled
+                ? 'Translation is on for this conversation'
+                : 'Turn on translation for this conversation'
+            }
+            className={cn(
+              'flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50',
+              inboxTranslation.enabled
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <LanguageIcon className="h-4 w-4" />
+            <span className="hidden sm:inline">Translate</span>
+          </button>
+        )}
+        {/* Overflow: rarer conversation-level actions. Only shown while it
+            has something to offer (Remove SLA today). */}
+        {conversation?.sla && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="More conversation actions"
+                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <EllipsisHorizontalIcon className="h-5 w-5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => removeSlaMutation.mutate()}
+                disabled={removeSlaMutation.isPending}
+                className="text-xs"
+              >
+                Remove SLA ({conversation.sla.policyName})
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+    )
+
+  return (
+    <div className="flex h-full flex-1 min-w-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {header}
+
+        {/* Conversation labels — xl+ shows them in the detail panel. Tickets
+            have no tags surface (§2.5's capability matrix — "tags,
+            conversations only"). */}
+        {!isTicket && conversation && conversationId && (
           <div className="flex items-center gap-1.5 border-b border-border/50 px-4 py-2 sm:px-5 xl:hidden">
             <ConversationTagsEditor conversationId={conversationId} tags={conversation.tags} />
           </div>
@@ -1017,38 +1263,42 @@ export function AgentConversationThread({
 
         {/* Composer */}
         <div className="border-t border-border/50 p-3">
-          {/* Reply vs internal-note mode */}
-          <div className="mb-2 flex gap-1">
-            {(
-              [
-                { mode: false, label: 'Reply' },
-                { mode: true, label: 'Note' },
-              ] as const
-            ).map(({ mode, label }) => (
-              <button
-                key={label}
-                type="button"
-                onClick={() => setNoteMode(mode)}
-                className={cn(
-                  'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                  noteMode === mode
-                    ? mode
-                      ? 'bg-amber-400/20 text-amber-700 dark:text-amber-300'
-                      : 'bg-muted text-foreground'
-                    : 'text-muted-foreground hover:bg-muted/60'
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          {/* Reply vs internal-note mode — a back_office/tracker ticket has no
+              reply capability, so Note is the only tab: hide the toggle and
+              force note mode (styled as today's note mode, per §2.5). */}
+          {capabilities.reply && (
+            <div className="mb-2 flex gap-1">
+              {(
+                [
+                  { mode: false, label: 'Reply' },
+                  { mode: true, label: 'Note' },
+                ] as const
+              ).map(({ mode, label }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setNoteMode(mode)}
+                  className={cn(
+                    'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                    noteMode === mode
+                      ? mode
+                        ? 'bg-amber-400/20 text-amber-700 dark:text-amber-300'
+                        : 'bg-muted text-foreground'
+                      : 'text-muted-foreground hover:bg-muted/60'
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {/* Composer: the editor spans the full width on top, then the pending
               attachment tray, then the actions (attach / emoji / saved replies)
               and send. Enter sends; Shift+Enter inserts a newline. */}
           <div
             className={cn(
               'rounded-lg border px-3 py-2 focus-within:ring-2',
-              noteMode
+              noteMode || !capabilities.reply
                 ? 'border-amber-400/50 bg-amber-400/5 focus-within:ring-amber-400/20'
                 : 'border-border bg-background focus-within:ring-primary/20'
             )}
@@ -1072,7 +1322,7 @@ export function AgentConversationThread({
                 Enter sends, Shift+Enter breaks; formatting comes from the editor's
                 own bubble/slash/`:` surfaces. Pasted/dropped images inline via
                 onImageUpload; the paperclip still stages files in the tray below. */}
-            {noteMode ? (
+            {noteMode || !capabilities.reply ? (
               <RichTextEditor
                 key={`note-${noteKey}`}
                 value={noteDraft.json ?? ''}
@@ -1096,7 +1346,7 @@ export function AgentConversationThread({
                 minHeight="1.5rem"
                 autofocus={replyKey > 0 ? 'end' : false}
                 disabled={sendMutation.isPending}
-                placeholder="Type your reply…"
+                placeholder={isTicket ? 'Reply to the requester…' : 'Type your reply…'}
                 className="max-h-32 overflow-y-auto"
                 onChange={onReplyChange}
                 onSubmit={onSend}
@@ -1105,10 +1355,10 @@ export function AgentConversationThread({
             )}
             <ComposerAttachmentTray attachments={pendingAttachments} onRemove={removeAttachment} />
             {/* Live link unfurl while composing (Slack-style) — part of the
-                preview tray, gated by the flag. */}
+                preview tray, gated by the flag + capability. */}
             {linkPreviewsEnabled && <LinkPreviews content={debouncedComposerText} />}
             <div className="flex items-center gap-0.5 pt-1">
-              {/* Attach is available in both reply and note mode. */}
+              {/* Attach is available in both reply and note mode, for both kinds. */}
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -1118,14 +1368,16 @@ export function AgentConversationThread({
               >
                 <PaperClipIcon className="h-4 w-4" />
               </button>
-              <EmojiPicker
-                className="size-8"
-                onSelect={(emoji) => {
-                  if (noteMode) insertIntoNote(emoji)
-                  else insertIntoReply(emoji)
-                }}
-              />
-              {!noteMode && (
+              {capabilities.emojiPicker && (
+                <EmojiPicker
+                  className="size-8"
+                  onSelect={(emoji) => {
+                    if (noteMode) insertIntoNote(emoji)
+                    else insertIntoReply(emoji)
+                  }}
+                />
+              )}
+              {capabilities.macros && !noteMode && conversationId && (
                 <MacroPicker
                   conversationId={conversationId}
                   onInsert={insertIntoReply}
@@ -1139,11 +1391,11 @@ export function AgentConversationThread({
                 disabled={sendDisabled}
                 className={cn(
                   'flex size-8 shrink-0 items-center justify-center rounded-md text-primary-foreground disabled:opacity-40 transition-opacity',
-                  noteMode ? 'bg-amber-500 text-white' : 'bg-primary'
+                  noteMode || !capabilities.reply ? 'bg-amber-500 text-white' : 'bg-primary'
                 )}
-                aria-label={noteMode ? 'Add note' : 'Send reply'}
+                aria-label={noteMode || !capabilities.reply ? 'Add note' : 'Send reply'}
               >
-                {noteMode ? (
+                {noteMode || !capabilities.reply ? (
                   <PencilSquareIcon className="h-4 w-4" />
                 ) : (
                   <PaperAirplaneIcon className="h-4 w-4" />
@@ -1154,7 +1406,47 @@ export function AgentConversationThread({
         </div>
       </div>
 
-      {conversation && (
+      {/* Convert/share/end dialogs are conversation-only (§2.5 — convert-to-post
+          is deferred for tickets, end-conversation has no ticket equivalent,
+          the status axis stands in for it instead). Not rendered at all for a
+          ticket, so their state (never set by any ticket-only affordance)
+          stays inert. */}
+      {!isTicket && conversationId && (
+        <>
+          <ConvertToPostDialog
+            open={!!convertSeed}
+            onOpenChange={(o) => {
+              if (!o) setConvertSeed(null)
+            }}
+            conversationId={conversationId}
+            defaultTitle={convertSeed?.title ?? ''}
+            defaultContent={convertSeed?.content ?? ''}
+            defaultBoardId={convertSeed?.boardId}
+            visitorIsAnonymous={visitorIsAnonymous}
+            visitorContactEmail={visitorContactEmail}
+            onConverted={refreshThread}
+          />
+          <SharePostDialog
+            open={!!shareMsg}
+            onOpenChange={(o) => {
+              if (!o) setShareMsg(null)
+            }}
+            conversationId={conversationId}
+            onShared={refreshThread}
+          />
+          <EndConversationDialog
+            open={endDialogOpen}
+            onOpenChange={setEndDialogOpen}
+            conversationId={conversationId}
+            onEnded={refreshThread}
+          />
+        </>
+      )}
+
+      {/* The conversation detail panel renders here (unchanged); a ticket's
+          panel is the interim `TicketDetailPanel`, rendered by the route
+          BESIDE this component (M5 merges the two into one panel). */}
+      {!isTicket && conversation && conversationId && (
         <ConversationDetailPanel
           conversation={conversation}
           onChanged={refreshThread}

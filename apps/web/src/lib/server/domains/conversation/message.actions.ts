@@ -37,9 +37,18 @@ function requireAgent(actor: Actor): PrincipalId {
 }
 
 /** Load a message that an agent may react to / flag: it must exist, not be
- *  soft-deleted, and not be a system event (status notices aren't content). */
+ *  soft-deleted, and not be a system event (status notices aren't content).
+ *  A ticket-parented message additionally requires the actor to be able to
+ *  see that ticket (§2.5) — 404, not 403, mirroring the existing
+ *  hide-existence-on-invisible-parent pattern (`assertTicketVisible` /
+ *  `copilot-gate.ts`'s `assertTicketViewable`). Conversation-parented
+ *  messages get NO equivalent per-conversation check here: that's a
+ *  pre-existing gap (the caller today only re-checks `canActAsAgent` plus the
+ *  flat `conversation.note` permission at the server-fn layer), left as-is —
+ *  narrowing it further is out of scope for this change. */
 async function loadActionableMessageOr404(
-  messageId: ConversationMessageId
+  messageId: ConversationMessageId,
+  actor: Actor
 ): Promise<ConversationMessage> {
   const [message] = await db
     .select()
@@ -51,6 +60,10 @@ async function loadActionableMessageOr404(
   }
   if (message.senderType === 'system') {
     throw new ForbiddenError('FORBIDDEN', 'System messages cannot be reacted to or flagged')
+  }
+  if (message.ticketId) {
+    const { assertTicketVisible } = await import('@/lib/server/domains/tickets/ticket.service')
+    await assertTicketVisible(message.ticketId, actor)
   }
   return message
 }
@@ -73,7 +86,11 @@ async function publishMessageUpdated(
     message.metadata?.postSuggestion ?? null
   )
   // Conversation-thread messages fan out on the inbox channel; ticket-thread
-  // update routing arrives with the customer loop.
+  // update routing arrives with the customer loop. Concretely: a ticket-
+  // parented reaction/flag (now authorized above via assertTicketVisible) is
+  // optimistic-client-only for this milestone — no live cross-agent
+  // broadcast — rather than growing the realtime contract with a new
+  // ticket_message_updated event kind.
   if (message.conversationId) {
     publishAgentConversationEvent({
       kind: 'message_updated',
@@ -91,7 +108,7 @@ export async function addMessageReaction(
   actor: Actor
 ): Promise<{ reactions: MessageReactionCount[] }> {
   const agentId = requireAgent(actor)
-  const message = await loadActionableMessageOr404(messageId)
+  const message = await loadActionableMessageOr404(messageId, actor)
   await db
     .insert(conversationMessageReactions)
     .values({ conversationMessageId: messageId, principalId: agentId, emoji })
@@ -107,7 +124,7 @@ export async function removeMessageReaction(
   actor: Actor
 ): Promise<{ reactions: MessageReactionCount[] }> {
   const agentId = requireAgent(actor)
-  const message = await loadActionableMessageOr404(messageId)
+  const message = await loadActionableMessageOr404(messageId, actor)
   await db
     .delete(conversationMessageReactions)
     .where(
@@ -133,7 +150,7 @@ export async function setMessageFlag(
   actor: Actor
 ): Promise<{ flaggedAt: string | null }> {
   const agentId = requireAgent(actor)
-  await loadActionableMessageOr404(messageId)
+  await loadActionableMessageOr404(messageId, actor)
   if (flagged) {
     await db
       .insert(conversationMessageFlags)

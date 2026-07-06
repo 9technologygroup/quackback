@@ -7,12 +7,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PrincipalId, ConversationMessageId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
+import { NotFoundError } from '@/lib/shared/errors'
 
 const publishConversationEvent = vi.fn()
 const publishAgentConversationEvent = vi.fn()
 
 // The row the message-load SELECT resolves to (set per test).
 let messageRow: Record<string, unknown> | null = null
+
+// Ticket-branch authorization (Task B): a ticket-parented message additionally
+// requires assertTicketVisible to allow the actor through before the
+// reaction/flag write proceeds. Mocked here (real db-hitting implementation
+// has its own coverage in the tickets domain); this suite is only about
+// message.actions.ts's routing/gating.
+const mockAssertTicketVisible = vi.fn()
+vi.mock('@/lib/server/domains/tickets/ticket.service', () => ({
+  assertTicketVisible: (...args: unknown[]) => mockAssertTicketVisible(...args),
+}))
 
 vi.mock('@/lib/server/realtime/conversation-channels', () => ({
   publishConversationEvent: (...a: unknown[]) => publishConversationEvent(...a),
@@ -88,6 +99,7 @@ const publicMessage = {
 beforeEach(() => {
   messageRow = { ...publicMessage }
   vi.clearAllMocks()
+  mockAssertTicketVisible.mockResolvedValue({ id: 'ticket_1' })
 })
 
 describe('message reaction/flag publish routing', () => {
@@ -137,5 +149,69 @@ describe('message reaction/flag guards', () => {
       addMessageReaction('conversation_msg_1' as ConversationMessageId, '👍', agent)
     ).rejects.toThrow()
     expect(publishAgentConversationEvent).not.toHaveBeenCalled()
+  })
+})
+
+describe('ticket-parented message reaction/flag authorization', () => {
+  const ticketMessage = {
+    id: 'conversation_msg_ticket',
+    conversationId: null,
+    ticketId: 'ticket_1',
+    senderType: 'agent',
+    principalId: 'principal_agent',
+    isInternal: false,
+    deletedAt: null,
+    flaggedAt: new Date(),
+  }
+
+  it('reacts to a ticket-parented message when the ticket is visible to the actor', async () => {
+    messageRow = { ...ticketMessage }
+    const { reactions } = await addMessageReaction(
+      'conversation_msg_ticket' as ConversationMessageId,
+      '👍',
+      agent
+    )
+    expect(mockAssertTicketVisible).toHaveBeenCalledWith('ticket_1', agent)
+    expect(reactions).toEqual([])
+    // No broadcast for ticket-parented messages yet (deferred to the customer loop).
+    expect(publishAgentConversationEvent).not.toHaveBeenCalled()
+  })
+
+  it('flags a ticket-parented message when the ticket is visible to the actor', async () => {
+    messageRow = { ...ticketMessage }
+    const { flaggedAt } = await setMessageFlag(
+      'conversation_msg_ticket' as ConversationMessageId,
+      true,
+      agent
+    )
+    expect(mockAssertTicketVisible).toHaveBeenCalledWith('ticket_1', agent)
+    expect(flaggedAt).not.toBeNull()
+  })
+
+  it('404s reacting to a ticket-parented message the actor cannot see', async () => {
+    messageRow = { ...ticketMessage }
+    mockAssertTicketVisible.mockRejectedValue(
+      new NotFoundError('TICKET_NOT_FOUND', 'Ticket not found')
+    )
+    await expect(
+      addMessageReaction('conversation_msg_ticket' as ConversationMessageId, '👍', agent)
+    ).rejects.toThrow(NotFoundError)
+    expect(publishAgentConversationEvent).not.toHaveBeenCalled()
+  })
+
+  it('404s flagging a ticket-parented message the actor cannot see (e.g. assigned to another team)', async () => {
+    messageRow = { ...ticketMessage }
+    mockAssertTicketVisible.mockRejectedValue(
+      new NotFoundError('TICKET_NOT_FOUND', 'Ticket not found')
+    )
+    await expect(
+      setMessageFlag('conversation_msg_ticket' as ConversationMessageId, true, agent)
+    ).rejects.toThrow(NotFoundError)
+  })
+
+  it('never consults ticket visibility for a conversation-parented message', async () => {
+    messageRow = { ...publicMessage }
+    await addMessageReaction('conversation_msg_1' as ConversationMessageId, '👍', agent)
+    expect(mockAssertTicketVisible).not.toHaveBeenCalled()
   })
 })

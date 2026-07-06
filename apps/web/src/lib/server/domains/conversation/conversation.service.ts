@@ -1240,7 +1240,10 @@ export async function setConversationPriority(
 
 /** Soft-delete a message. Team members may delete any message; a visitor may
  * delete only their own. Broadcasts a message_deleted event so open clients
- * drop the bubble. Idempotent. */
+ * drop the bubble. Idempotent. Branches on the message's (exactly one) parent
+ * — a conversation-thread message keeps the full visitor-or-team-member
+ * decision below; a ticket-thread message takes the narrower path at the
+ * bottom (see its comment for why). */
 export async function deleteConversationMessage(
   messageId: ConversationMessageId,
   actor: Actor
@@ -1251,18 +1254,50 @@ export async function deleteConversationMessage(
     .where(eq(conversationMessages.id, messageId))
     .limit(1)
   if (!message) throw new NotFoundError('MESSAGE_NOT_FOUND', 'Message not found')
-  // Exactly one parent, so a null conversation_id means a ticket-thread message;
-  // deletion for those arrives with the customer loop, not this conversation path.
-  if (!message.conversationId) throw new NotFoundError('MESSAGE_NOT_FOUND', 'Message not found')
-  const conversationId = message.conversationId
-
-  const conversation = await loadConversationOr404(conversationId)
 
   // System events (assignment notices) are status records, not user content —
-  // no one deletes them. The guard also narrows senderType to visitor|agent.
+  // no one deletes them, on either parent. The guard also narrows senderType
+  // to visitor|agent for canDeleteMessage below.
   if (message.senderType === 'system') {
     throw new ForbiddenError('FORBIDDEN', 'System messages cannot be deleted')
   }
+
+  if (!message.conversationId) {
+    // Ticket-thread message. `canDeleteMessage`'s third argument is typed as
+    // ConversationShape (visitorPrincipalId + a ConversationStatus) — real
+    // conversation semantics that don't map onto a ticket, and there's no
+    // ticket-side "delete your own message" feature to preserve (the
+    // requester portal exposes no delete action at all today), so this path
+    // is intentionally narrower than the conversation one above: any team
+    // member who can see the ticket (assigned to them/their team, or
+    // ticket.view_all) may delete any of its messages. `canActAsAgent` is the
+    // same broad "is this actor an agent" gate `message.actions.ts`'s
+    // `requireAgent` uses for the equivalent ticket-message actions.
+    const ticketId = message.ticketId
+    if (!ticketId) throw new NotFoundError('MESSAGE_NOT_FOUND', 'Message not found')
+    const { assertTicketVisible } = await import('@/lib/server/domains/tickets/ticket.service')
+    await assertTicketVisible(ticketId, actor)
+    const decision = canActAsAgent(actor)
+    if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
+
+    await db
+      .update(conversationMessages)
+      .set({
+        deletedAt: new Date(),
+        deletedByPrincipalId: actor.principalId,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(conversationMessages.id, messageId), isNull(conversationMessages.deletedAt)))
+
+    // No realtime broadcast and no webhook here: ticket-thread update routing
+    // (and its message.deleted webhook analogue) arrives with the customer
+    // loop, mirroring message.actions.ts's identical deferral for ticket
+    // reactions/flags. The acting client applies the deletion optimistically.
+    return
+  }
+
+  const conversationId = message.conversationId
+  const conversation = await loadConversationOr404(conversationId)
 
   const decision = canDeleteMessage(
     actor,

@@ -238,13 +238,22 @@ export async function enrichMessageForAgent(
 
 /**
  * The viewing agent's "Saved for later" feed: their flagged messages, newest
- * flag first, each with a preview + the conversation it belongs to so the list
- * can link straight to it. Soft-deleted messages are skipped.
+ * flag first, each with a preview + the parent thread it belongs to (a
+ * conversation OR a ticket — exactly one of `conversationId`/`ticketId` is set
+ * on the DTO) so the list can link straight to it. Soft-deleted messages are
+ * skipped. Two branches, unioned in memory and re-sorted by flag time: the
+ * conversation branch is unchanged; the ticket branch additionally applies
+ * `ticketFilter(actor)` (unlike the conversation branch, which trusts the
+ * flag ownership alone — flagging is per-agent already, but a ticket's
+ * visibility can narrow further by team/assignment, so a flag on a ticket the
+ * viewer no longer has access to quietly drops out of their feed rather than
+ * leaking a peek at it).
  */
-export async function listFlaggedMessages(
-  viewerPrincipalId: PrincipalId
-): Promise<FlaggedMessageDTO[]> {
-  const rows = await db
+export async function listFlaggedMessages(actor: Actor): Promise<FlaggedMessageDTO[]> {
+  const viewerPrincipalId = actor.principalId
+  if (!viewerPrincipalId) return []
+
+  const conversationRows = await db
     .select({
       messageId: conversationMessages.id,
       conversationId: conversationMessages.conversationId,
@@ -268,11 +277,36 @@ export async function listFlaggedMessages(
     .orderBy(desc(conversationMessageFlags.flaggedAt))
     .limit(100)
 
-  const visitorNames = await loadAuthors(rows.map((r) => r.visitorPrincipalId))
-  return rows.map((r) => ({
+  const { tickets } = await import('@/lib/server/db')
+  const { ticketFilter } = await import('@/lib/server/policy/tickets')
+  const ticketRows = await db
+    .select({
+      messageId: conversationMessages.id,
+      ticketId: conversationMessages.ticketId,
+      content: conversationMessages.content,
+      senderType: conversationMessages.senderType,
+      authorName: principal.displayName,
+      ticketTitle: tickets.title,
+      ticketNumber: tickets.number,
+      flaggedAt: conversationMessageFlags.flaggedAt,
+    })
+    .from(conversationMessageFlags)
+    .innerJoin(
+      conversationMessages,
+      and(
+        eq(conversationMessages.id, conversationMessageFlags.conversationMessageId),
+        isNull(conversationMessages.deletedAt)
+      )
+    )
+    .innerJoin(tickets, and(eq(tickets.id, conversationMessages.ticketId), ticketFilter(actor)))
+    .leftJoin(principal, eq(principal.id, conversationMessages.principalId))
+    .where(eq(conversationMessageFlags.principalId, viewerPrincipalId))
+    .orderBy(desc(conversationMessageFlags.flaggedAt))
+    .limit(100)
+
+  const visitorNames = await loadAuthors(conversationRows.map((r) => r.visitorPrincipalId))
+  const fromConversations: FlaggedMessageDTO[] = conversationRows.map((r) => ({
     messageId: r.messageId,
-    // Flagged messages come through an inner join on conversations, so these are
-    // conversation messages; ticket-thread flags surface with the customer loop.
     conversationId: r.conversationId,
     ticketId: null,
     preview: truncate(r.content, 120),
@@ -280,6 +314,19 @@ export async function listFlaggedMessages(
     conversationLabel: visitorNames.get(r.visitorPrincipalId)?.displayName ?? 'Visitor',
     flaggedAt: r.flaggedAt.toISOString(),
   }))
+  const fromTickets: FlaggedMessageDTO[] = ticketRows.map((r) => ({
+    messageId: r.messageId,
+    conversationId: null,
+    ticketId: r.ticketId,
+    preview: truncate(r.content, 120),
+    authorName: r.authorName ?? (r.senderType === 'agent' ? 'Agent' : 'Visitor'),
+    conversationLabel: `#${r.ticketNumber} · ${r.ticketTitle}`,
+    flaggedAt: r.flaggedAt.toISOString(),
+  }))
+
+  return [...fromConversations, ...fromTickets]
+    .sort((a, b) => new Date(b.flaggedAt).getTime() - new Date(a.flaggedAt).getTime())
+    .slice(0, 100)
 }
 
 /**

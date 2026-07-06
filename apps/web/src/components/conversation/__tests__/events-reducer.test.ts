@@ -24,10 +24,13 @@ import {
   asAgentMessage,
   mergeAgentMessage,
   prependOlderAgentMessages,
+  prependOlderTicketMessages,
   prependOlderVisitorMessages,
   removeAgentThreadMessage,
+  removeTicketThreadMessage,
   toggleReactionLocal,
   updateAgentThreadMessage,
+  updateTicketThreadMessage,
   type AgentThreadCache,
   type TicketThreadCache,
   type VisitorThreadCache,
@@ -568,8 +571,8 @@ describe('agent thread message helpers', () => {
   })
 })
 
-function ticketMessage(id: string, overrides: Partial<ConversationMessageDTO> = {}) {
-  return baseMessage(id, { conversationId: null, ticketId: TICKET_ID, ...overrides })
+function ticketMessage(id: string, overrides: Partial<AgentConversationMessageDTO> = {}) {
+  return agentMessage(id, { conversationId: null, ticketId: TICKET_ID, ...overrides })
 }
 
 function ticketCache(overrides: Partial<TicketThreadCache> = {}): TicketThreadCache {
@@ -639,5 +642,39 @@ describe('appendSentTicketMessage', () => {
     const prev = ticketCache()
     expect(appendSentTicketMessage(prev, { message: ticketMessage('tm1') })).toBe(prev)
     expect(appendSentTicketMessage(undefined, { message: ticketMessage('tm1') })).toBeUndefined()
+  })
+})
+
+describe('ticket thread message helpers (§2.5, M4)', () => {
+  it('prependOlderTicketMessages prepends only unknown messages, coerced, and updates hasMore', () => {
+    const prev = ticketCache({ hasMore: true })
+    const next = prependOlderTicketMessages(prev, {
+      messages: [ticketMessage('tm0'), ticketMessage('tm1')],
+      hasMore: false,
+    })!
+    expect(next.messages.map((m) => m.id)).toEqual(['tm0', 'tm1'])
+    expect(next.messages[0]).toEqual(expect.objectContaining({ reactions: [], flaggedAt: null }))
+    expect(next.hasMore).toBe(false)
+    expect(prependOlderTicketMessages(undefined, { messages: [], hasMore: false })).toBeUndefined()
+  })
+
+  it('updateTicketThreadMessage patches just the target message', () => {
+    const prev = ticketCache({ messages: [ticketMessage('tm1'), ticketMessage('tm2')] })
+    const next = updateTicketThreadMessage(prev, 'tm2' as ConversationMessageId, (m) => ({
+      ...m,
+      flaggedAt: 'now',
+    }))!
+    expect(next.messages[0].flaggedAt).toBeNull()
+    expect(next.messages[1].flaggedAt).toBe('now')
+    expect(
+      updateTicketThreadMessage(undefined, 'tm2' as ConversationMessageId, (m) => m)
+    ).toBeUndefined()
+  })
+
+  it('removeTicketThreadMessage drops the target message', () => {
+    const prev = ticketCache({ messages: [ticketMessage('tm1'), ticketMessage('tm2')] })
+    const next = removeTicketThreadMessage(prev, 'tm1' as ConversationMessageId)!
+    expect(next.messages.map((m) => m.id)).toEqual(['tm2'])
+    expect(removeTicketThreadMessage(undefined, 'tm1' as ConversationMessageId)).toBeUndefined()
   })
 })

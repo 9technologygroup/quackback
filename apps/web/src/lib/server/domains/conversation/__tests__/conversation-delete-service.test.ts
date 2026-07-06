@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PrincipalId, ConversationMessageId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
+import { NotFoundError } from '@/lib/shared/errors'
 
 const publishConversationEvent = vi.fn()
 const publishAgentConversationEvent = vi.fn()
@@ -80,6 +81,15 @@ vi.mock('@/lib/server/db', () => {
   }
 })
 
+// Ticket-branch authorization (Task A): ticket.service.ts is a real module
+// with a real db-hitting `assertTicketVisible`, so it's mocked here — this
+// suite is about deleteConversationMessage's routing/branching, not
+// ticketFilter's SQL, which has its own coverage in the tickets domain.
+const mockAssertTicketVisible = vi.fn()
+vi.mock('@/lib/server/domains/tickets/ticket.service', () => ({
+  assertTicketVisible: (...args: unknown[]) => mockAssertTicketVisible(...args),
+}))
+
 import { deleteConversationMessage } from '../conversation.service'
 
 const agentActor: Actor = {
@@ -89,9 +99,17 @@ const agentActor: Actor = {
   segmentIds: new Set(),
 }
 
+const nonAgentActor: Actor = {
+  principalId: 'principal_visitor' as PrincipalId,
+  role: 'user',
+  principalType: 'user',
+  segmentIds: new Set(),
+}
+
 beforeEach(() => {
   messageRow = null
   vi.clearAllMocks()
+  mockAssertTicketVisible.mockResolvedValue({ id: 'ticket_1' })
 })
 
 describe('deleteConversationMessage publish routing', () => {
@@ -125,5 +143,53 @@ describe('deleteConversationMessage publish routing', () => {
     expect(publishConversationEvent).not.toHaveBeenCalled()
     // The note never reached the visitor, so its deletion fires no public webhook.
     expect(emit.emitMessageDeleted).not.toHaveBeenCalled()
+  })
+})
+
+describe('deleteConversationMessage ticket branch', () => {
+  const ticketMessage = {
+    id: 'conversation_msg_ticket',
+    conversationId: null,
+    ticketId: 'ticket_1',
+    senderType: 'agent' as const,
+    principalId: 'principal_agent',
+    isInternal: false,
+    deletedAt: null,
+  }
+
+  it('deletes a ticket-parented message for an agent who can see the ticket, with no broadcast', async () => {
+    messageRow = { ...ticketMessage }
+    await deleteConversationMessage('conversation_msg_ticket' as ConversationMessageId, agentActor)
+    expect(mockAssertTicketVisible).toHaveBeenCalledWith('ticket_1', agentActor)
+    // Deferred: no realtime fan-out and no webhook for ticket-thread messages yet.
+    expect(publishAgentConversationEvent).not.toHaveBeenCalled()
+    expect(publishConversationEvent).not.toHaveBeenCalled()
+    expect(emit.emitMessageDeleted).not.toHaveBeenCalled()
+  })
+
+  it('404s when the ticket is not visible to the actor', async () => {
+    messageRow = { ...ticketMessage }
+    mockAssertTicketVisible.mockRejectedValue(
+      new NotFoundError('TICKET_NOT_FOUND', 'Ticket not found')
+    )
+    await expect(
+      deleteConversationMessage('conversation_msg_ticket' as ConversationMessageId, agentActor)
+    ).rejects.toThrow(NotFoundError)
+  })
+
+  it('refuses a non-agent actor even when the ticket is visible', async () => {
+    messageRow = { ...ticketMessage }
+    await expect(
+      deleteConversationMessage('conversation_msg_ticket' as ConversationMessageId, nonAgentActor)
+    ).rejects.toThrow()
+    expect(publishAgentConversationEvent).not.toHaveBeenCalled()
+  })
+
+  it('refuses deleting a ticket-parented system message', async () => {
+    messageRow = { ...ticketMessage, senderType: 'system', principalId: null }
+    await expect(
+      deleteConversationMessage('conversation_msg_ticket' as ConversationMessageId, agentActor)
+    ).rejects.toThrow()
+    expect(mockAssertTicketVisible).not.toHaveBeenCalled()
   })
 })

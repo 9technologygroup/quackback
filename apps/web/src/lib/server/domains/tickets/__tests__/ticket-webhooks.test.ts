@@ -155,7 +155,10 @@ describe('ticket.webhooks reply + note emit helpers', () => {
   })
 
   it('emitTicketReplied carries senderType visitor for a requester reply', async () => {
-    const requesterReply = { ...baseMessage, senderType: 'visitor' } as unknown as ConversationMessageDTO
+    const requesterReply = {
+      ...baseMessage,
+      senderType: 'visitor',
+    } as unknown as ConversationMessageDTO
     await emitTicketReplied(agentActor, baseTicket, requesterReply)
     const [, , , , , senderType] = dispatch.dispatchTicketReplied.mock.calls[0]
     expect(senderType).toBe('visitor')
@@ -165,13 +168,23 @@ describe('ticket.webhooks reply + note emit helpers', () => {
     const withAttachment = {
       ...baseMessage,
       attachments: [
-        { url: 'https://cdn.example.com/log.txt', name: 'log.txt', contentType: 'text/plain', size: 1234 },
+        {
+          url: 'https://cdn.example.com/log.txt',
+          name: 'log.txt',
+          contentType: 'text/plain',
+          size: 1234,
+        },
       ],
     } as unknown as ConversationMessageDTO
     await emitTicketReplied(agentActor, baseTicket, withAttachment)
     const [, , , , attachments] = dispatch.dispatchTicketReplied.mock.calls[0]
     expect(attachments).toEqual([
-      { name: 'log.txt', url: 'https://cdn.example.com/log.txt', contentType: 'text/plain', size: 1234 },
+      {
+        name: 'log.txt',
+        url: 'https://cdn.example.com/log.txt',
+        contentType: 'text/plain',
+        size: 1234,
+      },
     ])
   })
 

@@ -7,7 +7,11 @@
  * this module does not touch.
  */
 import { queryOptions } from '@tanstack/react-query'
+import type { TicketId } from '@quackback/ids'
 import { listInboxItemsFn, fetchInboxCountsFn } from '@/lib/server/functions/inbox'
+import { listTicketMessagesFn, getTicketFn } from '@/lib/server/functions/tickets'
+import { ticketKeys } from '@/lib/client/queries/tickets'
+import { asAgentMessage } from '@/lib/shared/conversation/types'
 import type { InboxListParams } from '@/lib/client/conversation/inbox-scope'
 
 export const inboxKeys = {
@@ -51,6 +55,42 @@ export const inboxQueries = {
     queryOptions({
       queryKey: inboxKeys.counts(),
       queryFn: () => fetchInboxCountsFn(),
+      staleTime: 60_000,
+    }),
+
+  // -------------------------------------------------------------------------
+  // Ticket thread/detail (§2.5, M4): the unified thread's ticket-kind data.
+  // Deliberately keyed under `ticketKeys` (not a new `inboxKeys` namespace) —
+  // `lib/client/queries/tickets.ts` is only deleted in M6, and the inbox
+  // route's `refreshInbox` already invalidates `ticketKeys.all()` to refresh
+  // the (to-be-deleted) ticket-only surfaces; reusing the same keys means
+  // that one invalidation keeps covering the unified thread too, with no
+  // second cache entry to keep in sync.
+  // -------------------------------------------------------------------------
+
+  /** A ticket's message thread (oldest-first), coerced through `asAgentMessage`
+   *  so the cache always holds `AgentConversationMessageDTO` regardless of
+   *  whether the server response already carries reactions/flags — mirrors
+   *  `ticketQueries.thread` (same key, so a `ticketKeys.all()` invalidation
+   *  covers both). */
+  ticketThread: (id: TicketId) =>
+    queryOptions({
+      queryKey: ticketKeys.thread(id),
+      queryFn: async () => {
+        const page = await listTicketMessagesFn({ data: { ticketId: id } })
+        return { ...page, messages: page.messages.map(asAgentMessage) }
+      },
+      staleTime: 10_000,
+    }),
+
+  /** A single ticket's properties, for the unified thread's header controls
+   *  (status/assignee/priority/type/stage) and the route's interim
+   *  `TicketDetailPanel` slot — same key as `ticketQueries.detail` so both
+   *  readers share one cache entry. */
+  ticketDetail: (id: TicketId) =>
+    queryOptions({
+      queryKey: ticketKeys.detail(id),
+      queryFn: () => getTicketFn({ data: { ticketId: id } }),
       staleTime: 60_000,
     }),
 }

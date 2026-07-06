@@ -20,6 +20,7 @@ import {
   tickets,
   ticketStatuses,
   teams,
+  teamMembers,
   principal,
   user,
   settings,
@@ -30,6 +31,8 @@ import {
   eq,
   and,
   desc,
+  PERMISSIONS,
+  type PermissionKey,
 } from '@/lib/server/db'
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
@@ -71,7 +74,9 @@ import {
   softDeleteTicket,
   listTickets,
   getTicket,
+  assertTicketVisible,
 } from '../ticket.service'
+import { NotFoundError } from '@/lib/shared/errors'
 import { listTicketMessages, sendTicketMessage, addTicketNote } from '../ticket-message.service'
 import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import type { Actor } from '@/lib/server/policy/types'
@@ -908,6 +913,109 @@ describe.skipIf(!fixture.available)('ticket.service (real DB, rolled back)', () 
       expect(new Date(dto.lastMessageAt as string).getTime()).toBe(latestNote.createdAt.getTime())
       // ...but the preview still prefers the non-internal message.
       expect(dto.lastMessagePreview).toBe('customer-visible reply')
+    })
+  })
+
+  describe('assertTicketVisible (unified inbox §2.5)', () => {
+    it('returns the ticket for a workspace-wide viewer (ticket.view_all)', async () => {
+      await seedSettings()
+      const { open } = await seedStatuses()
+      const [created] = await testDb
+        .insert(tickets)
+        .values({ title: 'Visible to all', statusId: open.id })
+        .returning()
+
+      const row = await assertTicketVisible(created.id as TicketId, adminActor())
+      expect(row.id).toBe(created.id)
+    })
+
+    it('returns the ticket for a scoped viewer (ticket.view) assigned to them', async () => {
+      await seedSettings()
+      const { open } = await seedStatuses()
+      const principalId = await seedTeammate()
+      const [created] = await testDb
+        .insert(tickets)
+        .values({ title: 'Assigned to me', statusId: open.id, assigneePrincipalId: principalId })
+        .returning()
+      const scopedActor: Actor = {
+        principalId,
+        role: 'member',
+        principalType: 'user',
+        segmentIds: new Set(),
+        permissions: new Set<PermissionKey>([PERMISSIONS.TICKET_VIEW]),
+      }
+
+      const row = await assertTicketVisible(created.id as TicketId, scopedActor)
+      expect(row.id).toBe(created.id)
+    })
+
+    it('returns the ticket for a scoped viewer via their team assignment', async () => {
+      await seedSettings()
+      const { open } = await seedStatuses()
+      const principalId = await seedTeammate()
+      const teamId = await seedTeam()
+      await testDb.insert(teamMembers).values({ teamId, principalId })
+      const [created] = await testDb
+        .insert(tickets)
+        .values({ title: 'Assigned to my team', statusId: open.id, assigneeTeamId: teamId })
+        .returning()
+      const scopedActor: Actor = {
+        principalId,
+        role: 'member',
+        principalType: 'user',
+        segmentIds: new Set(),
+        permissions: new Set<PermissionKey>([PERMISSIONS.TICKET_VIEW]),
+      }
+
+      const row = await assertTicketVisible(created.id as TicketId, scopedActor)
+      expect(row.id).toBe(created.id)
+    })
+
+    it('404s for a scoped viewer (ticket.view only) on a ticket assigned elsewhere', async () => {
+      await seedSettings()
+      const { open } = await seedStatuses()
+      const elsewhere = await seedTeammate()
+      const [created] = await testDb
+        .insert(tickets)
+        .values({ title: 'Assigned elsewhere', statusId: open.id, assigneePrincipalId: elsewhere })
+        .returning()
+      const scopedActor: Actor = {
+        principalId: await seedTeammate(),
+        role: 'member',
+        principalType: 'user',
+        segmentIds: new Set(),
+        permissions: new Set<PermissionKey>([PERMISSIONS.TICKET_VIEW]),
+      }
+
+      await expect(assertTicketVisible(created.id as TicketId, scopedActor)).rejects.toThrow(
+        NotFoundError
+      )
+    })
+
+    it('404s for an actor with no ticket.view permission at all', async () => {
+      await seedSettings()
+      const { open } = await seedStatuses()
+      const [created] = await testDb
+        .insert(tickets)
+        .values({ title: 'No permission', statusId: open.id })
+        .returning()
+      const powerless: Actor = {
+        principalId: createId('principal') as PrincipalId,
+        role: 'user',
+        principalType: 'user',
+        segmentIds: new Set(),
+        permissions: new Set<PermissionKey>(),
+      }
+
+      await expect(assertTicketVisible(created.id as TicketId, powerless)).rejects.toThrow(
+        NotFoundError
+      )
+    })
+
+    it('404s for a non-existent ticket id', async () => {
+      await expect(
+        assertTicketVisible(createId('ticket') as TicketId, adminActor())
+      ).rejects.toThrow(NotFoundError)
     })
   })
 })

@@ -90,6 +90,28 @@ export async function loadTicketOr404(id: TicketId): Promise<Ticket> {
   return row
 }
 
+/**
+ * The canonical single-ticket authorization chokepoint (unified inbox §2.5):
+ * exists, non-deleted, AND passes `ticketFilter(actor)` — the same
+ * existence+visibility fusion `assertConversationViewable` uses for
+ * conversations, so a caller without `ticket.view`/`ticket.view_all` (or with
+ * `ticket.view` on a ticket assigned to someone else / another team) gets
+ * NotFound rather than a Forbidden that would leak the ticket's existence.
+ *
+ * Named `assertTicketVisible` (not `assertTicketViewable`) to stay distinct
+ * from the assistant domain's `copilot-gate.ts` helper of that name, which
+ * predates this one and now just delegates here — see its doc comment.
+ */
+export async function assertTicketVisible(id: TicketId, actor: Actor): Promise<Ticket> {
+  const [row] = await db
+    .select()
+    .from(tickets)
+    .where(and(eq(tickets.id, id), ticketFilter(actor)))
+    .limit(1)
+  if (!row) throw new NotFoundError('TICKET_NOT_FOUND', 'Ticket not found')
+  return row
+}
+
 export async function getTicket(id: TicketId): Promise<TicketDTO> {
   return ticketRowToDTO(await loadTicketOr404(id))
 }

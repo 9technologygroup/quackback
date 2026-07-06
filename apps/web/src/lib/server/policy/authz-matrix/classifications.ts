@@ -216,6 +216,30 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
       'target-dependent — a conversation target requires conversation.set_attributes, a ticket target requires ticket.set_status'
     ),
 
+  // Unified inbox (UNIFIED-INBOX-SPEC.md §3.1): the permission depends on
+  // which kind(s) the actor can see, so the gate is bare and
+  // `canViewInboxAtAll` asserts the either-or at runtime — a caller holding
+  // only `ticket.view` still reaches the endpoint (conversation-only callers
+  // just get a ticket-empty feed and vice versa, per the RBAC decision log).
+  'lib/server/functions/inbox.ts::listInboxItemsFn': DYNAMIC_PERMISSION(
+    [
+      PERMISSIONS.CONVERSATION_VIEW,
+      PERMISSIONS.CONVERSATION_VIEW_ALL,
+      PERMISSIONS.TICKET_VIEW,
+      PERMISSIONS.TICKET_VIEW_ALL,
+    ],
+    'either-or — conversation.view(_all) or ticket.view(_all), checked by canViewInboxAtAll'
+  ),
+  'lib/server/functions/inbox.ts::fetchInboxCountsFn': DYNAMIC_PERMISSION(
+    [
+      PERMISSIONS.CONVERSATION_VIEW,
+      PERMISSIONS.CONVERSATION_VIEW_ALL,
+      PERMISSIONS.TICKET_VIEW,
+      PERMISSIONS.TICKET_VIEW_ALL,
+    ],
+    'either-or — conversation.view(_all) or ticket.view(_all), checked by canViewInboxAtAll'
+  ),
+
   // Public-tier REST reads: a valid key is required, but the data is portal-public
   // so no permission is checked. Anonymous (no key) is still rejected.
   'routes/api/v1/apps/boards.ts::GET': PUBLIC_DATA('public board list'),

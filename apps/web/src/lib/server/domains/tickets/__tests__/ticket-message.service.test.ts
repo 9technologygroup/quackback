@@ -32,6 +32,8 @@ import {
   tickets,
   ticketStatuses,
   conversationMessages,
+  conversationMessageReactions,
+  conversationMessageFlags,
   principal,
   user,
   eq,
@@ -39,7 +41,12 @@ import {
   type PermissionKey,
 } from '@/lib/server/db'
 import { ANONYMOUS_ACTOR, type Actor } from '@/lib/server/policy/types'
-import { sendTicketMessage, addTicketNote, listTicketMessages } from '../ticket-message.service'
+import {
+  sendTicketMessage,
+  addTicketNote,
+  listTicketMessages,
+  listTicketMessagesForAgent,
+} from '../ticket-message.service'
 
 // Realtime publish (unified inbox §3.2, M3): neutralize the real Redis-backed
 // publish so these DB-fixture tests stay deterministic, and assert the
@@ -275,5 +282,45 @@ describe.skipIf(!fixture.available)('ticket message service (real DB, rolled bac
     })
 
     expect(message.content).toBe('Explicit content wins.')
+  })
+
+  describe('listTicketMessagesForAgent', () => {
+    it("carries a viewer's own reaction and flag on the enriched agent page", async () => {
+      const { ticketId, actor } = await seedTicketWithAgent()
+      const { message } = await sendTicketMessage(actor, { ticketId, content: 'reply one' })
+
+      await testDb.insert(conversationMessageReactions).values({
+        conversationMessageId: message.id,
+        principalId: actor.principalId!,
+        emoji: '👍',
+      })
+      await testDb.insert(conversationMessageFlags).values({
+        conversationMessageId: message.id,
+        principalId: actor.principalId!,
+      })
+
+      const page = await listTicketMessagesForAgent(ticketId, actor.principalId!, {
+        includeInternal: true,
+      })
+
+      expect(page.messages).toHaveLength(1)
+      expect(page.messages[0].reactions).toMatchObject([
+        { emoji: '👍', count: 1, hasReacted: true },
+      ])
+      expect(page.messages[0].flaggedAt).not.toBeNull()
+    })
+
+    it('returns no reactions/flags for a message no one reacted to or flagged', async () => {
+      const { ticketId, actor } = await seedTicketWithAgent()
+      await sendTicketMessage(actor, { ticketId, content: 'reply one' })
+
+      const page = await listTicketMessagesForAgent(ticketId, actor.principalId!, {
+        includeInternal: true,
+      })
+
+      expect(page.messages).toHaveLength(1)
+      expect(page.messages[0].reactions).toEqual([])
+      expect(page.messages[0].flaggedAt).toBeNull()
+    })
   })
 })

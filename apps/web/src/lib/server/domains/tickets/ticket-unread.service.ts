@@ -19,8 +19,13 @@ import {
   gt,
   sql,
 } from '@/lib/server/db'
-import type { TicketId } from '@quackback/ids'
+import type { TicketId, ConversationMessageId } from '@quackback/ids'
 import { publishTicketEvent } from '@/lib/server/realtime/conversation-channels'
+import { unreadWatermarkFromAnchor } from '@/lib/server/domains/conversation/conversation.lifecycle'
+import { assertTicketVisible } from './ticket.service'
+import { canActAsAgent } from '@/lib/server/policy/conversation'
+import type { Actor } from '@/lib/server/policy/types'
+import { NotFoundError, ForbiddenError } from '@/lib/shared/errors'
 
 export type TicketUnreadSide = 'requester' | 'assignee'
 
@@ -128,5 +133,55 @@ export async function markTicketReadForRequester(
     ticketId,
     side: 'visitor',
     at: at.toISOString(),
+  })
+}
+
+/**
+ * "Mark unread from here" for a ticket thread — the assignee-side sibling of
+ * conversation.service.ts's `markConversationUnreadFromMessage`, against
+ * `tickets.assigneeLastReadAt` instead of `conversations.agentLastReadAt`.
+ * Deliberately a separate function (not a branch inside the conversation one):
+ * the conversation-side fn is owned by a concurrent client integration this
+ * task must not disturb.
+ *
+ * Agent-gated (`canActAsAgent` — only a team member can move their own read
+ * watermark) and ticket-visibility-gated (`assertTicketVisible` — a
+ * `ticket.view`-holding agent may only rewind a watermark on a ticket they can
+ * actually see, not any ticket in the workspace); the anchor message must
+ * belong to `ticketId` and not be soft-deleted. Reuses the shared, pure
+ * `unreadWatermarkFromAnchor` (backward-only) so the date logic isn't
+ * duplicated between the conversation and ticket domains. Published on the
+ * ticket channel as `ticket_read` (unified inbox §3.2, M3) — the same event
+ * kind `markTicketReadForAgent` already emits, so no new SSE contract.
+ */
+export async function markTicketUnreadFromMessage(
+  ticketId: TicketId,
+  messageId: ConversationMessageId,
+  actor: Actor
+): Promise<void> {
+  const ticket = await assertTicketVisible(ticketId, actor)
+  const decision = canActAsAgent(actor)
+  if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
+
+  // The anchor must belong to this ticket and not be soft-deleted.
+  const [message] = await db
+    .select({
+      createdAt: conversationMessages.createdAt,
+      deletedAt: conversationMessages.deletedAt,
+    })
+    .from(conversationMessages)
+    .where(and(eq(conversationMessages.id, messageId), eq(conversationMessages.ticketId, ticketId)))
+    .limit(1)
+  if (!message || message.deletedAt) {
+    throw new NotFoundError('MESSAGE_NOT_FOUND', 'Message not found')
+  }
+
+  const watermark = unreadWatermarkFromAnchor(ticket.assigneeLastReadAt, message.createdAt)
+  await db.update(tickets).set({ assigneeLastReadAt: watermark }).where(eq(tickets.id, ticketId))
+  publishTicketEvent(ticketId, {
+    kind: 'ticket_read',
+    ticketId,
+    side: 'agent',
+    at: (watermark ?? new Date(0)).toISOString(),
   })
 }

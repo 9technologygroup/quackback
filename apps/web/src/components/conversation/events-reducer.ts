@@ -7,14 +7,21 @@
  * directly (events-reducer.test.ts).
  */
 import type { ConversationId, ConversationMessageId, TicketId } from '@quackback/ids'
-import type {
-  AgentConversationMessageDTO,
-  ConversationDTO,
-  ConversationMessageDTO,
-  ConversationStatus,
-  ConversationStreamEvent,
-  MessageReactionCount,
+import {
+  asAgentMessage,
+  type AgentConversationMessageDTO,
+  type ConversationDTO,
+  type ConversationMessageDTO,
+  type ConversationStatus,
+  type ConversationStreamEvent,
+  type MessageReactionCount,
 } from '@/lib/shared/conversation/types'
+
+// Re-exported for existing callers (`asAgentMessage` used to be defined here);
+// its canonical home is lib/shared/conversation/types.ts now, so
+// `lib/client/*` query factories — which must not import from `components/`
+// — can reach it too (see queries/inbox.ts's `ticketThread`).
+export { asAgentMessage }
 
 /** The agent thread cache: messages are AgentConversationMessageDTO (reactions + flag). */
 export interface AgentThreadCache {
@@ -37,20 +44,6 @@ export interface VisitorThreadCache {
 interface MessagePage {
   messages: ConversationMessageDTO[]
   hasMore: boolean
-}
-
-/** Coerce a base/partial message DTO to an agent one, preserving any reaction /
- *  flag fields it already carries (a fresh message has neither yet). */
-export function asAgentMessage(
-  m: ConversationMessageDTO | AgentConversationMessageDTO
-): AgentConversationMessageDTO {
-  return {
-    ...m,
-    reactions: 'reactions' in m ? m.reactions : [],
-    flaggedAt: 'flaggedAt' in m ? m.flaggedAt : null,
-    postSuggestion: 'postSuggestion' in m ? m.postSuggestion : null,
-    translatedFrom: 'translatedFrom' in m ? (m.translatedFrom ?? null) : null,
-  }
 }
 
 /** Apply an incoming message_updated to a cached message: take its reaction
@@ -303,14 +296,17 @@ export function removeAgentThreadMessage(
 // Ticket thread (unified inbox §3.2, M3)
 // ---------------------------------------------------------------------------
 
-/** The interim ticket thread cache (components/admin/tickets/ticket-thread.tsx's
- *  own local `TicketThreadCache`, mirrored here): plain base DTOs, no
- *  `conversation`-shaped field to patch — a ticket carries no reactions/flags,
- *  and its properties (status, assignee, priority...) live in the separate
- *  `ticketQueries.detail`/`ticketQueries.list` caches, not this one. So
- *  `applyTicketThreadEvent` only ever has a `ticket_message` to react to. */
+/** The ticket thread cache (unified inbox §2.5, M4): messages are
+ *  AgentConversationMessageDTO too, same as the conversation cache — a ticket
+ *  message now carries reactions/flags (the M4 fold gave it the same message-
+ *  level actions a conversation message has). No `conversation`-shaped field
+ *  to patch, though: a ticket's properties (status, assignee, priority...)
+ *  live in the separate `inboxQueries.ticketDetail`/`ticketQueries.list`
+ *  caches, not this one — so `applyTicketThreadEvent` only ever has a
+ *  `ticket_message` to react to (`ticket_updated`/`ticket_read` have nothing
+ *  here to patch). */
 export interface TicketThreadCache {
-  messages: ConversationMessageDTO[]
+  messages: AgentConversationMessageDTO[]
   hasMore: boolean
 }
 
@@ -318,7 +314,10 @@ export interface TicketThreadCache {
  *  other tickets (the inbox stream is multiplexed, and a ticket's own stream
  *  only ever carries its own events anyway) and any non-`ticket_message` kind
  *  return prev untouched — `ticket_updated`/`ticket_read` have nothing in this
- *  cache to patch (see the type doc above). */
+ *  cache to patch (see the type doc above). Ticket-parented reactions/flags
+ *  don't broadcast yet (no `ticket_message_updated` stream event — deferred,
+ *  see message.actions.ts), so unlike the conversation side there is no
+ *  `message_updated`/`message_deleted` case to handle here.*/
 export function applyTicketThreadEvent(
   prev: TicketThreadCache | undefined,
   evt: ConversationStreamEvent,
@@ -328,7 +327,7 @@ export function applyTicketThreadEvent(
   if (evt.kind !== 'ticket_message') return prev
   if (evt.ticketId !== ticketId) return prev
   if (prev.messages.some((m) => m.id === evt.message.id)) return prev
-  return { ...prev, messages: [...prev.messages, evt.message] }
+  return { ...prev, messages: [...prev.messages, asAgentMessage(evt.message)] }
 }
 
 /** Merge our own freshly-sent ticket message into the thread cache (dedupe by
@@ -339,6 +338,35 @@ export function appendSentTicketMessage(
   res: { message: ConversationMessageDTO }
 ): TicketThreadCache | undefined {
   return prev && !prev.messages.some((m) => m.id === res.message.id)
-    ? { ...prev, messages: [...prev.messages, res.message] }
+    ? { ...prev, messages: [...prev.messages, asAgentMessage(res.message)] }
     : prev
+}
+
+/** Prepend an older ticket page, coercing rows to the agent DTO (mirrors
+ *  `prependOlderAgentMessages`). */
+export function prependOlderTicketMessages(
+  prev: TicketThreadCache | undefined,
+  page: MessagePage
+): TicketThreadCache | undefined {
+  return prev ? prependOlder(prev, page, asAgentMessage) : prev
+}
+
+/** Patch one message in the ticket thread cache (optimistic updates + server
+ *  reconciliation for reactions and flags — mirrors `updateAgentThreadMessage`). */
+export function updateTicketThreadMessage(
+  prev: TicketThreadCache | undefined,
+  messageId: ConversationMessageId,
+  update: (m: AgentConversationMessageDTO) => AgentConversationMessageDTO
+): TicketThreadCache | undefined {
+  if (!prev) return prev
+  return { ...prev, messages: prev.messages.map((m) => (m.id === messageId ? update(m) : m)) }
+}
+
+/** Drop one message from the ticket thread cache (after a delete). */
+export function removeTicketThreadMessage(
+  prev: TicketThreadCache | undefined,
+  messageId: ConversationMessageId
+): TicketThreadCache | undefined {
+  if (!prev) return prev
+  return { ...prev, messages: prev.messages.filter((m) => m.id !== messageId) }
 }

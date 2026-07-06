@@ -23,7 +23,10 @@ import {
 } from '@/lib/server/db'
 import type { TicketId, ConversationMessageId, PrincipalId } from '@quackback/ids'
 import type { ConversationAttachment, TiptapContent } from '@/lib/shared/db-types'
-import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
+import type {
+  ConversationMessageDTO,
+  AgentConversationMessageDTO,
+} from '@/lib/shared/conversation/types'
 import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
 import {
   validateAttachments,
@@ -33,6 +36,13 @@ import {
   toMessageDTO,
 } from '@/lib/server/messages/message-core'
 import { loadAuthors, fallbackAuthor } from '../principals/principal-display'
+// The conversation domain, not this one, owns reaction/flag storage
+// (conversationMessageReactions/Flags) — `enrichMessagesForAgent` is already
+// generic over any ConversationMessageDTO[] + viewer id, so the agent-view
+// ticket read path (listTicketMessagesForAgent, below) reuses it rather than
+// re-querying those tables here. Safe to import statically: conversation.query.ts
+// has no import edge back into this domain (verified — no cycle).
+import { enrichMessagesForAgent } from '../conversation/conversation.query'
 import { firstResponseStamp } from './ticket.lifecycle'
 import { loadTicketOr404 } from './ticket.service'
 import { emitTicketReplied, emitTicketNoteAdded } from './ticket.webhooks'
@@ -233,4 +243,32 @@ export async function listTicketMessages(
     )
   )
   return { messages, hasMore }
+}
+
+export interface AgentTicketMessagePage {
+  messages: AgentConversationMessageDTO[]
+  hasMore: boolean
+}
+
+/**
+ * Agent-view page of a ticket's thread: `listTicketMessages` plus the same
+ * reactions/flags enrichment the conversation inbox already applies via
+ * `enrichMessagesForAgent` (unified inbox §2.5 — ticket messages now carry
+ * reactions/flags too, see message.actions.ts). A sibling function rather
+ * than a parameter on `listTicketMessages` because that fn's return type
+ * (`TicketMessagePage`, bare `ConversationMessageDTO[]`) is also used by the
+ * requester portal and the transcript export, neither of which may ever see
+ * agent-only reaction/flag data — keeping them as two functions makes that
+ * split a type-level guarantee instead of a runtime opt.  Quinn post-
+ * suggestions and pending-action pointers don't exist on ticket threads yet,
+ * hence the empty map.
+ */
+export async function listTicketMessagesForAgent(
+  ticketId: TicketId,
+  viewerPrincipalId: PrincipalId,
+  opts: { before?: string; includeInternal?: boolean } = {}
+): Promise<AgentTicketMessagePage> {
+  const page = await listTicketMessages(ticketId, opts)
+  const messages = await enrichMessagesForAgent(page.messages, viewerPrincipalId, new Map())
+  return { messages, hasMore: page.hasMore }
 }

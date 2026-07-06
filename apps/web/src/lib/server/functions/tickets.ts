@@ -11,7 +11,14 @@
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { isValidTypeId } from '@quackback/ids'
-import type { TicketId, TicketStatusId, PrincipalId, TeamId, CompanyId } from '@quackback/ids'
+import type {
+  TicketId,
+  TicketStatusId,
+  PrincipalId,
+  TeamId,
+  CompanyId,
+  ConversationMessageId,
+} from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   TICKET_TYPES,
@@ -406,12 +413,67 @@ export const listTicketMessagesFn = createServerFn({ method: 'GET' })
   .handler(async ({ data }) => {
     const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_VIEW })
     const { isTeamMember } = await import('@/lib/shared/roles')
-    const { listTicketMessages } =
+    const isAgent = isTeamMember(ctx.principal.role)
+    const { listTicketMessages, listTicketMessagesForAgent } =
       await import('@/lib/server/domains/tickets/ticket-message.service')
+    // Agents get the enriched (reactions/flags) page — the toolbar these
+    // drive is agent-only; a non-agent caller (a customer viewing their own
+    // ticket via this same TICKET_VIEW-gated fn) keeps the bare shape.
+    if (isAgent) {
+      return listTicketMessagesForAgent(
+        data.ticketId as TicketId,
+        ctx.principal.id as PrincipalId,
+        {
+          before: data.before,
+          includeInternal: true,
+        }
+      )
+    }
     return listTicketMessages(data.ticketId as TicketId, {
       before: data.before,
-      includeInternal: isTeamMember(ctx.principal.role),
+      includeInternal: false,
     })
+  })
+
+const markTicketUnreadFromMessageSchema = z.object({
+  ticketId: z.string(),
+  messageId: z.string(),
+})
+
+/** Agent action: mark a ticket unread starting at a specific message ("mark
+ *  unread from here"), the ticket-thread sibling of
+ *  `markConversationUnreadFromMessageFn` (unified inbox §2.5). Ticket
+ *  visibility is enforced inside `markTicketUnreadFromMessage` itself. */
+export const markTicketUnreadFromMessageFn = createServerFn({ method: 'POST' })
+  .validator(markTicketUnreadFromMessageSchema)
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_VIEW })
+    const actor = await policyActorFromAuth(ctx)
+    const { markTicketUnreadFromMessage } =
+      await import('@/lib/server/domains/tickets/ticket-unread.service')
+    await markTicketUnreadFromMessage(
+      data.ticketId as TicketId,
+      data.messageId as ConversationMessageId,
+      actor
+    )
+    return { ok: true }
+  })
+
+/** Agent action: mark a ticket read (opening/viewing its thread) — distinct
+ *  from `markTicketUnreadFromMessageFn` above, and with no prior server fn at
+ *  all. Ticket-visibility-gated so a `ticket.view`-holding agent can only mark
+ *  read a ticket they can actually see, matching `ticketFilter`. */
+export const markTicketReadFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ ticketId: z.string() }))
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_VIEW })
+    const actor = await policyActorFromAuth(ctx)
+    const { assertTicketVisible } = await import('@/lib/server/domains/tickets/ticket.service')
+    await assertTicketVisible(data.ticketId as TicketId, actor)
+    const { markTicketReadForAgent } =
+      await import('@/lib/server/domains/tickets/ticket-unread.service')
+    await markTicketReadForAgent(data.ticketId as TicketId)
+    return { ok: true }
   })
 
 /**

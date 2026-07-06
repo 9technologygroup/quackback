@@ -1,10 +1,20 @@
 import { useQuery } from '@tanstack/react-query'
 import { BookmarkIcon } from '@heroicons/react/24/solid'
-import type { ConversationId, ConversationMessageId } from '@quackback/ids'
+import type { ConversationId, ConversationMessageId, TicketId } from '@quackback/ids'
 import { listFlaggedMessagesFn } from '@/lib/server/functions/conversation'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/shared/spinner'
 import { cn } from '@/lib/shared/utils'
+
+/** A flagged-message row's navigation target, discriminated by which parent it
+ *  belongs to (exactly one of `conversationId`/`ticketId` is ever set on the
+ *  DTO — see `FlaggedMessageDTO`). A conversation flag deep-links the specific
+ *  message (`?i=&m=`, the thread scrolls to + flashes it); a ticket flag just
+ *  opens the ticket (`?i=` only) — the unified thread's ticket adapter has no
+ *  deep-link-jump capability yet (§2.5). */
+export type SavedMessageTarget =
+  | { conversationId: ConversationId; messageId: ConversationMessageId }
+  | { ticketId: TicketId }
 
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
@@ -22,12 +32,14 @@ function relativeTime(iso: string): string {
  * it lives in. Clicking opens that conversation in the thread pane.
  */
 export function SavedMessagesColumn({
-  selectedConversationId,
+  selectedId,
   onSelect,
 }: {
-  selectedConversationId: ConversationId | null
-  /** Open the conversation and deep-link the flagged message within it. */
-  onSelect: (conversationId: ConversationId, messageId: ConversationMessageId) => void
+  /** The currently-open item's id (either kind), for row highlighting. */
+  selectedId: string | null
+  /** Open the flagged message's parent — a conversation (deep-linking the
+   *  message) or a ticket (just the ticket itself, see `SavedMessageTarget`). */
+  onSelect: (target: SavedMessageTarget) => void
 }) {
   const { data, isLoading } = useQuery({
     queryKey: ['admin', 'inbox', 'flagged'],
@@ -40,7 +52,7 @@ export function SavedMessagesColumn({
     <div
       className={cn(
         'flex min-h-0 w-full shrink-0 flex-col border-r border-border/50 md:w-80',
-        selectedConversationId && 'hidden md:flex'
+        selectedId && 'hidden md:flex'
       )}
     >
       <div className="border-b border-border/50 px-4 py-[1.1rem]">
@@ -63,10 +75,16 @@ export function SavedMessagesColumn({
             <button
               key={m.messageId}
               type="button"
-              onClick={() => m.conversationId && onSelect(m.conversationId, m.messageId)}
+              onClick={() => {
+                if (m.conversationId)
+                  onSelect({ conversationId: m.conversationId, messageId: m.messageId })
+                else if (m.ticketId) onSelect({ ticketId: m.ticketId })
+              }}
               className={cn(
                 'flex w-full flex-col gap-0.5 border-b border-border/30 px-3 py-3 text-left transition-colors',
-                selectedConversationId === m.conversationId ? 'bg-muted/60' : 'hover:bg-muted/30'
+                selectedId === (m.conversationId ?? m.ticketId)
+                  ? 'bg-muted/60'
+                  : 'hover:bg-muted/30'
               )}
             >
               <div className="flex items-center justify-between gap-2">
@@ -77,7 +95,7 @@ export function SavedMessagesColumn({
               </div>
               <p className="truncate text-xs text-muted-foreground">{m.preview}</p>
               <p className="truncate text-[10px] text-muted-foreground/60">
-                in {m.conversationLabel ?? 'conversation'}
+                in {m.conversationLabel ?? (m.ticketId ? 'ticket' : 'conversation')}
               </p>
             </button>
           ))

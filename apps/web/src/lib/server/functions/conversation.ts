@@ -1456,13 +1456,15 @@ export const bulkUpdateConversationsFn = createServerFn({ method: 'POST' })
     }
   })
 
-/** The caller's "Saved for later" feed — their flagged messages, newest first. */
+/** The caller's "Saved for later" feed — their flagged messages (conversation-
+ *  or ticket-parented), newest first. */
 export const listFlaggedMessagesFn = createServerFn({ method: 'GET' }).handler(async () => {
   try {
     const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_VIEW })
+    const actor = await policyActorFromAuth(ctx)
     const { listFlaggedMessages } =
       await import('@/lib/server/domains/conversation/conversation.query')
-    return await listFlaggedMessages(ctx.principal.id)
+    return await listFlaggedMessages(actor)
   } catch (error) {
     log.error({ err: error }, 'list flagged messages failed')
     throw error

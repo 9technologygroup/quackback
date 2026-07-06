@@ -182,6 +182,24 @@ export interface AgentConversationMessageDTO extends ConversationMessageDTO {
   translatedFrom: TranslatedFromMetadata | null
 }
 
+/** Coerce a base/partial message DTO to an agent one, preserving any reaction /
+ *  flag fields it already carries (a fresh message has neither yet). Lives here
+ *  (lib/shared, not components/conversation/events-reducer.ts, which re-exports
+ *  it for its existing callers) so `lib/client/*` query factories — which must
+ *  not import from `components/` — can coerce a fetched page's messages before
+ *  they ever enter a thread cache. */
+export function asAgentMessage(
+  m: ConversationMessageDTO | AgentConversationMessageDTO
+): AgentConversationMessageDTO {
+  return {
+    ...m,
+    reactions: 'reactions' in m ? m.reactions : [],
+    flaggedAt: 'flaggedAt' in m ? m.flaggedAt : null,
+    postSuggestion: 'postSuggestion' in m ? m.postSuggestion : null,
+    translatedFrom: 'translatedFrom' in m ? (m.translatedFrom ?? null) : null,
+  }
+}
+
 /** A flagged ("Saved for later") message for the per-agent saved feed: enough
  *  to preview it and jump to its conversation. */
 export interface FlaggedMessageDTO {
