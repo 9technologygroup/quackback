@@ -1,15 +1,19 @@
 /**
  * The conversation message bubbles, one per audience:
  *
- *  - AgentMessageBubble: the inbox row — avatar + author line, internal-note
- *    tint, reactions, flag/mark-unread/delete hover toolbar, track-as-feedback
- *    actions. Agent-only affordances arrive as props; absent props hide them.
+ *  - AgentMessageBubble: the admin thread — same chat-bubble idiom as the
+ *    messenger (avatar beside a bubble, attribution below), plus the
+ *    agent-only affordances (reactions, flag/mark-unread/delete hover
+ *    toolbar, track-as-feedback) arriving as props; absent props hide them.
+ *    Internal notes keep 'self' geometry with an amber fill instead of the
+ *    brand one.
  *  - VisitorMessageBubble: the messenger bubble — muted on the left for the
  *    team and assistant with an attribution line below, brand-colored on the
  *    right for the visitor.
  *
- * Each bubble's DOM is its surface's original markup, so rendering through
- * the shared component is pixel-equivalent per surface.
+ * `bubbleClasses`/`bubbleContentTextClass` below are the shared surface
+ * tokens both bubbles render from (UNIFIED-INBOX-SPEC.md §2.6) — geometry
+ * and fill live in one place so the two idioms cannot drift apart.
  */
 import { useState } from 'react'
 import { FormattedMessage } from 'react-intl'
@@ -60,6 +64,38 @@ import { PendingActionCard } from '@/components/conversation/pending-action-card
 
 function timeLabel(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+
+/** 'self' = the thread's own side (visitor in the messenger; agent/assistant
+ *  outbound in the admin thread) — brand-primary fill, right-aligned. 'peer'
+ *  = the other party — neutral muted fill, left-aligned. */
+export type BubbleSide = 'self' | 'peer'
+
+/**
+ * The chat-bubble surface: geometry (max-width, radius, padding) is identical
+ * for every side, only the fill + text color vary. Both `AgentMessageBubble`
+ * and `VisitorMessageBubble` call this so admin and messenger bubbles cannot
+ * drift apart. An internal note keeps 'self' geometry (it renders on the
+ * agent's side of the admin thread) but swaps the fill for the amber tint
+ * that has marked notes since the flat-row era — readable in both themes at
+ * this opacity, same as the flag/note tints this replaces.
+ */
+export function bubbleClasses(side: BubbleSide, opts: { note?: boolean } = {}): string {
+  if (opts.note) {
+    return 'max-w-[85%] rounded-2xl border border-amber-400/25 bg-amber-400/10 px-3.5 py-2.5 text-foreground'
+  }
+  return cn(
+    'max-w-[85%] rounded-2xl px-3.5 py-2.5',
+    side === 'self' ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground'
+  )
+}
+
+/** Rich (TipTap) content's text color has to match the bubble's fill — on the
+ *  brand-primary bubble it needs `text-primary-foreground` so prose text
+ *  isn't near-invisible; everywhere else it's the standard body tone. */
+export function bubbleContentTextClass(side: BubbleSide, opts: { note?: boolean } = {}): string {
+  if (opts.note) return 'text-foreground/90'
+  return side === 'self' ? 'text-primary-foreground' : 'text-foreground/90'
 }
 
 /** A thin "New" divider rendered immediately above the first unread message. */
@@ -168,15 +204,24 @@ export function AgentMessageBubble({
     )
   }
 
-  // Visitor messages, agent replies, and internal notes all share one threaded
-  // layout + hover toolbar (reactions, flag, mark-unread, delete). An internal
-  // note keeps its agent-only distinction via an amber tint + an "Internal note"
-  // badge and renders its rich TipTap body, but otherwise behaves identically.
+  // Visitor messages, agent replies, and internal notes all share one chat-
+  // bubble layout + hover toolbar (reactions, flag, mark-unread, delete),
+  // via the same `bubbleClasses` tokens VisitorMessageBubble uses below. An
+  // internal note keeps 'self' geometry (it renders on the agent's side) but
+  // swaps the fill for the amber tint and renders its rich TipTap body
+  // through `NoteContent` instead of the reply renderer.
   const isNote = message.isInternal
   const isAgent = message.senderType === 'agent'
   const authorName = message.author?.displayName ?? (isAgent ? 'Agent' : 'Visitor')
   const isFlagged = message.flaggedAt !== null
   const toolbarPinned = emojiOpen || menuOpen
+  // Agent replies, assistant turns, and notes all sit on the agent's side of
+  // the thread; only the visitor's own message is the peer.
+  const self = isAgent
+  const side: BubbleSide = self ? 'self' : 'peer'
+  // Notes never get the jumbo-emoji treatment — they keep their own body
+  // renderer (mention chips), matching the pre-restyle behavior.
+  const jumbo = !isNote && isJumboEmojiMessage(message.content, message.contentJson)
   // "Track as feedback" quick actions only apply to a visitor's own message (not
   // agent replies or internal notes) and only when the host wired them up.
   const showTrackActions =
@@ -195,138 +240,223 @@ export function AgentMessageBubble({
     <div
       // The scroll/flash target for "jump to message" deep-links.
       data-message-id={message.id}
-      className={cn(
-        'group relative -mx-2 flex gap-2.5 rounded-md px-2 py-1 transition-colors',
-        isFlagged
-          ? 'bg-amber-500/10 hover:bg-amber-500/15'
-          : isNote
-            ? 'bg-amber-400/5 hover:bg-amber-400/10'
-            : 'hover:bg-muted/40',
-        // Animated flash for motion users; a static brand ring as the
-        // reduced-motion equivalent (no background fight with the row's tint).
-        highlighted &&
-          'motion-safe:animate-flash-highlight motion-reduce:ring-2 motion-reduce:ring-inset motion-reduce:ring-primary/50'
-      )}
+      className={cn('group flex gap-2 py-1.5', self ? 'flex-row-reverse' : 'flex-row')}
     >
       <Avatar
         src={message.author?.avatarUrl ?? null}
         name={authorName}
-        className="mt-0.5 size-9 shrink-0 text-xs"
+        className="mt-0.5 size-7 shrink-0 text-[10px]"
       />
 
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-xs font-semibold text-foreground">{authorName}</span>
-          {message.isAssistant && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-              <SparklesIcon className="h-3 w-3" /> AI
-            </span>
-          )}
-          {isNote && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
-              <PencilSquareIcon className="h-3 w-3" /> Internal note
-            </span>
-          )}
-          <span className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground/50">
-            {message.viaEmail && (
-              <EnvelopeIcon
-                className="h-3 w-3"
-                aria-label="Received by email"
-                title="Received by email"
-              />
+      <div className={cn('flex min-w-0 flex-col', self ? 'items-end' : 'items-start')}>
+        {message.isAssistant && message.citations.length > 0 && (
+          <AssistantSourcesTrace citations={message.citations} />
+        )}
+
+        {/* The bubble and its hover toolbar share this positioning context so
+            the toolbar anchors to the bubble's corner, not the row. */}
+        <div className="relative">
+          <div
+            className={cn(
+              jumbo ? 'max-w-[85%]' : bubbleClasses(side, { note: isNote }),
+              // Animated flash for motion users; a static brand ring as the
+              // reduced-motion equivalent (no background fight with the fill).
+              highlighted &&
+                'motion-safe:animate-flash-highlight motion-reduce:ring-2 motion-reduce:ring-inset motion-reduce:ring-primary/50'
             )}
-            {timeLabel(message.createdAt)}
-          </span>
-          {/* Flag marker sits right after the time. */}
-          {isFlagged && (
-            <BookmarkSolidIcon
-              className="h-3.5 w-3.5 shrink-0 text-amber-500"
-              aria-label="Flagged"
-              title="Flagged"
-            />
+          >
+            {isNote ? (
+              <NoteContent
+                content={message.content}
+                contentJson={message.contentJson}
+                className="text-sm text-foreground/90"
+              />
+            ) : jumbo ? (
+              // A lone-emoji message renders large (Slack/iMessage style).
+              <div className={JUMBO_EMOJI_CLASS}>{message.content}</div>
+            ) : message.contentJson ? (
+              // Rich reply (inline embeds / images). No mention overlay — replies
+              // carry no @-mentions, unlike internal notes. An embedded post opens
+              // in the admin `?post=` modal rather than navigating away.
+              <EmbedHydration openMode="modal" onOpenInModal={onOpenPost}>
+                <RichTextContent
+                  content={message.contentJson}
+                  className={cn('text-sm leading-relaxed', bubbleContentTextClass(side))}
+                />
+              </EmbedHydration>
+            ) : message.isAssistant ? (
+              // Quinn's reply: render the same markdown + inline citations the
+              // customer sees, so the agent has full context — uncited replies
+              // don't show raw markdown. No explicit text color: it inherits
+              // the bubble's `text-primary-foreground` from `bubbleClasses`.
+              <AssistantAnswer text={message.content} citations={message.citations} />
+            ) : (
+              message.content && (
+                <>
+                  <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+                    {translation
+                      ? translation.showingOriginal
+                        ? translation.originalContent
+                        : translation.translatedContent
+                      : message.content}
+                  </div>
+                  {translation && (
+                    <button
+                      type="button"
+                      onClick={translation.onToggleOriginal}
+                      className={cn(
+                        'mt-0.5 text-[11px] underline decoration-dotted underline-offset-2 transition-colors',
+                        self
+                          ? 'text-primary-foreground/70 hover:text-primary-foreground'
+                          : 'text-muted-foreground/60 hover:text-foreground'
+                      )}
+                    >
+                      {translation.showingOriginal
+                        ? 'Show translation'
+                        : `${translation.label} · Show original`}
+                    </button>
+                  )}
+                </>
+              )
+            )}
+            {message.attachments.length > 0 && (
+              <ConversationAttachmentList attachments={message.attachments} />
+            )}
+            {linkPreviews && !isNote && (
+              <LinkPreviews content={message.content} contentJson={message.contentJson} />
+            )}
+          </div>
+
+          {/* Hover toolbar: inbox affordances, hidden in read-only ticket
+              threads. Anchored to the bubble's inner-facing top corner (the
+              side facing the thread's center) so it never gets clipped by the
+              column edge or lands on top of the avatar. */}
+          {!readOnly && (
+            <div
+              className={cn(
+                'absolute -top-3 z-10 flex items-center gap-0.5 rounded-lg border border-border bg-card p-0.5 shadow-sm transition-opacity',
+                self ? 'left-2' : 'right-2',
+                toolbarPinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+              )}
+            >
+              <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    aria-label="Add reaction"
+                  >
+                    <FaceSmileIcon className="h-4 w-4" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-auto p-1">
+                  <div className="flex gap-0.5">
+                    {REACTION_EMOJIS.map((emoji) => {
+                      const has = message.reactions.some((r) => r.emoji === emoji && r.hasReacted)
+                      return (
+                        <button
+                          key={emoji}
+                          type="button"
+                          aria-label={`React with ${emoji}`}
+                          aria-pressed={has}
+                          onClick={() => {
+                            onToggleReaction(emoji, has)
+                            setEmojiOpen(false)
+                          }}
+                          className={cn(
+                            'flex size-8 items-center justify-center rounded text-lg leading-none hover:bg-muted',
+                            has && 'bg-primary/10'
+                          )}
+                        >
+                          {emoji}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </PopoverContent>
+              </Popover>
+
+              <button
+                type="button"
+                onClick={() => onToggleFlag(!isFlagged)}
+                className={cn(
+                  'flex size-7 items-center justify-center rounded transition-colors hover:bg-muted',
+                  isFlagged ? 'text-amber-500' : 'text-muted-foreground hover:text-foreground'
+                )}
+                aria-label={isFlagged ? 'Remove flag' : 'Flag message'}
+                aria-pressed={isFlagged}
+              >
+                {isFlagged ? (
+                  <BookmarkSolidIcon className="h-4 w-4" />
+                ) : (
+                  <BookmarkIcon className="h-4 w-4" />
+                )}
+              </button>
+
+              <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    aria-label="More actions"
+                  >
+                    <EllipsisVerticalIcon className="h-4 w-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={onMarkUnread}>
+                    <EnvelopeIcon className="h-4 w-4" /> Mark unread
+                  </DropdownMenuItem>
+                  <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                    <TrashIcon className="h-4 w-4" /> Delete
+                  </DropdownMenuItem>
+                  {showTrackActions && (
+                    <>
+                      <DropdownMenuSeparator />
+                      {onSharePost && (
+                        <DropdownMenuItem onClick={onSharePost}>
+                          <ChatBubbleLeftRightIcon className="h-4 w-4" /> Share a post…
+                        </DropdownMenuItem>
+                      )}
+                      {onTrackAsPost && (
+                        <DropdownMenuItem onClick={onTrackAsPost}>
+                          <AdjustmentsHorizontalIcon className="h-4 w-4" /> Track as feedback…
+                        </DropdownMenuItem>
+                      )}
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           )}
         </div>
-        {isNote ? (
-          <>
-            <NoteContent
-              content={message.content}
-              contentJson={message.contentJson}
-              className="mt-0.5 text-sm text-foreground/90"
-            />
-            {suggestion && onTrackSuggestion && (
-              <div className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-2 py-1.5">
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
-                  <LightBulbIcon className="h-3.5 w-3.5" /> AI suggests tracking this as a post
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onTrackSuggestion(suggestion)}
-                  className="ml-auto inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                >
-                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" /> Track as feedback
-                </button>
-              </div>
-            )}
-            {pendingAction && (
-              <PendingActionCard
-                pendingActionId={pendingAction.pendingActionId}
-                summary={pendingAction.summary}
-              />
-            )}
-          </>
-        ) : isJumboEmojiMessage(message.content, message.contentJson) ? (
-          // A lone-emoji message renders large (Slack/iMessage style).
-          <div className={JUMBO_EMOJI_CLASS}>{message.content}</div>
-        ) : message.contentJson ? (
-          // Rich reply (inline embeds / images). No mention overlay — replies
-          // carry no @-mentions, unlike internal notes. An embedded post opens
-          // in the admin `?post=` modal rather than navigating away.
-          <EmbedHydration openMode="modal" onOpenInModal={onOpenPost}>
-            <RichTextContent
-              content={message.contentJson}
-              className="mt-0.5 text-sm leading-relaxed text-foreground/90"
-            />
-          </EmbedHydration>
-        ) : message.isAssistant ? (
-          // Quinn's reply: render the same markdown + inline citations the customer
-          // sees (sources trace only when it grounded the answer), so the agent has
-          // full context — and uncited replies don't show raw markdown.
-          <div className="mt-0.5">
-            {message.citations.length > 0 && (
-              <AssistantSourcesTrace citations={message.citations} />
-            )}
-            <AssistantAnswer text={message.content} citations={message.citations} />
+
+        {/* Note-only follow-ups render as their own cards below the bubble
+            (they already carry their own border/fill) rather than nested
+            inside the note's amber surface. */}
+        {isNote && suggestion && onTrackSuggestion && (
+          <div className="flex max-w-[85%] flex-wrap items-center gap-2 rounded-md border border-amber-400/30 bg-amber-400/10 px-2 py-1.5">
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+              <LightBulbIcon className="h-3.5 w-3.5" /> AI suggests tracking this as a post
+            </span>
+            <button
+              type="button"
+              onClick={() => onTrackSuggestion(suggestion)}
+              className="ml-auto inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" /> Track as feedback
+            </button>
           </div>
-        ) : (
-          message.content && (
-            <>
-              <div className="mt-0.5 whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
-                {translation
-                  ? translation.showingOriginal
-                    ? translation.originalContent
-                    : translation.translatedContent
-                  : message.content}
-              </div>
-              {translation && (
-                <button
-                  type="button"
-                  onClick={translation.onToggleOriginal}
-                  className="mt-0.5 text-[11px] text-muted-foreground/60 underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground"
-                >
-                  {translation.showingOriginal
-                    ? 'Show translation'
-                    : `${translation.label} · Show original`}
-                </button>
-              )}
-            </>
-          )
         )}
-        {message.attachments.length > 0 && (
-          <ConversationAttachmentList attachments={message.attachments} />
+        {isNote && pendingAction && (
+          <div className="max-w-[85%]">
+            <PendingActionCard
+              pendingActionId={pendingAction.pendingActionId}
+              summary={pendingAction.summary}
+            />
+          </div>
         )}
-        {linkPreviews && !isNote && (
-          <LinkPreviews content={message.content} contentJson={message.contentJson} />
-        )}
+
         {message.reactions.length > 0 && (
           <div className="mt-1 flex flex-wrap gap-1">
             {message.reactions.map((r) => (
@@ -341,106 +471,45 @@ export function AgentMessageBubble({
             ))}
           </div>
         )}
-      </div>
 
-      {/* Hover toolbar: inbox affordances, hidden in read-only ticket threads. */}
-      {!readOnly && (
+        {/* Attribution below the bubble, matching VisitorMessageBubble: name,
+            optional AI/Internal-note badge, via-email icon, time, and the
+            flagged bookmark glyph — flag state is a meta-line glyph now, not
+            a row tint. */}
         <div
           className={cn(
-            'absolute -top-3 right-2 z-10 flex items-center gap-0.5 rounded-lg border border-border bg-card p-0.5 shadow-sm transition-opacity',
-            toolbarPinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+            'mt-1 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground/70',
+            self && 'flex-row-reverse'
           )}
         >
-          <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                aria-label="Add reaction"
-              >
-                <FaceSmileIcon className="h-4 w-4" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-auto p-1">
-              <div className="flex gap-0.5">
-                {REACTION_EMOJIS.map((emoji) => {
-                  const has = message.reactions.some((r) => r.emoji === emoji && r.hasReacted)
-                  return (
-                    <button
-                      key={emoji}
-                      type="button"
-                      aria-label={`React with ${emoji}`}
-                      aria-pressed={has}
-                      onClick={() => {
-                        onToggleReaction(emoji, has)
-                        setEmojiOpen(false)
-                      }}
-                      className={cn(
-                        'flex size-8 items-center justify-center rounded text-lg leading-none hover:bg-muted',
-                        has && 'bg-primary/10'
-                      )}
-                    >
-                      {emoji}
-                    </button>
-                  )
-                })}
-              </div>
-            </PopoverContent>
-          </Popover>
-
-          <button
-            type="button"
-            onClick={() => onToggleFlag(!isFlagged)}
-            className={cn(
-              'flex size-7 items-center justify-center rounded transition-colors hover:bg-muted',
-              isFlagged ? 'text-amber-500' : 'text-muted-foreground hover:text-foreground'
-            )}
-            aria-label={isFlagged ? 'Remove flag' : 'Flag message'}
-            aria-pressed={isFlagged}
-          >
-            {isFlagged ? (
-              <BookmarkSolidIcon className="h-4 w-4" />
-            ) : (
-              <BookmarkIcon className="h-4 w-4" />
-            )}
-          </button>
-
-          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                aria-label="More actions"
-              >
-                <EllipsisVerticalIcon className="h-4 w-4" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={onMarkUnread}>
-                <EnvelopeIcon className="h-4 w-4" /> Mark unread
-              </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onClick={onDelete}>
-                <TrashIcon className="h-4 w-4" /> Delete
-              </DropdownMenuItem>
-              {showTrackActions && (
-                <>
-                  <DropdownMenuSeparator />
-                  {onSharePost && (
-                    <DropdownMenuItem onClick={onSharePost}>
-                      <ChatBubbleLeftRightIcon className="h-4 w-4" /> Share a post…
-                    </DropdownMenuItem>
-                  )}
-                  {onTrackAsPost && (
-                    <DropdownMenuItem onClick={onTrackAsPost}>
-                      <AdjustmentsHorizontalIcon className="h-4 w-4" /> Track as feedback…
-                    </DropdownMenuItem>
-                  )}
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <span className="truncate">{authorName}</span>
+          {message.isAssistant && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              <SparklesIcon className="h-3 w-3" /> AI
+            </span>
+          )}
+          {isNote && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+              <PencilSquareIcon className="h-3 w-3" /> Internal note
+            </span>
+          )}
+          {message.viaEmail && (
+            <EnvelopeIcon
+              className="h-3 w-3 shrink-0"
+              aria-label="Received by email"
+              title="Received by email"
+            />
+          )}
+          <span>{timeLabel(message.createdAt)}</span>
+          {isFlagged && (
+            <BookmarkSolidIcon
+              className="h-3.5 w-3.5 shrink-0 text-amber-500"
+              aria-label="Flagged"
+              title="Flagged"
+            />
+          )}
         </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -474,15 +543,7 @@ export function VisitorMessageBubble({
   return (
     <div className={self ? 'flex flex-col items-end' : 'flex flex-col items-start'}>
       {cited && <AssistantSourcesTrace citations={cited} />}
-      <div
-        className={
-          jumbo
-            ? 'max-w-[85%]'
-            : self
-              ? 'max-w-[85%] rounded-2xl bg-primary px-3.5 py-2.5 text-primary-foreground'
-              : 'max-w-[85%] rounded-2xl bg-muted px-3.5 py-2.5 text-foreground'
-        }
-      >
+      <div className={jumbo ? 'max-w-[85%]' : bubbleClasses(side)}>
         {jumbo ? (
           // A lone-emoji message renders large (no bubble chrome).
           <div className={JUMBO_EMOJI_CLASS}>{content}</div>
@@ -494,11 +555,7 @@ export function VisitorMessageBubble({
           <EmbedHydration openMode={embedOpenMode} getAuthHeaders={getAuthHeaders}>
             <RichTextContent
               content={contentJson}
-              className={
-                self
-                  ? 'text-sm leading-relaxed text-primary-foreground'
-                  : 'text-sm leading-relaxed text-foreground/90'
-              }
+              className={cn('text-sm leading-relaxed', bubbleContentTextClass(side))}
             />
           </EmbedHydration>
         ) : (
