@@ -12,6 +12,8 @@ import { db, eq, inArray, principal, user, teamMembers, conversations } from '@/
 import { resolveSendingAddress } from '@/lib/server/domains/channel-accounts/channel-account.service'
 import type { Conversation } from '@/lib/server/db'
 import type { PrincipalId, ConversationId, TeamId } from '@quackback/ids'
+import type { JSONContent } from '@tiptap/core'
+import { generateContentHTML } from '@/lib/shared/content-html'
 import { isAnyAgentOnline, isPrincipalOnline } from '@/lib/server/realtime/presence'
 import { createNotificationsBatch } from '@/lib/server/domains/notifications/notification.service'
 import { buildHookContext } from '@/lib/server/events/hook-context'
@@ -32,6 +34,38 @@ import { logger } from '@/lib/server/logger'
 const log = logger.child({ component: 'conversation-notify' })
 
 const previewOf = (content: string) => truncate(content, 140)
+
+/** Escape a plain-text string for safe interpolation into HTML text content. */
+function escapeHtmlText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/**
+ * Wrap plain-text message content in escaped <p> paragraphs — blank lines split
+ * paragraphs, single newlines become <br>. This is the body for a message with
+ * no rich contentJson, and it carries the FULL text (not the truncated subject
+ * preview) so the email recipient reads the whole message inline.
+ */
+function plaintextBodyHtml(content: string): string {
+  const paragraphs = content
+    .split(/\r?\n\s*\r?\n/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+  if (paragraphs.length === 0) return ''
+  return paragraphs.map((p) => `<p>${escapeHtmlText(p).replace(/\r?\n/g, '<br>')}</p>`).join('')
+}
+
+/**
+ * The full message body as sanitized HTML for the conversation email: the rich
+ * `contentJson` rendered through the shared JSON→HTML serializer when present
+ * (text nodes are HTML-escaped by the serializer), else the plain-text content
+ * wrapped in escaped paragraphs. Empty when there's nothing to render, in which
+ * case the template falls back to its truncated preview quote.
+ */
+function messageBodyHtml(content: string, contentJson?: JSONContent | null): string {
+  if (contentJson) return generateContentHTML(contentJson)
+  return plaintextBodyHtml(content)
+}
 
 /**
  * Threading headers for a visitor-facing conversation email: a fresh
@@ -84,6 +118,8 @@ async function resolveVisitorConversationLink(
 export async function notifyVisitorMessage(opts: {
   conversation: Conversation
   content: string
+  /** Rich message body (TipTap doc) rendered inline in the email, when present. */
+  contentJson?: JSONContent | null
   authorName: string
   isFirstMessage: boolean
 }): Promise<void> {
@@ -129,6 +165,7 @@ export async function notifyVisitorMessage(opts: {
               direction: 'visitor_message',
               senderName: opts.authorName,
               messagePreview: body,
+              bodyHtml: messageBodyHtml(opts.content, opts.contentJson),
               ctaUrl,
               workspaceName: ctx.workspaceName,
               logoUrl: ctx.logoUrl ?? undefined,
@@ -189,6 +226,8 @@ async function sendVisitorConversationEmail(opts: {
   direction: 'agent_reply' | 'agent_started'
   senderName: string
   content: string
+  /** Rich message body (TipTap doc) rendered inline in the email, when present. */
+  contentJson?: JSONContent | null
   ctaUrl: string
   ctx: { workspaceName: string; logoUrl: string | null }
 }): Promise<void> {
@@ -211,7 +250,10 @@ async function sendVisitorConversationEmail(opts: {
     to: opts.recipient,
     direction: opts.direction,
     senderName: opts.senderName,
+    // The truncated preview backs the subject/preheader; the full body is
+    // carried by bodyHtml so the recipient reads the whole reply inline.
     messagePreview: previewOf(opts.content),
+    bodyHtml: messageBodyHtml(opts.content, opts.contentJson),
     ctaUrl: opts.ctaUrl,
     workspaceName: opts.ctx.workspaceName,
     logoUrl: opts.ctx.logoUrl ?? undefined,
@@ -242,6 +284,8 @@ export async function notifyAgentReply(opts: {
   conversationId: ConversationId
   visitorPrincipalId: PrincipalId
   content: string
+  /** Rich message body (TipTap doc) rendered inline in the email, when present. */
+  contentJson?: JSONContent | null
   agentName: string
   /** Pre-chat email captured on the conversation, if any. */
   capturedEmail?: string | null
@@ -278,6 +322,7 @@ export async function notifyAgentReply(opts: {
       direction: 'agent_reply',
       senderName: opts.agentName,
       content: opts.content,
+      contentJson: opts.contentJson,
       ctaUrl,
       ctx,
     })
@@ -297,6 +342,8 @@ export async function notifyConversationStarted(opts: {
   conversationId: ConversationId
   visitorPrincipalId: PrincipalId
   content: string
+  /** Rich message body (TipTap doc) rendered inline in the email, when present. */
+  contentJson?: JSONContent | null
   agentName: string
 }): Promise<void> {
   try {
@@ -326,6 +373,7 @@ export async function notifyConversationStarted(opts: {
       direction: 'agent_started',
       senderName: opts.agentName,
       content: opts.content,
+      contentJson: opts.contentJson,
       ctaUrl,
       ctx,
     })

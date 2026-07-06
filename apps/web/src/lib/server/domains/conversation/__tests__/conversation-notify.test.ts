@@ -84,6 +84,7 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
 })
 
 import { notifyVisitorMessage, notifyAgentReply } from '../conversation.notify'
+import { generateContentHTML } from '@/lib/shared/content-html'
 
 const conversationId = 'conversation_1' as ConversationId
 const conversation = { id: conversationId } as unknown as Conversation
@@ -337,6 +338,154 @@ describe('notifyAgentReply', () => {
       })
 
       expect(sendConversationMessageEmail.mock.calls[0][0].replyTo).toBeUndefined()
+    })
+  })
+})
+
+// P4.5: the outbound conversation email carries the whole message body, not just
+// a ~120-char excerpt. bodyHtml is the rich contentJson rendered to HTML, or the
+// FULL plain-text content wrapped in escaped paragraphs; the truncated preview is
+// retained only as messagePreview (subject/preheader).
+describe('conversation email body (P4.5)', () => {
+  const visitorPrincipalId = 'principal_visitor' as PrincipalId
+
+  it('renders the rich contentJson as bodyHtml while keeping the truncated preview separate', async () => {
+    isPrincipalOnline.mockResolvedValue(false)
+    visitorRows = [{ type: 'user', email: 'account@x.com' }]
+    const contentJson = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'Here is ' },
+            { type: 'text', text: 'bold', marks: [{ type: 'bold' }] },
+          ],
+        },
+      ],
+    }
+
+    await notifyAgentReply({
+      conversationId,
+      visitorPrincipalId,
+      content: 'Here is bold',
+      contentJson,
+      agentName: 'Agent',
+    })
+
+    const call = sendConversationMessageEmail.mock.calls[0][0]
+    // bodyHtml is exactly what the shared serializer produces for the doc.
+    expect(call.bodyHtml).toBe(generateContentHTML(contentJson))
+    expect(call.bodyHtml).toContain('<strong>bold</strong>')
+    // The preview excerpt is still provided for the subject/preheader.
+    expect(call.messagePreview).toBe('Here is bold')
+  })
+
+  it('falls back to the FULL plain-text content wrapped in escaped <p> paragraphs (no contentJson)', async () => {
+    isPrincipalOnline.mockResolvedValue(false)
+    visitorRows = [{ type: 'user', email: 'account@x.com' }]
+    // Long, multi-paragraph, and containing HTML-special chars.
+    const body = `${'A'.repeat(200)}\n\nsecond <script> line`
+
+    await notifyAgentReply({
+      conversationId,
+      visitorPrincipalId,
+      content: body,
+      agentName: 'Agent',
+    })
+
+    const call = sendConversationMessageEmail.mock.calls[0][0]
+    // The whole body (not the 140-char preview), split on the blank line and
+    // with text escaped so stored content can't inject HTML into the inbox.
+    expect(call.bodyHtml).toBe(
+      `<p>${'A'.repeat(200)}</p><p>second &lt;script&gt; line</p>`
+    )
+    // messagePreview stays the truncated excerpt.
+    expect((call.messagePreview as string).length).toBeLessThan(body.length)
+  })
+})
+
+// P4.6: pin the RFC 5322 threading headers byte-for-byte so the P4.5 body change
+// can't perturb Message-ID / In-Reply-To / References (which back conversation
+// threading + inbound reply routing).
+describe('threading headers (P4.6 regression guard)', () => {
+  const visitorPrincipalId = 'principal_visitor' as PrincipalId
+
+  it('omits all threading headers and records no outbound id when no sending domain is configured', async () => {
+    // Base test env: EMAIL_FROM and EMAIL_INBOUND_DOMAIN are both unset, so no
+    // Message-ID is minted and nothing is persisted to the threading store.
+    isPrincipalOnline.mockResolvedValue(false)
+    visitorRows = [{ type: 'user', email: 'account@x.com' }]
+
+    await notifyAgentReply({
+      conversationId,
+      visitorPrincipalId,
+      content: 'hello',
+      agentName: 'Agent',
+    })
+
+    const call = sendConversationMessageEmail.mock.calls[0][0]
+    expect(call.messageId).toBeUndefined()
+    expect(call.inReplyTo).toBeUndefined()
+    expect(call.references).toBeUndefined()
+    expect(recordOutboundEmail).not.toHaveBeenCalled()
+  })
+
+  describe('with a sending domain configured', () => {
+    const prevDomain = process.env.EMAIL_INBOUND_DOMAIN
+    const prevSecret = process.env.EMAIL_INBOUND_SIGNING_SECRET
+
+    beforeEach(() => {
+      process.env.EMAIL_INBOUND_DOMAIN = 'tenaevexeo.resend.app'
+      process.env.EMAIL_INBOUND_SIGNING_SECRET = 'whsec_test'
+    })
+    afterEach(() => {
+      if (prevDomain === undefined) delete process.env.EMAIL_INBOUND_DOMAIN
+      else process.env.EMAIL_INBOUND_DOMAIN = prevDomain
+      if (prevSecret === undefined) delete process.env.EMAIL_INBOUND_SIGNING_SECRET
+      else process.env.EMAIL_INBOUND_SIGNING_SECRET = prevSecret
+    })
+
+    it('mints a fresh Message-ID (no parent) and records it against the conversation', async () => {
+      isPrincipalOnline.mockResolvedValue(false)
+      visitorRows = [{ type: 'user', email: 'account@x.com' }]
+      // No prior outbound mails → nothing to reply to / reference.
+      priorOutboundMessageIds.mockResolvedValue([])
+
+      await notifyAgentReply({
+        conversationId,
+        visitorPrincipalId,
+        content: 'answer',
+        agentName: 'Agent',
+      })
+
+      const call = sendConversationMessageEmail.mock.calls[0][0]
+      const suffix = conversationId.replace(/^conversation_/, '')
+      expect(call.messageId).toMatch(
+        new RegExp(`^c\\.${suffix}\\.[A-Za-z0-9_-]+@tenaevexeo\\.resend\\.app$`)
+      )
+      expect(call.inReplyTo).toBeUndefined()
+      expect(call.references).toBeUndefined()
+      // The minted id is persisted (so a later reply threads back to it).
+      expect(recordOutboundEmail).toHaveBeenCalledWith(call.messageId, conversationId)
+    })
+
+    it('carries the prior-id References chain and sets In-Reply-To to the latest', async () => {
+      isPrincipalOnline.mockResolvedValue(false)
+      visitorRows = [{ type: 'user', email: 'account@x.com' }]
+      const prior = ['c.1.aaa@tenaevexeo.resend.app', 'c.1.bbb@tenaevexeo.resend.app']
+      priorOutboundMessageIds.mockResolvedValue(prior)
+
+      await notifyAgentReply({
+        conversationId,
+        visitorPrincipalId,
+        content: 'answer',
+        agentName: 'Agent',
+      })
+
+      const call = sendConversationMessageEmail.mock.calls[0][0]
+      expect(call.references).toEqual(prior)
+      expect(call.inReplyTo).toBe('c.1.bbb@tenaevexeo.resend.app')
     })
   })
 })

@@ -609,6 +609,9 @@ interface SendConversationMessageEmailParams {
   direction: 'agent_reply' | 'visitor_message' | 'agent_started'
   senderName: string
   messagePreview: string
+  /** The full message body as pre-rendered, sanitized HTML. When present it is
+   *  shown inline in place of the truncated `messagePreview` quote. */
+  bodyHtml?: string
   /** Link to the conversation (admin inbox for agents; portal/widget for visitors). */
   ctaUrl: string
   workspaceName: string
@@ -642,6 +645,7 @@ export async function sendConversationMessageEmail(
     direction,
     senderName,
     messagePreview,
+    bodyHtml,
     ctaUrl,
     workspaceName,
     logoUrl,
@@ -693,6 +697,7 @@ export async function sendConversationMessageEmail(
       intro,
       senderName,
       messagePreview,
+      bodyHtml,
       ctaUrl,
       ctaLabel,
       organizationName: workspaceName,

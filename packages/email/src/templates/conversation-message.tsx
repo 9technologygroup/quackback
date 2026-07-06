@@ -7,6 +7,13 @@ interface ConversationMessageEmailProps {
   intro: string
   senderName: string
   messagePreview: string
+  /**
+   * The full message body as pre-rendered, sanitized HTML (from the message's
+   * rich-text content, or the plain-text content wrapped in escaped paragraphs).
+   * When present it replaces the truncated `messagePreview` quote so the reader
+   * gets the whole reply inline. Absent = fall back to the preview excerpt.
+   */
+  bodyHtml?: string
   ctaUrl: string
   ctaLabel: string
   organizationName: string
@@ -20,6 +27,7 @@ export function ConversationMessageEmail({
   intro,
   senderName,
   messagePreview,
+  bodyHtml,
   ctaUrl,
   ctaLabel,
   organizationName,
@@ -53,11 +61,30 @@ export function ConversationMessageEmail({
         <Row>
           <Column style={{ width: '3px', backgroundColor: colors.primary, borderRadius: '2px' }} />
           <Column style={{ paddingLeft: '16px' }}>
-            <Text
-              style={{ ...typography.text, marginTop: '0', marginBottom: '0', fontStyle: 'italic' }}
-            >
-              &quot;{messagePreview}&quot;
-            </Text>
+            {bodyHtml ? (
+              // The full message body. Pre-sanitized upstream (write-time TipTap
+              // sanitizer + serializer escaping); email clients get no live DOM,
+              // so this is the same controlled HTML the app renders server-side.
+              <div
+                style={{
+                  color: colors.text,
+                  fontSize: '16px',
+                  lineHeight: '26px',
+                }}
+                dangerouslySetInnerHTML={{ __html: bodyHtml }}
+              />
+            ) : (
+              <Text
+                style={{
+                  ...typography.text,
+                  marginTop: '0',
+                  marginBottom: '0',
+                  fontStyle: 'italic',
+                }}
+              >
+                &quot;{messagePreview}&quot;
+              </Text>
+            )}
           </Column>
         </Row>
       </Section>
