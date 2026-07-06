@@ -44,6 +44,9 @@ const hoisted = vi.hoisted(() => ({
   summarizeConversationNowFn: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  getAssistantPendingActionFn: vi.fn(),
+  approveAssistantActionFn: vi.fn(),
+  rejectAssistantActionFn: vi.fn(),
 }))
 
 vi.mock('@/lib/server/functions/macros', () => ({
@@ -51,6 +54,13 @@ vi.mock('@/lib/server/functions/macros', () => ({
 }))
 vi.mock('@/lib/server/functions/copilot-summary', () => ({
   summarizeConversationNowFn: hoisted.summarizeConversationNowFn,
+}))
+vi.mock('@/lib/server/functions/assistant-pending-actions', () => ({
+  getAssistantPendingActionFn: hoisted.getAssistantPendingActionFn,
+}))
+vi.mock('@/lib/server/functions/assistant-actions', () => ({
+  approveAssistantActionFn: hoisted.approveAssistantActionFn,
+  rejectAssistantActionFn: hoisted.rejectAssistantActionFn,
 }))
 vi.mock('sonner', () => ({
   toast: { success: hoisted.toastSuccess, error: hoisted.toastError },
@@ -144,6 +154,25 @@ beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
 })
+
+function proposedActionRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'assistant_action_1',
+    conversationId: CONVERSATION_ID,
+    involvementId: null,
+    toolName: 'end_conversation',
+    args: {},
+    summary: 'Close the conversation',
+    status: 'proposed',
+    proposedAt: '2026-07-01T00:00:00.000Z',
+    expiresAt: '2026-07-02T00:00:00.000Z',
+    decidedById: null,
+    decidedAt: null,
+    executedAt: null,
+    result: null,
+    ...overrides,
+  }
+}
 
 describe('<CopilotPanel> ask -> stream -> answer', () => {
   it('streams delta text and renders the final answer with citations', async () => {
@@ -672,5 +701,158 @@ describe('<CopilotPanel> Summarize chip', () => {
     const summarizingButton = await screen.findByRole('button', { name: /summarizing/i })
     expect(summarizingButton).toBeDisabled()
     resolveSummary({ question: 'Q', bullets: ['B'] })
+  })
+})
+
+describe('<CopilotPanel> empty state', () => {
+  it('teases act-on-approval with the shield-check bullet', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    renderPanel()
+
+    expect(screen.getByText('Can take actions for you, with your approval.')).toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('<CopilotPanel> proposed actions (P2-C.4)', () => {
+  async function askAndGetProposal(overrides: Record<string, unknown> = {}) {
+    hoisted.getAssistantPendingActionFn.mockResolvedValue(proposedActionRow(overrides))
+    const frames = sseFrame(COPILOT_EVENTS.final, {
+      text: "I've proposed closing this conversation for you.",
+      citations: [],
+      internalSourced: false,
+      proposedActions: [
+        {
+          id: 'assistant_action_1',
+          toolName: 'end_conversation',
+          summary: 'Close the conversation',
+        },
+      ],
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
+    renderPanel()
+    await ask('Can you close this out?')
+    await screen.findByText("I've proposed closing this conversation for you.")
+    // Wait for the card's own pending-action query to resolve (a separate
+    // fetch from the SSE turn above) so callers can click Approve/Reject
+    // immediately without racing "Checking status…".
+    await screen.findByRole('button', { name: /approve/i })
+  }
+
+  it('renders a proposal card with the tool label, summary, and Approve/Reject', async () => {
+    await askAndGetProposal()
+
+    expect(await screen.findByText('End conversation')).toBeInTheDocument()
+    expect(screen.getByText('Close the conversation')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /reject/i })).toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+
+  it('renders nothing extra when the turn proposed no actions', async () => {
+    const frames = sseFrame(COPILOT_EVENTS.final, {
+      text: 'Just an answer, nothing proposed.',
+      citations: [],
+      internalSourced: false,
+      proposedActions: [],
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
+    renderPanel()
+    await ask('Anything to propose?')
+    await screen.findByText('Just an answer, nothing proposed.')
+
+    expect(screen.queryByRole('button', { name: /approve/i })).not.toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+
+  it('approving calls the gated server fn and swaps to the executed state with a result summary', async () => {
+    await askAndGetProposal()
+    hoisted.approveAssistantActionFn.mockResolvedValue(
+      proposedActionRow({ status: 'executed', result: { note: 'Closed as resolved.' } })
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /approve/i }))
+
+    await waitFor(() =>
+      expect(hoisted.approveAssistantActionFn).toHaveBeenCalledWith({
+        data: { pendingActionId: 'assistant_action_1' },
+      })
+    )
+    expect(await screen.findByText('Closed as resolved.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /approve/i })).not.toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+
+  it('falls back to a generic executed label when the result carries no recognizable summary', async () => {
+    await askAndGetProposal()
+    hoisted.approveAssistantActionFn.mockResolvedValue(
+      proposedActionRow({ status: 'executed', result: null })
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /approve/i }))
+
+    expect(await screen.findByText('Approved and executed')).toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+
+  it('rejecting calls the gated server fn and swaps to the rejected state', async () => {
+    await askAndGetProposal()
+    hoisted.rejectAssistantActionFn.mockResolvedValue(proposedActionRow({ status: 'rejected' }))
+
+    await userEvent.click(screen.getByRole('button', { name: /reject/i }))
+
+    await waitFor(() =>
+      expect(hoisted.rejectAssistantActionFn).toHaveBeenCalledWith({
+        data: { pendingActionId: 'assistant_action_1' },
+      })
+    )
+    expect(await screen.findByText('Rejected')).toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+
+  it('shows a failed execution with the settled error', async () => {
+    await askAndGetProposal()
+    hoisted.approveAssistantActionFn.mockResolvedValue(
+      proposedActionRow({ status: 'failed', result: { error: 'boom' } })
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /approve/i }))
+
+    expect(await screen.findByText('boom')).toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+
+  it('shows the friendly permission message on a 403, leaving the buttons usable', async () => {
+    await askAndGetProposal()
+    const forbidden = Object.assign(
+      new Error("Approving this action requires the 'x' permission"),
+      {
+        statusCode: 403,
+        code: 'ASSISTANT_ACTION_PERMISSION_DENIED',
+      }
+    )
+    hoisted.approveAssistantActionFn.mockRejectedValue(forbidden)
+
+    await userEvent.click(screen.getByRole('button', { name: /approve/i }))
+
+    expect(
+      await screen.findByText('You do not have permission to approve this action.')
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+
+  it('shows the raw message for a non-permission error (e.g. already decided)', async () => {
+    await askAndGetProposal()
+    hoisted.approveAssistantActionFn.mockRejectedValue(
+      new Error('This request was already decided or has expired')
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /approve/i }))
+
+    expect(
+      await screen.findByText('This request was already decided or has expired')
+    ).toBeInTheDocument()
+    vi.unstubAllGlobals()
   })
 })

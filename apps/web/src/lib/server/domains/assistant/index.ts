@@ -90,6 +90,7 @@ export {
   type ToolControlMode,
   type AssistantToolSpec,
   type AssistantCitation,
+  type AssistantProposedAction,
   type AssistantToolContext,
 } from './assistant.toolspec'
 

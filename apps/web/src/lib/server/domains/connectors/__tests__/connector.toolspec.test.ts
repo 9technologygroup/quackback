@@ -48,7 +48,10 @@ const mockDbSelect = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/server/db', () => ({
   db: { select: (...args: unknown[]) => mockDbSelect(...args) },
   eq: () => true,
-  conversations: { id: 'conversations.id', visitorPrincipalId: 'conversations.visitor_principal_id' },
+  conversations: {
+    id: 'conversations.id',
+    visitorPrincipalId: 'conversations.visitor_principal_id',
+  },
   principal: { id: 'principal.id', displayName: 'x', contactEmail: 'x', userId: 'x' },
   user: { id: 'user.id', name: 'x', email: 'x' },
 }))
@@ -90,6 +93,7 @@ function makeCtx(overrides: Partial<AssistantToolContext> = {}): AssistantToolCo
     audience: 'team',
     conversationId: null,
     sources: new Map(),
+    proposedActions: [],
     searchCalls: 0,
     simulate: false,
     involvementId: null,
@@ -181,7 +185,9 @@ describe('connectorToolSpec', () => {
       const spec = connectorToolSpec(makeConnector())
       const schema = spec.definition.outputSchema as z.ZodTypeAny
       expect(schema.safeParse({ ok: true, data: { x: 1 } }).success).toBe(true)
-      expect(schema.safeParse({ ok: false, note: 'This connector call failed.' }).success).toBe(true)
+      expect(schema.safeParse({ ok: false, note: 'This connector call failed.' }).success).toBe(
+        true
+      )
     })
 
     // Locked design decision (see connector.toolspec.ts's EXTERNAL_DATA_NOTE

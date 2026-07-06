@@ -2,8 +2,14 @@
  * Unit tests for POST /api/admin/assistant/copilot: the permission gate, the
  * flag gate, the AI-configured/budget gates, the conversation-exists gate,
  * the SSE turn stream, and the safety property that matters most: that this
- * route never writes to the conversation (no involvement row, no
- * conversation message, no unread-count change).
+ * route never writes to the conversation (no involvement row, no unread-count
+ * change) beyond the ONE documented P2-C.4 exception: a write-tool call
+ * proposes (creates a pending-action row plus its announcing internal note)
+ * rather than executing or writing anything else. `runAssistantTurn` itself
+ * is mocked throughout this file, so the pipeline behavior that enforces
+ * "propose never executes" is pinned in assistant.tools.test.ts; these tests
+ * only pin what THIS route does with the result, including passing
+ * `writeToolPolicy: 'propose'` and relaying `proposedActions` untouched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -74,6 +80,7 @@ beforeEach(() => {
     text: 'ok',
     citations: [],
     internalSourced: false,
+    proposedActions: [],
   })
 })
 
@@ -151,6 +158,7 @@ describe('POST /api/admin/assistant/copilot', () => {
             { type: 'snippet', id: 'assistant_snippet_1', title: 'S', url: '', internal: true },
           ],
           internalSourced: true,
+          proposedActions: [],
         }
       }
     )
@@ -169,6 +177,7 @@ describe('POST /api/admin/assistant/copilot', () => {
           { type: 'snippet', id: 'assistant_snippet_1', title: 'S', url: '', internal: true },
         ],
         internalSourced: true,
+        proposedActions: [],
       },
     })
   })
@@ -180,20 +189,64 @@ describe('POST /api/admin/assistant/copilot', () => {
     const frames = parseSse(await res.text())
     expect(frames.at(-1)).toEqual({
       event: 'copilot.v1.final',
-      data: { text: '', citations: [], internalSourced: false, suppressed: 'silence' },
+      data: {
+        text: '',
+        citations: [],
+        internalSourced: false,
+        suppressed: 'silence',
+        proposedActions: [],
+      },
     })
   })
 
-  it('calls the runtime directly with a real conversationId, surface copilot, and simulate: true, never the orchestrator (no involvement row, no conversation message, no unread change)', async () => {
+  it('calls the runtime directly with a real conversationId, surface copilot, and writeToolPolicy: propose, never the orchestrator (no involvement row, no unread change)', async () => {
     await handleCopilot({ request: makeRequest(validBody) })
 
     expect(mockRunAssistantTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: CONVERSATION_ID,
         surface: 'copilot',
-        simulate: true,
+        writeToolPolicy: 'propose',
       })
     )
+    // simulate is no longer set from this route: 'propose' alone is what
+    // keeps a write tool from executing here (see resolveEffectiveToolMode).
+    expect(mockRunAssistantTurn.mock.calls[0][0]).not.toHaveProperty('simulate')
+  })
+
+  it('relays a turn that proposed a write-tool action: the pending action surfaces on the final payload untouched', async () => {
+    mockRunAssistantTurn.mockResolvedValue({
+      status: 'answered',
+      text: "I've proposed closing this conversation for you.",
+      citations: [],
+      internalSourced: false,
+      proposedActions: [
+        {
+          id: 'assistant_action_1',
+          toolName: 'end_conversation',
+          summary: 'Close the conversation',
+        },
+      ],
+    })
+
+    const res = await handleCopilot({ request: makeRequest(validBody) })
+    const frames = parseSse(await res.text())
+
+    expect(frames.at(-1)).toEqual({
+      event: 'copilot.v1.final',
+      data: {
+        text: "I've proposed closing this conversation for you.",
+        citations: [],
+        internalSourced: false,
+        proposedActions: [
+          {
+            id: 'assistant_action_1',
+            toolName: 'end_conversation',
+            summary: 'Close the conversation',
+          },
+        ],
+      },
+    })
   })
 
   it('maps teammate history to customer-sender turns and copilot history to assistant-sender turns, question last', async () => {

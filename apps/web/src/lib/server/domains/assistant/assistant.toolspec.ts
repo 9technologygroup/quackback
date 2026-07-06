@@ -48,6 +48,22 @@ export interface AssistantCitation {
 }
 
 /**
+ * One write-tool call the pipeline turned into a pending action this run
+ * (P2-C.4). Recorded on `ctx.proposedActions` by the approval branch of
+ * `runWithPipeline`, mirroring how `ctx.sources` collects citations: the
+ * runtime surfaces the ledger on `AssistantTurnResult` unfiltered (unlike
+ * citations, a proposal is never model-curated: every approval-mode call this
+ * run created a real row, so every one of them is reported).
+ */
+export interface AssistantProposedAction {
+  /** The `assistant_pending_actions` row id, for the approval queue / copilot card to look up. */
+  id: string
+  toolName: string
+  /** `spec.summarize(args)` at proposal time, same text the inbox note card shows. */
+  summary: string
+}
+
+/**
  * Request-local context threaded to server tools (and middleware). Carries the
  * tenant db handle, Quinn's service principal, the viewer audience for
  * retrieval scoping, the linked conversation (null in the sandbox), and a
@@ -82,6 +98,14 @@ export interface AssistantToolContext {
   sourceTypes?: RetrievedItem['sourceType'][]
   /** Sources surfaced by search_knowledge this run, keyed by id, for citation assembly. */
   sources: Map<string, AssistantCitation>
+  /**
+   * Pending actions this run's write-tool calls turned into approval-queue
+   * rows (P2-C.4), in call order. Populated by the approval branch of
+   * `runWithPipeline` (assistant.tools.ts); cleared per attempt alongside
+   * `sources`/`searchCalls` so a retry doesn't double-report an earlier
+   * attempt's proposals. See `AssistantProposedAction`.
+   */
+  proposedActions: AssistantProposedAction[]
   /** search_knowledge calls made this attempt, for the server-side search budget. */
   searchCalls: number
   /** True in the admin sandbox: write tools report what they would do instead of running. */
@@ -91,15 +115,20 @@ export interface AssistantToolContext {
    * consulted for a read-risk tool, or when `simulate` is false). 'simulate',
    * the default when unset, always previews instead of running, matching
    * every caller today: the sandbox (no conversation to attach a claim,
-   * approval, or denial to) and copilot (a real conversation, but writes
-   * must never actually fire there). 'controls' instead defers to the tool's
+   * approval, or denial to). 'controls' instead defers to the tool's
    * configured mode, letting approval propose a pending action and
-   * autonomous execute as usual even while `simulate` is set. This is the
-   * seam a future surface uses to preview writes as approval cards rather
-   * than as a blanket simulated summary, without the pipeline itself
-   * changing. See `resolveEffectiveToolMode` in assistant.tools.ts.
+   * autonomous execute as usual even while `simulate` is set: the seam a
+   * future surface uses to preview writes as approval cards rather than as a
+   * blanket simulated summary, without the pipeline itself changing.
+   * 'propose' (P2-C.4, the copilot surface) is stronger still: a write tool
+   * ALWAYS resolves to approval, even one configured autonomous, regardless
+   * of `simulate`. From a Copilot chat the proposal card itself is the
+   * confirmation UX, so an autonomous-configured tool proposes rather than
+   * fires. Quinn must never act in the conversation from a teammate's Q&A
+   * about it, only ever suggest an action for a human to approve. See
+   * `resolveEffectiveToolMode` in assistant.tools.ts.
    */
-  writeToolPolicy?: 'simulate' | 'controls'
+  writeToolPolicy?: 'simulate' | 'controls' | 'propose'
   /** The involvement this turn belongs to, for audit rows and pending actions. Null before the first involvement opens. */
   involvementId: AssistantInvolvementId | null
   /** The customer message this turn answers, keying the write-tool idempotency key. Null in the sandbox. */
@@ -128,7 +157,7 @@ export function makeAssistantToolContext(init: {
   involvementId?: AssistantInvolvementId | null
   latestCustomerMessageId?: string | null
   simulate?: boolean
-  writeToolPolicy?: 'simulate' | 'controls'
+  writeToolPolicy?: 'simulate' | 'controls' | 'propose'
   actor?: Actor
 }): AssistantToolContext {
   return {
@@ -139,6 +168,7 @@ export function makeAssistantToolContext(init: {
     customerPrincipalId: init.customerPrincipalId ?? undefined,
     sourceTypes: init.sourceTypes,
     sources: new Map<string, AssistantCitation>(),
+    proposedActions: [],
     searchCalls: 0,
     simulate: init.simulate ?? init.conversationId === null,
     writeToolPolicy: init.writeToolPolicy,

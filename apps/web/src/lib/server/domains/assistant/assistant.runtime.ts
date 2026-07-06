@@ -35,6 +35,7 @@ import { assembleAssistantToolset } from './assistant.tools'
 import { makeAssistantToolContext } from './assistant.toolspec'
 import type {
   AssistantCitation,
+  AssistantProposedAction,
   AssistantToolContext,
   AssistantToolSpec,
 } from './assistant.toolspec'
@@ -78,6 +79,14 @@ export type AssistantTurnResult =
        *  server-derived flag the copilot leak gate reads; a customer-facing turn's citations
        *  are never internal in practice (their retrieval ceiling excludes those sources). */
       internalSourced: boolean
+      /**
+       * Write-tool calls this turn turned into pending-approval rows (P2-C.4),
+       * lifted verbatim off `toolContext.proposedActions`: unlike citations
+       * these are never model-curated, so every proposal this run made is
+       * reported. Empty outside `writeToolPolicy: 'propose'` (or any other
+       * caller that never resolves a write tool to 'approval').
+       */
+      proposedActions: AssistantProposedAction[]
       escalation?: EscalationOutcome
     }
   | { status: 'suppressed'; reason: 'silence' }
@@ -130,12 +139,22 @@ export interface AssistantTurnInput {
   /**
    * Force write tools to report what they would do instead of running, even
    * with a real `conversationId` (which otherwise implies a live run; see
-   * `makeAssistantToolContext`). The copilot surface sets this: it is a
-   * private Q&A about the conversation, never participation in it, so a
-   * write tool must never actually execute there. Undefined preserves the
-   * existing conversationId-derived default for every other caller.
+   * `makeAssistantToolContext`). Undefined preserves the existing
+   * conversationId-derived default for every caller. The copilot surface no
+   * longer sets this (see `writeToolPolicy` below): it has a real
+   * conversation and now creates real pending-action proposals there, just
+   * never runs a write tool directly from a Q&A turn.
    */
   simulate?: boolean
+  /**
+   * Threaded straight onto the tool context's `writeToolPolicy` (see its doc
+   * on `AssistantToolContext`). The copilot surface sets 'propose': a write
+   * tool call always resolves to approval there, so Quinn only ever proposes
+   * an action for a teammate to approve, never runs one from a Q&A turn, even
+   * one configured autonomous. Undefined preserves the existing
+   * simulate-derived default for every other caller.
+   */
+  writeToolPolicy?: 'simulate' | 'controls' | 'propose'
   /** Tenant db handle for the tools; defaults to the app db. */
   db?: Executor
   /** Aborts the in-flight provider call. */
@@ -594,6 +613,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     involvementId: input.involvementId,
     latestCustomerMessageId: input.latestCustomerMessageId,
     simulate: input.simulate,
+    writeToolPolicy: input.writeToolPolicy,
   })
   // Config read: basics, surfaces, and tool controls all live in the same
   // settings row, so a single `getAssistantConfig()` read (in parallel with
@@ -658,6 +678,11 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     text: ASSISTANT_FALLBACK_MESSAGE,
     citations: [],
     internalSourced: false,
+    // A reference, not a snapshot: toolContext.proposedActions is cleared
+    // in-place per attempt (never reassigned; see onAttemptStart below), so
+    // this always reflects whichever attempt actually ran by the time the
+    // fallback is returned, including one a real proposal happened in.
+    proposedActions: toolContext.proposedActions,
   }
 
   const outcome = await runSynthesis<AssistantTurnResult, AssistantToolContext>({
@@ -690,9 +715,13 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     },
     deriveAnswerKind: (attempt) => deriveAnswerKind(attempt, toolContext),
     onAttemptStart: () => {
-      // Fresh ledger + search budget per attempt so a retry starts clean.
+      // Fresh ledgers + search budget per attempt so a retry starts clean.
+      // proposedActions is truncated in place, never reassigned, so a
+      // reference taken earlier (the `fallback` value above) always reflects
+      // the latest attempt's state rather than an attempt-1 snapshot.
       toolContext.sources.clear()
       toolContext.searchCalls = 0
+      toolContext.proposedActions.length = 0
     },
     onRetry: (_attempt, error) => {
       log.warn({ err: error }, 'assistant turn attempt failed, retrying once')
@@ -729,6 +758,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     text: relinkCitations(parsed.text, parsed.citations, citations),
     citations,
     internalSourced: citations.some((c) => c.internal === true),
+    proposedActions: [...toolContext.proposedActions],
     ...(escalation && { escalation }),
   }
 }

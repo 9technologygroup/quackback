@@ -54,17 +54,35 @@ export interface CopilotActivityPayload {
 }
 
 /**
+ * A write-tool call this copilot turn turned into a pending-approval row
+ * (P2-C.4, "act-on-approval"): the beyond-Fin edge where a Copilot answer can
+ * propose a real action and a teammate approves it inline, without Quinn ever
+ * running it directly from the Q&A turn. Mirrors `CopilotCitation`'s role for
+ * citations: the client-safe shape of `AssistantProposedAction`.
+ */
+export interface CopilotProposedAction {
+  /** The `assistant_pending_actions` row id, what the approve/reject fns key on. */
+  id: string
+  toolName: string
+  /** Human-readable one-liner, same text the inbox approval note card shows. */
+  summary: string
+}
+
+/**
  * copilot.v1.final: the completed turn. `suppressed` carries the silence-rule
  * reason on the rare turn Quinn was muted for (text is then empty and
  * `internalSourced` is always false). `internalSourced` is `true` when any
  * citation in the answer is internal: the server-computed gate the sidebar's
- * leak-gate confirm dialog reads.
+ * leak-gate confirm dialog reads. `proposedActions` is empty outside a turn
+ * that called a write tool (every write tool proposes rather than executes on
+ * this surface; see the copilot route's doc comment).
  */
 export interface CopilotFinalPayload {
   text: string
   citations: CopilotCitation[]
   internalSourced: boolean
   suppressed?: string
+  proposedActions: CopilotProposedAction[]
 }
 
 /** copilot.v1.error: a terminal failure after the stream opened. */

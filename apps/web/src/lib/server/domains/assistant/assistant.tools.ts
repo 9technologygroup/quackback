@@ -53,20 +53,28 @@ export type EffectiveToolMode = ToolControlMode | 'simulate'
 
 /**
  * Resolve a spec's effective mode for this turn: the saved control (or the
- * spec's default), then two folds on top, applied in order.
+ * spec's default), then three folds on top, applied in order.
  *
  * 1. Unsupported mode fails closed. A saved mode the spec no longer supports
  *    (or, for a read tool, 'approval': reads never support it) disables the
  *    tool rather than silently running under some other permissiveness.
  * 2. 'disabled' always wins. A tool the workspace turned off never runs
- *    under any circumstance, `ctx.simulate` included.
- * 3. Write-risk simulate override. A write-risk tool with `ctx.simulate` true
+ *    under any circumstance, `ctx.simulate`/`ctx.writeToolPolicy` included.
+ * 3. Write-risk propose override. A write-risk tool under `ctx.writeToolPolicy:
+ *    'propose'` (P2-C.4, the copilot surface) ALWAYS resolves to 'approval',
+ *    even one configured 'autonomous': the proposal card a teammate sees IS
+ *    the confirmation UX for a Copilot chat, so nothing fires without one,
+ *    regardless of `ctx.simulate`. This check runs before the simulate fold
+ *    below, so 'propose' wins over 'simulate' too if both were ever set.
+ * 4. Write-risk simulate override. A write-risk tool with `ctx.simulate` true
  *    resolves to 'simulate' unless `ctx.writeToolPolicy` is explicitly
- *    'controls', in which case the configured mode (approval or autonomous)
- *    is honored instead. `ctx.writeToolPolicy` unset behaves as 'simulate',
- *    matching today's behavior for every existing caller (see its doc on
+ *    'controls' (or 'propose', already handled above), in which case the
+ *    configured mode (approval or autonomous) is honored instead.
+ *    `ctx.writeToolPolicy` unset behaves as 'simulate', matching today's
+ *    behavior for every existing caller (see its doc on
  *    `AssistantToolContext`). Read-risk tools are never affected by
- *    `ctx.simulate`: reads only observe, so there is nothing to preview.
+ *    `ctx.simulate` or `ctx.writeToolPolicy`: reads only observe, so there is
+ *    nothing to preview or propose.
  */
 export function resolveEffectiveToolMode(
   spec: AssistantToolSpec,
@@ -82,8 +90,9 @@ export function resolveEffectiveToolMode(
     return 'disabled'
   }
   if (mode === 'disabled') return 'disabled'
-  if (spec.risk === 'write' && ctx.simulate && (ctx.writeToolPolicy ?? 'simulate') === 'simulate') {
-    return 'simulate'
+  if (spec.risk === 'write') {
+    if (ctx.writeToolPolicy === 'propose') return 'approval'
+    if (ctx.simulate && (ctx.writeToolPolicy ?? 'simulate') === 'simulate') return 'simulate'
   }
   return mode
 }
@@ -148,13 +157,19 @@ async function runWithPipeline(
   }
 
   if (mode === 'approval') {
-    await proposePendingAction({
+    const summary = spec.summarize(args)
+    const pending = await proposePendingAction({
       conversationId: ctx.conversationId as ConversationId,
       involvementId: ctx.involvementId ?? undefined,
       toolName: spec.name,
       args: args as Record<string, unknown>,
-      summary: spec.summarize(args),
+      summary,
     })
+    // Mirrors how search_knowledge records onto ctx.sources: the caller (the
+    // copilot route, today) reads this ledger off the tool context after the
+    // turn to surface what got proposed, alongside the customer-facing note
+    // proposePendingAction already dropped in the thread.
+    ctx.proposedActions.push({ id: pending.id, toolName: spec.name, summary })
     return { status: 'pending_approval', note: PENDING_APPROVAL_NOTE }
   }
 

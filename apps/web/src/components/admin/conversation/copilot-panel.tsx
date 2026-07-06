@@ -25,10 +25,17 @@ import {
   LockClosedIcon,
   MagnifyingGlassIcon,
   MapIcon,
+  ShieldCheckIcon,
   SparklesIcon,
 } from '@heroicons/react/24/outline'
-import { PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid'
-import type { ConversationId } from '@quackback/ids'
+import {
+  CheckCircleIcon,
+  CheckIcon,
+  PaperAirplaneIcon,
+  StopIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/solid'
+import type { AssistantPendingActionId, ConversationId } from '@quackback/ids'
 import { Avatar } from '@/components/ui/avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -65,6 +72,11 @@ import {
 } from '@/components/shared/conversation/assistant-turn'
 import { useSseTurn } from '@/lib/client/hooks/use-sse-turn'
 import { settingsQueries } from '@/lib/client/queries/settings'
+import { assistantPendingActionQueries } from '@/lib/client/queries/assistant-pending-actions'
+import {
+  useApproveAssistantAction,
+  useRejectAssistantAction,
+} from '@/lib/client/mutations/assistant-pending-actions'
 import { cn } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import {
@@ -76,6 +88,7 @@ import {
   type CopilotErrorPayload,
   type CopilotFinalPayload,
   type CopilotHistoryEntry,
+  type CopilotProposedAction,
   type TransformKind,
   type TransformDeltaPayload,
   type TransformFinalPayload,
@@ -135,6 +148,10 @@ interface CopilotTurn {
   citations: CopilotCitation[]
   internalSourced: boolean
   suppressed?: string
+  /** Write-tool calls this turn proposed (P2-C.4, act-on-approval); empty
+   *  unless the model called a write tool, since every write tool proposes
+   *  rather than executes on this surface. */
+  proposedActions: CopilotProposedAction[]
   status: 'streaming' | 'done' | 'error'
   activity: AssistantActivityStatus | null
   errorMessage?: string
@@ -434,6 +451,7 @@ export function CopilotPanel({
               citations: final.citations,
               internalSourced: final.internalSourced,
               suppressed: final.suppressed,
+              proposedActions: final.proposedActions ?? [],
               status: 'done',
               activity: null,
             })
@@ -483,6 +501,7 @@ export function CopilotPanel({
         answer: '',
         citations: [],
         internalSourced: false,
+        proposedActions: [],
         status: 'streaming',
         activity: null,
       },
@@ -506,6 +525,7 @@ export function CopilotPanel({
                 citations: [],
                 internalSourced: false,
                 suppressed: undefined,
+                proposedActions: [],
                 errorMessage: undefined,
                 status: 'streaming' as const,
                 activity: null,
@@ -668,6 +688,10 @@ function CopilotEmptyState() {
           <span>Suggests what to do next using your team&apos;s internal knowledge.</span>
         </li>
         <li className="flex items-start gap-2">
+          <ShieldCheckIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>Can take actions for you, with your approval.</span>
+        </li>
+        <li className="flex items-start gap-2">
           <LockClosedIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>Copilot chats are private to you.</span>
         </li>
@@ -770,7 +794,157 @@ function CopilotTurnView({
           </>
         )}
       </div>
+      {!streaming &&
+        turn.proposedActions.map((action) => (
+          <CopilotProposedActionCard key={action.id} action={action} />
+        ))}
       {!streaming && turn.citations.length > 0 && <CopilotSourcesList citations={turn.citations} />}
+    </div>
+  )
+}
+
+/** Terminal-status copy for a decided proposal that ISN'T executed/failed
+ *  (those two get their own richer treatment below). Mirrors
+ *  pending-action-card.tsx's TERMINAL_LABEL for the states it shares. */
+const PROPOSED_ACTION_TERMINAL_LABEL: Record<string, string> = {
+  approved: 'Approved',
+  rejected: 'Rejected',
+  expired: 'Expired',
+}
+
+/** "close_conversation" -> "Close conversation": a short, human tool label
+ *  for the card's kicker line. Derived from the internal tool name rather
+ *  than fetched from the server catalogue, since this is a purely cosmetic
+ *  label and the copilot client has no other reason to know tool metadata. */
+function humanizeToolName(toolName: string): string {
+  const words = toolName.split('_').filter(Boolean)
+  if (words.length === 0) return toolName
+  return [`${words[0][0]?.toUpperCase() ?? ''}${words[0].slice(1)}`, ...words.slice(1)].join(' ')
+}
+
+/** Pull a short, human line out of a tool's JSON result, if it offered one
+ *  (create_ticket's reference/title, or any tool's own `note`). Returns null
+ *  when nothing recognizable is there; the card falls back to a generic
+ *  "Approved and executed" in that case. */
+function formatProposedActionResult(result: unknown): string | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null
+  const r = result as Record<string, unknown>
+  if (typeof r.note === 'string' && r.note) return r.note
+  if (typeof r.reference === 'string' && r.reference) return `Ticket ${r.reference}`
+  if (typeof r.title === 'string' && r.title) return r.title
+  return null
+}
+
+/** The `{error}` a failed execution settled with (markPendingActionFailed's result shape). */
+function formatProposedActionFailure(result: unknown): string | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null
+  const error = (result as Record<string, unknown>).error
+  return typeof error === 'string' && error ? error : null
+}
+
+/** True for a 403 from the approve/reject gate: duck-typed off the DomainException
+ *  shape (`statusCode`/`code`) rather than `instanceof`, since a thrown server-fn
+ *  error's prototype chain isn't guaranteed to survive the RPC boundary, but its
+ *  own enumerable properties are. */
+function isPermissionDeniedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const withMeta = error as Error & { statusCode?: number; code?: string }
+  return withMeta.statusCode === 403 || withMeta.code === 'ASSISTANT_ACTION_PERMISSION_DENIED'
+}
+
+function proposedActionErrorMessage(error: unknown): string {
+  if (isPermissionDeniedError(error)) return 'You do not have permission to approve this action.'
+  return error instanceof Error && error.message ? error.message : GENERIC_ERROR
+}
+
+/**
+ * One write-tool call this Copilot turn proposed (P2-C.4, "act-on-approval"):
+ * tool label + summary + Approve/Reject, wired to the SAME gated server fns
+ * the inbox approval queue uses (functions/assistant-actions.ts via
+ * use-assistant-pending-actions' mutations), polling the same live row
+ * (assistantPendingActionQueries) so this card can never show a stale status
+ * relative to the inbox note card announcing the same proposal. A distinct
+ * visual from pending-action-card.tsx (that one's amber note-card chrome is
+ * built for the conversation thread, not a Copilot answer bubble), same data
+ * plumbing underneath, per the "reuse the same fns" rule.
+ */
+function CopilotProposedActionCard({ action }: { action: CopilotProposedAction }) {
+  const id = action.id as AssistantPendingActionId
+  const { data, isLoading, isError } = useQuery(assistantPendingActionQueries.detail(id))
+  const approve = useApproveAssistantAction()
+  const reject = useRejectAssistantAction()
+  const [inlineError, setInlineError] = useState<string | null>(null)
+
+  const busy = approve.isPending || reject.isPending
+
+  const decide = (mutate: typeof approve.mutate) => {
+    setInlineError(null)
+    mutate(
+      { pendingActionId: id },
+      { onError: (error) => setInlineError(proposedActionErrorMessage(error)) }
+    )
+  }
+
+  return (
+    <div className="mt-2 flex flex-col gap-1.5 rounded-lg border border-border bg-background p-2.5 text-xs">
+      <div className="flex items-center gap-1.5 font-medium text-foreground">
+        <ShieldCheckIcon className="h-3.5 w-3.5 shrink-0 text-primary" />
+        {humanizeToolName(action.toolName)}
+      </div>
+      <p className="text-muted-foreground">{action.summary}</p>
+
+      {isLoading ? (
+        <span className="text-muted-foreground">Checking status…</span>
+      ) : isError ? (
+        <span className="text-muted-foreground">Couldn&apos;t load the current status</span>
+      ) : data?.status === 'proposed' ? (
+        <div className="flex items-center gap-2 pt-0.5">
+          <Button type="button" size="sm" disabled={busy} onClick={() => decide(approve.mutate)}>
+            {approve.isPending ? (
+              <>
+                <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" /> Approving…
+              </>
+            ) : (
+              <>
+                <CheckIcon className="h-3.5 w-3.5" /> Approve
+              </>
+            )}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => decide(reject.mutate)}
+          >
+            {reject.isPending ? (
+              <>
+                <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" /> Rejecting…
+              </>
+            ) : (
+              <>
+                <XMarkIcon className="h-3.5 w-3.5" /> Reject
+              </>
+            )}
+          </Button>
+        </div>
+      ) : data?.status === 'executed' ? (
+        <div className="flex items-center gap-1.5 pt-0.5 text-emerald-700 dark:text-emerald-400">
+          <CheckCircleIcon className="h-4 w-4 shrink-0" />
+          <span>{formatProposedActionResult(data.result) ?? 'Approved and executed'}</span>
+        </div>
+      ) : data?.status === 'failed' ? (
+        <span className="pt-0.5 text-destructive">
+          {formatProposedActionFailure(data.result) ?? 'This action could not be completed.'}
+        </span>
+      ) : (
+        <span className="pt-0.5 font-medium text-muted-foreground">
+          {data
+            ? (PROPOSED_ACTION_TERMINAL_LABEL[data.status] ?? data.status)
+            : 'Unable to load status'}
+        </span>
+      )}
+      {inlineError && <span className="text-destructive">{inlineError}</span>}
     </div>
   )
 }

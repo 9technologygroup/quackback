@@ -662,6 +662,7 @@ describe('runAssistantTurn', () => {
         },
       ],
       internalSourced: false,
+      proposedActions: [],
     })
     expect(deltas.join('')).toBe('Use the reset link.')
     // Retrieval was called through the tool, audience-scoped.
@@ -845,6 +846,7 @@ describe('runAssistantTurn', () => {
       text: ASSISTANT_FALLBACK_MESSAGE,
       citations: [],
       internalSourced: false,
+      proposedActions: [],
     })
     expect(mockChat).toHaveBeenCalledTimes(2)
   })
@@ -879,6 +881,7 @@ describe('runAssistantTurn', () => {
       text: ASSISTANT_FALLBACK_MESSAGE,
       citations: [],
       internalSourced: false,
+      proposedActions: [],
     })
   })
 
@@ -1019,6 +1022,7 @@ describe('runAssistantTurn', () => {
       text: 'Click the reset link in your email.',
       citations: [],
       internalSourced: false,
+      proposedActions: [],
     })
     // Salvaged on the first attempt; no retry needed.
     expect(mockChat).toHaveBeenCalledTimes(1)
@@ -1163,6 +1167,82 @@ describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
     })
 
     expect(capturedCtx?.simulate).toBe(false)
+  })
+
+  it("threads writeToolPolicy onto the tool context (P2-C.4: copilot sets 'propose')", async () => {
+    mockRetrieve.mockResolvedValue([])
+    let capturedCtx: { writeToolPolicy?: unknown } | undefined
+    driveSearch((ctx) => {
+      capturedCtx = ctx as typeof capturedCtx
+    })
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_42' as never,
+      writeToolPolicy: 'propose',
+    })
+
+    expect(capturedCtx?.writeToolPolicy).toBe('propose')
+  })
+
+  it('defaults writeToolPolicy to undefined when the caller omits it', async () => {
+    mockRetrieve.mockResolvedValue([])
+    let capturedCtx: { writeToolPolicy?: unknown } | undefined
+    driveSearch((ctx) => {
+      capturedCtx = ctx as typeof capturedCtx
+    })
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_42' as never,
+    })
+
+    expect(capturedCtx?.writeToolPolicy).toBeUndefined()
+  })
+
+  it('surfaces ctx.proposedActions on the result (P2-C.4), mirroring ctx.sources for citations', async () => {
+    mockRetrieve.mockResolvedValue([])
+    mockChat.mockImplementation((opts: { context: { proposedActions: unknown[] } }) =>
+      (async function* () {
+        // Stands in for what the approval branch of runWithPipeline does
+        // (assistant.tools.ts): this file exercises the runtime's plumbing
+        // of the ledger onto the result, not the pipeline logic itself
+        // (covered end to end in assistant.tools.test.ts).
+        opts.context.proposedActions.push({
+          id: 'assistant_action_1',
+          toolName: 'end_conversation',
+          summary: 'Close the conversation',
+        })
+        yield* completeRun({ text: 'ok', citations: [] })
+      })()
+    )
+
+    const result = await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_42' as never,
+    })
+
+    expect(result).toMatchObject({
+      proposedActions: [
+        {
+          id: 'assistant_action_1',
+          toolName: 'end_conversation',
+          summary: 'Close the conversation',
+        },
+      ],
+    })
+  })
+
+  it('defaults proposedActions to an empty array when nothing was proposed', async () => {
+    mockRetrieve.mockResolvedValue([])
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    const result = await runAssistantTurn({ ...baseInput, messages: customerAsks('question') })
+
+    expect(result).toMatchObject({ proposedActions: [] })
   })
 })
 
