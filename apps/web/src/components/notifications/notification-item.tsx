@@ -2,7 +2,8 @@
 
 import { Link } from '@tanstack/react-router'
 import { formatDistanceToNow, isToday, format } from 'date-fns'
-import { cn } from '@/lib/shared/utils'
+import { cn, getInitials } from '@/lib/shared/utils'
+import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
 import { getNotificationTypeConfig } from './notification-type-config'
 import { getNotificationTarget } from './notification-target'
 import type { SerializedNotification } from '@/lib/client/hooks/use-notifications-queries'
@@ -90,6 +91,62 @@ interface ContentProps {
   isUnread: boolean
 }
 
+/**
+ * Leading visual for a notification row. Person-driven notifications (a
+ * comment, mention, or visitor message) show the actor's avatar with the
+ * type icon as a small overlay badge; system-driven types (status changes,
+ * assignments, changelogs) and any row created before actorName existed keep
+ * the plain icon circle. Shared by both variants so the two layouts never
+ * drift from each other. Fixed at 36px wide so the 320px dropdown never
+ * overflows.
+ */
+function NotificationLeadingVisual({
+  notification,
+  icon: Icon,
+  iconClass,
+  bgClass,
+  variant,
+}: {
+  notification: SerializedNotification
+  icon: React.ComponentType<{ className?: string }>
+  iconClass: string
+  bgClass: string
+  variant: 'compact' | 'full'
+}) {
+  if (notification.actorName) {
+    return (
+      <div className="relative flex-shrink-0">
+        <Avatar className="h-9 w-9">
+          {notification.actorAvatarUrl && (
+            <AvatarImage src={notification.actorAvatarUrl} alt={notification.actorName} />
+          )}
+          <AvatarFallback className="text-xs">{getInitials(notification.actorName)}</AvatarFallback>
+        </Avatar>
+        <span
+          className={cn(
+            'absolute -bottom-0.5 -end-0.5 w-[17px] h-[17px] rounded-full border-2 border-card flex items-center justify-center',
+            bgClass
+          )}
+        >
+          <Icon className={cn('h-2.5 w-2.5', iconClass)} />
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className={cn(
+        'flex-shrink-0 w-9 h-9 flex items-center justify-center',
+        variant === 'full' ? 'rounded-lg' : 'rounded-full',
+        bgClass
+      )}
+    >
+      <Icon className={cn(variant === 'full' ? 'h-4.5 w-4.5' : 'h-4 w-4', iconClass)} />
+    </div>
+  )
+}
+
 function CompactContent({ notification, icon: Icon, iconClass, bgClass, isUnread }: ContentProps) {
   return (
     <div
@@ -98,14 +155,13 @@ function CompactContent({ notification, icon: Icon, iconClass, bgClass, isUnread
         isUnread && 'bg-primary/[0.02]'
       )}
     >
-      <div
-        className={cn(
-          'flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center',
-          bgClass
-        )}
-      >
-        <Icon className={cn('h-4 w-4', iconClass)} />
-      </div>
+      <NotificationLeadingVisual
+        notification={notification}
+        icon={Icon}
+        iconClass={iconClass}
+        bgClass={bgClass}
+        variant="compact"
+      />
 
       <div className="flex-1 min-w-0 space-y-0.5">
         <p className={cn('text-sm leading-tight', isUnread ? 'font-medium' : 'text-foreground')}>
@@ -138,11 +194,13 @@ function FullContent({ notification, icon: Icon, iconClass, bgClass, isUnread }:
         <div className="absolute start-0 top-3 bottom-3 w-0.5 rounded-full bg-primary" />
       )}
 
-      <div
-        className={cn('flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center', bgClass)}
-      >
-        <Icon className={cn('h-4.5 w-4.5', iconClass)} />
-      </div>
+      <NotificationLeadingVisual
+        notification={notification}
+        icon={Icon}
+        iconClass={iconClass}
+        bgClass={bgClass}
+        variant="full"
+      />
 
       <div className="flex-1 min-w-0">
         <p className={cn('text-sm leading-tight', isUnread ? 'font-medium' : 'text-foreground')}>

@@ -110,7 +110,7 @@ export async function notifyVisitorMessage(opts: {
         type: 'chat_message' as const,
         title,
         body,
-        metadata: { conversationId: opts.conversation.id },
+        metadata: { conversationId: opts.conversation.id, actorName: opts.authorName },
       }))
     )
 

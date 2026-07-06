@@ -121,6 +121,7 @@ function buildNotifications(
         commenterName,
         commentPreview,
         isTeamMember,
+        actorName: commenterName,
       },
     }))
   }
@@ -154,7 +155,7 @@ function buildNotifications(
       title: `${actorName} mentioned you in a post`,
       body: truncate(data.postTitle, 150),
       postId: data.postId as PostId,
-      metadata: { postUrl: data.postUrl, excerpt: data.excerpt },
+      metadata: { postUrl: data.postUrl, excerpt: data.excerpt, actorName },
     }))
   }
 

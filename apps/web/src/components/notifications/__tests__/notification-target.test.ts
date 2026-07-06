@@ -21,6 +21,8 @@ function buildNotification(overrides: Partial<SerializedNotification>): Serializ
     conversationId: null,
     ticketId: null,
     changelogId: null,
+    actorName: null,
+    actorAvatarUrl: null,
     readAt: null,
     archivedAt: null,
     createdAt: new Date().toISOString(),

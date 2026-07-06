@@ -121,6 +121,75 @@ describe('notificationHook — post.mentioned', () => {
       excerpt: 'context paragraph',
     })
   })
+
+  it('carries actorName in metadata, same value used in the title', async () => {
+    const event = {
+      id: 'evt-6',
+      type: 'post.mentioned',
+      timestamp: new Date().toISOString(),
+      actor: { type: 'user', displayName: 'Alex' },
+      data: {
+        postId: 'post_123',
+        postTitle: 'Title',
+        postUrl: 'https://example.com/p/123',
+        mentionedPrincipalId: 'principal_target',
+        mentioningPrincipalId: 'principal_alex',
+        excerpt: 'context paragraph',
+      },
+    } as EventData
+
+    await notificationHook.run(event, { principalIds: ['principal_target' as never] }, {})
+    const call = batchSpy.mock.calls[0][0] as Array<{ metadata?: Record<string, unknown> }>
+    expect(call[0].metadata).toMatchObject({ actorName: 'Alex' })
+  })
+
+  it('falls back to Anonymous user for actorName when the actor has no displayName', async () => {
+    const event = {
+      id: 'evt-7',
+      type: 'post.mentioned',
+      timestamp: new Date().toISOString(),
+      actor: { type: 'user' },
+      data: {
+        postId: 'post_123',
+        postTitle: 'Title',
+        postUrl: 'https://example.com/p/123',
+        mentionedPrincipalId: 'principal_target',
+        mentioningPrincipalId: 'principal_unknown',
+        excerpt: '',
+      },
+    } as EventData
+
+    await notificationHook.run(event, { principalIds: ['principal_target' as never] }, {})
+    const call = batchSpy.mock.calls[0][0] as Array<{ metadata?: Record<string, unknown> }>
+    expect(call[0].metadata).toMatchObject({ actorName: 'Anonymous user' })
+  })
+})
+
+describe('notificationHook — comment.created', () => {
+  it('carries actorName in metadata, mirroring commenterName', async () => {
+    const event = {
+      id: 'evt-8',
+      type: 'comment.created',
+      timestamp: new Date().toISOString(),
+      actor: { type: 'user', displayName: 'Jordan' },
+      data: {},
+    } as EventData
+
+    const config = {
+      postId: 'post_1',
+      postTitle: 'A post',
+      boardSlug: 'feedback',
+      postUrl: 'https://example.com/posts/post_1',
+      commentId: 'post_comment_1',
+      commenterName: 'Jordan',
+      commentPreview: 'Nice work',
+      isTeamMember: false,
+    }
+
+    await notificationHook.run(event, { principalIds: ['principal_target' as never] }, config)
+    const call = batchSpy.mock.calls[0][0] as Array<{ metadata?: Record<string, unknown> }>
+    expect(call[0].metadata).toMatchObject({ commenterName: 'Jordan', actorName: 'Jordan' })
+  })
 })
 
 describe('notificationHook — changelog.published', () => {

@@ -83,7 +83,7 @@ export async function syncConversationMessageMentions(
         type: 'chat_mention' as const,
         title: `${authorName} mentioned you in a conversation`,
         body: truncate(input.content, NOTE_PREVIEW_MAX),
-        metadata: { conversationId },
+        metadata: { conversationId, actorName: authorName },
       }))
     )
 

@@ -39,6 +39,10 @@ export interface SerializedNotification {
   ticketId: string | null
   /** Target changelog entry for changelog notifications (from metadata); null otherwise. */
   changelogId: string | null
+  /** Display name of the person who triggered this notification (from metadata); null for system-driven types. */
+  actorName: string | null
+  /** Avatar URL for the actor (from metadata); null when unavailable. */
+  actorAvatarUrl: string | null
   readAt: string | null
   archivedAt: string | null
   createdAt: string
