@@ -18,6 +18,7 @@ import {
   validateAttachments,
   validateContent,
   richMessageFallbackLabel,
+  resolveMessageContent,
   toMessageDTO,
 } from '@/lib/server/messages/message-core'
 import { loadAuthors, fallbackAuthor } from '../principals/principal-display'
@@ -69,7 +70,10 @@ export async function insertTicketMessage(
   const attachments = validateAttachments(input.attachments)
   const safeContentJson = input.contentJson ? sanitizeTiptapContent(input.contentJson) : null
   const fallbackLabel = richMessageFallbackLabel(safeContentJson)
-  const content = validateContent(input.content, attachments.length > 0 || !!fallbackLabel)
+  const content = validateContent(
+    resolveMessageContent(input.content, safeContentJson),
+    attachments.length > 0 || !!fallbackLabel
+  )
 
   // Validate existence + read first_response_at before the write; the stamp is
   // idempotent (set once), so a read-before-update race is harmless.

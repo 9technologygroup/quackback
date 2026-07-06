@@ -4,6 +4,8 @@ import {
   tiptapJsonToMarkdown,
   contentJsonToMarkdown,
   commentMarkdownToTiptapJson,
+  tiptapJsonToText,
+  hasTextLeaf,
 } from '../markdown-tiptap'
 
 describe('markdownToTiptapJson', () => {
@@ -358,5 +360,127 @@ describe('commentMarkdownToTiptapJson', () => {
     const result = commentMarkdownToTiptapJson('Hello 😀 world!')
     const json = JSON.stringify(result)
     expect(json).toContain('😀')
+  })
+})
+
+describe('tiptapJsonToText', () => {
+  test('joins multiple paragraphs with a newline', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'First paragraph.' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'Second paragraph.' }] },
+      ],
+    }
+    expect(tiptapJsonToText(doc)).toBe('First paragraph.\nSecond paragraph.')
+  })
+
+  test('renders a bullet list as one item per line', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Item 1' }] }],
+            },
+            {
+              type: 'listItem',
+              content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Item 2' }] }],
+            },
+          ],
+        },
+      ],
+    }
+    expect(tiptapJsonToText(doc)).toBe('Item 1\nItem 2')
+  })
+
+  test('renders an image node as [image]', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'Look:' }] },
+        { type: 'chatImage', attrs: { src: 'https://cdn.example.com/x.png' } },
+      ],
+    }
+    expect(tiptapJsonToText(doc)).toContain('[image]')
+  })
+
+  test('renders a mention as @label', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'cc ' },
+            { type: 'mention', attrs: { id: 'p1', label: 'Alice' } },
+          ],
+        },
+      ],
+    }
+    expect(tiptapJsonToText(doc)).toBe('cc @Alice')
+  })
+
+  test('a hard break becomes a newline', () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'line one' },
+            { type: 'hardBreak' },
+            { type: 'text', text: 'line two' },
+          ],
+        },
+      ],
+    }
+    expect(tiptapJsonToText(doc)).toBe('line one\nline two')
+  })
+
+  test('an empty doc returns an empty string', () => {
+    expect(tiptapJsonToText({ type: 'doc', content: [] })).toBe('')
+  })
+
+  test('an image-only doc still renders [image] (callers, not this helper, decide whether to use it)', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'chatImage', attrs: { src: 'https://cdn.example.com/x.png' } }],
+    }
+    expect(tiptapJsonToText(doc)).toBe('[image]')
+  })
+})
+
+describe('hasTextLeaf', () => {
+  test('true for a doc with real text', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Hello' }] }],
+    }
+    expect(hasTextLeaf(doc)).toBe(true)
+  })
+
+  test('false for an image-only doc', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'chatImage', attrs: { src: 'https://cdn.example.com/x.png' } }],
+    }
+    expect(hasTextLeaf(doc)).toBe(false)
+  })
+
+  test('false for a doc whose only text node is whitespace', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: '   ' }] }],
+    }
+    expect(hasTextLeaf(doc)).toBe(false)
+  })
+
+  test('false for null/undefined', () => {
+    expect(hasTextLeaf(null)).toBe(false)
+    expect(hasTextLeaf(undefined)).toBe(false)
   })
 })

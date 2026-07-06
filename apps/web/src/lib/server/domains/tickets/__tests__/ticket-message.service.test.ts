@@ -121,4 +121,52 @@ describe.skipIf(!fixture.available)('ticket message service (real DB, rolled bac
     const customerView = await listTicketMessages(ticketId, { includeInternal: false })
     expect(customerView.messages.map((m) => m.content)).toEqual(['reply one', 'reply two'])
   })
+
+  it('derives content from contentJson when a text-bearing doc arrives with blank content', async () => {
+    const { ticketId, actor } = await seedTicketWithAgent()
+    const contentJson = {
+      type: 'doc' as const,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'First line.' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'Second line.' }] },
+      ],
+    }
+
+    const { message } = await sendTicketMessage(actor, { ticketId, content: '', contentJson })
+
+    expect(message.content).toBe('First line.\nSecond line.')
+  })
+
+  it('keeps the richMessageFallbackLabel behavior for an image-only doc with blank content', async () => {
+    const { ticketId, actor } = await seedTicketWithAgent()
+    const contentJson = {
+      type: 'doc' as const,
+      content: [{ type: 'chatImage', attrs: { src: null, alt: null } }],
+    }
+
+    const { message } = await sendTicketMessage(actor, { ticketId, content: '', contentJson })
+
+    // No text leaf to derive from: richMessageFallbackLabel just clears
+    // validateContent's empty-content guard (an image-only message is valid
+    // with no text) — it was never a source for the stored `content`, so
+    // that stays blank rather than being replaced with derived or label text.
+    expect(message.content).toBe('')
+    expect(message.contentJson?.content?.[0]?.type).toBe('chatImage')
+  })
+
+  it('prefers explicit non-blank content over deriving from contentJson', async () => {
+    const { ticketId, actor } = await seedTicketWithAgent()
+    const contentJson = {
+      type: 'doc' as const,
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Doc says this.' }] }],
+    }
+
+    const { message } = await sendTicketMessage(actor, {
+      ticketId,
+      content: 'Explicit content wins.',
+      contentJson,
+    })
+
+    expect(message.content).toBe('Explicit content wins.')
+  })
 })

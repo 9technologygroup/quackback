@@ -224,6 +224,23 @@ describe('sendVisitorMessage first-message conversation creation', () => {
   })
 })
 
+describe('sendVisitorMessage content derivation from contentJson', () => {
+  it('derives content from a text-bearing contentJson when content is blank', async () => {
+    const contentJson = {
+      type: 'doc' as const,
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Hello from the doc.' }] }],
+    }
+    const result = await sendVisitorMessage(
+      { content: '' },
+      { principalId: visitor },
+      visitorActor,
+      contentJson
+    )
+    expect(result.created).toBe(true)
+    expect(insertedMessages[0]).toMatchObject({ content: 'Hello from the doc.' })
+  })
+})
+
 describe('sendVisitorMessage attachments', () => {
   it('allows an attachment-only message (empty content)', async () => {
     const result = await sendVisitorMessage(

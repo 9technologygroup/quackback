@@ -72,6 +72,7 @@ import {
   validateContent,
   preview,
   richMessageFallbackLabel,
+  resolveMessageContent,
 } from '@/lib/server/messages/message-core'
 import {
   notifyVisitorMessage,
@@ -191,9 +192,8 @@ export async function captureVisitorContactEmail(
 
   // Changelog auto-subscribe touchpoint (Changelog Settings §2): "conversation
   // contact" — the moment a previously-anonymous visitor's email becomes known.
-  const { ensureAutoSubscribed } = await import(
-    '@/lib/server/domains/changelog/changelog-subscription.service'
-  )
+  const { ensureAutoSubscribed } =
+    await import('@/lib/server/domains/changelog/changelog-subscription.service')
   ensureAutoSubscribed(conversation.visitorPrincipalId).catch((err) =>
     log.error({ err }, 'failed to auto-subscribe to changelog on contact capture')
   )
@@ -223,8 +223,13 @@ export async function sendVisitorMessage(
   // doc with neither (an empty doc) yields '' → treated as no content below.
   const fallbackLabel = richMessageFallbackLabel(safeContentJson)
   // Empty content is valid when there are attachments OR a doc with a real
-  // content node (image/embed-only message).
-  const content = validateContent(input.content, attachments.length > 0 || !!fallbackLabel)
+  // content node (image/embed-only message). resolveMessageContent derives a
+  // plaintext mirror from the doc when the caller sent blank content
+  // alongside a text-bearing one (e.g. a client that only serializes contentJson).
+  const content = validateContent(
+    resolveMessageContent(input.content, safeContentJson),
+    attachments.length > 0 || !!fallbackLabel
+  )
 
   let created = false
   // The conversation's status BEFORE this message, so the assistant trigger can
@@ -517,7 +522,12 @@ export async function sendAgentMessage(
   const fallbackLabel = richMessageFallbackLabel(safeContentJson)
   // A rich message can be embed/image-only (no text), so empty content is valid
   // when there are attachments OR a doc with a real content node.
-  const content = validateContent(rawContent, attachments.length > 0 || !!fallbackLabel)
+  // resolveMessageContent derives a plaintext mirror from the doc when the
+  // caller sent blank content alongside a text-bearing one.
+  const content = validateContent(
+    resolveMessageContent(rawContent, safeContentJson),
+    attachments.length > 0 || !!fallbackLabel
+  )
 
   const txResult = await db.transaction(async (tx) => {
     const [existing] = await tx

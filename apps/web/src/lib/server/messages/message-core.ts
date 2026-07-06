@@ -10,6 +10,7 @@ import { ValidationError } from '@/lib/shared/errors'
 import { isTrustedAttachmentUrl } from '@/lib/server/storage/trusted-url'
 import { truncate } from '@/lib/shared/utils/string'
 import type { TiptapContent } from '@/lib/shared/db-types'
+import { tiptapJsonToText, hasTextLeaf } from '@/lib/server/markdown-tiptap'
 import type { PrincipalId } from '@quackback/ids'
 import {
   MAX_CONVERSATION_MESSAGE_LENGTH,
@@ -48,6 +49,24 @@ export function validateAttachments(
       size,
     }
   })
+}
+
+/**
+ * Resolve the plaintext to store for a composer-authored message: the
+ * caller's raw content when it carries real text, otherwise a plaintext
+ * derived from a text-bearing rich doc — so a client that sends a blank
+ * `content` alongside a real `contentJson` (e.g. one that only serializes
+ * the doc) still gets a `content` mirror faithful for FTS/transcripts/
+ * previews. A doc with no text leaf (image/embed-only) has nothing to
+ * derive, so the raw (blank) content passes through unchanged — validateContent,
+ * gated by richMessageFallbackLabel, still allows it.
+ */
+export function resolveMessageContent(
+  rawContent: string,
+  safeContentJson: TiptapContent | null
+): string {
+  if (rawContent?.trim() || !safeContentJson || !hasTextLeaf(safeContentJson)) return rawContent
+  return tiptapJsonToText(safeContentJson)
 }
 
 /** Trim + length-check message text; empty is allowed only with an attachment. */
