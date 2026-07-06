@@ -7,6 +7,7 @@ import {
   CheckIcon,
   CheckCircleIcon,
   EllipsisHorizontalIcon,
+  ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Spinner } from '@/components/shared/spinner'
@@ -57,7 +58,7 @@ function NotificationsPage() {
   const { filter } = Route.useSearch()
   const unreadOnly = filter === 'unread'
   const [archiveAllReadOpen, setArchiveAllReadOpen] = useState(false)
-  const { data, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } =
+  const { data, isLoading, isError, refetch, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useInfiniteNotifications({ unreadOnly })
   const markAsRead = useMarkNotificationAsRead()
   const markAllAsRead = useMarkAllNotificationsAsRead()
@@ -219,6 +220,29 @@ function NotificationsPage() {
       {isLoading ? (
         <div className="flex items-center justify-center py-24">
           <Spinner size="xl" className="border-primary" />
+        </div>
+      ) : isError ? (
+        <div
+          className="rounded-xl border border-border/50 bg-card shadow-sm animate-in fade-in duration-200 fill-mode-backwards"
+          style={{ animationDelay: '75ms' }}
+        >
+          <EmptyState
+            icon={ExclamationTriangleIcon}
+            title={intl.formatMessage({
+              id: 'portal.notifications.error.title',
+              defaultMessage: 'Failed to load',
+            })}
+            description={intl.formatMessage({
+              id: 'portal.notifications.error.description',
+              defaultMessage: "We couldn't load your notifications. Please try again.",
+            })}
+            action={
+              <Button variant="outline" size="sm" onClick={() => refetch()}>
+                <FormattedMessage id="portal.notifications.error.retry" defaultMessage="Retry" />
+              </Button>
+            }
+            className="py-20 px-6"
+          />
         </div>
       ) : notifications.length > 0 ? (
         <div className="space-y-6">

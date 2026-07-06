@@ -24,6 +24,10 @@ interface NotificationItemProps {
   style?: React.CSSProperties
 }
 
+// Same ring treatment as the bell button that opens the notification
+// dropdown, so every focusable notification surface reads consistently.
+const FOCUS_RING_CLASS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+
 export function NotificationItem({
   notification,
   onMarkAsRead,
@@ -43,6 +47,17 @@ export function NotificationItem({
       onMarkAsRead(notification.id)
     }
     onClick?.()
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
+    if (event.key === 'Enter' || event.key === ' ') {
+      // Space would otherwise scroll the page since the row isn't a
+      // native button.
+      if (event.key === ' ') {
+        event.preventDefault()
+      }
+      handleClick()
+    }
   }
 
   const content = isFullVariant ? (
@@ -79,7 +94,7 @@ export function NotificationItem({
         search={target.search}
         hash={target.hash}
         onClick={handleClick}
-        className={rowClassName}
+        className={cn(rowClassName, FOCUS_RING_CLASS)}
         style={style}
       >
         {content}
@@ -87,8 +102,27 @@ export function NotificationItem({
     )
   }
 
+  // Unroutable row: only unread rows are interactive (clicking marks them
+  // read). A read, unroutable row has nothing to do on click, so it's
+  // rendered inert — no role/tabIndex/onClick — rather than a dead focus
+  // stop or click target.
+  if (isUnread) {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={handleClick}
+        onKeyDown={handleKeyDown}
+        className={cn(rowClassName, FOCUS_RING_CLASS)}
+        style={style}
+      >
+        {content}
+      </div>
+    )
+  }
+
   return (
-    <div onClick={handleClick} className={rowClassName} style={style}>
+    <div className={rowClassName} style={style}>
       {content}
     </div>
   )
@@ -177,18 +211,28 @@ function CompactContent({ notification, icon: Icon, iconClass, bgClass, isUnread
       />
 
       <div className="flex-1 min-w-0 space-y-0.5">
+        {/* The dot below is aria-hidden, so this plain-English label is the
+            only unread signal exposed to screen readers. Both surfaces share
+            this component, so full i18n of the row is out of scope here. */}
+        {isUnread && <span className="sr-only">Unread</span>}
         <p className={cn('text-sm leading-tight', isUnread ? 'font-medium' : 'text-foreground')}>
           {notification.title}
         </p>
         {notification.body && (
           <p className="text-xs text-muted-foreground line-clamp-2">{notification.body}</p>
         )}
-        <p className="text-xs text-muted-foreground/70">
+        <time
+          className="block text-xs text-muted-foreground/70"
+          dateTime={new Date(notification.createdAt).toISOString()}
+          title={format(new Date(notification.createdAt), 'MMM d, yyyy, h:mm a')}
+        >
           {formatDistanceToNow(new Date(notification.createdAt), { addSuffix: true })}
-        </p>
+        </time>
       </div>
 
-      {isUnread && <div className="flex-shrink-0 w-2 h-2 rounded-full bg-primary mt-1.5" />}
+      {isUnread && (
+        <div className="flex-shrink-0 w-2 h-2 rounded-full bg-primary mt-1.5" aria-hidden="true" />
+      )}
     </div>
   )
 }
@@ -219,7 +263,10 @@ function FullContent({
       )}
     >
       {isUnread && (
-        <div className="absolute start-0 top-3 bottom-3 w-0.5 rounded-full bg-primary" />
+        <div
+          className="absolute start-0 top-3 bottom-3 w-0.5 rounded-full bg-primary"
+          aria-hidden="true"
+        />
       )}
 
       <NotificationLeadingVisual
@@ -233,6 +280,11 @@ function FullContent({
       {/* End padding reserves room for the absolutely-positioned unread dot
           and archive button so long titles never run underneath them. */}
       <div className="flex-1 min-w-0 pe-14">
+        {/* The accent bar and dot are aria-hidden, so this plain-English
+            label is the only unread signal exposed to screen readers. Both
+            surfaces share this component, so full i18n of the row is out of
+            scope here. */}
+        {isUnread && <span className="sr-only">Unread</span>}
         <p className={cn('text-sm leading-tight', isUnread ? 'font-medium' : 'text-foreground')}>
           {notification.title}
         </p>
@@ -251,6 +303,7 @@ function FullContent({
           <time
             className="text-[11px] text-muted-foreground/60 whitespace-nowrap"
             dateTime={createdAt.toISOString()}
+            title={format(createdAt, 'MMM d, yyyy, h:mm a')}
           >
             {isToday(createdAt)
               ? formatDistanceToNow(createdAt, { addSuffix: true })
@@ -262,7 +315,10 @@ function FullContent({
       {/* Sits to the start-side of the archive button (below), clear of its
           hitbox so the two never overlap. */}
       {isUnread && (
-        <div className="absolute end-10 top-4 flex-shrink-0 w-2.5 h-2.5 rounded-full bg-primary ring-4 ring-primary/10" />
+        <div
+          className="absolute end-10 top-4 flex-shrink-0 w-2.5 h-2.5 rounded-full bg-primary ring-4 ring-primary/10"
+          aria-hidden="true"
+        />
       )}
 
       {onArchive && (

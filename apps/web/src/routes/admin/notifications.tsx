@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { InboxIcon, CheckCircleIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline'
+import {
+  InboxIcon,
+  CheckCircleIcon,
+  EllipsisHorizontalIcon,
+  ExclamationTriangleIcon,
+} from '@heroicons/react/24/outline'
 import { BellIcon as BellIconSolid } from '@heroicons/react/24/solid'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Spinner } from '@/components/shared/spinner'
@@ -60,7 +65,7 @@ function NotificationsPage() {
   const { filter } = Route.useSearch()
   const unreadOnly = filter === 'unread'
   const [archiveAllReadOpen, setArchiveAllReadOpen] = useState(false)
-  const { data, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } =
+  const { data, isLoading, isError, refetch, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useInfiniteNotifications({ unreadOnly })
   const markAsRead = useMarkNotificationAsRead()
   const markAllAsRead = useMarkAllNotificationsAsRead()
@@ -163,6 +168,18 @@ function NotificationsPage() {
         <div className="flex items-center justify-center py-24">
           <Spinner size="xl" />
         </div>
+      ) : isError ? (
+        <EmptyState
+          icon={ExclamationTriangleIcon}
+          title="Failed to load"
+          description="We couldn't load your notifications. Please try again."
+          action={
+            <Button variant="outline" size="sm" onClick={() => refetch()}>
+              Retry
+            </Button>
+          }
+          className="py-24"
+        />
       ) : notifications.length > 0 ? (
         <ScrollArea className="flex-1">
           <div className="space-y-4 px-6 py-4">
