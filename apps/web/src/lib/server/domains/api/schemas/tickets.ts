@@ -73,6 +73,14 @@ const TicketSchema = z.object({
     .meta({ description: 'How many times the ticket has reopened', example: 0 }),
 })
 
+// A single image/file attachment ref on a ticket message.
+const TicketMessageAttachmentSchema = z.object({
+  url: z.string().meta({ example: 'https://cdn.example.com/uploads/screenshot.png' }),
+  name: z.string().meta({ example: 'screenshot.png' }),
+  contentType: z.string().meta({ example: 'image/png' }),
+  size: z.number().meta({ description: 'Size in bytes', example: 48213 }),
+})
+
 // Ticket message schema (GET /tickets/:id/messages)
 const TicketMessageSchema = z.object({
   id: TypeIdSchema.meta({ example: 'conversation_msg_01h455vb4pex5vsknk084sn02q' }),
@@ -93,7 +101,20 @@ const TicketMessageSchema = z.object({
     description: 'Display name of the author, null for system messages',
     example: 'Jane Doe',
   }),
-  content: z.string().meta({ example: 'I still cannot sign in after resetting my password.' }),
+  content: z.string().meta({
+    description:
+      'Markdown content. Derived from contentJson when it carries an image (restores ' +
+      '`![](…)` that plain markdown storage would otherwise lose), else the stored text verbatim.',
+    example: 'I still cannot sign in after resetting my password.',
+  }),
+  contentJson: z
+    .record(z.string(), z.unknown())
+    .nullable()
+    .meta({ description: 'Rich text content as TipTap JSON, null for plain-text messages' }),
+  attachments: z
+    .array(TicketMessageAttachmentSchema)
+    .nullable()
+    .meta({ description: 'Image/file attachments, null if none' }),
   createdAt: TimestampSchema,
 })
 

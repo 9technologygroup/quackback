@@ -1,5 +1,6 @@
 import type { TicketDTO } from '@/lib/server/domains/tickets/ticket.types'
 import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
+import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
 
 /** Public, stable ticket shape for the read API. Nested refs collapse to ids;
  *  status reports its human name + the stable category, stage the public slot. */
@@ -26,7 +27,9 @@ export function serializeTicket(dto: TicketDTO) {
   }
 }
 
-/** Public, stable ticket-message shape for the read API. */
+/** Public, stable ticket-message shape for the read API. `content` prefers the
+ *  stored markdown but restores image nodes from `contentJson` (mirrors the
+ *  posts/changelog read-path fix) — a plain message passes through verbatim. */
 export function serializeTicketMessage(dto: ConversationMessageDTO) {
   return {
     id: dto.id,
@@ -35,7 +38,9 @@ export function serializeTicketMessage(dto: ConversationMessageDTO) {
     isInternal: dto.isInternal,
     authorPrincipalId: dto.author?.principalId ?? null,
     authorName: dto.author?.displayName ?? null,
-    content: dto.content,
+    content: contentJsonToMarkdown(dto.contentJson, dto.content),
+    contentJson: dto.contentJson ?? null,
+    attachments: dto.attachments?.length ? dto.attachments : null,
     createdAt: dto.createdAt,
   }
 }
