@@ -2,10 +2,10 @@ import {
   CheckCircleIcon,
   ChatBubbleLeftEllipsisIcon,
   ChatBubbleLeftRightIcon,
-  SparklesIcon,
   NewspaperIcon,
   BellIcon,
   TicketIcon,
+  AtSymbolIcon,
 } from '@heroicons/react/24/solid'
 import type { NotificationType } from '@/lib/shared/types'
 
@@ -15,6 +15,8 @@ export interface NotificationTypeConfig {
   bgClass: string
 }
 
+// Color-coding strategy: @ symbol marks mention types (amber for posts, rose for conversations);
+// teal for support conversation; indigo separates ticket stage changes from blue post status changes.
 export const notificationTypeConfigs: Record<NotificationType, NotificationTypeConfig> = {
   post_status_changed: {
     icon: CheckCircleIcon,
@@ -27,7 +29,7 @@ export const notificationTypeConfigs: Record<NotificationType, NotificationTypeC
     bgClass: 'bg-purple-500/10',
   },
   post_mentioned: {
-    icon: SparklesIcon,
+    icon: AtSymbolIcon,
     iconClass: 'text-amber-500',
     bgClass: 'bg-amber-500/10',
   },
@@ -42,14 +44,14 @@ export const notificationTypeConfigs: Record<NotificationType, NotificationTypeC
     bgClass: 'bg-teal-500/10',
   },
   chat_mention: {
-    icon: ChatBubbleLeftRightIcon,
-    iconClass: 'text-teal-500',
-    bgClass: 'bg-teal-500/10',
+    icon: AtSymbolIcon,
+    iconClass: 'text-rose-500',
+    bgClass: 'bg-rose-500/10',
   },
   ticket_status_changed: {
     icon: TicketIcon,
-    iconClass: 'text-blue-500',
-    bgClass: 'bg-blue-500/10',
+    iconClass: 'text-indigo-500',
+    bgClass: 'bg-indigo-500/10',
   },
 }
 
