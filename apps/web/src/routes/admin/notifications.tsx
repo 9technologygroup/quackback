@@ -8,6 +8,16 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { NotificationItem } from '@/components/notifications/notification-item'
 import { useNotifications } from '@/lib/client/hooks/use-notifications-queries'
 import { useMarkNotificationAsRead, useMarkAllNotificationsAsRead } from '@/lib/client/mutations'
+import {
+  groupNotificationsByDate,
+  type NotificationDateGroupKey,
+} from '@/components/notifications/group-by-date'
+
+const GROUP_LABELS: Record<NotificationDateGroupKey, string> = {
+  today: 'Today',
+  yesterday: 'Yesterday',
+  earlier: 'Earlier',
+}
 
 export const Route = createFileRoute('/admin/notifications')({
   component: NotificationsPage,
@@ -21,6 +31,7 @@ function NotificationsPage() {
   const notifications = data?.notifications ?? []
   const unreadCount = data?.unreadCount ?? 0
   const total = data?.total ?? 0
+  const groups = groupNotificationsByDate(notifications)
 
   return (
     <div className="flex flex-col h-full">
@@ -60,14 +71,23 @@ function NotificationsPage() {
         </div>
       ) : notifications.length > 0 ? (
         <ScrollArea className="flex-1">
-          <div className="divide-y divide-border/50">
-            {notifications.map((notification) => (
-              <NotificationItem
-                key={notification.id}
-                notification={notification}
-                onMarkAsRead={(id) => markAsRead.mutate(id)}
-                variant="full"
-              />
+          <div className="space-y-4 px-6 py-4">
+            {groups.map((group) => (
+              <div key={group.label}>
+                <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+                  {GROUP_LABELS[group.label]}
+                </h2>
+                <div className="divide-y divide-border/50">
+                  {group.notifications.map((notification) => (
+                    <NotificationItem
+                      key={notification.id}
+                      notification={notification}
+                      onMarkAsRead={(id) => markAsRead.mutate(id)}
+                      variant="full"
+                    />
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         </ScrollArea>

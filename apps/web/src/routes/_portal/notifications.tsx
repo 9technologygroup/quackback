@@ -3,43 +3,15 @@ import { useIntl, FormattedMessage } from 'react-intl'
 import { BellIcon, InboxIcon, CheckIcon } from '@heroicons/react/24/outline'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Spinner } from '@/components/shared/spinner'
-import { isToday, isYesterday } from 'date-fns'
 import { Button } from '@/components/ui/button'
-import {
-  useNotifications,
-  type SerializedNotification,
-} from '@/lib/client/hooks/use-notifications-queries'
+import { useNotifications } from '@/lib/client/hooks/use-notifications-queries'
 import { useMarkNotificationAsRead, useMarkAllNotificationsAsRead } from '@/lib/client/mutations'
 import { NotificationItem } from '@/components/notifications/notification-item'
+import { groupNotificationsByDate } from '@/components/notifications/group-by-date'
 
 export const Route = createFileRoute('/_portal/notifications')({
   component: NotificationsPage,
 })
-
-/** Group notifications by time period for better scannability */
-function groupNotificationsByDate(notifications: SerializedNotification[]) {
-  const groups: { label: string; notifications: SerializedNotification[] }[] = []
-  const today: SerializedNotification[] = []
-  const yesterday: SerializedNotification[] = []
-  const earlier: SerializedNotification[] = []
-
-  for (const notification of notifications) {
-    const date = new Date(notification.createdAt)
-    if (isToday(date)) {
-      today.push(notification)
-    } else if (isYesterday(date)) {
-      yesterday.push(notification)
-    } else {
-      earlier.push(notification)
-    }
-  }
-
-  if (today.length > 0) groups.push({ label: 'today', notifications: today })
-  if (yesterday.length > 0) groups.push({ label: 'yesterday', notifications: yesterday })
-  if (earlier.length > 0) groups.push({ label: 'earlier', notifications: earlier })
-
-  return groups
-}
 
 function NotificationsPage() {
   const intl = useIntl()
