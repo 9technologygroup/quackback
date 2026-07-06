@@ -1,5 +1,9 @@
 import { createFileRoute, redirect, Outlet } from '@tanstack/react-router'
 import { fetchUserAvatar } from '@/lib/server/functions/portal'
+import { getMyPortalPermissionsFn } from '@/lib/server/functions/portal-permissions'
+import { PortalPermissionsProvider } from '@/lib/client/hooks/use-portal-permissions'
+import { isTeamMember } from '@/lib/shared/roles'
+import type { PermissionKey } from '@/lib/shared/permissions'
 import { PortalHeader } from '@/components/public/portal-header'
 import { AuthPopoverProvider } from '@/components/auth/auth-popover-context'
 import { AuthDialog } from '@/components/auth/auth-dialog'
@@ -137,12 +141,18 @@ export const Route = createFileRoute('/_portal')({
       if (instant) throw redirect({ href: instant.url })
     }
 
-    // userRole comes from bootstrap data, avatar needs to be fetched
-    const avatarData = session?.user
-      ? await fetchUserAvatar({
-          data: { userId: session.user.id, fallbackImageUrl: session.user.image },
-        })
-      : null
+    // userRole comes from bootstrap data, avatar needs to be fetched.
+    // Permission keys are resolved server-side once per request (render-only
+    // gating; the server still enforces every mutation) and only for team
+    // roles — end users and visitors skip the RPC entirely.
+    const [avatarData, permissionKeys] = await Promise.all([
+      session?.user
+        ? fetchUserAvatar({
+            data: { userId: session.user.id, fallbackImageUrl: session.user.image },
+          })
+        : null,
+      isTeamMember(userRole) ? getMyPortalPermissionsFn() : ([] as PermissionKey[]),
+    ])
 
     const brandingData = settings?.brandingData ?? null
     const faviconData = settings?.faviconData ?? null
@@ -192,6 +202,7 @@ export const Route = createFileRoute('/_portal')({
       locale,
       messages,
       prompt,
+      permissionKeys,
       gate: null,
     }
   },
@@ -269,36 +280,39 @@ function PortalLayout() {
     locale,
     messages,
     prompt,
+    permissionKeys,
   } = loaderData
 
   const isAuthenticated = !!session?.user && session.user.principalType !== 'anonymous'
 
   return (
     <PortalIntlProvider locale={locale} messages={messages}>
-      <AuthPopoverProvider>
-        <PortalAuthAutoOpen
-          mode={prompt.mode}
-          callbackUrl={prompt.callbackUrl}
-          error={prompt.error}
-          isAuthenticated={isAuthenticated}
-        />
-        <div className="min-h-screen bg-background flex flex-col">
-          {themeStyles && <style dangerouslySetInnerHTML={{ __html: themeStyles }} />}
-          {/* Custom CSS is injected after theme styles so it can override */}
-          {customCss && <style dangerouslySetInnerHTML={{ __html: customCss }} />}
-          <PortalHeader
-            orgName={org.name}
-            orgLogo={brandingData?.logoUrl ?? null}
-            userRole={userRole}
-            initialUserData={initialUserData}
-            showThemeToggle={themeMode === 'user'}
+      <PortalPermissionsProvider permissionKeys={permissionKeys}>
+        <AuthPopoverProvider>
+          <PortalAuthAutoOpen
+            mode={prompt.mode}
+            callbackUrl={prompt.callbackUrl}
+            error={prompt.error}
+            isAuthenticated={isAuthenticated}
           />
-          <main className="flex-1 w-full flex flex-col">
-            <Outlet />
-          </main>
-          <AuthDialog authConfig={authConfig} workspaceName={org.name} />
-        </div>
-      </AuthPopoverProvider>
+          <div className="min-h-screen bg-background flex flex-col">
+            {themeStyles && <style dangerouslySetInnerHTML={{ __html: themeStyles }} />}
+            {/* Custom CSS is injected after theme styles so it can override */}
+            {customCss && <style dangerouslySetInnerHTML={{ __html: customCss }} />}
+            <PortalHeader
+              orgName={org.name}
+              orgLogo={brandingData?.logoUrl ?? null}
+              userRole={userRole}
+              initialUserData={initialUserData}
+              showThemeToggle={themeMode === 'user'}
+            />
+            <main className="flex-1 w-full flex flex-col">
+              <Outlet />
+            </main>
+            <AuthDialog authConfig={authConfig} workspaceName={org.name} />
+          </div>
+        </AuthPopoverProvider>
+      </PortalPermissionsProvider>
     </PortalIntlProvider>
   )
 }

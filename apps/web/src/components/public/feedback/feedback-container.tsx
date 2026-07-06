@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useIntl } from 'react-intl'
+import { toast } from 'sonner'
+import { useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { useInfiniteScroll } from '@/lib/client/hooks/use-infinite-scroll'
 import { Spinner } from '@/components/shared/spinner'
 import { useRouter, useRouteContext } from '@tanstack/react-router'
@@ -19,11 +21,16 @@ import type { PostStatusEntity, PostTag } from '@/lib/shared/db-types'
 import { useAuthBroadcast } from '@/lib/client/hooks/use-auth-broadcast'
 import {
   flattenPublicPosts,
+  publicPostsKeys,
   usePublicPosts,
   useVotedPosts,
 } from '@/lib/client/hooks/use-portal-posts-query'
+import { useChangePostStatusId } from '@/lib/client/mutations/posts'
+import { usePortalPermissions } from '@/lib/client/hooks/use-portal-permissions'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { PublicPostListItem } from '@/lib/shared/types'
 import { cn } from '@/lib/shared/utils'
+import type { PostId, PostStatusId } from '@quackback/ids'
 
 interface FeedbackContainerProps {
   workspaceName: string
@@ -71,6 +78,12 @@ export function FeedbackContainer({
   const router = useRouter()
   const { session } = useRouteContext({ from: '__root__' })
   const { filters, setFilters, clearFilters, activeFilterCount } = usePublicFilters()
+  const queryClient = useQueryClient()
+  const { can } = usePortalPermissions()
+  const changeStatus = useChangePostStatusId()
+  // Team members with post.set_status get an inline status dropdown on the
+  // portal feed; end users and visitors keep the static badge.
+  const canSetStatus = can(PERMISSIONS.POST_SET_STATUS)
 
   // List key for animations - only updates when data finishes loading
   // This prevents double animations when filters change (stale data → new data)
@@ -218,6 +231,78 @@ export function FeedbackContainer({
     }, 100)
   }
 
+  // Write the new statusId straight into the feed's infinite-query cache so the
+  // badge updates immediately, no refetch flicker. Keyed by mergedFilters to
+  // match the live usePublicPosts query.
+  function patchFeedStatus(postId: PostId, statusId: PostStatusId | null): void {
+    queryClient.setQueryData<InfiniteData<{ items: PublicPostListItem[] }>>(
+      publicPostsKeys.list(mergedFilters),
+      (old) =>
+        old
+          ? {
+              ...old,
+              pages: old.pages.map((page) => ({
+                ...page,
+                items: page.items.map((p) => (p.id === postId ? { ...p, statusId } : p)),
+              })),
+            }
+          : old
+    )
+  }
+
+  // Optimistically apply a status, fire the mutation, and roll back on failure.
+  // Shared by the dropdown change and the undo action (undo just targets the
+  // previous statusId). Invalidates the feed on settle to reconcile with server.
+  async function applyStatusChange(
+    postId: PostId,
+    statusId: PostStatusId,
+    previousStatusId: PostStatusId | null
+  ): Promise<void> {
+    patchFeedStatus(postId, statusId)
+    try {
+      await changeStatus.mutateAsync({ postId, statusId })
+    } catch {
+      patchFeedStatus(postId, previousStatusId)
+      toast.error(
+        intl.formatMessage({
+          id: 'portal.postCard.statusChange.error',
+          defaultMessage: 'Failed to update status',
+        })
+      )
+      return
+    } finally {
+      queryClient.invalidateQueries({ queryKey: publicPostsKeys.lists() })
+    }
+  }
+
+  function handleStatusChange(post: PublicPostListItem, statusId: PostStatusId): void {
+    const previousStatusId = post.statusId
+    if (previousStatusId === statusId) return
+    void applyStatusChange(post.id, statusId, previousStatusId)
+    const newStatus = statuses.find((s) => s.id === statusId)
+    toast(
+      intl.formatMessage(
+        {
+          id: 'portal.postCard.statusChange.toast',
+          defaultMessage: 'Status updated to {status}',
+        },
+        { status: newStatus?.name ?? statusId }
+      ),
+      {
+        duration: 5000,
+        action: {
+          label: intl.formatMessage({
+            id: 'portal.postCard.statusChange.undo',
+            defaultMessage: 'Undo',
+          }),
+          onClick: () => {
+            if (previousStatusId) void applyStatusChange(post.id, previousStatusId, statusId)
+          },
+        },
+      }
+    )
+  }
+
   return (
     <div className="py-6">
       <div className="flex gap-8">
@@ -304,6 +389,9 @@ export function FeedbackContainer({
                         canVote={
                           post.board ? (boardPermissions?.[post.board.id]?.canVote ?? false) : false
                         }
+                        canChangeStatus={canSetStatus}
+                        onStatusChange={(statusId) => handleStatusChange(post, statusId)}
+                        isUpdatingStatus={changeStatus.isPending}
                         showAvatar={false}
                       />
                     </div>

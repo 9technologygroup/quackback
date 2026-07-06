@@ -70,7 +70,12 @@ interface PostCardProps {
   onDelete?: () => void
 
   // Admin mode props
-  /** Enable admin mode with editable status */
+  /**
+   * Render the status badge as an editable dropdown. Independent of admin
+   * mode (which is driven by `onClick`): the portal passes this to let team
+   * members with `post.set_status` change status inline while keeping Link
+   * navigation and the author quick-actions.
+   */
   canChangeStatus?: boolean
   /** Callback when status changes (required if canChangeStatus) */
   onStatusChange?: (statusId: PostStatusId) => void
@@ -121,7 +126,12 @@ export function PostCard({
   // Safe hook - returns null in admin context where AuthPopoverProvider isn't available
   const intl = useIntl()
   const authPopover = useAuthPopoverSafe()
-  const isAdminMode = canChangeStatus || !!onClick
+  // "Admin mode" here means the inbox list rendering: modal-style navigation
+  // (onClick instead of a Link) plus the admin quick-actions overlay. It is
+  // deliberately NOT tied to canChangeStatus: the public portal grants status
+  // editing to team members via canChangeStatus while keeping Link navigation
+  // and the author quick-actions (edit/delete), so the two concerns are split.
+  const isAdminMode = !!onClick
   const currentStatus = statuses.find((s) => s.id === statusId)
   const createdAtDate = typeof createdAt === 'string' ? new Date(createdAt) : createdAt
 

@@ -20,6 +20,8 @@ import { DeletePostDialog } from '@/components/public/post-detail/delete-post-di
 import { usePostPermissions, postPermissionsKeys } from '@/lib/client/hooks/use-portal-posts-query'
 import { getPostPermissionsFn } from '@/lib/server/functions/public-posts'
 import { usePostActions } from '@/lib/client/mutations'
+import { usePortalTeamPostActions } from '@/lib/client/mutations/portal-team-post-actions'
+import { MergeIntoDialog, MergeOthersDialog } from '@/components/admin/feedback/merge-section'
 import { usePortalImageUpload } from '@/lib/client/hooks/use-image-upload'
 import {
   useDeleteComment,
@@ -32,6 +34,7 @@ import { PortalMergeBanner } from '@/components/public/post-detail/merge-banner'
 import { similarPostsQuery } from '@/components/public/post-detail/similar-posts-section'
 import { isValidTypeId, type PostCommentId, type PostId } from '@quackback/ids'
 import type { TiptapContent } from '@/lib/shared/schemas/posts'
+import type { PostStatusEntity } from '@/lib/shared/db-types'
 
 export const Route = createFileRoute('/_portal/b/$slug/posts/$postId')({
   loader: async ({ params, context }) => {
@@ -112,6 +115,8 @@ function PostDetailPage() {
   const intl = useIntl()
   const [isEditingPost, setIsEditingPost] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [mergeIntoDialogOpen, setMergeIntoDialogOpen] = useState(false)
+  const [mergeOthersDialogOpen, setMergeOthersDialogOpen] = useState(false)
 
   // Post detail already includes board data (JOINed in query)
   const postQuery = useSuspenseQuery(portalDetailQueries.postDetail(postId))
@@ -123,8 +128,23 @@ function PostDetailPage() {
     canDelete: false,
   }
 
+  // Team-member capabilities (permission-gated; empty set for customers, so
+  // every flag reads false and the portal UI is unchanged for them).
+  const team = usePortalTeamPostActions({
+    postId,
+    post: postQuery.data,
+    boardSlug: slug,
+    onEditSaved: () => setIsEditingPost(false),
+  })
+
+  // Author-window rules (canEdit/canDelete) and team permissions compose:
+  // authors keep the user-scoped save/delete path, team members without
+  // author rights go through the permission-enforced admin path.
+  const effectiveCanEdit = canEdit || team.canTeamEdit
+  const effectiveCanDelete = canDelete || team.canTeamDelete
+
   const isAnonymousSession = session?.user?.principalType === 'anonymous'
-  const canUploadImages = canEdit && !isAnonymousSession && !!session?.user
+  const canUploadImages = effectiveCanEdit && !isAnonymousSession && !!session?.user
   const { upload: uploadImage } = usePortalImageUpload()
 
   const {
@@ -177,6 +197,26 @@ function PostDetailPage() {
     ...post,
     contentJson: (post.contentJson ?? { type: 'doc' }) as TiptapContent,
   }
+
+  // Manage row (merge / lock / delete) — team members only, one action per
+  // permission key. The portal detail endpoint never serves deleted posts, so
+  // the restore branch is wired but unreachable here.
+  const manageActions =
+    team.canMerge || team.canTeamEdit || team.canTeamDelete
+      ? {
+          onMergeOthers: team.canMerge ? () => setMergeOthersDialogOpen(true) : undefined,
+          onMergeInto: team.canMerge ? () => setMergeIntoDialogOpen(true) : undefined,
+          onToggleLock: team.onToggleLock,
+          isCommentsLocked: !!post.isCommentsLocked,
+          isLockPending: team.isLockPending,
+          onDelete: team.canTeamDelete ? () => setDeleteDialogOpen(true) : undefined,
+          onRestore: team.restorePostAsTeam,
+          isDeleted: false,
+          isRestorePending: team.isTeamRestoring,
+          isMerged: !!post.mergeInfo,
+          hasDuplicateSignals: false,
+        }
+      : undefined
 
   // Scroll to a comment anchor (e.g. arriving from a comment notification) once the
   // comments have rendered. Runs once per hash value (tracked via ref) and is a no-op,
@@ -239,17 +279,17 @@ function PostDetailPage() {
             post={typedPost}
             currentStatus={currentStatus}
             authorAvatarUrl={post.authorAvatarUrl}
-            canEdit={canEdit}
-            canDelete={canDelete}
+            canEdit={effectiveCanEdit}
+            canDelete={effectiveCanDelete}
             editReason={editReason}
             deleteReason={deleteReason}
             onDelete={() => setDeleteDialogOpen(true)}
             isEditing={isEditingPost}
             onEditStart={() => setIsEditingPost(true)}
-            onEditSave={editPost}
+            onEditSave={canEdit ? editPost : (team.saveEditAsTeam ?? editPost)}
             onEditCancel={() => setIsEditingPost(false)}
             onImageUpload={canUploadImages ? uploadImage : undefined}
-            isSaving={isSavingEdit}
+            isSaving={isSavingEdit || team.isTeamSavingEdit}
           />
 
           <Suspense fallback={<MetadataSidebarSkeleton />}>
@@ -264,6 +304,20 @@ function PostDetailPage() {
               eta={post.eta ?? null}
               tags={post.tags}
               roadmaps={post.roadmaps}
+              allStatuses={
+                team.canSetStatus ? (statusesQuery.data as unknown as PostStatusEntity[]) : []
+              }
+              onStatusChange={team.onStatusChange}
+              onEtaChange={team.onEtaChange}
+              allTags={team.allTags}
+              onTagsChange={team.onTagsChange}
+              allBoards={team.allBoards}
+              onBoardChange={team.onBoardChange}
+              allRoadmaps={team.allRoadmaps}
+              onRoadmapAdd={team.onRoadmapAdd}
+              onRoadmapRemove={team.onRoadmapRemove}
+              isUpdating={team.isMetaUpdating}
+              manageActions={manageActions}
             />
           </Suspense>
         </div>
@@ -306,9 +360,40 @@ function PostDetailPage() {
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         postTitle={post.title}
-        onConfirm={() => deletePost()}
-        isPending={isDeleting}
+        onConfirm={() => {
+          if (canDelete) {
+            deletePost()
+          } else {
+            void team.deletePostAsTeam?.()
+          }
+        }}
+        isPending={isDeleting || team.isTeamDeleting}
       />
+
+      {/* Merge dialogs — team members holding post.merge only. Invalidate on
+          close so a completed merge is reflected on the portal page. */}
+      {team.canMerge && (
+        <>
+          <MergeIntoDialog
+            postId={postId}
+            postTitle={post.title}
+            open={mergeIntoDialogOpen}
+            onOpenChange={(open) => {
+              setMergeIntoDialogOpen(open)
+              if (!open) team.invalidatePortal()
+            }}
+          />
+          <MergeOthersDialog
+            postId={postId}
+            postTitle={post.title}
+            open={mergeOthersDialogOpen}
+            onOpenChange={(open) => {
+              setMergeOthersDialogOpen(open)
+              if (!open) team.invalidatePortal()
+            }}
+          />
+        </>
+      )}
     </div>
   )
 }

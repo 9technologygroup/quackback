@@ -81,18 +81,23 @@ function NoneLabel() {
   return <span className="text-sm italic text-muted-foreground">None</span>
 }
 
+/**
+ * Manage-row actions. Every group is optional: a group's controls render only
+ * when its callbacks are provided, so callers can expose exactly the actions
+ * the actor is permitted to perform (the admin modal passes everything).
+ */
 export interface MetadataSidebarManageActions {
-  onMergeOthers: () => void
-  onMergeInto: () => void
-  onToggleLock: () => void
-  isCommentsLocked: boolean
-  isLockPending: boolean
-  onDelete: () => void
-  onRestore: () => void
-  isDeleted: boolean
-  isRestorePending: boolean
-  isMerged: boolean
-  hasDuplicateSignals: boolean
+  onMergeOthers?: () => void
+  onMergeInto?: () => void
+  onToggleLock?: () => void
+  isCommentsLocked?: boolean
+  isLockPending?: boolean
+  onDelete?: () => void
+  onRestore?: () => void
+  isDeleted?: boolean
+  isRestorePending?: boolean
+  isMerged?: boolean
+  hasDuplicateSignals?: boolean
 }
 
 interface ManagePostActionsProps {
@@ -124,7 +129,7 @@ export function ManagePostActions({
       )}
       <TooltipProvider delayDuration={300}>
         <div className="flex items-center gap-0.5">
-          {!actions.isMerged && (
+          {!actions.isMerged && actions.onMergeOthers && actions.onMergeInto && (
             <DropdownMenu>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -164,35 +169,37 @@ export function ManagePostActions({
             </DropdownMenu>
           )}
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={actions.onToggleLock}
-                disabled={actions.isLockPending}
-                className="flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-50"
-              >
-                {actions.isCommentsLocked ? (
-                  <IconLock className="h-5 w-5" strokeWidth={1.5} />
-                ) : (
-                  <IconLockOpen className="h-5 w-5" strokeWidth={1.5} />
-                )}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              {actions.isCommentsLocked
-                ? intl.formatMessage({
-                    id: 'portal.postDetail.metadata.unlockComments',
-                    defaultMessage: 'Unlock comments',
-                  })
-                : intl.formatMessage({
-                    id: 'portal.postDetail.metadata.lockComments',
-                    defaultMessage: 'Lock comments',
-                  })}
-            </TooltipContent>
-          </Tooltip>
+          {actions.onToggleLock && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={actions.onToggleLock}
+                  disabled={actions.isLockPending}
+                  className="flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-50"
+                >
+                  {actions.isCommentsLocked ? (
+                    <IconLock className="h-5 w-5" strokeWidth={1.5} />
+                  ) : (
+                    <IconLockOpen className="h-5 w-5" strokeWidth={1.5} />
+                  )}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {actions.isCommentsLocked
+                  ? intl.formatMessage({
+                      id: 'portal.postDetail.metadata.unlockComments',
+                      defaultMessage: 'Unlock comments',
+                    })
+                  : intl.formatMessage({
+                      id: 'portal.postDetail.metadata.lockComments',
+                      defaultMessage: 'Lock comments',
+                    })}
+              </TooltipContent>
+            </Tooltip>
+          )}
 
-          {actions.isDeleted ? (
+          {actions.isDeleted && actions.onRestore ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -211,7 +218,7 @@ export function ManagePostActions({
                 })}
               </TooltipContent>
             </Tooltip>
-          ) : (
+          ) : !actions.isDeleted && actions.onDelete ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -229,7 +236,7 @@ export function ManagePostActions({
                 })}
               </TooltipContent>
             </Tooltip>
-          )}
+          ) : null}
         </div>
       </TooltipProvider>
     </div>
@@ -251,8 +258,10 @@ interface MetadataSidebarProps {
   tags?: Array<{ id: string; name: string; color: string }>
   roadmaps?: Array<{ id: string; name: string; slug: string }>
 
-  // Admin mode props (all optional)
-  /** Enable admin mode with editable metadata */
+  // Team/admin mode props (all optional). Each metadata editor renders iff its
+  // callback (and any option list it needs) is provided, so callers can enable
+  // exactly the editors the actor is permitted to use.
+  /** Enable admin-only ambient sections (voters stack, author link to admin) */
   canEdit?: boolean
   /** All available statuses for dropdown */
   allStatuses?: PostStatusEntity[]
@@ -367,9 +376,9 @@ export function MetadataSidebar({
     reason: null,
   }
 
-  // Computed values for admin mode
+  // Computed values for team/admin mode
   const currentStatus =
-    canEdit && allStatuses.length > 0 ? allStatuses.find((s) => s.id === status?.id) : undefined
+    allStatuses.length > 0 ? allStatuses.find((s) => s.id === status?.id) : undefined
   const availableTags = allTags.filter((t) => !tags.some((pt) => pt.id === t.id))
   const currentRoadmapIds = roadmaps.map((r) => r.id)
   const availableRoadmaps = allRoadmaps.filter((r) => !currentRoadmapIds.includes(r.id))
@@ -501,7 +510,7 @@ export function MetadataSidebar({
           <span className="text-sm text-muted-foreground">
             <FormattedMessage id="portal.postDetail.metadata.status" defaultMessage="Status" />
           </span>
-          {canEdit && onStatusChange && allStatuses.length > 0 ? (
+          {onStatusChange && allStatuses.length > 0 ? (
             <StatusDropdown
               currentStatus={currentStatus}
               statuses={allStatuses}
@@ -516,8 +525,8 @@ export function MetadataSidebar({
           )}
         </div>
 
-        {/* ETA (time-based roadmap). Read: a "Mar 2027" chip; admin: month picker. */}
-        {(canEdit || etaLabel) && (
+        {/* ETA (time-based roadmap). Read: a "Mar 2027" chip; editor: month picker. */}
+        {(onEtaChange || etaLabel) && (
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <CalendarIcon className="h-4 w-4" />
@@ -525,7 +534,7 @@ export function MetadataSidebar({
                 <FormattedMessage id="portal.postDetail.metadata.eta" defaultMessage="ETA" />
               </span>
             </div>
-            {canEdit && onEtaChange ? (
+            {onEtaChange ? (
               <Popover open={etaOpen} onOpenChange={setEtaOpen}>
                 <PopoverTrigger asChild>
                   <button
@@ -585,7 +594,7 @@ export function MetadataSidebar({
               <FormattedMessage id="portal.postDetail.metadata.board" defaultMessage="Board" />
             </span>
           </div>
-          {canEdit && onBoardChange && allBoards && allBoards.length > 0 ? (
+          {onBoardChange && allBoards && allBoards.length > 0 ? (
             <Popover open={boardOpen} onOpenChange={setBoardOpen}>
               <PopoverTrigger asChild>
                 <button
@@ -638,7 +647,7 @@ export function MetadataSidebar({
               <FormattedMessage id="portal.postDetail.metadata.tags" defaultMessage="Tags" />
             </span>
           </div>
-          {canEdit && onTagsChange ? (
+          {onTagsChange ? (
             <div className="flex flex-wrap justify-end gap-1 max-w-[60%]">
               {tags.map((tag) => (
                 <button
@@ -747,7 +756,7 @@ export function MetadataSidebar({
               <FormattedMessage id="portal.postDetail.metadata.roadmap" defaultMessage="Roadmap" />
             </span>
           </div>
-          {canEdit && onRoadmapAdd && onRoadmapRemove ? (
+          {onRoadmapAdd && onRoadmapRemove ? (
             <div className="flex flex-wrap justify-end gap-1 max-w-[60%]">
               {roadmaps.map((roadmap) => {
                 const isPending = pendingRoadmapId === roadmap.id
