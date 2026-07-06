@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { XMarkIcon } from '@heroicons/react/24/solid'
 import type { JSONContent } from '@tiptap/react'
 import type { PrincipalId, TicketId } from '@quackback/ids'
 import type { TicketType, TiptapContent } from '@/lib/shared/db-types'
 import { TICKET_TYPES } from '@/lib/shared/db-types'
-import { createTicketFn } from '@/lib/server/functions/tickets'
-import { ticketKeys } from '@/lib/client/queries/tickets'
+import { useCreateTicket } from '@/lib/client/mutations/tickets'
 import { ticketTypeLabel } from '@/components/admin/tickets/ticket-chips'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import { PortalUserPicker } from '@/components/shared/portal-user-picker'
@@ -77,20 +75,7 @@ export function NewTicketDialog({
     }
   }, [open])
 
-  const queryClient = useQueryClient()
-  const create = useMutation({
-    mutationFn: (vars: {
-      type: TicketType
-      title: string
-      description?: string
-      descriptionJson?: TiptapContent | null
-      requesterPrincipalId?: PrincipalId
-    }) => createTicketFn({ data: vars }),
-    onSuccess: (ticket) => {
-      queryClient.setQueryData(ticketKeys.detail(ticket.id), ticket)
-      void queryClient.invalidateQueries({ queryKey: ticketKeys.lists() })
-    },
-  })
+  const create = useCreateTicket()
   const { upload: uploadImage } = useImageUpload({ prefix: 'chat-images' })
   const canCreate = title.trim().length > 0 && !create.isPending
 
