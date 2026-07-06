@@ -68,6 +68,7 @@ export const getNotificationsFn = createServerFn({ method: 'GET' })
           // the client can deep-link into the inbox.
           const conversationId = n.metadata?.conversationId
           const ticketId = n.metadata?.ticketId
+          const changelogId = n.metadata?.changelogId
           return {
             id: n.id,
             principalId: n.principalId,
@@ -78,6 +79,7 @@ export const getNotificationsFn = createServerFn({ method: 'GET' })
             commentId: n.commentId,
             conversationId: typeof conversationId === 'string' ? conversationId : null,
             ticketId: typeof ticketId === 'string' ? ticketId : null,
+            changelogId: typeof changelogId === 'string' ? changelogId : null,
             readAt: n.readAt?.toISOString() ?? null,
             archivedAt: n.archivedAt?.toISOString() ?? null,
             createdAt: n.createdAt.toISOString(),

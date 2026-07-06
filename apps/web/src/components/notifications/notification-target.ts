@@ -13,7 +13,7 @@ export interface NotificationTarget {
   to: string
   params?: Record<string, string>
   search?: Record<string, string>
-  /** Unused until a follow-up work order adds comment-level anchors within a post/ticket thread. */
+  /** Anchors the target route to a specific element, e.g. a comment within a post thread. */
   hash?: string
 }
 
@@ -21,10 +21,15 @@ export function getNotificationTarget(
   notification: SerializedNotification
 ): NotificationTarget | null {
   if (notification.post && notification.postId) {
-    return {
+    const target: NotificationTarget = {
       to: '/b/$slug/posts/$postId',
       params: { slug: notification.post.boardSlug, postId: notification.postId },
     }
+    // Anchor a comment notification to the comment itself rather than just the post.
+    if (notification.type === 'comment_created' && notification.commentId) {
+      target.hash = `comment-${notification.commentId}`
+    }
+    return target
   }
 
   // Conversation mentions and messages deep-link into the inbox conversation.
@@ -44,9 +49,12 @@ export function getNotificationTarget(
     return { to: '/support/ticket/$ticketId', params: { ticketId: notification.ticketId } }
   }
 
-  // Deep-links to the specific changelog entry are a follow-up; for now land
-  // on the changelog index.
+  // Deep-link to the specific changelog entry when we have its id. Rows created
+  // before changelogId was threaded through metadata fall back to the index.
   if (notification.type === 'changelog_published') {
+    if (notification.changelogId) {
+      return { to: '/changelog/$entryId', params: { entryId: notification.changelogId } }
+    }
     return { to: '/changelog' }
   }
 

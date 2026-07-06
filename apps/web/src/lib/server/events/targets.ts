@@ -750,17 +750,18 @@ async function getChangelogSubscriberTargets(
   const changelogId = event.data.changelog.id
   if (!changelogId) return []
 
-  const { changelogEntryPosts, changelogSubscriptions, isNull, isNotNull, eq: eqOp } =
-    await import('@/lib/server/db')
-  const { getChangelogSettings } = await import(
-    '@/lib/server/domains/settings/settings.changelog'
-  )
-  const { resolveSendingAddress } = await import(
-    '@/lib/server/domains/channel-accounts/channel-account.service'
-  )
-  const { batchGenerateChangelogUnsubscribeTokens } = await import(
-    '@/lib/server/domains/subscriptions/subscription.service'
-  )
+  const {
+    changelogEntryPosts,
+    changelogSubscriptions,
+    isNull,
+    isNotNull,
+    eq: eqOp,
+  } = await import('@/lib/server/db')
+  const { getChangelogSettings } = await import('@/lib/server/domains/settings/settings.changelog')
+  const { resolveSendingAddress } =
+    await import('@/lib/server/domains/channel-accounts/channel-account.service')
+  const { batchGenerateChangelogUnsubscribeTokens } =
+    await import('@/lib/server/domains/subscriptions/subscription.service')
 
   // 1. Legacy linked-post subscribers (additive source).
   const linkedPosts = await db.query.changelogEntryPosts.findMany({
@@ -891,6 +892,7 @@ async function getChangelogSubscriberTargets(
         principalIds: nonActorSubscribers.map((s) => s.principalId),
       },
       config: {
+        changelogId,
         changelogTitle: event.data.changelog.title,
         changelogUrl,
         contentPreview: event.data.changelog.contentPreview,

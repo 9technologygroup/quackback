@@ -122,3 +122,35 @@ describe('notificationHook — post.mentioned', () => {
     })
   })
 })
+
+describe('notificationHook — changelog.published', () => {
+  it('includes changelogId in the notification metadata', async () => {
+    const event = {
+      id: 'evt-5',
+      type: 'changelog.published',
+      timestamp: new Date().toISOString(),
+      actor: { type: 'service' },
+      data: {
+        changelog: {
+          id: 'changelog_1',
+          title: 'New feature',
+          contentPreview: 'We shipped a thing',
+          publishedAt: new Date().toISOString(),
+          linkedPostCount: 0,
+        },
+      },
+    } as EventData
+
+    const target: NotificationTarget = { principalIds: ['principal_target' as never] }
+    const config = {
+      changelogId: 'changelog_1',
+      changelogTitle: 'New feature',
+      changelogUrl: 'https://example.com/changelog',
+      contentPreview: 'We shipped a thing',
+    }
+
+    await notificationHook.run(event, target, config)
+    const call = batchSpy.mock.calls[0][0] as Array<{ metadata?: Record<string, unknown> }>
+    expect(call[0].metadata).toMatchObject({ changelogId: 'changelog_1' })
+  })
+})

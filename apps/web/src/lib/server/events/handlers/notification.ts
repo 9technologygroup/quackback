@@ -136,6 +136,7 @@ function buildNotifications(
       title: `New update: ${changelogTitle}`,
       body,
       metadata: {
+        changelogId: changelogConfig.changelogId,
         changelogTitle,
         changelogUrl: changelogConfig.changelogUrl,
         contentPreview: changelogConfig.contentPreview,

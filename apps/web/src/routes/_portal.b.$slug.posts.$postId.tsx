@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { useIntl } from 'react-intl'
 import { createFileRoute, notFound, useRouteContext } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
@@ -178,20 +178,34 @@ function PostDetailPage() {
     contentJson: (post.contentJson ?? { type: 'doc' }) as TiptapContent,
   }
 
-  // Scroll to comment anchor after content loads
+  // Scroll to a comment anchor (e.g. arriving from a comment notification) once the
+  // comments have rendered. Runs once per hash value (tracked via ref) and is a no-op,
+  // not a retry loop, if the target comment never appears (e.g. it was deleted).
+  // Honors prefers-reduced-motion with an instant jump and no animated highlight.
+  const scrolledToHashRef = useRef<string | null>(null)
   useEffect(() => {
     const hash = window.location.hash
-    if (!hash || !hash.startsWith('#comment-')) {
+    if (!hash || !hash.startsWith('#comment-') || scrolledToHashRef.current === hash) {
       return
     }
 
     const timeoutId = setTimeout(() => {
       const element = document.querySelector(hash)
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        element.classList.add('bg-primary/5')
-        setTimeout(() => element.classList.remove('bg-primary/5'), 2000)
+      if (!element) {
+        return
       }
+      scrolledToHashRef.current = hash
+
+      const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+      if (prefersReducedMotion) {
+        element.scrollIntoView({ block: 'center' })
+        return
+      }
+
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      element.classList.add('bg-primary/5')
+      setTimeout(() => element.classList.remove('bg-primary/5'), 2000)
     }, 100)
 
     return () => clearTimeout(timeoutId)

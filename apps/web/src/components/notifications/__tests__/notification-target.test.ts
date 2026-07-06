@@ -20,6 +20,7 @@ function buildNotification(overrides: Partial<SerializedNotification>): Serializ
     commentId: null,
     conversationId: null,
     ticketId: null,
+    changelogId: null,
     readAt: null,
     archivedAt: null,
     createdAt: new Date().toISOString(),
@@ -41,7 +42,7 @@ describe('getNotificationTarget', () => {
     })
   })
 
-  it('routes comment_created with post+postId to the post', () => {
+  it('routes comment_created with a commentId to the post, anchored to the comment', () => {
     const notification = buildNotification({
       type: 'comment_created',
       postId: 'post_2',
@@ -51,6 +52,20 @@ describe('getNotificationTarget', () => {
     expect(getNotificationTarget(notification)).toEqual({
       to: '/b/$slug/posts/$postId',
       params: { slug: 'ideas', postId: 'post_2' },
+      hash: 'comment-post_comment_1',
+    })
+  })
+
+  it('routes comment_created without a commentId to the post, with no hash', () => {
+    const notification = buildNotification({
+      type: 'comment_created',
+      postId: 'post_2b',
+      commentId: null,
+      post: { id: 'post_2b', title: 'A post', boardSlug: 'ideas' },
+    })
+    expect(getNotificationTarget(notification)).toEqual({
+      to: '/b/$slug/posts/$postId',
+      params: { slug: 'ideas', postId: 'post_2b' },
     })
   })
 
@@ -99,8 +114,19 @@ describe('getNotificationTarget', () => {
     })
   })
 
-  it('routes changelog_published to the changelog index regardless of ids', () => {
-    const notification = buildNotification({ type: 'changelog_published' })
+  it('routes changelog_published with a changelogId to the specific entry', () => {
+    const notification = buildNotification({
+      type: 'changelog_published',
+      changelogId: 'changelog_1',
+    })
+    expect(getNotificationTarget(notification)).toEqual({
+      to: '/changelog/$entryId',
+      params: { entryId: 'changelog_1' },
+    })
+  })
+
+  it('routes changelog_published without a changelogId to the changelog index', () => {
+    const notification = buildNotification({ type: 'changelog_published', changelogId: null })
     expect(getNotificationTarget(notification)).toEqual({ to: '/changelog' })
   })
 
