@@ -1,7 +1,7 @@
 'use client'
 
 import { Link } from '@tanstack/react-router'
-import { formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNow, isToday, format } from 'date-fns'
 import { cn } from '@/lib/shared/utils'
 import { getNotificationTypeConfig } from './notification-type-config'
 import { getNotificationTarget } from './notification-target'
@@ -13,6 +13,10 @@ interface NotificationItemProps {
   onClick?: () => void
   /** Layout variant: 'compact' for dropdown, 'full' for page view */
   variant?: 'compact' | 'full'
+  /** Extra classes for the row root, e.g. staggered fade-in animation classes */
+  className?: string
+  /** Extra inline styles for the row root, e.g. per-row animation delay */
+  style?: React.CSSProperties
 }
 
 export function NotificationItem({
@@ -20,6 +24,8 @@ export function NotificationItem({
   onMarkAsRead,
   onClick,
   variant = 'compact',
+  className,
+  style,
 }: NotificationItemProps) {
   const config = getNotificationTypeConfig(notification.type)
   const Icon = config.icon
@@ -61,13 +67,19 @@ export function NotificationItem({
         search={target.search}
         hash={target.hash}
         onClick={handleClick}
+        className={className}
+        style={style}
       >
         {content}
       </Link>
     )
   }
 
-  return <div onClick={handleClick}>{content}</div>
+  return (
+    <div onClick={handleClick} className={className} style={style}>
+      {content}
+    </div>
+  )
 }
 
 interface ContentProps {
@@ -113,13 +125,19 @@ function CompactContent({ notification, icon: Icon, iconClass, bgClass, isUnread
 }
 
 function FullContent({ notification, icon: Icon, iconClass, bgClass, isUnread }: ContentProps) {
+  const createdAt = new Date(notification.createdAt)
+
   return (
     <div
       className={cn(
-        'flex items-start gap-4 px-5 py-4 transition-colors hover:bg-muted/30 border-l-2',
-        isUnread ? 'border-l-primary bg-primary/[0.02]' : 'border-l-transparent'
+        'relative flex items-start gap-4 px-5 py-4 transition-colors hover:bg-muted/30',
+        isUnread && 'bg-primary/[0.02]'
       )}
     >
+      {isUnread && (
+        <div className="absolute start-0 top-3 bottom-3 w-0.5 rounded-full bg-primary" />
+      )}
+
       <div
         className={cn('flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center', bgClass)}
       >
@@ -127,25 +145,35 @@ function FullContent({ notification, icon: Icon, iconClass, bgClass, isUnread }:
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-0.5">
-            <p
-              className={cn('text-sm leading-tight', isUnread ? 'font-medium' : 'text-foreground')}
-            >
-              {notification.title}
-            </p>
-            {notification.body && (
-              <p className="text-xs text-muted-foreground line-clamp-2">{notification.body}</p>
-            )}
-            {notification.post && (
-              <p className="text-[11px] text-muted-foreground/60 mt-1">{notification.post.title}</p>
-            )}
-          </div>
-          <span className="text-[11px] text-muted-foreground/60 whitespace-nowrap flex-shrink-0 mt-0.5">
-            {formatDistanceToNow(new Date(notification.createdAt), { addSuffix: true })}
-          </span>
+        <p className={cn('text-sm leading-tight', isUnread ? 'font-medium' : 'text-foreground')}>
+          {notification.title}
+        </p>
+        {notification.body && (
+          <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">{notification.body}</p>
+        )}
+        <div className="flex items-center gap-2 mt-1">
+          {notification.post && (
+            <>
+              <span className="text-[11px] text-muted-foreground/60 truncate max-w-[200px]">
+                {notification.post.title}
+              </span>
+              <span className="text-muted-foreground/40">·</span>
+            </>
+          )}
+          <time
+            className="text-[11px] text-muted-foreground/60 whitespace-nowrap"
+            dateTime={createdAt.toISOString()}
+          >
+            {isToday(createdAt)
+              ? formatDistanceToNow(createdAt, { addSuffix: true })
+              : format(createdAt, 'MMM d, h:mm a')}
+          </time>
         </div>
       </div>
+
+      {isUnread && (
+        <div className="flex-shrink-0 w-2.5 h-2.5 rounded-full bg-primary mt-1.5 ring-4 ring-primary/10" />
+      )}
     </div>
   )
 }
