@@ -7,8 +7,12 @@
  * this module does not touch.
  */
 import { queryOptions } from '@tanstack/react-query'
-import type { TicketId } from '@quackback/ids'
-import { listInboxItemsFn, fetchInboxCountsFn } from '@/lib/server/functions/inbox'
+import type { ConversationId, TicketId } from '@quackback/ids'
+import {
+  listInboxItemsFn,
+  fetchInboxCountsFn,
+  getConversationTicketLinkFn,
+} from '@/lib/server/functions/inbox'
 import { listTicketMessagesFn, getTicketFn } from '@/lib/server/functions/tickets'
 import { ticketKeys } from '@/lib/client/queries/tickets'
 import { asAgentMessage } from '@/lib/shared/conversation/types'
@@ -58,6 +62,18 @@ export const inboxQueries = {
       staleTime: 60_000,
     }),
 
+  /** The linked customer ticket for one conversation, or null (unified inbox
+   *  §M5): the unified thread header's ticket-status pill + the detail
+   *  panel's Ticket card/Links section read this for a plain conversation
+   *  item — the one-row rule means a conversation never shows its OWN ticket
+   *  row, so this is the only way either surface learns about the link. */
+  conversationTicketLink: (conversationId: ConversationId) =>
+    queryOptions({
+      queryKey: [...inboxKeys.all(), 'conversation-ticket-link', conversationId] as const,
+      queryFn: () => getConversationTicketLinkFn({ data: { conversationId } }),
+      staleTime: 30_000,
+    }),
+
   // -------------------------------------------------------------------------
   // Ticket thread/detail (§2.5, M4): the unified thread's ticket-kind data.
   // Deliberately keyed under `ticketKeys` (not a new `inboxKeys` namespace) —
@@ -84,9 +100,9 @@ export const inboxQueries = {
     }),
 
   /** A single ticket's properties, for the unified thread's header controls
-   *  (status/assignee/priority/type/stage) and the route's interim
-   *  `TicketDetailPanel` slot — same key as `ticketQueries.detail` so both
-   *  readers share one cache entry. */
+   *  (status/assignee/priority/type/stage) and the unified `InboxDetailPanel`
+   *  — same key as `ticketQueries.detail` so both readers share one cache
+   *  entry. */
   ticketDetail: (id: TicketId) =>
     queryOptions({
       queryKey: ticketKeys.detail(id),

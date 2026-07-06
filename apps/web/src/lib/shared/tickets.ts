@@ -17,6 +17,20 @@ export function formatTicketNumber(n: number): string {
   return `#${n}`
 }
 
+/** The workspace's default closed-category ticket status (unified inbox §3.4:
+ *  "close"/"Resolve" maps to it for a ticket target) — the status marked
+ *  `isDefault` within the closed category, or else the first closed status by
+ *  position. Undefined when the workspace has no closed status configured at
+ *  all. Shared by the inbox route's bulk/solo close and the unified thread
+ *  header's primary Resolve button, so the resolution rule can't drift. */
+export function resolveDefaultClosedStatusId(
+  statuses: { id: string; category: string; isDefault: boolean }[] | undefined
+): string | undefined {
+  if (!statuses) return undefined
+  const closed = statuses.filter((s) => s.category === 'closed')
+  return closed.find((s) => s.isDefault)?.id ?? closed[0]?.id
+}
+
 /** Customer-facing labels for the four requester stages. */
 export type TicketStageLabels = Record<TicketStage, string>
 

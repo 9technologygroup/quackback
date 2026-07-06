@@ -402,6 +402,7 @@ export type ConversationSystemEventKind =
   | 'assistant_handoff'
   | 'ticket_status_changed'
   | 'ticket_linked'
+  | 'ticket_created'
   | 'assistant_action_expired'
 
 export interface ConversationSystemEvent {
@@ -413,6 +414,10 @@ export interface ConversationSystemEvent {
   stageLabel?: string
   /** Tracker reference (e.g. "#12") for 'ticket_linked' — team-only. */
   trackerReference?: string
+  /** Ticket reference (e.g. "#42") for 'ticket_created' (unified inbox M5's
+   *  create-ticket flow) — team-only, the ticket itself may not be visible to
+   *  the customer. */
+  ticketReference?: string
 }
 
 // An agent-only suggestion (carried on an internal note) to track a resolved

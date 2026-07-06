@@ -3,10 +3,28 @@ import { toast } from 'sonner'
 import { ArrowDownTrayIcon } from '@heroicons/react/24/outline'
 import { Button } from '@/components/ui/button'
 
-interface TranscriptFile {
+export interface TranscriptFile {
   filename: string
   content: string
   mimeType: string
+}
+
+/**
+ * Trigger a browser download of an already-rendered transcript file. Shared by
+ * `ExportTranscriptButton` (the panel's old full-width button, still used
+ * wherever it's mounted) and the unified thread header's overflow menu item
+ * (unified inbox §2.7), so both call sites share one download mechanic.
+ */
+export async function downloadTranscriptFile(load: () => Promise<TranscriptFile>): Promise<void> {
+  const { filename, content, mimeType } = await load()
+  const url = URL.createObjectURL(new Blob([content], { type: `${mimeType};charset=utf-8` }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 /**
@@ -23,15 +41,7 @@ export function ExportTranscriptButton({ load }: { load: () => Promise<Transcrip
     if (busy) return
     setBusy(true)
     try {
-      const { filename, content, mimeType } = await load()
-      const url = URL.createObjectURL(new Blob([content], { type: `${mimeType};charset=utf-8` }))
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      await downloadTranscriptFile(load)
     } catch {
       toast.error('Could not export the transcript. Please try again.')
     } finally {

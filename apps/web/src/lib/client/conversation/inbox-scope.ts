@@ -13,8 +13,13 @@ import type {
   ConversationViewId,
 } from '@quackback/ids'
 import type { ConversationStatus, ConversationPriority } from '@/lib/shared/conversation/types'
-import type { ConversationSort, ConversationViewListParams } from '@/lib/shared/conversation/views'
-import type { TicketType } from '@/lib/shared/db-types'
+import type {
+  ConversationSort,
+  ConversationViewListParams,
+  ConversationViewFilters,
+} from '@/lib/shared/conversation/views'
+import { viewHasTicketRules, viewFiltersToInboxParams } from '@/lib/shared/conversation/views'
+import type { TicketType, TicketStage } from '@/lib/shared/db-types'
 import {
   facetToConversationStatus,
   isInboxTriageFacet,
@@ -265,6 +270,9 @@ export interface InboxListParams {
   facet: InboxTriageFacet
   kinds?: Array<'conversation' | 'ticket'>
   ticketType?: TicketType
+  /** A saved view's `ticket_stage` rule (unified inbox §2.8) — no URL/chip
+   *  equivalent, only ever set when a custom view carries the rule. */
+  ticketStage?: TicketStage
   priority?: ConversationPriority
   search?: string
   assignee?: string
@@ -275,12 +283,17 @@ export interface InboxListParams {
 
 /**
  * Whether `nav` is one of the scopes the unified `listInboxItemsFn` endpoint
- * supports (mine/unassigned/all, a per-team inbox, or a Tickets-section
- * scope). Everything else (tag/segment/custom/mentions/quinn/saved) stays on
- * the legacy conversation-only endpoint via `buildListParams`.
+ * supports (mine/unassigned/all, a per-team inbox, a Tickets-section scope,
+ * or a custom saved view carrying a ticket-only rule — §2.8). Everything else
+ * (tag/segment/mentions/quinn/saved, and a custom view with NO ticket rules)
+ * stays on the legacy conversation-only endpoint via `buildListParams`.
  */
-export function usesUnifiedInboxList(nav: InboxNavItem): boolean {
+export function usesUnifiedInboxList(
+  nav: InboxNavItem,
+  activeViewFilters?: ConversationViewFilters
+): boolean {
   if (nav.kind === 'team') return true
+  if (nav.kind === 'custom') return !!activeViewFilters && viewHasTicketRules(activeViewFilters)
   if (nav.kind === 'view') {
     return (
       nav.view === 'mine' ||
@@ -296,7 +309,11 @@ export function usesUnifiedInboxList(nav: InboxNavItem): boolean {
  * Map the active nav scope + triage facet + filter chips to the unified
  * endpoint's list filter. Only called for the scopes the endpoint supports
  * (see the module note above); the route picks `buildListParams` instead for
- * everything else.
+ * everything else. `activeViewFilters` is only read for `nav.kind ===
+ * 'custom'` (a custom view with a ticket-only rule, per `usesUnifiedInboxList`)
+ * — the view's OWN rules fully determine facet/kinds/assignee/etc, mirroring
+ * how `buildListParams` ignores the URL facet/priority chips for a custom
+ * view on the legacy path (the view owns everything it filters on).
  */
 export function buildInboxListParams(
   nav: InboxNavItem,
@@ -304,7 +321,8 @@ export function buildInboxListParams(
   priorityFilter: ConversationPriority | 'all',
   search: string,
   companyId?: CompanyId,
-  sort?: ConversationSort
+  sort?: ConversationSort,
+  activeViewFilters?: ConversationViewFilters
 ): InboxListParams {
   const priority = priorityFilter === 'all' ? undefined : priorityFilter
   const searchParam = search || undefined
@@ -314,6 +332,21 @@ export function buildInboxListParams(
       ? (sort as InboxListParams['sort'])
       : undefined
 
+  if (nav.kind === 'custom' && activeViewFilters) {
+    const view = viewFiltersToInboxParams(activeViewFilters)
+    return {
+      facet: view.facet,
+      kinds: view.kinds.length > 0 ? view.kinds : undefined,
+      ticketType: view.ticketType,
+      ticketStage: view.ticketStage,
+      assignee: view.assignee,
+      teamId: view.teamId,
+      priority: view.priority,
+      search: searchParam,
+      companyId: company,
+      sort: sortParam,
+    }
+  }
   if (nav.kind === 'team') {
     return {
       facet,

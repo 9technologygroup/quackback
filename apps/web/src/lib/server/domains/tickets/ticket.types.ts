@@ -14,6 +14,7 @@ import type {
   ConversationAttachment,
 } from '@/lib/shared/db-types'
 import type { ConversationAuthorDTO } from '@/lib/shared/conversation/types'
+import type { JsonValue } from '@/lib/shared/json'
 
 // ---------------------------------------------------------------------------
 // Service inputs
@@ -142,6 +143,10 @@ export interface TicketDTO {
   createdAt: string
   updatedAt: string
   reopenedCount: number
+  /** Custom attribute values keyed by definition key (values are `{ v, src, at }`
+   *  envelopes or bare legacy values — read via readAttributeValue). The
+   *  registry is shared with conversations (unified inbox §3.5). */
+  customAttributes: Record<string, JsonValue>
   /** The latest customer-visible message's preview text (same truncation as the
    *  conversation inbox's `lastMessagePreview`), falling back to the ticket
    *  title when only internal notes exist or the thread is empty. */

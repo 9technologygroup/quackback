@@ -20,6 +20,7 @@ import {
   type TicketStatusEntity,
 } from '@/lib/server/db'
 import type { TicketId, TicketStatusId, PrincipalId, TeamId, CompanyId } from '@quackback/ids'
+import type { JsonValue } from '@/lib/shared/json'
 import { formatTicketNumber, type TicketStageLabels } from '@/lib/shared/tickets'
 import { preview } from '@/lib/server/messages/message-core'
 import { loadAuthors, fallbackAuthor } from '../principals/principal-display'
@@ -187,6 +188,7 @@ export function ticketToDTO(row: Ticket, ctx: TicketDTOContext): TicketDTO {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     reopenedCount: row.reopenedCount,
+    customAttributes: (row.customAttributes as Record<string, JsonValue> | null) ?? {},
     lastMessagePreview: ctx.activity.get(row.id)?.lastMessagePreview ?? row.title,
     lastMessageAt: ctx.activity.get(row.id)?.lastMessageAt?.toISOString() ?? null,
   }

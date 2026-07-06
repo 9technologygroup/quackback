@@ -257,6 +257,24 @@ describe('usesUnifiedInboxList', () => {
     expect(usesUnifiedInboxList({ kind: 'segment', segmentId: segId })).toBe(false)
     expect(usesUnifiedInboxList({ kind: 'custom', viewId })).toBe(false)
   })
+
+  // Unified inbox §2.8: a custom view with a ticket-only rule routes through
+  // the unified endpoint; one with no such rule stays on the legacy path.
+  it('routes a custom view through the unified endpoint only when it carries a ticket rule', () => {
+    expect(
+      usesUnifiedInboxList(
+        { kind: 'custom', viewId },
+        { rules: [{ field: 'kind', value: 'ticket' }] }
+      )
+    ).toBe(true)
+    expect(
+      usesUnifiedInboxList(
+        { kind: 'custom', viewId },
+        { rules: [{ field: 'status', value: 'open' }] }
+      )
+    ).toBe(false)
+    expect(usesUnifiedInboxList({ kind: 'custom', viewId }, undefined)).toBe(false)
+  })
 })
 
 describe('buildInboxListParams', () => {
@@ -337,5 +355,60 @@ describe('buildInboxListParams', () => {
       buildInboxListParams({ kind: 'view', view: 'all' }, 'open', 'all', '', undefined, 'recent')
         .sort
     ).toBeUndefined()
+  })
+
+  // Unified inbox §2.8: a custom view carrying a ticket-only rule is routed
+  // here (nav.kind === 'custom'); its OWN rules fully determine the params —
+  // the passed-in facet/priority chips are ignored, mirroring how
+  // buildListParams ignores them for a custom view on the legacy path.
+  it('a custom view with ticket rules ignores the URL facet/priority and uses its own rules', () => {
+    expect(
+      buildInboxListParams(
+        { kind: 'custom', viewId },
+        'open',
+        'urgent',
+        'refund',
+        companyId,
+        undefined,
+        {
+          rules: [
+            { field: 'ticket_type', value: 'customer' },
+            { field: 'ticket_status_category', value: 'open' },
+          ],
+        }
+      )
+    ).toEqual({
+      facet: 'open',
+      kinds: ['ticket'],
+      ticketType: 'customer',
+      ticketStage: undefined,
+      assignee: undefined,
+      teamId: undefined,
+      priority: undefined,
+      search: 'refund',
+      companyId,
+      sort: undefined,
+    })
+  })
+
+  it('reproduces the old tickets page: kind=ticket, type=customer, category=open', () => {
+    const result = buildInboxListParams(
+      { kind: 'custom', viewId },
+      'all',
+      'all',
+      '',
+      undefined,
+      undefined,
+      {
+        rules: [
+          { field: 'kind', value: 'ticket' },
+          { field: 'ticket_type', value: 'customer' },
+          { field: 'ticket_status_category', value: 'open' },
+        ],
+      }
+    )
+    expect(result.kinds).toEqual(['ticket'])
+    expect(result.ticketType).toBe('customer')
+    expect(result.facet).toBe('open')
   })
 })

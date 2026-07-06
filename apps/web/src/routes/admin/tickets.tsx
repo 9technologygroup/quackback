@@ -9,10 +9,13 @@ import type { FeatureFlags } from '@/lib/shared/types/settings'
  * `?t=<id>` deep-links become `?i=<id>`; a bare visit opens the Tickets >
  * Customer scope. Mirrors the `c=` → `i=` alias `/admin/inbox` itself accepts.
  *
- * The standalone ticket components (`TicketListColumn`, `NewTicketDialog`, …)
+ * The standalone ticket components (`TicketListColumn`, `TicketDetailPanel`, …)
  * are no longer imported here. `TicketDetail`/`ticket-thread.tsx` were deleted
- * in M4 (folded into the unified `agent-conversation-thread.tsx`); the rest
- * are unused until M6 finishes the cleanup pass (§4).
+ * in M4 (folded into the unified `agent-conversation-thread.tsx`); M5 folded
+ * `TicketDetailPanel` into `inbox-detail-panel.tsx` and repurposed
+ * `new-ticket-dialog.tsx` into `components/admin/inbox/create-ticket-dialog.tsx`
+ * (still used, from the unified inbox); the rest are unused until M6 finishes
+ * the cleanup pass (§4).
  */
 interface TicketsRedirectSearch {
   t?: string

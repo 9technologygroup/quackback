@@ -1,15 +1,15 @@
 // @vitest-environment happy-dom
 /**
- * <ConversationDetailPanel> tab host (COPILOT-SIDEBAR-UX.md B.1): the
- * Copilot tab only renders when BOTH the `assistantCopilot` flag is on AND
- * the viewer holds `copilot.use`. With the flag off, there is no Tabs
+ * <InboxDetailPanel> tab host (COPILOT-SIDEBAR-UX.md B.1; unified inbox §2.7):
+ * the Copilot tab only renders when BOTH the `assistantCopilot` flag is on
+ * AND the viewer holds `copilot.use`. With the flag off, there is no Tabs
  * wrapper at all — the panel renders the exact same Details content as
  * before Copilot existed.
  *
- * Heavy child controls (tags/attributes/priority/assignee/status/company/
- * block) are stubbed: this test is about the tab host, not those controls,
- * and several of them fire unconditional queries that would otherwise hit
- * real server functions.
+ * Heavy child controls (tags/attributes/priority/assignee/status/company)
+ * are stubbed: this test is about the tab host, not those controls, and
+ * several of them fire unconditional queries that would otherwise hit real
+ * server functions.
  */
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
@@ -19,31 +19,45 @@ import type { FeatureFlags } from '@/lib/shared/types/settings'
 
 afterEach(cleanup)
 
-// vi.mock's specifier resolves relative to THIS file (in __tests__/), so the
-// module under test's `./x` (relative to conversation-detail-panel.tsx, one
-// directory up) must be mocked here as `../x`.
-vi.mock('../priority-control', () => ({ PriorityControl: () => null }))
-vi.mock('../assignee-control', () => ({ AssigneeControl: () => null }))
-vi.mock('../export-transcript-button', () => ({ ExportTranscriptButton: () => null }))
-vi.mock('../conversation-tags-editor', () => ({ ConversationTagsEditor: () => null }))
-vi.mock('../conversation-attributes-editor', () => ({ ConversationAttributesEditor: () => null }))
-vi.mock('../status-control', () => ({ StatusControl: () => null }))
-vi.mock('../company-card', () => ({ CompanyCard: () => null }))
+vi.mock('@/components/admin/conversation/priority-control', () => ({
+  PriorityControl: () => null,
+}))
+vi.mock('@/components/admin/conversation/assignee-control', () => ({
+  AssigneeControl: () => null,
+}))
+vi.mock('@/components/admin/conversation/conversation-tags-editor', () => ({
+  ConversationTagsEditor: () => null,
+}))
+vi.mock('@/components/admin/conversation/conversation-attributes-editor', () => ({
+  ConversationAttributesEditor: () => null,
+}))
+vi.mock('@/components/admin/conversation/status-control', () => ({ StatusControl: () => null }))
+vi.mock('@/components/admin/conversation/company-card', () => ({ CompanyCard: () => null }))
+vi.mock('@/components/admin/tickets/ticket-chips', () => ({
+  TicketTypeBadge: () => null,
+  TicketStageChip: () => null,
+}))
+vi.mock('@/components/admin/tickets/ticket-controls', () => ({
+  TicketStatusControl: () => null,
+  TicketAssigneeControl: () => null,
+  TicketPriorityControl: () => null,
+}))
+vi.mock('@/components/admin/tickets/ticket-links', () => ({ TicketLinks: () => null }))
 vi.mock('@/components/admin/users/block-person-control', () => ({
-  BlockPersonControl: () => null,
   usePersonBlockStatus: () => ({ blocked: false, isLoading: false }),
 }))
 vi.mock('@/lib/server/functions/conversation', () => ({
   listConversationsForUserFn: vi.fn().mockResolvedValue({ conversations: [], hasMore: false }),
   getConversationAssistantActivityFn: vi.fn().mockResolvedValue(null),
-  exportConversationTranscriptFn: vi.fn(),
 }))
 vi.mock('@/lib/server/functions/admin', () => ({
   getPortalUserFn: vi.fn().mockResolvedValue(null),
 }))
-vi.mock('../copilot-panel', () => ({
-  CopilotPanel: ({ conversationId }: { conversationId: string }) => (
-    <div data-testid="copilot-panel-stub">copilot for {conversationId}</div>
+vi.mock('@/components/admin/conversation/copilot-panel', () => ({
+  CopilotPanel: ({ item }: { item: { kind: string; id: string } }) => (
+    <div data-testid="copilot-panel-stub">
+      copilot for {item.kind}:{item.id}
+    </div>
   ),
 }))
 
@@ -62,7 +76,7 @@ vi.mock('@tanstack/react-router', () => ({
   useRouteContext: () => routeContextState,
 }))
 
-import { ConversationDetailPanel } from '../conversation-detail-panel'
+import { InboxDetailPanel } from '../inbox-detail-panel'
 
 function makeConversation(overrides: Partial<ConversationDTO> = {}): ConversationDTO {
   return {
@@ -98,12 +112,13 @@ function renderPanel(conversation: ConversationDTO = makeConversation()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <ConversationDetailPanel
+      <InboxDetailPanel
+        item={{ kind: 'conversation', id: conversation.id }}
         conversation={conversation}
         onChanged={vi.fn()}
-        onSelectConversation={vi.fn()}
-        onEndConversation={vi.fn()}
+        onSelectItem={vi.fn()}
         onTrackAsFeedback={vi.fn()}
+        onCreateTicket={vi.fn()}
         onInsertFromCopilot={vi.fn()}
         getComposerText={() => ''}
         onReplaceComposerText={vi.fn()}
@@ -112,7 +127,7 @@ function renderPanel(conversation: ConversationDTO = makeConversation()) {
   )
 }
 
-describe('<ConversationDetailPanel> tab host', () => {
+describe('<InboxDetailPanel> tab host', () => {
   it('renders no Tabs when the assistantCopilot flag is off — Details content directly, byte-identical', () => {
     routeContextState.settings = {
       featureFlags: { assistantCopilot: false } as unknown as FeatureFlags,
@@ -124,7 +139,7 @@ describe('<ConversationDetailPanel> tab host', () => {
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
     expect(screen.queryByText('Copilot')).not.toBeInTheDocument()
     // Details content renders directly under <aside>, no intermediate Tabs wrapper.
-    expect(screen.getByText('Manage')).toBeInTheDocument()
+    expect(screen.getByText('Properties')).toBeInTheDocument()
     const aside = container.querySelector('aside')
     expect(aside?.querySelector('[data-slot="tabs"]')).toBeNull()
   })
@@ -152,7 +167,7 @@ describe('<ConversationDetailPanel> tab host', () => {
 
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /copilot/i })).not.toBeInTheDocument()
-    expect(screen.getByText('Manage')).toBeInTheDocument()
+    expect(screen.getByText('Properties')).toBeInTheDocument()
   })
 
   it('keeps Details mounted (not unmounted) once the Copilot tab is switched to', () => {
@@ -166,7 +181,7 @@ describe('<ConversationDetailPanel> tab host', () => {
     fireEvent.click(screen.getByRole('tab', { name: /copilot/i }))
 
     // Both stay in the DOM (forceMount + CSS-hide) — Details content is still present.
-    expect(screen.getByText('Manage')).toBeInTheDocument()
+    expect(screen.getByText('Properties')).toBeInTheDocument()
     expect(screen.getByTestId('copilot-panel-stub')).toBeInTheDocument()
   })
 })

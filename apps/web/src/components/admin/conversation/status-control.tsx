@@ -5,25 +5,12 @@ import { toast } from 'sonner'
 import type { ConversationId } from '@quackback/ids'
 import type { ConversationStatus } from '@/lib/shared/conversation/types'
 import { isMissingRequiredAttributesMessage } from '@/lib/shared/conversation/attribute-values'
-import { setConversationStatusFn, snoozeConversationFn } from '@/lib/server/functions/conversation'
+import { setConversationStatusFn } from '@/lib/server/functions/conversation'
 import { RequiredAttributesDialog } from './required-attributes-dialog'
-import { tomorrowAt, inHours, nextMondayAt } from '@/lib/shared/utils'
-import { DateTimePicker } from '@/components/ui/datetime-picker'
-import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
@@ -36,12 +23,12 @@ const wakeFormatter = new Intl.DateTimeFormat(undefined, {
 })
 
 /**
- * The conversation status control. Open and Closed set the status directly;
- * Snooze defers the thread with presets (later today, tomorrow, next week, or
- * until the customer replies) or a specific wake time, and picking Open again
- * wakes a snoozed thread. When snoozed until a time, the badge shows it. Used in
- * the detail panel and the thread header, so the full lifecycle is settable at
- * every width.
+ * The conversation status control: Open and Closed set the status directly;
+ * picking Open again wakes a snoozed thread ("unsnooze"). Snoozing itself
+ * (presets + a custom wake time) moved to the thread header's dedicated moon
+ * icon (unified inbox §2.7) — this control only shows the CURRENT snoozed-
+ * until label when applicable. Used in the detail panel's Properties row and
+ * the thread header's narrow-viewport fallback.
  */
 export function StatusControl({
   conversationId,
@@ -56,8 +43,6 @@ export function StatusControl({
   onChanged: () => void
 }) {
   const queryClient = useQueryClient()
-  const [customOpen, setCustomOpen] = useState(false)
-  const [customDate, setCustomDate] = useState<Date | undefined>(() => tomorrowAt(9))
   // Required-to-close refusal from the server: raise the blocking prompt
   // instead of a generic error toast.
   const [closeBlocked, setCloseBlocked] = useState<string[] | null>(null)
@@ -77,14 +62,8 @@ export function StatusControl({
       }
     },
   })
-  const snoozeMut = useMutation({
-    mutationFn: (until: string | null) => snoozeConversationFn({ data: { conversationId, until } }),
-    onSuccess: invalidate,
-    onError: () => toast.error('Failed to snooze conversation'),
-  })
-  const busy = statusMut.isPending || snoozeMut.isPending
+  const busy = statusMut.isPending
 
-  const snooze = (until: string | null) => snoozeMut.mutate(until)
   const wakeLabel =
     status === 'snoozed' && snoozedUntil ? wakeFormatter.format(new Date(snoozedUntil)) : null
 
@@ -108,37 +87,6 @@ export function StatusControl({
           <DropdownMenuItem onClick={() => statusMut.mutate('open')} className="text-xs capitalize">
             open
           </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
-            Snooze
-          </DropdownMenuLabel>
-          <DropdownMenuItem onClick={() => snooze(inHours(4).toISOString())} className="text-xs">
-            Later today
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => snooze(tomorrowAt(9).toISOString())} className="text-xs">
-            Tomorrow
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={() => snooze(nextMondayAt(9).toISOString())}
-            className="text-xs"
-          >
-            Next week
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => snooze(null)} className="text-xs">
-            Until they reply
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              setCustomDate(tomorrowAt(9))
-              // Let the menu finish closing before the dialog grabs focus, so
-              // the two Radix overlays don't fight over it.
-              requestAnimationFrame(() => setCustomOpen(true))
-            }}
-            className="text-xs"
-          >
-            Pick a date &amp; time…
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
           <DropdownMenuItem
             onClick={() => statusMut.mutate('closed')}
             className="text-xs capitalize"
@@ -149,38 +97,6 @@ export function StatusControl({
       </DropdownMenu>
 
       <RequiredAttributesDialog messages={closeBlocked} onClose={() => setCloseBlocked(null)} />
-
-      <Dialog open={customOpen} onOpenChange={setCustomOpen}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Snooze until</DialogTitle>
-            <DialogDescription>
-              The conversation leaves your open queue and returns at the time you pick.
-            </DialogDescription>
-          </DialogHeader>
-          <DateTimePicker
-            value={customDate}
-            onChange={setCustomDate}
-            minDate={new Date()}
-            className="w-full"
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCustomOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={!customDate || busy}
-              onClick={() => {
-                if (!customDate) return
-                snooze(customDate.toISOString())
-                setCustomOpen(false)
-              }}
-            >
-              Snooze
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </>
   )
 }

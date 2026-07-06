@@ -1,12 +1,13 @@
 /**
  * Quinn Copilot: a private, teammate-facing Q&A thread scoped to a single
- * conversation (COPILOT-SIDEBAR-UX.md). Renders inside the inbox detail
- * panel's "Copilot" tab (conversation-detail-panel.tsx). Streams against
- * POST /api/admin/assistant/copilot (copilot.v1.* SSE events, cloned from the
- * admin assistant sandbox's fetch/SSE/patch-last-turn shape), reuses
- * AssistantAnswer for citation rendering, and gates any internal-sourced
- * answer behind a hard confirm before it can reach a customer-facing
- * composer (B.4's leak gate) — "Add as note" never confirms, from anywhere.
+ * conversation OR ticket (COPILOT-SIDEBAR-UX.md; item-scoped per unified
+ * inbox §2.9). Renders inside the unified inbox detail panel's "Copilot" tab
+ * (inbox-detail-panel.tsx). Streams against POST /api/admin/assistant/copilot
+ * (copilot.v1.* SSE events, cloned from the admin assistant sandbox's
+ * fetch/SSE/patch-last-turn shape), reuses AssistantAnswer for citation
+ * rendering, and gates any internal-sourced answer behind a hard confirm
+ * before it can reach a customer-facing composer (B.4's leak gate) — "Add as
+ * note" never confirms, from anywhere.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouteContext } from '@tanstack/react-router'
@@ -24,7 +25,6 @@ import {
   SparklesIcon,
 } from '@heroicons/react/24/outline'
 import { PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid'
-import type { ConversationId } from '@quackback/ids'
 import { Avatar } from '@/components/ui/avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -79,7 +79,18 @@ import {
 } from '@/lib/shared/assistant/copilot-contract'
 import { formatConversationSummaryNote } from '@/lib/shared/assistant/copilot-format'
 import type { AssistantActivityStatus } from '@/lib/shared/conversation/types'
-import { summarizeConversationNowFn } from '@/lib/server/functions/copilot-summary'
+import type { InboxItemRef } from '@/lib/shared/inbox/items'
+import {
+  summarizeConversationNowFn,
+  summarizeTicketNowFn,
+} from '@/lib/server/functions/copilot-summary'
+
+/** The item-ref body fragment every Copilot SSE request carries (unified
+ *  inbox §2.9's `withAssistantItemRef` union) — `{ conversationId }` or
+ *  `{ ticketId }`, exactly one, spread alongside the route's own fields. */
+function itemRefBody(item: InboxItemRef): { conversationId: string } | { ticketId: string } {
+  return item.kind === 'conversation' ? { conversationId: item.id } : { ticketId: item.id }
+}
 
 const MAX_QUESTION_CHARS = 4000
 const MAX_HISTORY_ENTRIES = 20
@@ -221,13 +232,15 @@ function buildHistory(turns: CopilotTurn[]): CopilotHistoryEntry[] {
 }
 
 export function CopilotPanel({
-  conversationId,
+  item,
   flags,
   onInsert,
   getComposerText,
   onReplaceComposerText,
 }: {
-  conversationId: ConversationId
+  /** The open item (unified inbox §2.9) — grounds the turn on the
+   *  conversation or ticket's own thread + drives the Summarize chip. */
+  item: InboxItemRef
   flags: FeatureFlags | undefined
   onInsert: (text: string, mode: InsertMode) => void
   /** Current plain text of the reply composer: the Format chip's
@@ -290,7 +303,7 @@ export function CopilotPanel({
       let ok = true
       await startTransform({
         url: '/api/admin/assistant/transform',
-        body: { conversationId, text, transform },
+        body: { ...itemRefBody(item), text, transform },
         handlers: {
           [TRANSFORM_EVENTS.delta]: (data) => {
             result += (data as TransformDeltaPayload).text
@@ -318,7 +331,7 @@ export function CopilotPanel({
       })
       return ok && result ? result : null
     },
-    [conversationId, startTransform]
+    [item, startTransform]
   )
 
   const modifyAnswer = useCallback(
@@ -361,7 +374,7 @@ export function CopilotPanel({
       await start({
         url: '/api/admin/assistant/copilot',
         body: {
-          conversationId,
+          ...itemRefBody(item),
           question,
           history,
           ...(sourceTypesParam ? { sourceTypes: sourceTypesParam } : {}),
@@ -408,7 +421,7 @@ export function CopilotPanel({
         },
       })
     },
-    [conversationId, sourceTypesParam, start]
+    [item, sourceTypesParam, start]
   )
 
   const ask = useCallback(() => {
@@ -477,14 +490,17 @@ export function CopilotPanel({
     if (busy || summarizing) return
     setSummarizing(true)
     try {
-      const result = await summarizeConversationNowFn({ data: { conversationId } })
+      const result =
+        item.kind === 'conversation'
+          ? await summarizeConversationNowFn({ data: { conversationId: item.id } })
+          : await summarizeTicketNowFn({ data: { ticketId: item.id } })
       onInsert(formatConversationSummaryNote(result.question, result.bullets), 'note')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to summarize the conversation')
     } finally {
       setSummarizing(false)
     }
-  }, [busy, summarizing, conversationId, onInsert])
+  }, [busy, summarizing, item, onInsert])
 
   return (
     <div className="flex h-full min-h-0 flex-col">

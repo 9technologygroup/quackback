@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   conversationViewFiltersSchema,
   viewFiltersToListParams,
+  viewHasTicketRules,
+  viewFiltersToInboxParams,
   isConversationSort,
   MAX_VIEW_RULES,
   CONVERSATION_SORTS,
@@ -45,6 +47,26 @@ describe('conversationViewFiltersSchema', () => {
       rules: Array.from({ length: MAX_VIEW_RULES }, () => ({ field: 'status', value: 'open' })),
     }
     expect(conversationViewFiltersSchema.safeParse(atCap).success).toBe(true)
+  })
+
+  // Unified inbox §2.8: the four ticket-only rule fields.
+  it('accepts the ticket-only rule fields', () => {
+    const filters = {
+      rules: [
+        { field: 'kind', value: 'ticket' },
+        { field: 'ticket_type', value: 'customer' },
+        { field: 'ticket_status_category', value: 'pending' },
+        { field: 'ticket_stage', value: 'in_progress' },
+      ],
+    }
+    expect(conversationViewFiltersSchema.safeParse(filters).success).toBe(true)
+  })
+
+  it('rejects an unknown ticket_type value', () => {
+    const r = conversationViewFiltersSchema.safeParse({
+      rules: [{ field: 'ticket_type', value: 'bogus' }],
+    })
+    expect(r.success).toBe(false)
   })
 })
 
@@ -105,6 +127,91 @@ describe('viewFiltersToListParams', () => {
       })
       expect(assignee && SERVER_RESOLVABLE.has(assignee)).toBe(true)
     }
+  })
+})
+
+describe('viewHasTicketRules', () => {
+  it('is false for a conversation-only rule set', () => {
+    expect(
+      viewHasTicketRules({
+        rules: [
+          { field: 'status', value: 'open' },
+          { field: 'priority', value: 'high' },
+        ],
+      })
+    ).toBe(false)
+  })
+
+  it('is true when any ticket-only field is present', () => {
+    expect(viewHasTicketRules({ rules: [{ field: 'kind', value: 'ticket' }] })).toBe(true)
+    expect(viewHasTicketRules({ rules: [{ field: 'ticket_type', value: 'customer' }] })).toBe(true)
+    expect(
+      viewHasTicketRules({ rules: [{ field: 'ticket_status_category', value: 'open' }] })
+    ).toBe(true)
+    expect(viewHasTicketRules({ rules: [{ field: 'ticket_stage', value: 'received' }] })).toBe(true)
+  })
+})
+
+describe('viewFiltersToInboxParams', () => {
+  it('maps ticket_status_category onto the unified facet vocabulary', () => {
+    const result = viewFiltersToInboxParams({
+      rules: [{ field: 'ticket_status_category', value: 'pending' }],
+    })
+    expect(result.kinds).toEqual(['ticket'])
+    expect(result.facet).toBe('waiting')
+    expect(result.ticketType).toBeUndefined()
+    expect(result.ticketStage).toBeUndefined()
+  })
+
+  it('defaults facet to "all" when no status-category rule is present', () => {
+    const result = viewFiltersToInboxParams({
+      rules: [{ field: 'ticket_type', value: 'back_office' }],
+    })
+    expect(result.facet).toBe('all')
+    expect(result.kinds).toEqual(['ticket'])
+    expect(result.ticketType).toBe('back_office')
+  })
+
+  it('respects a bare kind rule with no other ticket field', () => {
+    const result = viewFiltersToInboxParams({ rules: [{ field: 'kind', value: 'conversation' }] })
+    expect(result.kinds).toEqual(['conversation'])
+    expect(result.facet).toBe('all')
+    expect(result.ticketType).toBeUndefined()
+    expect(result.ticketStage).toBeUndefined()
+  })
+
+  it('carries over priority/assignee/team rules alongside a ticket rule', () => {
+    const result = viewFiltersToInboxParams({
+      rules: [
+        { field: 'kind', value: 'ticket' },
+        { field: 'priority', value: 'urgent' },
+        { field: 'assignee', value: 'me' },
+        { field: 'team', value: 'team_1' },
+      ],
+    })
+    expect(result.priority).toBe('urgent')
+    expect(result.assignee).toBe('me')
+    expect(result.teamId).toBe('team_1')
+  })
+
+  it('maps a conversation status rule onto the facet too', () => {
+    const result = viewFiltersToInboxParams({
+      rules: [
+        { field: 'kind', value: 'conversation' },
+        { field: 'status', value: 'snoozed' },
+      ],
+    })
+    expect(result.facet).toBe('waiting')
+  })
+
+  it('a later kind rule overrides the ticket-only default', () => {
+    const result = viewFiltersToInboxParams({
+      rules: [
+        { field: 'ticket_type', value: 'customer' },
+        { field: 'kind', value: 'ticket' },
+      ],
+    })
+    expect(result.kinds).toEqual(['ticket'])
   })
 })
 

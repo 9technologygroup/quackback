@@ -90,8 +90,11 @@ vi.mock('@/components/admin/conversation/conversation-tags-editor', () => ({
   ConversationTagsEditor: () => null,
 }))
 vi.mock('@/components/admin/conversation/status-control', () => ({ StatusControl: () => null }))
-vi.mock('@/components/admin/conversation/conversation-detail-panel', () => ({
-  ConversationDetailPanel: () => <div data-testid="conversation-detail-panel" />,
+vi.mock('@/components/admin/inbox/inbox-detail-panel', () => ({
+  InboxDetailPanel: () => <div data-testid="inbox-detail-panel" />,
+}))
+vi.mock('@/components/admin/inbox/create-ticket-dialog', () => ({
+  CreateTicketDialog: () => null,
 }))
 vi.mock('@/components/admin/conversation/convert-to-post-dialog', () => ({
   ConvertToPostDialog: () => null,
@@ -102,6 +105,17 @@ vi.mock('@/components/admin/conversation/end-conversation-dialog', () => ({
 vi.mock('@/components/admin/conversation/share-post-dialog', () => ({
   SharePostDialog: () => null,
 }))
+vi.mock('@/components/admin/conversation/required-attributes-dialog', () => ({
+  RequiredAttributesDialog: () => null,
+}))
+vi.mock('@/components/admin/users/block-person-control', () => ({
+  usePersonBlockStatus: () => ({ blocked: false, isLoading: false }),
+}))
+vi.mock('@/components/shared/confirm-dialog', () => ({ ConfirmDialog: () => null }))
+vi.mock('@/components/admin/conversation/export-transcript-button', () => ({
+  downloadTranscriptFile: vi.fn(),
+}))
+vi.mock('@/components/ui/datetime-picker', () => ({ DateTimePicker: () => null }))
 vi.mock('@/components/admin/tickets/ticket-chips', () => ({
   TicketTypeBadge: ({ type }: { type: string }) => (
     <span data-testid="ticket-type-badge">{type}</span>
@@ -167,8 +181,15 @@ vi.mock('@/lib/server/functions/conversation', () => ({
   removeMessageReactionFn: vi.fn(),
   setMessageFlagFn: vi.fn(),
   markConversationUnreadFromMessageFn: vi.fn(),
+  exportConversationTranscriptFn: vi.fn(),
+  snoozeConversationFn: vi.fn(),
+  setConversationStatusFn: vi.fn(),
 }))
 vi.mock('@/lib/server/functions/sla', () => ({ removeConversationSlaFn: vi.fn() }))
+vi.mock('@/lib/server/functions/blocking', () => ({
+  blockPersonFn: vi.fn(),
+  unblockPersonFn: vi.fn(),
+}))
 
 const { mockTicket, mockTicketThread } = vi.hoisted(() => {
   const mockTicket = {
@@ -189,6 +210,7 @@ const { mockTicket, mockTicketThread } = vi.hoisted(() => {
     createdAt: '2026-07-03T00:00:00.000Z',
     updatedAt: '2026-07-03T00:00:00.000Z',
     reopenedCount: 0,
+    customAttributes: {},
     lastMessagePreview: 'Help please',
     lastMessageAt: '2026-07-03T00:00:00.000Z',
   } as TicketDTO
@@ -227,6 +249,8 @@ vi.mock('@/lib/server/functions/tickets', () => ({
   markTicketUnreadFromMessageFn: vi.fn(),
   markTicketReadFn: vi.fn().mockResolvedValue({ ok: true }),
   getTicketFn: vi.fn().mockResolvedValue(mockTicket),
+  setTicketStatusFn: vi.fn(),
+  exportTicketTranscriptFn: vi.fn(),
 }))
 vi.mock('@/lib/client/queries/inbox', () => ({
   inboxQueries: {
@@ -237,6 +261,19 @@ vi.mock('@/lib/client/queries/inbox', () => ({
     ticketDetail: (id: string) => ({
       queryKey: ['ticket-detail', id],
       queryFn: () => Promise.resolve({ ...mockTicket, id }),
+    }),
+    conversationTicketLink: (id: string) => ({
+      queryKey: ['conversation-ticket-link', id],
+      queryFn: () => Promise.resolve(null),
+    }),
+  },
+}))
+vi.mock('@/lib/client/queries/tickets', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/client/queries/tickets')>()),
+  ticketQueries: {
+    statuses: () => ({
+      queryKey: ['ticket-statuses'],
+      queryFn: () => Promise.resolve([]),
     }),
   },
 }))
@@ -295,7 +332,7 @@ function renderThread(item: { kind: 'conversation' | 'ticket'; id: string }) {
         targetMessageId={null}
         onChanged={vi.fn()}
         onBack={vi.fn()}
-        onSelectConversation={vi.fn()}
+        onSelectItem={vi.fn()}
         onOpenPost={vi.fn()}
         isVisitorTyping={false}
         isOtherAgentTyping={false}
@@ -320,7 +357,7 @@ describe('AgentConversationThread — ticket capability wiring', () => {
           targetMessageId={null}
           onChanged={vi.fn()}
           onBack={vi.fn()}
-          onSelectConversation={vi.fn()}
+          onSelectItem={vi.fn()}
           onOpenPost={vi.fn()}
           isVisitorTyping={false}
           isOtherAgentTyping={false}
@@ -350,7 +387,7 @@ describe('AgentConversationThread — ticket capability wiring', () => {
           targetMessageId={null}
           onChanged={vi.fn()}
           onBack={vi.fn()}
-          onSelectConversation={vi.fn()}
+          onSelectItem={vi.fn()}
           onOpenPost={vi.fn()}
           isVisitorTyping={false}
           isOtherAgentTyping={false}
@@ -381,6 +418,6 @@ describe('AgentConversationThread — conversation kind unaffected', () => {
     renderThread({ kind: 'conversation', id: 'conversation_1' })
     expect(await screen.findByText('Reply')).toBeInTheDocument()
     expect(screen.getByText('Note')).toBeInTheDocument()
-    expect(screen.getByTestId('conversation-detail-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('inbox-detail-panel')).toBeInTheDocument()
   })
 })

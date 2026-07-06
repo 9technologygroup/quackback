@@ -112,7 +112,7 @@ function renderPanel(
   render(
     <QueryClientProvider client={client}>
       <CopilotPanel
-        conversationId={CONVERSATION_ID}
+        item={{ kind: 'conversation', id: CONVERSATION_ID }}
         flags={props.flags ?? ALL_FLAGS_ON}
         onInsert={onInsert}
         getComposerText={props.getComposerText ?? (() => '')}

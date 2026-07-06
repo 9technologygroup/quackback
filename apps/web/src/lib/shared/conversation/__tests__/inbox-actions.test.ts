@@ -23,6 +23,7 @@ describe('INBOX_ACTIONS registry', () => {
       'priority',
       'close',
       'reopen',
+      'create_ticket',
       'next',
       'prev',
       'toggle_select',
@@ -31,9 +32,8 @@ describe('INBOX_ACTIONS registry', () => {
     }
   })
 
-  it('omits the deferred actions (convert-to-ticket, note, macro)', () => {
+  it('omits the still-deferred actions (note, macro)', () => {
     const ids = INBOX_ACTIONS.map((a) => a.id)
-    expect(ids.some((id) => id.includes('ticket'))).toBe(false)
     expect(ids).not.toContain('note')
     expect(ids).not.toContain('macro')
   })
@@ -42,7 +42,15 @@ describe('INBOX_ACTIONS registry', () => {
     for (const id of ['reply', 'next', 'prev']) {
       expect(byId(id).scope).toBe('active')
     }
-    for (const id of ['assign', 'assign_team', 'snooze', 'priority', 'close', 'reopen']) {
+    for (const id of [
+      'assign',
+      'assign_team',
+      'snooze',
+      'priority',
+      'close',
+      'reopen',
+      'create_ticket',
+    ]) {
       expect(byId(id).scope).toBe('both')
     }
     expect(byId('toggle_select').scope).toBe('selection')
@@ -117,7 +125,7 @@ describe('isInboxActionEnabled', () => {
     ).toBe(false)
   })
 
-  it('hasTicketTarget never disables a non-snooze action', () => {
+  it('hasTicketTarget never disables assign/priority/close/reopen', () => {
     expect(
       isInboxActionEnabled(both, {
         hasActiveConversation: true,
@@ -125,5 +133,30 @@ describe('isInboxActionEnabled', () => {
         hasTicketTarget: true,
       })
     ).toBe(true)
+  })
+
+  it('create_ticket is available with no target at all (a bare create)', () => {
+    const createTicket = byId('create_ticket')
+    expect(
+      isInboxActionEnabled(createTicket, { hasActiveConversation: false, hasSelection: false })
+    ).toBe(true)
+  })
+
+  it('create_ticket is available for a conversation target', () => {
+    const createTicket = byId('create_ticket')
+    expect(
+      isInboxActionEnabled(createTicket, { hasActiveConversation: true, hasSelection: false })
+    ).toBe(true)
+  })
+
+  it('create_ticket is disabled once the target is a ticket', () => {
+    const createTicket = byId('create_ticket')
+    expect(
+      isInboxActionEnabled(createTicket, {
+        hasActiveConversation: true,
+        hasSelection: false,
+        hasTicketTarget: true,
+      })
+    ).toBe(false)
   })
 })

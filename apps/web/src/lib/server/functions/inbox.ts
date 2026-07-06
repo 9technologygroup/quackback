@@ -10,13 +10,15 @@
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { isValidTypeId } from '@quackback/ids'
-import type { PrincipalId, TeamId, CompanyId } from '@quackback/ids'
-import { TICKET_TYPES, CONVERSATION_PRIORITIES } from '@/lib/shared/db-types'
+import type { PrincipalId, TeamId, CompanyId, ConversationId } from '@quackback/ids'
+import { TICKET_TYPES, TICKET_STAGES, CONVERSATION_PRIORITIES } from '@/lib/shared/db-types'
 import { INBOX_TRIAGE_FACETS } from '@/lib/shared/inbox/items'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { ForbiddenError } from '@/lib/shared/errors'
 import { requireAuth, policyActorFromAuth } from './auth-helpers'
 
 const ticketTypeSchema = z.enum(TICKET_TYPES)
+const ticketStageSchema = z.enum(TICKET_STAGES)
 const prioritySchema = z.enum(CONVERSATION_PRIORITIES)
 const inboxSortSchema = z.enum(['recent', 'oldest', 'created', 'priority'])
 
@@ -28,6 +30,9 @@ export const listInboxItemsSchema = z.object({
     .max(2)
     .optional(),
   ticketType: ticketTypeSchema.optional(),
+  /** A saved view's `ticket_stage` rule (unified inbox §2.8); no chip sets
+   *  this directly. */
+  ticketStage: ticketStageSchema.optional(),
   priority: prioritySchema.optional(),
   search: z.string().optional(),
   /** 'me' | 'unassigned' | a teammate principal id; validated in the handler
@@ -66,6 +71,7 @@ export const listInboxItemsFn = createServerFn({ method: 'GET' })
       facet: data.facet,
       kinds: data.kinds,
       ticketType: data.ticketType,
+      ticketStage: data.ticketStage,
       priority: data.priority,
       search: data.search,
       assignee,
@@ -93,3 +99,17 @@ export const fetchInboxCountsFn = createServerFn({ method: 'GET' }).handler(asyn
   }
   return countInboxScopes(actor)
 })
+
+/**
+ * The linked customer ticket for one conversation, or null (unified inbox
+ * §M5): the unified detail panel's Ticket card/Links section and the thread
+ * header's ticket-status pill read this for a plain conversation item.
+ * Gated on conversation.view — the caller already has the conversation open.
+ */
+export const getConversationTicketLinkFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ conversationId: z.string() }))
+  .handler(async ({ data }) => {
+    await requireAuth({ permission: PERMISSIONS.CONVERSATION_VIEW })
+    const { getLinkedCustomerTicket } = await import('@/lib/server/domains/inbox/inbox.query')
+    return getLinkedCustomerTicket(data.conversationId as ConversationId)
+  })

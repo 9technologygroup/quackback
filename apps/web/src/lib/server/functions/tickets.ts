@@ -17,6 +17,7 @@ import type {
   PrincipalId,
   TeamId,
   CompanyId,
+  ConversationId,
   ConversationMessageId,
 } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
@@ -255,6 +256,26 @@ export const unlinkTicketFromTrackerFn = createServerFn({ method: 'POST' })
     await unlinkTicketFromTracker(
       data.trackerTicketId as TicketId,
       data.ticketId as TicketId,
+      actor
+    )
+    return { success: true }
+  })
+
+/**
+ * Link a freshly created customer ticket back to the conversation it came
+ * from (unified inbox §M5's create-ticket flow, step 2 after createTicketFn).
+ * Gated on ticket.create — same permission the create step itself required.
+ */
+export const linkTicketToConversationFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ ticketId: z.string(), conversationId: z.string() }))
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_CREATE })
+    const actor = await policyActorFromAuth(ctx)
+    const { linkTicketToConversation } =
+      await import('@/lib/server/domains/tickets/ticket-conversation-link.service')
+    await linkTicketToConversation(
+      data.ticketId as TicketId,
+      data.conversationId as ConversationId,
       actor
     )
     return { success: true }

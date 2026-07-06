@@ -49,7 +49,6 @@ import {
   setTicketPriorityFn,
   setTicketStatusFn,
 } from '@/lib/server/functions/tickets'
-import { TicketDetailPanel } from '@/components/admin/tickets/ticket-detail-panel'
 import {
   InboxNavSidebar,
   isInboxView,
@@ -62,7 +61,9 @@ import {
 } from '@/components/admin/conversation/inbox-nav-sidebar'
 import { ConversationViewDialog } from '@/components/admin/conversation/conversation-view-dialog'
 import { RequiredAttributesDialog } from '@/components/admin/conversation/required-attributes-dialog'
+import { CreateTicketDialog } from '@/components/admin/inbox/create-ticket-dialog'
 import { isMissingRequiredAttributesMessage } from '@/lib/shared/conversation/attribute-values'
+import { resolveDefaultClosedStatusId } from '@/lib/shared/tickets'
 import {
   inboxNavKey,
   navFromSearch,
@@ -367,18 +368,6 @@ async function runTicketBulk(
   return { succeeded, failed }
 }
 
-/** The workspace's default closed-category ticket status (§3.4: "close" maps to
- *  it for a ticket target) — the status marked `isDefault` within the closed
- *  category, or else the first closed status by position. Undefined when the
- *  workspace has no closed status configured at all. */
-function resolveDefaultClosedStatusId(
-  statuses: { id: string; category: string; isDefault: boolean }[] | undefined
-): string | undefined {
-  if (!statuses) return undefined
-  const closed = statuses.filter((s) => s.category === 'closed')
-  return closed.find((s) => s.isDefault)?.id ?? closed[0]?.id
-}
-
 function InboxPage() {
   const queryClient = useQueryClient()
   const navigate = Route.useNavigate()
@@ -564,10 +553,11 @@ function InboxPage() {
     }
   }, [urlCompany, companies, updateSearch])
 
-  // The unified endpoint (mine/unassigned/all, a team scope, or a Tickets-
-  // section scope) vs the legacy conversation-only endpoint (mentions/quinn/
-  // saved, tag/segment/custom views — see inbox-scope.ts's module note).
-  const useUnified = usesUnifiedInboxList(nav)
+  // The unified endpoint (mine/unassigned/all, a team scope, a Tickets-section
+  // scope, or a custom view carrying a ticket-only rule — §2.8) vs the legacy
+  // conversation-only endpoint (mentions/quinn/saved, tag/segment, and a
+  // custom view with no ticket rules — see inbox-scope.ts's module note).
+  const useUnified = usesUnifiedInboxList(nav, activeView?.filters)
   const { data: unifiedData, isLoading: unifiedLoading } = useQuery({
     ...inboxQueries.itemList(
       buildInboxListParams(
@@ -576,7 +566,8 @@ function InboxPage() {
         priorityFilter,
         search,
         urlCompany as CompanyId | undefined,
-        sort
+        sort,
+        activeView?.filters
       )
     ),
     refetchInterval: 30_000, // polling fallback until ticket SSE lands (M3)
@@ -629,18 +620,6 @@ function InboxPage() {
   const { data: ticketStatusList } = useQuery({
     ...ticketQueries.statuses(),
     enabled: showTickets,
-  })
-
-  // The open ticket's properties, for the interim `TicketDetailPanel` slot
-  // (§2.5 — M5 merges this into one unified detail panel). Same query the
-  // unified thread's header reads (`inboxQueries.ticketDetail`, keyed under
-  // `ticketKeys.detail`), so this is a cache hit, not a second network call,
-  // whenever the thread is also mounted.
-  const { data: openTicket } = useQuery({
-    ...inboxQueries.ticketDetail(
-      selectedRef?.kind === 'ticket' ? selectedRef.id : ('' as TicketId)
-    ),
-    enabled: selectedRef?.kind === 'ticket',
   })
 
   // Keep the active scope's memory in sync with what's open, so it's current the
@@ -736,7 +715,7 @@ function InboxPage() {
 
       // A ticket's live properties (status/assignee/priority/stage/type)
       // — patched directly onto the same cache key the unified thread's
-      // header and this route's `TicketDetailPanel` both read
+      // header and its `InboxDetailPanel` both read
       // (`inboxQueries.ticketDetail`/`ticketQueries.detail` share
       // `ticketKeys.detail`), so a change from another agent/tab shows up
       // without a refetch.
@@ -788,6 +767,14 @@ function InboxPage() {
   const [closeBlocked, setCloseBlocked] = useState<string[] | null>(null)
   const [commandOpen, setCommandOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  // Create-ticket flow (unified inbox §M5). The command bar's `create_ticket`
+  // action pings the open conversation thread (`createTicketToken`, since
+  // only that component holds the conversation data the dialog prefills
+  // from) when a conversation is active, or opens the route-level standalone
+  // dialog otherwise (nothing selected — the action is disabled for a ticket
+  // target, see `isInboxActionEnabled`).
+  const [createTicketToken, setCreateTicketToken] = useState(0)
+  const [standaloneCreateTicketOpen, setStandaloneCreateTicketOpen] = useState(false)
   // Anchor for shift-click range selection.
   const selectAnchor = useRef<string | null>(null)
   // The thread wrapper, so the reply action can focus the open composer.
@@ -1169,12 +1156,17 @@ function InboxPage() {
         case 'reopen':
           if (needsTarget) void applyReopen()
           break
+        case 'create_ticket':
+          if (selectedRef?.kind === 'conversation') setCreateTicketToken((t) => t + 1)
+          else if (!hasTicketTarget) setStandaloneCreateTicketOpen(true)
+          break
       }
     },
     [
       hasSelection,
       hasActiveConversation,
       hasTicketTarget,
+      selectedRef,
       focusComposer,
       moveSelection,
       selectedId,
@@ -1216,6 +1208,15 @@ function InboxPage() {
         onSaved={(viewId) => setNav({ kind: 'custom', viewId })}
       />
       <RequiredAttributesDialog messages={closeBlocked} onClose={() => setCloseBlocked(null)} />
+      {/* Standalone create-ticket (command bar with nothing selected) — the
+          "from a conversation" flow is mounted inside `AgentConversationThread`
+          instead, where the conversation data it prefills from already lives. */}
+      <CreateTicketDialog
+        open={standaloneCreateTicketOpen}
+        onOpenChange={setStandaloneCreateTicketOpen}
+        onCreated={(id) => setSelectedId(id)}
+        onChanged={refreshInbox}
+      />
       {isSaved ? (
         <SavedMessagesColumn selectedId={selectedId} onSelect={selectSavedMessage} />
       ) : (
@@ -1261,28 +1262,24 @@ function InboxPage() {
         />
       )}
 
-      {/* Thread / detail pane. Both kinds render the unified thread; a ticket
-          selection additionally gets the interim `TicketDetailPanel` beside
-          it (M5 merges the two panels into one). */}
+      {/* Thread / detail pane. Both kinds render the unified thread, which
+          mounts the one unified `InboxDetailPanel` internally (§2.7, M5). */}
       <div
         ref={threadContainerRef}
         className={cn('min-w-0 flex-1', !selectedRef && 'hidden md:block')}
       >
         {selectedRef?.kind === 'ticket' ? (
-          <div className="flex h-full">
-            <AgentConversationThread
-              key={selectedRef.id}
-              item={selectedRef}
-              targetMessageId={null}
-              onChanged={refreshInbox}
-              onBack={() => setSelectedId(null)}
-              onSelectConversation={setSelectedId}
-              onOpenPost={openPost}
-              isVisitorTyping={false}
-              isOtherAgentTyping={false}
-            />
-            {openTicket && <TicketDetailPanel ticket={openTicket} onChanged={refreshInbox} />}
-          </div>
+          <AgentConversationThread
+            key={selectedRef.id}
+            item={selectedRef}
+            targetMessageId={null}
+            onChanged={refreshInbox}
+            onBack={() => setSelectedId(null)}
+            onSelectItem={setSelectedId}
+            onOpenPost={openPost}
+            isVisitorTyping={false}
+            isOtherAgentTyping={false}
+          />
         ) : selectedRef?.kind === 'conversation' ? (
           <AgentConversationThread
             key={selectedRef.id}
@@ -1290,10 +1287,11 @@ function InboxPage() {
             targetMessageId={targetMessageId}
             onChanged={refreshInbox}
             onBack={() => setSelectedId(null)}
-            onSelectConversation={setSelectedId}
+            onSelectItem={setSelectedId}
             onOpenPost={openPost}
             isVisitorTyping={visitorTyping}
             isOtherAgentTyping={otherAgentTyping}
+            createTicketToken={createTicketToken}
           />
         ) : (
           <div className="hidden h-full items-center justify-center md:flex">

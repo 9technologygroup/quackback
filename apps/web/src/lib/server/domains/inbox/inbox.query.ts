@@ -35,7 +35,7 @@ import {
   type TicketType,
 } from '@/lib/server/db'
 import type { ConversationId, TicketId, PrincipalId, TeamId, CompanyId } from '@quackback/ids'
-import type { ConversationPriority } from '@/lib/shared/db-types'
+import type { ConversationPriority, TicketStage } from '@/lib/shared/db-types'
 import { can } from '@/lib/server/policy/authorize'
 import { conversationFilter } from '@/lib/server/policy/conversations'
 import { ticketFilter } from '@/lib/server/policy/tickets'
@@ -63,6 +63,9 @@ export interface InboxListFilter {
   /** Restrict to one or both kinds. Omitted = both (subject to RBAC). */
   kinds?: Array<'conversation' | 'ticket'>
   ticketType?: TicketType
+  /** A saved view's `ticket_stage` rule (unified inbox §2.8) — no chip sets
+   *  this directly. */
+  ticketStage?: TicketStage
   priority?: ConversationPriority
   search?: string
   /** 'me' | 'unassigned' | a teammate principal id — shared shape with
@@ -243,9 +246,12 @@ const EMPTY_BRANCH = (cursor: string | null): InboxBranchFetch => ({
  * Batch-load the one-row-rule enrichment for a page of conversations: the
  * linked CUSTOMER ticket (at most one per conversation, per the partial
  * unique index), joined through to its status for the chip's display fields.
- * One query for the whole page.
+ * One query for the whole page. Exported so a single-conversation lookup
+ * (`getLinkedCustomerTicket`, used by the unified detail panel + header's
+ * ticket-status pill on a conversation item) can reuse the same join instead
+ * of duplicating it.
  */
-async function loadLinkedCustomerTicketSummaries(
+export async function loadLinkedCustomerTicketSummaries(
   conversationIds: ConversationId[]
 ): Promise<Map<ConversationId, LinkedTicketSummary>> {
   const map = new Map<ConversationId, LinkedTicketSummary>()
@@ -334,6 +340,7 @@ async function fetchTicketBranch(
     {
       type: filter.ticketType,
       statusCategory: facetToTicketStatusCategory(filter.facet),
+      stage: filter.ticketStage,
       priority: filter.priority,
       assignee: filter.assignee,
       teamId: filter.teamId,
@@ -512,4 +519,21 @@ export async function countInboxScopes(actor: Actor): Promise<InboxCounts> {
     unassigned,
     ticketsByType: { customer, back_office: backOffice, tracker },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Single-conversation linked-ticket lookup (unified inbox §M5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The linked CUSTOMER ticket for one conversation (or null), for the unified
+ * detail panel's Ticket card + Links section and the thread header's ticket-
+ * status pill when a plain conversation links a ticket. Thin wrapper over the
+ * same batched join the list branch uses.
+ */
+export async function getLinkedCustomerTicket(
+  conversationId: ConversationId
+): Promise<LinkedTicketSummary | null> {
+  const map = await loadLinkedCustomerTicketSummaries([conversationId])
+  return map.get(conversationId) ?? null
 }

@@ -38,6 +38,7 @@ function ticket(overrides: Partial<TicketDTO> = {}): TicketDTO {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     reopenedCount: 0,
+    customAttributes: {},
     lastMessagePreview: 'Cannot log in',
     lastMessageAt: null,
     ...overrides,

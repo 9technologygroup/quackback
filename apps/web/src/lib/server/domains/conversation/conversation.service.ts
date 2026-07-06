@@ -918,12 +918,15 @@ export async function endConversation(
 
 /**
  * Insert + broadcast an author-less 'system' status event (assignment, chat
- * ended/reopened, …). It carries senderType 'system' with no principal, so it
- * renders as a centered notice on both sides, never counts as unread, and does
- * not bump the conversation's last-message preview. Best-effort: a failure here
- * must not undo the action that already landed.
+ * ended/reopened, ticket created, …). It carries senderType 'system' with no
+ * principal, so it renders as a centered notice on both sides, never counts as
+ * unread, and does not bump the conversation's last-message preview.
+ * Best-effort: a failure here must not undo the action that already landed.
+ * Exported so sibling domains (e.g. the create-ticket flow's conversation
+ * announcement) can post the same shape without duplicating the insert +
+ * publish plumbing.
  */
-async function emitSystemMessage(
+export async function emitSystemMessage(
   conversationId: ConversationId,
   content: string,
   systemEvent?: ConversationSystemEvent

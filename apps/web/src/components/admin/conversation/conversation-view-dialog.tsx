@@ -12,15 +12,20 @@ import {
   CONVERSATION_SORTS,
   CONVERSATION_SORT_LABELS,
   CONVERSATION_VIEW_RULE_FIELDS,
+  TICKET_VIEW_RULE_FIELDS,
   MAX_VIEW_RULES,
   conversationViewFiltersSchema,
   type ConversationSort,
   type ConversationViewDTO,
   type ConversationViewRuleField,
 } from '@/lib/shared/conversation/views'
+import { TICKET_TYPES, TICKET_STATUS_CATEGORIES, TICKET_STAGES } from '@/lib/shared/db-types'
+import { TICKET_STATUS_CATEGORY_LABELS, DEFAULT_TICKET_STAGE_LABELS } from '@/lib/shared/tickets'
+import { ticketTypeLabel } from '@/components/admin/tickets/ticket-chips'
 import {
   useConversationTagsWithCounts,
   useInboxTeams,
+  useSupportTicketsEnabled,
 } from '@/components/admin/conversation/inbox-nav-sidebar'
 import {
   Dialog,
@@ -53,6 +58,10 @@ const FIELD_LABELS: Record<ConversationViewRuleField, string> = {
   tag: 'Tag',
   source: 'Channel',
   waiting: 'Waiting',
+  kind: 'Item kind',
+  ticket_type: 'Ticket type',
+  ticket_status_category: 'Ticket status',
+  ticket_stage: 'Ticket stage',
 }
 
 const STATUS_OPTIONS = ['open', 'snoozed', 'closed']
@@ -62,6 +71,20 @@ const ASSIGNEE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'unassigned', label: 'Unassigned' },
 ]
 const SOURCE_OPTIONS = ['widget', 'email']
+const KIND_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'conversation', label: 'Conversation' },
+  { value: 'ticket', label: 'Ticket' },
+]
+const TICKET_TYPE_OPTIONS: Array<{ value: string; label: string }> = TICKET_TYPES.map((t) => ({
+  value: t,
+  label: ticketTypeLabel(t),
+}))
+const TICKET_STATUS_CATEGORY_OPTIONS: Array<{ value: string; label: string }> =
+  TICKET_STATUS_CATEGORIES.map((c) => ({ value: c, label: TICKET_STATUS_CATEGORY_LABELS[c] }))
+const TICKET_STAGE_OPTIONS: Array<{ value: string; label: string }> = TICKET_STAGES.map((s) => ({
+  value: s,
+  label: DEFAULT_TICKET_STAGE_LABELS[s],
+}))
 
 /** The default value for a freshly-picked field (so a new row is valid at once). */
 function defaultValueFor(field: ConversationViewRuleField): string {
@@ -76,6 +99,14 @@ function defaultValueFor(field: ConversationViewRuleField): string {
       return 'widget'
     case 'waiting':
       return 'true'
+    case 'kind':
+      return 'ticket'
+    case 'ticket_type':
+      return 'customer'
+    case 'ticket_status_category':
+      return 'open'
+    case 'ticket_stage':
+      return TICKET_STAGES[0]
     // team + tag depend on the loaded lists; the picker fills them in.
     default:
       return ''
@@ -100,6 +131,14 @@ export function ConversationViewDialog({ open, onOpenChange, editing, onSaved }:
   const queryClient = useQueryClient()
   const { data: tags } = useConversationTagsWithCounts()
   const { data: teams } = useInboxTeams()
+  const supportTickets = useSupportTicketsEnabled()
+  // Ticket-only rule fields (§2.8) are hidden from the picker when the
+  // workspace hasn't turned tickets on — an existing view already carrying
+  // one still runs (the schema/translation don't gate on the flag), it just
+  // can't be re-picked from a fresh row.
+  const visibleFields = CONVERSATION_VIEW_RULE_FIELDS.filter(
+    (f) => supportTickets || !(TICKET_VIEW_RULE_FIELDS as readonly string[]).includes(f)
+  )
 
   const [name, setName] = useState('')
   const [rules, setRules] = useState<DraftRule[]>([])
@@ -209,7 +248,7 @@ export function ConversationViewDialog({ open, onOpenChange, editing, onSaved }:
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {CONVERSATION_VIEW_RULE_FIELDS.map((f) => (
+                      {visibleFields.map((f) => (
                         <SelectItem key={f} value={f}>
                           {FIELD_LABELS[f]}
                         </SelectItem>
@@ -312,7 +351,15 @@ function RuleValue({
             ? SOURCE_OPTIONS.map((v) => ({ value: v, label: v }))
             : rule.field === 'tag'
               ? tags.map((t) => ({ value: t.id, label: t.name }))
-              : teams.map((t) => ({ value: t.id, label: t.name }))
+              : rule.field === 'kind'
+                ? KIND_OPTIONS
+                : rule.field === 'ticket_type'
+                  ? TICKET_TYPE_OPTIONS
+                  : rule.field === 'ticket_status_category'
+                    ? TICKET_STATUS_CATEGORY_OPTIONS
+                    : rule.field === 'ticket_stage'
+                      ? TICKET_STAGE_OPTIONS
+                      : teams.map((t) => ({ value: t.id, label: t.name }))
 
   const empty = options.length === 0
   return (

@@ -8,8 +8,7 @@
  * char on the descriptor means the palette hint, the actual binding, and the
  * help panel never drift.
  *
- * Client-safe (no server imports). Convert-to-ticket is intentionally absent —
- * tickets are a later phase.
+ * Client-safe (no server imports).
  *
  * Labels are English inline (no locale catalogue yet; see report).
  */
@@ -22,6 +21,7 @@ export type InboxActionId =
   | 'priority'
   | 'close'
   | 'reopen'
+  | 'create_ticket'
   | 'next'
   | 'prev'
   | 'toggle_select'
@@ -71,6 +71,13 @@ export const INBOX_ACTIONS: readonly InboxActionDescriptor[] = [
   { id: 'priority', label: 'Set priority', group: 'Status', scope: 'both', shortcut: 'p' },
   { id: 'close', label: 'Close conversation', group: 'Status', scope: 'both', shortcut: 'e' },
   { id: 'reopen', label: 'Reopen conversation', group: 'Status', scope: 'both', shortcut: 'u' },
+  {
+    id: 'create_ticket',
+    label: 'Create ticket',
+    group: 'Status',
+    scope: 'both',
+    shortcut: 'c',
+  },
   { id: 'next', label: 'Next conversation', group: 'Navigate', scope: 'active', shortcut: 'j' },
   { id: 'prev', label: 'Previous conversation', group: 'Navigate', scope: 'active', shortcut: 'k' },
   {
@@ -98,14 +105,18 @@ export interface InboxActionContext {
 
 /**
  * Whether an action can run in the current context, from its `scope` alone.
- * Snooze is additionally disabled whenever the target includes a ticket.
- * Pure; shared by the palette and unit-tested directly.
+ * Snooze is additionally disabled whenever the target includes a ticket (no
+ * ticket-row equivalent — the status axis stands in for it); create_ticket is
+ * the reverse, available with no target at all (a bare create) or a
+ * conversation target, but disabled once the target IS a ticket (nothing to
+ * create from). Pure; shared by the palette and unit-tested directly.
  */
 export function isInboxActionEnabled(
   descriptor: InboxActionDescriptor,
   ctx: InboxActionContext
 ): boolean {
   if (descriptor.id === 'snooze' && ctx.hasTicketTarget) return false
+  if (descriptor.id === 'create_ticket') return !ctx.hasTicketTarget
   switch (descriptor.scope) {
     case 'active':
       return ctx.hasActiveConversation

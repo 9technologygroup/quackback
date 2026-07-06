@@ -33,8 +33,19 @@ import {
   EllipsisHorizontalIcon,
   LanguageIcon,
   XMarkIcon,
+  CheckIcon,
+  BookmarkIcon as BookmarkSolidIcon,
 } from '@heroicons/react/24/solid'
-import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline'
+import {
+  ChatBubbleLeftRightIcon,
+  BookmarkIcon,
+  MoonIcon,
+  TicketIcon,
+  NoSymbolIcon,
+  LinkIcon,
+  ArrowDownTrayIcon,
+  ArrowTopRightOnSquareIcon,
+} from '@heroicons/react/24/outline'
 import { toast } from 'sonner'
 import type { ConversationId, ConversationMessageId, TicketId } from '@quackback/ids'
 import {
@@ -45,14 +56,21 @@ import {
   removeMessageReactionFn,
   setMessageFlagFn,
   markConversationUnreadFromMessageFn,
+  exportConversationTranscriptFn,
+  snoozeConversationFn,
+  setConversationStatusFn,
 } from '@/lib/server/functions/conversation'
+import { isMissingRequiredAttributesMessage } from '@/lib/shared/conversation/attribute-values'
 import {
   sendTicketMessageFn,
   addTicketNoteFn,
   listTicketMessagesFn,
   markTicketUnreadFromMessageFn,
   markTicketReadFn,
+  setTicketStatusFn,
+  exportTicketTranscriptFn,
 } from '@/lib/server/functions/tickets'
+import { blockPersonFn, unblockPersonFn } from '@/lib/server/functions/blocking'
 import { useInboxTranslation } from '@/lib/client/hooks/use-inbox-translation'
 import {
   isTranslationUnavailableMessage,
@@ -66,6 +84,8 @@ import type {
   ConversationDTO,
 } from '@/lib/shared/conversation/types'
 import type { InboxItemRef } from '@/lib/shared/inbox/items'
+import type { TicketDTO } from '@/lib/server/domains/tickets'
+import { resolveDefaultClosedStatusId } from '@/lib/shared/tickets'
 import { AgentMessageBubble, UnreadDivider } from '@/components/conversation/message-bubble'
 import {
   ThreadViewport,
@@ -100,16 +120,21 @@ import { ChannelBadge } from '@/components/admin/conversation/channel-badge'
 import { SlaChip } from '@/components/admin/conversation/sla-chip'
 import { ConversationTagsEditor } from '@/components/admin/conversation/conversation-tags-editor'
 import { StatusControl } from '@/components/admin/conversation/status-control'
-import { ConversationDetailPanel } from '@/components/admin/conversation/conversation-detail-panel'
-import { ConvertToPostDialog } from '@/components/admin/conversation/convert-to-post-dialog'
-import { EndConversationDialog } from '@/components/admin/conversation/end-conversation-dialog'
-import { SharePostDialog } from '@/components/admin/conversation/share-post-dialog'
 import { TicketTypeBadge, TicketStageChip } from '@/components/admin/tickets/ticket-chips'
 import {
   TicketStatusControl,
   TicketAssigneeControl,
   TicketPriorityControl,
 } from '@/components/admin/tickets/ticket-controls'
+import { InboxDetailPanel } from '@/components/admin/inbox/inbox-detail-panel'
+import { CreateTicketDialog } from '@/components/admin/inbox/create-ticket-dialog'
+import { ConvertToPostDialog } from '@/components/admin/conversation/convert-to-post-dialog'
+import { EndConversationDialog } from '@/components/admin/conversation/end-conversation-dialog'
+import { SharePostDialog } from '@/components/admin/conversation/share-post-dialog'
+import { usePersonBlockStatus } from '@/components/admin/users/block-person-control'
+import { ConfirmDialog } from '@/components/shared/confirm-dialog'
+import { RequiredAttributesDialog } from '@/components/admin/conversation/required-attributes-dialog'
+import { downloadTranscriptFile } from '@/components/admin/conversation/export-transcript-button'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import {
   CONVERSATION_EDITOR_FEATURES,
@@ -119,7 +144,7 @@ import { ComposerAttachmentTray } from '@/components/shared/composer-attachment-
 import { LinkPreviews } from '@/components/shared/link-preview-card'
 import { conversationInboxQueries } from '@/lib/client/queries/conversation-inbox'
 import { inboxQueries } from '@/lib/client/queries/inbox'
-import { ticketKeys } from '@/lib/client/queries/tickets'
+import { ticketKeys, ticketQueries } from '@/lib/client/queries/tickets'
 import {
   buildAdminConversationRows,
   type AdminConversationRow,
@@ -137,13 +162,24 @@ import { EmojiPicker } from '@/components/shared/emoji-picker'
 import { Avatar } from '@/components/ui/avatar'
 import { Spinner } from '@/components/shared/spinner'
 import { EmptyState } from '@/components/shared/empty-state'
+import { Button } from '@/components/ui/button'
+import { DateTimePicker } from '@/components/ui/datetime-picker'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { cn } from '@/lib/shared/utils'
+import { cn, tomorrowAt, inHours, nextMondayAt } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
 // "Jump to message" tuning: how long the flash plays (must match the
@@ -198,10 +234,11 @@ export function AgentConversationThread({
   targetMessageId,
   onChanged,
   onBack,
-  onSelectConversation,
+  onSelectItem,
   onOpenPost,
   isVisitorTyping,
   isOtherAgentTyping,
+  createTicketToken,
 }: {
   /** The open item, discriminated by kind — drives both the data adapter and
    *  the derived `ThreadCapabilities`. */
@@ -212,15 +249,20 @@ export function AgentConversationThread({
   onChanged: () => void
   /** Mobile-only: return to the list (single-column layout). */
   onBack: () => void
-  /** Open another conversation (e.g. from the detail panel's history).
-   *  Conversation-only — the ticket kind renders no detail panel here (the
-   *  route places `TicketDetailPanel` beside this component instead). */
-  onSelectConversation: (id: ConversationId) => void
+  /** Navigate to another item — a previous conversation from the detail
+   *  panel's contact card, or a linked ticket/conversation row. A bare
+   *  TypeID, either kind (the route's `setSelectedId` resolves it). */
+  onSelectItem: (id: string) => void
   /** Open an embedded post in the host's in-place `?post=` modal (the route owns
    *  the search-param navigation so the agent never leaves the thread). */
   onOpenPost: (postId: string) => void
   isVisitorTyping: boolean
   isOtherAgentTyping: boolean
+  /** Bumped by the route's command-bar `create_ticket` action while this
+   *  conversation is the active item (unified inbox §M5) — a change opens
+   *  this thread's own create-ticket dialog (which needs the conversation
+   *  data only this component has loaded). Ignored for a ticket item. */
+  createTicketToken?: number
 }) {
   const queryClient = useQueryClient()
   const isTicket = item.kind === 'ticket'
@@ -232,6 +274,7 @@ export function AgentConversationThread({
   const { session, settings } = useRouteContext({ from: '__root__' })
   const myName = session?.user?.name ?? 'You'
   const flags = settings?.featureFlags as FeatureFlags | undefined
+  const showTickets = flags?.supportTickets ?? false
 
   // Reply and Note each hold an independent draft (the rich doc persisted as
   // contentJson + its markdown mirror), so toggling modes preserves each mode's
@@ -305,6 +348,29 @@ export function AgentConversationThread({
     ...inboxQueries.ticketDetail(ticketId ?? INACTIVE_TICKET_ID),
     enabled: isTicket,
   })
+
+  // The linked customer ticket (unified inbox §2.1's one-row rule): a plain
+  // conversation may wear a ticket chip/status pill even though it renders
+  // its own row. Resolved in two hops — the summary tells us the id, then
+  // the full DTO (same cache key as a ticket item's own `ticket` query above)
+  // drives the header's ticket-status pill + the panel's Ticket card/Links.
+  const { data: linkedTicketSummary } = useQuery({
+    ...inboxQueries.conversationTicketLink(conversationId ?? INACTIVE_CONVERSATION_ID),
+    enabled: !isTicket && !!conversationId,
+  })
+  const linkedTicketId = linkedTicketSummary?.id ?? null
+  const { data: linkedTicketFull } = useQuery({
+    ...inboxQueries.ticketDetail(linkedTicketId ?? INACTIVE_TICKET_ID),
+    enabled: !!linkedTicketId,
+  })
+  // The ticket in scope for both the header pill and the detail panel: the
+  // item's own ticket (a ticket item), or the conversation's linked one.
+  const panelTicket: TicketDTO | null | undefined = isTicket ? ticket : linkedTicketFull
+
+  // The ticket status catalogue, needed to resolve "Resolve" -> the default
+  // closed-category status (§3.4). Shared cache key with the route's own
+  // read, so mounting both costs one request, not two.
+  const { data: ticketStatusList } = useQuery({ ...ticketQueries.statuses(), enabled: isTicket })
 
   const conversation = convThread?.conversation
   const messages: AgentConversationMessageDTO[] = isTicket
@@ -397,6 +463,22 @@ export function AgentConversationThread({
   // convert dialog should offer the optional email-capture field.
   const visitorContactEmail = conversation?.visitorEmail ?? null
   const visitorIsAnonymous = conversation != null && visitorContactEmail == null
+
+  // Whether the open conversation is already closed — hides the overflow's
+  // "End conversation" item once it no longer applies.
+  const isClosedConversation = !isTicket && conversation?.status === 'closed'
+
+  // Create-ticket dialog defaults (unified inbox §M5): title from the subject
+  // or first message (mirrors "Track as feedback"'s own default), requester
+  // fixed to this conversation's visitor.
+  const createTicketDefaultRequester = conversation
+    ? {
+        principalId: conversation.visitor.principalId,
+        name: conversation.visitor.displayName,
+        email: visitorContactEmail,
+        image: conversation.visitor.avatarUrl,
+      }
+    : null
 
   // The agent's latest message is "Seen" once the visitor read watermark
   // reaches it. Conversation-only (a ticket carries no visitor read watermark
@@ -819,6 +901,144 @@ export function AgentConversationThread({
     onError: () => toast.error('Failed to mark unread'),
   })
 
+  // ── Header action bar (§2.7) ─────────────────────────────────────────────
+
+  // Create-ticket dialog (conversations only): opened from the header icon,
+  // the panel's Ticket card empty slot, or the route's command-bar action —
+  // the latter via `createTicketToken`, since only this component holds the
+  // conversation data (subject/first message/visitor) the dialog prefills
+  // from.
+  const [createTicketOpen, setCreateTicketOpen] = useState(false)
+  const createTicketTokenRef = useRef(createTicketToken)
+  useEffect(() => {
+    if (createTicketToken !== undefined && createTicketToken !== createTicketTokenRef.current) {
+      createTicketTokenRef.current = createTicketToken
+      if (!isTicket) setCreateTicketOpen(true)
+    }
+  }, [createTicketToken, isTicket])
+
+  // Save for later (star/bookmark icon, both kinds): the pragmatic thread-
+  // level affordance — flags the LATEST message, reusing the same per-message
+  // flag primitive the "Saved for later" feed already reads (there is no
+  // separate thread-level save row).
+  const lastMessage = messages.at(-1)
+  const lastMessageFlagged = lastMessage?.flaggedAt != null
+  const toggleSaveForLater = useCallback(() => {
+    if (!lastMessage) return
+    flagMutation.mutate({ messageId: lastMessage.id, flagged: !lastMessageFlagged })
+  }, [lastMessage, lastMessageFlagged, flagMutation])
+
+  // Snooze (moon icon, conversations only) — the same preset menu
+  // StatusControl used to carry (§2.7 moves it into the header's icon
+  // cluster; StatusControl keeps only Open/Closed + the current snoozed-
+  // until label).
+  const [snoozeCustomOpen, setSnoozeCustomOpen] = useState(false)
+  const [snoozeCustomDate, setSnoozeCustomDate] = useState<Date | undefined>(() => tomorrowAt(9))
+  const snoozeMutation = useMutation({
+    mutationFn: (until: string | null) =>
+      snoozeConversationFn({
+        data: { conversationId: conversationId ?? INACTIVE_CONVERSATION_ID, until },
+      }),
+    onSuccess: () => refreshThread(),
+    onError: () => toast.error('Failed to snooze conversation'),
+  })
+  const snooze = (until: string | null) => snoozeMutation.mutate(until)
+
+  // Block / unblock the visitor (overflow menu, conversations only).
+  const { blocked: visitorBlocked } = usePersonBlockStatus(conversation?.visitor.principalId)
+  const [blockConfirmOpen, setBlockConfirmOpen] = useState(false)
+  const blockStatusKey = ['admin', 'person-block-status', conversation?.visitor.principalId]
+  const blockMutation = useMutation({
+    mutationFn: () => blockPersonFn({ data: { principalId: conversation!.visitor.principalId } }),
+    onSuccess: () => {
+      toast.success('Person blocked')
+      void queryClient.invalidateQueries({ queryKey: blockStatusKey })
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Failed to block'),
+  })
+  const unblockMutation = useMutation({
+    mutationFn: () => unblockPersonFn({ data: { principalId: conversation!.visitor.principalId } }),
+    onSuccess: () => {
+      toast.success('Person unblocked')
+      void queryClient.invalidateQueries({ queryKey: blockStatusKey })
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Failed to unblock'),
+  })
+
+  // Export transcript (overflow menu, both kinds).
+  const [exporting, setExporting] = useState(false)
+  const exportTranscript = useCallback(async () => {
+    if (exporting) return
+    setExporting(true)
+    try {
+      await downloadTranscriptFile(() =>
+        isTicket
+          ? exportTicketTranscriptFn({ data: { ticketId: ticketId ?? INACTIVE_TICKET_ID } })
+          : exportConversationTranscriptFn({
+              data: { conversationId: conversationId ?? INACTIVE_CONVERSATION_ID },
+            })
+      )
+    } catch {
+      toast.error('Could not export the transcript. Please try again.')
+    } finally {
+      setExporting(false)
+    }
+  }, [exporting, isTicket, ticketId, conversationId])
+
+  // Copy link (overflow menu, both kinds): /admin/inbox?i=<id>.
+  const copyLink = useCallback(() => {
+    const url = `${window.location.origin}/admin/inbox?i=${item.id}`
+    void navigator.clipboard.writeText(url).then(
+      () => toast.success('Link copied'),
+      () => toast.error('Could not copy the link')
+    )
+  }, [item.id])
+
+  // Close (conversations) / Resolve (tickets) — the primary button. A
+  // conversation close keeps the required-attributes guard (a local
+  // RequiredAttributesDialog, mirroring StatusControl's own instance); a
+  // ticket resolve sets the workspace's default closed-category status.
+  const [closeBlocked, setCloseBlocked] = useState<string[] | null>(null)
+  const closeConversationMutation = useMutation({
+    mutationFn: () =>
+      setConversationStatusFn({
+        data: { conversationId: conversationId ?? INACTIVE_CONVERSATION_ID, status: 'closed' },
+      }),
+    onSuccess: () => {
+      toast.success('Conversation closed')
+      refreshThread()
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : null
+      if (message && isMissingRequiredAttributesMessage(message)) setCloseBlocked([message])
+      else toast.error('Failed to close conversation')
+    },
+  })
+  const resolveTicketMutation = useMutation({
+    mutationFn: (statusId: string) =>
+      setTicketStatusFn({ data: { ticketId: ticketId ?? INACTIVE_TICKET_ID, statusId } }),
+    onSuccess: () => {
+      toast.success('Ticket resolved')
+      onChanged()
+    },
+    onError: () => toast.error('Failed to resolve ticket'),
+  })
+  const primaryActionPending = isTicket
+    ? resolveTicketMutation.isPending
+    : closeConversationMutation.isPending
+  const runPrimaryAction = useCallback(() => {
+    if (isTicket) {
+      const closedStatusId = resolveDefaultClosedStatusId(ticketStatusList)
+      if (!closedStatusId) {
+        toast.error('No closed ticket status is configured')
+        return
+      }
+      resolveTicketMutation.mutate(closedStatusId)
+    } else {
+      closeConversationMutation.mutate()
+    }
+  }, [isTicket, ticketStatusList, resolveTicketMutation, closeConversationMutation])
+
   // Seed a text insert into a mode's draft, then remount that editor so the new
   // value is loaded and the cursor lands at its end. The unified RichTextEditor
   // exposes no imperative insert, so every "insert at cursor" affordance (macros,
@@ -1021,10 +1241,13 @@ export function AgentConversationThread({
   }
 
   // The header block differs by kind (§2.5): a conversation keeps its exact
-  // current header (visitor identity, status, channel, SLA, CSAT); a ticket
-  // renders title + reference + type/stage chips + status/assignee/priority
-  // controls in the same geometry (M5 restructures the action bar — this is
-  // parity, not a redesign).
+  // identity/status/channel/SLA/CSAT title area; a ticket shows title +
+  // reference + type/stage chips. The RIGHT side is the unified action bar
+  // (§2.7, M5): a ticket-status pill when the item is or links a ticket, an
+  // icon cluster (create ticket / save for later / snooze / overflow), then
+  // the primary Close (conversations) / Resolve (tickets) button. Priority/
+  // assignee move to the detail panel's Properties row; an xl:hidden fallback
+  // keeps them reachable below that breakpoint (the panel is xl-only).
   const backButton = (
     <button
       type="button"
@@ -1035,6 +1258,176 @@ export function AgentConversationThread({
       <ChevronLeftIcon className="h-5 w-5" />
     </button>
   )
+  const headerIconButtonClass =
+    'flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50'
+
+  // The unified action bar's icon cluster + overflow + primary button —
+  // identical JSX for both kinds, gated internally by `isTicket`/capabilities.
+  const headerActions = (
+    <div className="flex shrink-0 items-center gap-1">
+      {panelTicket && <TicketStatusControl ticket={panelTicket} onChanged={refreshThread} />}
+      {!isTicket && showTickets && !panelTicket && (
+        <button
+          type="button"
+          title="Create ticket"
+          aria-label="Create ticket"
+          onClick={() => setCreateTicketOpen(true)}
+          className={headerIconButtonClass}
+        >
+          <TicketIcon className="h-4 w-4" />
+        </button>
+      )}
+      {lastMessage && (
+        <button
+          type="button"
+          title="Save for later"
+          aria-label="Save for later"
+          aria-pressed={lastMessageFlagged}
+          onClick={toggleSaveForLater}
+          className={headerIconButtonClass}
+        >
+          {lastMessageFlagged ? (
+            <BookmarkSolidIcon className="h-4 w-4 text-amber-500" />
+          ) : (
+            <BookmarkIcon className="h-4 w-4" />
+          )}
+        </button>
+      )}
+      {!isTicket && conversation && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              title="Snooze"
+              aria-label="Snooze"
+              disabled={snoozeMutation.isPending}
+              className={headerIconButtonClass}
+            >
+              <MoonIcon className="h-4 w-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => snooze(inHours(4).toISOString())} className="text-xs">
+              Later today
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => snooze(tomorrowAt(9).toISOString())}
+              className="text-xs"
+            >
+              Tomorrow
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => snooze(nextMondayAt(9).toISOString())}
+              className="text-xs"
+            >
+              Next week
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => snooze(null)} className="text-xs">
+              Until they reply
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                setSnoozeCustomDate(tomorrowAt(9))
+                // Let the menu finish closing before the dialog grabs focus,
+                // so the two Radix overlays don't fight over it.
+                requestAnimationFrame(() => setSnoozeCustomOpen(true))
+              }}
+              className="text-xs"
+            >
+              Pick a date &amp; time…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      {/* P2-D.1 inbox translation: manual per-conversation toggle. */}
+      {inboxTranslationEnabled && conversation && (
+        <button
+          type="button"
+          onClick={inboxTranslation.toggleEnabled}
+          disabled={inboxTranslation.togglePending}
+          aria-pressed={inboxTranslation.enabled}
+          title={
+            inboxTranslation.enabled
+              ? 'Translation is on for this conversation'
+              : 'Turn on translation for this conversation'
+          }
+          className={cn(
+            headerIconButtonClass,
+            inboxTranslation.enabled && 'bg-primary/10 text-primary hover:text-primary'
+          )}
+        >
+          <LanguageIcon className="h-4 w-4" />
+        </button>
+      )}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={isTicket ? 'More ticket actions' : 'More conversation actions'}
+            className={headerIconButtonClass}
+          >
+            <EllipsisHorizontalIcon className="h-5 w-5" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => void exportTranscript()} className="text-xs">
+            <ArrowDownTrayIcon className="h-3.5 w-3.5" />
+            {exporting ? 'Exporting…' : 'Export transcript'}
+          </DropdownMenuItem>
+          {!isTicket && conversation?.visitor.principalId && (
+            <DropdownMenuItem
+              onClick={() =>
+                visitorBlocked ? unblockMutation.mutate() : setBlockConfirmOpen(true)
+              }
+              className="text-xs"
+            >
+              <NoSymbolIcon className="h-3.5 w-3.5" />
+              {visitorBlocked ? 'Unblock person' : 'Block person'}
+            </DropdownMenuItem>
+          )}
+          {!isTicket && conversation && !isClosedConversation && (
+            <DropdownMenuItem onClick={() => setEndDialogOpen(true)} className="text-xs">
+              <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+              End conversation
+            </DropdownMenuItem>
+          )}
+          {!isTicket && conversation && capabilities.convertToPost && (
+            <DropdownMenuItem
+              onSelect={() =>
+                setConvertSeed({ title: convertDefaultTitle, content: convertDefaultContent })
+              }
+              className="text-xs"
+            >
+              <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+              Convert to post
+            </DropdownMenuItem>
+          )}
+          {!isTicket && conversation?.sla && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => removeSlaMutation.mutate()}
+                disabled={removeSlaMutation.isPending}
+                className="text-xs"
+              >
+                Remove SLA ({conversation.sla.policyName})
+              </DropdownMenuItem>
+            </>
+          )}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={copyLink} className="text-xs">
+            <LinkIcon className="h-3.5 w-3.5" />
+            Copy link
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Button type="button" size="sm" onClick={runPrimaryAction} disabled={primaryActionPending}>
+        <CheckIcon className="h-4 w-4" />
+        {isTicket ? 'Resolve' : 'Close'}
+      </Button>
+    </div>
+  )
+
   const header: ReactNode =
     isTicket && ticket ? (
       <div className="flex items-center justify-between gap-3 border-b border-border/50 px-4 py-3 sm:px-5">
@@ -1049,11 +1442,13 @@ export function AgentConversationThread({
             </p>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        {/* Narrow-viewport fallback: Properties live in the detail panel at
+            xl+; below that, priority/assignee stay reachable here. */}
+        <div className="flex shrink-0 items-center gap-1.5 xl:hidden">
           <TicketPriorityControl ticket={ticket} onChanged={onChanged} />
           <TicketAssigneeControl ticket={ticket} onChanged={onChanged} />
-          <TicketStatusControl ticket={ticket} onChanged={onChanged} />
         </div>
+        {headerActions}
       </div>
     ) : (
       <div className="flex items-center justify-between gap-3 border-b border-border/50 px-4 py-3 sm:px-5">
@@ -1089,21 +1484,6 @@ export function AgentConversationThread({
             </p>
           </div>
         </div>
-        {/* Conversation-level track entry for narrow viewports: at xl+ the
-            detail panel's bottom "Track as feedback" button takes over, so this
-            header trigger mirrors the triage controls' xl:hidden fallback. */}
-        {conversation && capabilities.convertToPost && conversationId && (
-          <div className="flex shrink-0 items-center gap-1.5 xl:hidden">
-            <ConvertToPostDialog
-              conversationId={conversationId}
-              defaultTitle={convertDefaultTitle}
-              defaultContent={convertDefaultContent}
-              visitorIsAnonymous={visitorIsAnonymous}
-              visitorContactEmail={visitorContactEmail}
-              onConverted={refreshThread}
-            />
-          </div>
-        )}
         {/* Triage controls live in the detail panel at xl+; below that
             (panel hidden) they stay in the header. */}
         {conversation && (
@@ -1121,57 +1501,12 @@ export function AgentConversationThread({
             <StatusControl
               conversationId={conversationId ?? INACTIVE_CONVERSATION_ID}
               status={conversation.status}
+              snoozedUntil={conversation.snoozedUntil}
               onChanged={refreshThread}
             />
           </div>
         )}
-        {/* P2-D.1 inbox translation: manual per-conversation toggle. */}
-        {inboxTranslationEnabled && conversation && (
-          <button
-            type="button"
-            onClick={inboxTranslation.toggleEnabled}
-            disabled={inboxTranslation.togglePending}
-            aria-pressed={inboxTranslation.enabled}
-            title={
-              inboxTranslation.enabled
-                ? 'Translation is on for this conversation'
-                : 'Turn on translation for this conversation'
-            }
-            className={cn(
-              'flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50',
-              inboxTranslation.enabled
-                ? 'bg-primary/10 text-primary'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-            )}
-          >
-            <LanguageIcon className="h-4 w-4" />
-            <span className="hidden sm:inline">Translate</span>
-          </button>
-        )}
-        {/* Overflow: rarer conversation-level actions. Only shown while it
-            has something to offer (Remove SLA today). */}
-        {conversation?.sla && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="More conversation actions"
-                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <EllipsisHorizontalIcon className="h-5 w-5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onClick={() => removeSlaMutation.mutate()}
-                disabled={removeSlaMutation.isPending}
-                className="text-xs"
-              >
-                Remove SLA ({conversation.sla.policyName})
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+        {headerActions}
       </div>
     )
 
@@ -1440,21 +1775,74 @@ export function AgentConversationThread({
             conversationId={conversationId}
             onEnded={refreshThread}
           />
+          <CreateTicketDialog
+            open={createTicketOpen}
+            onOpenChange={setCreateTicketOpen}
+            onCreated={onSelectItem}
+            conversationId={conversationId}
+            defaultTitle={trackConvoTitle}
+            defaultRequester={createTicketDefaultRequester}
+            onChanged={refreshThread}
+          />
+          <ConfirmDialog
+            open={blockConfirmOpen}
+            onOpenChange={setBlockConfirmOpen}
+            title={`Block ${conversation?.visitor.displayName || 'this person'}?`}
+            description="They will not be able to send new messages or sign in again. Their existing activity stays, and you can unblock them at any time."
+            confirmLabel="Block"
+            variant="destructive"
+            isPending={blockMutation.isPending}
+            onConfirm={() => blockMutation.mutate()}
+          />
+          <Dialog open={snoozeCustomOpen} onOpenChange={setSnoozeCustomOpen}>
+            <DialogContent className="sm:max-w-sm">
+              <DialogHeader>
+                <DialogTitle>Snooze until</DialogTitle>
+                <DialogDescription>
+                  The conversation leaves your open queue and returns at the time you pick.
+                </DialogDescription>
+              </DialogHeader>
+              <DateTimePicker
+                value={snoozeCustomDate}
+                onChange={setSnoozeCustomDate}
+                minDate={new Date()}
+                className="w-full"
+              />
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setSnoozeCustomOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={!snoozeCustomDate || snoozeMutation.isPending}
+                  onClick={() => {
+                    if (!snoozeCustomDate) return
+                    snooze(snoozeCustomDate.toISOString())
+                    setSnoozeCustomOpen(false)
+                  }}
+                >
+                  Snooze
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </>
       )}
 
-      {/* The conversation detail panel renders here (unchanged); a ticket's
-          panel is the interim `TicketDetailPanel`, rendered by the route
-          BESIDE this component (M5 merges the two into one panel). */}
-      {!isTicket && conversation && conversationId && (
-        <ConversationDetailPanel
+      <RequiredAttributesDialog messages={closeBlocked} onClose={() => setCloseBlocked(null)} />
+
+      {/* The unified detail panel (§2.7, M5): one panel for both kinds,
+          assembled from existing per-kind pieces. */}
+      {((!isTicket && conversation) || (isTicket && ticket)) && (
+        <InboxDetailPanel
+          item={item}
           conversation={conversation}
+          ticket={panelTicket}
           onChanged={refreshThread}
-          onSelectConversation={onSelectConversation}
-          onEndConversation={() => setEndDialogOpen(true)}
+          onSelectItem={onSelectItem}
           onTrackAsFeedback={() =>
             setConvertSeed({ title: trackConvoTitle, content: trackConvoContent })
           }
+          onCreateTicket={() => setCreateTicketOpen(true)}
           onInsertFromCopilot={insertFromCopilot}
           getComposerText={getComposerText}
           onReplaceComposerText={replaceComposerText}
