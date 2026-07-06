@@ -21,10 +21,13 @@ import {
   ArrowRightStartOnRectangleIcon,
   Cog6ToothIcon,
   ComputerDesktopIcon,
+  EyeIcon,
   MoonIcon,
   ShieldCheckIcon,
   SunIcon,
 } from '@heroicons/react/24/solid'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useCustomerView } from '@/lib/client/hooks/use-portal-permissions'
 import { useAuthPopoverSafe } from '@/components/auth/auth-popover-context'
 import { hasAnyPortalAuthMethod, resolveSoleOidcProvider } from '@/components/auth/oauth-buttons'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -90,6 +93,11 @@ export function PortalHeader({
 
   const authPopover = useAuthPopoverSafe()
   const openAuthPopover = authPopover?.openAuthPopover
+
+  // Customer view: team members can preview the portal exactly as an end user
+  // sees it. `available`/`active` come from the REAL permission set, so this
+  // control keeps working even while the effective set is suppressed to empty.
+  const customerView = useCustomerView()
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
 
@@ -249,11 +257,57 @@ export function PortalHeader({
     )
   }
 
+  // Customer-view toggle: an eye button that flips the whole portal into an
+  // end-user preview. Rendered whenever the actor is a team member (available)
+  // OR the preview is already active — never gated on the effective permission
+  // set, which reads empty while active and would hide the toggle itself.
+  const CustomerViewToggle = () => {
+    if (!customerView.available && !customerView.active) return null
+
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant={customerView.active ? 'default' : 'outline'}
+            size="sm"
+            onClick={customerView.toggle}
+            aria-pressed={customerView.active}
+            className="ms-1 me-2"
+          >
+            <EyeIcon className="me-2 h-4 w-4" />
+            {customerView.active ? (
+              <FormattedMessage
+                id="portal.header.customerView.active"
+                defaultMessage="Customer view"
+              />
+            ) : (
+              <FormattedMessage id="portal.header.customerView.enter" defaultMessage="Preview" />
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {customerView.active
+            ? intl.formatMessage({
+                id: 'portal.header.customerView.activeHint',
+                defaultMessage: 'Team tools hidden. Click to show them again.',
+              })
+            : intl.formatMessage({
+                id: 'portal.header.customerView.enterHint',
+                defaultMessage: 'Preview the portal exactly as a customer sees it.',
+              })}
+        </TooltipContent>
+      </Tooltip>
+    )
+  }
+
   // Auth/admin buttons component (reused in both layouts)
   const AuthButtons = () => (
     <div className="flex items-center">
       {/* Theme Toggle (when admin allows user choice) */}
       <ThemeToggle />
+
+      {/* Customer-view toggle (team members / while previewing) */}
+      <CustomerViewToggle />
 
       {/* Admin Button (visible for team members) */}
       {canAccessAdmin && (
@@ -295,6 +349,25 @@ export function PortalHeader({
                   <ShieldCheckIcon className="me-2 h-4 w-4" />
                   <FormattedMessage id="portal.header.auth.admin" defaultMessage="Admin" />
                 </Link>
+              </DropdownMenuItem>
+            )}
+            {(customerView.available || customerView.active) && (
+              <DropdownMenuItem
+                onClick={customerView.toggle}
+                className={cn(customerView.active && 'bg-accent')}
+              >
+                <EyeIcon className="me-2 h-4 w-4" />
+                {customerView.active ? (
+                  <FormattedMessage
+                    id="portal.header.customerView.exitItem"
+                    defaultMessage="Exit customer view"
+                  />
+                ) : (
+                  <FormattedMessage
+                    id="portal.header.customerView.enterItem"
+                    defaultMessage="Preview as customer"
+                  />
+                )}
               </DropdownMenuItem>
             )}
             <DropdownMenuItem asChild>

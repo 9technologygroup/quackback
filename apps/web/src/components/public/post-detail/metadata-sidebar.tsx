@@ -33,12 +33,24 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { TimeAgo } from '@/components/ui/time-ago'
 import { Skeleton } from '@/components/ui/skeleton'
 import { AuthVoteButton } from '@/components/public/auth-vote-button'
+import { AuthorHoverCard } from '@/components/public/author-hover-card'
 import { AuthSubscriptionBell } from '@/components/public/auth-subscription-bell'
-import { VotersAvatarStack } from '@/components/admin/feedback/voters-avatar-stack'
+import {
+  VotersAvatarStack,
+  type VotersQuerySource,
+} from '@/components/admin/feedback/voters-avatar-stack'
 import { SOURCE_TYPE_LABELS, SourceTypeIcon } from '@/components/admin/feedback/source-type-icon'
 import { cn, getInitials, formatMonthYear } from '@/lib/shared/utils'
 import type { PostStatusEntity } from '@/lib/shared/db-types'
-import type { PostId, PostStatusId, PostTagId, RoadmapId, BoardId } from '@quackback/ids'
+import type { OwnerRef } from '@/lib/server/functions/post-owner-context'
+import type {
+  PostId,
+  PostStatusId,
+  PostTagId,
+  RoadmapId,
+  BoardId,
+  PrincipalId,
+} from '@quackback/ids'
 
 export function MetadataSidebarSkeleton({
   variant = 'column',
@@ -283,6 +295,12 @@ interface MetadataSidebarProps {
   allBoards?: Array<{ id: string; name: string; slug: string }>
   /** Callback when board changes */
   onBoardChange?: (boardId: BoardId) => Promise<void>
+  /** Current post owner (assignee); null when unassigned */
+  owner?: OwnerRef | null
+  /** Team members assignable as owner (for the picker) */
+  ownerCandidates?: OwnerRef[]
+  /** Callback when the owner is set (principal id) or cleared (null) */
+  onOwnerChange?: (ownerId: PrincipalId | null) => Promise<void>
   /** Whether metadata update is in progress */
   isUpdating?: boolean
   /** Hide subscribe section (for admin context) */
@@ -295,6 +313,24 @@ interface MetadataSidebarProps {
   votersAdditionalPostIds?: PostId[]
   /** Hide subscription controls in voters modal */
   votersReadonly?: boolean
+  /**
+   * Render the voters avatar stack + modal (the vote-management tools). The
+   * admin modal passes this in its canEdit context; the portal passes it for
+   * holders of post.vote_on_behalf. Independent of `canEdit` so the tools can
+   * appear on the portal without the admin ambient sections.
+   */
+  showVoters?: boolean
+  /**
+   * Where the voters list is read from (defaults to the admin query inside the
+   * stack). The portal passes its post.vote_on_behalf-gated source.
+   */
+  votersQuery?: VotersQuerySource
+  /** Gate the add-voter member search (people.view). Defaults true. */
+  votersCanAddVoter?: boolean
+  /** Gate the create-new-user add-voter branch (people.manage). Defaults true. */
+  votersCanCreateUser?: boolean
+  /** Extra invalidation after a vote-management mutation (portal query + detail). */
+  onVotersInvalidate?: () => void
   /** Admin manage actions (renders icon row at top of sidebar) */
   manageActions?: MetadataSidebarManageActions
   /** Feedback source info (if post was created from the feedback pipeline) */
@@ -330,12 +366,20 @@ export function MetadataSidebar({
   onRoadmapRemove,
   allBoards,
   onBoardChange,
+  owner = null,
+  ownerCandidates = [],
+  onOwnerChange,
   isUpdating = false,
   hideSubscribe = false,
   hideVote = false,
   variant = 'column',
   votersAdditionalPostIds,
   votersReadonly = false,
+  showVoters = false,
+  votersQuery,
+  votersCanAddVoter,
+  votersCanCreateUser,
+  onVotersInvalidate,
   manageActions,
   feedbackSource,
 }: MetadataSidebarProps) {
@@ -343,6 +387,7 @@ export function MetadataSidebar({
   const [tagOpen, setTagOpen] = useState(false)
   const [roadmapOpen, setRoadmapOpen] = useState(false)
   const [boardOpen, setBoardOpen] = useState(false)
+  const [ownerOpen, setOwnerOpen] = useState(false)
   const [etaOpen, setEtaOpen] = useState(false)
   const [sourceQuoteOpen, setSourceQuoteOpen] = useState(false)
   const [pendingRoadmapId, setPendingRoadmapId] = useState<string | null>(null)
@@ -425,6 +470,12 @@ export function MetadataSidebar({
     }
   }
 
+  async function handleOwnerSelect(ownerId: PrincipalId | null) {
+    setOwnerOpen(false)
+    if (!onOwnerChange || ownerId === (owner?.principalId ?? null)) return
+    await onOwnerChange(ownerId)
+  }
+
   async function handleRemoveFromRoadmap(roadmapId: RoadmapId) {
     if (!onRoadmapRemove) return
     setPendingRoadmapId(roadmapId)
@@ -456,7 +507,9 @@ export function MetadataSidebar({
 
         {manageActions && <div className="border-t border-border/30" />}
 
-        {/* Upvotes */}
+        {/* Upvotes. The voters avatar stack renders under either header when
+            showVoters is set — the admin modal always passes it; the portal
+            passes it for holders of post.vote_on_behalf. */}
         {!hideVote &&
           (canEdit ? (
             <div className="space-y-2">
@@ -474,34 +527,54 @@ export function MetadataSidebar({
                   {voteCount}
                 </span>
               </div>
-              <VotersAvatarStack
-                postId={postId}
-                voteCount={voteCount}
-                votersAdditionalPostIds={votersAdditionalPostIds}
-                votersReadonly={votersReadonly}
-              />
+              {showVoters && (
+                <VotersAvatarStack
+                  postId={postId}
+                  voteCount={voteCount}
+                  votersAdditionalPostIds={votersAdditionalPostIds}
+                  votersReadonly={votersReadonly}
+                  votersQuery={votersQuery}
+                  canAddVoter={votersCanAddVoter}
+                  canCreateUser={votersCanCreateUser}
+                  onVotersInvalidate={onVotersInvalidate}
+                />
+              )}
             </div>
           ) : (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <ChevronUpIcon className="h-4 w-4" />
-                <span>
-                  <FormattedMessage
-                    id="portal.postDetail.metadata.upvotes"
-                    defaultMessage="Upvotes"
-                  />
-                </span>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <ChevronUpIcon className="h-4 w-4" />
+                  <span>
+                    <FormattedMessage
+                      id="portal.postDetail.metadata.upvotes"
+                      defaultMessage="Upvotes"
+                    />
+                  </span>
+                </div>
+                {/* Portal mode: interactive vote button with auth + authz.
+                    Don't structurally disable on !canVote — AuthVoteButton renders
+                    the denied state (sign-in prompt or "no access" tooltip). */}
+                <AuthVoteButton
+                  postId={postId}
+                  voteCount={voteCount}
+                  canVote={canVote}
+                  isAuthenticated={isMember}
+                  compact
+                />
               </div>
-              {/* Portal mode: interactive vote button with auth + authz.
-                  Don't structurally disable on !canVote — AuthVoteButton renders
-                  the denied state (sign-in prompt or "no access" tooltip). */}
-              <AuthVoteButton
-                postId={postId}
-                voteCount={voteCount}
-                canVote={canVote}
-                isAuthenticated={isMember}
-                compact
-              />
+              {showVoters && (
+                <VotersAvatarStack
+                  postId={postId}
+                  voteCount={voteCount}
+                  votersAdditionalPostIds={votersAdditionalPostIds}
+                  votersReadonly={votersReadonly}
+                  votersQuery={votersQuery}
+                  canAddVoter={votersCanAddVoter}
+                  canCreateUser={votersCanCreateUser}
+                  onVotersInvalidate={onVotersInvalidate}
+                />
+              )}
             </div>
           ))}
 
@@ -638,6 +711,100 @@ export function MetadataSidebar({
             </span>
           )}
         </div>
+
+        {/* Owner (assignee) — renders only when the actor can set the owner. */}
+        {onOwnerChange && (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <UserIcon className="h-4 w-4" />
+              <span>
+                <FormattedMessage id="portal.postDetail.metadata.owner" defaultMessage="Owner" />
+              </span>
+            </div>
+            <Popover open={ownerOpen} onOpenChange={setOwnerOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  disabled={isUpdating}
+                  className={cn(
+                    'flex items-center gap-1.5 text-sm font-medium text-end max-w-[60%]',
+                    'hover:opacity-80 transition-opacity',
+                    'disabled:opacity-50 disabled:cursor-not-allowed'
+                  )}
+                >
+                  {owner ? (
+                    <>
+                      <Avatar className="h-5 w-5">
+                        {owner.avatarUrl && <AvatarImage src={owner.avatarUrl} alt={owner.name} />}
+                        <AvatarFallback className="text-[9px]">
+                          {getInitials(owner.name)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="truncate text-foreground">{owner.name}</span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground/70">
+                      <FormattedMessage
+                        id="portal.postDetail.metadata.ownerUnassigned"
+                        defaultMessage="Unassigned"
+                      />
+                    </span>
+                  )}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-52 p-1" align="end" sideOffset={4}>
+                <ScrollArea
+                  className="[&_[data-slot=scroll-area-viewport]]:max-h-56"
+                  scrollBarClassName="w-1.5"
+                >
+                  <div className="space-y-0.5">
+                    <button
+                      type="button"
+                      onClick={() => handleOwnerSelect(null)}
+                      className={cn(
+                        'w-full flex items-center gap-2 px-2.5 py-1.5 text-xs rounded-md',
+                        'text-foreground/80 hover:text-foreground hover:bg-muted/60',
+                        'transition-all duration-100 text-start font-medium'
+                      )}
+                    >
+                      <UserIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="flex-1 truncate">
+                        <FormattedMessage
+                          id="portal.postDetail.metadata.ownerUnassigned"
+                          defaultMessage="Unassigned"
+                        />
+                      </span>
+                      {!owner && <CheckIcon className="h-3.5 w-3.5 text-primary shrink-0" />}
+                    </button>
+                    {ownerCandidates.map((m) => (
+                      <button
+                        key={m.principalId}
+                        type="button"
+                        onClick={() => handleOwnerSelect(m.principalId as PrincipalId)}
+                        className={cn(
+                          'w-full flex items-center gap-2 px-2.5 py-1.5 text-xs rounded-md',
+                          'text-foreground/80 hover:text-foreground hover:bg-muted/60',
+                          'transition-all duration-100 text-start font-medium'
+                        )}
+                      >
+                        <Avatar className="h-5 w-5 shrink-0">
+                          {m.avatarUrl && <AvatarImage src={m.avatarUrl} alt={m.name} />}
+                          <AvatarFallback className="text-[9px]">
+                            {getInitials(m.name)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="flex-1 truncate">{m.name}</span>
+                        {owner?.principalId === m.principalId && (
+                          <CheckIcon className="h-3.5 w-3.5 text-primary shrink-0" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </PopoverContent>
+            </Popover>
+          </div>
+        )}
 
         {/* Tags */}
         <div className="flex items-start justify-between">
@@ -986,30 +1153,43 @@ export function MetadataSidebar({
               </span>
             </Link>
           ) : (
-            <div className="flex items-center gap-1.5">
-              <Avatar className="h-5 w-5">
-                {authorAvatarUrl && (
-                  <AvatarImage
-                    src={authorAvatarUrl}
-                    alt={
-                      authorName ||
+            (() => {
+              const authorRow = (
+                <div className="flex items-center gap-1.5">
+                  <Avatar className="h-5 w-5">
+                    {authorAvatarUrl && (
+                      <AvatarImage
+                        src={authorAvatarUrl}
+                        alt={
+                          authorName ||
+                          intl.formatMessage({
+                            id: 'portal.postDetail.metadata.authorFallback',
+                            defaultMessage: 'Anonymous',
+                          })
+                        }
+                      />
+                    )}
+                    <AvatarFallback className="text-[9px]">
+                      {getInitials(authorName)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-sm font-medium text-foreground">
+                    {authorName ||
                       intl.formatMessage({
                         id: 'portal.postDetail.metadata.authorFallback',
                         defaultMessage: 'Anonymous',
-                      })
-                    }
-                  />
-                )}
-                <AvatarFallback className="text-[9px]">{getInitials(authorName)}</AvatarFallback>
-              </Avatar>
-              <span className="text-sm font-medium text-foreground">
-                {authorName ||
-                  intl.formatMessage({
-                    id: 'portal.postDetail.metadata.authorFallback',
-                    defaultMessage: 'Anonymous',
-                  })}
-              </span>
-            </div>
+                      })}
+                  </span>
+                </div>
+              )
+              return authorPrincipalId ? (
+                <AuthorHoverCard principalId={authorPrincipalId} displayName={authorName}>
+                  {authorRow}
+                </AuthorHoverCard>
+              ) : (
+                authorRow
+              )
+            })()
           )}
         </div>
 

@@ -100,6 +100,8 @@ async function fetchPublicPosts(
       minVotes: filters.minVotes,
       dateFrom: filters.dateFrom,
       responded: filters.responded,
+      owner: filters.owner,
+      segmentIds: filters.segmentIds,
     },
   })) as unknown as PublicPostListResult
 }

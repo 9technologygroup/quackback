@@ -20,6 +20,7 @@ const FULL_PORTAL_CONFIG: PortalConfig = {
     allowEditAfterEngagement: false,
     allowDeleteAfterEngagement: false,
     showPublicEditHistory: false,
+    publicProfiles: true,
   },
   moderationDefault: { requireApproval: 'none' },
   access: ACCESS_POLICY,

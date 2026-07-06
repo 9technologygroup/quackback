@@ -14,6 +14,7 @@ import {
   PublicFiltersToolbarButton,
 } from '@/components/public/feedback/public-filters-bar'
 import { usePublicFilters } from '@/components/public/feedback/use-public-filters'
+import { PortalModerationSection } from '@/components/public/feedback/portal-moderation-section'
 import { PostCard } from '@/components/public/post-card'
 import type { PublicBoardWithStats } from '@/lib/shared/types'
 import type { PortalWelcomeCard as PortalWelcomeCardData } from '@/lib/shared/types/settings'
@@ -84,10 +85,14 @@ export function FeedbackContainer({
   // Team members with post.set_status get an inline status dropdown on the
   // portal feed; end users and visitors keep the static badge.
   const canSetStatus = can(PERMISSIONS.POST_SET_STATUS)
+  // Holders of post.approve get the inline moderation section (banner + pending
+  // cards). The hook's set is empty under the customer-view toggle, so this is
+  // false in preview mode — no role gate needed.
+  const canApprove = can(PERMISSIONS.POST_APPROVE)
 
   // List key for animations - only updates when data finishes loading
   // This prevents double animations when filters change (stale data → new data)
-  const filterKey = `${filters.board ?? currentBoard}-${filters.sort ?? currentSort}-${filters.search ?? currentSearch}-${(filters.status ?? []).join()}-${(filters.tagIds ?? []).join()}-${filters.minVotes ?? ''}-${filters.dateFrom ?? ''}-${filters.responded ?? ''}`
+  const filterKey = `${filters.board ?? currentBoard}-${filters.sort ?? currentSort}-${filters.search ?? currentSearch}-${(filters.status ?? []).join()}-${(filters.tagIds ?? []).join()}-${filters.minVotes ?? ''}-${filters.dateFrom ?? ''}-${filters.responded ?? ''}-${filters.owner ?? ''}-${(filters.segmentIds ?? []).join()}`
   const [listKey, setListKey] = useState(filterKey)
 
   const effectiveUser = session?.user
@@ -117,6 +122,10 @@ export function FeedbackContainer({
       minVotes: filters.minVotes,
       dateFrom: filters.dateFrom,
       responded: filters.responded,
+      // Team-only filters (owner, segments). Ignored server-side for callers
+      // without post.view_private, so passing them through is always safe.
+      owner: filters.owner,
+      segmentIds: filters.segmentIds,
     }),
     [
       activeBoard,
@@ -127,6 +136,8 @@ export function FeedbackContainer({
       filters.minVotes,
       filters.dateFrom,
       filters.responded,
+      filters.owner,
+      filters.segmentIds,
     ]
   )
 
@@ -345,6 +356,8 @@ export function FeedbackContainer({
             />
           </div>
 
+          <PortalModerationSection enabled={canApprove} />
+
           <div className="mt-5">
             {posts.length === 0 && !isLoading ? (
               <p className="text-muted-foreground text-center py-8">
@@ -382,6 +395,7 @@ export function FeedbackContainer({
                         voteCount={post.voteCount}
                         commentCount={post.commentCount}
                         authorName={post.authorName}
+                        authorPrincipalId={post.principalId}
                         createdAt={post.createdAt}
                         boardSlug={post.board?.slug || ''}
                         tags={post.tags}

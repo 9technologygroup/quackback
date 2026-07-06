@@ -16,11 +16,20 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useIntl } from 'react-intl'
 import { toast } from 'sonner'
-import type { BoardId, PostId, PostStatusId, PostTagId, RoadmapId } from '@quackback/ids'
+import type {
+  BoardId,
+  PostId,
+  PostStatusId,
+  PostTagId,
+  PrincipalId,
+  RoadmapId,
+} from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { usePortalPermissions } from '@/lib/client/hooks/use-portal-permissions'
 import { portalDetailQueries, type PublicPostDetailView } from '@/lib/client/queries/portal-detail'
 import { portalQueries } from '@/lib/client/queries/portal'
+import { postOwnerQueries } from '@/lib/client/queries/post-owner'
+import { postVotersQueries } from '@/lib/client/queries/post-voters'
 import {
   useChangePostStatusId,
   useChangePostBoard,
@@ -32,7 +41,8 @@ import {
 } from './posts'
 import type { EditPostInput } from './portal-post-actions'
 import { addPostToRoadmapFn, removePostFromRoadmapFn } from '@/lib/server/functions/roadmaps'
-import { setPostEtaFn } from '@/lib/server/functions/posts'
+import { setPostEtaFn, setPostOwnerFn } from '@/lib/server/functions/posts'
+import type { OwnerRef } from '@/lib/server/functions/post-owner-context'
 import type { PostTag } from '@/lib/shared/db-types'
 
 /** How long the Undo action stays available on reversible-change toasts. */
@@ -61,10 +71,19 @@ export function usePortalTeamPostActions({
   const canSetEta = can(PERMISSIONS.POST_SET_ETA)
   const canSetTags = can(PERMISSIONS.POST_SET_TAGS)
   const canSetBoard = can(PERMISSIONS.POST_SET_BOARD)
+  const canSetOwner = can(PERMISSIONS.POST_SET_OWNER)
   const canManageRoadmap = can(PERMISSIONS.ROADMAP_MANAGE)
   const canMerge = can(PERMISSIONS.POST_MERGE)
   const canTeamEdit = can(PERMISSIONS.POST_EDIT)
   const canTeamDelete = can(PERMISSIONS.POST_DELETE)
+  // Vote-management tools (voters stack + modal + proxy-vote flow). The list,
+  // proxy-vote, remove-vote, and subscription mutations all gate on
+  // post.vote_on_behalf. The add-voter member search and create-user branch
+  // gate on the broader people.view / people.manage; those affordances are
+  // hidden unless the actor ALSO holds them (rather than widening any gate).
+  const canVoteOnBehalf = can(PERMISSIONS.POST_VOTE_ON_BEHALF)
+  const canSearchPeople = can(PERMISSIONS.PEOPLE_VIEW)
+  const canCreatePeople = can(PERMISSIONS.PEOPLE_MANAGE)
 
   // Option lists for the editors, fetched only when the matching key is held.
   // The portal list endpoints are portal-access-gated, so they are safe for
@@ -73,6 +92,18 @@ export function usePortalTeamPostActions({
   const { data: allTags } = useQuery({ ...portalQueries.tags(), enabled: canSetTags })
   const { data: allBoards } = useQuery({ ...portalQueries.boards(), enabled: canSetBoard })
   const { data: allRoadmaps } = useQuery({ ...portalQueries.roadmaps(), enabled: canManageRoadmap })
+
+  // Owner (assignee) context. The public post payload carries no owner, so the
+  // current owner and the assignable roster are fetched here, each gated on
+  // post.set_owner and enabled only when the actor holds it.
+  const { data: ownerCandidates } = useQuery({
+    ...postOwnerQueries.candidates(),
+    enabled: canSetOwner,
+  })
+  const { data: owner } = useQuery({
+    ...postOwnerQueries.forPost(postId),
+    enabled: canSetOwner,
+  })
 
   const changeStatus = useChangePostStatusId()
   const changeBoard = useChangePostBoard()
@@ -92,6 +123,15 @@ export function usePortalTeamPostActions({
     queryClient.invalidateQueries({ queryKey: ['portal', 'data'] })
     queryClient.invalidateQueries({ queryKey: ['portal', 'posts'] })
     queryClient.invalidateQueries({ queryKey: ['portal', 'roadmapPosts'] })
+  }
+
+  // Voters read from a portal-specific key (not the admin `inbox` cache the
+  // vote-management mutations invalidate), so after one lands we refresh that
+  // key here and the portal surfaces (the vote count changes on add/remove).
+  const votersKey = postVotersQueries.forPost(postId).queryKey
+  const invalidateVoters = () => {
+    queryClient.invalidateQueries({ queryKey: votersKey })
+    invalidatePortal()
   }
 
   const genericErrorMessage = () =>
@@ -263,6 +303,69 @@ export function usePortalTeamPostActions({
       }
     : undefined
 
+  // Owner assignment targets its own query cache (not the portal detail view),
+  // so it applies optimistically there with the same 5s-undo toast shape.
+  const ownerKey = postOwnerQueries.forPost(postId).queryKey
+  const onOwnerChange = canSetOwner
+    ? async (ownerId: PrincipalId | null) => {
+        await queryClient.cancelQueries({ queryKey: ownerKey })
+        const previous = queryClient.getQueryData<OwnerRef | null>(ownerKey) ?? null
+        const previousOwnerId = (previous?.principalId ?? null) as PrincipalId | null
+        const next = ownerId
+          ? ((ownerCandidates ?? []).find((m) => m.principalId === ownerId) ?? null)
+          : null
+        queryClient.setQueryData<OwnerRef | null>(ownerKey, next)
+        setIsMetaUpdating(true)
+        try {
+          await setPostOwnerFn({ data: { id: postId, ownerId } })
+          queryClient.invalidateQueries({ queryKey: ownerKey })
+          invalidatePortal()
+          toast(
+            ownerId
+              ? intl.formatMessage({
+                  id: 'portal.postDetail.team.ownerAssigned',
+                  defaultMessage: 'Owner assigned',
+                })
+              : intl.formatMessage({
+                  id: 'portal.postDetail.team.ownerUnassigned',
+                  defaultMessage: 'Owner unassigned',
+                }),
+            {
+              duration: UNDO_TOAST_DURATION_MS,
+              action: {
+                label: intl.formatMessage({
+                  id: 'portal.postDetail.team.undo',
+                  defaultMessage: 'Undo',
+                }),
+                onClick: () => {
+                  void setPostOwnerFn({ data: { id: postId, ownerId: previousOwnerId } })
+                    .then(() => {
+                      queryClient.invalidateQueries({ queryKey: ownerKey })
+                      invalidatePortal()
+                    })
+                    .catch((err: unknown) => {
+                      toast.error(
+                        err instanceof Error
+                          ? err.message
+                          : intl.formatMessage({
+                              id: 'portal.postDetail.team.undoFailed',
+                              defaultMessage: "Couldn't undo the change",
+                            })
+                      )
+                    })
+                },
+              },
+            }
+          )
+        } catch (err) {
+          queryClient.setQueryData<OwnerRef | null>(ownerKey, previous)
+          toast.error(err instanceof Error ? err.message : genericErrorMessage())
+        } finally {
+          setIsMetaUpdating(false)
+        }
+      }
+    : undefined
+
   const onRoadmapAdd = canManageRoadmap
     ? async (roadmapId: RoadmapId) => {
         const roadmap = (allRoadmaps ?? []).find((r) => r.id === roadmapId)
@@ -390,19 +493,29 @@ export function usePortalTeamPostActions({
     canSetEta,
     canSetTags,
     canSetBoard,
+    canSetOwner,
     canManageRoadmap,
     canMerge,
     canTeamEdit,
     canTeamDelete,
+    canVoteOnBehalf,
+    canSearchPeople,
+    canCreatePeople,
+    // Vote-management wiring for the sidebar's voters tools
+    votersQuery: canVoteOnBehalf ? postVotersQueries.forPost(postId) : undefined,
+    invalidateVoters,
     // Option lists
     allTags,
     allBoards,
     allRoadmaps,
+    ownerCandidates,
+    owner: owner ?? null,
     // Metadata editors
     onStatusChange,
     onEtaChange,
     onTagsChange,
     onBoardChange,
+    onOwnerChange,
     onRoadmapAdd,
     onRoadmapRemove,
     isMetaUpdating,

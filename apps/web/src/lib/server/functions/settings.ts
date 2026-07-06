@@ -291,6 +291,7 @@ const updatePortalConfigSchema = z.object({
   features: z
     .object({
       allowAnonymous: z.boolean().optional(),
+      publicProfiles: z.boolean().optional(),
     })
     .optional(),
   welcomeCard: z
@@ -925,7 +926,8 @@ export const fetchChangelogSettingsFn = createServerFn({ method: 'GET' }).handle
   log.debug('fetch changelog settings')
   try {
     await requireAuth({ permission: PERMISSIONS.CHANGELOG_MANAGE })
-    const { getChangelogSettings } = await import('@/lib/server/domains/settings/settings.changelog')
+    const { getChangelogSettings } =
+      await import('@/lib/server/domains/settings/settings.changelog')
     return await getChangelogSettings()
   } catch (error) {
     log.error({ err: error }, 'fetch changelog settings failed')

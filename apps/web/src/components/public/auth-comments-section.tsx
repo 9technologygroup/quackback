@@ -36,6 +36,8 @@ interface AuthCommentsSectionProps {
   currentStatusId?: string | null
   /** Whether the current user is a team member */
   isTeamMember?: boolean
+  /** Link comment authors to their public profile (portal only). */
+  linkAuthors?: boolean
   /** Hide the comment form area entirely (for readonly previews) */
   hideCommentForm?: boolean
   /** Callback when a comment is deleted */
@@ -69,6 +71,7 @@ export function AuthCommentsSection({
   statuses,
   currentStatusId,
   isTeamMember,
+  linkAuthors = false,
   hideCommentForm,
   onDeleteComment,
   deletingCommentId,
@@ -160,6 +163,7 @@ export function AuthCommentsSection({
       statuses={statuses}
       currentStatusId={currentStatusId}
       isTeamMember={isTeamMember}
+      linkAuthors={linkAuthors}
       hideCommentForm={hideCommentForm}
       onDeleteComment={onDeleteComment}
       deletingCommentId={deletingCommentId}

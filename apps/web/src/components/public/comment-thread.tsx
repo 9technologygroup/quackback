@@ -26,6 +26,7 @@ import type { PublicCommentView } from '@/lib/client/queries/portal-detail'
 import { cn, getInitials } from '@/lib/shared/utils'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { CommentContent } from '@/components/public/comment-content'
+import { AuthorHoverCard } from '@/components/public/author-hover-card'
 import { CommentForm, type CreateCommentMutation } from './comment-form'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import { COMMENT_EDITOR_FEATURES } from './comment-editor-features'
@@ -137,6 +138,8 @@ interface CommentThreadProps {
   currentStatusId?: string | null
   /** Whether the current user is a team member */
   isTeamMember?: boolean
+  /** Link comment authors to their public profile (portal only). */
+  linkAuthors?: boolean
   /** Hide the comment form area entirely (for readonly previews) */
   hideCommentForm?: boolean
   /** Callback when a comment is deleted */
@@ -168,6 +171,7 @@ export function CommentThread({
   statuses,
   currentStatusId,
   isTeamMember,
+  linkAuthors = false,
   hideCommentForm = false,
   onDeleteComment,
   deletingCommentId,
@@ -265,6 +269,7 @@ export function CommentThread({
             onUnpinComment,
             isPinPending,
             isTeamMember,
+            linkAuthors,
             onDeleteComment,
             deletingCommentId,
             onRestoreComment,
@@ -293,6 +298,8 @@ interface CommentItemProps {
   isPinPending?: boolean
   /** Whether the current user is a team member */
   isTeamMember?: boolean
+  /** Link the author name to their public profile (portal only). */
+  linkAuthors?: boolean
   /** Callback when a comment is deleted */
   onDeleteComment?: (commentId: PostCommentId) => void
   /** ID of the comment currently being deleted */
@@ -322,6 +329,7 @@ function CommentItem({
   onUnpinComment,
   isPinPending = false,
   isTeamMember,
+  linkAuthors = false,
   onDeleteComment,
   deletingCommentId,
   onRestoreComment,
@@ -490,6 +498,7 @@ function CommentItem({
                     onUnpinComment={onUnpinComment}
                     isPinPending={isPinPending}
                     isTeamMember={isTeamMember}
+                    linkAuthors={linkAuthors}
                     onDeleteComment={onDeleteComment}
                     deletingCommentId={deletingCommentId}
                     onRestoreComment={onRestoreComment}
@@ -541,13 +550,27 @@ function CommentItem({
               )}
               <AvatarFallback className="text-xs">{getInitials(comment.authorName)}</AvatarFallback>
             </Avatar>
-            <span className="font-medium text-sm">
-              {comment.authorName ||
-                intl.formatMessage({
-                  id: 'portal.commentThread.authorFallback',
-                  defaultMessage: 'Anonymous',
-                })}
-            </span>
+            {linkAuthors && comment.principalId ? (
+              <AuthorHoverCard
+                principalId={comment.principalId}
+                displayName={comment.authorName}
+                className="font-medium text-sm"
+              >
+                {comment.authorName ||
+                  intl.formatMessage({
+                    id: 'portal.commentThread.authorFallback',
+                    defaultMessage: 'Anonymous',
+                  })}
+              </AuthorHoverCard>
+            ) : (
+              <span className="font-medium text-sm">
+                {comment.authorName ||
+                  intl.formatMessage({
+                    id: 'portal.commentThread.authorFallback',
+                    defaultMessage: 'Anonymous',
+                  })}
+              </span>
+            )}
             {comment.isTeamMember && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -932,6 +955,7 @@ function CommentItem({
                   onUnpinComment={onUnpinComment}
                   isPinPending={isPinPending}
                   isTeamMember={isTeamMember}
+                  linkAuthors={linkAuthors}
                   onDeleteComment={onDeleteComment}
                   deletingCommentId={deletingCommentId}
                   onRestoreComment={onRestoreComment}

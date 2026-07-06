@@ -20,6 +20,8 @@ import {
 } from './auth-helpers'
 import { NotFoundError } from '@/lib/shared/errors'
 import { isTeamMember } from '@/lib/shared/roles'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { db, principal as principalTable, user as userTable, eq, inArray } from '@/lib/server/db'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
 import {
@@ -66,6 +68,11 @@ const fetchPortalDataSchema = z.object({
     .refine((s) => !Number.isNaN(new Date(s).getTime()), 'Invalid calendar date')
     .optional(),
   responded: z.enum(['responded', 'unresponded']).optional(),
+  // Team-only filters. Applied only when the caller holds post.view_private
+  // (checked server-side); silently ignored for everyone else so the public
+  // payload can never be widened by a crafted request.
+  owner: z.string().optional(),
+  segmentIds: z.array(z.string()).optional(),
 })
 
 /**
@@ -147,6 +154,21 @@ export const fetchPortalData = createServerFn({ method: 'GET' })
     const auth = await getOptionalAuth()
     const actor = await policyActorFromAuth(auth)
 
+    // Team-only filters (owner, segments) are honoured only for callers who
+    // hold post.view_private — resolved through the same policy seam as the
+    // portal permission bootstrap. Everyone else has these params dropped, so
+    // a crafted request can never surface owner/segment structure or widen the
+    // public feed. `owner: 'unassigned'` maps to a null owner match.
+    const callerPermissions = resolveActorPermissions(auth?.principal.role ?? null)
+    const canViewPrivate = callerPermissions.has(PERMISSIONS.POST_VIEW_PRIVATE)
+    const ownerId = canViewPrivate
+      ? data.owner === 'unassigned'
+        ? null
+        : (data.owner as PrincipalId | undefined)
+      : undefined
+    const segmentIds =
+      canViewPrivate && data.segmentIds?.length ? (data.segmentIds as SegmentId[]) : undefined
+
     // Run ALL queries in parallel for maximum performance — including the
     // (fail-closed) anonymous-ceiling read so buildBoardPermissions doesn't
     // serialize an extra round-trip onto this (highest-traffic) loader.
@@ -173,6 +195,8 @@ export const fetchPortalData = createServerFn({ method: 'GET' })
           minVotes: data.minVotes,
           dateFrom: data.dateFrom,
           responded: data.responded,
+          ownerId,
+          segmentIds,
         }),
         listPublicStatuses(),
         listPublicPostTags(),

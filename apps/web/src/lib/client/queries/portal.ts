@@ -33,6 +33,8 @@ export const portalQueries = {
     minVotes?: number
     dateFrom?: string
     responded?: RespondedFilter
+    owner?: string
+    segmentIds?: string[]
   }) =>
     queryOptions({
       queryKey: [
@@ -47,6 +49,8 @@ export const portalQueries = {
         params.minVotes,
         params.dateFrom,
         params.responded,
+        params.owner,
+        params.segmentIds,
       ],
       queryFn: async () => {
         const data = await fetchPortalData({ data: params })

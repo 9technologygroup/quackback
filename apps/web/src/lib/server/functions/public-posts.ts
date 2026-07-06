@@ -11,6 +11,7 @@ import {
   type PostTagId,
   type PrincipalId,
   type RoadmapId,
+  type SegmentId,
   type UserId,
 } from '@quackback/ids'
 import { tiptapContentSchema } from '@/lib/shared/schemas/posts'
@@ -40,6 +41,8 @@ import { getMemberByUser } from '@/lib/server/domains/principals/principal.servi
 import { listPublicRoadmaps } from '@/lib/server/domains/roadmaps/roadmap.service'
 import { getPublicRoadmapPosts } from '@/lib/server/domains/roadmaps/roadmap.query'
 import { resolvePortalAccessForRequest } from './portal-access'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'public-posts' })
@@ -66,6 +69,10 @@ const listPublicPostsSchema = z.object({
     .refine((s) => !Number.isNaN(new Date(s).getTime()), 'Invalid calendar date')
     .optional(),
   responded: z.enum(['responded', 'unresponded']).optional(),
+  // Team-only filters, honoured only for post.view_private holders (checked
+  // server-side); silently ignored for everyone else.
+  owner: z.string().optional(),
+  segmentIds: z.array(z.string()).optional(),
 })
 
 const getPostPermissionsSchema = z.object({
@@ -157,6 +164,21 @@ export const listPublicPostsFn = createServerFn({ method: 'GET' })
       const auth = await getOptionalAuth()
       const actor = await policyActorFromAuth(auth)
 
+      // Team-only filters (owner, segments) are honoured only for callers who
+      // hold post.view_private, resolved through the policy seam. Everyone else
+      // has these dropped, so a crafted request can never surface owner/segment
+      // structure or widen the public feed. `owner: 'unassigned'` → null match.
+      const canViewPrivate = resolveActorPermissions(auth?.principal.role ?? null).has(
+        PERMISSIONS.POST_VIEW_PRIVATE
+      )
+      const ownerId = canViewPrivate
+        ? data.owner === 'unassigned'
+          ? null
+          : (data.owner as PrincipalId | undefined)
+        : undefined
+      const segmentIds =
+        canViewPrivate && data.segmentIds?.length ? (data.segmentIds as SegmentId[]) : undefined
+
       const result = await listPublicPosts({
         boardSlug: data.boardSlug,
         search: data.search,
@@ -169,6 +191,8 @@ export const listPublicPostsFn = createServerFn({ method: 'GET' })
         minVotes: data.minVotes,
         dateFrom: data.dateFrom,
         responded: data.responded,
+        ownerId,
+        segmentIds,
         actor,
       })
 

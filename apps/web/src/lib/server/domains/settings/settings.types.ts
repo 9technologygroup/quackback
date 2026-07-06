@@ -197,6 +197,13 @@ export interface PortalFeatures {
   allowDeleteAfterEngagement: boolean
   /** Show public edit history on posts */
   showPublicEditHistory: boolean
+  /**
+   * Public user profile pages (`/u/:principalId`) on the portal. Default ON.
+   * When off, the profile route and both profile server fns 404/return empty
+   * for every viewer. Stored rows without the key inherit `true` via the
+   * read-time default merge in `parseJsonConfig` — no migration needed.
+   */
+  publicProfiles: boolean
 }
 
 /**
@@ -279,6 +286,7 @@ export const DEFAULT_PORTAL_CONFIG: PortalConfig = {
     allowDeleteAfterEngagement: false,
     showPublicEditHistory: false,
     allowAnonymous: true,
+    publicProfiles: true,
   },
   welcomeCard: {
     enabled: false,

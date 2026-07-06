@@ -46,6 +46,17 @@ export interface PublicFeedbackFilters {
   minVotes?: number
   dateFrom?: string
   responded?: RespondedFilter
+  /**
+   * Team-only: owner principal id, or the literal 'unassigned' for posts with
+   * no owner. Applied server-side only for callers holding post.view_private;
+   * silently ignored otherwise.
+   */
+  owner?: string
+  /**
+   * Team-only: filter to posts authored by users in any of these segments.
+   * Applied server-side only for post.view_private holders.
+   */
+  segmentIds?: string[]
 }
 
 /**

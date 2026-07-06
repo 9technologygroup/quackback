@@ -14,6 +14,7 @@ import {
   postTags,
   postVotes,
   postStatuses,
+  userSegments,
   principal as principalTable,
 } from '@/lib/server/db'
 import {
@@ -22,6 +23,7 @@ import {
   type PostStatusId,
   type PostTagId,
   type PrincipalId,
+  type SegmentId,
 } from '@quackback/ids'
 import type { PublicPostListResult } from './post.types'
 import type { RespondedFilter } from '@/lib/shared/types/filters'
@@ -96,6 +98,15 @@ interface PostListParams {
   minVotes?: number
   dateFrom?: string
   responded?: RespondedFilter
+  /**
+   * Team-only owner filter. `null` matches unassigned posts; a principal id
+   * matches that owner. Undefined leaves ownership unfiltered. Callers must
+   * gate this on post.view_private before passing it in — the query layer
+   * does not re-check.
+   */
+  ownerId?: PrincipalId | null
+  /** Team-only: restrict to posts authored by members of any of these segments. */
+  segmentIds?: SegmentId[]
 }
 
 function buildPostFilterConditions(params: PostListParams, actor: Actor) {
@@ -168,6 +179,28 @@ function buildPostFilterConditions(params: PostListParams, actor: Actor) {
   } else if (params.responded === 'unresponded') {
     conditions.push(
       sql`NOT EXISTS (SELECT 1 FROM post_comments WHERE post_comments.post_id = ${posts.id} AND post_comments.is_team_member = true AND post_comments.deleted_at IS NULL)`
+    )
+  }
+
+  // Team-only owner filter — mirrors post.inbox.ts. `null` means unassigned;
+  // a principal id restricts to that owner. The server fn only forwards these
+  // for post.view_private holders, so no re-check here.
+  if (params.ownerId === null) {
+    conditions.push(sql`${posts.ownerPrincipalId} IS NULL`)
+  } else if (params.ownerId) {
+    conditions.push(eq(posts.ownerPrincipalId, params.ownerId))
+  }
+
+  // Team-only segment filter — posts whose author is in any selected segment.
+  if (params.segmentIds && params.segmentIds.length > 0) {
+    conditions.push(
+      inArray(
+        posts.principalId,
+        db
+          .select({ principalId: userSegments.principalId })
+          .from(userSegments)
+          .where(inArray(userSegments.segmentId, params.segmentIds))
+      )
     )
   }
 

@@ -15,7 +15,10 @@ import { Button } from '@/components/ui/button'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import { usePostImageUpload } from '@/lib/client/hooks/use-image-upload'
 import { adminQueries } from '@/lib/client/queries/admin'
+import { postOwnerQueries } from '@/lib/client/queries/post-owner'
 import { mergeSuggestionQueries } from '@/lib/client/queries/signals'
+import { usePermission } from '@/lib/client/hooks/use-permission'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { inboxKeys } from '@/lib/client/hooks/use-inbox-query'
 import {
   MetadataSidebar,
@@ -45,6 +48,7 @@ import {
   useDeletePost,
   useRestorePost,
   useChangePostBoard,
+  useUpdatePostOwner,
 } from '@/lib/client/mutations'
 import {
   DeletePostDialog,
@@ -62,6 +66,7 @@ import {
   type RoadmapId,
   type PostCommentId,
   type BoardId,
+  type PrincipalId,
 } from '@quackback/ids'
 import { useDeleteComment, useRestoreComment } from '@/lib/client/mutations/portal-comments'
 import type { PostDetails, CurrentUser } from '@/lib/shared/types'
@@ -97,6 +102,15 @@ function PostModalContent({
   const { data: roadmaps = [] } = useQuery(adminQueries.roadmaps())
   const { data: boards = [] } = useQuery(adminQueries.boards())
   const { data: feedbackSource } = useQuery(adminQueries.postFeedbackSource(postId))
+
+  // Owner (assignee) control — gated on post.set_owner. The roster is fetched
+  // via the same post.set_owner-gated fn the portal uses; the current owner is
+  // resolved from it against the post's ownerPrincipalId (already in payload).
+  const canSetOwner = usePermission(PERMISSIONS.POST_SET_OWNER)
+  const { data: ownerCandidates } = useQuery({
+    ...postOwnerQueries.candidates(),
+    enabled: canSetOwner,
+  })
 
   const post = postQuery.data as PostDetails
 
@@ -142,6 +156,7 @@ function PostModalContent({
   const deletePost = useDeletePost()
   const restorePostMutation = useRestorePost()
   const changePostBoard = useChangePostBoard()
+  const updateOwner = useUpdatePostOwner()
 
   // External links for cascade delete
   const externalLinksQuery = usePostExternalLinks(post.id as PostId, showDeleteDialog)
@@ -230,6 +245,17 @@ function PostModalContent({
     }
   }
 
+  const handleOwnerChange = async (ownerId: PrincipalId | null) => {
+    try {
+      // The mutation applies the change optimistically and invalidates the
+      // inbox detail/list caches, matching the other sidebar callbacks here.
+      await updateOwner.mutateAsync({ postId: post.id as PostId, ownerId })
+      toast.success(ownerId ? 'Owner assigned' : 'Owner unassigned')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update owner')
+    }
+  }
+
   const handleEtaChange = async (eta: string | null) => {
     setIsUpdating(true)
     try {
@@ -274,6 +300,10 @@ function PostModalContent({
   const handleKeyDown = useKeyboardSubmit(hasChanges ? handleSubmit : () => {})
 
   const currentStatus = statuses.find((s) => s.id === post.statusId)
+  const currentOwner =
+    (post.ownerPrincipalId &&
+      (ownerCandidates ?? []).find((m) => m.principalId === post.ownerPrincipalId)) ||
+    null
   const postRoadmaps = (post.roadmapIds || [])
     .map((id) => roadmaps.find((r) => r.id === id))
     .filter(Boolean) as Array<{ id: string; name: string; slug: string }>
@@ -381,6 +411,7 @@ function PostModalContent({
                 minHeight="200px"
                 disabled={updatePost.isPending}
                 borderless
+                toolbarPosition="bottom"
                 features={{
                   headings: true,
                   codeBlocks: true,
@@ -498,6 +529,7 @@ function PostModalContent({
               tags={post.tags}
               roadmaps={postRoadmaps}
               canEdit
+              showVoters
               allStatuses={statuses}
               allTags={tags}
               allRoadmaps={roadmaps}
@@ -508,6 +540,9 @@ function PostModalContent({
               onRoadmapAdd={handleRoadmapAdd}
               onRoadmapRemove={handleRoadmapRemove}
               onBoardChange={handleBoardChange}
+              owner={currentOwner}
+              ownerCandidates={canSetOwner ? ownerCandidates : undefined}
+              onOwnerChange={canSetOwner ? handleOwnerChange : undefined}
               isUpdating={isUpdating || !!pendingRoadmapId}
               hideSubscribe
               variant="card"

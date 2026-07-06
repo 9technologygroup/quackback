@@ -29,7 +29,8 @@ import type { PostStatusEntity } from '@/lib/shared/db-types'
 import { usePostVote } from '@/lib/client/hooks/use-post-vote'
 import { cn, getInitials } from '@/lib/shared/utils'
 import { useEnsureAnonSession } from '@/lib/client/hooks/use-ensure-anon-session'
-import type { PostId, PostStatusId } from '@quackback/ids'
+import { AuthorHoverCard } from '@/components/public/author-hover-card'
+import type { PostId, PostStatusId, PrincipalId } from '@quackback/ids'
 
 interface PostCardProps {
   id: PostId
@@ -41,6 +42,13 @@ interface PostCardProps {
   commentCount: number
   authorName: string | null
   authorAvatarUrl?: string | null
+  /**
+   * Author's principal id. When present in portal (Link) mode, the author
+   * name/avatar link to the public profile with a lazy hover card. Omit (or
+   * null) for anonymous authors without a resolvable profile. Ignored in admin
+   * (onClick) mode — admin rendering is unchanged.
+   */
+  authorPrincipalId?: PrincipalId | null
   createdAt: Date | string
   boardSlug: string
   tags: { id: string; name: string; color?: string }[]
@@ -102,6 +110,7 @@ export function PostCard({
   commentCount,
   authorName,
   authorAvatarUrl,
+  authorPrincipalId,
   createdAt,
   boardSlug,
   tags,
@@ -421,6 +430,41 @@ export function PostCard({
     </div>
   )
 
+  // Author meta (avatar + name). In portal (Link) mode with a resolvable
+  // principal, it links to the public profile behind a lazy hover card; in
+  // admin (onClick) mode it stays inert so admin rendering is unchanged.
+  const authorFallback = intl.formatMessage({
+    id: 'portal.postCard.authorFallback',
+    defaultMessage: 'Anonymous',
+  })
+  const authorInner = (
+    <>
+      {showAvatar && (
+        <Avatar className="h-5 w-5">
+          {authorAvatarUrl && (
+            <AvatarImage src={authorAvatarUrl} alt={authorName || authorFallback} />
+          )}
+          <AvatarFallback className="bg-muted text-[10px]">
+            {getInitials(authorName)}
+          </AvatarFallback>
+        </Avatar>
+      )}
+      <span className={showAvatar ? '' : 'text-foreground/80'}>{authorName || authorFallback}</span>
+    </>
+  )
+  const authorMeta =
+    !isAdminMode && authorPrincipalId ? (
+      <AuthorHoverCard
+        principalId={authorPrincipalId}
+        displayName={authorName}
+        className="inline-flex items-center gap-2 text-muted-foreground"
+      >
+        {authorInner}
+      </AuthorHoverCard>
+    ) : (
+      authorInner
+    )
+
   // Main content
   const cardContent = (
     <div className="flex items-start p-4 gap-4">
@@ -464,32 +508,7 @@ export function PostCard({
 
         {/* Meta row */}
         <div className="flex items-center text-muted-foreground gap-2 text-xs mt-2.5">
-          {showAvatar && (
-            <Avatar className="h-5 w-5">
-              {authorAvatarUrl && (
-                <AvatarImage
-                  src={authorAvatarUrl}
-                  alt={
-                    authorName ||
-                    intl.formatMessage({
-                      id: 'portal.postCard.authorFallback',
-                      defaultMessage: 'Anonymous',
-                    })
-                  }
-                />
-              )}
-              <AvatarFallback className="bg-muted text-[10px]">
-                {getInitials(authorName)}
-              </AvatarFallback>
-            </Avatar>
-          )}
-          <span className={showAvatar ? '' : 'text-foreground/80'}>
-            {authorName ||
-              intl.formatMessage({
-                id: 'portal.postCard.authorFallback',
-                defaultMessage: 'Anonymous',
-              })}
-          </span>
+          {authorMeta}
           <span className="text-muted-foreground/40">·</span>
           <TimeAgo date={createdAtDate} className="text-muted-foreground/70" />
           {commentCount > 0 && (

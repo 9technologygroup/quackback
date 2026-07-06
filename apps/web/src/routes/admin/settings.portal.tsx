@@ -47,6 +47,8 @@ function PortalSettingsPage() {
   // invalidates the portalConfig query so the cache reflects the saved value
   // on the next visit; the live form fields are intentionally not re-synced.
   const [enabled, setEnabled] = useState(config.welcomeCard?.enabled ?? false)
+  const [publicProfiles, setPublicProfiles] = useState(config.features?.publicProfiles ?? true)
+  const [savingProfiles, setSavingProfiles] = useState(false)
   const [title, setTitle] = useState(
     config.welcomeCard?.title ?? DEFAULT_PORTAL_CONFIG.welcomeCard!.title
   )
@@ -69,6 +71,19 @@ function PortalSettingsPage() {
     }
   }
 
+  async function handleTogglePublicProfiles(checked: boolean) {
+    setPublicProfiles(checked)
+    setSavingProfiles(true)
+    try {
+      await updatePortalConfig.mutateAsync({ features: { publicProfiles: checked } })
+      startTransition(() => router.invalidate())
+    } catch {
+      setPublicProfiles(!checked)
+    } finally {
+      setSavingProfiles(false)
+    }
+  }
+
   const previewCard = useMemo<PortalWelcomeCardData>(
     () => ({ enabled: true, title, body }),
     [title, body]
@@ -85,6 +100,33 @@ function PortalSettingsPage() {
         title="Portal"
         description="Customize how the public portal greets visitors"
       />
+
+      <SettingsCard
+        title="Public profiles"
+        description="Profile pages for the people contributing feedback on your portal"
+      >
+        <div className="flex items-center justify-between rounded-lg border border-border/50 p-4">
+          <div>
+            <Label htmlFor="public-profiles" className="text-sm font-medium cursor-pointer">
+              Enable public profiles
+            </Label>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Anyone who can view the portal can open contributor profile pages showing their posts,
+              comments, and upvotes. Only activity the viewer can already see is included.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <InlineSpinner visible={savingProfiles} />
+            <Switch
+              id="public-profiles"
+              checked={publicProfiles}
+              onCheckedChange={handleTogglePublicProfiles}
+              disabled={savingProfiles}
+              aria-label="Enable public profiles"
+            />
+          </div>
+        </div>
+      </SettingsCard>
 
       <SettingsCard
         title="Welcome card"

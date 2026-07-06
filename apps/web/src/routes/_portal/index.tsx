@@ -22,6 +22,10 @@ const searchSchema = z.object({
     .refine((s) => !Number.isNaN(new Date(s).getTime()), 'Invalid calendar date')
     .optional(),
   responded: z.enum(['responded', 'unresponded']).optional(),
+  // Team-only filters (rendered only for post.view_private holders; the server
+  // ignores them for everyone else). URL-driven + shareable like the rest.
+  owner: z.string().optional(),
+  segmentIds: z.array(z.string()).optional(),
 })
 
 export const Route = createFileRoute('/_portal/')({
@@ -54,6 +58,8 @@ export const Route = createFileRoute('/_portal/')({
         minVotes: searchParams.minVotes,
         dateFrom: searchParams.dateFrom,
         responded: searchParams.responded,
+        owner: searchParams.owner,
+        segmentIds: searchParams.segmentIds?.length ? searchParams.segmentIds : undefined,
       })
     )
 
@@ -121,6 +127,8 @@ function PublicPortalPage() {
       minVotes: search.minVotes,
       dateFrom: search.dateFrom,
       responded: search.responded,
+      owner: search.owner,
+      segmentIds: search.segmentIds?.length ? search.segmentIds : undefined,
     }),
     placeholderData: keepPreviousData,
   })

@@ -313,10 +313,18 @@ function PostDetailPage() {
               onTagsChange={team.onTagsChange}
               allBoards={team.allBoards}
               onBoardChange={team.onBoardChange}
+              owner={team.owner}
+              ownerCandidates={team.ownerCandidates}
+              onOwnerChange={team.onOwnerChange}
               allRoadmaps={team.allRoadmaps}
               onRoadmapAdd={team.onRoadmapAdd}
               onRoadmapRemove={team.onRoadmapRemove}
               isUpdating={team.isMetaUpdating}
+              showVoters={team.canVoteOnBehalf}
+              votersQuery={team.votersQuery}
+              votersCanAddVoter={team.canSearchPeople}
+              votersCanCreateUser={team.canCreatePeople}
+              onVotersInvalidate={team.invalidateVoters}
               manageActions={manageActions}
             />
           </Suspense>

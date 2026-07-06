@@ -154,6 +154,9 @@ export function CommentsSection({
         statuses={statuses}
         currentStatusId={currentStatusId}
         isTeamMember={effectiveIsTeamMember}
+        // Portal (no adminUser) links comment authors to their public profile;
+        // the admin post view keeps author names inert.
+        linkAuthors={!adminUser}
         onDeleteComment={onDeleteComment}
         deletingCommentId={deletingCommentId}
         onRestoreComment={onRestoreComment}
