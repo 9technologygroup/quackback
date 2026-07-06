@@ -1,14 +1,36 @@
+import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { InboxIcon, CheckCircleIcon } from '@heroicons/react/24/outline'
+import { InboxIcon, CheckCircleIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline'
 import { BellIcon as BellIconSolid } from '@heroicons/react/24/solid'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Spinner } from '@/components/shared/spinner'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { NotificationItem } from '@/components/notifications/notification-item'
 import { useInfiniteNotifications } from '@/lib/client/hooks/use-notifications-queries'
-import { useMarkNotificationAsRead, useMarkAllNotificationsAsRead } from '@/lib/client/mutations'
+import {
+  useMarkNotificationAsRead,
+  useMarkAllNotificationsAsRead,
+  useArchiveNotification,
+  useArchiveAllReadNotifications,
+} from '@/lib/client/mutations'
 import {
   groupNotificationsByDate,
   type NotificationDateGroupKey,
@@ -37,10 +59,13 @@ function NotificationsPage() {
   const navigate = Route.useNavigate()
   const { filter } = Route.useSearch()
   const unreadOnly = filter === 'unread'
+  const [archiveAllReadOpen, setArchiveAllReadOpen] = useState(false)
   const { data, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useInfiniteNotifications({ unreadOnly })
   const markAsRead = useMarkNotificationAsRead()
   const markAllAsRead = useMarkAllNotificationsAsRead()
+  const archiveNotification = useArchiveNotification()
+  const archiveAllRead = useArchiveAllReadNotifications()
 
   const notifications = data?.pages.flatMap((page) => page.notifications) ?? []
   const unreadCount = data?.pages[0]?.unreadCount ?? 0
@@ -98,8 +123,40 @@ function NotificationsPage() {
               Mark all as read
             </Button>
           )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="More notification actions">
+                <EllipsisHorizontalIcon className="h-5 w-5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setArchiveAllReadOpen(true)}>
+                Archive all read
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
+
+      <AlertDialog open={archiveAllReadOpen} onOpenChange={setArchiveAllReadOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive all read notifications?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Read notifications will be removed from your list. This can't be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={archiveAllRead.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => archiveAllRead.mutate()}
+              disabled={archiveAllRead.isPending}
+            >
+              Archive
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Content */}
       {isLoading ? (
@@ -120,6 +177,7 @@ function NotificationsPage() {
                       key={notification.id}
                       notification={notification}
                       onMarkAsRead={(id) => markAsRead.mutate(id)}
+                      onArchive={(id) => archiveNotification.mutate(id)}
                       variant="full"
                     />
                   ))}

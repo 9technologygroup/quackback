@@ -12,6 +12,7 @@ import {
   markAsRead,
   markAllAsRead,
   archiveNotification,
+  archiveAllNotifications,
 } from '@/lib/server/domains/notifications/notification.service'
 import { logger } from '@/lib/server/logger'
 
@@ -169,3 +170,20 @@ export const archiveNotificationFn = createServerFn({ method: 'POST' })
       throw error
     }
   })
+
+/**
+ * Archive all read (but not unread) notifications for the current user
+ */
+export const archiveAllReadNotificationsFn = createServerFn({ method: 'POST' }).handler(
+  async () => {
+    log.info({}, 'all read notifications archived')
+    try {
+      const auth = await requireAuth()
+      await archiveAllNotifications(auth.principal.id, { onlyRead: true })
+      return { success: true }
+    } catch (error) {
+      log.error({ err: error }, 'archive all read notifications failed')
+      throw error
+    }
+  }
+)

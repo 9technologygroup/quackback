@@ -14,6 +14,7 @@ import {
   and,
   desc,
   isNull,
+  isNotNull,
   sql,
   inAppNotifications,
   posts,
@@ -292,10 +293,7 @@ export async function archiveNotification(
   principalId: PrincipalId,
   notificationId: NotificationId
 ): Promise<void> {
-  log.debug(
-    { principal_id: principalId, notification_id: notificationId },
-    'archive notification'
-  )
+  log.debug({ principal_id: principalId, notification_id: notificationId }, 'archive notification')
   const existing = await db.query.inAppNotifications.findFirst({
     where: and(
       eq(inAppNotifications.id, notificationId),
@@ -314,14 +312,23 @@ export async function archiveNotification(
 }
 
 /**
- * Archive all notifications for a member
+ * Archive all notifications for a member. Pass `{ onlyRead: true }` to
+ * archive just the read ones, leaving unread notifications in place.
  */
-export async function archiveAllNotifications(principalId: PrincipalId): Promise<void> {
-  log.debug({ principal_id: principalId }, 'archive all notifications')
+export async function archiveAllNotifications(
+  principalId: PrincipalId,
+  options: { onlyRead?: boolean } = {}
+): Promise<void> {
+  const { onlyRead = false } = options
+  log.debug({ principal_id: principalId, only_read: onlyRead }, 'archive all notifications')
   await db
     .update(inAppNotifications)
     .set({ archivedAt: new Date() })
     .where(
-      and(eq(inAppNotifications.principalId, principalId), isNull(inAppNotifications.archivedAt))
+      and(
+        eq(inAppNotifications.principalId, principalId),
+        isNull(inAppNotifications.archivedAt),
+        onlyRead ? isNotNull(inAppNotifications.readAt) : undefined
+      )
     )
 }

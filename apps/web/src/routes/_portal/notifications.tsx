@@ -1,12 +1,40 @@
+import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useIntl, FormattedMessage } from 'react-intl'
-import { BellIcon, InboxIcon, CheckIcon, CheckCircleIcon } from '@heroicons/react/24/outline'
+import {
+  BellIcon,
+  InboxIcon,
+  CheckIcon,
+  CheckCircleIcon,
+  EllipsisHorizontalIcon,
+} from '@heroicons/react/24/outline'
 import { EmptyState } from '@/components/shared/empty-state'
 import { Spinner } from '@/components/shared/spinner'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { useInfiniteNotifications } from '@/lib/client/hooks/use-notifications-queries'
-import { useMarkNotificationAsRead, useMarkAllNotificationsAsRead } from '@/lib/client/mutations'
+import {
+  useMarkNotificationAsRead,
+  useMarkAllNotificationsAsRead,
+  useArchiveNotification,
+  useArchiveAllReadNotifications,
+} from '@/lib/client/mutations'
 import { NotificationItem } from '@/components/notifications/notification-item'
 import { groupNotificationsByDate } from '@/components/notifications/group-by-date'
 
@@ -28,10 +56,13 @@ function NotificationsPage() {
   const navigate = Route.useNavigate()
   const { filter } = Route.useSearch()
   const unreadOnly = filter === 'unread'
+  const [archiveAllReadOpen, setArchiveAllReadOpen] = useState(false)
   const { data, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useInfiniteNotifications({ unreadOnly })
   const markAsRead = useMarkNotificationAsRead()
   const markAllAsRead = useMarkAllNotificationsAsRead()
+  const archiveNotification = useArchiveNotification()
+  const archiveAllRead = useArchiveAllReadNotifications()
 
   const notifications = data?.pages.flatMap((page) => page.notifications) ?? []
   const unreadCount = data?.pages[0]?.unreadCount ?? 0
@@ -122,9 +153,67 @@ function NotificationsPage() {
                 </span>
               </Button>
             )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={intl.formatMessage({
+                    id: 'portal.notifications.moreActions',
+                    defaultMessage: 'More notification actions',
+                  })}
+                >
+                  <EllipsisHorizontalIcon className="h-5 w-5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setArchiveAllReadOpen(true)}>
+                  <FormattedMessage
+                    id="portal.notifications.archiveAllRead"
+                    defaultMessage="Archive all read"
+                  />
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </header>
+
+      <AlertDialog open={archiveAllReadOpen} onOpenChange={setArchiveAllReadOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              <FormattedMessage
+                id="portal.notifications.archiveDialog.title"
+                defaultMessage="Archive all read notifications?"
+              />
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <FormattedMessage
+                id="portal.notifications.archiveDialog.description"
+                defaultMessage="Read notifications will be removed from your list. This can't be undone."
+              />
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={archiveAllRead.isPending}>
+              <FormattedMessage
+                id="portal.notifications.archiveDialog.cancel"
+                defaultMessage="Cancel"
+              />
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => archiveAllRead.mutate()}
+              disabled={archiveAllRead.isPending}
+            >
+              <FormattedMessage
+                id="portal.notifications.archiveDialog.confirm"
+                defaultMessage="Archive"
+              />
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Content */}
       {isLoading ? (
@@ -150,6 +239,7 @@ function NotificationsPage() {
                       notification={notification}
                       variant="full"
                       onMarkAsRead={(id) => markAsRead.mutate(id)}
+                      onArchive={(id) => archiveNotification.mutate(id)}
                       className="animate-in fade-in-0 fill-mode-both"
                       style={{
                         animationDelay: `${groupIndex * 100 + index * 50}ms`,

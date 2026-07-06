@@ -2,8 +2,10 @@
 
 import { Link } from '@tanstack/react-router'
 import { formatDistanceToNow, isToday, format } from 'date-fns'
+import { ArchiveBoxIcon } from '@heroicons/react/24/outline'
 import { cn, getInitials } from '@/lib/shared/utils'
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
+import { Button } from '@/components/ui/button'
 import { getNotificationTypeConfig } from './notification-type-config'
 import { getNotificationTarget } from './notification-target'
 import type { SerializedNotification } from '@/lib/client/hooks/use-notifications-queries'
@@ -11,6 +13,8 @@ import type { SerializedNotification } from '@/lib/client/hooks/use-notification
 interface NotificationItemProps {
   notification: SerializedNotification
   onMarkAsRead?: (id: SerializedNotification['id']) => void
+  /** Archives the row. Only rendered as a button in the 'full' variant. */
+  onArchive?: (id: SerializedNotification['id']) => void
   onClick?: () => void
   /** Layout variant: 'compact' for dropdown, 'full' for page view */
   variant?: 'compact' | 'full'
@@ -23,6 +27,7 @@ interface NotificationItemProps {
 export function NotificationItem({
   notification,
   onMarkAsRead,
+  onArchive,
   onClick,
   variant = 'compact',
   className,
@@ -47,6 +52,7 @@ export function NotificationItem({
       iconClass={config.iconClass}
       bgClass={config.bgClass}
       isUnread={isUnread}
+      onArchive={onArchive}
     />
   ) : (
     <CompactContent
@@ -58,6 +64,11 @@ export function NotificationItem({
     />
   )
 
+  // `group` scopes the archive button's hover/focus visibility to this row;
+  // only applied for the full variant, which is the only one that ever
+  // renders the button.
+  const rowClassName = cn(isFullVariant && 'group', className)
+
   const target = getNotificationTarget(notification)
 
   if (target) {
@@ -68,7 +79,7 @@ export function NotificationItem({
         search={target.search}
         hash={target.hash}
         onClick={handleClick}
-        className={className}
+        className={rowClassName}
         style={style}
       >
         {content}
@@ -77,7 +88,7 @@ export function NotificationItem({
   }
 
   return (
-    <div onClick={handleClick} className={className} style={style}>
+    <div onClick={handleClick} className={rowClassName} style={style}>
       {content}
     </div>
   )
@@ -89,6 +100,8 @@ interface ContentProps {
   iconClass: string
   bgClass: string
   isUnread: boolean
+  /** Full-variant only; ignored by CompactContent. */
+  onArchive?: (id: SerializedNotification['id']) => void
 }
 
 /**
@@ -180,8 +193,23 @@ function CompactContent({ notification, icon: Icon, iconClass, bgClass, isUnread
   )
 }
 
-function FullContent({ notification, icon: Icon, iconClass, bgClass, isUnread }: ContentProps) {
+function FullContent({
+  notification,
+  icon: Icon,
+  iconClass,
+  bgClass,
+  isUnread,
+  onArchive,
+}: ContentProps) {
   const createdAt = new Date(notification.createdAt)
+
+  function handleArchiveClick(event: React.MouseEvent<HTMLButtonElement>): void {
+    // The row itself is (or is wrapped by) a Link — stop the click from
+    // bubbling into it so archiving never triggers a navigation.
+    event.preventDefault()
+    event.stopPropagation()
+    onArchive?.(notification.id)
+  }
 
   return (
     <div
@@ -202,7 +230,9 @@ function FullContent({ notification, icon: Icon, iconClass, bgClass, isUnread }:
         variant="full"
       />
 
-      <div className="flex-1 min-w-0">
+      {/* End padding reserves room for the absolutely-positioned unread dot
+          and archive button so long titles never run underneath them. */}
+      <div className="flex-1 min-w-0 pe-14">
         <p className={cn('text-sm leading-tight', isUnread ? 'font-medium' : 'text-foreground')}>
           {notification.title}
         </p>
@@ -229,8 +259,27 @@ function FullContent({ notification, icon: Icon, iconClass, bgClass, isUnread }:
         </div>
       </div>
 
+      {/* Sits to the start-side of the archive button (below), clear of its
+          hitbox so the two never overlap. */}
       {isUnread && (
-        <div className="flex-shrink-0 w-2.5 h-2.5 rounded-full bg-primary mt-1.5 ring-4 ring-primary/10" />
+        <div className="absolute end-10 top-4 flex-shrink-0 w-2.5 h-2.5 rounded-full bg-primary ring-4 ring-primary/10" />
+      )}
+
+      {onArchive && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={handleArchiveClick}
+          aria-label="Archive notification"
+          className={cn(
+            'absolute end-2 top-2 h-7 w-7',
+            'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus-within:opacity-100',
+            'transition-opacity'
+          )}
+        >
+          <ArchiveBoxIcon className="h-4 w-4" />
+        </Button>
       )}
     </div>
   )

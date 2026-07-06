@@ -11,6 +11,7 @@ import {
   markNotificationAsReadFn,
   markAllNotificationsAsReadFn,
   archiveNotificationFn,
+  archiveAllReadNotificationsFn,
 } from '@/lib/server/functions/notifications'
 import {
   notificationsKeys,
@@ -114,6 +115,37 @@ export function useMarkAllNotificationsAsRead() {
       )
 
       queryClient.setQueryData<number>(notificationsKeys.unreadCount(), 0)
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: notificationsKeys.all })
+    },
+  })
+}
+
+export function useArchiveAllReadNotifications() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: () => archiveAllReadNotificationsFn(),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: notificationsKeys.all })
+
+      // Optimistically drop every read row (on every page, in every cache
+      // entry) and shrink each page's `total` by however many of its own
+      // rows were removed. `unreadCount` is untouched — this action never
+      // touches unread notifications.
+      queryClient.setQueriesData<NotificationsCacheEntry>(
+        { queryKey: notificationsKeys.lists() },
+        (old) =>
+          updateNotificationPages(old, (page) => {
+            const removedCount = page.notifications.filter((n) => n.readAt !== null).length
+            return {
+              ...page,
+              notifications: page.notifications.filter((n) => n.readAt === null),
+              total: page.total - removedCount,
+            }
+          })
+      )
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: notificationsKeys.all })

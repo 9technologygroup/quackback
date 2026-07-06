@@ -85,6 +85,7 @@ export {
   useMarkNotificationAsRead,
   useMarkAllNotificationsAsRead,
   useArchiveNotification,
+  useArchiveAllReadNotifications,
 } from './notifications'
 
 // User mutations
