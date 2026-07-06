@@ -38,12 +38,10 @@ import type {
 import { AgentMessageBubble, UnreadDivider } from '@/components/conversation/message-bubble'
 import {
   ThreadViewport,
-  useComposerDoc,
   useMarkReadOnIncoming,
   useOlderMessages,
   useThreadVirtualizer,
   useTypingSender,
-  docHasContentNode,
 } from '@/components/conversation/thread'
 import {
   appendSentAgentMessage,
@@ -65,22 +63,21 @@ import { ConversationDetailPanel } from '@/components/admin/conversation/convers
 import { ConvertToPostDialog } from '@/components/admin/conversation/convert-to-post-dialog'
 import { EndConversationDialog } from '@/components/admin/conversation/end-conversation-dialog'
 import { SharePostDialog } from '@/components/admin/conversation/share-post-dialog'
+import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import {
-  ConversationNoteEditor,
-  type ConversationNoteEditorHandle,
-} from '@/components/admin/conversation/conversation-note-editor'
+  CONVERSATION_EDITOR_FEATURES,
+  CONVERSATION_NOTE_FEATURES,
+} from '@/components/conversation/conversation-editor-features'
 import { ComposerAttachmentTray } from '@/components/shared/composer-attachment-tray'
 import { LinkPreviews } from '@/components/shared/link-preview-card'
-import {
-  ConversationRichComposer,
-  type ConversationRichComposerHandle,
-} from '@/components/admin/conversation/conversation-rich-composer'
 import { conversationInboxQueries } from '@/lib/client/queries/conversation-inbox'
 import {
   buildAdminConversationRows,
   type AdminConversationRow,
 } from '@/lib/client/conversation/admin-conversation-rows'
 import type { JSONContent } from '@tiptap/core'
+import type { TiptapContent } from '@/lib/shared/db-types'
+import { isEmptyTiptapDoc } from '@/lib/shared/utils/is-empty-tiptap-doc'
 import { useConversationTyping } from '@/lib/client/hooks/use-conversation-typing'
 import { useImageUpload } from '@/lib/client/hooks/use-image-upload'
 import { useConversationComposerAttachments } from '@/lib/client/hooks/use-conversation-composer-attachments'
@@ -104,6 +101,40 @@ import type { FeatureFlags } from '@/lib/shared/types/settings'
 // chasing a deep-linked message before giving up.
 const FLASH_MS = 2200
 const MAX_JUMP_PAGES = 20
+
+/** A composer's live draft: the rich doc (persisted as contentJson) plus the
+ *  derived markdown mirror (stored as `content` for FTS/preview/transcripts). */
+type ComposerDraft = { json: TiptapContent | null; markdown: string }
+const EMPTY_DRAFT: ComposerDraft = { json: null, markdown: '' }
+
+/** A plain-text string as Tiptap paragraphs (one per line). The unified editor
+ *  is driven by its controlled `value`, not an imperative insert command, so the
+ *  text seams (macro body, Copilot answer, emoji) build the draft doc directly. */
+function textToParagraphs(text: string): TiptapContent[] {
+  return text
+    .split('\n')
+    .map((line) =>
+      line.length > 0
+        ? { type: 'paragraph', content: [{ type: 'text', text: line }] }
+        : { type: 'paragraph' }
+    )
+}
+
+/** Append plain text to a draft (used by the macro / Copilot / emoji seams).
+ *  Existing rich content is preserved; an effectively-empty draft is replaced
+ *  outright so an insert doesn't leave a leading blank paragraph. */
+function appendTextToDraft(prev: ComposerDraft, text: string): ComposerDraft {
+  const empty = isEmptyTiptapDoc(prev.json ?? undefined)
+  const baseContent = !empty && prev.json?.content ? prev.json.content : []
+  const json: TiptapContent = { type: 'doc', content: [...baseContent, ...textToParagraphs(text)] }
+  const markdown = !empty && prev.markdown.trim() ? `${prev.markdown.trim()}\n\n${text}` : text
+  return { json, markdown }
+}
+
+/** Replace a draft with plain text (used by the Copilot Format chip). */
+function textToDraft(text: string): ComposerDraft {
+  return { json: { type: 'doc', content: textToParagraphs(text) }, markdown: text }
+}
 
 export function AgentConversationThread({
   conversationId,
@@ -137,16 +168,28 @@ export function AgentConversationThread({
   const linkPreviewsEnabled =
     (settings?.featureFlags as FeatureFlags | undefined)?.linkPreviews ?? false
 
-  // Reply composer is a rich TipTap doc (inline images + post embeds); the note
-  // composer is a separate rich doc so it can carry @-mention chips. Composer
-  // mode toggles which one is live.
-  const reply = useComposerDoc()
-  const note = useComposerDoc()
+  // Reply and Note each hold an independent draft (the rich doc persisted as
+  // contentJson + its markdown mirror), so toggling modes preserves each mode's
+  // in-progress text/images. Both render the SAME unified RichTextEditor — reply
+  // gets mentions on (agent surface), note is the team-internal preset. The
+  // per-mode remount key force-remounts the active editor to clear it after a
+  // send (an empty controlled value leaves a stale `<p></p>` that traps the
+  // cursor) and to re-seed + focus after a text insert.
   const [noteMode, setNoteMode] = useState(false)
+  const [replyDraft, setReplyDraft] = useState<ComposerDraft>(EMPTY_DRAFT)
+  const [noteDraft, setNoteDraft] = useState<ComposerDraft>(EMPTY_DRAFT)
+  const [replyKey, setReplyKey] = useState(0)
+  const [noteKey, setNoteKey] = useState(0)
+  // Latest reply draft for the stable, pull-based Copilot Format seam.
+  const replyDraftRef = useRef(replyDraft)
+  replyDraftRef.current = replyDraft
   const scrollRef = useRef<HTMLDivElement>(null)
   // Live link-unfurl in the composer (the "preview tray"), debounced so it fires
   // on a settled URL rather than every keystroke.
-  const debouncedComposerText = useDebouncedValue(noteMode ? note.text : reply.text, 500)
+  const debouncedComposerText = useDebouncedValue(
+    noteMode ? noteDraft.markdown : replyDraft.markdown,
+    500
+  )
 
   // The one controlled convert dialog's seed, built at whichever entry point
   // opened it: a per-message "Track as feedback" pick, an AI "Track as post"
@@ -185,8 +228,6 @@ export function AgentConversationThread({
     uploading,
   } = useConversationComposerAttachments(upload)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const replyComposerRef = useRef<ConversationRichComposerHandle>(null)
-  const noteEditorRef = useRef<ConversationNoteEditorHandle>(null)
 
   // Shared factory (same key as `threadKey`) so a `?c=` deep-link prefetched by
   // the route loader hydrates this thread on first paint.
@@ -512,74 +553,111 @@ export function AgentConversationThread({
     onError: () => toast.error('Failed to mark unread'),
   })
 
-  // Insert a macro's rendered body into the reply composer (the picker applies
-  // any bundled actions server-side before calling this).
-  const insertMacroBody = useCallback((body: string) => {
-    replyComposerRef.current?.insertText(body)
+  // Seed a text insert into a mode's draft, then remount that editor so the new
+  // value is loaded and the cursor lands at its end. The unified RichTextEditor
+  // exposes no imperative insert, so every "insert at cursor" affordance (macros,
+  // Copilot, the emoji picker) routes through the controlled value + remount key.
+  const insertIntoReply = useCallback((text: string) => {
+    setReplyDraft((prev) => appendTextToDraft(prev, text))
+    setReplyKey((k) => k + 1)
+  }, [])
+  const insertIntoNote = useCallback((text: string) => {
+    setNoteDraft((prev) => appendTextToDraft(prev, text))
+    setNoteKey((k) => k + 1)
   }, [])
 
-  // The Copilot sidebar's "Add to composer" / "Add as note" seam
-  // (COPILOT-SIDEBAR-UX.md B.4): unlike insertMacroBody (always the reply
-  // composer), Copilot can target either editor and may need to flip
-  // `noteMode` first — see use-copilot-insert.ts for the mount-timing fix.
+  // The Copilot "Add to composer" / "Add as note" seam (COPILOT-SIDEBAR-UX.md
+  // B.4) targets either mode and may need to flip `noteMode` first — see
+  // use-copilot-insert.ts for the mount-timing fix. It drives the editors through
+  // insertable handles; with the unified editor those handles just seed the draft
+  // (value + remount). Kept in stable refs so insertFromCopilot's identity — and
+  // therefore the detail panel — doesn't churn on every keystroke.
+  const replyInsertRef = useRef<{ insertText: (text: string) => void } | null>(null)
+  const noteInsertRef = useRef<{ insertText: (text: string) => void } | null>(null)
+  replyInsertRef.current = { insertText: insertIntoReply }
+  noteInsertRef.current = { insertText: insertIntoNote }
   const insertFromCopilot = useCopilotInsert({
     noteMode,
     setNoteMode,
-    replyComposerRef,
-    noteEditorRef,
+    replyComposerRef: replyInsertRef,
+    noteEditorRef: noteInsertRef,
   })
 
-  // The Copilot Format chip's read/replace seam onto the REPLY composer only
-  // (P2-C.1): unlike insertFromCopilot, Format never targets the note editor,
-  // so it needs no mode-flip plumbing: it reads and rewrites whatever draft is
-  // already live in the reply composer. `getComposerText` is a plain pull (no
-  // re-render on every keystroke, mirroring insertMacroBody's ref-based
-  // approach); `replaceComposerText` swaps in the transformed text as one
-  // undoable edit and offers an Undo action so a bad rewrite costs one keystroke.
-  const getComposerText = useCallback(() => replyComposerRef.current?.getText() ?? '', [])
+  // The Copilot Format chip's read/replace seam onto the REPLY draft only
+  // (P2-C.1). `getComposerText` is a stable pull that reads the latest draft via
+  // a ref (no re-subscribe on every keystroke); `replaceComposerText` swaps the
+  // whole draft for the transform result (remount lands the cursor at the end)
+  // and offers an Undo that re-seeds the pre-format draft — the RichTextEditor
+  // has no undo handle, so we snapshot and restore instead.
+  const getComposerText = useCallback(() => replyDraftRef.current.markdown, [])
   const replaceComposerText = useCallback((text: string) => {
-    replyComposerRef.current?.replaceText(text)
+    const prev = replyDraftRef.current
+    setReplyDraft(textToDraft(text))
+    setReplyKey((k) => k + 1)
     toast.success('Draft updated. Undo with Ctrl+Z', {
       action: {
         label: 'Undo',
-        onClick: () => replyComposerRef.current?.undo(),
+        onClick: () => {
+          setReplyDraft(prev)
+          setReplyKey((k) => k + 1)
+        },
       },
     })
   }, [])
 
-  const onSend = useCallback(() => {
-    if (noteMode) {
-      // Notes are rich (mention chips in the doc) and can carry attachments. The
-      // plain text gates the send + drives the preview; the doc carries mentions.
-      const text = note.text.trim()
-      if (!text || noteMutation.isPending || uploading) return
-      noteMutation.mutate({
-        content: text,
-        contentJson: note.docRef.current,
-        attachments: pendingAttachments.length > 0 ? pendingAttachments : undefined,
-      })
-      note.clear()
-      return
-    }
-    // Reply is rich: send the plain text (preview/search) + the doc (inline
-    // images/embeds) + any tray attachments. A doc/attachment with no text is
-    // still valid (e.g. an image-only reply).
-    const text = reply.text.trim()
-    const doc = reply.docRef.current
+  // Track each mode's draft from the editor's onChange (json + markdown mirror).
+  // The reply keystroke also drives the visitor-facing typing indicator; a note
+  // is internal, so it never signals typing. Both callbacks are stable so the
+  // editor's extensions aren't rebuilt on every render.
+  const onReplyChange = useCallback(
+    (json: JSONContent, _html: string, markdown: string) => {
+      setReplyDraft({ json: json as TiptapContent, markdown })
+      onLocalInput()
+    },
+    [onLocalInput]
+  )
+  const onNoteChange = useCallback(
+    (json: JSONContent, _html: string, markdown: string) =>
+      setNoteDraft({ json: json as TiptapContent, markdown }),
+    []
+  )
+
+  // Enter-to-send routes through onSubmit, so it must be a STABLE callback — an
+  // inline arrow would churn the editor's extension identity every keystroke.
+  // Read the latest state through a ref refreshed each render. A message is
+  // sendable when the doc carries text or an inline image/embed (isEmptyTiptapDoc
+  // counts any non-text node as content), OR a file is staged in the tray;
+  // `content` is the doc's markdown, `contentJson` the doc (null when it's only
+  // an attachment). Text/doc clear optimistically; tray attachments clear in the
+  // mutation's onSuccess.
+  const sendRef = useRef<() => void>(() => {})
+  sendRef.current = () => {
+    const draft = noteMode ? noteDraft : replyDraft
+    const empty = isEmptyTiptapDoc(draft.json ?? undefined)
     const hasAttachments = pendingAttachments.length > 0
-    if (
-      (!text && !docHasContentNode(doc) && !hasAttachments) ||
-      sendMutation.isPending ||
-      uploading
-    )
-      return
-    sendMutation.mutate({
-      content: text,
-      contentJson: doc,
+    const mutation = noteMode ? noteMutation : sendMutation
+    if ((empty && !hasAttachments) || mutation.isPending || uploading) return
+    mutation.mutate({
+      content: draft.markdown.trim(),
+      contentJson: empty ? null : draft.json,
       attachments: hasAttachments ? pendingAttachments : undefined,
     })
-    reply.clear()
-  }, [reply, note, noteMode, noteMutation, pendingAttachments, uploading, sendMutation])
+    if (noteMode) {
+      setNoteDraft(EMPTY_DRAFT)
+      setNoteKey((k) => k + 1)
+    } else {
+      setReplyDraft(EMPTY_DRAFT)
+      setReplyKey((k) => k + 1)
+    }
+  }
+  const onSend = useCallback(() => sendRef.current(), [])
+
+  const activeDraft = noteMode ? noteDraft : replyDraft
+  const activePending = noteMode ? noteMutation.isPending : sendMutation.isPending
+  const sendDisabled =
+    (isEmptyTiptapDoc(activeDraft.json ?? undefined) && pendingAttachments.length === 0) ||
+    activePending ||
+    uploading
 
   // Render one virtualized row. AgentMessageBubble keeps all the agent-view
   // behaviors (and its data-message-id root); the affordance rows mirror the
@@ -881,25 +959,40 @@ export function AgentConversationThread({
                 e.target.value = ''
               }}
             />
+            {/* Reply and Note share the unified RichTextEditor; reply keeps
+                @-mentions on (agent surface), note is the team-internal preset.
+                Enter sends, Shift+Enter breaks; formatting comes from the editor's
+                own bubble/slash/`:` surfaces. Pasted/dropped images inline via
+                onImageUpload; the paperclip still stages files in the tray below. */}
             {noteMode ? (
-              <ConversationNoteEditor
-                ref={noteEditorRef}
-                resetSignal={note.resetSignal}
+              <RichTextEditor
+                key={`note-${noteKey}`}
+                value={noteDraft.json ?? ''}
+                features={CONVERSATION_NOTE_FEATURES}
+                borderless
+                minHeight="1.5rem"
+                autofocus={noteKey > 0 ? 'end' : false}
                 disabled={noteMutation.isPending}
-                onChange={note.onChange}
+                placeholder="Add an internal note for your team…"
+                className="max-h-32 overflow-y-auto"
+                onChange={onNoteChange}
                 onSubmit={onSend}
-                onImageFiles={(files) => void addFiles(files)}
+                onImageUpload={upload}
               />
             ) : (
-              <ConversationRichComposer
-                ref={replyComposerRef}
-                resetSignal={reply.resetSignal}
+              <RichTextEditor
+                key={`reply-${replyKey}`}
+                value={replyDraft.json ?? ''}
+                features={CONVERSATION_EDITOR_FEATURES}
+                borderless
+                minHeight="1.5rem"
+                autofocus={replyKey > 0 ? 'end' : false}
                 disabled={sendMutation.isPending}
                 placeholder="Type your reply…"
-                onChange={reply.onChange}
+                className="max-h-32 overflow-y-auto"
+                onChange={onReplyChange}
                 onSubmit={onSend}
-                onLocalInput={onLocalInput}
-                onImageFiles={(files) => void addFiles(files)}
+                onImageUpload={upload}
               />
             )}
             <ComposerAttachmentTray attachments={pendingAttachments} onRemove={removeAttachment} />
@@ -920,14 +1013,14 @@ export function AgentConversationThread({
               <EmojiPicker
                 className="size-8"
                 onSelect={(emoji) => {
-                  if (noteMode) noteEditorRef.current?.insertText(emoji)
-                  else replyComposerRef.current?.insertText(emoji)
+                  if (noteMode) insertIntoNote(emoji)
+                  else insertIntoReply(emoji)
                 }}
               />
               {!noteMode && (
                 <MacroPicker
                   conversationId={conversationId}
-                  onInsert={insertMacroBody}
+                  onInsert={insertIntoReply}
                   onApplied={refreshThread}
                 />
               )}
@@ -935,15 +1028,7 @@ export function AgentConversationThread({
               <button
                 type="button"
                 onClick={onSend}
-                disabled={
-                  noteMode
-                    ? !note.text.trim() || noteMutation.isPending || uploading
-                    : (!reply.text.trim() &&
-                        !reply.hasContentNode &&
-                        pendingAttachments.length === 0) ||
-                      sendMutation.isPending ||
-                      uploading
-                }
+                disabled={sendDisabled}
                 className={cn(
                   'flex size-8 shrink-0 items-center justify-center rounded-md text-primary-foreground disabled:opacity-40 transition-opacity',
                   noteMode ? 'bg-amber-500 text-white' : 'bg-primary'

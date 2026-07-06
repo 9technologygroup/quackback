@@ -23,6 +23,7 @@ import Youtube from '@tiptap/extension-youtube'
 import { Emoji, emojis as defaultEmojis, type EmojiItem } from '@tiptap/extension-emoji'
 import { MentionExtension } from './mention-extension'
 import { QuackbackEmbed } from './quackback-embed-extension'
+import { ConversationImage } from './conversation-image-node'
 import { Markdown } from '@tiptap/markdown'
 import { Extension } from '@tiptap/core'
 import type { Range } from '@tiptap/core'
@@ -202,6 +203,10 @@ export function buildExtensions(
     // Always register so saved embed nodes round-trip in any editor; paste rules
     // only fire when quackbackEmbeds is enabled for this editor.
     QuackbackEmbed.configure({ enablePaste: !!features.quackbackEmbeds }),
+    // Always register so legacy inline conversation images (the `chatImage` node
+    // authored by the retired hand-rolled composers) still parse in the editor
+    // schema and round-trip. New images author as resizableImage.
+    ConversationImage,
     ...(features.codeBlocks
       ? [
           CodeBlockLowlight.configure({

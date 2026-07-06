@@ -9,20 +9,18 @@
  * hook queues the pending insert and flushes it once the target editor's ref
  * is live.
  *
- * The harness below mirrors the real components' behavior of assigning their
- * imperative-handle ref during render (not in an effect) — exactly like
- * ConversationRichComposer / ConversationNoteEditor do (`editorRef.current =
- * editor`) — so only one of the two handles is "live" at a time, gated on
- * `noteMode`, just like the real conditional editor swap.
+ * The harness below mirrors the real composers' behavior of exposing their
+ * insert seam during render (not in an effect) — so only one of the two
+ * handles is "live" at a time, gated on `noteMode`, just like the real
+ * conditional editor swap.
  */
 import { useRef, useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { useCopilotInsert } from '../use-copilot-insert'
 
-// Structural stand-ins for ConversationRichComposerHandle /
-// ConversationNoteEditorHandle — lib/ tests must not import from components/,
-// and the hook only ever calls `insertText` on either handle.
+// Structural stand-ins for the composers' insert handles — lib/ tests must not
+// import from components/, and the hook only ever calls `insertText` on either.
 interface ReplyHandle {
   insertText: (text: string) => void
 }

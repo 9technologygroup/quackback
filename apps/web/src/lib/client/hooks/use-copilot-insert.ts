@@ -3,9 +3,9 @@ import type { RefObject } from 'react'
 
 type InsertMode = 'reply' | 'note'
 
-// Structural rather than importing ConversationRichComposerHandle /
-// ConversationNoteEditorHandle from components/ — lib/ must not import from
-// components/ (both real handles satisfy this shape).
+// Structural rather than importing the composer's insert handle from
+// components/ — lib/ must not import from components/. The reply and note
+// composers each expose an object of this shape.
 interface InsertableHandle {
   insertText: (text: string) => void
 }
