@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { IntlProvider } from 'react-intl'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   PublicFiltersBar,
   PublicFiltersAddButton,
@@ -36,11 +37,24 @@ const boards = [
   { id: 'board_2', slug: 'bugs', name: 'Bugs' },
 ]
 
+/** The bar reaches for useTeamMembers (react-query) via the owner filter, so
+ *  every render needs a QueryClient alongside intl. */
+function Providers({ children }: { children: React.ReactNode }) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return (
+    <QueryClientProvider client={client}>
+      <IntlProvider locale="en" defaultLocale="en">
+        {children}
+      </IntlProvider>
+    </QueryClientProvider>
+  )
+}
+
 function renderBar(overrides: Partial<React.ComponentProps<typeof PublicFiltersBar>> = {}) {
   const setFilters = vi.fn()
   const clearFilters = vi.fn()
   const result = render(
-    <IntlProvider locale="en" defaultLocale="en">
+    <Providers>
       <PublicFiltersBar
         filters={{ sort: 'top' }}
         setFilters={setFilters}
@@ -50,7 +64,7 @@ function renderBar(overrides: Partial<React.ComponentProps<typeof PublicFiltersB
         boards={boards}
         {...overrides}
       />
-    </IntlProvider>
+    </Providers>
   )
   return { setFilters, clearFilters, ...result }
 }
@@ -118,7 +132,7 @@ describe('PublicFiltersToolbarButton', () => {
   it('renders the solid Filter button (toolbar variant)', () => {
     const setFilters = vi.fn()
     render(
-      <IntlProvider locale="en" defaultLocale="en">
+      <Providers>
         <PublicFiltersToolbarButton
           filters={{ sort: 'top' }}
           setFilters={setFilters}
@@ -126,7 +140,7 @@ describe('PublicFiltersToolbarButton', () => {
           tags={tags}
           boards={boards}
         />
-      </IntlProvider>
+      </Providers>
     )
     expect(screen.getByRole('button', { name: /filter/i })).toBeInTheDocument()
   })
@@ -134,7 +148,7 @@ describe('PublicFiltersToolbarButton', () => {
   it('opens the same category menu and lets users add a vote-count filter', () => {
     const setFilters = vi.fn()
     render(
-      <IntlProvider locale="en" defaultLocale="en">
+      <Providers>
         <PublicFiltersToolbarButton
           filters={{ sort: 'top' }}
           setFilters={setFilters}
@@ -142,7 +156,7 @@ describe('PublicFiltersToolbarButton', () => {
           tags={tags}
           boards={boards}
         />
-      </IntlProvider>
+      </Providers>
     )
     fireEvent.click(screen.getByRole('button', { name: /filter/i }))
     fireEvent.click(screen.getByRole('button', { name: /vote count/i }))
@@ -154,7 +168,7 @@ describe('PublicFiltersToolbarButton', () => {
   it('lets users pick a board from the filter menu', () => {
     const setFilters = vi.fn()
     render(
-      <IntlProvider locale="en" defaultLocale="en">
+      <Providers>
         <PublicFiltersToolbarButton
           filters={{ sort: 'top' }}
           setFilters={setFilters}
@@ -162,7 +176,7 @@ describe('PublicFiltersToolbarButton', () => {
           tags={tags}
           boards={boards}
         />
-      </IntlProvider>
+      </Providers>
     )
     fireEvent.click(screen.getByRole('button', { name: /filter/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Board$/i }))
@@ -174,7 +188,7 @@ describe('PublicFiltersToolbarButton', () => {
   it('hides the Board category when only a single board exists', () => {
     const setFilters = vi.fn()
     render(
-      <IntlProvider locale="en" defaultLocale="en">
+      <Providers>
         <PublicFiltersToolbarButton
           filters={{ sort: 'top' }}
           setFilters={setFilters}
@@ -182,7 +196,7 @@ describe('PublicFiltersToolbarButton', () => {
           tags={tags}
           boards={[{ id: 'board_1', slug: 'feature-requests', name: 'Feature Requests' }]}
         />
-      </IntlProvider>
+      </Providers>
     )
     fireEvent.click(screen.getByRole('button', { name: /filter/i }))
     expect(screen.queryByRole('button', { name: /^Board$/i })).not.toBeInTheDocument()
@@ -193,7 +207,7 @@ describe('PublicFiltersAddButton (pill variant)', () => {
   it('clicking a status in the submenu adds it via setFilters', () => {
     const setFilters = vi.fn()
     render(
-      <IntlProvider locale="en" defaultLocale="en">
+      <Providers>
         <PublicFiltersAddButton
           filters={{ sort: 'top' }}
           setFilters={setFilters}
@@ -201,7 +215,7 @@ describe('PublicFiltersAddButton (pill variant)', () => {
           tags={tags}
           boards={boards}
         />
-      </IntlProvider>
+      </Providers>
     )
     fireEvent.click(screen.getByRole('button', { name: /^add filter$/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Status$/i }))
