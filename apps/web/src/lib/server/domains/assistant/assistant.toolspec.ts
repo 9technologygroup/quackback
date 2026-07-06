@@ -14,8 +14,8 @@ import { z } from 'zod'
 import { conversations, eq } from '@/lib/server/db'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
 import type { PrincipalId, ConversationId, AssistantInvolvementId, BoardId } from '@quackback/ids'
-import { type ContentAudience, toHelpCenterAudience } from './audience'
-import { retrieveKbArticles } from './retrieval'
+import { type ContentAudience } from './audience'
+import { retrieveKnowledge } from './retrieval-sources'
 import { listMessages } from '@/lib/server/domains/conversation/conversation.query'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import {
@@ -105,9 +105,6 @@ export function makeAssistantToolContext(init: {
   }
 }
 
-/** Per-article snippet budget handed to the model (full content stays server-side). */
-const KNOWLEDGE_SNIPPET_CHARS = 1200
-
 /**
  * Hard per-attempt budget on search_knowledge. Prompt discipline alone does not
  * hold — a model that dislikes its results keeps reformulating until the
@@ -120,11 +117,6 @@ export const SEARCH_BUDGET_PER_TURN = 3
 
 /** Recent messages get_conversation_context returns. */
 const CONTEXT_MESSAGE_LIMIT = 20
-
-/** Public help-center path for a retrieved article. */
-function helpArticleUrl(categorySlug: string, slug: string): string {
-  return `/hc/articles/${categorySlug}/${slug}`
-}
 
 /** Read tools only observe; write tools change state and can require approval. */
 export type ToolRiskClass = 'read' | 'write'
@@ -248,25 +240,19 @@ async function executeSearchKnowledge(
     }
   }
   // Audience-scoped from day one: the citation set can never exceed what the
-  // viewer could already see. retrieveKbArticles only knows the narrower
-  // public|team HelpCenterAudience, so map at this boundary rather than
-  // widening that type's blast radius across the rest of the help center.
-  const articles = await retrieveKbArticles(args.query, {
-    audience: toHelpCenterAudience(ctx.audience),
-  })
-  for (const a of articles) {
-    ctx.sources.set(a.id, {
-      type: 'article',
-      id: a.id,
-      title: a.title,
-      url: helpArticleUrl(a.categorySlug, a.slug),
-    })
+  // viewer could already see. retrieveKnowledge composes every registered
+  // grounding source (the knowledge base always; feedback posts when
+  // assistantPostGrounding is on) behind one call, each source mapping the
+  // audience boundary itself.
+  const items = await retrieveKnowledge(args.query, ctx.audience)
+  for (const item of items) {
+    ctx.sources.set(item.id, item.citation)
   }
   return {
-    articles: articles.map((a) => ({
-      id: a.id,
-      title: a.title,
-      snippet: a.content.slice(0, KNOWLEDGE_SNIPPET_CHARS),
+    articles: items.map((item) => ({
+      id: item.id,
+      title: item.title,
+      snippet: item.excerpt,
     })),
   }
 }

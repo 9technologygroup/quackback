@@ -15,6 +15,18 @@ export {
   type RetrievedKbArticle,
   type RetrieveKbArticlesOptions,
 } from './retrieval'
+
+// Source-adapter seam: the composed knowledge-base + (flagged) feedback-posts
+// grounding retrieval behind Quinn's search_knowledge tool.
+export {
+  retrieveKnowledge,
+  resolveKnowledgeSources,
+  kbKnowledgeSource,
+  KNOWLEDGE_TOP_K,
+  KNOWLEDGE_SNIPPET_CHARS,
+  type RetrievedItem,
+  type KnowledgeSource,
+} from './retrieval-sources'
 export {
   synthesizeAnswer,
   isAskAiConfigured,

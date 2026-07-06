@@ -253,6 +253,28 @@ describe('assembleCitations', () => {
     ).toEqual([{ type: 'article', id: 'kb_article_1', title: 'T1', url: '/hc/articles/g/a1' }])
   })
 
+  it('round-trips a post citation the same way as an article one (post grounding source)', () => {
+    const postLedger = new Map<string, AssistantCitation>([
+      ...ledger,
+      [
+        'post_1',
+        { type: 'post', id: 'post_1', title: 'Dark mode request', url: '/b/general/posts/post_1' },
+      ],
+    ])
+    expect(
+      assembleCitations(
+        [
+          { type: 'article', id: 'kb_article_1' },
+          { type: 'post', id: 'post_1' },
+        ],
+        postLedger
+      )
+    ).toEqual([
+      { type: 'article', id: 'kb_article_1', title: 'T1', url: '/hc/articles/g/a1' },
+      { type: 'post', id: 'post_1', title: 'Dark mode request', url: '/b/general/posts/post_1' },
+    ])
+  })
+
   it('drops everything when nothing cleared the confidence floor (empty ledger)', () => {
     expect(assembleCitations([{ type: 'article', id: 'kb_article_1' }], new Map())).toEqual([])
   })

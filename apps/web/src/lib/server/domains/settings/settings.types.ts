@@ -941,6 +941,8 @@ export interface FeatureFlags {
   assistantActions: boolean
   /** External API integrations for the AI assistant to look up or update data in other systems */
   dataConnectors: boolean
+  /** Ground AI assistant answers in published feedback posts, alongside the knowledge base */
+  assistantPostGrounding: boolean
 }
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -954,6 +956,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   visitorDeviceTracking: false,
   assistantActions: false,
   dataConnectors: false,
+  assistantPostGrounding: false,
 }
 
 /**
@@ -1010,6 +1013,11 @@ export const FEATURE_FLAG_REGISTRY: Record<
     description:
       'Define external API calls the AI assistant can use to look up or update data in other systems.',
   },
+  assistantPostGrounding: {
+    label: 'Assistant post grounding',
+    description:
+      'Let the AI assistant search published feedback posts, alongside the knowledge base, when answering questions.',
+  },
 }
 
 /**
@@ -1040,7 +1048,8 @@ export const LAB_SECTIONS: Array<{
   },
   {
     title: 'AI',
-    description: 'Enable your AI assistant to automate workflows and integrate with external data sources.',
-    flags: ['assistantActions', 'dataConnectors'],
+    description:
+      'Enable your AI assistant to automate workflows and integrate with external data sources.',
+    flags: ['assistantActions', 'dataConnectors', 'assistantPostGrounding'],
   },
 ]
