@@ -10,6 +10,7 @@ import { renderConversationTranscript, type TranscriptMessage } from '../convers
 const msg = (over: Partial<TranscriptMessage>): TranscriptMessage => ({
   senderType: 'visitor',
   content: 'hi',
+  contentJson: null,
   createdAt: '2026-07-04T09:15:30.000Z',
   author: { displayName: 'Alice' } as TranscriptMessage['author'],
   isInternal: false,
@@ -103,5 +104,71 @@ describe('renderConversationTranscript', () => {
     expect(out).not.toContain('- Subject:')
     expect(out).not.toContain('- Status:')
     expect(out).toContain('- Opened: unknown')
+  })
+})
+
+describe('renderConversationTranscript — deriving text and images from contentJson', () => {
+  it('derives an image-only message from contentJson instead of falling back to "(no text content)"', () => {
+    const out = renderConversationTranscript({ id: 'c' }, [
+      msg({
+        content: '',
+        contentJson: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'chatImage', attrs: { src: 'https://cdn.example.com/a.png' } }],
+            },
+          ],
+        },
+      }),
+    ])
+    expect(out).not.toContain('(no text content)')
+    expect(out).toContain('[image] https://cdn.example.com/a.png')
+  })
+
+  it('renders derived text alongside the image source line for a rich text+image message', () => {
+    const out = renderConversationTranscript({ id: 'c' }, [
+      msg({
+        content: '',
+        contentJson: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                { type: 'text', text: 'See this screenshot' },
+                { type: 'chatImage', attrs: { src: 'https://cdn.example.com/b.png' } },
+              ],
+            },
+          ],
+        },
+      }),
+    ])
+    expect(out).not.toContain('(no text content)')
+    expect(out).toContain('See this screenshot')
+    expect(out).toContain('[image] https://cdn.example.com/b.png')
+  })
+
+  it('renders a plain-content message exactly as before, ignoring contentJson entirely', () => {
+    const out = renderConversationTranscript({ id: 'c' }, [
+      msg({
+        senderType: 'agent',
+        author: { displayName: 'Jane' } as TranscriptMessage['author'],
+        content: 'Sure',
+        // A plain message never carries contentJson in practice, but the
+        // renderer must still prefer `content` when it's non-blank.
+        contentJson: { type: 'doc', content: [] },
+      }),
+    ])
+    expect(out).toContain('[2026-07-04 09:15 UTC] Jane (agent): Sure')
+    expect(out).not.toContain('[image]')
+  })
+
+  it('still falls back to "(no text content)" when neither content nor contentJson has anything', () => {
+    const out = renderConversationTranscript({ id: 'c' }, [
+      msg({ content: '', contentJson: null }),
+    ])
+    expect(out).toContain('(no text content)')
   })
 })
