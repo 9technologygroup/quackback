@@ -34,6 +34,7 @@ function toDTO(row: AssistantPendingAction): AssistantPendingActionDTO {
   return {
     id: row.id,
     conversationId: row.conversationId,
+    ticketId: row.ticketId,
     involvementId: row.involvementId,
     toolName: row.toolName,
     args: row.args as AssistantPendingActionDTO['args'],

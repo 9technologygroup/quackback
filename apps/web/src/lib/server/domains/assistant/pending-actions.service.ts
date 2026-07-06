@@ -11,10 +11,16 @@ import type {
   AssistantPendingActionId,
   AssistantInvolvementId,
   ConversationId,
+  TicketId,
   PrincipalId,
 } from '@quackback/ids'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
 import { getAssistantPrincipal } from './assistant.principal'
+import { quinnActor } from './assistant.actor'
+// Read-only reach into the tickets domain (an existing edge — see
+// assistant.runtime.ts's own comment on the same import) for the ticket-note
+// announcement path. Never edited as part of this task.
+import { addTicketNote } from '@/lib/server/domains/tickets/ticket-message.service'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'assistant-pending-actions' })
@@ -24,8 +30,16 @@ export type AssistantPendingAction = typeof assistantPendingActions.$inferSelect
 /** Default time an unattended proposal stays decidable before the sweep expires it. */
 const DEFAULT_TTL_HOURS = 24
 
-export interface ProposePendingActionInput {
-  conversationId: ConversationId
+/**
+ * A pending action's polymorphic parent (unified inbox §3.3): exactly one of
+ * conversation or ticket, mirroring the DB's own `num_nonnuls(...) = 1` CHECK
+ * on `assistant_pending_actions`.
+ */
+export type ProposePendingActionParent =
+  | { conversationId: ConversationId; ticketId?: undefined }
+  | { ticketId: TicketId; conversationId?: undefined }
+
+export type ProposePendingActionInput = ProposePendingActionParent & {
   involvementId?: AssistantInvolvementId
   toolName: string
   args: Record<string, unknown>
@@ -34,14 +48,14 @@ export interface ProposePendingActionInput {
   /**
    * A stable per-turn key, same shape as `assistant_tool_calls.idempotency_key`
    * (assistant.tools.ts's `resolveIdempotencyKey`:
-   * `conversationId:latestCustomerMessageId:toolName:hash(args)`). A synthesis
-   * retry that re-runs the same write-tool call for the same turn mints the
-   * identical key, so the INSERT below no-ops against the partial-unique
-   * index instead of creating a duplicate row and re-announcing the note; see
-   * this function's doc comment and the column comment in the Drizzle schema
-   * for why the uniqueness is scoped to `status = 'proposed'`. Undefined
-   * never conflicts (a NULL key never collides with another NULL), matching
-   * every caller that predates this field.
+   * `(conversationId ?? ticketId):latestCustomerMessageId:toolName:hash(args)`).
+   * A synthesis retry that re-runs the same write-tool call for the same turn
+   * mints the identical key, so the INSERT below no-ops against the
+   * partial-unique index instead of creating a duplicate row and
+   * re-announcing the note; see this function's doc comment and the column
+   * comment in the Drizzle schema for why the uniqueness is scoped to `status
+   * = 'proposed'`. Undefined never conflicts (a NULL key never collides with
+   * another NULL), matching every caller that predates this field.
    */
   idempotencyKey?: string
 }
@@ -64,7 +78,8 @@ export async function proposePendingAction(
   const [row] = await exec
     .insert(assistantPendingActions)
     .values({
-      conversationId: input.conversationId,
+      conversationId: input.conversationId ?? null,
+      ticketId: input.ticketId ?? null,
       involvementId: input.involvementId ?? null,
       toolName: input.toolName,
       args: input.args,
@@ -107,26 +122,41 @@ export async function getPendingActionByIdempotencyKey(
 }
 
 /**
- * Announce a fresh proposal in the inbox thread so the team sees it without
+ * Announce a fresh proposal in the item's thread so the team sees it without
  * polling. Best-effort: a note failure (or Quinn not yet provisioned) must
  * never fail the proposal itself, since the pending action row is already the
  * source of truth an agent can act on from the approval queue.
+ *
+ * Conversation-scoped rows get the rich card note (`appendAssistantPendingActionNote`,
+ * with the structured `assistantPendingAction` metadata the approval-queue UI
+ * renders as a card). Ticket-scoped rows (unified inbox §3.3) get a plain
+ * internal ticket note instead — there is no ticket-scoped approval-queue card
+ * UI yet (see functions/assistant-actions.ts's `AssistantPendingActionDTO`
+ * comment), so this only needs to make the proposal visible in the thread, not
+ * render a card. Posted as Quinn (`quinnActor`), which needs `ticket.note` —
+ * granted in `assistant.actor.ts`'s `ASSISTANT_PERMISSIONS` alongside its
+ * other bounded ticket/conversation authority.
  */
 async function surfacePendingActionNote(row: AssistantPendingAction): Promise<void> {
-  // Ticket-scoped pending actions (unified inbox §3.3) have no conversation
-  // thread to post into; that surface is unwired for tickets, so skip rather
-  // than announce nowhere.
-  if (!row.conversationId) return
   try {
     const assistant = await getAssistantPrincipal()
     if (!assistant) return
-    const { appendAssistantPendingActionNote } =
-      await import('@/lib/server/domains/conversation/conversation.service')
-    await appendAssistantPendingActionNote(
-      row.conversationId,
-      { pendingActionId: row.id, toolName: row.toolName, summary: row.summary },
-      { principalId: assistant.id, displayName: assistant.displayName }
-    )
+    if (row.conversationId) {
+      const { appendAssistantPendingActionNote } =
+        await import('@/lib/server/domains/conversation/conversation.service')
+      await appendAssistantPendingActionNote(
+        row.conversationId,
+        { pendingActionId: row.id, toolName: row.toolName, summary: row.summary },
+        { principalId: assistant.id, displayName: assistant.displayName }
+      )
+      return
+    }
+    if (row.ticketId) {
+      await addTicketNote(quinnActor(assistant.id), {
+        ticketId: row.ticketId,
+        content: `Requested approval: ${row.summary}`,
+      })
+    }
   } catch (err) {
     log.warn({ err, pendingActionId: row.id }, 'assistant pending action note failed')
   }
@@ -225,32 +255,60 @@ export async function expireStalePendingActions(
 }
 
 /**
- * Sweep + announce: expire stale proposals, then drop a customer-visible
- * notice on each affected conversation so nobody is left thinking Quinn is
- * still waiting on a teammate. Called from the periodic sweep tick alongside
- * the other assistant sweeps (snooze-sweep-queue). The notice itself is
- * best-effort inside `emitAssistantActionExpiredSystemMessage` — a publish
- * failure there must not stop the rest of the batch from being announced.
+ * Sweep + announce: expire stale proposals, then drop a notice on each
+ * affected item so nobody is left thinking Quinn is still waiting on a
+ * teammate. Called from the periodic sweep tick alongside the other assistant
+ * sweeps (snooze-sweep-queue).
+ *
+ * A conversation-scoped row gets a customer-visible system notice
+ * (`emitAssistantActionExpiredSystemMessage`, itself best-effort — a publish
+ * failure there must not stop the rest of the batch). A ticket-scoped row
+ * (unified inbox §3.3) gets a plain internal ticket note instead (there is no
+ * customer side to notify uniformly — a back_office/tracker ticket has none
+ * at all), posted as Quinn the same way `surfacePendingActionNote` does;
+ * wrapped in its own catch per row so one ticket's note failure never drops
+ * the rest of the batch's announcements, mirroring the conversation branch's
+ * own best-effort contract.
  */
 export async function sweepAndNotifyExpiredPendingActions(
   exec: Executor = db
 ): Promise<AssistantPendingAction[]> {
   const expired = await expireStalePendingActions(exec)
   if (expired.length === 0) return expired
+
+  const conversationExpired = expired.filter(
+    (
+      row
+    ): row is AssistantPendingAction & {
+      conversationId: NonNullable<AssistantPendingAction['conversationId']>
+    } => row.conversationId !== null
+  )
+  const ticketExpired = expired.filter(
+    (
+      row
+    ): row is AssistantPendingAction & {
+      ticketId: NonNullable<AssistantPendingAction['ticketId']>
+    } => row.ticketId !== null
+  )
+
   const { emitAssistantActionExpiredSystemMessage } =
     await import('@/lib/server/domains/conversation/conversation.service')
-  await Promise.all(
-    // Ticket-scoped pending actions (unified inbox §3.3) have no conversation
-    // thread to notify; that surface is unwired for tickets.
-    expired
-      .filter(
-        (
-          row
-        ): row is AssistantPendingAction & {
-          conversationId: NonNullable<AssistantPendingAction['conversationId']>
-        } => row.conversationId !== null
-      )
-      .map((row) => emitAssistantActionExpiredSystemMessage(row.conversationId))
-  )
+  // Only fetched when there's a ticket-scoped row to announce — the common
+  // case (every proposal conversation-scoped) never pays for it.
+  const assistant = ticketExpired.length > 0 ? await getAssistantPrincipal() : null
+
+  await Promise.all([
+    ...conversationExpired.map((row) =>
+      emitAssistantActionExpiredSystemMessage(row.conversationId)
+    ),
+    ...(assistant
+      ? ticketExpired.map((row) =>
+          addTicketNote(quinnActor(assistant.id), {
+            ticketId: row.ticketId,
+            content: 'This request timed out before a teammate could review it.',
+          }).catch((err) => log.warn({ err, pendingActionId: row.id }, 'ticket expiry note failed'))
+        )
+      : []),
+  ])
   return expired
 }

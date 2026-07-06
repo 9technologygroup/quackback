@@ -92,6 +92,7 @@ function makeCtx(overrides: Partial<AssistantToolContext> = {}): AssistantToolCo
     assistantPrincipalId: 'principal_assistant' as never,
     audience: 'team',
     conversationId: null,
+    ticketId: null,
     sources: new Map(),
     proposedActions: [],
     searchCalls: 0,

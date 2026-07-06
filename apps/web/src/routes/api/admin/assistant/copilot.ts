@@ -1,10 +1,13 @@
 /**
- * Quinn Copilot: a private, teammate-facing Q&A sidebar in the inbox
- * conversation panel (COPILOT-SIDEBAR-UX.md). Streams a single turn scoped to
- * a real conversation, for grounding (get_conversation_context and the
- * customer-scoped past-conversation summaries source) and for the retrieval
- * ceiling (surface 'copilot' resolves to the 'team' ContentAudience). This
- * route never writes to the conversation itself and never opens or touches an
+ * Quinn Copilot: a private, teammate-facing Q&A sidebar in the inbox item
+ * panel (COPILOT-SIDEBAR-UX.md; item-scoped per unified inbox §2.9). Streams
+ * a single turn scoped to a real conversation OR a real ticket — exactly one,
+ * see `item-ref.schema.ts` — for grounding (the customer-scoped
+ * past-conversation-summaries source on the conversation branch, the ticket
+ * context block on the ticket branch — see assistant.runtime.ts's
+ * `runAssistantTurn`) and for the retrieval ceiling (surface 'copilot'
+ * resolves to the 'team' ContentAudience either way). This route never writes
+ * to the conversation/ticket itself and never opens or touches an
  * assistant_involvements row: those side effects live entirely in
  * assistant.orchestrator.ts's runAssistantTurnForConversation, which this
  * route never calls; it calls the runtime seam (runAssistantTurn) directly,
@@ -39,7 +42,7 @@ import {
   type AssistantThreadMessage,
 } from '@/lib/server/domains/assistant'
 import { gateCopilotRequest } from '@/lib/server/domains/assistant/copilot-gate'
-import { conversationIdSchema } from '@/lib/server/domains/assistant/conversation-id.schema'
+import { withAssistantItemRef } from '@/lib/server/domains/assistant/item-ref.schema'
 import { createSseStream, SSE_RESPONSE_HEADERS } from '@/lib/server/utils/sse'
 import { logger } from '@/lib/server/logger'
 import {
@@ -64,8 +67,10 @@ const historyEntrySchema: z.ZodType<CopilotHistoryEntry> = z.object({
   content: z.string().min(1).max(MAX_QUESTION_CHARS),
 })
 
-const requestSchema = z.object({
-  conversationId: conversationIdSchema,
+// Backward compatible: the pre-§2.9 client only ever sends `conversationId`,
+// which is still just the schema's first union branch (see
+// `withAssistantItemRef`'s doc comment).
+const requestSchema = withAssistantItemRef({
   question: z.string().min(1).max(MAX_QUESTION_CHARS),
   history: z.array(historyEntrySchema).max(MAX_HISTORY_TURNS).default([]),
   sourceTypes: z.array(z.enum(['article', 'post', 'snippet', 'summary'])).optional(),
@@ -92,10 +97,10 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
   const gate = await gateCopilotRequest(
     request,
     requestSchema,
-    'A valid conversationId and question are required'
+    'A valid conversationId or ticketId, and a question, are required'
   )
   if (!gate.ok) return gate.response
-  const { auth, parsed, conversationId } = gate
+  const { auth, parsed, conversationId, ticketId } = gate
 
   // Provisioning Quinn's identity is idempotent and, like the sandbox, not a
   // conversation write of its own.
@@ -109,13 +114,15 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
       const result = await runAssistantTurn({
         messages,
         assistantPrincipalId: assistant.id,
-        // A real conversation id (unlike the sandbox's null) so the turn gets
-        // customer-scoped grounding (get_conversation_context, the
-        // past-conversation-summaries source); `writeToolPolicy: 'propose'`
-        // keeps a write tool from ever executing for real here, turning it
-        // into a pending-approval proposal instead (see this file's doc
-        // comment).
+        // A real conversation OR ticket id (unlike the sandbox's null-null),
+        // never both — so the turn gets item-scoped grounding (the
+        // past-conversation-summaries source on the conversation branch, the
+        // ticket context block on the ticket branch; see this file's doc
+        // comment). `writeToolPolicy: 'propose'` keeps a write tool from ever
+        // executing for real here, turning it into a pending-approval
+        // proposal instead.
         conversationId,
+        ticketId,
         surface: 'copilot',
         // Attributes this turn to the asking teammate in the usage log, for
         // the per-teammate breakdown in analytics/copilot-usage.ts — Quinn's

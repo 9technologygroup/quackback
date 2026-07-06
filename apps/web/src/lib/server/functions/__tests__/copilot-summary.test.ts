@@ -8,7 +8,7 @@
  * validator runs on each call.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { createId, type ConversationId } from '@quackback/ids'
+import { createId, type ConversationId, type TicketId } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 
 vi.mock('@tanstack/react-start', () => ({
@@ -37,7 +37,9 @@ const hoisted = vi.hoisted(() => ({
   isFeatureEnabled: vi.fn(),
   isAssistantConfigured: vi.fn(),
   assertConversationViewable: vi.fn(),
+  assertTicketViewable: vi.fn(),
   generateConversationSummaryText: vi.fn(),
+  generateTicketSummaryText: vi.fn(),
 }))
 
 vi.mock('@/lib/server/functions/auth-helpers', () => ({
@@ -53,13 +55,18 @@ vi.mock('@/lib/server/domains/assistant', () => ({
 vi.mock('@/lib/server/domains/conversation/conversation.service', () => ({
   assertConversationViewable: hoisted.assertConversationViewable,
 }))
+vi.mock('@/lib/server/domains/assistant/copilot-gate', () => ({
+  assertTicketViewable: hoisted.assertTicketViewable,
+}))
 vi.mock('@/lib/server/domains/assistant/conversation-summary.service', () => ({
   generateConversationSummaryText: hoisted.generateConversationSummaryText,
+  generateTicketSummaryText: hoisted.generateTicketSummaryText,
 }))
 
-import { summarizeConversationNowFn } from '../copilot-summary'
+import { summarizeConversationNowFn, summarizeTicketNowFn } from '../copilot-summary'
 
 const CONVERSATION_ID = createId('conversation') as ConversationId
+const TICKET_ID = createId('ticket') as TicketId
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -68,9 +75,14 @@ beforeEach(() => {
   hoisted.isFeatureEnabled.mockResolvedValue(true)
   hoisted.isAssistantConfigured.mockReturnValue(true)
   hoisted.assertConversationViewable.mockResolvedValue({ id: CONVERSATION_ID })
+  hoisted.assertTicketViewable.mockResolvedValue({ id: TICKET_ID })
   hoisted.generateConversationSummaryText.mockResolvedValue({
     question: 'Refund window',
     bullets: ['Customer asked about refunds.', 'Explained the 30-day window.'],
+  })
+  hoisted.generateTicketSummaryText.mockResolvedValue({
+    question: 'CSV export broken',
+    bullets: ['Customer cannot export CSV.', 'Investigating.'],
   })
 })
 
@@ -138,5 +150,45 @@ describe('summarizeConversationNowFn', () => {
     ).rejects.toThrow('Access denied')
     expect(hoisted.isFeatureEnabled).not.toHaveBeenCalled()
     expect(hoisted.generateConversationSummaryText).not.toHaveBeenCalled()
+  })
+})
+
+describe('summarizeTicketNowFn (unified inbox §2.9)', () => {
+  it('gates on copilot.use, the assistantCopilot flag, and assistant configured, same order as the conversation fn', async () => {
+    await summarizeTicketNowFn({ data: { ticketId: TICKET_ID } })
+    expect(hoisted.requireAuth).toHaveBeenCalledWith({ permission: PERMISSIONS.COPILOT_USE })
+    expect(hoisted.isFeatureEnabled).toHaveBeenCalledWith('assistantCopilot')
+  })
+
+  it('checks the ticket is viewable by the caller before summarizing, never the conversation gate', async () => {
+    await summarizeTicketNowFn({ data: { ticketId: TICKET_ID } })
+    expect(hoisted.assertTicketViewable).toHaveBeenCalledWith(TICKET_ID, expect.anything())
+    expect(hoisted.assertConversationViewable).not.toHaveBeenCalled()
+  })
+
+  it('returns the question/bullets result on success and writes nothing', async () => {
+    const result = await summarizeTicketNowFn({ data: { ticketId: TICKET_ID } })
+    expect(result).toEqual({
+      question: 'CSV export broken',
+      bullets: ['Customer cannot export CSV.', 'Investigating.'],
+    })
+  })
+
+  it('rejects when there is nothing to summarize yet', async () => {
+    hoisted.generateTicketSummaryText.mockResolvedValue(null)
+    await expect(summarizeTicketNowFn({ data: { ticketId: TICKET_ID } })).rejects.toThrow()
+  })
+
+  it('rejects an invalid ticket id at the boundary, before touching auth', async () => {
+    await expect(summarizeTicketNowFn({ data: { ticketId: 'not-a-real-id' } })).rejects.toThrow()
+    expect(hoisted.requireAuth).not.toHaveBeenCalled()
+  })
+
+  it('404s (rejects) when the ticket does not exist or is not viewable', async () => {
+    hoisted.assertTicketViewable.mockRejectedValue(new Error('Ticket not found'))
+    await expect(summarizeTicketNowFn({ data: { ticketId: TICKET_ID } })).rejects.toThrow(
+      'Ticket not found'
+    )
+    expect(hoisted.generateTicketSummaryText).not.toHaveBeenCalled()
   })
 })

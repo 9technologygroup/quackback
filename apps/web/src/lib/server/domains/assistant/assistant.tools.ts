@@ -22,7 +22,7 @@ import {
 } from '@/lib/server/domains/settings/settings.assistant'
 import { can } from '@/lib/server/policy/authorize'
 import { logger } from '@/lib/server/logger'
-import type { ConversationId } from '@quackback/ids'
+import type { ConversationId, TicketId } from '@quackback/ids'
 import type { AssistantToolContext, AssistantToolSpec, ToolControlMode } from './assistant.toolspec'
 import { ASSISTANT_TOOL_SPECS, resolveToolSpecs } from './assistant.toolspec'
 import {
@@ -129,7 +129,12 @@ function hashArgs(args: unknown): string {
 /**
  * The write-tool idempotency key: stable across retries of the same customer
  * turn, distinct per tool and args. An explicit `spec.idempotencyKey` wins;
- * read-risk tools never need one (they never claim).
+ * read-risk tools never need one (they never claim). `ctx.conversationId ??
+ * ctx.ticketId` keys on whichever item this turn is grounded on (unified
+ * inbox §2.9) — without this fallback a ticket-scoped turn's key would
+ * collapse to a bare `null` item segment, colliding across every ticket
+ * proposing the same tool with the same args instead of scoping per ticket
+ * the way a conversation-scoped key already scopes per conversation.
  */
 function resolveIdempotencyKey(
   spec: AssistantToolSpec,
@@ -138,7 +143,7 @@ function resolveIdempotencyKey(
 ): string | undefined {
   if (spec.idempotencyKey) return spec.idempotencyKey(args, ctx)
   if (spec.risk !== 'write') return undefined
-  return `${ctx.conversationId}:${ctx.latestCustomerMessageId}:${spec.name}:${hashArgs(args)}`
+  return `${ctx.conversationId ?? ctx.ticketId}:${ctx.latestCustomerMessageId}:${spec.name}:${hashArgs(args)}`
 }
 
 /**
@@ -171,8 +176,15 @@ async function runWithPipeline(
 
   if (mode === 'approval') {
     const summary = spec.summarize(args)
+    // Polymorphic parent (unified inbox §3.3): whichever item this turn is
+    // grounded on. `ctx.conversationId` wins when both happen to be set (never
+    // true today — a turn grounds on exactly one item), matching every
+    // pre-ticket caller's behavior unchanged.
+    const parent = ctx.conversationId
+      ? { conversationId: ctx.conversationId }
+      : { ticketId: ctx.ticketId as TicketId }
     const pending = await proposePendingAction({
-      conversationId: ctx.conversationId as ConversationId,
+      ...parent,
       involvementId: ctx.involvementId ?? undefined,
       toolName: spec.name,
       args: args as Record<string, unknown>,

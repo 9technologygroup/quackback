@@ -75,6 +75,13 @@ vi.mock('../assistant.thread', () => ({
   loadConversationThread: (...args: unknown[]) => mockLoadConversationThread(...args),
 }))
 
+// Ticket grounding (unified inbox §2.9): the read-only reach into the tickets
+// domain `generateTicketSummaryText` uses for its thread.
+const mockListTicketMessages = vi.fn()
+vi.mock('@/lib/server/domains/tickets/ticket-message.service', () => ({
+  listTicketMessages: (...args: unknown[]) => mockListTicketMessages(...args),
+}))
+
 const mockLogError = vi.fn()
 const mockLogWarn = vi.fn()
 vi.mock('@/lib/server/logger', () => ({
@@ -90,10 +97,13 @@ vi.mock('@/lib/server/logger', () => ({
 import {
   summarizeConversationOnClose,
   generateConversationSummaryText,
+  generateTicketSummaryText,
 } from '../conversation-summary.service'
+import type { TicketId } from '@quackback/ids'
 
 const CONVERSATION_ID = 'conversation_1' as ConversationId
 const VISITOR_PRINCIPAL_ID = 'principal_visitor_1' as PrincipalId
+const TICKET_ID = 'ticket_1' as TicketId
 
 function msg(overrides: Partial<ConversationMessageDTO> = {}): ConversationMessageDTO {
   return {
@@ -360,5 +370,92 @@ describe('generateConversationSummaryText', () => {
     await expect(generateConversationSummaryText(CONVERSATION_ID)).rejects.toThrow(
       'upstream unavailable'
     )
+  })
+})
+
+describe('generateTicketSummaryText (unified inbox §2.9)', () => {
+  beforeEach(() => {
+    mockListTicketMessages.mockResolvedValue({
+      messages: [
+        { senderType: 'visitor', content: 'The CSV export button does nothing.' },
+        { senderType: 'agent', content: 'Looking into it now.' },
+      ],
+      hasMore: false,
+    })
+    mockOpenAI.chat.completions.create.mockResolvedValue(
+      jsonCompletion({
+        question: 'CSV export broken',
+        bullets: ['Customer cannot export CSV.', 'Agent is investigating.'],
+      })
+    )
+  })
+
+  it('returns a question and bullets built from the ticket thread', async () => {
+    const result = await generateTicketSummaryText(TICKET_ID)
+
+    expect(result).toEqual({
+      question: 'CSV export broken',
+      bullets: ['Customer cannot export CSV.', 'Agent is investigating.'],
+    })
+    expect(mockListTicketMessages).toHaveBeenCalledWith(TICKET_ID, { includeInternal: false })
+    const call = mockOpenAI.chat.completions.create.mock.calls[0][0] as {
+      messages: Array<{ role: string; content: string }>
+    }
+    expect(call.messages.at(-1)?.content).toContain('The CSV export button does nothing.')
+  })
+
+  it('never writes anything (no ticket_summaries table, no message, no involvement)', async () => {
+    await generateTicketSummaryText(TICKET_ID)
+
+    expect(mockInsertValues).not.toHaveBeenCalled()
+    expect(mockGenerateEmbedding).not.toHaveBeenCalled()
+  })
+
+  it('usage-logs the call under pipelineStep copilot_summary, same as the conversation path', async () => {
+    await generateTicketSummaryText(TICKET_ID)
+
+    expect(mockWithUsageLogging).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipelineStep: 'copilot_summary',
+        callType: 'chat_completion',
+        metadata: { ticketId: TICKET_ID },
+      }),
+      expect.any(Function),
+      expect.any(Function)
+    )
+  })
+
+  it('returns null when the AI client is not configured', async () => {
+    mockGetOpenAI.mockReturnValue(null as unknown as never)
+
+    const result = await generateTicketSummaryText(TICKET_ID)
+
+    expect(result).toBeNull()
+    expect(mockListTicketMessages).not.toHaveBeenCalled()
+  })
+
+  it('returns null when there is no customer-visible thread yet', async () => {
+    mockListTicketMessages.mockResolvedValue({ messages: [], hasMore: false })
+
+    const result = await generateTicketSummaryText(TICKET_ID)
+
+    expect(result).toBeNull()
+    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+  })
+
+  it('returns null on an invalid model response shape', async () => {
+    mockOpenAI.chat.completions.create.mockResolvedValue(
+      jsonCompletion({ question: 'Only a question, no bullets' })
+    )
+
+    const result = await generateTicketSummaryText(TICKET_ID)
+
+    expect(result).toBeNull()
+  })
+
+  it('propagates a model-call failure instead of swallowing it', async () => {
+    mockOpenAI.chat.completions.create.mockRejectedValue(new Error('upstream unavailable'))
+
+    await expect(generateTicketSummaryText(TICKET_ID)).rejects.toThrow('upstream unavailable')
   })
 })

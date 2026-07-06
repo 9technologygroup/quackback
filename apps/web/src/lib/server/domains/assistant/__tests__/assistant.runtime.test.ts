@@ -70,6 +70,18 @@ vi.mock('@/lib/server/domains/conversation/conversation.query', () => ({
   listMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false, nextCursor: null }),
 }))
 
+// Ticket grounding (unified inbox §2.9): the runtime's read-only reach into
+// the tickets domain for a ticket-scoped turn. Defaults to no ticket
+// resolved; individual tests below set a real ticket/thread.
+const mockGetTicket = vi.fn()
+vi.mock('@/lib/server/domains/tickets/ticket.service', () => ({
+  getTicket: (...args: unknown[]) => mockGetTicket(...args),
+}))
+const mockListTicketMessages = vi.fn()
+vi.mock('@/lib/server/domains/tickets/ticket-message.service', () => ({
+  listTicketMessages: (...args: unknown[]) => mockListTicketMessages(...args),
+}))
+
 const mockWithUsageLogging = vi.fn()
 /** The merged metadata of the most recent usage-log row (params + fn outcome). */
 let lastLoggedMetadata: Record<string, unknown> | undefined
@@ -155,6 +167,7 @@ import {
   buildBasicsPrompt,
   buildGuidancePrompt,
   buildCopilotFramingPrompt,
+  buildTicketContextPrompt,
   isAssistantConfigured,
   AssistantNotConfiguredError,
   salvageAssistantOutput,
@@ -526,6 +539,29 @@ describe('buildBasicsPrompt', () => {
   it('contains no em dashes', () => {
     const block = buildBasicsPrompt({ tone: 'professional', length: 'thorough' })
     expect(block).not.toContain('—')
+  })
+})
+
+describe('buildTicketContextPrompt (unified inbox §2.9)', () => {
+  it('renders the structural facts and wraps the transcript as untrusted content', () => {
+    const block = buildTicketContextPrompt(
+      { title: 'Cannot export CSV', status: 'Open', stage: 'In progress', requester: 'Jamie' },
+      'Customer: The CSV export button does nothing.\nAgent: Looking into it now.'
+    )
+    expect(block).toContain('Cannot export CSV')
+    expect(block).toContain('Open (In progress)')
+    expect(block).toContain('Jamie')
+    expect(block).toContain('The CSV export button does nothing.')
+    expect(block.toLowerCase()).toContain('not instructions')
+  })
+
+  it('omits the parenthetical stage when there is none', () => {
+    const block = buildTicketContextPrompt(
+      { title: 'T', status: 'Open', stage: null, requester: 'None' },
+      ''
+    )
+    expect(block).toContain('Status: Open.')
+    expect(block).not.toContain('(')
   })
 })
 
@@ -1324,6 +1360,100 @@ describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
     const result = await runAssistantTurn({ ...baseInput, messages: customerAsks('question') })
 
     expect(result).toMatchObject({ proposedActions: [] })
+  })
+})
+
+describe('runAssistantTurn: ticket-scoped grounding (unified inbox §2.9)', () => {
+  function systemPromptsFromLastCall(): string[] {
+    const opts = mockChat.mock.calls.at(-1)?.[0] as { systemPrompts: string[] }
+    return opts.systemPrompts
+  }
+
+  function fakeTicket(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      title: 'Cannot export CSV',
+      status: { name: 'Open' },
+      stage: { label: 'In progress' },
+      requester: { displayName: 'Jamie Requester' },
+      ...overrides,
+    }
+  }
+
+  beforeEach(() => {
+    mockRetrieve.mockResolvedValue([])
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+  })
+
+  it("grounds a ticket-scoped copilot turn on the ticket's facts and thread, right after the copilot framing block", async () => {
+    mockGetTicket.mockResolvedValue(fakeTicket())
+    mockListTicketMessages.mockResolvedValue({
+      messages: [
+        { senderType: 'visitor', content: 'The CSV export button does nothing.' },
+        { senderType: 'agent', content: 'Looking into it now.' },
+      ],
+      hasMore: false,
+    })
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('what has been tried so far?'),
+      ticketId: 'ticket_1' as never,
+      surface: 'copilot',
+    })
+
+    expect(mockListTicketMessages).toHaveBeenCalledWith('ticket_1', { includeInternal: false })
+    const prompts = systemPromptsFromLastCall()
+    const ticketBlockIndex = prompts.findIndex((p) => p.includes('Cannot export CSV'))
+    expect(ticketBlockIndex).toBeGreaterThan(-1)
+    expect(prompts[ticketBlockIndex]).toContain('Open (In progress)')
+    expect(prompts[ticketBlockIndex]).toContain('Jamie Requester')
+    expect(prompts[ticketBlockIndex]).toContain('The CSV export button does nothing.')
+    expect(prompts[ticketBlockIndex]).toContain('Looking into it now.')
+    // Right after the copilot framing block (element 1 is the base prompt's
+    // JSON contract, element 2 is the copilot framing, element 3 is ticket
+    // grounding — see buildCopilotFramingPrompt's own doc on ordering).
+    expect(prompts[ticketBlockIndex - 1]).toBe(buildCopilotFramingPrompt())
+  })
+
+  it('never resolves customerPrincipalId or queries the conversation row for a ticket-scoped turn (skips customer-history grounding)', async () => {
+    mockGetTicket.mockResolvedValue(fakeTicket())
+    mockListTicketMessages.mockResolvedValue({ messages: [], hasMore: false })
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      ticketId: 'ticket_1' as never,
+      surface: 'copilot',
+    })
+
+    expect(mockConversationLookupLimit).not.toHaveBeenCalled()
+  })
+
+  it('continues the turn without a ticket-context block when the ticket lookup fails', async () => {
+    mockGetTicket.mockRejectedValue(new Error('ticket vanished'))
+
+    const result = await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      ticketId: 'ticket_1' as never,
+      surface: 'copilot',
+    })
+
+    expect(result.status).toBe('answered')
+    const prompts = systemPromptsFromLastCall()
+    expect(prompts.some((p) => p.includes('Cannot export CSV'))).toBe(false)
+  })
+
+  it('adds no ticket-context block for a conversation-scoped (or ticket-less) turn', async () => {
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_42' as never,
+      surface: 'copilot',
+    })
+
+    expect(mockGetTicket).not.toHaveBeenCalled()
+    expect(mockListTicketMessages).not.toHaveBeenCalled()
   })
 })
 

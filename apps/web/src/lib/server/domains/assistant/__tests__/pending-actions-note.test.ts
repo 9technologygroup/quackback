@@ -7,10 +7,18 @@
  * message persistence.
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-import type { ConversationId, PrincipalId } from '@quackback/ids'
+import type { ConversationId, PrincipalId, TicketId, TicketStatusId } from '@quackback/ids'
+import { createId } from '@quackback/ids'
 
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
-import { assistantPendingActions, conversations, principal, eq } from '@/lib/server/db'
+import {
+  assistantPendingActions,
+  conversations,
+  tickets,
+  ticketStatuses,
+  principal,
+  eq,
+} from '@/lib/server/db'
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
@@ -27,6 +35,15 @@ const mockEmitExpired = vi.fn()
 vi.mock('@/lib/server/domains/conversation/conversation.service', () => ({
   appendAssistantPendingActionNote: (...args: unknown[]) => mockAppendNote(...args),
   emitAssistantActionExpiredSystemMessage: (...args: unknown[]) => mockEmitExpired(...args),
+}))
+
+// Ticket-scoped announcement seam (unified inbox §2.9): mocked at the module
+// boundary like the conversation seam above, so these tests assert the call
+// (right actor, right ticket, right content) rather than re-testing ticket
+// message persistence (covered in ticket-message.service.test.ts).
+const mockAddTicketNote = vi.fn()
+vi.mock('@/lib/server/domains/tickets/ticket-message.service', () => ({
+  addTicketNote: (...args: unknown[]) => mockAddTicketNote(...args),
 }))
 
 const mockLoggerWarn = vi.fn()
@@ -55,6 +72,17 @@ async function seedConversation(): Promise<ConversationId> {
     .values({ visitorPrincipalId: visitorId, channel: 'messenger' })
     .returning()
   return conversation.id
+}
+
+const suffix = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+async function seedTicket(): Promise<TicketId> {
+  const statusId = createId('ticket_status') as TicketStatusId
+  await testDb
+    .insert(ticketStatuses)
+    .values({ id: statusId, name: 'Open', slug: `pan-${suffix()}` })
+  const [ticket] = await testDb.insert(tickets).values({ title: 'A ticket', statusId }).returning()
+  return ticket.id
 }
 
 const fixture = await createDbTestFixture({
@@ -150,6 +178,42 @@ describe.skipIf(!fixture.available)('proposePendingAction: propose-time note', (
     // a second note for the same proposal.
     expect(mockAppendNote).toHaveBeenCalledTimes(1)
   })
+
+  it('surfaces a plain internal ticket note (not the conversation card note) for a ticket-scoped proposal (unified inbox §2.9)', async () => {
+    mockGetAssistantPrincipal.mockResolvedValue({ id: 'principal_quinn', displayName: 'Quinn' })
+    const ticketId = await seedTicket()
+
+    const proposed = await proposePendingAction({
+      ticketId,
+      toolName: 'create_ticket',
+      args: { type: 'customer', title: 'x' },
+      summary: 'Create a customer ticket: "x"',
+    })
+
+    expect(proposed.ticketId).toBe(ticketId)
+    expect(proposed.conversationId).toBeNull()
+    expect(mockAddTicketNote).toHaveBeenCalledWith(
+      expect.objectContaining({ principalId: 'principal_quinn' }),
+      { ticketId, content: 'Requested approval: Create a customer ticket: "x"' }
+    )
+    expect(mockAppendNote).not.toHaveBeenCalled()
+  })
+
+  it('does not fail the proposal when the ticket note append throws', async () => {
+    mockGetAssistantPrincipal.mockResolvedValue({ id: 'principal_quinn', displayName: 'Quinn' })
+    mockAddTicketNote.mockRejectedValue(new Error('publish boom'))
+    const ticketId = await seedTicket()
+
+    const proposed = await proposePendingAction({
+      ticketId,
+      toolName: 'create_ticket',
+      args: {},
+      summary: 'x',
+    })
+
+    expect(proposed.status).toBe('proposed')
+    expect(mockLoggerWarn).toHaveBeenCalled()
+  })
 })
 
 describe.skipIf(!fixture.available)('sweepAndNotifyExpiredPendingActions', () => {
@@ -222,5 +286,52 @@ describe.skipIf(!fixture.available)('sweepAndNotifyExpiredPendingActions', () =>
     expect(expired.map((r) => r.id)).not.toContain(fresh.id)
     expect(expired.map((r) => r.id)).not.toContain(decided.id)
     expect(mockEmitExpired).not.toHaveBeenCalled()
+  })
+
+  it('posts an internal ticket note (not a customer-visible system message) for an expired ticket-scoped proposal', async () => {
+    mockGetAssistantPrincipal.mockResolvedValue({ id: 'principal_quinn', displayName: 'Quinn' })
+    const ticketId = await seedTicket()
+
+    const stale = await proposePendingAction({
+      ticketId,
+      toolName: 'create_ticket',
+      args: {},
+      summary: 'Nobody decided in time.',
+    })
+    await testDb
+      .update(assistantPendingActions)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(assistantPendingActions.id, stale.id))
+
+    const expired = await sweepAndNotifyExpiredPendingActions()
+
+    expect(expired.map((r) => r.id)).toEqual([stale.id])
+    expect(mockEmitExpired).not.toHaveBeenCalled()
+    expect(mockAddTicketNote).toHaveBeenCalledWith(
+      expect.objectContaining({ principalId: 'principal_quinn' }),
+      { ticketId, content: 'This request timed out before a teammate could review it.' }
+    )
+  })
+
+  it('never queries for the assistant principal when nothing ticket-scoped expired (conversation-only batch)', async () => {
+    const conversationId = await seedConversation()
+    const stale = await proposePendingAction({
+      conversationId,
+      toolName: 'close_conversation',
+      args: {},
+      summary: 'Nobody decided in time.',
+    })
+    await testDb
+      .update(assistantPendingActions)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(assistantPendingActions.id, stale.id))
+    // Reset the propose-time call above so the assertion below is scoped to
+    // what the SWEEP itself does, not the unrelated propose-time note lookup.
+    mockGetAssistantPrincipal.mockClear()
+
+    await sweepAndNotifyExpiredPendingActions()
+
+    expect(mockGetAssistantPrincipal).not.toHaveBeenCalled()
+    expect(mockAddTicketNote).not.toHaveBeenCalled()
   })
 })

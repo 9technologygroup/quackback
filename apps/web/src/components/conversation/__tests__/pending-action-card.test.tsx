@@ -33,6 +33,7 @@ function pendingRow(overrides: Partial<AssistantPendingActionDTO> = {}): Assista
   return {
     id: 'assistant_action_1',
     conversationId: 'conversation_1',
+    ticketId: null,
     involvementId: null,
     toolName: 'close_conversation',
     args: {},

@@ -3,10 +3,7 @@
  * builder and one pending-action row, so a context or schema field change
  * lands in a single place instead of per-file copies.
  */
-import {
-  makeAssistantToolContext,
-  type AssistantToolContext,
-} from '../assistant.toolspec'
+import { makeAssistantToolContext, type AssistantToolContext } from '../assistant.toolspec'
 import type { AssistantPendingAction } from '../pending-actions.service'
 
 /** A tool context with test defaults; overrides win (including `actor`). */
@@ -30,6 +27,7 @@ export function fakePendingActionRow(
   return {
     id: 'assistant_action_1',
     conversationId: 'conversation_1',
+    ticketId: null,
     involvementId: 'assistant_involvement_1',
     toolName: 'close_conversation',
     args: { reason: 'resolved' },

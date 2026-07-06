@@ -32,6 +32,15 @@
  * `conversation_summaries`. Unlike the on-close path it does not swallow
  * errors: it's an explicit, interactive request, so a failure should surface
  * to the teammate rather than silently no-op.
+ *
+ * `generateTicketSummaryText` (unified inbox §2.9) is the ticket-scoped
+ * sibling of `generateConversationSummaryText`: identical contract (same
+ * Question/Summary-bullets shape, never persists, propagates model
+ * failures), over a ticket's customer-visible thread via its own
+ * `loadTicketSummaryInput` instead of a conversation's. There is no
+ * `ticket_summaries` table and none is added — on-close summarization and its
+ * customer-history retrieval stay conversation-only; only the on-demand chip
+ * gains a ticket branch.
  */
 import { db, conversations, conversationSummaries, eq, sql } from '@/lib/server/db'
 import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
@@ -41,9 +50,16 @@ import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { generateEmbedding } from '@/lib/server/domains/embeddings/embedding.service'
 import { loadConversationThread } from './assistant.thread'
-import { createId, type ConversationId } from '@quackback/ids'
+import { createId, type ConversationId, type TicketId } from '@quackback/ids'
 import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
 import { logger } from '@/lib/server/logger'
+// Read-only reach into the tickets domain for the ticket-scoped on-demand
+// summary (unified inbox §2.9) — an existing edge (assistant.toolspec.ts's
+// create_ticket tool already imports from it); never edited as part of this
+// task, since that domain's files are owned by a concurrent workstream. Only
+// the thread is needed here (unlike the runtime's grounding block, this
+// summary never names the ticket's title/status/requester).
+import { listTicketMessages } from '@/lib/server/domains/tickets/ticket-message.service'
 
 const log = logger.child({ component: 'conversation-summary' })
 
@@ -307,6 +323,125 @@ export async function generateConversationSummaryText(
 
   if (!question || bullets.length === 0) {
     log.error({ conversation_id: conversationId }, 'invalid on-demand conversation summary shape')
+    return null
+  }
+
+  return { question, bullets }
+}
+
+/**
+ * Render a ticket thread as plain "Speaker: content" lines, oldest first —
+ * same shape as `buildTranscript` above, but over a ticket's customer-visible
+ * messages (`listTicketMessages` with `includeInternal: false`, mirroring
+ * `loadConversationThread`'s own internal-note exclusion: even the
+ * teammate-facing summarize chip never grounds on internal notes).
+ */
+function buildTicketTranscript(messages: ConversationMessageDTO[]): string {
+  const lines: string[] = []
+  for (const m of messages) {
+    const content = m.content?.trim()
+    if (!content) continue
+    lines.push(`${m.senderType === 'visitor' ? 'Customer' : 'Agent'}: ${content}`)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Ticket sibling of `loadConversationSummaryInput`: the same config-gated
+ * no-op guard and char-budget truncation, over a ticket's thread instead of a
+ * conversation's. Returns `null` when AI isn't configured, the ticket can't be
+ * found, or there's nothing customer-visible to summarize yet.
+ */
+async function loadTicketSummaryInput(ticketId: TicketId) {
+  await enforceAiTokenBudget()
+
+  const openai = getOpenAI()
+  const model = getChatModel('summary')
+  if (!openai || !model) return null
+
+  const thread = await listTicketMessages(ticketId, { includeInternal: false })
+  const transcript = buildTicketTranscript(thread.messages)
+  if (!transcript) return null // nothing customer-visible happened; no summary to write
+
+  const truncated =
+    transcript.length > TRANSCRIPT_CHAR_BUDGET
+      ? transcript.slice(0, TRANSCRIPT_CHAR_BUDGET) + '\n\n[truncated]'
+      : transcript
+
+  return { openai, model, transcript: truncated }
+}
+
+/**
+ * Ticket sibling of `generateConversationSummaryText` (unified inbox §2.9):
+ * the ticket copilot's on-demand Summarize chip. Same contract in every
+ * respect — never persists anything (no `ticket_summaries` table exists, and
+ * none is added by this), propagates a model-call failure rather than
+ * swallowing it, and is usage-logged under the same `copilot_summary`
+ * pipeline step so analytics/copilot-usage.ts counts it identically to a
+ * conversation summary.
+ */
+export async function generateTicketSummaryText(
+  ticketId: TicketId
+): Promise<ConversationSummaryNow | null> {
+  const input = await loadTicketSummaryInput(ticketId)
+  if (!input) return null
+  const { openai, model, transcript } = input
+
+  const completion = await withUsageLogging(
+    {
+      pipelineStep: 'copilot_summary',
+      callType: 'chat_completion',
+      model,
+      metadata: { ticketId },
+    },
+    () =>
+      withRetry(() =>
+        openai.chat.completions.create({
+          model,
+          messages: [
+            { role: 'system', content: NOW_SYSTEM_PROMPT },
+            { role: 'user', content: transcript },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.2,
+          max_completion_tokens: 400,
+        })
+      ),
+    (r) => ({
+      inputTokens: r.usage?.prompt_tokens ?? 0,
+      outputTokens: r.usage?.completion_tokens,
+      totalTokens: r.usage?.total_tokens ?? 0,
+    })
+  )
+
+  const responseText = completion.choices[0]?.message?.content
+  if (!responseText) {
+    log.error({ ticket_id: ticketId }, 'empty on-demand ticket summary response')
+    return null
+  }
+
+  let parsed: Partial<ConversationSummaryNow>
+  try {
+    parsed = JSON.parse(stripCodeFences(responseText))
+  } catch {
+    log.error(
+      { ticket_id: ticketId, response_length: responseText.length },
+      'failed to parse on-demand ticket summary json'
+    )
+    return null
+  }
+
+  const question = typeof parsed.question === 'string' ? parsed.question.trim() : ''
+  const bullets = Array.isArray(parsed.bullets)
+    ? parsed.bullets
+        .filter(
+          (bullet): bullet is string => typeof bullet === 'string' && bullet.trim().length > 0
+        )
+        .map((bullet) => bullet.trim())
+    : []
+
+  if (!question || bullets.length === 0) {
+    log.error({ ticket_id: ticketId }, 'invalid on-demand ticket summary shape')
     return null
   }
 

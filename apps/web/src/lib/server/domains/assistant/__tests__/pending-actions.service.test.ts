@@ -5,10 +5,20 @@
  * rollback transaction.
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-import type { ConversationId, PrincipalId } from '@quackback/ids'
+import type { ConversationId, PrincipalId, TicketId, TicketStatusId } from '@quackback/ids'
+import { createId } from '@quackback/ids'
 
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
-import { assistantPendingActions, conversations, principal, eq } from '@/lib/server/db'
+import {
+  assistantPendingActions,
+  conversations,
+  tickets,
+  ticketStatuses,
+  conversationMessages,
+  principal,
+  eq,
+  and,
+} from '@/lib/server/db'
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
@@ -23,6 +33,7 @@ import {
   expireStalePendingActions,
   getPendingActionByIdempotencyKey,
 } from '../pending-actions.service'
+import { ensureAssistantPrincipal } from '../assistant.principal'
 
 const fixture = await createDbTestFixture({
   probe: async (db) => {
@@ -45,6 +56,17 @@ async function seedConversation(): Promise<ConversationId> {
     .values({ visitorPrincipalId: visitorId, channel: 'messenger' })
     .returning()
   return conversation.id
+}
+
+const suffix = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+async function seedTicket(): Promise<TicketId> {
+  const statusId = createId('ticket_status') as TicketStatusId
+  await testDb
+    .insert(ticketStatuses)
+    .values({ id: statusId, name: 'Open', slug: `pas-${suffix()}` })
+  const [ticket] = await testDb.insert(tickets).values({ title: 'A ticket', statusId }).returning()
+  return ticket.id
 }
 
 describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled back)', () => {
@@ -292,6 +314,82 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
         'conversation_1:msg_1:close_conversation:abc'
       )
       expect(found?.id).toBe(proposed.id)
+    })
+  })
+
+  describe('ticket-scoped pending actions (unified inbox §2.9)', () => {
+    it('propose -> approve -> markPendingActionExecuted round-trip, announcing via a real internal ticket message', async () => {
+      const ticketId = await seedTicket()
+      const agentId = await seedPrincipal()
+      // Real Quinn principal (not mocked) so surfacePendingActionNote's
+      // ticket branch actually runs `addTicketNote` for real against the
+      // rolled-back tx, landing a genuine conversation_messages row.
+      const assistant = await ensureAssistantPrincipal(testDb)
+
+      const proposed = await proposePendingAction({
+        ticketId,
+        toolName: 'create_ticket',
+        args: { type: 'customer', title: 'Follow-up' },
+        summary: 'Create a customer ticket: "Follow-up"',
+      })
+      expect(proposed.ticketId).toBe(ticketId)
+      expect(proposed.conversationId).toBeNull()
+
+      const approved = await decidePendingAction(proposed.id, 'approved', agentId)
+      expect(approved?.status).toBe('approved')
+
+      const executed = await markPendingActionExecuted(proposed.id, { created: true })
+      expect(executed?.status).toBe('executed')
+      expect(executed?.result).toEqual({ created: true })
+
+      // The announcement landed as a real internal note on the ticket
+      // thread (not a conversation message, and never customer-visible).
+      const [note] = await testDb
+        .select()
+        .from(conversationMessages)
+        .where(
+          and(
+            eq(conversationMessages.ticketId, ticketId),
+            eq(conversationMessages.isInternal, true)
+          )
+        )
+      expect(note).toBeDefined()
+      expect(note.conversationId).toBeNull()
+      expect(note.principalId).toBe(assistant.id)
+      expect(note.content).toBe('Requested approval: Create a customer ticket: "Follow-up"')
+    })
+
+    it('rejects a ticket-scoped proposal the same way as a conversation-scoped one', async () => {
+      const ticketId = await seedTicket()
+      const agentId = await seedPrincipal()
+
+      const proposed = await proposePendingAction({
+        ticketId,
+        toolName: 'create_ticket',
+        args: {},
+        summary: 'x',
+      })
+
+      const rejected = await decidePendingAction(proposed.id, 'rejected', agentId)
+      expect(rejected?.status).toBe('rejected')
+    })
+
+    it('sweep expires a stale ticket-scoped proposal the same way as a conversation-scoped one', async () => {
+      const ticketId = await seedTicket()
+
+      const stale = await proposePendingAction({
+        ticketId,
+        toolName: 'create_ticket',
+        args: {},
+        summary: 'Nobody decided in time.',
+      })
+      await testDb
+        .update(assistantPendingActions)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(assistantPendingActions.id, stale.id))
+
+      const expired = await expireStalePendingActions()
+      expect(expired.map((r) => r.id)).toEqual([stale.id])
     })
   })
 })

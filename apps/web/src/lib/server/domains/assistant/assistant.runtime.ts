@@ -27,9 +27,12 @@ import {
 } from '@/lib/server/domains/settings/settings.assistant'
 import { logger } from '@/lib/server/logger'
 import type { AssistantHandoffReason } from '@/lib/server/db'
-import type { PrincipalId, ConversationId, AssistantInvolvementId } from '@quackback/ids'
+import type { PrincipalId, ConversationId, TicketId, AssistantInvolvementId } from '@quackback/ids'
 import type { AssistantSurface } from '@/lib/shared/assistant/surfaces'
-import type { AssistantActivityStatus } from '@/lib/shared/conversation/types'
+import type {
+  AssistantActivityStatus,
+  ConversationMessageDTO,
+} from '@/lib/shared/conversation/types'
 import { resolveContentAudience } from './audience'
 import { assembleAssistantToolset } from './assistant.tools'
 import { makeAssistantToolContext } from './assistant.toolspec'
@@ -47,6 +50,13 @@ import {
   type AssistantGuidanceRule,
 } from './guidance.service'
 import { runSynthesis, safeJsonRepair, type AttemptOutcome } from './synthesis-core'
+import { wrapUntrustedText } from './injection-guard'
+// Read-only reach into the tickets domain (an existing edge — assistant.toolspec.ts's
+// create_ticket tool already imports from it) for the ticket copilot's grounding
+// facts and thread. Never edited as part of this task: the tickets domain's own
+// files are owned by a concurrent unified-inbox workstream.
+import { getTicket } from '@/lib/server/domains/tickets/ticket.service'
+import { listTicketMessages } from '@/lib/server/domains/tickets/ticket-message.service'
 
 const log = logger.child({ component: 'assistant-runtime' })
 
@@ -124,6 +134,18 @@ export interface AssistantTurnInput {
   assistantPrincipalId: PrincipalId
   /** The linked conversation, or null (sandbox, which also implies simulate mode for write tools). */
   conversationId?: ConversationId | null
+  /**
+   * The linked ticket (unified inbox §2.9, Copilot only) — mutually exclusive
+   * with `conversationId` in practice (a turn grounds on exactly one item; the
+   * copilot route only ever sets one of the two). Grounds the turn on the
+   * ticket's title/status/stage/requester plus its thread (see
+   * `buildTicketContextPrompt`), deliberately WITHOUT the customer-history
+   * grounding a real `conversationId` gets (no `customerPrincipalId` is ever
+   * derived for a ticket-scoped turn, so the past-conversation-summaries
+   * source returns nothing for it — see its own module doc on why a missing
+   * scope must never fall back to unscoped).
+   */
+  ticketId?: TicketId | null
   /** The active involvement, for audit rows and pending actions. Null before the first involvement opens, or in the sandbox. */
   involvementId?: AssistantInvolvementId | null
   /** The customer message this turn answers, keying the write-tool idempotency key. Null in the sandbox. */
@@ -513,6 +535,81 @@ export function buildCopilotFramingPrompt(): string {
   ].join('\n')
 }
 
+/** The ticket facts `buildTicketContextPrompt` composes into its structural line. */
+export interface TicketGroundingFacts {
+  title: string
+  status: string
+  /** Null when the ticket's status has no configured stage mapping. */
+  stage: string | null
+  requester: string
+}
+
+/**
+ * Render a ticket thread (oldest-first, customer-visible turns only — internal
+ * notes are excluded, mirroring `assistant.thread.ts`'s `loadConversationThread`
+ * for conversations: even the teammate-facing copilot surface never grounds
+ * Quinn on internal notes) as plain "Speaker: content" lines. Mirrors
+ * `conversation-summary.service.ts`'s `buildTranscript` shape.
+ */
+function buildTicketTranscript(messages: ConversationMessageDTO[]): string {
+  const lines: string[] = []
+  for (const m of messages) {
+    const content = m.content?.trim()
+    if (!content) continue
+    lines.push(`${m.senderType === 'visitor' ? 'Customer' : 'Agent'}: ${content}`)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Ticket grounding block (unified inbox §2.9): the ticket copilot's parallel
+ * to the conversation surface's grounding, added right after the copilot
+ * framing block. Structural facts (title/status/stage/requester) are plain
+ * text (not caller-authored, so no injection-guard framing); the thread
+ * itself is caller/customer-authored text same as a conversation transcript,
+ * so it's wrapped via `wrapUntrustedText` (injection-guard.ts) rather than
+ * trusted as instructions.
+ */
+export function buildTicketContextPrompt(ticket: TicketGroundingFacts, transcript: string): string {
+  const statusLine = ticket.stage ? `${ticket.status} (${ticket.stage})` : ticket.status
+  return [
+    `Ticket: "${ticket.title}". Status: ${statusLine}. Requester: ${ticket.requester}.`,
+    wrapUntrustedText('The ticket thread you are answering questions about', transcript),
+  ].join('\n')
+}
+
+/**
+ * Resolve the ticket-grounding facts a ticket-scoped copilot turn needs: the
+ * structural facts plus the rendered thread. Best-effort — a failed lookup
+ * (the ticket vanished between the route's `assertTicketViewable` gate and
+ * this turn, or a transient DB error) logs and returns null rather than
+ * failing the whole turn; the turn still runs, just without ticket-specific
+ * grounding, the same fallback shape a missing customer row already gets
+ * above for the conversation branch.
+ */
+async function loadTicketGroundingContext(
+  ticketId: TicketId
+): Promise<{ facts: TicketGroundingFacts; transcript: string } | null> {
+  try {
+    const [ticket, thread] = await Promise.all([
+      getTicket(ticketId),
+      listTicketMessages(ticketId, { includeInternal: false }),
+    ])
+    return {
+      facts: {
+        title: ticket.title,
+        status: ticket.status.name,
+        stage: ticket.stage.label,
+        requester: ticket.requester?.displayName ?? 'None',
+      },
+      transcript: buildTicketTranscript(thread.messages),
+    }
+  } catch (err) {
+    log.warn({ err, ticketId }, 'failed to load ticket grounding context; continuing without it')
+    return null
+  }
+}
+
 /** `buildGuidancePrompt`'s result: the composed block plus which rules made it in. */
 export interface GuidancePromptResult {
   /** The composed guidance block, or null when no rule survived the budget. */
@@ -601,14 +698,17 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   const surface = input.surface ?? 'widget'
   const audience = resolveContentAudience(surface)
   const conversationId = input.conversationId ?? null
+  const ticketId = input.ticketId ?? null
   const execDb = input.db ?? db
 
   // The current conversation's customer, for customer-scoped retrieval
   // (past-conversation summaries — see conversation-summary-retrieval.ts).
   // Resolved here because this is the one place a turn has both a
   // conversation id and a db handle; a turn with no conversation (the
-  // sandbox) leaves this undefined, and that source MUST return nothing in
-  // that case rather than fall back to unscoped (see its own module doc).
+  // sandbox, or a ticket-scoped turn) leaves this undefined, and that source
+  // MUST return nothing in that case rather than fall back to unscoped (see
+  // its own module doc) — a ticket-scoped turn deliberately never resolves
+  // this, per the ticket branch's "skip customer-history grounding" contract.
   let customerPrincipalId: PrincipalId | undefined
   if (conversationId) {
     const [conversationRow] = await execDb
@@ -619,6 +719,12 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     customerPrincipalId = conversationRow?.visitorPrincipalId
   }
 
+  // Ticket grounding (unified inbox §2.9): resolved alongside the customer
+  // lookup above, before tool assembly, so it's ready to fold into the system
+  // prompt below. Null when there's no ticket to ground on, or the lookup
+  // failed (see `loadTicketGroundingContext`'s own doc).
+  const ticketGrounding = ticketId ? await loadTicketGroundingContext(ticketId) : null
+
   // Shared construction point (simulate derives from the null conversation =
   // sandbox; actor defaults to Quinn's bounded set).
   const toolContext = makeAssistantToolContext({
@@ -626,6 +732,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     assistantPrincipalId: input.assistantPrincipalId,
     audience,
     conversationId,
+    ticketId,
     customerPrincipalId,
     sourceTypes: input.sourceTypes,
     involvementId: input.involvementId,
@@ -673,6 +780,12 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // it is structural, not admin-configured content.
   if (surface === 'copilot') {
     systemPrompts.push(buildCopilotFramingPrompt())
+  }
+  // Ticket grounding (unified inbox §2.9): right after the copilot framing,
+  // before basics/surface instructions/guidance — same slot a conversation's
+  // own grounding would occupy, were there an equivalent block for it today.
+  if (ticketGrounding) {
+    systemPrompts.push(buildTicketContextPrompt(ticketGrounding.facts, ticketGrounding.transcript))
   }
   // Ids of the guidance rules actually folded into this turn's prompt (after
   // the budget cap), logged onto every attempt below for the per-rule

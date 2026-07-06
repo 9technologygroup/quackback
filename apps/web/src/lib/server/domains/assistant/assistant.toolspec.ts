@@ -13,7 +13,13 @@ import { toolDefinition, type ToolDefinition } from '@tanstack/ai'
 import { z } from 'zod'
 import { conversations, eq } from '@/lib/server/db'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
-import type { PrincipalId, ConversationId, AssistantInvolvementId, BoardId } from '@quackback/ids'
+import type {
+  PrincipalId,
+  ConversationId,
+  TicketId,
+  AssistantInvolvementId,
+  BoardId,
+} from '@quackback/ids'
 import { type ContentAudience } from './audience'
 import { retrieveKnowledge, type RetrievedItem } from './retrieval-sources'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
@@ -82,6 +88,17 @@ export interface AssistantToolContext {
    */
   audience: ContentAudience
   conversationId: ConversationId | null
+  /**
+   * The linked ticket (unified inbox §2.9), or null. Mutually exclusive with
+   * `conversationId` in practice — a copilot turn grounds on exactly one item
+   * — but nothing here enforces that; the caller (`runAssistantTurn`) only
+   * ever sets one. None of today's write tools are ticket-aware yet (they all
+   * key off `conversationId` and report "no linked conversation" when it's
+   * null, same as the sandbox), so this exists for `proposePendingAction`'s
+   * polymorphic parent and for a future ticket-scoped write tool, not for any
+   * tool's execute body today.
+   */
+  ticketId: TicketId | null
   /**
    * The current conversation's customer (its `visitorPrincipalId`), for
    * customer-scoped retrieval (past-conversation summaries — see
@@ -155,6 +172,7 @@ export function makeAssistantToolContext(init: {
   assistantPrincipalId: PrincipalId
   audience: ContentAudience
   conversationId: ConversationId | null
+  ticketId?: TicketId | null
   customerPrincipalId?: PrincipalId | null
   sourceTypes?: RetrievedItem['sourceType'][]
   involvementId?: AssistantInvolvementId | null
@@ -168,6 +186,7 @@ export function makeAssistantToolContext(init: {
     assistantPrincipalId: init.assistantPrincipalId,
     audience: init.audience,
     conversationId: init.conversationId,
+    ticketId: init.ticketId ?? null,
     customerPrincipalId: init.customerPrincipalId ?? undefined,
     sourceTypes: init.sourceTypes,
     sources: new Map<string, AssistantCitation>(),

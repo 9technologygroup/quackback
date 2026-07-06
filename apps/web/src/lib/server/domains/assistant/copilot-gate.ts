@@ -2,11 +2,12 @@
  * Shared gate sequence for the two teammate-facing Copilot SSE routes
  * (copilot.ts, transform.ts): `copilot.use` permission -> body parse against
  * the caller's own zod schema -> the `assistantCopilot` flag -> the assistant
- * being configured -> the AI token budget -> `assertConversationViewable`,
- * each already mapped onto the route's error envelope (forbiddenResponse /
- * errorResponse). Both routes ran this exact sequence verbatim before this;
- * only the request schema and the invalid-request message differ between
- * them, so this is generic over both.
+ * being configured -> the AI token budget -> item-scoped viewability
+ * (`assertConversationViewable` or `assertTicketViewable`, whichever the
+ * parsed request carries — unified inbox §2.9), each already mapped onto the
+ * route's error envelope (forbiddenResponse / errorResponse). Both routes ran
+ * this exact sequence verbatim before this; only the request schema and the
+ * invalid-request message differ between them, so this is generic over both.
  *
  * sandbox.ts is deliberately NOT a caller: it has no conversation to assert
  * viewability against and gates on a different permission (`settings.manage`,
@@ -14,7 +15,7 @@
  * duplicating this one.
  */
 import type { z } from 'zod'
-import type { ConversationId } from '@quackback/ids'
+import type { ConversationId, TicketId } from '@quackback/ids'
 import {
   requireAuth,
   policyActorFromAuth,
@@ -30,16 +31,43 @@ import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service
 // so there is no import cycle.
 import { isAssistantConfigured } from '@/lib/server/domains/assistant'
 import { assertConversationViewable } from '@/lib/server/domains/conversation/conversation.service'
+import { db, tickets, eq, and, type Ticket } from '@/lib/server/db'
+import { ticketFilter } from '@/lib/server/policy/tickets'
+import type { Actor } from '@/lib/server/policy/types'
 import { NotFoundError } from '@/lib/shared/errors'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import { errorResponse, forbiddenResponse } from '@/lib/server/domains/api/responses'
 
+/**
+ * Ticket-scoped read chokepoint mirroring `assertConversationViewable`
+ * exactly (one query resolves existence + visibility; NotFound, never
+ * Forbidden, so a caller without `ticket.view` can't probe ticket ids
+ * either). Lives here rather than in `lib/server/domains/tickets` because
+ * that domain's files are owned by a concurrent unified-inbox workstream this
+ * task must not touch; `ticketFilter` itself is a pure, already-exported SQL
+ * predicate this only composes with an id equality check.
+ */
+export async function assertTicketViewable(ticketId: TicketId, actor: Actor): Promise<Ticket> {
+  const [row] = await db
+    .select()
+    .from(tickets)
+    .where(and(eq(tickets.id, ticketId), ticketFilter(actor)))
+    .limit(1)
+  if (!row) {
+    throw new NotFoundError('TICKET_NOT_FOUND', 'Ticket not found')
+  }
+  return row
+}
+
 export interface CopilotGateOk<T> {
   ok: true
   auth: AuthContext
   parsed: T
-  conversationId: ConversationId
+  /** Set when the request is conversation-scoped; null for a ticket-scoped one. */
+  conversationId: ConversationId | null
+  /** Set when the request is ticket-scoped; null for a conversation-scoped one. */
+  ticketId: TicketId | null
 }
 
 export interface CopilotGateFailed {
@@ -51,14 +79,17 @@ export interface CopilotGateFailed {
 export type CopilotGateResult<T> = CopilotGateOk<T> | CopilotGateFailed
 
 /**
- * Run the shared gate. `schema` is the caller's own request shape (it must
- * carry a `conversationId` field, validated the same way by both routes
- * today — see `conversation-id.schema.ts`); `invalidRequestMessage` is the
- * route-specific 400 body text a malformed request gets. Returns either the
- * gate's outputs for the caller to continue its own turn-specific logic, or
- * a Response the caller must return immediately, untouched.
+ * Run the shared gate. `schema` is the caller's own request shape — either a
+ * `conversationId` field (validated as today, see `conversation-id.schema.ts`)
+ * or a `ticketId` one (see `item-ref.schema.ts`'s `withAssistantItemRef`, the
+ * only kind of schema the two callers actually build); `invalidRequestMessage`
+ * is the route-specific 400 body text a malformed request gets. Returns
+ * either the gate's outputs for the caller to continue its own turn-specific
+ * logic, or a Response the caller must return immediately, untouched.
  */
-export async function gateCopilotRequest<T extends { conversationId: string }>(
+export async function gateCopilotRequest<
+  T extends { conversationId: string } | { ticketId: string },
+>(
   request: Request,
   schema: z.ZodType<T>,
   invalidRequestMessage: string
@@ -97,10 +128,17 @@ export async function gateCopilotRequest<T extends { conversationId: string }>(
     throw err
   }
 
-  const conversationId = parsed.conversationId as ConversationId
+  let conversationId: ConversationId | null = null
+  let ticketId: TicketId | null = null
   try {
     const actor = await policyActorFromAuth(auth)
-    await assertConversationViewable(conversationId, actor)
+    if ('conversationId' in parsed) {
+      conversationId = parsed.conversationId as ConversationId
+      await assertConversationViewable(conversationId, actor)
+    } else {
+      ticketId = parsed.ticketId as TicketId
+      await assertTicketViewable(ticketId, actor)
+    }
   } catch (err) {
     if (err instanceof NotFoundError) {
       return { ok: false, response: errorResponse(err.code, err.message, 404) }
@@ -108,5 +146,5 @@ export async function gateCopilotRequest<T extends { conversationId: string }>(
     throw err
   }
 
-  return { ok: true, auth, parsed, conversationId }
+  return { ok: true, auth, parsed, conversationId, ticketId }
 }

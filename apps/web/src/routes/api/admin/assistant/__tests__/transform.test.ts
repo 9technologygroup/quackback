@@ -37,6 +37,27 @@ vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
   enforceAiTokenBudget: (...args: unknown[]) => mockEnforceAiTokenBudget(...args),
 }))
 
+// `assertTicketViewable` (copilot-gate.ts) is real here — see copilot.test.ts's
+// identical mock for why a module-level override would never be seen by its
+// internal caller (gateCopilotRequest, same file). Faking `db.select`'s chain
+// is enough since `ticketFilter` is a pure SQL-fragment builder.
+const mockTicketLookup = vi.fn()
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/server/db')>()
+  return {
+    ...actual,
+    db: {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: (...args: unknown[]) => mockTicketLookup(...args),
+          })),
+        })),
+      })),
+    },
+  }
+})
+
 import { handleTransform } from '../transform'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import { NotFoundError } from '@/lib/shared/errors'
@@ -44,6 +65,7 @@ import { parseAskAiSseBlock } from '@/components/help-center/ask-ai'
 import { generateId } from '@quackback/ids'
 
 const CONVERSATION_ID = generateId('conversation')
+const TICKET_ID = generateId('ticket')
 const PRINCIPAL_ID = 'principal_1'
 
 function makeRequest(body: unknown): Request {
@@ -68,6 +90,7 @@ beforeEach(() => {
   mockIsAssistantConfigured.mockReturnValue(true)
   mockEnforceAiTokenBudget.mockResolvedValue(undefined)
   mockAssertConversationViewable.mockResolvedValue({ id: CONVERSATION_ID })
+  mockTicketLookup.mockResolvedValue([{ id: TICKET_ID }])
   mockRunCopilotTransform.mockResolvedValue({ text: 'Rewritten.' })
 })
 
@@ -203,6 +226,40 @@ describe('POST /api/admin/assistant/transform', () => {
     expect(mockAssertConversationViewable).toHaveBeenCalledWith(
       CONVERSATION_ID,
       expect.objectContaining({ principalId: PRINCIPAL_ID })
+    )
+  })
+})
+
+describe('POST /api/admin/assistant/transform: ticket-scoped (unified inbox §2.9)', () => {
+  const ticketBody = {
+    ticketId: TICKET_ID,
+    text: 'Thanks for reaching out, we will look into it.',
+    transform: 'more_friendly',
+  }
+
+  it('400s when both conversationId and ticketId are present', async () => {
+    const res = await handleTransform({
+      request: makeRequest({ ...validBody, ticketId: TICKET_ID }),
+    })
+    expect(res.status).toBe(400)
+    expect(mockRunCopilotTransform).not.toHaveBeenCalled()
+  })
+
+  it('404s when the ticket does not exist (or is not viewable)', async () => {
+    mockTicketLookup.mockResolvedValue([])
+    const res = await handleTransform({ request: makeRequest(ticketBody) })
+    expect(res.status).toBe(404)
+    const body = await res.json()
+    expect(body.error.code).toBe('TICKET_NOT_FOUND')
+    expect(mockRunCopilotTransform).not.toHaveBeenCalled()
+  })
+
+  it('runs the transform for a viewable ticket, authorizing via the ticket rather than a conversation', async () => {
+    const res = await handleTransform({ request: makeRequest(ticketBody) })
+    expect(res.status).toBe(200)
+    expect(mockAssertConversationViewable).not.toHaveBeenCalled()
+    expect(mockRunCopilotTransform).toHaveBeenCalledWith(
+      expect.objectContaining({ transform: 'more_friendly', text: ticketBody.text })
     )
   })
 })

@@ -44,6 +44,31 @@ vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
   enforceAiTokenBudget: (...args: unknown[]) => mockEnforceAiTokenBudget(...args),
 }))
 
+// `assertTicketViewable` (copilot-gate.ts) is real here, not mocked as a
+// module — it's called from WITHIN gateCopilotRequest in the same file, so a
+// module-level mock override would never be seen by that internal call (ESM
+// self-reference). Instead, fake the one thing it touches: the `db.select`
+// chain, mirroring assistant.runtime.test.ts's conversation-lookup mock. Every
+// other db export (tickets, eq, and — all pure/schema-only) stays real, since
+// `ticketFilter` itself is a pure SQL-fragment builder that never touches a
+// live connection.
+const mockTicketLookup = vi.fn()
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/server/db')>()
+  return {
+    ...actual,
+    db: {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: (...args: unknown[]) => mockTicketLookup(...args),
+          })),
+        })),
+      })),
+    },
+  }
+})
+
 import { handleCopilot } from '../copilot'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import { NotFoundError } from '@/lib/shared/errors'
@@ -51,6 +76,7 @@ import { parseAskAiSseBlock } from '@/components/help-center/ask-ai'
 import { generateId } from '@quackback/ids'
 
 const CONVERSATION_ID = generateId('conversation')
+const TICKET_ID = generateId('ticket')
 
 function makeRequest(body: unknown): Request {
   return new Request('http://localhost/api/admin/assistant/copilot', {
@@ -74,6 +100,7 @@ beforeEach(() => {
   mockIsAssistantConfigured.mockReturnValue(true)
   mockEnforceAiTokenBudget.mockResolvedValue(undefined)
   mockAssertConversationViewable.mockResolvedValue({ id: CONVERSATION_ID })
+  mockTicketLookup.mockResolvedValue([{ id: TICKET_ID }])
   mockEnsureAssistantPrincipal.mockResolvedValue({ id: 'principal_assistant' })
   mockRunAssistantTurn.mockResolvedValue({
     status: 'answered',
@@ -286,6 +313,65 @@ describe('POST /api/admin/assistant/copilot', () => {
 
     expect(mockRunAssistantTurn).toHaveBeenCalledWith(
       expect.objectContaining({ sourceTypes: ['article', 'snippet'] })
+    )
+  })
+})
+
+describe('POST /api/admin/assistant/copilot: ticket-scoped (unified inbox §2.9)', () => {
+  const ticketBody = { ticketId: TICKET_ID, question: 'What is the refund policy?' }
+
+  it('400s when both conversationId and ticketId are present (exactly one is required)', async () => {
+    const res = await handleCopilot({
+      request: makeRequest({ ...validBody, ticketId: TICKET_ID }),
+    })
+    expect(res.status).toBe(400)
+    expect(mockRunAssistantTurn).not.toHaveBeenCalled()
+  })
+
+  it('400s when neither conversationId nor ticketId is present', async () => {
+    const res = await handleCopilot({
+      request: makeRequest({ question: 'What is the refund policy?' }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('400s on a malformed ticketId', async () => {
+    const res = await handleCopilot({
+      request: makeRequest({ ...ticketBody, ticketId: 'not-a-typeid' }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('404s when the ticket does not exist (or is not viewable)', async () => {
+    mockTicketLookup.mockResolvedValue([])
+    const res = await handleCopilot({ request: makeRequest(ticketBody) })
+    expect(res.status).toBe(404)
+    const body = await res.json()
+    expect(body.error.code).toBe('TICKET_NOT_FOUND')
+    expect(mockRunAssistantTurn).not.toHaveBeenCalled()
+  })
+
+  it('calls the runtime with the ticketId, a null conversationId, surface copilot, and writeToolPolicy propose', async () => {
+    const res = await handleCopilot({ request: makeRequest(ticketBody) })
+    expect(res.status).toBe(200)
+
+    expect(mockRunAssistantTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: null,
+        ticketId: TICKET_ID,
+        surface: 'copilot',
+        writeToolPolicy: 'propose',
+      })
+    )
+    // The conversation-viewable gate is never consulted for a ticket-scoped request.
+    expect(mockAssertConversationViewable).not.toHaveBeenCalled()
+  })
+
+  it('conversation-scoped payloads are unaffected: the ticket lookup is never consulted', async () => {
+    await handleCopilot({ request: makeRequest(validBody) })
+    expect(mockTicketLookup).not.toHaveBeenCalled()
+    expect(mockRunAssistantTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: CONVERSATION_ID, ticketId: null })
     )
   })
 })

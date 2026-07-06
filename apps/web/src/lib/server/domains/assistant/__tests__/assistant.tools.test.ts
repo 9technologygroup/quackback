@@ -444,6 +444,32 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
     expect(c1.proposedActions[0].id).toBe(c2.proposedActions[0].id)
     expect(mockProposePendingAction).toHaveBeenCalledTimes(2)
   })
+
+  it('proposes against the ticket parent (not conversationId) for a ticket-scoped context (unified inbox §2.9)', async () => {
+    mockActionsFlag(true)
+    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'approval' })
+    mockProposePendingAction.mockResolvedValue({ id: 'assistant_action_1' })
+
+    const c = ctx({
+      conversationId: null,
+      ticketId: 'ticket_1' as never,
+      involvementId: 'assistant_involvement_1' as never,
+    })
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()])
+    await tool.execute({ reason: 'resolved' }, toolCtx(c))
+
+    expect(mockProposePendingAction).toHaveBeenCalledWith({
+      ticketId: 'ticket_1',
+      involvementId: 'assistant_involvement_1',
+      toolName: 'close_conversation',
+      args: { reason: 'resolved' },
+      summary: 'Close conversation: resolved',
+      // Falls back to ticketId (not the bare "null" a naive conversationId-only
+      // key would produce) so two different tickets proposing the same tool
+      // with the same args never collide — see resolveIdempotencyKey's doc.
+      idempotencyKey: expect.stringMatching(/^ticket_1:null:close_conversation:[0-9a-f]{64}$/),
+    })
+  })
 })
 
 describe('assembleAssistantToolset: write-tool pipeline (writeToolPolicy: propose, P2-C.4)', () => {

@@ -24,6 +24,12 @@ export const ASSISTANT_PERMISSIONS: ReadonlySet<PermissionKey> = new Set([
   PERMISSIONS.CONVERSATION_SET_STATUS,
   PERMISSIONS.CONVERSATION_SET_ATTRIBUTES,
   PERMISSIONS.TICKET_CREATE,
+  // Lets Quinn post its own pending-action proposal/expiry notes on a
+  // ticket-scoped copilot turn (unified inbox §2.9) — see
+  // pending-actions.service.ts's `surfacePendingActionNote` and
+  // `sweepAndNotifyExpiredPendingActions`, the only callers that post as
+  // Quinn on a ticket thread today.
+  PERMISSIONS.TICKET_NOTE,
   PERMISSIONS.POST_CREATE,
   PERMISSIONS.POST_VOTE_ON_BEHALF,
 ])

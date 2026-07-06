@@ -89,6 +89,7 @@ vi.mock('@/lib/server/domains/assistant/assistant.toolspec', () => ({
     assistantPrincipalId: init.assistantPrincipalId,
     audience: init.audience,
     conversationId: init.conversationId,
+    ticketId: init.ticketId ?? null,
     sources: new Map(),
     searchCalls: 0,
     simulate: init.simulate ?? init.conversationId === null,
@@ -207,6 +208,33 @@ describe('approveAssistantActionFn', () => {
     })
     expect(hoisted.markPendingActionFailed).not.toHaveBeenCalled()
     expect(out).toEqual(expect.objectContaining(expectDTOFrom(settled)))
+  })
+
+  it('threads the ticket parent onto the execution context for a ticket-scoped pending action (unified inbox §2.9)', async () => {
+    const pending = pendingRow({ conversationId: null, ticketId: 'ticket_1' })
+    hoisted.getPendingActionById.mockResolvedValue(pending)
+    const decided = { ...pending, status: 'approved', decidedById: 'principal_agent1' }
+    hoisted.decidePendingAction.mockResolvedValue(decided)
+    hoisted.executeApprovedPendingAction.mockResolvedValue({
+      status: 'executed',
+      result: { created: true },
+    })
+    hoisted.markPendingActionExecuted.mockResolvedValue({
+      ...decided,
+      status: 'executed',
+      result: { created: true },
+    })
+
+    await approve({ pendingActionId: 'assistant_action_1' })
+
+    expect(hoisted.executeApprovedPendingAction).toHaveBeenCalledWith(
+      CLOSE_SPEC,
+      decided,
+      expect.objectContaining({
+        conversationId: null,
+        ticketId: 'ticket_1',
+      })
+    )
   })
 
   it('settles failed when execution fails, without throwing', async () => {

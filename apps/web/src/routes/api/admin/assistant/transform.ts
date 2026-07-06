@@ -6,21 +6,22 @@
  * composer's Format chip. Both send whatever text they're acting on plus a
  * transform kind, and get back the rewritten text.
  *
- * The conversation id anchors context + authorization ONLY: `assertConversationViewable`
- * confirms the caller may see this conversation (so a teammate can't probe a
- * transform against a conversation they have no business in), but the
- * transform itself never reads or writes the conversation's messages, and
- * (like copilot.ts) never touches assistant_involvements or unread counts.
+ * The item id (conversation OR ticket — exactly one, see `item-ref.schema.ts`)
+ * anchors context + authorization ONLY: `assertConversationViewable` /
+ * `assertTicketViewable` confirms the caller may see this item (so a teammate
+ * can't probe a transform against one they have no business in), but the
+ * transform itself never reads or writes the item's messages, and (like
+ * copilot.ts) never touches assistant_involvements or unread counts.
  *
  * Same gate order as copilot.ts: `copilot.use` -> the `assistantCopilot` flag
- * -> AI configured -> the AI token budget -> the conversation-viewable check.
- * That shared sequence lives in copilot-gate.ts, alongside copilot.ts.
+ * -> AI configured -> the AI token budget -> the item-viewable check. That
+ * shared sequence lives in copilot-gate.ts, alongside copilot.ts.
  */
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { runCopilotTransform } from '@/lib/server/domains/assistant'
 import { gateCopilotRequest } from '@/lib/server/domains/assistant/copilot-gate'
-import { conversationIdSchema } from '@/lib/server/domains/assistant/conversation-id.schema'
+import { withAssistantItemRef } from '@/lib/server/domains/assistant/item-ref.schema'
 import { createSseStream, SSE_RESPONSE_HEADERS } from '@/lib/server/utils/sse'
 import { logger } from '@/lib/server/logger'
 import {
@@ -35,8 +36,10 @@ const log = logger.child({ component: 'assistant-transform' })
 
 const MAX_TEXT_CHARS = 8000
 
-const requestSchema = z.object({
-  conversationId: conversationIdSchema,
+// Backward compatible: the pre-§2.9 client only ever sends `conversationId`,
+// which is still just the schema's first union branch (see
+// `withAssistantItemRef`'s doc comment).
+const requestSchema = withAssistantItemRef({
   text: z.string().min(1).max(MAX_TEXT_CHARS),
   transform: z.enum(TRANSFORM_KINDS),
 })
@@ -45,7 +48,7 @@ export async function handleTransform({ request }: { request: Request }): Promis
   const gate = await gateCopilotRequest(
     request,
     requestSchema,
-    'A valid conversationId, text, and transform are required'
+    'A valid conversationId or ticketId, plus text and transform, are required'
   )
   if (!gate.ok) return gate.response
   const { auth, parsed } = gate
