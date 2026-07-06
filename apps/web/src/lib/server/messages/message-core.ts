@@ -91,10 +91,15 @@ export function preview(content: string, attachments: ConversationAttachment[] =
   return ''
 }
 
-/** A display label for a text-less rich message (inline image / shared post). */
+/** A display label for a text-less rich message (inline image / shared post).
+ *  `chatImage` is the legacy hand-rolled composer's inline node; `resizableImage`
+ *  is what the unified RichTextEditor's `onImageUpload` authors instead (support-
+ *  grade tickets/conversations, per TICKET-CONTENT-PARITY-SPEC §4) — both count,
+ *  so an image-only send from either composer clears validateContent's
+ *  empty-content guard the same way. */
 export function richMessageFallbackLabel(doc: TiptapContent | null | undefined): string {
   for (const node of doc?.content ?? []) {
-    if (node.type === 'chatImage') return '📷 Image'
+    if (node.type === 'chatImage' || node.type === 'resizableImage') return '📷 Image'
     if (node.type === 'quackbackEmbed') {
       return node.attrs?.kind === 'changelog' ? '🔗 Shared an update' : '🔗 Shared a post'
     }

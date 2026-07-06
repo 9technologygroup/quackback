@@ -24,7 +24,13 @@ import {
   type Ticket,
   type ConversationPriority,
 } from '@/lib/server/db'
-import { validateContent } from '@/lib/server/messages/message-core'
+import {
+  validateContent,
+  validateAttachments,
+  resolveMessageContent,
+  richMessageFallbackLabel,
+} from '@/lib/server/messages/message-core'
+import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
 import type { SQL } from 'drizzle-orm'
 import type { TicketId, TicketStatusId } from '@quackback/ids'
 import { can } from '@/lib/server/policy/authorize'
@@ -189,7 +195,19 @@ export async function createTicketCore(input: CreateTicketInput, actor: Actor): 
     throw new InternalError('NO_DEFAULT_STATUS', 'No default ticket status is configured')
   }
 
-  const description = input.description?.trim()
+  // Same sanitize/validate idioms as insertTicketMessage (ticket-message.service):
+  // sanitize the doc, cap/validate attachments, derive the plaintext mirror from
+  // the doc when the raw description is blank, and let a text-less rich doc
+  // (image/embed) satisfy the empty-content guard via its fallback label. Run
+  // ahead of the transaction — it's pure validation, no I/O.
+  const openingAttachments = validateAttachments(input.attachments)
+  const safeDescriptionJson = input.descriptionJson
+    ? sanitizeTiptapContent(input.descriptionJson)
+    : null
+  const fallbackLabel = richMessageFallbackLabel(safeDescriptionJson)
+  const resolvedDescription = resolveMessageContent(input.description ?? '', safeDescriptionJson)
+  const hasOpeningMessage =
+    !!resolvedDescription.trim() || openingAttachments.length > 0 || !!fallbackLabel
 
   const created = await db.transaction(async (tx) => {
     const [ticket] = await tx
@@ -205,7 +223,7 @@ export async function createTicketCore(input: CreateTicketInput, actor: Actor): 
       })
       .returning()
 
-    if (description) {
+    if (hasOpeningMessage) {
       // The description opens the thread. It is the requester's ask when they
       // file it themselves (senderType 'visitor'), or a teammate's summary when
       // filing on someone's behalf ('agent'). Either way it is the opening
@@ -216,7 +234,12 @@ export async function createTicketCore(input: CreateTicketInput, actor: Actor): 
         ticketId: ticket.id,
         principalId: actor.principalId,
         senderType: filedByRequester ? 'visitor' : 'agent',
-        content: validateContent(description),
+        content: validateContent(
+          resolvedDescription,
+          openingAttachments.length > 0 || !!fallbackLabel
+        ),
+        contentJson: safeDescriptionJson,
+        attachments: openingAttachments.length > 0 ? openingAttachments : null,
       })
     }
     return ticket

@@ -18,6 +18,13 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
   db: (await import('@/lib/server/__tests__/db-test-fixture')).testDb,
 }))
 
+// config getters validate the full env (absent in tests); provide just what the
+// attachment URL check (validateAttachments -> isTrustedAttachmentUrl) reads.
+vi.mock('@/lib/server/config', () => ({
+  config: { s3PublicUrl: undefined, baseUrl: 'http://localhost:3000' },
+  getBaseUrl: () => 'http://localhost:3000',
+}))
+
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
 import {
   tickets,
@@ -202,6 +209,41 @@ describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled b
     ).rejects.toThrow(/not found/i)
   })
 
+  it('replyToMyTicket persists contentJson + attachments (wire shape for the portal rich composer)', async () => {
+    const w = await seedWorld()
+    const contentJson = {
+      type: 'doc' as const,
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Still broken, see attached.' }] }],
+    }
+    const attachments = [
+      {
+        url: '/api/storage/chat-images/screenshot.png',
+        name: 'screenshot.png',
+        contentType: 'image/png',
+        size: 2048,
+      },
+    ]
+    const { message } = await replyToMyTicket(requesterActor(w.me), {
+      ticketId: w.mine,
+      content: 'Still broken, see attached.',
+      contentJson,
+      attachments,
+    })
+    expect(message.contentJson?.content?.[0]?.type).toBe('paragraph')
+    expect(message.attachments).toHaveLength(1)
+    expect(message.attachments[0]).toMatchObject({
+      url: '/api/storage/chat-images/screenshot.png',
+      name: 'screenshot.png',
+    })
+
+    // Re-read through the requester thread to prove it round-trips off the DB,
+    // not just off the write's in-memory return value.
+    const page = await getMyTicketThread(requesterActor(w.me), w.mine)
+    const stored = page.messages.find((m) => m.id === message.id)
+    expect(stored?.contentJson?.content?.[0]?.type).toBe('paragraph')
+    expect(stored?.attachments).toHaveLength(1)
+  })
+
   it('createMyTicket opens a customer ticket owned by me with a visitor opening message', async () => {
     await testDb
       .insert(settings)
@@ -226,6 +268,44 @@ describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled b
     const page = await getMyTicketThread(requesterActor(me), dto.id)
     expect(page.messages.map((m) => m.senderType)).toEqual(['visitor'])
     expect(page.messages[0].content).toBe('It really broke')
+  })
+
+  it('createMyTicket seeds descriptionJson + attachments on the opening message', async () => {
+    await testDb
+      .insert(settings)
+      .values({ name: 'WS', slug: `ws_${suffix()}`, createdAt: new Date() })
+    await testDb
+      .update(ticketStatuses)
+      .set({ isDefault: false })
+      .where(eq(ticketStatuses.isDefault, true))
+    await testDb
+      .insert(ticketStatuses)
+      .values({ name: 'New', slug: `def_${suffix()}`, isDefault: true })
+    const me = await seedPrincipal()
+
+    const descriptionJson = {
+      type: 'doc' as const,
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Rich description.' }] }],
+    }
+    const attachments = [
+      {
+        url: '/api/storage/chat-images/attached.png',
+        name: 'attached.png',
+        contentType: 'image/png',
+        size: 512,
+      },
+    ]
+    const dto = await createMyTicket(requesterActor(me), {
+      title: 'Broken, with a screenshot',
+      descriptionJson,
+      attachments,
+    })
+
+    const page = await getMyTicketThread(requesterActor(me), dto.id)
+    expect(page.messages).toHaveLength(1)
+    expect(page.messages[0].content).toBe('Rich description.')
+    expect(page.messages[0].contentJson?.content?.[0]?.type).toBe('paragraph')
+    expect(page.messages[0].attachments).toHaveLength(1)
   })
 
   it('a requester reply reopens an awaiting-requester ticket to the first open status', async () => {

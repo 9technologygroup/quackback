@@ -8,6 +8,7 @@
 import { db, tickets, eq, and, isNull, desc, type Ticket } from '@/lib/server/db'
 import type { TicketId, PrincipalId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
+import type { TiptapContent, ConversationAttachment } from '@/lib/shared/db-types'
 import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
 import { NotFoundError, ForbiddenError } from '@/lib/shared/errors'
 import { loadTicketOr404, createTicketCore, autoReopenOnRequesterReply } from './ticket.service'
@@ -85,7 +86,12 @@ export async function getMyTicketThread(
  */
 export async function createMyTicket(
   actor: Actor,
-  input: { title: string; description?: string }
+  input: {
+    title: string
+    description?: string
+    descriptionJson?: TiptapContent | null
+    attachments?: ConversationAttachment[]
+  }
 ): Promise<TicketDTO> {
   const principalId = requireRequester(actor)
   return createTicketCore(
@@ -93,6 +99,8 @@ export async function createMyTicket(
       type: 'customer',
       title: input.title,
       description: input.description,
+      descriptionJson: input.descriptionJson,
+      attachments: input.attachments,
       requesterPrincipalId: principalId,
     },
     actor

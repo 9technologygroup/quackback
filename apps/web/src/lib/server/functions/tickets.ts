@@ -35,6 +35,16 @@ const stageSchema = z.enum(TICKET_STAGES)
 const prioritySchema = z.enum(CONVERSATION_PRIORITIES)
 const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Invalid color format')
 
+// Shared by every rich-content entry point (the opening description, a reply,
+// a note): the service re-validates count/size/url, so this only shapes the
+// wire payload.
+const ticketAttachmentSchema = z.object({
+  url: z.string(),
+  name: z.string().optional(),
+  contentType: z.string().optional(),
+  size: z.number(),
+})
+
 // ---------------------------------------------------------------------------
 // Ticket CRUD + lifecycle
 // ---------------------------------------------------------------------------
@@ -100,6 +110,9 @@ const createTicketSchema = z.object({
   type: ticketTypeSchema,
   title: z.string().min(1).max(300),
   description: z.string().max(4000).optional(),
+  // Empty is valid for an image/embed-only opening message; the service re-validates.
+  descriptionJson: z.any().nullable().optional(),
+  attachments: z.array(ticketAttachmentSchema).optional(),
   requesterPrincipalId: z.string().optional(),
   priority: prioritySchema.optional(),
   companyId: z.string().optional(),
@@ -117,6 +130,8 @@ export const createTicketFn = createServerFn({ method: 'POST' })
         type: data.type,
         title: data.title,
         description: data.description,
+        descriptionJson: data.descriptionJson ?? null,
+        attachments: data.attachments as ConversationAttachment[] | undefined,
         requesterPrincipalId:
           data.requesterPrincipalId && isValidTypeId(data.requesterPrincipalId, 'principal')
             ? (data.requesterPrincipalId as PrincipalId)
@@ -338,13 +353,6 @@ export const setTicketFormFn = createServerFn({ method: 'POST' })
 // Ticket thread messages (§4.2)
 // ---------------------------------------------------------------------------
 
-const ticketAttachmentSchema = z.object({
-  url: z.string(),
-  name: z.string().optional(),
-  contentType: z.string().optional(),
-  size: z.number(),
-})
-
 const sendTicketMessageSchema = z.object({
   ticketId: z.string(),
   // Empty is valid for an image/embed-only rich message; the service re-validates.
@@ -488,7 +496,13 @@ export const replyToMyTicketFn = createServerFn({ method: 'POST' })
 
 export const createMyTicketFn = createServerFn({ method: 'POST' })
   .validator(
-    z.object({ title: z.string().min(1).max(300), description: z.string().max(4000).optional() })
+    z.object({
+      title: z.string().min(1).max(300),
+      description: z.string().max(4000).optional(),
+      // Empty is valid for an image/embed-only opening message; the service re-validates.
+      descriptionJson: z.any().nullable().optional(),
+      attachments: z.array(ticketAttachmentSchema).optional(),
+    })
   )
   .handler(async ({ data }) => {
     const ctx = await requireAuth()
@@ -500,7 +514,12 @@ export const createMyTicketFn = createServerFn({ method: 'POST' })
     }
     const actor = await policyActorFromAuth(ctx)
     const { createMyTicket } = await import('@/lib/server/domains/tickets/requester.service')
-    return createMyTicket(actor, { title: data.title, description: data.description })
+    return createMyTicket(actor, {
+      title: data.title,
+      description: data.description,
+      descriptionJson: data.descriptionJson ?? null,
+      attachments: data.attachments as ConversationAttachment[] | undefined,
+    })
   })
 
 const searchSchema = z.object({

@@ -10,6 +10,8 @@ import type {
   TicketStage,
   TicketStatusCategory,
   ConversationPriority,
+  TiptapContent,
+  ConversationAttachment,
 } from '@/lib/shared/db-types'
 import type { ConversationAuthorDTO } from '@/lib/shared/conversation/types'
 
@@ -25,6 +27,13 @@ export interface CreateTicketInput {
    *  "description"). Authored by the requester when they file it themselves,
    *  otherwise by the creating teammate. */
   description?: string
+  /** The rich-doc counterpart of `description`, sanitized + validated through
+   *  the same path as a reply/note (see `insertTicketMessage`). When present,
+   *  `description` is only the fallback plaintext — the derived `content`
+   *  mirror comes from this doc when the raw description is blank. */
+  descriptionJson?: TiptapContent | null
+  /** Attachments on the opening message, same shape/limits as a reply. */
+  attachments?: ConversationAttachment[]
   requesterPrincipalId?: PrincipalId | null
   priority?: ConversationPriority
   companyId?: CompanyId | null

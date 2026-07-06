@@ -34,6 +34,13 @@ const webhooks = vi.hoisted(() => ({
 }))
 vi.mock('../ticket.webhooks', () => webhooks)
 
+// config getters validate the full env (absent in tests); provide just what the
+// attachment URL check (validateAttachments -> isTrustedAttachmentUrl) reads.
+vi.mock('@/lib/server/config', () => ({
+  config: { s3PublicUrl: undefined, baseUrl: 'http://localhost:3000' },
+  getBaseUrl: () => 'http://localhost:3000',
+}))
+
 import { createTicket, setTicketStatus, assignTicket } from '../ticket.service'
 import { listTicketMessages } from '../ticket-message.service'
 import { resolveActorPermissions } from '@/lib/server/policy/permissions'
@@ -194,6 +201,108 @@ describe.skipIf(!fixture.available)('ticket.service (real DB, rolled back)', () 
     const dto = await createTicket({ type: 'customer', title: 'Quiet ticket' }, adminActor())
     const page = await listTicketMessages(dto.id, {})
     expect(page.messages).toHaveLength(0)
+  })
+
+  it('seeds the opening message from descriptionJson: sanitized contentJson + derived content', async () => {
+    await seedSettings()
+    await seedStatuses()
+    const principalId = await seedTeammate()
+    const actor: Actor = {
+      principalId,
+      role: 'admin',
+      principalType: 'user',
+      segmentIds: new Set(),
+      permissions: resolveActorPermissions('admin'),
+    }
+    const descriptionJson = {
+      type: 'doc' as const,
+      content: [
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: 'First line.', marks: [{ type: 'bold' }] }],
+        },
+        { type: 'paragraph', content: [{ type: 'text', text: 'Second line.' }] },
+      ],
+    }
+    const dto = await createTicket({ type: 'customer', title: 'Rich open', descriptionJson }, actor)
+    const page = await listTicketMessages(dto.id, { includeInternal: true })
+    expect(page.messages).toHaveLength(1)
+    // No plain `description` was given: content is derived server-side from
+    // the doc's text leaves (mirrors resolveMessageContent).
+    expect(page.messages[0].content).toBe('First line.\nSecond line.')
+    expect(page.messages[0].contentJson?.content?.[0]?.type).toBe('paragraph')
+    expect(page.messages[0].contentJson?.content?.[0]?.content?.[0]?.marks?.[0]?.type).toBe('bold')
+  })
+
+  it('sanitizes a hostile descriptionJson before it is stored', async () => {
+    await seedSettings()
+    await seedStatuses()
+    const principalId = await seedTeammate()
+    const actor: Actor = {
+      principalId,
+      role: 'admin',
+      principalType: 'user',
+      segmentIds: new Set(),
+      permissions: resolveActorPermissions('admin'),
+    }
+    const descriptionJson = {
+      type: 'doc' as const,
+      content: [
+        // Unknown node type: stripped entirely.
+        { type: 'script', content: [{ type: 'text', text: 'evil' }] },
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: 'Safe text.' }],
+        },
+        // javascript: src is neutralized to an empty (non-rendering) image.
+        { type: 'image', attrs: { src: 'javascript:alert(1)', alt: 'x' } },
+      ],
+    }
+    const dto = await createTicket(
+      { type: 'customer', title: 'Hostile open', descriptionJson },
+      actor
+    )
+    const page = await listTicketMessages(dto.id, { includeInternal: true })
+    const stored = page.messages[0]
+    const types = stored.contentJson?.content?.map((n) => n.type)
+    expect(types).not.toContain('script')
+    expect(types).toEqual(['paragraph', 'image'])
+    const imageNode = stored.contentJson?.content?.find((n) => n.type === 'image')
+    expect(imageNode?.attrs?.src).toBe('')
+    // Derived from the sanitized doc: the surviving paragraph's text, plus the
+    // `[image]` placeholder for the (now-neutralized) image node.
+    expect(stored.content).toBe('Safe text.\n[image]')
+  })
+
+  it('persists attachments on the opening message', async () => {
+    await seedSettings()
+    await seedStatuses()
+    const principalId = await seedTeammate()
+    const actor: Actor = {
+      principalId,
+      role: 'admin',
+      principalType: 'user',
+      segmentIds: new Set(),
+      permissions: resolveActorPermissions('admin'),
+    }
+    const attachments = [
+      {
+        url: '/api/storage/chat-images/photo.png',
+        name: 'photo.png',
+        contentType: 'image/png',
+        size: 1024,
+      },
+    ]
+    const dto = await createTicket(
+      { type: 'customer', title: 'With attachment', attachments },
+      actor
+    )
+    const page = await listTicketMessages(dto.id, { includeInternal: true })
+    expect(page.messages).toHaveLength(1)
+    expect(page.messages[0].attachments).toHaveLength(1)
+    expect(page.messages[0].attachments[0].name).toBe('photo.png')
+    // No text and no descriptionJson: the derived content mirror stays blank.
+    expect(page.messages[0].content).toBe('')
   })
 
   it('a public_stage crossing posts a status event into the ticket thread', async () => {

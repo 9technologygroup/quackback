@@ -154,6 +154,19 @@ describe.skipIf(!fixture.available)('ticket message service (real DB, rolled bac
     expect(message.contentJson?.content?.[0]?.type).toBe('chatImage')
   })
 
+  it('extends the same image-only allowance to a resizableImage doc (the unified RichTextEditor node)', async () => {
+    const { ticketId, actor } = await seedTicketWithAgent()
+    const contentJson = {
+      type: 'doc' as const,
+      content: [{ type: 'resizableImage', attrs: { src: null, alt: null } }],
+    }
+
+    const { message } = await sendTicketMessage(actor, { ticketId, content: '', contentJson })
+
+    expect(message.content).toBe('')
+    expect(message.contentJson?.content?.[0]?.type).toBe('resizableImage')
+  })
+
   it('prefers explicit non-blank content over deriving from contentJson', async () => {
     const { ticketId, actor } = await seedTicketWithAgent()
     const contentJson = {

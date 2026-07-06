@@ -5,19 +5,24 @@
  * on the right, the team's on the left). Ownership + the internal-note strip are
  * enforced by the requester server fns.
  */
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { createFileRoute, Link, Navigate, useRouteContext } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FormattedMessage, useIntl } from 'react-intl'
 import { ArrowLeftIcon, PaperAirplaneIcon } from '@heroicons/react/24/solid'
 import { toast } from 'sonner'
+import type { JSONContent } from '@tiptap/core'
 import type { TicketId } from '@quackback/ids'
 import { TICKET_STAGES } from '@/lib/shared/db-types'
+import type { TiptapContent } from '@/lib/shared/db-types'
 import { DEFAULT_TICKET_STAGE_LABELS } from '@/lib/shared/tickets'
 import { replyToMyTicketFn } from '@/lib/server/functions/tickets'
 import { portalTicketQueries, portalTicketKeys } from '@/lib/client/queries/portal-tickets'
 import { VisitorMessageBubble } from '@/components/conversation/message-bubble'
-import { Textarea } from '@/components/ui/textarea'
+import { RichTextEditor } from '@/components/ui/rich-text-editor'
+import { VISITOR_CONVERSATION_FEATURES } from '@/components/conversation/conversation-editor-features'
+import { usePortalImageUpload } from '@/lib/client/hooks/use-image-upload'
+import { isEmptyTiptapDoc } from '@/lib/shared/utils/is-empty-tiptap-doc'
 import { Spinner } from '@/components/shared/spinner'
 import { EmptyState } from '@/components/shared/empty-state'
 import { TicketIcon } from '@heroicons/react/24/outline'
@@ -61,7 +66,16 @@ function PortalTicketPage() {
   const id = ticketId as TicketId
   const { session, settings } = useRouteContext({ from: '__root__' })
   const queryClient = useQueryClient()
-  const [reply, setReply] = useState('')
+  // The rich doc lives in a ref (it changes on every keystroke) so the stable
+  // `handleSend` below never needs to be rebuilt — RichTextEditor rebuilds its
+  // extensions whenever `onSubmit`'s identity changes. `hasContent` is the
+  // reactive mirror that drives the Send button's disabled state.
+  const replyJsonRef = useRef<TiptapContent | null>(null)
+  const [hasContent, setHasContent] = useState(false)
+  // Bumped after a successful send to remount the editor with a blank doc —
+  // RichTextEditor has no imperative clear, so a key change is the reset.
+  const [editorKey, setEditorKey] = useState(0)
+  const { upload } = usePortalImageUpload()
 
   const supportTicketsEnabled = !!settings?.featureFlags?.supportTickets
   const isLoggedIn = !!session?.user && session.user.principalType !== 'anonymous'
@@ -80,18 +94,36 @@ function PortalTicketPage() {
   })
 
   const send = useMutation({
-    mutationFn: (content: string) => replyToMyTicketFn({ data: { ticketId: id, content } }),
+    mutationFn: (contentJson: TiptapContent | null) =>
+      // `content` stays blank: the server derives the plaintext FTS/preview
+      // mirror from `contentJson` (insertTicketMessage's resolveMessageContent),
+      // the same path a text-bearing doc always goes through.
+      replyToMyTicketFn({ data: { ticketId: id, content: '', contentJson } }),
     onSuccess: () => {
-      setReply('')
+      replyJsonRef.current = null
+      setHasContent(false)
+      setEditorKey((k) => k + 1)
       void queryClient.invalidateQueries({ queryKey: portalTicketKeys.thread(id) })
     },
     onError: () => toast.error('Failed to send your reply'),
   })
 
+  const handleEditorChange = useCallback((json: JSONContent) => {
+    const doc = json as TiptapContent
+    replyJsonRef.current = doc
+    setHasContent(!isEmptyTiptapDoc(doc))
+  }, [])
+
+  const handleSend = useCallback(() => {
+    const doc = replyJsonRef.current
+    if (isEmptyTiptapDoc(doc ?? undefined) || send.isPending) return
+    send.mutate(doc)
+  }, [send])
+
   if (!supportTicketsEnabled) return <Navigate to="/" />
 
   const messages = thread?.messages ?? []
-  const canSend = reply.trim().length > 0 && !send.isPending
+  const canSend = hasContent && !send.isPending
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col px-4 sm:px-6 py-6">
@@ -155,27 +187,24 @@ function PortalTicketPage() {
           </div>
 
           <div className="mt-4 rounded-lg border border-border bg-background p-2 focus-within:ring-2 focus-within:ring-primary/20">
-            <Textarea
-              value={reply}
-              onChange={(e) => setReply(e.target.value)}
-              rows={3}
-              maxLength={4000}
+            <RichTextEditor
+              key={editorKey}
+              borderless
+              minHeight="72px"
+              disabled={send.isPending}
+              features={VISITOR_CONVERSATION_FEATURES}
               placeholder={intl.formatMessage({
                 id: 'portal.tickets.reply.placeholder',
                 defaultMessage: 'Reply to the team…',
               })}
-              className="border-0 focus-visible:ring-0"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  if (canSend) send.mutate(reply.trim())
-                }
-              }}
+              onChange={handleEditorChange}
+              onImageUpload={upload}
+              onSubmit={handleSend}
             />
             <div className="flex justify-end pt-1">
               <button
                 type="button"
-                onClick={() => canSend && send.mutate(reply.trim())}
+                onClick={handleSend}
                 disabled={!canSend}
                 className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-40 transition-opacity"
               >
