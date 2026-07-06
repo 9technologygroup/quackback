@@ -374,6 +374,7 @@ export function HelpCenterArticleEditor({ articleId }: HelpCenterArticleEditorPr
                         placeholder="Start writing..."
                         minHeight="60vh"
                         borderless
+                        toolbarPosition="bottom"
                         features={{
                           headings: true,
                           images: true,

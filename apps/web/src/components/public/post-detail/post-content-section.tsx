@@ -183,6 +183,7 @@ export function PostContentSection({
             minHeight="150px"
             disabled={isSaving}
             borderless
+            toolbarPosition="bottom"
             features={editorFeatures}
             onImageUpload={onImageUpload}
           />

@@ -372,6 +372,7 @@ export function FeedbackHeaderAnimated({
                 })}
                 minHeight="150px"
                 borderless
+                toolbarPosition="bottom"
                 features={{ images: canUploadImages, quackbackEmbeds: true }}
                 onImageUpload={canUploadImages ? uploadImage : undefined}
               />

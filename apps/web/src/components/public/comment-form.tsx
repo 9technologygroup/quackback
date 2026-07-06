@@ -218,6 +218,7 @@ export function CommentForm({
                         key={editorResetKey}
                         value={field.value}
                         borderless
+                        toolbarPosition="bottom"
                         minHeight="72px"
                         disabled={isSubmitting}
                         features={COMMENT_EDITOR_FEATURES}

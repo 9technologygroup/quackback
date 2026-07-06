@@ -199,6 +199,7 @@ export function CreatePostDialog({
                             placeholder="Add more details... Type / for commands"
                             minHeight="200px"
                             borderless
+                            toolbarPosition="bottom"
                             features={{
                               headings: true,
                               codeBlocks: true,
