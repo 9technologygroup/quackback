@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FormattedMessage, useIntl } from 'react-intl'
+import type { JSONContent } from '@tiptap/core'
 import { buildConversationRows, type ConversationRow } from './conversation-rows'
 import { AssistantWorkingTrace, AssistantStreamingBubble } from './assistant-turn'
 import { ConversationPresenceBadge } from './conversation-presence-badge'
@@ -9,8 +10,8 @@ import { ArrowUpIcon, ChevronDownIcon } from '@heroicons/react/24/solid'
 import { ChatBubbleLeftRightIcon, PaperClipIcon, BookOpenIcon } from '@heroicons/react/24/outline'
 import type { ConversationId } from '@quackback/ids'
 import { Avatar } from '@/components/ui/avatar'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { TypingDots } from '@/components/shared/typing-dots'
-import { EmojiPicker } from '@/components/shared/emoji-picker'
 import { personalizeMessage, firstNameOf } from '@/lib/shared/conversation/personalize'
 import { useConversationStream } from '@/lib/client/hooks/use-conversation-stream'
 import { useConversationTyping } from '@/lib/client/hooks/use-conversation-typing'
@@ -18,10 +19,7 @@ import { useAssistantTurn } from '@/lib/client/hooks/use-assistant-turn'
 import { useConversationComposerAttachments } from '@/lib/client/hooks/use-conversation-composer-attachments'
 import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
 import { ComposerAttachmentTray } from '@/components/shared/composer-attachment-tray'
-import {
-  ConversationRichComposer,
-  type ConversationRichComposerHandle,
-} from '@/components/admin/conversation/conversation-rich-composer'
+import { VISITOR_CONVERSATION_FEATURES } from '@/components/conversation/conversation-editor-features'
 import { VisitorMessageBubble } from '@/components/conversation/message-bubble'
 import {
   ThreadViewport,
@@ -58,6 +56,43 @@ function formatTime(iso: string): string {
 const NO_HEADERS = (): Record<string, string> => ({})
 const ALWAYS_READY = async (): Promise<boolean> => true
 const EMPTY_MESSAGES: ConversationMessageDTO[] = []
+
+// The full rich-text editor pulls in lowlight's syntax-highlighting grammars
+// (a meaningful chunk) that the composer doesn't need until it's actually
+// rendered — deferred to its own chunk via React.lazy so it's not part of the
+// widget/portal shell's initial bundle. The Suspense fallback below (a plain,
+// disabled-looking placeholder matching the editor's own dimensions) keeps the
+// composer's layout stable while that chunk loads.
+const LazyRichTextEditor = lazy(() =>
+  import('@/components/ui/rich-text-editor').then((m) => ({ default: m.RichTextEditor }))
+)
+
+// Cheap plain-text extraction from a TipTap JSON doc — drives the send-gate,
+// the typing indicator, the help-search query, and the link-preview scanner.
+// Deliberately NOT a markdown serialization: RichTextEditor only pays for the
+// expensive recursive @tiptap/markdown walk when the caller's onChange
+// declares a 3rd (markdown) parameter, which would redo that walk on every
+// keystroke — overkill for what's ultimately just an emptiness/substring check.
+function tiptapPlainText(doc: JSONContent | null | undefined): string {
+  if (!doc?.content) return ''
+  const parts: string[] = []
+  const walk = (node: JSONContent) => {
+    if (node.type === 'text') {
+      parts.push(node.text ?? '')
+      return
+    }
+    if (node.type === 'hardBreak') {
+      parts.push('\n')
+      return
+    }
+    node.content?.forEach(walk)
+    if (node.type === 'paragraph' || node.type === 'heading' || node.type === 'blockquote') {
+      parts.push('\n')
+    }
+  }
+  doc.content.forEach(walk)
+  return parts.join('')
+}
 
 export interface VisitorConversationThreadPresence {
   agentsOnline: boolean
@@ -258,7 +293,48 @@ export function VisitorConversationThread({
   // Live link unfurl while composing (debounced), matching admin.
   const debouncedMessageText = useDebouncedValue(composer.text, 500)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const composerRef = useRef<ConversationRichComposerHandle>(null)
+  const composerPlaceholder = intl.formatMessage({
+    id: 'widget.messenger.placeholder',
+    defaultMessage: 'Type your message…',
+  })
+
+  // RichTextEditor's onChange fires (json, html, markdown) — only the JSON is
+  // needed here (see tiptapPlainText above for why we skip the markdown arg).
+  // Also drives the typing indicator, same as onLocalInput did for the old composer.
+  const handleEditorChange = useCallback(
+    (json: JSONContent) => {
+      composer.onChange(tiptapPlainText(json).trim(), json)
+      onLocalInput()
+    },
+    [composer.onChange, onLocalInput]
+  )
+
+  // Pasting/dropping an image routes to the attachment tray, matching the
+  // paperclip button — RichTextEditor has no onImageUpload wired for visitors
+  // (images stay tray-only here, never inlined), so this replicates what the
+  // old composer's own paste/drop interception did.
+  const handleComposerPaste = useCallback(
+    (e: React.ClipboardEvent<HTMLDivElement>) => {
+      const images = Array.from(e.clipboardData?.files ?? []).filter((f) =>
+        f.type.startsWith('image/')
+      )
+      if (images.length === 0) return
+      e.preventDefault()
+      void handleAddFiles(images)
+    },
+    [handleAddFiles]
+  )
+  const handleComposerDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      const images = Array.from(e.dataTransfer?.files ?? []).filter((f) =>
+        f.type.startsWith('image/')
+      )
+      if (images.length === 0) return
+      e.preventDefault()
+      void handleAddFiles(images)
+    },
+    [handleAddFiles]
+  )
 
   // Initial load — resumes an existing conversation for the current principal
   // (works without forcing a session: getMyConversationFn returns just the greeting when
@@ -948,11 +1024,21 @@ export function VisitorConversationThread({
         </div>
       )}
       <div className="border-t border-border/40 p-2 shrink-0">
-        {/* Composer: a rich editor on top (inline images via paste/drop +
-              the attach button, and post links become embed cards), actions
-              (attach / emoji / send) on the row below. Enter sends; Shift+Enter
-              inserts a newline and the editor auto-grows to fit. */}
-        <div className="rounded-2xl border border-border bg-background px-3 py-2.5 shadow-sm transition-shadow focus-within:border-foreground/30 focus-within:ring-2 focus-within:ring-primary/25">
+        {/* Composer: a rich editor on top (the / menu inserts code blocks etc.,
+              and post links become embed cards), actions (attach / send) on the
+              row below. Enter sends; Shift+Enter inserts a newline and the
+              editor auto-grows to fit (capped, then scrolls). Images stay
+              tray-only here (paste/drop routes to the tray below, same as the
+              attach button) — the editor itself gets no onImageUpload, so it
+              never inlines an image. Emoji insertion is the editor's own `:`
+              trigger; RichTextEditor exposes no imperative ref to drive an
+              external picker button. The editor is lazy-loaded (defers the
+              lowlight syntax-highlighting bundle) behind a quiet placeholder. */}
+        <div
+          className="rounded-2xl border border-border bg-background px-3 py-2.5 shadow-sm transition-shadow focus-within:border-foreground/30 focus-within:ring-2 focus-within:ring-primary/25"
+          onPaste={handleComposerPaste}
+          onDrop={handleComposerDrop}
+        >
           <input
             ref={fileInputRef}
             type="file"
@@ -966,19 +1052,38 @@ export function VisitorConversationThread({
               e.target.value = ''
             }}
           />
-          <ConversationRichComposer
-            ref={composerRef}
-            resetSignal={composer.resetSignal}
-            disabled={sending}
-            placeholder={intl.formatMessage({
-              id: 'widget.messenger.placeholder',
-              defaultMessage: 'Type your message…',
-            })}
-            onChange={composer.onChange}
-            onSubmit={() => void send()}
-            onLocalInput={onLocalInput}
-            onImageFiles={(files) => void handleAddFiles(files)}
-          />
+          <ScrollArea
+            className="[&_[data-slot=scroll-area-viewport]]:max-h-32"
+            scrollBarClassName="w-1.5"
+          >
+            <Suspense
+              fallback={
+                <div
+                  aria-hidden="true"
+                  className="min-h-[1.5rem] select-none py-1 text-sm text-muted-foreground/50"
+                >
+                  {composerPlaceholder}
+                </div>
+              }
+            >
+              <LazyRichTextEditor
+                // Remounts the editor to clear it after a send (no imperative
+                // ref exists to call clearContent()) — resetSignal starts at 0
+                // (no remount, no autofocus on first mount) and increments on
+                // every successful send, at which point we DO want focus back
+                // so the visitor can keep typing without re-clicking.
+                key={composer.resetSignal}
+                borderless
+                minHeight="1.5rem"
+                disabled={sending}
+                placeholder={composerPlaceholder}
+                features={VISITOR_CONVERSATION_FEATURES}
+                autofocus={composer.resetSignal > 0 ? 'end' : false}
+                onChange={handleEditorChange}
+                onSubmit={send}
+              />
+            </Suspense>
+          </ScrollArea>
           <ComposerAttachmentTray attachments={pendingAttachments} onRemove={removeAttachment} />
           {uploadError && <p className="px-1 pt-1 text-[11px] text-destructive">{uploadError}</p>}
           {/* Live link unfurl while composing (Slack-style), gated by the flag. */}
@@ -997,10 +1102,6 @@ export function VisitorConversationThread({
             >
               <PaperClipIcon className="w-5 h-5" />
             </button>
-            <EmojiPicker
-              className="size-8"
-              onSelect={(emoji) => composerRef.current?.insertText(emoji)}
-            />
             <div className="flex-1" />
             <button
               type="button"
