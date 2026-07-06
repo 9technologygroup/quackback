@@ -28,8 +28,8 @@ import {
 import { logger } from '@/lib/server/logger'
 import type { AssistantHandoffReason } from '@/lib/server/db'
 import type { PrincipalId, ConversationId, AssistantInvolvementId } from '@quackback/ids'
-import type { HelpCenterAudience } from '@/lib/server/domains/help-center/help-center-search.service'
 import type { AssistantSurface } from '@/lib/shared/assistant/surfaces'
+import { resolveContentAudience } from './audience'
 import { assembleAssistantTools } from './assistant.tools'
 import { makeAssistantToolContext } from './assistant.toolspec'
 import type { AssistantCitation, AssistantToolContext } from './assistant.toolspec'
@@ -85,8 +85,6 @@ export interface AssistantTurnInput {
   messages: AssistantThreadMessage[]
   /** Quinn's service principal (authors replies next wave). */
   assistantPrincipalId: PrincipalId
-  /** Viewer audience for retrieval scoping. Defaults to `public`. */
-  audience?: HelpCenterAudience
   /** The linked conversation, or null (sandbox, which also implies simulate mode for write tools). */
   conversationId?: ConversationId | null
   /** The active involvement, for audit rows and pending actions. Null before the first involvement opens, or in the sandbox. */
@@ -95,7 +93,13 @@ export interface AssistantTurnInput {
   latestCustomerMessageId?: string | null
   /** Whether Quinn has already offered escalation once in this thread. */
   escalationAlreadyOffered?: boolean
-  /** Deploy surface this turn runs on: scopes guidance rules and picks the surface's saved instructions. Defaults to 'widget'. */
+  /**
+   * Deploy surface this turn runs on: scopes guidance rules, picks the
+   * surface's saved instructions, AND (via `resolveContentAudience`) sets the
+   * retrieval ceiling — there is no separate caller-suppliable audience field,
+   * so a customer-facing surface can never be made to retrieve teammate or
+   * internal content. Defaults to 'widget'.
+   */
   surface?: AssistantSurface
   /** Tenant db handle for the tools; defaults to the app db. */
   db?: Executor
@@ -480,7 +484,13 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // isAssistantConfigured() guarantees an effective chat model above.
   const model = getChatModel('assistant')!
 
-  const audience = input.audience ?? 'public'
+  // Surface is the only signal that distinguishes a customer-facing turn from
+  // a teammate-facing one (quinnActor is always a 'service' principal), so the
+  // retrieval ceiling derives from it via the one allowed mint point rather
+  // than being a caller-suppliable field: a caller can pick the wrong surface,
+  // but it can no longer pick the wrong audience for a given surface.
+  const surface = input.surface ?? 'widget'
+  const audience = resolveContentAudience(surface)
   const conversationId = input.conversationId ?? null
   // Shared construction point (simulate derives from the null conversation =
   // sandbox; actor defaults to Quinn's bounded set).
@@ -509,7 +519,6 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // the usage-log metadata carries no guidanceRuleIds key in that case.
   let guidanceRuleIds: string[] = []
   if (actionsEnabled) {
-    const surface = input.surface ?? 'widget'
     const [config, guidanceRules] = await Promise.all([
       getAssistantConfig(),
       listGuidanceRules({ enabledOnly: true, surface }),

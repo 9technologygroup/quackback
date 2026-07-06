@@ -504,6 +504,40 @@ describe('runAssistantTurn', () => {
     expect(mockRetrieve).toHaveBeenCalledWith('reset password', { audience: 'public' })
   })
 
+  it('derives a team content audience for the copilot surface (structural leak gate)', async () => {
+    mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
+    mockChat.mockImplementation(
+      (opts: {
+        tools: Array<{ name: string; execute: (args: unknown, o: unknown) => Promise<unknown> }>
+        context: unknown
+      }) =>
+        (async function* () {
+          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          await search.execute(
+            { query: 'internal escalation policy' },
+            { context: opts.context, emitCustomEvent: () => {} }
+          )
+          const object = {
+            text: 'Here is the policy.',
+            citations: [{ type: 'article', id: 'kb_article_1' }],
+          }
+          yield* completeRun(object)
+        })()
+    )
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('what is the escalation policy?'),
+      surface: 'copilot',
+    })
+
+    // A copilot-surface turn resolves a 'team' retrieval ceiling — mapped to
+    // the KB's own 'team' HelpCenterAudience at the toolspec boundary — never
+    // a caller-suppliable value, since AssistantTurnInput has no audience
+    // field at all.
+    expect(mockRetrieve).toHaveBeenCalledWith('internal escalation policy', { audience: 'team' })
+  })
+
   it('drops citations below the confidence floor (nothing retrieved)', async () => {
     mockRetrieve.mockResolvedValue([])
     mockChat.mockImplementation(

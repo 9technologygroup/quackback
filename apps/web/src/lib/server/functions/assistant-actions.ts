@@ -30,6 +30,7 @@ import {
   makeAssistantToolContext,
   type AssistantToolContext,
 } from '@/lib/server/domains/assistant/assistant.toolspec'
+import { resolveContentAudience } from '@/lib/server/domains/assistant/audience'
 import { executeApprovedPendingAction } from '@/lib/server/domains/assistant/assistant.tools'
 import { ensureAssistantPrincipal } from '@/lib/server/domains/assistant/assistant.principal'
 
@@ -86,14 +87,22 @@ class ToolSpecGoneError extends DomainException {
 
 /** Build the tool-execution context an approved action runs under — Quinn's
  *  own identity, never the approver's, since the approver only authorizes it. */
-async function buildExecutionContext(pending: AssistantPendingAction): Promise<AssistantToolContext> {
+async function buildExecutionContext(
+  pending: AssistantPendingAction
+): Promise<AssistantToolContext> {
   const assistant = await ensureAssistantPrincipal()
   // simulate is explicit: the conversation id is always set here, but this
   // path executes for real regardless of how the default would derive.
   return makeAssistantToolContext({
     db,
     assistantPrincipalId: assistant.id,
-    audience: 'team',
+    // A teammate approved this proposal from the inbox approval queue — the
+    // same teammate-facing surface as copilot — so it resolves through the
+    // same allow-list as any other context construction, rather than writing
+    // the 'team' literal directly. This executor never runs for a
+    // customer-facing surface's proposals, so 'copilot' is the correct fixed
+    // choice, not a per-call parameter.
+    audience: resolveContentAudience('copilot'),
     conversationId: pending.conversationId,
     involvementId: pending.involvementId,
     simulate: false,

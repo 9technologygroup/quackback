@@ -14,7 +14,7 @@ import { z } from 'zod'
 import { conversations, eq } from '@/lib/server/db'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
 import type { PrincipalId, ConversationId, AssistantInvolvementId, BoardId } from '@quackback/ids'
-import type { HelpCenterAudience } from '@/lib/server/domains/help-center/help-center-search.service'
+import { type ContentAudience, toHelpCenterAudience } from './audience'
 import { retrieveKbArticles } from './retrieval'
 import { listMessages } from '@/lib/server/domains/conversation/conversation.query'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
@@ -51,7 +51,11 @@ export interface AssistantCitation {
 export interface AssistantToolContext {
   db: Executor
   assistantPrincipalId: PrincipalId
-  audience: HelpCenterAudience
+  /**
+   * The turn's retrieval ceiling, minted exclusively by `resolveContentAudience`
+   * (see `./audience`). Never construct this from a raw string literal.
+   */
+  audience: ContentAudience
   conversationId: ConversationId | null
   /** Sources surfaced by search_knowledge this run, keyed by id, for citation assembly. */
   sources: Map<string, AssistantCitation>
@@ -80,7 +84,7 @@ export interface AssistantToolContext {
 export function makeAssistantToolContext(init: {
   db: Executor
   assistantPrincipalId: PrincipalId
-  audience: HelpCenterAudience
+  audience: ContentAudience
   conversationId: ConversationId | null
   involvementId?: AssistantInvolvementId | null
   latestCustomerMessageId?: string | null
@@ -244,8 +248,12 @@ async function executeSearchKnowledge(
     }
   }
   // Audience-scoped from day one: the citation set can never exceed what the
-  // viewer could already see.
-  const articles = await retrieveKbArticles(args.query, { audience: ctx.audience })
+  // viewer could already see. retrieveKbArticles only knows the narrower
+  // public|team HelpCenterAudience, so map at this boundary rather than
+  // widening that type's blast radius across the rest of the help center.
+  const articles = await retrieveKbArticles(args.query, {
+    audience: toHelpCenterAudience(ctx.audience),
+  })
   for (const a of articles) {
     ctx.sources.set(a.id, {
       type: 'article',
@@ -623,7 +631,8 @@ const SPECS: readonly AssistantToolSpec[] = [
   }),
   defineToolSpec({
     label: 'Create ticket',
-    description: 'Open a support ticket to track work that needs a teammate beyond this conversation.',
+    description:
+      'Open a support ticket to track work that needs a teammate beyond this conversation.',
     risk: 'write',
     supportedModes: ['disabled', 'approval', 'autonomous'],
     defaultMode: 'approval',
@@ -672,9 +681,8 @@ export async function resolveToolSpecs(): Promise<AssistantToolSpec[]> {
   const staticSpecs = Object.values(ASSISTANT_TOOL_SPECS)
   const connectorsEnabled = await isFeatureEnabled('dataConnectors')
   if (!connectorsEnabled) return staticSpecs
-  const { listEnabledConnectorToolSpecs } = await import(
-    '@/lib/server/domains/connectors/connector.toolspec'
-  )
+  const { listEnabledConnectorToolSpecs } =
+    await import('@/lib/server/domains/connectors/connector.toolspec')
   return [...staticSpecs, ...(await listEnabledConnectorToolSpecs())]
 }
 
