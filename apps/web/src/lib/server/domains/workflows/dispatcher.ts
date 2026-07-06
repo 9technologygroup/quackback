@@ -23,8 +23,14 @@ import { frequencyCapAllows, hasActiveCustomerFacingRun } from './dispatcher.gua
 export interface WorkflowTrigger {
   triggerType: string
   conversationId: ConversationId
-  /** The triggering actor's type; 'service' (automated) is gated out. */
+  /** The triggering actor's type, reported truthfully; 'service' (automated)
+   *  is gated out below unless the trigger opts out via allowServiceActor. */
   actorType: PrincipalType
+  /** Exempts this trigger from the automated-actor gate. Only for a
+   *  service-authored event that is a terminal, one-time signal (the AI
+   *  assistant's hand-off) — never for an event a workflow action can itself
+   *  produce, which would reopen the loop the gate exists to stop. */
+  allowServiceActor?: boolean
   /** The person the run acts on, for per-person frequency caps. */
   subjectPrincipalId?: PrincipalId | null
   /** The triggering message (body + sender), if the trigger carried one. */
@@ -32,8 +38,9 @@ export interface WorkflowTrigger {
 }
 
 export async function dispatchWorkflowTrigger(trigger: WorkflowTrigger): Promise<void> {
-  // Human-caused only: an automated (service) actor never re-triggers workflows.
-  if (trigger.actorType === 'service') return
+  // Human-caused only: an automated (service) actor never re-triggers workflows
+  // unless the trigger's mapping explicitly vouched for it (allowServiceActor).
+  if (trigger.actorType === 'service' && !trigger.allowServiceActor) return
 
   const live = await listLiveWorkflowsForTrigger(trigger.triggerType)
   if (live.length === 0) return

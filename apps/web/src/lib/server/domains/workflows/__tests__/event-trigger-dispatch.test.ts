@@ -67,6 +67,24 @@ describe('dispatchWorkflowsForEvent', () => {
     expect(dispatchWorkflowTrigger).toHaveBeenCalledTimes(2)
   })
 
+  it('dispatches assistant.handed_off (service-authored) without interrupting waits', async () => {
+    await dispatchWorkflowsForEvent({
+      ...base,
+      type: 'assistant.handed_off',
+      actor: { type: 'service' as const, principalId: 'principal_assistant' },
+      data: { conversationId: 'conversation_4', reason: 'frustration' },
+    } as unknown as EventData)
+    expect(interruptWaitingRuns).not.toHaveBeenCalled()
+    expect(dispatchWorkflowTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        triggerType: 'assistant.handed_off',
+        conversationId: 'conversation_4',
+        actorType: 'service',
+        allowServiceActor: true,
+      })
+    )
+  })
+
   it('does nothing for a non-conversation event (no trigger, no interrupt)', async () => {
     await dispatchWorkflowsForEvent({
       ...base,

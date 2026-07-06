@@ -149,6 +149,53 @@ export const ACTION_LABELS: Record<ActionType, string> = {
 }
 export const ACTION_TYPES = Object.keys(ACTION_LABELS) as ActionType[]
 
+// ---------------------------------------------------------------------------
+// Trigger / class / status catalogues (workflow-level, not step-level): the
+// fullscreen builder's top bar + trigger inspector share these.
+// ---------------------------------------------------------------------------
+
+export const TRIGGER_TYPES = [
+  'conversation.created',
+  'message.created',
+  'conversation.status_changed',
+  'conversation.assigned',
+  'assistant.handed_off',
+] as const
+export type TriggerType = (typeof TRIGGER_TYPES)[number]
+
+export const TRIGGER_LABELS: Record<TriggerType, string> = {
+  'conversation.created': 'New conversation',
+  'message.created': 'Message received',
+  'conversation.status_changed': 'Status changed',
+  'conversation.assigned': 'Assigned to team or agent',
+  'assistant.handed_off': 'AI agent handed off to a human',
+}
+
+/** Trigger label for a stored triggerType, tolerant of an unknown/legacy value. */
+export function triggerLabel(triggerType: string): string {
+  return (TRIGGER_LABELS as Record<string, string | undefined>)[triggerType] ?? triggerType
+}
+
+export const WORKFLOW_CLASSES = [
+  {
+    value: 'customer_facing',
+    label: 'Customer-facing',
+    description: 'Exclusive: only one customer-facing workflow runs per conversation.',
+  },
+  {
+    value: 'background',
+    label: 'Background',
+    description: 'Parallel: runs silently alongside other workflows.',
+  },
+] as const
+export type WorkflowClassValue = (typeof WORKFLOW_CLASSES)[number]['value']
+
+export const WORKFLOW_STATUSES = ['draft', 'live', 'paused'] as const
+export type WorkflowStatusValue = (typeof WORKFLOW_STATUSES)[number]
+
+/** The channel checkboxes offered under a trigger (mirrors "conversation.channel"). */
+export const TRIGGER_CHANNELS = CONDITION_FIELD_META['conversation.channel'].options!
+
 /** A fresh action of the given type with editable defaults. */
 export function defaultAction(type: ActionType): GraphAction {
   switch (type) {
@@ -229,12 +276,19 @@ export function freshStepId(tree: WorkflowTree, kind: TreeStep['kind']): string 
   return `${kind}-${n}`
 }
 
-/** A fresh step of the given kind with a tree-unique id. */
-export function createStep(tree: WorkflowTree, kind: TreeStep['kind']): TreeStep {
+/** A fresh step of the given kind with a tree-unique id. `actionType` picks
+ *  the initial action for an 'action' step (the step palette inserts a
+ *  specific type directly, e.g. "Apply SLA policy" rather than a generic
+ *  action the editor then has to be switched away from). */
+export function createStep(
+  tree: WorkflowTree,
+  kind: TreeStep['kind'],
+  actionType?: ActionType
+): TreeStep {
   const id = freshStepId(tree, kind)
   switch (kind) {
     case 'action':
-      return { id, kind, action: defaultAction('assign_agent') }
+      return { id, kind, action: defaultAction(actionType ?? 'assign_agent') }
     case 'condition':
       return { id, kind, condition: {} }
     case 'branch':
@@ -684,8 +738,9 @@ export interface EntityLabels {
 
 const shortId = (id: string): string => (id.length > 14 ? `${id.slice(0, 14)}…` : id)
 
+// Needs-setup placeholders summarize as "not chosen yet", not as a raw id.
 const named = (id: string, lookup: ReadonlyMap<string, string> | undefined, missing: string) =>
-  id ? (lookup?.get(id) ?? shortId(id)) : missing
+  id && !isNeedsSetupRef(id) ? (lookup?.get(id) ?? shortId(id)) : missing
 
 export function actionSummary(action: GraphAction, labels: EntityLabels = {}): string {
   switch (action.type) {
@@ -816,4 +871,266 @@ export function draftToGraphJson(draft: GraphDraft): Result<WorkflowGraphJson> {
   const graph = treeToGraph(draft.tree)
   const check = validateGraph(graph)
   return check.ok ? { ok: true, value: graph } : check
+}
+
+// ---------------------------------------------------------------------------
+// Step addressing: locate/replace a step by id without threading positional
+// callbacks through the render recursion. The fullscreen builder's inspector
+// panel is not co-located with the node it edits (the canvas only renders
+// cards and reports a selected id), so it needs to turn "step X changed" into
+// an updated tree knowing only X's id.
+// ---------------------------------------------------------------------------
+
+/** One branch hop (which branch step, which of its paths) from the tree root. */
+export interface StepLocation {
+  path: { branchId: string; pathKey: string }[]
+}
+
+export const ROOT_LOCATION: StepLocation = { path: [] }
+
+/** The steps array a location addresses (the root list, or a branch path's). */
+export function stepsAtLocation(tree: WorkflowTree, location: StepLocation): TreeStep[] {
+  let steps = tree.steps
+  for (const hop of location.path) {
+    const branch = steps.find((s) => s.id === hop.branchId)
+    if (!branch || branch.kind !== 'branch') return []
+    const path = branch.paths.find((p) => p.key === hop.pathKey)
+    steps = path ? path.steps : []
+  }
+  return steps
+}
+
+function replaceStepsAtLocation(
+  tree: WorkflowTree,
+  location: StepLocation,
+  steps: TreeStep[]
+): WorkflowTree {
+  if (location.path.length === 0) return { ...tree, steps }
+  const replaceIn = (current: TreeStep[], hops: StepLocation['path']): TreeStep[] => {
+    const [hop, ...rest] = hops
+    return current.map((s) => {
+      if (!hop || s.id !== hop.branchId || s.kind !== 'branch') return s
+      return {
+        ...s,
+        paths: s.paths.map((p) =>
+          p.key !== hop.pathKey
+            ? p
+            : { ...p, steps: rest.length === 0 ? steps : replaceIn(p.steps, rest) }
+        ),
+      }
+    })
+  }
+  return { ...tree, steps: replaceIn(tree.steps, location.path) }
+}
+
+/** Find a step anywhere in the tree by id, with the location needed to update it. */
+export function findStepById(
+  tree: WorkflowTree,
+  id: string
+): { step: TreeStep; location: StepLocation } | null {
+  const search = (
+    steps: TreeStep[],
+    location: StepLocation
+  ): { step: TreeStep; location: StepLocation } | null => {
+    for (const step of steps) {
+      if (step.id === id) return { step, location }
+      if (step.kind === 'branch') {
+        for (const p of step.paths) {
+          const found = search(p.steps, {
+            path: [...location.path, { branchId: step.id, pathKey: p.key }],
+          })
+          if (found) return found
+        }
+      }
+    }
+    return null
+  }
+  return search(tree.steps, ROOT_LOCATION)
+}
+
+/** Insert `step` at `index` within the steps array `location` addresses. */
+export function insertStepAt(
+  tree: WorkflowTree,
+  location: StepLocation,
+  index: number,
+  step: TreeStep
+): WorkflowTree {
+  return replaceStepsAtLocation(
+    tree,
+    location,
+    insertStep(stepsAtLocation(tree, location), index, step)
+  )
+}
+
+/** Replace the step with `id` (wherever it is) via `updater`. A no-op if missing. */
+export function updateStepById(
+  tree: WorkflowTree,
+  id: string,
+  updater: (step: TreeStep) => TreeStep
+): WorkflowTree {
+  const found = findStepById(tree, id)
+  if (!found) return tree
+  const steps = stepsAtLocation(tree, found.location)
+  return replaceStepsAtLocation(
+    tree,
+    found.location,
+    steps.map((s) => (s.id === id ? updater(s) : s))
+  )
+}
+
+/** Remove the step with `id` (wherever it is), along with any nested steps. */
+export function removeStepById(tree: WorkflowTree, id: string): WorkflowTree {
+  const found = findStepById(tree, id)
+  if (!found) return tree
+  const steps = stepsAtLocation(tree, found.location)
+  return replaceStepsAtLocation(
+    tree,
+    found.location,
+    steps.filter((s) => s.id !== id)
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Per-step issues: the subset of validateAction's rules that apply to an
+// already-typed GraphAction. Every step in a WorkflowTree is well-formed (it
+// came from a validated graph or from createStep's defaults), so the only
+// thing left to flag is a step still missing a required choice — e.g. an
+// "Assign to team" step with no team picked yet. Kept in sync with
+// validateAction by hand: that one validates unknown JSON and prefixes a
+// "where", this one validates a typed action for a plain message, so they
+// can't share one function body.
+// ---------------------------------------------------------------------------
+
+/** Sentinel ref prefix used by workflow templates for config only the workspace
+ *  can supply (a team id, an SLA policy id). Sentinels keep template graphs
+ *  schema-valid so they create cleanly, while reading as unset here so the list
+ *  badge and the builder's issues chip demand setup before going live. */
+export const NEEDS_SETUP_PREFIX = 'needs-setup-'
+
+/** True when the ref is a template placeholder rather than a real id. */
+export function isNeedsSetupRef(v: string | undefined): boolean {
+  return typeof v === 'string' && v.startsWith(NEEDS_SETUP_PREFIX)
+}
+
+const isSetRef = (v: string | undefined): boolean => Boolean(v) && !isNeedsSetupRef(v)
+
+export function actionIssue(action: GraphAction): string | null {
+  switch (action.type) {
+    case 'assign_agent':
+      return isSetRef(action.principalId) ? null : 'Choose a teammate to assign'
+    case 'assign_team':
+      return isSetRef(action.teamId) ? null : 'Choose a team to assign'
+    case 'add_tag':
+      return isSetRef(action.tagId) ? null : 'Choose a tag to add'
+    case 'remove_tag':
+      return isSetRef(action.tagId) ? null : 'Choose a tag to remove'
+    case 'apply_sla':
+      return isSetRef(action.policyId) ? null : 'Choose an SLA policy'
+    case 'set_attribute':
+      return action.key ? null : 'Choose an attribute'
+    case 'set_priority':
+    case 'snooze':
+    case 'close':
+      return null
+  }
+}
+
+/** Every step id in the tree with an unresolved issue, mapped to its message. */
+export function collectStepIssues(tree: WorkflowTree): Map<string, string> {
+  const issues = new Map<string, string>()
+  const walk = (steps: TreeStep[]) => {
+    for (const step of steps) {
+      if (step.kind === 'action') {
+        const message = actionIssue(step.action)
+        if (message) issues.set(step.id, message)
+      } else if (step.kind === 'branch') {
+        for (const p of step.paths) walk(p.steps)
+      }
+    }
+  }
+  walk(tree.steps)
+  return issues
+}
+
+export interface DraftIssues {
+  count: number
+  ids: ReadonlySet<string>
+  firstId: string | null
+  /** A structural problem (bad JSON, a cycle, an orphan step) blocking save entirely. */
+  blocking: string | null
+}
+
+/** Validation summary for the top bar's issues chip and the Set-live gate. */
+export function draftIssues(draft: GraphDraft): DraftIssues {
+  if (draft.mode === 'json') {
+    const parsed = parseWorkflowGraphText(draft.text)
+    if (!parsed.ok) return { count: 1, ids: new Set(), firstId: null, blocking: parsed.error }
+    return { count: 0, ids: new Set(), firstId: null, blocking: null }
+  }
+  const stepIssues = collectStepIssues(draft.tree)
+  const ids = new Set(stepIssues.keys())
+  const [firstId = null] = ids
+  return { count: ids.size, ids, firstId, blocking: null }
+}
+
+// ---------------------------------------------------------------------------
+// Outline: a flat top-to-bottom list for the builder's left rail, derived from
+// the same tree the canvas renders. Branch paths get an unselectable section
+// header row ("Path A · Billing"); everything else is one selectable row per
+// step, indented one level per branch nesting.
+// ---------------------------------------------------------------------------
+
+export type OutlineEntry =
+  | { kind: 'trigger'; id: string; label: string; depth: number; hasIssue: false }
+  | { kind: TreeStep['kind']; id: string; label: string; depth: number; hasIssue: boolean }
+  | { kind: 'path-header'; label: string; depth: number }
+
+export const PATH_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+function stepLabel(step: TreeStep, labels: EntityLabels): string {
+  switch (step.kind) {
+    case 'action':
+      return actionSummary(step.action, labels)
+    case 'condition':
+      return conditionSummary(step.condition)
+    case 'wait':
+      return waitSummary(step.seconds)
+    case 'branch':
+      return `Branch · ${step.paths.length} path${step.paths.length === 1 ? '' : 's'}`
+  }
+}
+
+export function deriveOutline(
+  tree: WorkflowTree,
+  triggerLabelText: string,
+  issues: ReadonlyMap<string, string>,
+  labels: EntityLabels = {}
+): OutlineEntry[] {
+  const entries: OutlineEntry[] = [
+    { kind: 'trigger', id: tree.triggerId, label: triggerLabelText, depth: 0, hasIssue: false },
+  ]
+  const walk = (steps: TreeStep[], depth: number) => {
+    for (const step of steps) {
+      entries.push({
+        kind: step.kind,
+        id: step.id,
+        label: stepLabel(step, labels),
+        depth,
+        hasIssue: issues.has(step.id),
+      })
+      if (step.kind === 'branch') {
+        step.paths.forEach((p, i) => {
+          const letter = PATH_LETTERS[i] ?? String(i + 1)
+          entries.push({
+            kind: 'path-header',
+            label: `Path ${letter} · ${p.key}`,
+            depth: depth + 1,
+          })
+          walk(p.steps, depth + 1)
+        })
+      }
+    }
+  }
+  walk(tree.steps, 0)
+  return entries
 }

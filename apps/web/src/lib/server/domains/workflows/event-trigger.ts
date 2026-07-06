@@ -59,6 +59,23 @@ export function eventToWorkflowTrigger(event: EventData): WorkflowTrigger | null
         message: { body: m.content, senderType: m.senderType },
       }
     }
+    case 'assistant.handed_off': {
+      // The assistant's own service principal authors this event, so the
+      // dispatcher's automated-actor gate would silently swallow it. That gate
+      // exists to stop a workflow's own automated action from re-triggering
+      // workflows; a terminal "the assistant gave up, hand off to a human"
+      // signal is not that loop (no workflow action can produce it), so the
+      // trigger opts out explicitly — actorType stays truthful for any other
+      // consumer.
+      return {
+        triggerType: event.type,
+        conversationId: event.data.conversationId as ConversationId,
+        actorType,
+        allowServiceActor: true,
+        subjectPrincipalId: null,
+        message: null,
+      }
+    }
     default:
       return null
   }

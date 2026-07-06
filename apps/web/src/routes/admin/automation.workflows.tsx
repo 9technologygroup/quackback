@@ -27,7 +27,7 @@ function WorkflowsPageRoute() {
 
 function WorkflowsPage() {
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-5xl">
       <div className="lg:hidden">
         <BackLink to="/admin/automation">AI &amp; Automation</BackLink>
       </div>

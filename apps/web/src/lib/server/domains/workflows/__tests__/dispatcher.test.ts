@@ -54,6 +54,12 @@ describe('dispatchWorkflowTrigger', () => {
     expect(runWorkflow).not.toHaveBeenCalled()
   })
 
+  it('lets a service actor through when the trigger explicitly opts out of the gate', async () => {
+    listLiveWorkflowsForTrigger.mockResolvedValue([wf('bg1', 'background')])
+    await dispatchWorkflowTrigger(trigger({ actorType: 'service', allowServiceActor: true }))
+    expect(ranIds()).toEqual(['bg1'])
+  })
+
   it('does nothing when no workflow is live for the trigger', async () => {
     listLiveWorkflowsForTrigger.mockResolvedValue([])
     await dispatchWorkflowTrigger(trigger())

@@ -106,6 +106,23 @@ describe('eventToWorkflowTrigger', () => {
     expect(eventToWorkflowTrigger(event)?.actorType).toBe('service')
   })
 
+  it('maps assistant.handed_off truthfully as service-authored, opted out of the automated-actor gate', () => {
+    const event = {
+      ...base,
+      type: 'assistant.handed_off',
+      actor: { type: 'service' as const, principalId: 'principal_assistant' },
+      data: { conversationId: 'conversation_5', reason: 'low_confidence' },
+    } as unknown as EventData
+    expect(eventToWorkflowTrigger(event)).toEqual({
+      triggerType: 'assistant.handed_off',
+      conversationId: 'conversation_5',
+      actorType: 'service',
+      allowServiceActor: true,
+      subjectPrincipalId: null,
+      message: null,
+    })
+  })
+
   it('returns null for non-conversation events', () => {
     for (const type of [
       'post.created',
