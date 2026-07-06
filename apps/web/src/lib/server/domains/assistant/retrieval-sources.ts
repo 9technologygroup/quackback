@@ -4,9 +4,9 @@
  * `search_knowledge` used to call the knowledge base directly (the only
  * grounding source that existed). This module generalizes that into a
  * `KnowledgeSource` per grounding source — the knowledge base always,
- * feedback posts and admin-curated snippets each behind their own flag, more
- * later (past-conversation summaries) — composed by `retrieveKnowledge` into
- * one ranked, budgeted result.
+ * feedback posts, admin-curated snippets, and the same customer's own
+ * past-conversation summaries each behind their own flag — composed by
+ * `retrieveKnowledge` into one ranked, budgeted result.
  *
  * Mirrors the static-plus-flagged-dynamic shape of `resolveToolSpecs()`
  * (assistant.toolspec.ts): the knowledge-base source is always registered; a
@@ -17,6 +17,7 @@
  * `retrieveKbArticles`'s own ranking — merging and re-ranking a single
  * source's already-sorted output changes nothing.
  */
+import type { PrincipalId, ConversationId } from '@quackback/ids'
 import type { ContentAudience } from './audience'
 import { toHelpCenterAudience } from './audience'
 import { retrieveKbArticles } from './retrieval'
@@ -37,7 +38,7 @@ export const KNOWLEDGE_TOP_K = 5
  */
 export interface RetrievedItem {
   id: string
-  sourceType: 'article' | 'post' | 'snippet'
+  sourceType: 'article' | 'post' | 'snippet' | 'summary'
   title: string
   excerpt: string
   score: number
@@ -50,13 +51,27 @@ export interface RetrievedItem {
  * `retrieve` takes the turn's retrieval ceiling (never a raw audience
  * string — see `./audience`) and returns already audience-scoped items; a
  * source is responsible for its own visibility predicate.
+ *
+ * `customerPrincipalId` and `conversationId` describe the CURRENT turn's
+ * conversation (its customer, and the conversation itself), for a source
+ * whose scope is per-customer rather than per-audience — today only the
+ * past-conversation-summaries source (`conversation-summary-retrieval.ts`)
+ * reads either; every other source ignores them. Both are undefined/null
+ * when there is no real customer to scope to (e.g. the admin sandbox), which
+ * a customer-scoped source MUST treat as "return nothing", never "return
+ * everything" — a missing scope is not the same as an unbounded one.
  */
 export interface KnowledgeSource {
   sourceType: RetrievedItem['sourceType']
   retrieve(
     query: string,
     ceiling: ContentAudience,
-    opts: { topK: number; signal?: AbortSignal }
+    opts: {
+      topK: number
+      signal?: AbortSignal
+      customerPrincipalId?: PrincipalId
+      conversationId?: ConversationId | null
+    }
   ): Promise<RetrievedItem[]>
 }
 
@@ -103,17 +118,19 @@ const STATIC_SOURCES: readonly KnowledgeSource[] = [kbKnowledgeSource]
 
 /**
  * Resolve the active source list: the knowledge-base source plus, per-flag,
- * the feedback-posts source (`assistantPostGrounding`) and the admin-curated
- * snippets source (`assistantSnippets`). Each optional source's domain is
+ * the feedback-posts source (`assistantPostGrounding`), the admin-curated
+ * snippets source (`assistantSnippets`), and the past-conversation-summaries
+ * source (`assistantConversationGrounding`). Each optional source's domain is
  * imported dynamically so this module (and everything that statically
  * imports it, including assistant.toolspec.ts) never pulls in that source's
  * schema at load time when its flag is off — mirrors `resolveToolSpecs()`'s
  * lazy import of the connectors domain behind `dataConnectors`.
  */
 export async function resolveKnowledgeSources(): Promise<KnowledgeSource[]> {
-  const [postGroundingEnabled, snippetsEnabled] = await Promise.all([
+  const [postGroundingEnabled, snippetsEnabled, conversationGroundingEnabled] = await Promise.all([
     isFeatureEnabled('assistantPostGrounding'),
     isFeatureEnabled('assistantSnippets'),
+    isFeatureEnabled('assistantConversationGrounding'),
   ])
   const sources: KnowledgeSource[] = [...STATIC_SOURCES]
   if (postGroundingEnabled) {
@@ -123,6 +140,11 @@ export async function resolveKnowledgeSources(): Promise<KnowledgeSource[]> {
   if (snippetsEnabled) {
     const { snippetsKnowledgeSource } = await import('./snippets-retrieval')
     sources.push(snippetsKnowledgeSource)
+  }
+  if (conversationGroundingEnabled) {
+    const { conversationSummariesKnowledgeSource } =
+      await import('./conversation-summary-retrieval')
+    sources.push(conversationSummariesKnowledgeSource)
   }
   return sources
 }
@@ -136,12 +158,24 @@ export async function resolveKnowledgeSources(): Promise<KnowledgeSource[]> {
 export async function retrieveKnowledge(
   query: string,
   ceiling: ContentAudience,
-  opts: { topK?: number; signal?: AbortSignal } = {}
+  opts: {
+    topK?: number
+    signal?: AbortSignal
+    customerPrincipalId?: PrincipalId
+    conversationId?: ConversationId | null
+  } = {}
 ): Promise<RetrievedItem[]> {
   const topK = opts.topK ?? KNOWLEDGE_TOP_K
   const sources = await resolveKnowledgeSources()
   const perSource = await Promise.all(
-    sources.map((source) => source.retrieve(query, ceiling, { topK, signal: opts.signal }))
+    sources.map((source) =>
+      source.retrieve(query, ceiling, {
+        topK,
+        signal: opts.signal,
+        customerPrincipalId: opts.customerPrincipalId,
+        conversationId: opts.conversationId,
+      })
+    )
   )
   return perSource
     .flat()

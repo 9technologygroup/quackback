@@ -11,6 +11,16 @@ vi.mock('../retrieval', () => ({
   retrieveKbArticles: (...args: unknown[]) => mockRetrieve(...args),
 }))
 
+// Stands in for the real past-conversation-summaries source: resolveKnowledgeSources
+// dynamically imports this only when assistantConversationGrounding is on.
+const mockConversationSummariesRetrieve = vi.fn()
+vi.mock('../conversation-summary-retrieval', () => ({
+  conversationSummariesKnowledgeSource: {
+    sourceType: 'summary',
+    retrieve: (...args: unknown[]) => mockConversationSummariesRetrieve(...args),
+  },
+}))
+
 const mockIsFeatureEnabled = vi.fn()
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
@@ -132,6 +142,7 @@ function makeFakeWriteSpec(overrides: Partial<AssistantToolSpec> = {}): Assistan
 beforeEach(() => {
   vi.clearAllMocks()
   mockIsFeatureEnabled.mockResolvedValue(false)
+  mockConversationSummariesRetrieve.mockResolvedValue([])
 })
 
 describe('search_knowledge', () => {
@@ -184,6 +195,46 @@ describe('search_knowledge', () => {
     expect(out.articles).toEqual([])
     expect(out.note).toMatch(/answer/i)
     expect(c.sources.has('kb_article_1')).toBe(true)
+  })
+
+  it("threads the context's customerPrincipalId and conversationId into the past-conversation-summaries source", async () => {
+    mockIsFeatureEnabled.mockImplementation(
+      async (flag: string) => flag === 'assistantConversationGrounding'
+    )
+    mockRetrieve.mockResolvedValue([])
+    const c = ctx({
+      customerPrincipalId: 'principal_customer_1' as never,
+      conversationId: 'conversation_current' as never,
+    })
+    const search = await findTool(c, 'search_knowledge')
+
+    await search.execute({ query: 'billing' }, toolCtx(c))
+
+    expect(mockConversationSummariesRetrieve).toHaveBeenCalledWith(
+      'billing',
+      'public',
+      expect.objectContaining({
+        customerPrincipalId: 'principal_customer_1',
+        conversationId: 'conversation_current',
+      })
+    )
+  })
+
+  it('runs the summaries source with an undefined customerPrincipalId when the context has none (sandbox)', async () => {
+    mockIsFeatureEnabled.mockImplementation(
+      async (flag: string) => flag === 'assistantConversationGrounding'
+    )
+    mockRetrieve.mockResolvedValue([])
+    const c = ctx({ conversationId: null })
+    const search = await findTool(c, 'search_knowledge')
+
+    await search.execute({ query: 'billing' }, toolCtx(c))
+
+    expect(mockConversationSummariesRetrieve).toHaveBeenCalledWith(
+      'billing',
+      'public',
+      expect.objectContaining({ customerPrincipalId: undefined })
+    )
   })
 })
 

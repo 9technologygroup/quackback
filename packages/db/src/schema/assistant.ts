@@ -52,9 +52,9 @@ export type AssistantInvolvementTrigger = (typeof ASSISTANT_INVOLVEMENT_TRIGGERS
 export type AssistantInvolvementStatus = (typeof ASSISTANT_INVOLVEMENT_STATUSES)[number]
 export type AssistantHandoffReason = (typeof ASSISTANT_HANDOFF_REASONS)[number]
 
-/** One cited source captured on an involvement (a help-center article, a feedback post, or an admin-curated snippet). */
+/** One cited source captured on an involvement (a help-center article, a feedback post, an admin-curated snippet, or a past-conversation summary). */
 export interface AssistantInvolvementSource {
-  type: 'article' | 'post' | 'snippet'
+  type: 'article' | 'post' | 'snippet' | 'summary'
   id: string
   title?: string
   url?: string

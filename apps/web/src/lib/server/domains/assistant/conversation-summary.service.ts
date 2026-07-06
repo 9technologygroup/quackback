@@ -1,0 +1,184 @@
+/**
+ * Conversation summary service (Quinn P2-A.4: past-conversation grounding).
+ *
+ * Generates a short AI summary of a conversation's customer-visible
+ * transcript when it closes, so a later conversation with the SAME customer
+ * can ground on it (see `conversation-summary-retrieval.ts`). Cloned from
+ * `domains/summary/summary.service.ts`'s post-summary shape: same
+ * config-gated no-op, same `response_format: json_object` contract, same
+ * strip-fences-then-parse-then-validate pipeline.
+ *
+ * Two differences from the post summary:
+ *   - The source text is the conversation transcript via `loadConversationThread`
+ *     (assistant.thread.ts), which already excludes internal notes in SQL — a
+ *     note can never leak into a summary a customer's own history retrieval
+ *     might later surface.
+ *   - The row also carries an embedding (via the shared `generateEmbedding`,
+ *     not a new helper) so `conversation-summary-retrieval.ts` can rank by
+ *     semantic similarity, and `visitorPrincipalId` denormalized from the
+ *     conversation for that retrieval's mandatory customer-scoping predicate.
+ *
+ * `summarizeConversationOnClose` is best-effort end to end: every failure
+ * (unconfigured AI, a malformed model response, a DB error) is caught and
+ * logged here, so it never throws into its caller — the event hook
+ * (events/process.ts) that fires it fire-and-forget.
+ */
+import { db, conversations, conversationSummaries, eq, sql } from '@/lib/server/db'
+import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { getChatModel, getEmbeddingModel } from '@/lib/server/domains/ai/models'
+import { withRetry } from '@/lib/server/domains/ai/retry'
+import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
+import { generateEmbedding } from '@/lib/server/domains/embeddings/embedding.service'
+import { loadConversationThread } from './assistant.thread'
+import { createId, type ConversationId } from '@quackback/ids'
+import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
+import { logger } from '@/lib/server/logger'
+
+const log = logger.child({ component: 'conversation-summary' })
+
+const SYSTEM_PROMPT = `You are a support analyst writing a brief on a just-closed customer conversation, for a future AI agent that has never met this customer to ground on when they come back.
+
+Return strict JSON only:
+{
+  "summary": "string"
+}
+
+Rules for "summary" (2-4 sentences):
+- Lead with what the customer needed or the problem they had, not "The customer asked about X."
+- Name specifics: what feature, what workflow, what broke, what was decided or promised.
+- Note how it was resolved, or that it was not.
+- Write for a future AI agent that needs just enough context to avoid asking the customer to repeat themselves, not a full transcript replay.
+- BAD: "The customer had a billing question."
+- GOOD: "Customer was double-charged for their March invoice after a plan upgrade; refunded $40 and confirmed by the customer."`
+
+/** Max transcript chars sent to the model, mirroring the post summary's budget. */
+const TRANSCRIPT_CHAR_BUDGET = 6000
+
+interface ConversationSummaryJson {
+  summary: string
+}
+
+/**
+ * Render the customer-visible transcript as plain "Speaker: content" lines.
+ * System status events (already excluded from `loadConversationThread`'s
+ * internal-note filter, but still present for e.g. assignment notices) and
+ * text-less messages carry nothing for the model to summarize, so both are
+ * skipped — mirrors `mapRowsToThreadMessages`'s own skip rules.
+ */
+function buildTranscript(messages: ConversationMessageDTO[]): string {
+  const lines: string[] = []
+  for (const m of messages) {
+    if (m.senderType === 'system') continue
+    const content = m.content?.trim()
+    if (!content) continue
+    lines.push(`${m.senderType === 'visitor' ? 'Customer' : 'Agent'}: ${content}`)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Summarize a just-closed conversation and upsert the result (one row per
+ * conversation, keyed on `conversationId`). No-ops when the AI client or the
+ * `summary` chat model isn't configured — mirrors
+ * `generateAndSavePostSummary`'s guard — and never throws: every failure path
+ * (missing conversation, empty transcript, malformed model output, a DB or
+ * provider error) is logged and swallowed, since this runs fire-and-forget
+ * off the conversation-close event.
+ */
+export async function summarizeConversationOnClose(conversationId: ConversationId): Promise<void> {
+  try {
+    await enforceAiTokenBudget()
+
+    const openai = getOpenAI()
+    const model = getChatModel('summary')
+    if (!openai || !model) return
+
+    const [conversationRow, messages] = await Promise.all([
+      db.query.conversations.findFirst({
+        where: eq(conversations.id, conversationId),
+        columns: { visitorPrincipalId: true },
+      }),
+      loadConversationThread(conversationId),
+    ])
+    if (!conversationRow) {
+      log.warn({ conversation_id: conversationId }, 'conversation not found for summary')
+      return
+    }
+
+    const transcript = buildTranscript(messages)
+    if (!transcript) return // nothing customer-visible happened; no summary to write
+
+    const truncated =
+      transcript.length > TRANSCRIPT_CHAR_BUDGET
+        ? transcript.slice(0, TRANSCRIPT_CHAR_BUDGET) + '\n\n[truncated]'
+        : transcript
+
+    const { result: completion } = await withRetry(() =>
+      openai.chat.completions.create({
+        model,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: truncated },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.2,
+        max_completion_tokens: 400,
+      })
+    )
+
+    const responseText = completion.choices[0]?.message?.content
+    if (!responseText) {
+      log.error({ conversation_id: conversationId }, 'empty conversation summary response')
+      return
+    }
+
+    let parsed: Partial<ConversationSummaryJson>
+    try {
+      parsed = JSON.parse(stripCodeFences(responseText))
+    } catch {
+      log.error(
+        { conversation_id: conversationId, response_length: responseText.length },
+        'failed to parse conversation summary json'
+      )
+      return
+    }
+    if (typeof parsed.summary !== 'string' || !parsed.summary.trim()) {
+      log.error({ conversation_id: conversationId }, 'invalid conversation summary shape')
+      return
+    }
+    const summaryText = parsed.summary.trim()
+
+    // Best-effort: a failed/unavailable embedding still saves the summary
+    // text (retrieval's keyword fallback can still use it), just without the
+    // semantic ranking path.
+    const embedding = await generateEmbedding(summaryText, {
+      pipelineStep: 'assistant_conversation_summary_embedding',
+    })
+
+    const values = {
+      conversationId,
+      visitorPrincipalId: conversationRow.visitorPrincipalId,
+      summary: summaryText,
+      updatedAt: new Date(),
+      ...(embedding
+        ? {
+            embedding: sql<number[]>`${`[${embedding.join(',')}]`}::vector`,
+            embeddingModel: getEmbeddingModel() ?? 'unknown',
+            embeddingUpdatedAt: new Date(),
+          }
+        : {}),
+    }
+
+    await db
+      .insert(conversationSummaries)
+      .values({ id: createId('conversation_summary'), ...values })
+      .onConflictDoUpdate({
+        target: conversationSummaries.conversationId,
+        set: values,
+      })
+
+    log.info({ conversation_id: conversationId }, 'conversation summary generated')
+  } catch (err) {
+    log.error({ err, conversation_id: conversationId }, 'conversation summary generation failed')
+  }
+}

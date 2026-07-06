@@ -32,6 +32,38 @@ vi.mock('../retrieval', () => ({
   retrieveKbArticles: (...args: unknown[]) => mockRetrieve(...args),
 }))
 
+// The current conversation's customer lookup (P2-A.4 customer-scoped
+// retrieval): a fake `conversations` select chain the runtime queries only
+// when `conversationId` is set. Default resolves no row, so every existing
+// test (none of which set conversationId) never touches this at all — the
+// real `db` export is otherwise passed through unchanged.
+const mockConversationLookupLimit = vi.fn()
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/server/db')>()
+  return {
+    ...actual,
+    db: {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: (...args: unknown[]) => mockConversationLookupLimit(...args),
+          })),
+        })),
+      })),
+    },
+  }
+})
+
+// Stands in for the real past-conversation-summaries source: resolveKnowledgeSources
+// dynamically imports this only when assistantConversationGrounding is on.
+const mockConversationSummariesRetrieve = vi.fn()
+vi.mock('../conversation-summary-retrieval', () => ({
+  conversationSummariesKnowledgeSource: {
+    sourceType: 'summary',
+    retrieve: (...args: unknown[]) => mockConversationSummariesRetrieve(...args),
+  },
+}))
+
 // The runtime never triggers get_conversation_context in these tests; stub the
 // conversation query so importing the tool module stays hermetic.
 vi.mock('@/lib/server/domains/conversation/conversation.query', () => ({
@@ -171,6 +203,8 @@ beforeEach(() => {
   mockConfig.aiChatModel = 'test-model'
   mockConfig.aiHelpCenterModel = undefined
   mockIsFeatureEnabled.mockResolvedValue(false)
+  mockConversationLookupLimit.mockResolvedValue([])
+  mockConversationSummariesRetrieve.mockResolvedValue([])
   mockGetAssistantConfig.mockResolvedValue({ toolControls: {}, surfaces: {}, basics: {} })
   mockGetAssistantToolControls.mockResolvedValue({})
   mockListGuidanceRules.mockResolvedValue([])
@@ -306,6 +340,28 @@ describe('assembleCitations', () => {
     ])
   })
 
+  it('round-trips a summary citation the same way as an article one (past-conversation grounding source)', () => {
+    const summaryLedger = new Map<string, AssistantCitation>([
+      ...ledger,
+      [
+        'conversation_1',
+        { type: 'summary', id: 'conversation_1', title: 'Past conversation', url: '' },
+      ],
+    ])
+    expect(
+      assembleCitations(
+        [
+          { type: 'article', id: 'kb_article_1' },
+          { type: 'summary', id: 'conversation_1' },
+        ],
+        summaryLedger
+      )
+    ).toEqual([
+      { type: 'article', id: 'kb_article_1', title: 'T1', url: '/hc/articles/g/a1' },
+      { type: 'summary', id: 'conversation_1', title: 'Past conversation', url: '' },
+    ])
+  })
+
   it('drops everything when nothing cleared the confidence floor (empty ledger)', () => {
     expect(assembleCitations([{ type: 'article', id: 'kb_article_1' }], new Map())).toEqual([])
   })
@@ -399,7 +455,7 @@ describe('buildAssistantSystemPrompt', () => {
     ]).join('\n')
     const withoutTools = buildAssistantSystemPrompt('Quinn', []).join('\n')
     const contract =
-      'Respond with ONLY a single JSON object and nothing else: no preamble, no commentary, no markdown code fences. The object must have this exact shape: {"text": string, "citations": [{"type": "article"|"post"|"snippet", "id": string}], "escalation": {"reason": string} | null}. Put the entire reply to the customer inside "text".'
+      'Respond with ONLY a single JSON object and nothing else: no preamble, no commentary, no markdown code fences. The object must have this exact shape: {"text": string, "citations": [{"type": "article"|"post"|"snippet"|"summary", "id": string}], "escalation": {"reason": string} | null}. Put the entire reply to the customer inside "text".'
     expect(withTools).toContain(contract)
     expect(withoutTools).toContain(contract)
   })
@@ -887,6 +943,86 @@ describe('runAssistantTurn', () => {
     })
     // Salvaged on the first attempt; no retry needed.
     expect(mockChat).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
+  /** Drives the model to call search_knowledge once, capturing the ctx it ran under. */
+  function driveSearch(onSearch: (ctx: unknown) => void) {
+    mockChat.mockImplementation(
+      (opts: {
+        tools: Array<{ name: string; execute: (args: unknown, o: unknown) => Promise<unknown> }>
+        context: unknown
+      }) =>
+        (async function* () {
+          onSearch(opts.context)
+          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          await search.execute(
+            { query: 'billing' },
+            { context: opts.context, emitCustomEvent: () => {} }
+          )
+          yield* completeRun({ text: 'ok', citations: [] })
+        })()
+    )
+  }
+
+  it("resolves the conversation's visitorPrincipalId and threads it into the tool context and retrieval", async () => {
+    mockRetrieve.mockResolvedValue([])
+    mockConversationLookupLimit.mockResolvedValue([{ visitorPrincipalId: 'principal_customer_1' }])
+    mockIsFeatureEnabled.mockImplementation(
+      async (flag: string) => flag === 'assistantConversationGrounding'
+    )
+    let capturedCtx: { customerPrincipalId?: unknown; conversationId?: unknown } | undefined
+    driveSearch((ctx) => {
+      capturedCtx = ctx as typeof capturedCtx
+    })
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_42' as never,
+    })
+
+    expect(capturedCtx?.customerPrincipalId).toBe('principal_customer_1')
+    expect(capturedCtx?.conversationId).toBe('conversation_42')
+    expect(mockConversationSummariesRetrieve).toHaveBeenCalledWith(
+      'billing',
+      'public',
+      expect.objectContaining({
+        customerPrincipalId: 'principal_customer_1',
+        conversationId: 'conversation_42',
+      })
+    )
+  })
+
+  it('never queries the conversation row when there is no conversationId (sandbox)', async () => {
+    mockRetrieve.mockResolvedValue([])
+    let capturedCtx: { customerPrincipalId?: unknown } | undefined
+    driveSearch((ctx) => {
+      capturedCtx = ctx as typeof capturedCtx
+    })
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('question') })
+
+    expect(mockConversationLookupLimit).not.toHaveBeenCalled()
+    expect(capturedCtx?.customerPrincipalId).toBeUndefined()
+  })
+
+  it('leaves customerPrincipalId undefined when the conversation row is not found', async () => {
+    mockRetrieve.mockResolvedValue([])
+    mockConversationLookupLimit.mockResolvedValue([])
+    let capturedCtx: { customerPrincipalId?: unknown } | undefined
+    driveSearch((ctx) => {
+      capturedCtx = ctx as typeof capturedCtx
+    })
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_missing' as never,
+    })
+
+    expect(capturedCtx?.customerPrincipalId).toBeUndefined()
   })
 })
 

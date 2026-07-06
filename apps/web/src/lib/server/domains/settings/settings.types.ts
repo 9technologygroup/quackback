@@ -945,6 +945,8 @@ export interface FeatureFlags {
   assistantPostGrounding: boolean
   /** Ground AI assistant answers in admin-curated private snippets, alongside the knowledge base */
   assistantSnippets: boolean
+  /** Ground AI assistant answers in the SAME customer's own past-conversation summaries */
+  assistantConversationGrounding: boolean
 }
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -960,6 +962,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   dataConnectors: false,
   assistantPostGrounding: false,
   assistantSnippets: false,
+  assistantConversationGrounding: false,
 }
 
 /**
@@ -1026,6 +1029,11 @@ export const FEATURE_FLAG_REGISTRY: Record<
     description:
       'Let the AI assistant ground answers in short private facts your team curates, alongside the knowledge base.',
   },
+  assistantConversationGrounding: {
+    label: 'Assistant conversation grounding',
+    description:
+      "Let the AI assistant ground answers in the same customer's own past conversation summaries, so it remembers earlier context.",
+  },
 }
 
 /**
@@ -1058,6 +1066,12 @@ export const LAB_SECTIONS: Array<{
     title: 'AI',
     description:
       'Enable your AI assistant to automate workflows and integrate with external data sources.',
-    flags: ['assistantActions', 'dataConnectors', 'assistantPostGrounding', 'assistantSnippets'],
+    flags: [
+      'assistantActions',
+      'dataConnectors',
+      'assistantPostGrounding',
+      'assistantSnippets',
+      'assistantConversationGrounding',
+    ],
   },
 ]

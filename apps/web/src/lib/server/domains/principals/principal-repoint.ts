@@ -36,6 +36,7 @@ import {
   postActivity,
   conversations,
   conversationMessages,
+  conversationSummaries,
   postSubscriptions,
   inAppNotifications,
   pageViews,
@@ -261,6 +262,12 @@ export const REPOINT_STEPS: RepointStep[] = [
     conversationMessages,
     'principal_id',
     'Message authorship. ON DELETE RESTRICT, same as conversations.'
+  ),
+  simpleRepoint(
+    'conversation_summaries',
+    conversationSummaries,
+    'visitor_principal_id',
+    'Denormalized from conversations.visitor_principal_id for Quinn past-conversation grounding (P2-A.4) scoping. ON DELETE RESTRICT, same as conversations: a missed re-point would both strand the summary under the old identity (breaking the customer-scoped retrieval it exists for) and abort the merge at teardown.'
   ),
   simpleRepoint(
     'workflow_runs',

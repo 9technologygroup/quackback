@@ -247,13 +247,24 @@ export async function processEvent(event: EventData): Promise<void> {
   if (event.type === 'conversation.csat_submitted') {
     void import('@/lib/server/domains/assistant/assistant.involvement')
       .then((m) =>
-        m.confirmResolutionFromCsat(
-          event.data.conversation.id as ConversationId,
-          event.data.rating
-        )
+        m.confirmResolutionFromCsat(event.data.conversation.id as ConversationId, event.data.rating)
       )
       .catch((err) =>
         log.error({ err, event_type: event.type }, 'assistant CSAT hook failed to load')
+      )
+  }
+
+  // Summarize the conversation for future Quinn grounding (P2-A.4) once it
+  // closes. A distinct branch from the generic SLA/CSAT hooks above — never
+  // routed through the workflow engine's SUMMARY_EVENT_TYPES/'summary' target,
+  // since this always runs on close, not per-workspace configuration. Same
+  // fire-and-forget + lazy-import isolation; the service itself is also
+  // best-effort (see conversation-summary.service.ts), so this never throws.
+  if (event.type === 'conversation.status_changed' && event.data.newStatus === 'closed') {
+    void import('@/lib/server/domains/assistant/conversation-summary.service')
+      .then((m) => m.summarizeConversationOnClose(event.data.conversation.id as ConversationId))
+      .catch((err) =>
+        log.error({ err, event_type: event.type }, 'conversation summary hook failed to load')
       )
   }
 

@@ -235,6 +235,9 @@ export {
   conversationMessageReactionsRelations,
   conversationMessageFlags,
   conversationMessageFlagsRelations,
+  // Schema tables - past-conversation summaries (Quinn grounding, P2-A.4)
+  conversationSummaries,
+  conversationSummariesRelations,
   // Schema tables - custom saved inbox views + per-user pins
   conversationViews,
   conversationViewPins,
@@ -395,6 +398,7 @@ export type {
   AssistantPendingActionStatus,
   AssistantToolCallStatus,
   AssistantSnippet,
+  ConversationSummary,
   MacroScope,
   MacroPriority,
   MacroSnoozePreset,

@@ -382,7 +382,7 @@ export interface ConversationAttachment {
 // A source the AI assistant grounded a message in (conversation_messages.citations).
 // The message text carries inline [n] markers that index into this ordered list.
 export interface ConversationMessageCitation {
-  type: 'article' | 'post' | 'snippet'
+  type: 'article' | 'post' | 'snippet' | 'summary'
   id: string
   title: string
   url: string

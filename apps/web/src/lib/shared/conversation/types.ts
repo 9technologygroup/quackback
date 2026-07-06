@@ -83,10 +83,12 @@ export interface ConversationAttachment {
   size: number
 }
 
-/** A KB source the AI assistant grounded a reply in. The message `content`
- *  carries inline [n] markers that index into this ordered list. */
+/** A source the AI assistant grounded a reply in — a KB article, a feedback
+ *  post, an admin-curated snippet, or a past-conversation summary. The
+ *  message `content` carries inline [n] markers that index into this ordered
+ *  list. */
 export interface ConversationMessageCitation {
-  type: 'article' | 'post' | 'snippet'
+  type: 'article' | 'post' | 'snippet' | 'summary'
   id: string
   title: string
   url: string

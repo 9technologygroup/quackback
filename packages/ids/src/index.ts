@@ -85,6 +85,7 @@ export type {
   ConversationMessageId,
   ConversationTagId,
   ConversationMessageMentionId,
+  ConversationSummaryId,
   IntegrationId,
   PlatformCredentialId,
   EventMappingId,

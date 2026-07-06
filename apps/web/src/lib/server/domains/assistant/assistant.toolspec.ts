@@ -34,7 +34,7 @@ import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service
 
 /** A structured citation — the only citation contract; never free-form markdown. */
 export interface AssistantCitation {
-  type: 'article' | 'post' | 'snippet'
+  type: 'article' | 'post' | 'snippet' | 'summary'
   id: string
   title: string
   url: string
@@ -56,6 +56,15 @@ export interface AssistantToolContext {
    */
   audience: ContentAudience
   conversationId: ConversationId | null
+  /**
+   * The current conversation's customer (its `visitorPrincipalId`), for
+   * customer-scoped retrieval (past-conversation summaries — see
+   * `conversation-summary-retrieval.ts`). Undefined when there is no real
+   * customer to scope to (e.g. the admin sandbox, which has no conversation at
+   * all): a customer-scoped source MUST return no results in that case, never
+   * fall back to unscoped.
+   */
+  customerPrincipalId?: PrincipalId
   /** Sources surfaced by search_knowledge this run, keyed by id, for citation assembly. */
   sources: Map<string, AssistantCitation>
   /** search_knowledge calls made this attempt, for the server-side search budget. */
@@ -85,6 +94,7 @@ export function makeAssistantToolContext(init: {
   assistantPrincipalId: PrincipalId
   audience: ContentAudience
   conversationId: ConversationId | null
+  customerPrincipalId?: PrincipalId | null
   involvementId?: AssistantInvolvementId | null
   latestCustomerMessageId?: string | null
   simulate?: boolean
@@ -95,6 +105,7 @@ export function makeAssistantToolContext(init: {
     assistantPrincipalId: init.assistantPrincipalId,
     audience: init.audience,
     conversationId: init.conversationId,
+    customerPrincipalId: init.customerPrincipalId ?? undefined,
     sources: new Map<string, AssistantCitation>(),
     searchCalls: 0,
     simulate: init.simulate ?? init.conversationId === null,
@@ -230,10 +241,15 @@ async function executeSearchKnowledge(
   }
   // Audience-scoped from day one: the citation set can never exceed what the
   // viewer could already see. retrieveKnowledge composes every registered
-  // grounding source (the knowledge base always; feedback posts when
-  // assistantPostGrounding is on) behind one call, each source mapping the
-  // audience boundary itself.
-  const items = await retrieveKnowledge(args.query, ctx.audience)
+  // grounding source (the knowledge base always; feedback posts, snippets,
+  // and past-conversation summaries behind their own flags) behind one call,
+  // each source mapping the audience boundary (or, for summaries, the
+  // customer boundary) itself. customerPrincipalId/conversationId are only
+  // consumed by the summaries source; every other source ignores them.
+  const items = await retrieveKnowledge(args.query, ctx.audience, {
+    customerPrincipalId: ctx.customerPrincipalId,
+    conversationId: ctx.conversationId,
+  })
   for (const item of items) {
     ctx.sources.set(item.id, item.citation)
   }

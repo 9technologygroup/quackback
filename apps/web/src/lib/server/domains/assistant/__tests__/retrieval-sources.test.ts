@@ -32,6 +32,16 @@ vi.mock('../snippets-retrieval', () => ({
   },
 }))
 
+// Same idea for the past-conversation-summaries source, gated behind
+// assistantConversationGrounding.
+const mockConversationSummariesRetrieve = vi.fn()
+vi.mock('../conversation-summary-retrieval', () => ({
+  conversationSummariesKnowledgeSource: {
+    sourceType: 'summary',
+    retrieve: (...args: unknown[]) => mockConversationSummariesRetrieve(...args),
+  },
+}))
+
 /** Flag-aware stand-in for isFeatureEnabled, so enabling one grounding flag
  *  in a test doesn't accidentally also enable the other. */
 function onlyFlag(enabledFlag: string) {
@@ -91,12 +101,13 @@ describe('kbKnowledgeSource', () => {
 })
 
 describe('resolveKnowledgeSources', () => {
-  it('registers only the knowledge-base source when both flags are off', async () => {
+  it('registers only the knowledge-base source when every optional flag is off', async () => {
     mockIsFeatureEnabled.mockResolvedValue(false)
     const sources = await resolveKnowledgeSources()
     expect(sources).toEqual([kbKnowledgeSource])
     expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantPostGrounding')
     expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantSnippets')
+    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantConversationGrounding')
   })
 
   it('adds the feedback-posts source when assistantPostGrounding is on', async () => {
@@ -111,10 +122,16 @@ describe('resolveKnowledgeSources', () => {
     expect(sources.map((s) => s.sourceType)).toEqual(['article', 'snippet'])
   })
 
-  it('adds both optional sources when both flags are on', async () => {
+  it('adds the past-conversation-summaries source when assistantConversationGrounding is on', async () => {
+    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantConversationGrounding'))
+    const sources = await resolveKnowledgeSources()
+    expect(sources.map((s) => s.sourceType)).toEqual(['article', 'summary'])
+  })
+
+  it('adds every optional source when every flag is on', async () => {
     mockIsFeatureEnabled.mockResolvedValue(true)
     const sources = await resolveKnowledgeSources()
-    expect(sources.map((s) => s.sourceType)).toEqual(['article', 'post', 'snippet'])
+    expect(sources.map((s) => s.sourceType)).toEqual(['article', 'post', 'snippet', 'summary'])
   })
 })
 
@@ -174,5 +191,25 @@ describe('retrieveKnowledge', () => {
     expect(mockPostsRetrieve).toHaveBeenCalledOnce()
     expect(items.map((i) => i.id)).toEqual(['post_top', 'kb_high', 'post_mid'])
     expect(items).toHaveLength(3)
+  })
+
+  it('forwards customerPrincipalId and conversationId to every source (only the summaries source reads them)', async () => {
+    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantConversationGrounding'))
+    mockRetrieveKbArticles.mockResolvedValue([])
+    mockConversationSummariesRetrieve.mockResolvedValue([])
+
+    await retrieveKnowledge('q', 'public', {
+      customerPrincipalId: 'principal_customer_1' as never,
+      conversationId: 'conversation_current' as never,
+    })
+
+    expect(mockConversationSummariesRetrieve).toHaveBeenCalledWith(
+      'q',
+      'public',
+      expect.objectContaining({
+        customerPrincipalId: 'principal_customer_1',
+        conversationId: 'conversation_current',
+      })
+    )
   })
 })
