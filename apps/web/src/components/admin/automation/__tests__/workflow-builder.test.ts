@@ -10,6 +10,7 @@ import {
   collectStepIssues,
   createStep,
   deriveOutline,
+  describeInsertionContext,
   draftIssues,
   findStepById,
   insertStepAt,
@@ -176,5 +177,35 @@ describe('deriveOutline', () => {
     // Steps inside a path are indented one level deeper than the branch itself.
     const branchDepth = outline.find((e) => e.kind === 'branch')?.depth
     expect(pathHeaders[0]?.depth).toBe((branchDepth ?? 0) + 1)
+  })
+})
+
+describe('describeInsertionContext', () => {
+  it('describes a trunk insertion generically (before/append)', () => {
+    const tree = fixtureTree()
+    expect(describeInsertionContext(tree, ROOT_LOCATION, 0)).toBe('Inserts into the workflow')
+    const trunkLength = stepsAtLocation(tree, ROOT_LOCATION).length
+    expect(describeInsertionContext(tree, ROOT_LOCATION, trunkLength)).toBe(
+      'Appends to the workflow'
+    )
+  })
+
+  it('names the path by letter and key for a branch path insertion', () => {
+    const tree = fixtureTree()
+    const branch = tree.steps[1] as Extract<TreeStep, { kind: 'branch' }>
+    const pathOneLoc: StepLocation = {
+      path: [{ branchId: branch.id, pathKey: branch.paths[0]!.key }],
+    }
+    const pathTwoLoc: StepLocation = {
+      path: [{ branchId: branch.id, pathKey: branch.paths[1]!.key }],
+    }
+
+    expect(describeInsertionContext(tree, pathOneLoc, 0)).toBe(
+      `Inserts in path A · ${branch.paths[0]!.key}`
+    )
+    const pathTwoLength = stepsAtLocation(tree, pathTwoLoc).length
+    expect(describeInsertionContext(tree, pathTwoLoc, pathTwoLength)).toBe(
+      `Appends to path B · ${branch.paths[1]!.key}`
+    )
   })
 })

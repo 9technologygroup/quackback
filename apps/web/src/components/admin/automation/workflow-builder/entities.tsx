@@ -15,7 +15,7 @@ import {
   conversationAttributeQueries,
   type ConversationAttributeItem,
 } from '@/lib/client/queries/conversation-attributes'
-import type { EntityLabels } from '../workflow-graph'
+import { toAttributeFieldDefs, type EntityLabels } from '../workflow-graph'
 
 export interface EntityOption {
   id: string
@@ -75,6 +75,7 @@ export function WorkflowEntitiesProvider({ children }: { children: ReactNode }) 
         teams: toMap(teamOptions),
         tags: toMap(tagOptions),
         slaPolicies: toMap(slaOptions),
+        attributes: toAttributeFieldDefs(attributes ?? []),
       },
     }
   }, [members, teams, tags, slaPolicies, attributes])

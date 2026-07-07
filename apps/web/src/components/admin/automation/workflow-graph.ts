@@ -11,7 +11,10 @@
  * a field or action server-side fails the typecheck until the editor knows it.
  */
 import type { ValidatedWorkflowGraph } from '@/lib/server/domains/workflows/workflow.schemas'
-import type { CONDITION_FIELDS } from '@/lib/server/domains/workflows/condition.evaluator'
+import type {
+  ATTRIBUTE_FIELD_PREFIX as ServerAttributeFieldPrefix,
+  CONDITION_FIELDS,
+} from '@/lib/server/domains/workflows/condition.evaluator'
 
 export type { ConditionOperator } from '@/lib/server/domains/workflows/condition.evaluator'
 import type { ConditionOperator } from '@/lib/server/domains/workflows/condition.evaluator'
@@ -26,7 +29,20 @@ export type GraphEdge = WorkflowGraphJson['edges'][number]
 export type GraphAction = Extract<GraphNode, { type: 'action' }>['action']
 export type ActionType = GraphAction['type']
 export type GraphCondition = Extract<GraphNode, { type: 'condition' }>['condition']
-export type ConditionField = (typeof CONDITION_FIELDS)[number]
+
+/**
+ * Mirrors condition.evaluator's ATTRIBUTE_FIELD_PREFIX. The type-only import
+ * above pins the literal so a server-side rename fails typecheck here too —
+ * the server module can't be imported as a *value* from client code (only
+ * its types), so the string itself has to be re-declared, not re-exported.
+ */
+export const ATTRIBUTE_FIELD_PREFIX: typeof ServerAttributeFieldPrefix = 'conversation.attr.'
+
+/** The 10 built-in condition fields (mirrors the server's CONDITION_FIELDS). */
+export type StaticConditionField = (typeof CONDITION_FIELDS)[number]
+/** A dynamic `conversation.attr.<key>` predicate against a live attribute definition. */
+export type AttributeConditionField = `${typeof ATTRIBUTE_FIELD_PREFIX}${string}`
+export type ConditionField = StaticConditionField | AttributeConditionField
 
 type Priority = Extract<GraphAction, { type: 'set_priority' }>['priority']
 
@@ -107,7 +123,7 @@ export const CONDITION_FIELD_META: Record<ConditionField, ConditionFieldMeta> = 
   'csat.rating': { label: 'CSAT rating', kind: 'number' },
 }
 
-export const CONDITION_FIELD_LIST = Object.keys(CONDITION_FIELD_META) as ConditionField[]
+export const CONDITION_FIELD_LIST = Object.keys(CONDITION_FIELD_META) as StaticConditionField[]
 
 export const OPERATOR_LABELS: Record<ConditionOperator, string> = {
   eq: 'is',
@@ -134,6 +150,132 @@ export const OPERATORS_BY_KIND: Record<ConditionValueKind, readonly ConditionOpe
   list: ['includes_any', 'excludes_all', 'is_set', 'is_empty'],
   boolean: ['eq', 'neq'],
   choice: ['eq', 'neq', 'is_set', 'is_empty'],
+}
+
+export const ALL_OPERATORS = Object.keys(OPERATOR_LABELS) as ConditionOperator[]
+
+// ---------------------------------------------------------------------------
+// Attribute conditions: `conversation.attr.<key>` fields, backed by the live
+// conversation attribute registry (loaded by WorkflowEntitiesProvider). Unlike
+// the static catalogue above, the field set is data-driven, so instead of a
+// Record keyed by field there's a lookup (by attribute key) plus a resolver
+// that produces the same shape of metadata the static CONDITION_FIELD_META
+// entries carry, for a single call site (resolveConditionField) both the
+// visual editor and the canvas/outline summaries can share.
+// ---------------------------------------------------------------------------
+
+/** Mirrors conversation_attribute_definitions.field_type. */
+export type AttributeFieldType = 'text' | 'number' | 'select' | 'multi_select' | 'checkbox' | 'date'
+
+export interface AttributeFieldDef {
+  key: string
+  label: string
+  fieldType: AttributeFieldType
+  /** select / multi_select only — option id is the stored value. */
+  options?: readonly { id: string; label: string }[]
+}
+
+/** The operators offered per attribute field type (v1: date stays valueless-only). */
+export const ATTRIBUTE_OPERATORS_BY_TYPE: Record<AttributeFieldType, readonly ConditionOperator[]> =
+  {
+    text: ['contains', 'not_contains', 'eq', 'neq', 'is_set', 'is_empty'],
+    number: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'is_set', 'is_empty'],
+    select: ['eq', 'neq', 'is_set', 'is_empty'],
+    multi_select: ['includes_any', 'excludes_all', 'is_set', 'is_empty'],
+    checkbox: ['eq'],
+    date: ['is_set', 'is_empty'],
+  }
+
+const ATTRIBUTE_VALUE_KIND: Record<AttributeFieldType, ConditionValueKind> = {
+  text: 'text',
+  number: 'number',
+  select: 'choice',
+  multi_select: 'list',
+  checkbox: 'boolean',
+  // Never actually rendered: date only ever offers valueless operators.
+  date: 'text',
+}
+
+/** True for `conversation.attr.<key>` (with a non-empty key). */
+export function isAttributeField(field: string): field is AttributeConditionField {
+  return field.startsWith(ATTRIBUTE_FIELD_PREFIX) && field.length > ATTRIBUTE_FIELD_PREFIX.length
+}
+
+export function attributeKeyFromField(field: AttributeConditionField): string {
+  return field.slice(ATTRIBUTE_FIELD_PREFIX.length)
+}
+
+export function attributeFieldForKey(key: string): AttributeConditionField {
+  return `${ATTRIBUTE_FIELD_PREFIX}${key}` as AttributeConditionField
+}
+
+/**
+ * Build the `key -> AttributeFieldDef` lookup resolveConditionField and the
+ * value editors need, from anything shaped like the live attribute registry
+ * (duck-typed so this module stays decoupled from the query layer's type —
+ * WorkflowEntitiesProvider's ConversationAttributeItem[] satisfies this).
+ */
+export function toAttributeFieldDefs(
+  items: readonly {
+    key: string
+    label: string
+    fieldType: AttributeFieldType
+    options?: readonly { id: string; label: string }[] | null
+  }[]
+): ReadonlyMap<string, AttributeFieldDef> {
+  return new Map(
+    items.map((d) => [
+      d.key,
+      { key: d.key, label: d.label, fieldType: d.fieldType, options: d.options ?? undefined },
+    ])
+  )
+}
+
+export interface ResolvedConditionField {
+  label: string
+  kind: ConditionValueKind
+  operators: readonly ConditionOperator[]
+  options?: readonly { value: string; label: string }[]
+  placeholder?: string
+  /** A `conversation.attr.*` field with no matching live definition (archived
+   *  or a key from before/after this workspace's current registry). Still
+   *  editable — just degraded to a raw value input, never blocking. */
+  unresolved?: boolean
+}
+
+/** Field metadata for both the static catalogue and attribute fields, the
+ *  single place the visual editor and the canvas/outline summaries resolve
+ *  a field's label / operators / value options from. */
+export function resolveConditionField(
+  field: ConditionField,
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+): ResolvedConditionField {
+  if (isAttributeField(field)) {
+    const key = attributeKeyFromField(field)
+    const def = attributes.get(key)
+    if (!def) {
+      return {
+        label: `Unknown attribute ${key}`,
+        kind: 'text',
+        operators: ALL_OPERATORS,
+        unresolved: true,
+      }
+    }
+    return {
+      label: def.label,
+      kind: ATTRIBUTE_VALUE_KIND[def.fieldType],
+      operators: ATTRIBUTE_OPERATORS_BY_TYPE[def.fieldType],
+      options: def.options?.map((o) => ({ value: o.id, label: o.label })),
+    }
+  }
+  const meta = CONDITION_FIELD_META[field]
+  return {
+    label: meta.label,
+    kind: meta.kind,
+    operators: OPERATORS_BY_KIND[meta.kind],
+    options: meta.options,
+    placeholder: meta.placeholder,
+  }
 }
 
 export const ACTION_LABELS: Record<ActionType, string> = {
@@ -220,8 +362,12 @@ export function defaultAction(type: ActionType): GraphAction {
   }
 }
 
+/** Accepts both the static catalogue and the `conversation.attr.<key>`
+ *  prefix — an unknown/archived key still passes (see resolveConditionField's
+ *  "unresolved" fallback); only the shape of the field string is checked
+ *  here, same as the server's authoring schema. */
 export function isConditionField(v: unknown): v is ConditionField {
-  return typeof v === 'string' && v in CONDITION_FIELD_META
+  return typeof v === 'string' && (v in CONDITION_FIELD_META || isAttributeField(v))
 }
 function isOperator(v: unknown): v is ConditionOperator {
   return typeof v === 'string' && v in OPERATOR_LABELS
@@ -654,6 +800,17 @@ function leafToRule(leaf: ConditionLeaf): ConditionRuleDraft | null {
   const { field, op } = leaf
   if (VALUELESS_OPERATORS.has(op)) return { field, op, value: '' }
   const v = leaf.value
+  // Attribute fields don't need their live definition to read a leaf back
+  // into draft form: the stored JSON value's own runtime type says whether
+  // it's a checkbox boolean, a number, a multi_select array, or a plain
+  // string (select ids and text share the same string representation).
+  if (isAttributeField(field)) {
+    if (typeof v === 'boolean') return { field, op, value: v ? 'true' : 'false' }
+    if (typeof v === 'number' && Number.isFinite(v)) return { field, op, value: String(v) }
+    if (Array.isArray(v) && v.every((x) => typeof x === 'string'))
+      return { field, op, value: v.join(', ') }
+    return typeof v === 'string' ? { field, op, value: v } : null
+  }
   switch (CONDITION_FIELD_META[field].kind) {
     case 'text':
     case 'choice':
@@ -689,8 +846,49 @@ export function conditionToDraft(condition: GraphCondition): ConditionDraft {
   return { kind: 'simple', mode: hasAll ? 'all' : 'any', rules }
 }
 
-function ruleToLeaf(rule: ConditionRuleDraft): GraphCondition {
+/** Encode an attribute rule's string-form value back to typed JSON. The
+ *  operator alone disambiguates the array (includes_any/excludes_all) and
+ *  numeric (gt/gte/lt/lte) cases; only eq/neq/contains/not_contains need the
+ *  live definition to tell a checkbox boolean apart from select/text text —
+ *  an unresolved (archived/unknown) key falls back to the raw string, same
+ *  as the set_attribute action editor's raw-JSON fallback for unknown keys. */
+function encodeAttributeConditionValue(
+  rule: ConditionRuleDraft,
+  attributes: ReadonlyMap<string, AttributeFieldDef>
+): unknown {
+  if (rule.op === 'includes_any' || rule.op === 'excludes_all') {
+    return rule.value
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  }
+  if (rule.op === 'gt' || rule.op === 'gte' || rule.op === 'lt' || rule.op === 'lte') {
+    const n = Number(rule.value)
+    return Number.isFinite(n) ? n : 0
+  }
+  const def = isAttributeField(rule.field)
+    ? attributes.get(attributeKeyFromField(rule.field))
+    : undefined
+  if (def?.fieldType === 'checkbox') return rule.value === 'true'
+  if (def?.fieldType === 'number') {
+    const n = Number(rule.value)
+    return Number.isFinite(n) ? n : 0
+  }
+  return rule.value
+}
+
+function ruleToLeaf(
+  rule: ConditionRuleDraft,
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+): GraphCondition {
   if (VALUELESS_OPERATORS.has(rule.op)) return { field: rule.field, op: rule.op }
+  if (isAttributeField(rule.field)) {
+    return {
+      field: rule.field,
+      op: rule.op,
+      value: encodeAttributeConditionValue(rule, attributes),
+    }
+  }
   let value: unknown
   switch (CONDITION_FIELD_META[rule.field].kind) {
     case 'number': {
@@ -713,9 +911,12 @@ function ruleToLeaf(rule: ConditionRuleDraft): GraphCondition {
   return { field: rule.field, op: rule.op, value }
 }
 
-export function draftToCondition(draft: SimpleConditionDraft): GraphCondition {
+export function draftToCondition(
+  draft: SimpleConditionDraft,
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+): GraphCondition {
   if (draft.rules.length === 0) return {}
-  const leaves = draft.rules.map(ruleToLeaf)
+  const leaves = draft.rules.map((rule) => ruleToLeaf(rule, attributes))
   if (leaves.length === 1) return leaves[0]!
   return draft.mode === 'all' ? { all: leaves } : { any: leaves }
 }
@@ -734,6 +935,9 @@ export interface EntityLabels {
   teams?: ReadonlyMap<string, string>
   tags?: ReadonlyMap<string, string>
   slaPolicies?: ReadonlyMap<string, string>
+  /** Attribute key -> live definition, for conversation.attr.* condition
+   *  summaries (canvas rule pills, outline rows, branch path rows). */
+  attributes?: ReadonlyMap<string, AttributeFieldDef>
 }
 
 const shortId = (id: string): string => (id.length > 14 ? `${id.slice(0, 14)}…` : id)
@@ -767,8 +971,11 @@ export function actionSummary(action: GraphAction, labels: EntityLabels = {}): s
   }
 }
 
-function ruleSummary(rule: ConditionRuleDraft): string {
-  const meta = CONDITION_FIELD_META[rule.field]
+function ruleSummary(
+  rule: ConditionRuleDraft,
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+): string {
+  const meta = resolveConditionField(rule.field, attributes)
   const op = OPERATOR_LABELS[rule.op]
   if (VALUELESS_OPERATORS.has(rule.op)) return `${meta.label} ${op}`
   let value = rule.value
@@ -776,15 +983,27 @@ function ruleSummary(rule: ConditionRuleDraft): string {
     value = meta.options?.find((o) => o.value === rule.value)?.label ?? rule.value
   } else if (meta.kind === 'boolean') {
     value = rule.value === 'true' ? 'yes' : 'no'
+  } else if (meta.kind === 'list' && meta.options) {
+    // Attribute multi_select: render option labels, not the raw stored ids
+    // (static list fields like tags have no `options` metadata, so they keep
+    // showing raw ids — unchanged, pre-existing behavior).
+    const ids = rule.value
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    value = ids.map((id) => meta.options!.find((o) => o.value === id)?.label ?? id).join(', ')
   }
   return `${meta.label} ${op} ${value || '…'}`
 }
 
-export function conditionSummary(condition: GraphCondition): string {
+export function conditionSummary(
+  condition: GraphCondition,
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+): string {
   const draft = conditionToDraft(condition)
   if (draft.kind === 'advanced') return 'Custom condition'
   if (draft.rules.length === 0) return 'Matches everything'
-  const first = ruleSummary(draft.rules[0]!)
+  const first = ruleSummary(draft.rules[0]!, attributes)
   if (draft.rules.length === 1) return first
   return `${first} +${draft.rules.length - 1} more`
 }
@@ -1092,7 +1311,7 @@ function stepLabel(step: TreeStep, labels: EntityLabels): string {
     case 'action':
       return actionSummary(step.action, labels)
     case 'condition':
-      return conditionSummary(step.condition)
+      return conditionSummary(step.condition, labels.attributes)
     case 'wait':
       return waitSummary(step.seconds)
     case 'branch':
@@ -1133,4 +1352,33 @@ export function deriveOutline(
   }
   walk(tree.steps, 0)
   return entries
+}
+
+// ---------------------------------------------------------------------------
+// Insertion context: the inspector palette's subtitle when a "+" connector is
+// active ("Inserts in path B · Bug reports", "Appends to path A · Billing").
+// Additive helper for the React Flow canvas rebuild — the trunk/path framing
+// mirrors deriveOutline's path headers so the two stay in the same voice.
+// ---------------------------------------------------------------------------
+
+/** Human-readable description of where a pending palette insertion lands. */
+export function describeInsertionContext(
+  tree: WorkflowTree,
+  location: StepLocation,
+  index: number
+): string {
+  const steps = stepsAtLocation(tree, location)
+  const appending = index >= steps.length
+
+  if (location.path.length === 0) {
+    return appending ? 'Appends to the workflow' : 'Inserts into the workflow'
+  }
+
+  const lastHop = location.path[location.path.length - 1]!
+  const branch = findStepById(tree, lastHop.branchId)?.step
+  const paths = branch?.kind === 'branch' ? branch.paths : []
+  const pathIndex = paths.findIndex((p) => p.key === lastHop.pathKey)
+  const letter = PATH_LETTERS[pathIndex] ?? String(pathIndex + 1)
+  const label = `path ${letter} · ${lastHop.pathKey}`
+  return appending ? `Appends to ${label}` : `Inserts in ${label}`
 }

@@ -89,6 +89,7 @@ function WorkflowBuilderShell({ workflow }: { workflow: WorkflowDTO }) {
           <WorkflowBuilderCanvas
             tree={b.graphDraft.tree}
             triggerLabel={b.triggerLabelText}
+            triggerChannels={b.triggerSettings.channels}
             selection={b.selection}
             stepIssues={b.stepIssues}
             onSelectNode={b.selectNode}

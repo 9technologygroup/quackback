@@ -1,18 +1,20 @@
 /**
  * The step palette: shown in the inspector when a "+" connector is active
- * instead of a step. Grouped by Logic (condition/branch/wait) and Actions
- * (all 9 action types); clicking an item inserts that step at the active
- * insertion point and selects it.
+ * instead of a step. A search box filters by label; groups are Logic
+ * (condition/branch/wait) and Actions (all 9 action types), each icon tinted
+ * by the same tone the canvas card for that step kind uses. Clicking an item
+ * inserts that step at the active insertion point and selects it.
  */
-import type { ComponentType } from 'react'
-import { ClockIcon, FunnelIcon, ShareIcon } from '@heroicons/react/24/outline'
-import { ACTION_ICONS, GATE_TINT, STEP_TINT } from '../canvas'
+import { useState, type ComponentType } from 'react'
+import { ClockIcon, FunnelIcon, MagnifyingGlassIcon, ShareIcon } from '@heroicons/react/24/outline'
+import { ACTION_ICONS, TONE_TILE } from '../step-visuals'
+import { ACTION_TONE, type Tone } from '../flow-layout'
 import { ACTION_LABELS, ACTION_TYPES, type ActionType, type TreeStep } from '../../workflow-graph'
 
 interface PaletteItem {
   label: string
   icon: ComponentType<{ className?: string }>
-  tint: string
+  tone: Tone
   onSelect: () => void
 }
 
@@ -21,32 +23,52 @@ export function StepPalette({
 }: {
   onInsert: (kind: TreeStep['kind'], actionType?: ActionType) => void
 }) {
+  const [query, setQuery] = useState('')
+
   const logic: PaletteItem[] = [
-    {
-      label: 'Condition',
-      icon: FunnelIcon,
-      tint: GATE_TINT,
-      onSelect: () => onInsert('condition'),
-    },
+    { label: 'Condition', icon: FunnelIcon, tone: 'violet', onSelect: () => onInsert('condition') },
     {
       label: 'Branch into paths',
       icon: ShareIcon,
-      tint: GATE_TINT,
+      tone: 'violet',
       onSelect: () => onInsert('branch'),
     },
-    { label: 'Wait', icon: ClockIcon, tint: STEP_TINT, onSelect: () => onInsert('wait') },
+    { label: 'Wait', icon: ClockIcon, tone: 'amber', onSelect: () => onInsert('wait') },
   ]
   const actions: PaletteItem[] = ACTION_TYPES.map((type) => ({
     label: ACTION_LABELS[type],
     icon: ACTION_ICONS[type],
-    tint: STEP_TINT,
+    tone: ACTION_TONE[type],
     onSelect: () => onInsert('action', type),
   }))
 
+  const q = query.trim().toLowerCase()
+  const matches = (item: PaletteItem) => !q || item.label.toLowerCase().includes(q)
+  const groups = [
+    { label: 'Logic', items: logic.filter(matches) },
+    { label: 'Actions', items: actions.filter(matches) },
+  ].filter((g) => g.items.length > 0)
+
   return (
-    <div className="space-y-4 p-3">
-      <PaletteGroup label="Logic" items={logic} />
-      <PaletteGroup label="Actions" items={actions} />
+    <div className="flex flex-col gap-3 p-3">
+      <div className="relative">
+        <MagnifyingGlassIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search steps…"
+          aria-label="Search steps"
+          className="w-full rounded-md border border-input bg-secondary py-1.5 pr-2.5 pl-8 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+        />
+      </div>
+      {groups.length === 0 ? (
+        <p className="px-1 text-xs text-muted-foreground">No steps match "{query}".</p>
+      ) : (
+        groups.map((group) => (
+          <PaletteGroup key={group.label} label={group.label} items={group.items} />
+        ))
+      )}
     </div>
   )
 }
@@ -66,7 +88,7 @@ function PaletteGroup({ label, items }: { label: string; items: PaletteItem[] })
             className="flex w-full items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left text-xs hover:bg-muted/60"
           >
             <span
-              className={`flex size-6 shrink-0 items-center justify-center rounded-md ${item.tint}`}
+              className={`flex size-6 shrink-0 items-center justify-center rounded-md ${TONE_TILE[item.tone]}`}
             >
               <item.icon className="size-3.5" />
             </span>

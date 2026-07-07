@@ -10,7 +10,8 @@ import { ChevronDownIcon, ChevronUpIcon, PlusIcon } from '@heroicons/react/24/ou
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { ConfirmDeleteDialog } from '../canvas'
+import { ConfirmDeleteDialog } from '../step-visuals'
+import { useWorkflowEntities } from '../entities'
 import { ConditionEditor } from './condition-editor'
 import { Field } from './shared'
 import {
@@ -28,6 +29,7 @@ export function BranchEditor({
   step: Extract<TreeStep, { kind: 'branch' }>
   onChange: (step: TreeStep) => void
 }) {
+  const { labels } = useWorkflowEntities()
   const [expanded, setExpanded] = useState<number | null>(null)
   const [confirmIndex, setConfirmIndex] = useState<number | null>(null)
 
@@ -93,7 +95,7 @@ export function BranchEditor({
                       {letter} · {path.key}
                     </div>
                     <div className="truncate text-[11px] text-muted-foreground">
-                      {conditionSummary(path.condition)}
+                      {conditionSummary(path.condition, labels.attributes)}
                     </div>
                   </button>
                 </div>

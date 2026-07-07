@@ -2,6 +2,16 @@
  * One level of "all/any of these rules" condition editing, ported unchanged
  * from the old popover editor. Nested groups (or a value that doesn't fit
  * the field's kind) are preserved as-is and stay editable only via JSON mode.
+ *
+ * Extended (support platform §4.6 / AI attributes parity Phase 0) with a
+ * "Conversation attribute" field group backed by the live attribute registry
+ * (WorkflowEntitiesProvider): field label, operator set, and value input all
+ * come from the matching definition's field type, reusing AttributeValueInput
+ * so this editor and the set_attribute action editor stay in the same voice.
+ * A stored `conversation.attr.<key>` with no live definition (archived, or
+ * authored before/after the current registry) degrades to a labeled-unknown
+ * row with a raw text value instead of blocking — mirrors action-editor's
+ * unknown-key fallback for set_attribute.
  */
 import { PlusIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { cn } from '@/lib/shared/utils'
@@ -10,19 +20,33 @@ import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
 import {
+  AttributeValueInput,
+  type AttributeInputValue,
+} from '@/components/admin/conversation/attribute-value-input'
+import type { ConversationAttributeItem } from '@/lib/client/queries/conversation-attributes'
+import { useWorkflowEntities } from '../entities'
+import {
   CONDITION_FIELD_LIST,
   CONDITION_FIELD_META,
-  OPERATOR_LABELS,
   OPERATORS_BY_KIND,
   VALUELESS_OPERATORS,
+  attributeFieldForKey,
+  attributeKeyFromField,
   conditionToDraft,
   defaultRule,
   draftToCondition,
+  isAttributeField,
+  resolveConditionField,
+  OPERATOR_LABELS,
+  type AttributeFieldDef,
+  type ConditionField,
   type ConditionOperator,
   type ConditionRuleDraft,
   type GraphCondition,
@@ -37,6 +61,8 @@ export function ConditionEditor({
   condition: GraphCondition
   onChange: (condition: GraphCondition) => void
 }) {
+  const { attributes, labels } = useWorkflowEntities()
+  const attributeFieldDefs = labels.attributes ?? new Map<string, AttributeFieldDef>()
   const draft = conditionToDraft(condition)
 
   if (draft.kind === 'advanced') {
@@ -47,7 +73,7 @@ export function ConditionEditor({
     )
   }
 
-  const commit = (next: typeof draft) => onChange(draftToCondition(next))
+  const commit = (next: typeof draft) => onChange(draftToCondition(next, attributeFieldDefs))
   const updateRule = (index: number, rule: ConditionRuleDraft) =>
     commit({ ...draft, rules: draft.rules.map((r, i) => (i === index ? rule : r)) })
 
@@ -78,6 +104,8 @@ export function ConditionEditor({
         <RuleRow
           key={i}
           rule={rule}
+          attributeFieldDefs={attributeFieldDefs}
+          attributeItems={attributes}
           onChange={(r) => updateRule(i, r)}
           onRemove={() => commit({ ...draft, rules: draft.rules.filter((_, j) => j !== i) })}
         />
@@ -102,18 +130,35 @@ export function ConditionEditor({
 
 function RuleRow({
   rule,
+  attributeFieldDefs,
+  attributeItems,
   onChange,
   onRemove,
 }: {
   rule: ConditionRuleDraft
+  attributeFieldDefs: ReadonlyMap<string, AttributeFieldDef>
+  attributeItems: ConversationAttributeItem[]
   onChange: (rule: ConditionRuleDraft) => void
   onRemove: () => void
 }) {
-  const meta = CONDITION_FIELD_META[rule.field]
-  const operators = OPERATORS_BY_KIND[meta.kind]
+  const meta = resolveConditionField(rule.field, attributeFieldDefs)
+  const operators = meta.operators
   const needsValue = !VALUELESS_OPERATORS.has(rule.op)
+  const unknownAttributeKey = isAttributeField(rule.field) && meta.unresolved
 
-  const setField = (field: ConditionRuleDraft['field']) => {
+  const setField = (field: ConditionField) => {
+    if (isAttributeField(field)) {
+      const def = attributeFieldDefs.get(attributeKeyFromField(field))
+      const op = resolveConditionField(field, attributeFieldDefs).operators[0]!
+      const value =
+        def?.fieldType === 'select'
+          ? (def.options?.[0]?.id ?? '')
+          : def?.fieldType === 'checkbox'
+            ? 'true'
+            : ''
+      onChange({ field, op, value })
+      return
+    }
     const fieldMeta = CONDITION_FIELD_META[field]
     const op = OPERATORS_BY_KIND[fieldMeta.kind][0]!
     const value =
@@ -131,19 +176,33 @@ function RuleRow({
   return (
     <div className="space-y-1.5 rounded-md border bg-muted/30 p-2">
       <div className="flex items-center gap-1.5">
-        <Select
-          value={rule.field}
-          onValueChange={(f) => setField(f as ConditionRuleDraft['field'])}
-        >
+        <Select value={rule.field} onValueChange={(f) => setField(f as ConditionField)}>
           <SelectTrigger size="xs" className="min-w-0 flex-1">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {CONDITION_FIELD_LIST.map((f) => (
-              <SelectItem key={f} value={f}>
-                {CONDITION_FIELD_META[f].label}
-              </SelectItem>
-            ))}
+            <SelectGroup>
+              {CONDITION_FIELD_LIST.map((f) => (
+                <SelectItem key={f} value={f}>
+                  {CONDITION_FIELD_META[f].label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+            {attributeItems.length > 0 && (
+              <SelectGroup>
+                <SelectLabel>Conversation attribute</SelectLabel>
+                {attributeItems.map((d) => (
+                  <SelectItem key={d.key} value={attributeFieldForKey(d.key)}>
+                    {d.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            )}
+            {/* A stored graph can reference an attribute key with no live
+                definition (archived, or authored before/after the current
+                registry): inject a selectable item so the trigger still
+                displays it, instead of rendering blank. */}
+            {unknownAttributeKey && <SelectItem value={rule.field}>{meta.label}</SelectItem>}
           </SelectContent>
         </Select>
         <button
@@ -171,7 +230,9 @@ function RuleRow({
             ))}
           </SelectContent>
         </Select>
-        {needsValue && <RuleValueEditor rule={rule} onChange={onChange} />}
+        {needsValue && (
+          <RuleValueEditor rule={rule} attributeItems={attributeItems} onChange={onChange} />
+        )}
       </div>
     </div>
   )
@@ -179,11 +240,19 @@ function RuleRow({
 
 function RuleValueEditor({
   rule,
+  attributeItems,
   onChange,
 }: {
   rule: ConditionRuleDraft
+  attributeItems: ConversationAttributeItem[]
   onChange: (rule: ConditionRuleDraft) => void
 }) {
+  if (isAttributeField(rule.field)) {
+    return (
+      <AttributeRuleValueEditor rule={rule} attributeItems={attributeItems} onChange={onChange} />
+    )
+  }
+
   const meta = CONDITION_FIELD_META[rule.field]
   const set = (value: string) => onChange({ ...rule, value })
 
@@ -223,6 +292,73 @@ function RuleValueEditor({
       onChange={(e) => set(e.target.value)}
       placeholder={meta.placeholder}
       className="h-6 min-w-0 flex-1 px-1.5 text-xs"
+    />
+  )
+}
+
+/** Encode/decode between the rule draft's string encoding (comma-joined for
+ *  multi-value, 'true'/'false' for checkbox) and AttributeValueInput's typed
+ *  JSON value — the same shapes ruleToLeaf/leafToRule use for the stored
+ *  condition, so a value round-trips identically through either editor. */
+function decodeAttributeRuleValue(
+  fieldType: ConversationAttributeItem['fieldType'],
+  raw: string
+): unknown {
+  if (fieldType === 'multi_select') {
+    return raw
+      ? raw
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : []
+  }
+  if (fieldType === 'checkbox') return raw === 'true'
+  if (fieldType === 'number') return raw === '' ? null : Number(raw)
+  return raw === '' ? null : raw
+}
+
+function encodeAttributeRuleValue(value: AttributeInputValue): string {
+  if (value === null || value === undefined) return ''
+  if (Array.isArray(value)) return value.join(', ')
+  return String(value)
+}
+
+function AttributeRuleValueEditor({
+  rule,
+  attributeItems,
+  onChange,
+}: {
+  rule: ConditionRuleDraft
+  attributeItems: ConversationAttributeItem[]
+  onChange: (rule: ConditionRuleDraft) => void
+}) {
+  // Only ever rendered when RuleValueEditor has already confirmed this, but
+  // guard again here so the narrowing (and attributeKeyFromField's type) is
+  // sound without a cast.
+  if (!isAttributeField(rule.field)) return null
+  const key = attributeKeyFromField(rule.field)
+  const def = attributeItems.find((d) => d.key === key)
+
+  if (!def) {
+    // No live definition (archived / unknown key): keep the raw text input so
+    // the rule stays editable, same fallback action-editor uses for an
+    // unknown set_attribute key.
+    return (
+      <Input
+        value={rule.value}
+        onChange={(e) => onChange({ ...rule, value: e.target.value })}
+        placeholder="Value"
+        className="h-6 min-w-0 flex-1 px-1.5 text-xs"
+      />
+    )
+  }
+
+  return (
+    <AttributeValueInput
+      definition={def}
+      value={decodeAttributeRuleValue(def.fieldType, rule.value)}
+      onChange={(value) => onChange({ ...rule, value: encodeAttributeRuleValue(value) })}
+      className="h-6 flex-1 text-xs"
     />
   )
 }

@@ -7,7 +7,7 @@
  */
 import type { ComponentType } from 'react'
 import { BoltIcon, ClockIcon, FunnelIcon, PlusIcon, ShareIcon } from '@heroicons/react/24/outline'
-import { ACTION_ICONS, GATE_TINT, STEP_TINT } from '../canvas'
+import { ACTION_ICONS, GATE_TINT, STEP_TINT } from '../step-visuals'
 import type { BuilderSelection } from '../types'
 import type { TriggerSettingsDraft } from '../use-workflow-builder'
 import { ActionEditor } from './action-editor'
@@ -18,6 +18,7 @@ import { TriggerEditor } from './trigger-editor'
 import { WaitEditor } from './wait-editor'
 import {
   ACTION_LABELS,
+  describeInsertionContext,
   findStepById,
   type ActionType,
   type TreeStep,
@@ -57,6 +58,7 @@ export function InspectorPanel({
       <InspectorEmpty message="Editing as JSON. Switch to Visual to use the inspector panel." />
     )
   }
+  if (!tree) return <InspectorEmpty message="Nothing to edit." />
   if (!selection) {
     return <InspectorEmpty message='Select a step to edit it, or click a "+" to add one.' />
   }
@@ -67,13 +69,12 @@ export function InspectorPanel({
           icon={PlusIcon}
           tint={STEP_TINT}
           title="Add a step"
-          subtitle="Choose what runs next"
+          subtitle={describeInsertionContext(tree, selection.location, selection.index)}
         />
         <StepPalette onInsert={onInsert} />
       </div>
     )
   }
-  if (!tree) return <InspectorEmpty message="Nothing to edit." />
 
   if (selection.id === tree.triggerId) {
     return (

@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'vitest'
 import { workflowGraphSchema } from '@/lib/server/domains/workflows/workflow.schemas'
 import {
+  attributeFieldForKey,
+  conditionSummary,
   conditionToDraft,
   createStep,
   draftToCondition,
@@ -14,7 +16,10 @@ import {
   graphToTree,
   initialGraphDraft,
   insertStep,
+  isConditionField,
   newTree,
+  resolveConditionField,
+  toAttributeFieldDefs,
   treeToGraph,
   validateGraph,
   type GraphCondition,
@@ -357,5 +362,216 @@ describe('tree editing helpers', () => {
     expect(bad.ok).toBe(false)
     const good = draftToGraphJson({ mode: 'json', text: JSON.stringify(richGraph) })
     expect(good).toEqual({ ok: true, value: richGraph })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Attribute conditions (AI attributes parity Phase 0): `conversation.attr.*`
+// authoring. The engine already evaluates this prefix
+// (condition.evaluator.ts); this suite covers the client unlocking it.
+// ---------------------------------------------------------------------------
+
+describe('attribute condition fields', () => {
+  const attributeDefs = toAttributeFieldDefs([
+    {
+      key: 'plan',
+      label: 'Plan',
+      fieldType: 'select',
+      options: [
+        { id: 'opt_free', label: 'Free' },
+        { id: 'opt_pro', label: 'Pro' },
+      ],
+    },
+    {
+      key: 'topics',
+      label: 'Topics',
+      fieldType: 'multi_select',
+      options: [
+        { id: 'opt_billing', label: 'Billing' },
+        { id: 'opt_bug', label: 'Bug' },
+      ],
+    },
+    { key: 'is_escalated', label: 'Escalated', fieldType: 'checkbox' },
+    { key: 'seats', label: 'Seats', fieldType: 'number' },
+    { key: 'summary', label: 'Summary', fieldType: 'text' },
+    { key: 'renewal', label: 'Renewal date', fieldType: 'date' },
+  ])
+
+  describe('isConditionField / validateGraph', () => {
+    it('accepts the conversation.attr. prefix for any non-empty key', () => {
+      expect(isConditionField('conversation.attr.plan')).toBe(true)
+      expect(isConditionField('conversation.attr.some_unregistered_key')).toBe(true)
+    })
+
+    it('rejects an empty attribute key and unrelated prefixes', () => {
+      expect(isConditionField('conversation.attr.')).toBe(false)
+      expect(isConditionField('conversation.attrs.plan')).toBe(false)
+      expect(isConditionField('conversation.stattus')).toBe(false)
+    })
+
+    it('accepts an attribute condition in visual (leaf) shape', () => {
+      const graph = {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          {
+            id: 'x',
+            type: 'condition',
+            condition: { field: 'conversation.attr.plan', op: 'eq', value: 'opt_pro' },
+          },
+        ],
+        edges: [{ from: 'trigger', to: 'x' }],
+      }
+      expect(validateGraph(graph).ok).toBe(true)
+    })
+
+    it('accepts an unknown/archived attribute key (degrades, does not block)', () => {
+      const graph = {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          {
+            id: 'x',
+            type: 'condition',
+            condition: { field: 'conversation.attr.retired_key', op: 'is_set' },
+          },
+        ],
+        edges: [{ from: 'trigger', to: 'x' }],
+      }
+      expect(validateGraph(graph).ok).toBe(true)
+    })
+
+    it('still rejects a garbage field with the same JSON shape', () => {
+      const graph = {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          { id: 'x', type: 'condition', condition: { field: 'conversation.attr.', op: 'eq' } },
+        ],
+        edges: [{ from: 'trigger', to: 'x' }],
+      }
+      const result = validateGraph(graph)
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error).toMatch(/unknown condition field/)
+    })
+  })
+
+  describe('operator filtering per attribute field type', () => {
+    it.each([
+      ['select', 'plan', ['eq', 'neq', 'is_set', 'is_empty']],
+      ['multi_select', 'topics', ['includes_any', 'excludes_all', 'is_set', 'is_empty']],
+      ['checkbox', 'is_escalated', ['eq']],
+      ['number', 'seats', ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'is_set', 'is_empty']],
+      ['text', 'summary', ['contains', 'not_contains', 'eq', 'neq', 'is_set', 'is_empty']],
+      ['date', 'renewal', ['is_set', 'is_empty']],
+    ] as const)('%s attributes offer exactly %j', (_type, key, expected) => {
+      const resolved = resolveConditionField(attributeFieldForKey(key), attributeDefs)
+      expect([...resolved.operators]).toEqual([...expected])
+    })
+
+    it('falls back to every operator for an unresolved attribute key', () => {
+      const resolved = resolveConditionField(attributeFieldForKey('nope'), attributeDefs)
+      expect(resolved.unresolved).toBe(true)
+      expect(resolved.operators.length).toBeGreaterThan(6)
+    })
+  })
+
+  describe('draft <-> condition round-trip', () => {
+    it('round-trips a select eq condition, storing the option id', () => {
+      const leaf: GraphCondition = {
+        field: 'conversation.attr.plan',
+        op: 'eq',
+        value: 'opt_pro',
+      }
+      const draft = conditionToDraft(leaf)
+      expect(draft).toEqual({
+        kind: 'simple',
+        mode: 'all',
+        rules: [{ field: 'conversation.attr.plan', op: 'eq', value: 'opt_pro' }],
+      })
+      if (draft.kind === 'simple') expect(draftToCondition(draft, attributeDefs)).toEqual(leaf)
+    })
+
+    it('round-trips a multi_select includes_any condition as a string[]', () => {
+      const leaf: GraphCondition = {
+        field: 'conversation.attr.topics',
+        op: 'includes_any',
+        value: ['opt_billing', 'opt_bug'],
+      }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draft.rules[0]?.value).toBe('opt_billing, opt_bug')
+      expect(draftToCondition(draft, attributeDefs)).toEqual(leaf)
+    })
+
+    it('round-trips a checkbox eq condition as a real boolean, not the string "true"', () => {
+      const leaf: GraphCondition = {
+        field: 'conversation.attr.is_escalated',
+        op: 'eq',
+        value: true,
+      }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draft.rules[0]?.value).toBe('true')
+      const rebuilt = draftToCondition(draft, attributeDefs)
+      expect(rebuilt).toEqual(leaf)
+      if ('field' in rebuilt) expect(typeof rebuilt.value).toBe('boolean')
+    })
+
+    it('round-trips a number condition', () => {
+      const leaf: GraphCondition = { field: 'conversation.attr.seats', op: 'gte', value: 5 }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draftToCondition(draft, attributeDefs)).toEqual(leaf)
+    })
+
+    it('is_set/is_empty carry no value either direction', () => {
+      const leaf: GraphCondition = { field: 'conversation.attr.plan', op: 'is_set' }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draft.rules[0]?.value).toBe('')
+      expect(draftToCondition(draft, attributeDefs)).toEqual(leaf)
+    })
+  })
+
+  describe('conditionSummary label resolution', () => {
+    it('renders the definition label and option label, not the raw key/id', () => {
+      const condition: GraphCondition = {
+        field: 'conversation.attr.plan',
+        op: 'eq',
+        value: 'opt_pro',
+      }
+      expect(conditionSummary(condition, attributeDefs)).toBe('Plan is Pro')
+    })
+
+    it('renders option labels for a multi_select value', () => {
+      const condition: GraphCondition = {
+        field: 'conversation.attr.topics',
+        op: 'includes_any',
+        value: ['opt_billing', 'opt_bug'],
+      }
+      expect(conditionSummary(condition, attributeDefs)).toBe('Topics includes any of Billing, Bug')
+    })
+
+    it('renders yes/no for a checkbox value', () => {
+      const condition: GraphCondition = {
+        field: 'conversation.attr.is_escalated',
+        op: 'eq',
+        value: true,
+      }
+      expect(conditionSummary(condition, attributeDefs)).toBe('Escalated is yes')
+    })
+
+    it('falls back to the raw key when the definition is missing', () => {
+      const condition: GraphCondition = {
+        field: 'conversation.attr.retired_key',
+        op: 'is_set',
+      }
+      expect(conditionSummary(condition, attributeDefs)).toBe(
+        'Unknown attribute retired_key is set'
+      )
+    })
+
+    it('falls back to the raw key with no attributes map supplied at all', () => {
+      const condition: GraphCondition = { field: 'conversation.attr.plan', op: 'is_set' }
+      expect(conditionSummary(condition)).toBe('Unknown attribute plan is set')
+    })
   })
 })
