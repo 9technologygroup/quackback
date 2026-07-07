@@ -103,6 +103,7 @@ import {
   emitConversationCsatCommentAdded,
 } from './conversation.webhooks'
 import { dispatchAssistantHandedOff, buildEventActor } from '@/lib/server/events/dispatch'
+import { classifyConversationAttributes } from '@/lib/server/domains/conversation-attributes/ai-classification.service'
 import { extractMentions } from '@/lib/server/domains/posts/extract-mentions'
 import { syncConversationMessageMentions } from './sync-conversation-mentions'
 import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
@@ -803,6 +804,21 @@ export async function setConversationStatus(
   publishConversationUpdate(conversationId, dto)
   if (updated.status !== previous) {
     void emitConversationStatusChanged(actor, updated, previous)
+  }
+  // AI attribute classification (AI-ATTRIBUTES-PARITY-SPEC.md Phase 1,
+  // detectOnClose): the teammate-close moment, only for a REAL teammate
+  // (principalType 'user') — never Quinn's own end_conversation tool or a
+  // workflow's `close` action, both of which also call this same function
+  // but with a bounded service actor and have their own dedicated
+  // classification hooks (assistant_closed / handoff). Fire-and-forget: the
+  // classifier is flag-gated and never throws on its own, and the extra
+  // catch here is defense in depth so a failure can never affect the close.
+  if (status === 'closed' && previous !== 'closed' && actor.principalType === 'user') {
+    void classifyConversationAttributes(conversationId, { trigger: 'teammate_close' }).catch(
+      (err) => {
+        log.warn({ err, conversationId }, 'teammate-close attribute classification failed')
+      }
+    )
   }
   return updated
 }
@@ -1683,6 +1699,17 @@ export async function executeAssistantHandoff(
   // routing declines, still surface the updated attributes/status to the inbox.
   if (!assigned) {
     publishConversationUpdate(updated.id, await conversationToDTO(updated, 'agent'))
+  }
+  // AI attribute classification (AI-ATTRIBUTES-PARITY-SPEC.md Phase 1) runs
+  // BEFORE the event dispatches below, so a workflow condition on
+  // assistant.handed_off sees freshly classified attribute values rather than
+  // a stale (or never-set) one. Flag-gated and non-blocking inside the
+  // service itself; a failure here must never block the hand-off, hence the
+  // defensive catch even though the service already never throws.
+  try {
+    await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
+  } catch (err) {
+    log.warn({ err, conversationId }, 'pre-handoff attribute classification failed')
   }
   // Let workflows/webhooks react to the hand-off — Quinn (the assistant service
   // principal) performed it, so the actor mirrors other service-authored events.

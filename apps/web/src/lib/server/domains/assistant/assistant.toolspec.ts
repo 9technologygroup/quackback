@@ -31,12 +31,16 @@ import {
 } from '@/lib/shared/db-types'
 import type { Actor } from '@/lib/server/policy/types'
 import { setConversationAttribute } from '@/lib/server/domains/conversation-attributes/set-attribute.service'
+import { classifyConversationAttributes } from '@/lib/server/domains/conversation-attributes/ai-classification.service'
 import { readAttributeValue } from '@/lib/shared/conversation/attribute-values'
 import { setConversationStatus } from '@/lib/server/domains/conversation/conversation.service'
 import { createTicket } from '@/lib/server/domains/tickets/ticket.service'
 import { createPostFromConversation } from '@/lib/server/domains/conversation/conversation.convert'
 import { quinnActor } from './assistant.actor'
 import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service'
+import { logger } from '@/lib/server/logger'
+
+const log = logger.child({ component: 'assistant-toolspec' })
 
 /** A structured citation — the only citation contract; never free-form markdown. */
 export interface AssistantCitation {
@@ -373,8 +377,10 @@ export const setAttributeTool = toolDefinition({
       .max(100)
       .describe('The attribute definition key, exactly as configured in this workspace.'),
     value: z
-      .union([z.string(), z.number(), z.boolean(), z.null()])
-      .describe('The value to store. Use null to clear the attribute.'),
+      .union([z.string(), z.number(), z.boolean(), z.null(), z.array(z.string())])
+      .describe(
+        'The value to store. Use an array of option ids for a multi_select attribute, null to clear the attribute, otherwise the single value.'
+      ),
   }),
   outputSchema: withGateEnvelope(
     z.object({
@@ -496,12 +502,29 @@ async function getConversationSnapshot(
 
 interface SetAttributeArgs {
   key: string
-  value: string | number | boolean | null
+  value: string | number | boolean | null | string[]
 }
 
 interface SetAttributeOutput {
   applied: boolean
   note?: string
+}
+
+/**
+ * Whether the stored value matches what this call asked to write. Arrays
+ * (multi_select) compare order-insensitively — the writer dedupes but does
+ * not otherwise reorder, and the model has no reason to reproduce the exact
+ * stored order for the comparison to mean "this call's write landed".
+ */
+function valueLanded(stored: unknown, requested: SetAttributeArgs['value']): boolean {
+  if (Array.isArray(requested)) {
+    if (!Array.isArray(stored)) return false
+    if (stored.length !== requested.length) return false
+    const sortedStored = [...stored].sort()
+    const sortedRequested = [...requested].sort()
+    return sortedStored.every((v, i) => v === sortedRequested[i])
+  }
+  return stored === requested
 }
 
 async function executeSetAttribute(
@@ -519,7 +542,7 @@ async function executeSetAttribute(
   const applied =
     args.value === null
       ? attributes[args.key] === undefined
-      : readAttributeValue(attributes[args.key])?.v === args.value
+      : valueLanded(readAttributeValue(attributes[args.key])?.v, args.value)
   return applied
     ? { applied: true }
     : { applied: false, note: 'Attribute already set by another source.' }
@@ -550,6 +573,16 @@ async function executeEndConversation(
     return { closed: true, note: 'Conversation was already closed.' }
   }
   await setConversationStatus(conversationId, 'closed', ctx.actor)
+  // AI attribute classification (AI-ATTRIBUTES-PARITY-SPEC.md Phase 1): one
+  // of the "job done" moments. Flag-gated and non-blocking inside the
+  // service itself; the extra catch here is defense in depth so a
+  // classification failure can never turn a successful close into a failed
+  // tool call.
+  try {
+    await classifyConversationAttributes(conversationId, { trigger: 'assistant_closed' })
+  } catch (err) {
+    log.warn({ err, conversationId }, 'post-close attribute classification failed')
+  }
   return { closed: true }
 }
 

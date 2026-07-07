@@ -10,6 +10,7 @@ import type { Role } from '@/lib/shared/roles'
 import type { OfficeHoursConfig } from '@/lib/shared/conversation/types'
 import type { WidgetTranslations } from '@/lib/shared/widget/translations'
 import type { ChangelogSettings } from '@/lib/shared/changelog-settings'
+import type { StatusSettings } from '@/lib/shared/status-settings'
 
 // =============================================================================
 // Auth Configuration (Team sign-in settings)
@@ -899,6 +900,8 @@ export interface TenantSettings {
   helpCenterConfig: HelpCenterConfig
   /** Changelog audience/nav/collaboration/email settings */
   changelogConfig: ChangelogSettings
+  /** Status page enablement/visibility/email settings */
+  statusConfig: StatusSettings
   /** Public widget config (no secret, safe for client) */
   publicWidgetConfig: PublicWidgetConfig
   /** Feature flags for experimental features */
@@ -960,6 +963,13 @@ export interface FeatureFlags {
   /** Two-way inbox translation: customer messages display in the teammate's
    *  language and replies send in the customer's language, per conversation. */
   inboxTranslation: boolean
+  /** Deterministic AI classification of ai_detect-enabled conversation
+   *  attributes at handoff, assistant close, inactivity close, and (per
+   *  attribute) teammate close. */
+  aiAttributeDetection: boolean
+  /** Status page: public/private/segment-scoped service status with incidents,
+   *  maintenance windows, uptime history, and subscriber notifications. */
+  statusPage: boolean
 }
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
@@ -978,6 +988,8 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   assistantConversationGrounding: false,
   assistantCopilot: false,
   inboxTranslation: false,
+  aiAttributeDetection: false,
+  statusPage: false,
 }
 
 /**
@@ -1059,6 +1071,16 @@ export const FEATURE_FLAG_REGISTRY: Record<
     description:
       "Translate customer messages into a teammate's language and replies into the customer's language, per conversation. Requires an AI model to be configured.",
   },
+  aiAttributeDetection: {
+    label: 'AI attribute detection',
+    description:
+      'Let AI automatically classify conversation attributes you opt in (issue type, sentiment, urgency, and more) at handoff, close, and inactivity, with its reasoning recorded on the conversation. Requires an AI model to be configured.',
+  },
+  statusPage: {
+    label: 'Status page',
+    description:
+      'Publish a status page on your portal with live component status, incidents, scheduled maintenance, uptime history, and subscriber notifications.',
+  },
 }
 
 /**
@@ -1075,7 +1097,14 @@ export const LAB_SECTIONS: Array<{
   {
     title: 'Support',
     description: 'Support your customers with Messenger and a self-serve help center.',
-    flags: ['supportInbox', 'supportTickets', 'helpCenter', 'helpCenterAiAnswers', 'linkPreviews'],
+    flags: [
+      'supportInbox',
+      'supportTickets',
+      'helpCenter',
+      'helpCenterAiAnswers',
+      'linkPreviews',
+      'statusPage',
+    ],
   },
   {
     title: 'Feedback',
@@ -1099,6 +1128,7 @@ export const LAB_SECTIONS: Array<{
       'assistantConversationGrounding',
       'assistantCopilot',
       'inboxTranslation',
+      'aiAttributeDetection',
     ],
   },
 ]

@@ -17,6 +17,12 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
   sql: (strings: TemplateStringsArray) => ({ sql: strings }),
 }))
 
+const mockClassifyConversationAttributes = vi.fn()
+vi.mock('@/lib/server/domains/conversation-attributes/ai-classification.service', () => ({
+  classifyConversationAttributes: (...args: unknown[]) =>
+    mockClassifyConversationAttributes(...args),
+}))
+
 import { finalizeStaleAssistantInvolvements } from '../assistant.involvement'
 
 /**
@@ -24,7 +30,7 @@ import { finalizeStaleAssistantInvolvements } from '../assistant.involvement'
  * via select().from().where() (not awaited), and the sweep's set-based UPDATE
  * resolves through update().set().where().returning() to `resolvedRows`.
  */
-function makeExec(resolvedRows: Array<{ id: string }>) {
+function makeExec(resolvedRows: Array<{ id: string; conversationId: string }>) {
   return {
     select: () => ({ from: () => ({ where: () => ({ __subquery: true }) }) }),
     update: () => ({
@@ -33,11 +39,17 @@ function makeExec(resolvedRows: Array<{ id: string }>) {
   } as never
 }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockClassifyConversationAttributes.mockResolvedValue([])
+})
 
 describe('finalizeStaleAssistantInvolvements', () => {
   it('resolves in one set-based UPDATE, returning the count of rows it flipped', async () => {
-    const exec = makeExec([{ id: 'assistant_involvement_1' }, { id: 'assistant_involvement_2' }])
+    const exec = makeExec([
+      { id: 'assistant_involvement_1', conversationId: 'conversation_1' },
+      { id: 'assistant_involvement_2', conversationId: 'conversation_2' },
+    ])
     const { resolved } = await finalizeStaleAssistantInvolvements(10, exec)
     expect(resolved).toBe(2)
     // The "customer returned" guard rides a correlated NOT EXISTS subquery.
@@ -48,5 +60,35 @@ describe('finalizeStaleAssistantInvolvements', () => {
     const exec = makeExec([])
     const { resolved } = await finalizeStaleAssistantInvolvements(10, exec)
     expect(resolved).toBe(0)
+  })
+
+  it('classifies attributes (trigger inactivity) for every conversation resolved this sweep', async () => {
+    const exec = makeExec([
+      { id: 'assistant_involvement_1', conversationId: 'conversation_1' },
+      { id: 'assistant_involvement_2', conversationId: 'conversation_2' },
+    ])
+    await finalizeStaleAssistantInvolvements(10, exec)
+    // Fire-and-forget: give the un-awaited classify calls a tick to fire.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(mockClassifyConversationAttributes).toHaveBeenCalledWith('conversation_1', {
+      trigger: 'inactivity',
+    })
+    expect(mockClassifyConversationAttributes).toHaveBeenCalledWith('conversation_2', {
+      trigger: 'inactivity',
+    })
+  })
+
+  it('does not classify anything when no involvement was resolved', async () => {
+    const exec = makeExec([])
+    await finalizeStaleAssistantInvolvements(10, exec)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(mockClassifyConversationAttributes).not.toHaveBeenCalled()
+  })
+
+  it('never lets a classification failure affect the sweep result', async () => {
+    mockClassifyConversationAttributes.mockRejectedValue(new Error('classifier exploded'))
+    const exec = makeExec([{ id: 'assistant_involvement_1', conversationId: 'conversation_1' }])
+    const { resolved } = await finalizeStaleAssistantInvolvements(10, exec)
+    expect(resolved).toBe(1)
   })
 })

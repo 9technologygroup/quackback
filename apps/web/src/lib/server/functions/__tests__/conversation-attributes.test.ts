@@ -71,10 +71,12 @@ vi.mock('@/lib/server/functions/auth-helpers', async () => {
   }
 })
 
+const mockCreateConversationAttribute = vi.fn()
+const mockUpdateConversationAttribute = vi.fn()
 vi.mock('@/lib/server/domains/conversation-attributes/conversation-attribute.service', () => ({
   listConversationAttributes: vi.fn(),
-  createConversationAttribute: vi.fn(),
-  updateConversationAttribute: vi.fn(),
+  createConversationAttribute: (...args: unknown[]) => mockCreateConversationAttribute(...args),
+  updateConversationAttribute: (...args: unknown[]) => mockUpdateConversationAttribute(...args),
   archiveConversationAttribute: vi.fn(),
   restoreConversationAttribute: vi.fn(),
 }))
@@ -83,7 +85,11 @@ vi.mock('@/lib/server/domains/conversation-attributes/set-attribute.service', ()
   setConversationAttribute: hoisted.setConversationAttribute,
 }))
 
-import { setConversationAttributeValueFn } from '../conversation-attributes'
+import {
+  setConversationAttributeValueFn,
+  createConversationAttributeFn,
+  updateConversationAttributeFn,
+} from '../conversation-attributes'
 
 const AUTH = {
   user: { id: 'user_agent1', email: 'agent@x', name: 'Agent', image: null },
@@ -190,5 +196,46 @@ describe('setConversationAttributeValueFn — ticket target', () => {
       'enterprise',
       'teammate'
     )
+  })
+})
+
+describe('createConversationAttributeFn / updateConversationAttributeFn — aiDetect/detectOnClose', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const createCall = (data: any) => createConversationAttributeFn({ data })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const updateCall = (data: any) => updateConversationAttributeFn({ data })
+
+  beforeEach(() => {
+    mockCreateConversationAttribute.mockResolvedValue({ id: 'conv_attr_1' })
+    mockUpdateConversationAttribute.mockResolvedValue({ id: 'conv_attr_1' })
+  })
+
+  it('passes aiDetect/detectOnClose through on create', async () => {
+    await createCall({
+      key: 'issue_type',
+      label: 'Issue type',
+      fieldType: 'select',
+      options: [{ label: 'Billing' }],
+      aiDetect: true,
+      detectOnClose: true,
+    })
+    expect(mockCreateConversationAttribute).toHaveBeenCalledWith(
+      expect.objectContaining({ aiDetect: true, detectOnClose: true })
+    )
+  })
+
+  it('passes aiDetect/detectOnClose through on update', async () => {
+    await updateCall({ id: 'conv_attr_1', aiDetect: true, detectOnClose: false })
+    expect(mockUpdateConversationAttribute).toHaveBeenCalledWith(
+      'conv_attr_1',
+      expect.objectContaining({ aiDetect: true, detectOnClose: false })
+    )
+  })
+
+  it('omits aiDetect/detectOnClose from the create call when not provided', async () => {
+    await createCall({ key: 'plan', label: 'Plan', fieldType: 'text' })
+    const passed = mockCreateConversationAttribute.mock.calls[0][0]
+    expect(passed.aiDetect).toBeUndefined()
+    expect(passed.detectOnClose).toBeUndefined()
   })
 })

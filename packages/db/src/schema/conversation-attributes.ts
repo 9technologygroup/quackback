@@ -53,6 +53,17 @@ export const conversationAttributeDefinitions = pgTable(
     /** Enforced only on teammate inbox close; API/workflow/AI closes bypass. */
     requiredToClose: boolean('required_to_close').notNull().default(false),
     sourceHint: text('source_hint').$type<ConversationAttributeSourceHint | null>(),
+    /**
+     * Opt in to deterministic AI classification at the "job done" moments
+     * (handoff, assistant close, inactivity close). `select` field type only —
+     * enforced at the service layer, not here. Off by default: an admin must
+     * explicitly opt an attribute in.
+     */
+    aiDetect: boolean('ai_detect').notNull().default(false),
+    /** Re-run classification for this attribute when a teammate closes the
+     *  conversation, in addition to the standard "job done" moments. Only
+     *  meaningful alongside `aiDetect`; `select` field type only. */
+    detectOnClose: boolean('detect_on_close').notNull().default(false),
     /** Archive-only lifecycle: set = hidden from pickers, key stays reserved. */
     archivedAt: timestamp('archived_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

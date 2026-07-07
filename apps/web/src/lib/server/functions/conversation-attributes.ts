@@ -50,6 +50,9 @@ const createAttributeSchema = z.object({
   options: z.array(createOptionSchema).max(100).optional(),
   requiredToClose: z.boolean().optional(),
   sourceHint: sourceHintSchema.optional().nullable(),
+  // select-only, enforced at the service layer (createConversationAttribute).
+  aiDetect: z.boolean().optional(),
+  detectOnClose: z.boolean().optional(),
 })
 
 // Field type (and key) are immutable after creation, so neither is accepted.
@@ -60,6 +63,9 @@ const updateAttributeSchema = z.object({
   options: z.array(updateOptionSchema).max(100).optional(),
   requiredToClose: z.boolean().optional(),
   sourceHint: sourceHintSchema.optional().nullable(),
+  // select-only, enforced at the service layer (updateConversationAttribute).
+  aiDetect: z.boolean().optional(),
+  detectOnClose: z.boolean().optional(),
 })
 
 const attributeIdSchema = z.object({ id: z.string().min(1) })

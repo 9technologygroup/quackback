@@ -117,6 +117,15 @@ vi.mock('@/lib/server/domains/connectors/connector.toolspec', () => ({
   listEnabledConnectorToolSpecs: vi.fn().mockResolvedValue([]),
 }))
 
+// The live attribute catalogue (P0 catalogue injection): the runtime fetches
+// this only when set_attribute made it into the turn's active tool set.
+// Defaults to none, so every existing test (which never asserts on this)
+// keeps seeing the byte-identical no-definitions prompt.
+const mockListConversationAttributes = vi.fn()
+vi.mock('@/lib/server/domains/conversation-attributes/conversation-attribute.service', () => ({
+  listConversationAttributes: (...args: unknown[]) => mockListConversationAttributes(...args),
+}))
+
 // Surfaces, basics, tool controls, and guidance rules are only read when
 // actions are on (asserted explicitly below); default to nothing saved.
 // getAssistantConfig is the runtime's one-read-per-turn entry point;
@@ -222,6 +231,7 @@ beforeEach(() => {
   mockGetAssistantConfig.mockResolvedValue({ toolControls: {}, surfaces: {}, basics: {} })
   mockGetAssistantToolControls.mockResolvedValue({})
   mockListGuidanceRules.mockResolvedValue([])
+  mockListConversationAttributes.mockResolvedValue([])
   mockAssembleAssistantToolset.mockImplementation((...args: unknown[]) =>
     realAssembleAssistantToolsetRef.current(...args)
   )
@@ -486,6 +496,74 @@ describe('buildAssistantSystemPrompt', () => {
       'Respond with ONLY a single JSON object and nothing else: no preamble, no commentary, no markdown code fences. The object must have this exact shape: {"text": string, "citations": [{"type": "article"|"post"|"snippet"|"summary", "id": string}], "escalation": {"reason": string} | null}. Put the entire reply to the customer inside "text".'
     expect(withTools).toContain(contract)
     expect(withoutTools).toContain(contract)
+  })
+
+  describe('attribute catalogue injection', () => {
+    const setAttributeTool = [{ name: 'set_attribute', promptGuidance: 'x' }]
+    const definitions = [
+      {
+        key: 'issue_type',
+        label: 'Issue type',
+        description: 'What the conversation is about.',
+        fieldType: 'select' as const,
+        options: [
+          { id: 'opt_billing', label: 'Billing', description: 'A charge or invoice question.' },
+          { id: 'opt_bug', label: 'Bug report', description: null },
+        ],
+      },
+      {
+        key: 'affected_features',
+        label: 'Affected features',
+        description: null,
+        fieldType: 'multi_select' as const,
+        options: [{ id: 'opt_search', label: 'Search', description: null }],
+      },
+    ]
+
+    it('adds a workspace-attributes section when set_attribute is active and definitions exist', () => {
+      const joined = buildAssistantSystemPrompt('Quinn', setAttributeTool, definitions).join('\n')
+      expect(joined).toContain('issue_type')
+      expect(joined).toContain('Issue type')
+      expect(joined).toContain('What the conversation is about.')
+      expect(joined).toContain('opt_billing — Billing (A charge or invoice question.)')
+      expect(joined).toContain('opt_bug — Bug report')
+      expect(joined).toContain('affected_features')
+      expect(joined).toContain('opt_search — Search')
+    })
+
+    it('omits the section when set_attribute is not in the active tool set', () => {
+      const joined = buildAssistantSystemPrompt(
+        'Quinn',
+        [{ name: 'search_knowledge', promptGuidance: 'x' }],
+        definitions
+      ).join('\n')
+      expect(joined).not.toContain('issue_type')
+      expect(joined).not.toContain('opt_billing')
+    })
+
+    it('omits the section when no definitions are passed, even with the tool active', () => {
+      const joined = buildAssistantSystemPrompt('Quinn', setAttributeTool).join('\n')
+      expect(joined).not.toContain('issue_type')
+    })
+
+    it('omits the section when the definitions list is empty', () => {
+      const joined = buildAssistantSystemPrompt('Quinn', setAttributeTool, []).join('\n')
+      expect(joined).not.toContain('issue_type')
+    })
+
+    it('excludes options for non-select/multi_select definitions', () => {
+      const joined = buildAssistantSystemPrompt('Quinn', setAttributeTool, [
+        {
+          key: 'plan_tier',
+          label: 'Plan tier',
+          description: null,
+          fieldType: 'text' as const,
+          options: null,
+        },
+      ]).join('\n')
+      expect(joined).toContain('plan_tier')
+      expect(joined).not.toContain('opt_')
+    })
   })
 })
 
@@ -1608,6 +1686,66 @@ describe('runAssistantTurn: prompt assembly (basics + surface instructions + gui
 
     expect(mockGetAssistantConfig).toHaveBeenCalledTimes(1)
     expect(mockGetAssistantToolControls).not.toHaveBeenCalled()
+  })
+})
+
+describe('runAssistantTurn: attribute catalogue injection (P0)', () => {
+  function systemPromptsFromLastCall(): string[] {
+    const opts = mockChat.mock.calls.at(-1)?.[0] as { systemPrompts: string[] }
+    return opts.systemPrompts
+  }
+
+  const fakeDefinitions = [
+    {
+      key: 'issue_type',
+      label: 'Issue type',
+      description: 'What the conversation is about.',
+      fieldType: 'select' as const,
+      options: [{ id: 'opt_billing', label: 'Billing', description: null }],
+    },
+  ]
+
+  it('flag off (set_attribute not active): never fetches the catalogue', async () => {
+    mockIsFeatureEnabled.mockResolvedValue(false)
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
+
+    expect(mockListConversationAttributes).not.toHaveBeenCalled()
+    expect(systemPromptsFromLastCall()).toEqual(
+      buildAssistantSystemPrompt('Quinn', WIDGET_LEGACY_TOOLS)
+    )
+  })
+
+  it('flag on (set_attribute active): fetches and injects the live catalogue', async () => {
+    mockActionsFlag(true)
+    mockGetAssistantConfig.mockResolvedValue({ toolControls: {}, surfaces: {}, basics: {} })
+    mockListGuidanceRules.mockResolvedValue([])
+    mockListConversationAttributes.mockResolvedValue(fakeDefinitions)
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
+
+    expect(mockListConversationAttributes).toHaveBeenCalledTimes(1)
+    const prompts = systemPromptsFromLastCall()
+    expect(prompts).toEqual(
+      buildAssistantSystemPrompt('Quinn', ALL_DEFAULT_ACTIVE_SPECS, fakeDefinitions)
+    )
+    expect(prompts.join('\n')).toContain('issue_type')
+  })
+
+  it('flag on but no definitions exist: no workspace-attributes section is added', async () => {
+    mockActionsFlag(true)
+    mockGetAssistantConfig.mockResolvedValue({ toolControls: {}, surfaces: {}, basics: {} })
+    mockListGuidanceRules.mockResolvedValue([])
+    mockListConversationAttributes.mockResolvedValue([])
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
+
+    expect(systemPromptsFromLastCall()).toEqual(
+      buildAssistantSystemPrompt('Quinn', ALL_DEFAULT_ACTIVE_SPECS)
+    )
   })
 })
 

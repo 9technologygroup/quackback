@@ -21,6 +21,11 @@ vi.mock('../routing', () => ({
   routeConversation: (...a: unknown[]) => routeConversation(...a),
 }))
 
+const classifyConversationAttributes = vi.fn()
+vi.mock('@/lib/server/domains/conversation-attributes/ai-classification.service', () => ({
+  classifyConversationAttributes: (...a: unknown[]) => classifyConversationAttributes(...a),
+}))
+
 vi.mock('@/lib/server/realtime/conversation-channels', () => ({
   publishConversationEvent: vi.fn(),
   publishAgentConversationEvent: vi.fn(),
@@ -91,6 +96,7 @@ const quinnAuthor = {
 beforeEach(() => {
   vi.clearAllMocks()
   routeConversation.mockResolvedValue({ assignedPrincipalId: null })
+  classifyConversationAttributes.mockResolvedValue([])
 })
 
 describe('executeAssistantHandoff bus event', () => {
@@ -117,5 +123,30 @@ describe('executeAssistantHandoff bus event', () => {
     expect(buildEventActor).toHaveBeenCalledWith(
       expect.objectContaining({ principalId: 'principal_other', displayName: undefined })
     )
+  })
+
+  it('classifies attributes BEFORE dispatching the event, so a handoff-triggered workflow sees fresh values', async () => {
+    const order: string[] = []
+    classifyConversationAttributes.mockImplementation(async () => {
+      order.push('classify')
+      return []
+    })
+    dispatchAssistantHandedOff.mockImplementation(async () => {
+      order.push('dispatch')
+    })
+
+    await executeAssistantHandoff(convId, 'explicit_request', quinnAuthor)
+
+    expect(classifyConversationAttributes).toHaveBeenCalledWith(convId, { trigger: 'handoff' })
+    expect(order).toEqual(['classify', 'dispatch'])
+  })
+
+  it('never lets a classification failure block the handoff', async () => {
+    classifyConversationAttributes.mockRejectedValue(new Error('classifier exploded'))
+
+    await expect(
+      executeAssistantHandoff(convId, 'explicit_request', quinnAuthor)
+    ).resolves.toBeUndefined()
+    expect(dispatchAssistantHandedOff).toHaveBeenCalledTimes(1)
   })
 })

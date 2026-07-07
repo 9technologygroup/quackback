@@ -7,7 +7,7 @@
  * reserved by the unique index). Authorization lives at the server-fn layer.
  */
 import { randomUUID } from 'node:crypto'
-import { db, eq, asc, isNull, conversationAttributeDefinitions } from '@/lib/server/db'
+import { db, eq, asc, and, isNull, conversationAttributeDefinitions } from '@/lib/server/db'
 import type { ConversationAttributeOption } from '@/lib/server/db'
 import type { ConversationAttributeId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ConflictError, InternalError } from '@/lib/shared/errors'
@@ -41,6 +41,8 @@ function rowToAttribute(
     options: row.options,
     requiredToClose: row.requiredToClose,
     sourceHint: row.sourceHint,
+    aiDetect: row.aiDetect,
+    detectOnClose: row.detectOnClose,
     archivedAt: row.archivedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -68,17 +70,45 @@ function validateOptionsForType(fieldType: string, options: { label: string }[] 
   }
 }
 
-/** Non-archived definitions by default; the settings page lists everything. */
+/**
+ * AI classification (`aiDetect`/`detectOnClose`) is `select`-only, matching
+ * both competitor references (Intercom/Featurebase classify enum attributes
+ * only) — `multi_select` is a deliberate v1 exclusion, not yet supported by
+ * the classifier. Only checked when a caller actually sets one of the flags
+ * true, so a plain text/number/etc. attribute update untouched by this
+ * feature never has to pass `false` explicitly.
+ */
+function validateAiDetectForType(
+  fieldType: string,
+  aiDetect: boolean | undefined,
+  detectOnClose: boolean | undefined
+): void {
+  if ((aiDetect || detectOnClose) && fieldType !== 'select') {
+    throw new ValidationError(
+      'VALIDATION_ERROR',
+      'AI detection is only available on select attributes'
+    )
+  }
+}
+
+/**
+ * Non-archived definitions by default; the settings page lists everything.
+ * `aiDetectOnly` narrows to `aiDetect=true` definitions — the classifier's
+ * enabled-definitions read.
+ */
 export async function listConversationAttributes(opts?: {
   includeArchived?: boolean
+  aiDetectOnly?: boolean
 }): Promise<ConversationAttribute[]> {
   try {
+    const conditions = [
+      opts?.includeArchived ? undefined : isNull(conversationAttributeDefinitions.archivedAt),
+      opts?.aiDetectOnly ? eq(conversationAttributeDefinitions.aiDetect, true) : undefined,
+    ].filter((c): c is NonNullable<typeof c> => c !== undefined)
     const rows = await db
       .select()
       .from(conversationAttributeDefinitions)
-      .where(
-        opts?.includeArchived ? undefined : isNull(conversationAttributeDefinitions.archivedAt)
-      )
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(asc(conversationAttributeDefinitions.label))
     return rows.map(rowToAttribute)
   } catch (error) {
@@ -97,6 +127,7 @@ export async function createConversationAttribute(
       throw new ValidationError('VALIDATION_ERROR', 'Attribute label is required')
     }
     validateOptionsForType(input.fieldType, input.options)
+    validateAiDetectForType(input.fieldType, input.aiDetect, input.detectOnClose)
 
     const [row] = await db
       .insert(conversationAttributeDefinitions)
@@ -108,6 +139,8 @@ export async function createConversationAttribute(
         options: SELECT_TYPES.has(input.fieldType) ? buildOptions(input.options!) : null,
         requiredToClose: input.requiredToClose ?? false,
         sourceHint: input.sourceHint ?? null,
+        aiDetect: input.aiDetect ?? false,
+        detectOnClose: input.detectOnClose ?? false,
       })
       .returning()
     return rowToAttribute(row)
@@ -184,6 +217,14 @@ export async function updateConversationAttribute(
     if (input.description !== undefined) updates.description = input.description?.trim() || null
     if (input.requiredToClose !== undefined) updates.requiredToClose = input.requiredToClose
     if (input.sourceHint !== undefined) updates.sourceHint = input.sourceHint
+    if (input.aiDetect !== undefined || input.detectOnClose !== undefined) {
+      // Field type is immutable, so the existing row's type is the one
+      // that ever needs checking, regardless of which of the two flags
+      // this call is touching.
+      validateAiDetectForType(existing.fieldType, input.aiDetect, input.detectOnClose)
+      if (input.aiDetect !== undefined) updates.aiDetect = input.aiDetect
+      if (input.detectOnClose !== undefined) updates.detectOnClose = input.detectOnClose
+    }
     if (input.options !== undefined) {
       if (!SELECT_TYPES.has(existing.fieldType)) {
         throw new ValidationError('VALIDATION_ERROR', 'Only select attributes can have options')

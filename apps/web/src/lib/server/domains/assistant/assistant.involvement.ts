@@ -27,6 +27,7 @@ import {
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
 import { logger } from '@/lib/server/logger'
 import type { AssistantInvolvementId, ConversationId } from '@quackback/ids'
+import { classifyConversationAttributes } from '@/lib/server/domains/conversation-attributes/ai-classification.service'
 
 const log = logger.child({ component: 'assistant-involvement' })
 
@@ -321,7 +322,25 @@ export async function finalizeStaleAssistantInvolvements(
         notExists(laterCustomerMessage)
       )
     )
-    .returning({ id: assistantInvolvements.id })
+    .returning({
+      id: assistantInvolvements.id,
+      conversationId: assistantInvolvements.conversationId,
+    })
+  // AI attribute classification (AI-ATTRIBUTES-PARITY-SPEC.md Phase 1): the
+  // inactivity "job done" moment. Fire-and-forget per conversation — the
+  // classifier is itself flag-gated and never throws, so this never slows
+  // down or risks the sweep tick itself; the extra catch here is defense in
+  // depth in case that contract is ever violated.
+  for (const row of resolvedRows) {
+    void classifyConversationAttributes(row.conversationId, { trigger: 'inactivity' }).catch(
+      (err) => {
+        log.warn(
+          { err, conversationId: row.conversationId },
+          'inactivity-close attribute classification failed'
+        )
+      }
+    )
+  }
   return { resolved: resolvedRows.length }
 }
 

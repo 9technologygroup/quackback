@@ -27,6 +27,10 @@ export type ChatFeature =
   // Two-way inbox translation (P2-D.1): customer-language detection plus the
   // incoming/outgoing translate calls all ride this one feature dial.
   | 'inboxTranslation'
+  // Deterministic conversation attribute classification (AI-ATTRIBUTES-PARITY-SPEC.md
+  // Phase 1): one structured-output call per classification moment, over all
+  // ai_detect=true attributes for a conversation.
+  | 'classification'
 
 /**
  * Resolve an effective model: per-feature override wins over the role default;
@@ -59,6 +63,7 @@ export function getChatModel(feature: ChatFeature): string | null {
     helpCenterTranslate: config.aiHelpCenterTranslateModel,
     assistant: config.aiAssistantModel,
     inboxTranslation: config.aiInboxTranslationModel,
+    classification: config.aiClassificationModel,
   }
   return resolveModel(overrides[feature], config.aiChatModel)
 }

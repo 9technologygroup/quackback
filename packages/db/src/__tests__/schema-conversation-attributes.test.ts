@@ -23,6 +23,8 @@ describe('Conversation attribute definitions schema', () => {
         'options',
         'requiredToClose',
         'sourceHint',
+        'aiDetect',
+        'detectOnClose',
         'archivedAt',
         'createdAt',
         'updatedAt',
@@ -47,5 +49,21 @@ describe('Conversation attribute definitions schema', () => {
     expect(sql).toMatch(
       /CREATE UNIQUE INDEX "conversation_tags_name_lower_key"\s*ON "conversation_tags" \(lower\("name"\)\)/
     )
+  })
+
+  it('0178 migration adds the ai_detect/detect_on_close columns and seeds the four system definitions', () => {
+    const sql = readFileSync(
+      join(__dirname, '../../drizzle/0178_ai_attribute_detection.sql'),
+      'utf8'
+    )
+    expect(sql).toMatch(/ADD COLUMN "ai_detect" boolean DEFAULT false NOT NULL/)
+    expect(sql).toMatch(/ADD COLUMN "detect_on_close" boolean DEFAULT false NOT NULL/)
+    for (const key of ['issue_type', 'sentiment', 'urgency', 'spam']) {
+      expect(sql).toContain(`'${key}'`)
+    }
+    // Seeded system definitions are select-only, opt-in (ai_detect false), and
+    // the classifier prompt hint (source_hint 'ai') so admins can find them.
+    expect(sql.match(/'select'/g)?.length).toBeGreaterThanOrEqual(4)
+    expect(sql).toContain('ON CONFLICT (key) DO NOTHING')
   })
 })

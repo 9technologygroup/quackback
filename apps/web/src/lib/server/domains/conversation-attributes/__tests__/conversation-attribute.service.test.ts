@@ -47,13 +47,15 @@ describe.skipIf(!fixture.available)(
     afterAll(fixture.close)
 
     it('creates a text attribute with a normalized key', async () => {
+      // 'issue_type' is now a seeded system key (0178 migration), so this
+      // generic normalization test uses an unrelated key.
       const created = await createConversationAttribute({
-        key: 'Issue Type',
-        label: 'Issue type',
+        key: 'Ticket Category',
+        label: 'Ticket category',
         description: 'What the conversation is about',
         fieldType: 'text',
       })
-      expect(created.key).toBe('issue_type')
+      expect(created.key).toBe('ticket_category')
       expect(created.fieldType).toBe('text')
       expect(created.options).toBeNull()
       expect(created.requiredToClose).toBe(false)
@@ -155,6 +157,98 @@ describe.skipIf(!fixture.available)(
           fieldType: 'number',
         } as unknown as Parameters<typeof updateConversationAttribute>[1])
       ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    })
+
+    it('accepts aiDetect/detectOnClose on a select attribute and exposes them on the type', async () => {
+      const created = await createConversationAttribute({
+        key: 'issue_type_2',
+        label: 'Issue type 2',
+        fieldType: 'select',
+        options: [{ label: 'Billing' }, { label: 'Bug' }],
+        aiDetect: true,
+        detectOnClose: true,
+      })
+      expect(created.aiDetect).toBe(true)
+      expect(created.detectOnClose).toBe(true)
+    })
+
+    it('defaults aiDetect/detectOnClose to false when omitted', async () => {
+      const created = await createConversationAttribute({
+        key: 'issue_type_3',
+        label: 'Issue type 3',
+        fieldType: 'select',
+        options: [{ label: 'Billing' }],
+      })
+      expect(created.aiDetect).toBe(false)
+      expect(created.detectOnClose).toBe(false)
+    })
+
+    it('rejects aiDetect on a non-select field type', async () => {
+      await expect(
+        createConversationAttribute({
+          key: 'plan_ai',
+          label: 'Plan',
+          fieldType: 'text',
+          aiDetect: true,
+        })
+      ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    })
+
+    it('rejects detectOnClose on a non-select field type', async () => {
+      await expect(
+        createConversationAttribute({
+          key: 'plan_close',
+          label: 'Plan',
+          fieldType: 'number',
+          detectOnClose: true,
+        })
+      ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    })
+
+    it('allows updating aiDetect/detectOnClose on an existing select attribute', async () => {
+      const created = await createConversationAttribute({
+        key: 'issue_type_4',
+        label: 'Issue type 4',
+        fieldType: 'select',
+        options: [{ label: 'Billing' }],
+      })
+      const updated = await updateConversationAttribute(created.id, {
+        aiDetect: true,
+        detectOnClose: true,
+      })
+      expect(updated.aiDetect).toBe(true)
+      expect(updated.detectOnClose).toBe(true)
+    })
+
+    it('rejects updating aiDetect on a non-select existing attribute', async () => {
+      const created = await createConversationAttribute({
+        key: 'plan_update',
+        label: 'Plan',
+        fieldType: 'text',
+      })
+      await expect(
+        updateConversationAttribute(created.id, { aiDetect: true })
+      ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    })
+
+    it('lists only aiDetect-enabled definitions when filtered', async () => {
+      await createConversationAttribute({
+        key: 'issue_type_5',
+        label: 'Issue type 5',
+        fieldType: 'select',
+        options: [{ label: 'Billing' }],
+        aiDetect: true,
+      })
+      await createConversationAttribute({
+        key: 'issue_type_6',
+        label: 'Issue type 6',
+        fieldType: 'select',
+        options: [{ label: 'Billing' }],
+        aiDetect: false,
+      })
+      const aiDetectOnly = await listConversationAttributes({ aiDetectOnly: true })
+      expect(aiDetectOnly.some((a) => a.key === 'issue_type_5')).toBe(true)
+      expect(aiDetectOnly.some((a) => a.key === 'issue_type_6')).toBe(false)
     })
 
     it('archives (hidden from the default list) and restores', async () => {

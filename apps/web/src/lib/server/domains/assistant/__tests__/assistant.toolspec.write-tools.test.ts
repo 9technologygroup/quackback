@@ -32,6 +32,12 @@ vi.mock('@/lib/server/domains/conversation/conversation.service', () => ({
   setConversationStatus: (...args: unknown[]) => mockSetConversationStatus(...args),
 }))
 
+const mockClassifyConversationAttributes = vi.fn()
+vi.mock('@/lib/server/domains/conversation-attributes/ai-classification.service', () => ({
+  classifyConversationAttributes: (...args: unknown[]) =>
+    mockClassifyConversationAttributes(...args),
+}))
+
 const mockCreateTicket = vi.fn()
 vi.mock('@/lib/server/domains/tickets/ticket.service', () => ({
   createTicket: (...args: unknown[]) => mockCreateTicket(...args),
@@ -62,6 +68,7 @@ function fakeDbReturning(row: Record<string, unknown> | undefined) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockClassifyConversationAttributes.mockResolvedValue([])
 })
 
 describe('set_attribute', () => {
@@ -92,9 +99,14 @@ describe('set_attribute', () => {
     expect(result.success).toBe(false)
   })
 
-  it('rejects an array value', () => {
-    const result = spec.definition.inputSchema.safeParse({ key: 'k', value: ['x'] })
-    expect(result.success).toBe(false)
+  it('accepts a string array (multi_select)', () => {
+    const result = spec.definition.inputSchema.safeParse({ key: 'k', value: ['x', 'y'] })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects an array of non-string values', () => {
+    expect(spec.definition.inputSchema.safeParse({ key: 'k', value: [1, 2] }).success).toBe(false)
+    expect(spec.definition.inputSchema.safeParse({ key: 'k', value: [true] }).success).toBe(false)
   })
 
   it('rejects an object value', () => {
@@ -143,6 +155,30 @@ describe('set_attribute', () => {
     const c = ctx({ conversationId: 'conversation_1' as never })
     const out = await spec.execute({ key: 'plan_tier', value: null }, c)
     expect(out).toEqual({ applied: true })
+  })
+
+  it('applies a multi_select array write on the happy path (order-insensitive)', async () => {
+    mockSetConversationAttribute.mockResolvedValue({
+      affected_features: { v: ['opt_b', 'opt_a'], src: 'ai', at: '2026-01-01' },
+    })
+    const c = ctx({ conversationId: 'conversation_1' as never })
+    const out = await spec.execute({ key: 'affected_features', value: ['opt_a', 'opt_b'] }, c)
+    expect(mockSetConversationAttribute).toHaveBeenCalledWith(
+      { conversationId: 'conversation_1' },
+      'affected_features',
+      ['opt_a', 'opt_b'],
+      'ai'
+    )
+    expect(out).toEqual({ applied: true })
+  })
+
+  it('reports a multi_select slot already set by another source', async () => {
+    mockSetConversationAttribute.mockResolvedValue({
+      affected_features: { v: ['opt_c'], src: 'teammate', at: '2026-01-01' },
+    })
+    const c = ctx({ conversationId: 'conversation_1' as never })
+    const out = await spec.execute({ key: 'affected_features', value: ['opt_a'] }, c)
+    expect(out).toEqual({ applied: false, note: 'Attribute already set by another source.' })
   })
 })
 
@@ -202,6 +238,36 @@ describe('end_conversation', () => {
     const out = await spec.execute({}, c)
     expect(out).toEqual({ closed: true, note: 'Conversation was already closed.' })
     expect(mockSetConversationStatus).not.toHaveBeenCalled()
+  })
+
+  it('classifies attributes (trigger assistant_closed) when the conversation actually closes', async () => {
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      db: fakeDbReturning({ status: 'open' }) as never,
+    })
+    await spec.execute({ reason: 'resolved' }, c)
+    expect(mockClassifyConversationAttributes).toHaveBeenCalledWith('conversation_1', {
+      trigger: 'assistant_closed',
+    })
+  })
+
+  it('does not classify again when the conversation was already closed', async () => {
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      db: fakeDbReturning({ status: 'closed' }) as never,
+    })
+    await spec.execute({}, c)
+    expect(mockClassifyConversationAttributes).not.toHaveBeenCalled()
+  })
+
+  it('never lets a classification failure block reporting the close as successful', async () => {
+    mockClassifyConversationAttributes.mockRejectedValue(new Error('classifier exploded'))
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      db: fakeDbReturning({ status: 'open' }) as never,
+    })
+    const out = await spec.execute({ reason: 'resolved' }, c)
+    expect(out).toEqual({ closed: true })
   })
 })
 
