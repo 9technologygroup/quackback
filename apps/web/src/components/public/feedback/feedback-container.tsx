@@ -86,8 +86,7 @@ export function FeedbackContainer({
   // portal feed; end users and visitors keep the static badge.
   const canSetStatus = can(PERMISSIONS.POST_SET_STATUS)
   // Holders of post.approve get the inline moderation section (banner + pending
-  // cards). The hook's set is empty under the customer-view toggle, so this is
-  // false in preview mode — no role gate needed.
+  // cards).
   const canApprove = can(PERMISSIONS.POST_APPROVE)
 
   // List key for animations - only updates when data finishes loading
