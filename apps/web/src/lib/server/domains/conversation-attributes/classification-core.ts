@@ -1,0 +1,195 @@
+/**
+ * Shared classification core (AI-ATTRIBUTES-PARITY-SPEC.md Phase 3): the one
+ * structured-output model call + response parsing/validation used by BOTH the
+ * real classifier (`ai-classification.service.ts`'s
+ * `classifyConversationAttributes`) and the preview harness
+ * (`attribute-preview.service.ts`'s `previewAttributeDetection`). Extracted so
+ * a preview result is provably what the real classifier would decide — same
+ * system prompt, same request shape, same option-id validation — rather than
+ * a second, potentially-drifting prompt.
+ *
+ * Deliberately does NOT gate on the feature flag, AI configuration, or the
+ * token budget: callers gate first (their gates differ slightly — the real
+ * classifier also narrows by trigger/detectOnClose and no-ops on an empty
+ * catalogue; preview always classifies exactly one, possibly-unsaved
+ * definition) and only reach here once they're committed to spending a call.
+ */
+import type OpenAI from 'openai'
+import { stripCodeFences, structuredOutputProviderOptions } from '@/lib/server/domains/ai/config'
+import { withRetry } from '@/lib/server/domains/ai/retry'
+import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
+
+/**
+ * Bounds any transcript handed to the classifier call, real conversation or
+ * ephemeral preview sample alike — keeps the prompt (and the worst case
+ * token spend) bounded regardless of caller.
+ */
+export const TRANSCRIPT_CHAR_BUDGET = 3000
+
+export const CLASSIFICATION_SYSTEM_PROMPT = `You are a classification engine for a customer support conversation.
+
+You will be given a list of attribute definitions (each with a key, a label, a description, and its allowed options with an id/label/description) and the conversation transcript. For EACH attribute in the list, decide which option (if any) applies, based only on the transcript.
+
+Rules:
+- Refer to an option by its id, never its label.
+- If nothing in the transcript clearly supports one option over the others for an attribute, set "optionId" to null. Do not guess.
+- Base your decision only on the transcript given; never invent facts not present in it.
+- Give one short sentence of reasoning per attribute, naming what in the transcript supports (or fails to support) your decision.
+- Include exactly one result per attribute key you were given, in any order.
+
+Respond with ONLY a single JSON object of this exact shape, and nothing else: {"results": [{"key": string, "optionId": string | null, "reasoning": string}]}`
+
+export interface ClassificationOptionInput {
+  id: string
+  label: string
+  description: string | null
+}
+
+/** The definition shape the classification core needs — a structural subset
+ *  both `ConversationAttribute` (the real classifier) and the preview
+ *  harness's possibly-unsaved draft satisfy. */
+export interface ClassificationDefinitionInput {
+  key: string
+  label: string
+  description: string | null
+  options: readonly ClassificationOptionInput[]
+}
+
+/** One validated per-attribute result: `optionId` is either null or a known
+ *  option id of that attribute's definition — never a raw, unchecked value. */
+export interface ClassificationCallResult {
+  key: string
+  optionId: string | null
+  reasoning: string
+}
+
+/** Render the attribute catalogue for the classifier prompt — descriptions
+ *  double as the classifier's applies-if/does-not-apply-if guidance. */
+export function renderAttributeCatalogue(
+  definitions: readonly ClassificationDefinitionInput[]
+): string {
+  return definitions
+    .map((d) => {
+      const options = d.options
+        .map((o) => `  - ${o.id}: ${o.label}${o.description ? ` (${o.description})` : ''}`)
+        .join('\n')
+      return [
+        `Attribute "${d.key}" (${d.label}):${d.description ? ` ${d.description}` : ''}`,
+        'Options:',
+        options,
+      ].join('\n')
+    })
+    .join('\n\n')
+}
+
+interface RawClassificationResult {
+  key?: unknown
+  optionId?: unknown
+  reasoning?: unknown
+}
+
+/** Parse + validate the model's raw response into typed rows; malformed shapes yield []. */
+function parseClassificationResponse(responseText: string): RawClassificationResult[] {
+  let parsed: { results?: unknown }
+  try {
+    parsed = JSON.parse(stripCodeFences(responseText))
+  } catch {
+    return []
+  }
+  return Array.isArray(parsed.results) ? (parsed.results as RawClassificationResult[]) : []
+}
+
+export interface RunClassificationCallParams {
+  openai: OpenAI
+  model: string
+  definitions: readonly ClassificationDefinitionInput[]
+  /** Rendered transcript text — callers own their own truncation/formatting
+   *  (a full conversation vs. a single ephemeral sample message differ). */
+  transcript: string
+  /** Forwarded verbatim to `withUsageLogging`'s `metadata` field. */
+  usageMetadata: Record<string, unknown>
+}
+
+/**
+ * The shared core call: renders the catalogue + transcript into one prompt,
+ * makes the structured-output chat completion, and validates the response
+ * against each definition's own option ids (dropping unknown keys and
+ * invalid option ids rather than surfacing them). Never throws on a
+ * malformed/empty model response — returns `[]` — but does propagate a
+ * hard call failure (network/provider error) so callers can log/handle it
+ * their own way (the real classifier's caller catches everything; the
+ * preview harness surfaces the error to the admin).
+ */
+export async function runClassificationCall(
+  params: RunClassificationCallParams
+): Promise<ClassificationCallResult[]> {
+  const { openai, model, definitions, transcript, usageMetadata } = params
+
+  const userContent = [
+    'Attributes to classify:',
+    renderAttributeCatalogue(definitions),
+    '',
+    'Conversation transcript:',
+    transcript,
+  ].join('\n')
+
+  const completion = await withUsageLogging(
+    {
+      pipelineStep: 'classification',
+      callType: 'chat_completion',
+      model,
+      metadata: usageMetadata,
+    },
+    () =>
+      withRetry(() =>
+        openai.chat.completions.create({
+          model,
+          messages: [
+            { role: 'system', content: CLASSIFICATION_SYSTEM_PROMPT },
+            { role: 'user', content: userContent },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.1,
+          max_tokens: 1500,
+          ...structuredOutputProviderOptions(),
+        })
+      ),
+    (r) => ({
+      inputTokens: r.usage?.prompt_tokens ?? 0,
+      outputTokens: r.usage?.completion_tokens,
+      totalTokens: r.usage?.total_tokens ?? 0,
+    })
+  )
+
+  const responseText = completion.choices?.[0]?.message?.content
+  if (!responseText) return []
+  const rawResults = parseClassificationResponse(responseText)
+  if (rawResults.length === 0) return []
+
+  const defsByKey = new Map(definitions.map((d) => [d.key, d]))
+  const validated: ClassificationCallResult[] = []
+
+  for (const raw of rawResults) {
+    if (typeof raw.key !== 'string') continue
+    const def = defsByKey.get(raw.key)
+    if (!def) continue // unknown key — drop
+
+    let optionId: string | null
+    if (raw.optionId === null || raw.optionId === undefined) {
+      optionId = null
+    } else if (typeof raw.optionId === 'string' && def.options.some((o) => o.id === raw.optionId)) {
+      optionId = raw.optionId
+    } else {
+      continue // invalid optionId — drop
+    }
+
+    const reasoning =
+      typeof raw.reasoning === 'string' && raw.reasoning.trim()
+        ? raw.reasoning.trim()
+        : 'No reasoning provided.'
+
+    validated.push({ key: def.key, optionId, reasoning })
+  }
+
+  return validated
+}

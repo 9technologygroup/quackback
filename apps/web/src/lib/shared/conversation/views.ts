@@ -88,12 +88,56 @@ export const TICKET_VIEW_RULE_FIELDS = [
   'ticket_stage',
 ] as const satisfies readonly ConversationViewRuleField[]
 
+// ── Attribute rules (C2.7 / AI-ATTRIBUTES-PARITY-SPEC.md Phase 4) ──────────
+//
+// A `conversation.attr.<key>` filter dimension over `custom_attributes`,
+// mirroring the workflow condition editor's per-field-type operator set
+// (components/admin/automation/workflow-graph.ts's ATTRIBUTE_OPERATORS_BY_TYPE,
+// re-declared here rather than imported — that module lives in the component
+// tree and pulls in workflow-schema types this shared module has no business
+// depending on):
+//   select:       eq | neq | is_set | is_empty     (value = an option id)
+//   multi_select: includes_any | excludes_all | is_set | is_empty (value = option ids)
+//   text:         contains | not_contains | eq | neq | is_set | is_empty
+//   number:       eq | neq | gt | gte | lt | lte | is_set | is_empty
+//   checkbox:     eq                                (value = 'true' | 'false')
+//   date:         is_set | is_empty
+// The schema below doesn't know field types (that lives in the live attribute
+// registry), so it accepts the full operator vocabulary for any key — the UI
+// constrains which operator is offered per type, and an operator/type mismatch
+// just never matches anything server-side rather than 500ing.
+export const CONVERSATION_ATTRIBUTE_OPERATORS = [
+  'eq',
+  'neq',
+  'contains',
+  'not_contains',
+  'gt',
+  'gte',
+  'lt',
+  'lte',
+  'includes_any',
+  'excludes_all',
+  'is_set',
+  'is_empty',
+] as const
+export type ConversationAttributeOperator = (typeof CONVERSATION_ATTRIBUTE_OPERATORS)[number]
+
+/** Operators that take no value — mirrors VALUELESS_OPERATORS in workflow-graph.ts. */
+export const VALUELESS_ATTRIBUTE_OPERATORS: ReadonlySet<ConversationAttributeOperator> = new Set([
+  'is_set',
+  'is_empty',
+])
+
 // A discriminated union keeps each rule's value shape honest. `assignee` is
 // 'me' | 'unassigned' | a teammate principal id; `team`/`tag` carry an id;
 // `waiting` is a presence flag (only "waiting" makes sense as a saved rule).
 // `kind`/`ticket_type`/`ticket_status_category`/`ticket_stage` (§2.8) scope a
 // view to conversations, tickets, or a ticket subset — the request routes
 // through the unified inbox endpoint whenever any of these four are present.
+// `attribute` (§C2.7) is the dynamic `conversation.attr.<key>` dimension —
+// unlike the other fields its key isn't a fixed literal, so it carries its own
+// `key`/`operator` alongside `value` instead of living in
+// CONVERSATION_VIEW_RULE_FIELDS.
 export const conversationViewRuleSchema = z.discriminatedUnion('field', [
   z.object({ field: z.literal('status'), value: z.enum(['open', 'snoozed', 'closed']) }),
   z.object({
@@ -109,8 +153,19 @@ export const conversationViewRuleSchema = z.discriminatedUnion('field', [
   z.object({ field: z.literal('ticket_type'), value: z.enum(TICKET_TYPES) }),
   z.object({ field: z.literal('ticket_status_category'), value: z.enum(TICKET_STATUS_CATEGORIES) }),
   z.object({ field: z.literal('ticket_stage'), value: z.enum(TICKET_STAGES) }),
+  z.object({
+    field: z.literal('attribute'),
+    key: z.string().trim().min(1).max(100),
+    operator: z.enum(CONVERSATION_ATTRIBUTE_OPERATORS),
+    // Absent for is_set/is_empty; a bare string for text/select/checkbox/date,
+    // a number for number, string[] for multi_select includes_any/excludes_all.
+    value: z
+      .union([z.string().max(500), z.number(), z.boolean(), z.array(z.string().max(200)).max(50)])
+      .optional(),
+  }),
 ])
 export type ConversationViewRule = z.infer<typeof conversationViewRuleSchema>
+export type ConversationViewAttributeRule = Extract<ConversationViewRule, { field: 'attribute' }>
 
 export const conversationViewFiltersSchema = z.object({
   rules: z.array(conversationViewRuleSchema).max(MAX_VIEW_RULES),
@@ -134,6 +189,14 @@ export interface ConversationViewDTO {
  * fields `listConversationsFn` accepts; sort + search + company ride alongside
  * from the URL, not the view.
  */
+/** One `conversation.attr.<key>` predicate the list query ANDs in. Mirrors
+ *  `ConversationViewAttributeRule` minus the `field` discriminant. */
+export interface ConversationAttributeFilterParam {
+  key: string
+  operator: ConversationAttributeOperator
+  value?: string | number | boolean | string[]
+}
+
 export interface ConversationViewListParams {
   status?: ConversationStatus
   priority?: ConversationPriority
@@ -143,20 +206,26 @@ export interface ConversationViewListParams {
   tagIds?: string[]
   source?: string
   waitingOnly?: boolean
+  /** Custom-attribute rules (§C2.7): every entry ANDs an additional predicate
+   *  against `custom_attributes`. Unlike `tag`'s OR-collect, multiple rules on
+   *  the same key AND together — two constraints on one attribute (e.g. "is
+   *  set" and "contains") is a deliberate narrowing, not a repeated choice. */
+  attributeFilters?: ConversationAttributeFilterParam[]
 }
 
 /**
  * Translate a view's saved rules into list-query params (client-side). Rules
  * combine with AND; repeated `tag` rules collect into the OR-semantics tagIds
- * array (matching the inbox tag filter). Later rules win for single-valued
- * fields. Custom-attribute rules are intentionally absent until the
- * conversation.set_attributes query capability lands (see report).
+ * array (matching the inbox tag filter); repeated `attribute` rules collect
+ * into the AND-semantics attributeFilters array. Later rules win for
+ * single-valued fields.
  */
 export function viewFiltersToListParams(
   filters: ConversationViewFilters
 ): ConversationViewListParams {
   const params: ConversationViewListParams = {}
   const tagIds: string[] = []
+  const attributeFilters: ConversationAttributeFilterParam[] = []
   for (const rule of filters.rules) {
     switch (rule.field) {
       case 'status':
@@ -184,9 +253,13 @@ export function viewFiltersToListParams(
       case 'waiting':
         params.waitingOnly = true
         break
+      case 'attribute':
+        attributeFilters.push({ key: rule.key, operator: rule.operator, value: rule.value })
+        break
     }
   }
   if (tagIds.length > 0) params.tagIds = tagIds
+  if (attributeFilters.length > 0) params.attributeFilters = attributeFilters
   return params
 }
 
@@ -206,9 +279,13 @@ export function viewHasTicketRules(filters: ConversationViewFilters): boolean {
  *  Mirrors `lib/client/conversation/inbox-scope.ts`'s `InboxListParams` shape
  *  (that module can't import this one's zod-adjacent types without a cycle,
  *  so the route composes the two by hand — see `buildInboxListParams`).
- *  `tag`/`source`/`waiting` rules have no unified-endpoint equivalent yet (the
- *  endpoint carries no tagIds/segmentIds support — see inbox-scope.ts's module
- *  note) and are silently dropped here, same as they would 400 if forwarded. */
+ *  `tag`/`source`/`waiting`/`attribute` rules have no unified-endpoint
+ *  equivalent yet (the endpoint carries no tagIds/segmentIds/attributeFilters
+ *  support — see inbox-scope.ts's module note) and are silently dropped here,
+ *  same as they would 400 if forwarded. A ticket-routed view with an attribute
+ *  rule still saves and runs, just without that constraint applied — deferred
+ *  alongside the pre-existing tag/source/waiting gap (see AI-ATTRIBUTES-PARITY-SPEC.md
+ *  Phase 4 report for the scoping call). */
 export interface TicketViewRuleParams {
   /** Defaults to `['ticket']` once any ticket-only field is present, or the
    *  literal `kind` rule's value when that's the only ticket-only rule set. */

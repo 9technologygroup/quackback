@@ -27,7 +27,10 @@ import {
   type ConversationAttachment,
   type ConversationAssistantActivity,
 } from '@/lib/shared/conversation/types'
-import { CONVERSATION_SORTS } from '@/lib/shared/conversation/views'
+import {
+  CONVERSATION_SORTS,
+  CONVERSATION_ATTRIBUTE_OPERATORS,
+} from '@/lib/shared/conversation/views'
 import { officeHoursSnapshot } from '@/lib/shared/office-hours'
 import type { ConversationPresence } from '@/lib/shared/conversation/presence'
 import { realEmail } from '@/lib/shared/anonymous-email'
@@ -109,6 +112,26 @@ const listConversationsSchema = z.object({
   // Quinn-inbox sub-filter by involvement outcome; omitted = any Quinn-engaged.
   ai: z.enum(['resolved', 'escalated', 'pending']).optional(),
   before: z.string().optional(),
+  // Custom-attribute view rules (§C2.7): each ANDs a jsonb predicate against
+  // custom_attributes. The key isn't checked against the live registry here —
+  // an unknown/archived key just matches nothing, same as any other filter on
+  // an absent value; no server-side risk since every value is parameter-bound.
+  attributeFilters: z
+    .array(
+      z.object({
+        key: z.string().trim().min(1).max(100),
+        operator: z.enum(CONVERSATION_ATTRIBUTE_OPERATORS),
+        value: z
+          .union([
+            z.string().max(500),
+            z.number(),
+            z.boolean(),
+            z.array(z.string().max(200)).max(50),
+          ])
+          .optional(),
+      })
+    )
+    .optional(),
 })
 
 const messageIdSchema = z.object({ messageId: z.string() })
@@ -825,6 +848,7 @@ export const listConversationsFn = createServerFn({ method: 'GET' })
                 : Object.values(AI_INBOX_BUCKETS).flat()
               : undefined,
           before: data.before,
+          attributeFilters: data.attributeFilters,
         },
         actor
       )

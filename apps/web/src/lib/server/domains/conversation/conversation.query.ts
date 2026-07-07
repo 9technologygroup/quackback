@@ -47,7 +47,11 @@ import {
   type CompanyId,
   type TeamId,
 } from '@quackback/ids'
-import type { ConversationSort } from '@/lib/shared/conversation/views'
+import type {
+  ConversationSort,
+  ConversationAttributeFilterParam,
+  ConversationAttributeOperator,
+} from '@/lib/shared/conversation/views'
 import { nextSlaDue } from '@/lib/shared/conversation/sla'
 import type { SlaApplied } from '@/lib/server/domains/sla/sla.service'
 import { getAssistantPrincipal } from '@/lib/server/domains/assistant/assistant.principal'
@@ -900,6 +904,9 @@ export interface ConversationListFilter {
   /** "Quinn AI" view: only conversations with an `assistant_involvements` row in
    *  ANY of these lifecycle statuses (Resolved / Escalated / Pending buckets). */
   assistantStatuses?: AssistantInvolvementStatus[]
+  /** Custom-attribute view rules (§C2.7): every entry ANDs an additional
+   *  predicate against `custom_attributes`. See `attributeFilterCondition`. */
+  attributeFilters?: ConversationAttributeFilterParam[]
   /** Inbox ordering (default 'recent'). Keyset pagination adapts per sort. */
   sort?: ConversationSort
   /** Cursor: the previous page's last conversation id, re-resolved per sort. */
@@ -1068,6 +1075,117 @@ function cursorConditionForSort(sort: ConversationSort, c: Conversation) {
           : descColumn(conversations.id, c.id)
       return buildKeysetCondition([col, idTie])
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Custom-attribute view filters (§C2.7 / AI-ATTRIBUTES-PARITY-SPEC.md Phase 4):
+// translate a `{ key, operator, value }` rule into a jsonb predicate over
+// `conversations.custom_attributes`. Every stored entry is either the
+// `{ v, src, at }` envelope (see lib/shared/conversation/attribute-values.ts)
+// or a bare legacy value — this unwraps both to the same "effective value"
+// expression the operators compare against, mirroring `readAttributeValue`'s
+// envelope detection (an object carrying a 'v' key is always an envelope;
+// none of the value types an attribute can hold — string/number/bool/array —
+// is itself a JSON object, so the check is unambiguous).
+// ---------------------------------------------------------------------------
+
+/** The jsonb value at `custom_attributes -> key`, envelope-unwrapped. */
+function attributeValueExpr(key: string) {
+  return sql`(CASE
+    WHEN jsonb_typeof(${conversations.customAttributes} -> ${key}) = 'object'
+         AND (${conversations.customAttributes} -> ${key}) ? 'v'
+    THEN ${conversations.customAttributes} -> ${key} -> 'v'
+    ELSE ${conversations.customAttributes} -> ${key}
+  END)`
+}
+
+/** True when the effective value counts as "set" — mirrors
+ *  `attributeHasValue`: not null/undefined, not '', not []. */
+function attributeIsSetExpr(key: string) {
+  const v = attributeValueExpr(key)
+  return sql`(${v} IS NOT NULL AND ${v} <> 'null'::jsonb AND ${v} <> '""'::jsonb AND ${v} <> '[]'::jsonb)`
+}
+
+/**
+ * Build the jsonb predicate for one attribute view rule, or `undefined` when
+ * the operator/value combination is degenerate (no value on a value-required
+ * operator, an empty includes_any/excludes_all set) — an omitted predicate
+ * matches everything rather than erroring, same as the other list filters
+ * silently no-op on an empty array (see the tagIds/segmentIds guards above).
+ * Every bound value goes through a parameter (`${...}` in the sql template),
+ * never string-interpolated, so a hostile key/value can't break out of the
+ * jsonb operand.
+ */
+export function attributeFilterCondition(
+  key: string,
+  operator: ConversationAttributeOperator,
+  value: string | number | boolean | string[] | undefined
+) {
+  const v = attributeValueExpr(key)
+  switch (operator) {
+    case 'is_set':
+      return attributeIsSetExpr(key)
+    case 'is_empty':
+      return sql`NOT ${attributeIsSetExpr(key)}`
+    case 'eq':
+      if (value === undefined) return undefined
+      return sql`${v} = ${JSON.stringify(value)}::jsonb`
+    case 'neq':
+      if (value === undefined) return undefined
+      return sql`(${v} IS DISTINCT FROM ${JSON.stringify(value)}::jsonb)`
+    case 'contains':
+    case 'not_contains': {
+      if (typeof value !== 'string' || value === '') return undefined
+      // Guard the NULL case explicitly (unset attribute): `NOT (NULL ILIKE …)`
+      // is SQL NULL (excluded either way), but the workflow evaluator treats
+      // an unset value as "doesn't contain" — so not_contains must still
+      // match it. text IS NOT NULL AND … / its negation keeps both arms
+      // consistent with `applyOp`'s contains/not_contains in
+      // condition.evaluator.ts.
+      const text = sql`(${v} #>> '{}')`
+      const matches = sql`(${text} IS NOT NULL AND ${text} ILIKE ${'%' + value + '%'})`
+      return operator === 'contains' ? matches : sql`NOT (${matches})`
+    }
+    case 'gt':
+    case 'gte':
+    case 'lt':
+    case 'lte': {
+      if (typeof value !== 'number') return undefined
+      const cast = sql`(${v} #>> '{}')::numeric`
+      switch (operator) {
+        case 'gt':
+          return sql`${cast} > ${value}`
+        case 'gte':
+          return sql`${cast} >= ${value}`
+        case 'lt':
+          return sql`${cast} < ${value}`
+        case 'lte':
+          return sql`${cast} <= ${value}`
+      }
+      break
+    }
+    case 'includes_any':
+    case 'excludes_all': {
+      const values = Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === 'string')
+        : []
+      if (values.length === 0) return undefined
+      // jsonb_array_elements_text unnests the stored option-id array so a
+      // plain IN-list (parameter-bound, same idiom as company_attr's 'in'
+      // operator in segment.evaluation.ts) can match against it.
+      const placeholders = sql.join(
+        values.map((val) => sql`${val}`),
+        sql`, `
+      )
+      const anyMatch = sql`EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(COALESCE(${v}, '[]'::jsonb)) elem
+        WHERE elem IN (${placeholders})
+      )`
+      return operator === 'includes_any' ? anyMatch : sql`NOT (${anyMatch})`
+    }
+    default:
+      return undefined
   }
 }
 
@@ -1240,6 +1358,12 @@ export async function listConversationsForAgent(
                 .where(inArray(assistantInvolvements.status, filter.assistantStatuses))
             )
           : undefined,
+        // Custom-attribute view rules (§C2.7): each ANDs its own jsonb
+        // predicate — spread so an arbitrary number of rules compose without
+        // nesting another `and(...)` level.
+        ...(filter.attributeFilters ?? []).map((f) =>
+          attributeFilterCondition(f.key, f.operator, f.value)
+        ),
         // Keyset comparison for the active sort (re-resolved cursor row). id is
         // always the final tiebreak so a page boundary never dupes or skips.
         cursor ? cursorConditionForSort(sort, cursor) : undefined

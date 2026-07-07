@@ -7,6 +7,7 @@ import {
   isConversationSort,
   MAX_VIEW_RULES,
   CONVERSATION_SORTS,
+  CONVERSATION_ATTRIBUTE_OPERATORS,
   type ConversationViewFilters,
 } from '../views'
 
@@ -68,6 +69,50 @@ describe('conversationViewFiltersSchema', () => {
     })
     expect(r.success).toBe(false)
   })
+
+  // §C2.7: the dynamic conversation.attr.<key> rule.
+  it('accepts an attribute rule for every operator shape', () => {
+    for (const operator of CONVERSATION_ATTRIBUTE_OPERATORS) {
+      const value =
+        operator === 'includes_any' || operator === 'excludes_all'
+          ? ['opt_a', 'opt_b']
+          : operator === 'is_set' || operator === 'is_empty'
+            ? undefined
+            : 'opt_a'
+      const r = conversationViewFiltersSchema.safeParse({
+        rules: [{ field: 'attribute', key: 'issue_type', operator, value }],
+      })
+      expect(r.success).toBe(true)
+    }
+  })
+
+  it('accepts a number-valued attribute rule', () => {
+    const r = conversationViewFiltersSchema.safeParse({
+      rules: [{ field: 'attribute', key: 'seats', operator: 'gte', value: 5 }],
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('accepts a boolean-valued attribute rule (checkbox)', () => {
+    const r = conversationViewFiltersSchema.safeParse({
+      rules: [{ field: 'attribute', key: 'is_vip', operator: 'eq', value: true }],
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejects an attribute rule with an empty key', () => {
+    const r = conversationViewFiltersSchema.safeParse({
+      rules: [{ field: 'attribute', key: '', operator: 'is_set' }],
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects an attribute rule with an unknown operator', () => {
+    const r = conversationViewFiltersSchema.safeParse({
+      rules: [{ field: 'attribute', key: 'issue_type', operator: 'startswith', value: 'a' }],
+    })
+    expect(r.success).toBe(false)
+  })
 })
 
 describe('viewFiltersToListParams', () => {
@@ -106,6 +151,36 @@ describe('viewFiltersToListParams', () => {
 
   it('returns empty params for an empty rule set', () => {
     expect(viewFiltersToListParams({ rules: [] })).toEqual({})
+  })
+
+  it('translates a single attribute rule into an attributeFilters entry', () => {
+    const filters: ConversationViewFilters = {
+      rules: [{ field: 'attribute', key: 'issue_type', operator: 'eq', value: 'opt_billing' }],
+    }
+    expect(viewFiltersToListParams(filters)).toEqual({
+      attributeFilters: [{ key: 'issue_type', operator: 'eq', value: 'opt_billing' }],
+    })
+  })
+
+  it('collects repeated attribute rules into an AND-semantics array (unlike tag)', () => {
+    const filters: ConversationViewFilters = {
+      rules: [
+        { field: 'attribute', key: 'issue_type', operator: 'eq', value: 'opt_billing' },
+        { field: 'attribute', key: 'urgency', operator: 'is_set' },
+      ],
+    }
+    expect(viewFiltersToListParams(filters)).toEqual({
+      attributeFilters: [
+        { key: 'issue_type', operator: 'eq', value: 'opt_billing' },
+        { key: 'urgency', operator: 'is_set', value: undefined },
+      ],
+    })
+  })
+
+  it('omits attributeFilters entirely when no attribute rule is present', () => {
+    expect(
+      viewFiltersToListParams({ rules: [{ field: 'status', value: 'open' }] })
+    ).not.toHaveProperty('attributeFilters')
   })
 
   it('normalizes the assignee "me" token to the server-resolved "mine"', () => {

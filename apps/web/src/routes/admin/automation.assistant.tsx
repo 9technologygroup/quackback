@@ -7,6 +7,7 @@ import { PageHeader } from '@/components/shared/page-header'
 import { settingsQueries } from '@/lib/client/queries/settings'
 import { AssistantIdentityCard } from '@/components/admin/automation/assistant-identity-card'
 import { SupportPerformanceCard } from '@/components/admin/automation/support-performance-card'
+import { AttributeBreakdownCard } from '@/components/admin/automation/attribute-breakdown-card'
 import { QuinnPerformanceCard } from '@/components/admin/automation/quinn-performance-card'
 import { QuinnToolsCard } from '@/components/admin/automation/quinn-tools-card'
 import { CopilotUsageCard } from '@/components/admin/automation/copilot-usage-card'
@@ -57,6 +58,7 @@ function AssistantPage() {
       />
 
       <SupportPerformanceCard />
+      <AttributeBreakdownCard />
       <QuinnPerformanceCard />
       <QuinnToolsCard />
 

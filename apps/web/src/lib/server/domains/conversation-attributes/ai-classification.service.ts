@@ -40,14 +40,8 @@
  */
 import { db, conversations, conversationMessages, eq } from '@/lib/server/db'
 import type { ConversationId } from '@quackback/ids'
-import {
-  getOpenAI,
-  stripCodeFences,
-  structuredOutputProviderOptions,
-} from '@/lib/server/domains/ai/config'
+import { getOpenAI } from '@/lib/server/domains/ai/config'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service'
@@ -62,6 +56,11 @@ import { logger } from '@/lib/server/logger'
 import { listConversationAttributes } from './conversation-attribute.service'
 import { setConversationAttribute } from './set-attribute.service'
 import type { ConversationAttribute } from './conversation-attribute.types'
+import {
+  runClassificationCall,
+  TRANSCRIPT_CHAR_BUDGET,
+  type ClassificationDefinitionInput,
+} from './classification-core'
 
 const log = logger.child({ component: 'ai-attribute-classification' })
 
@@ -93,29 +92,8 @@ export interface ClassificationOutcome {
   reasoning: string
 }
 
-/**
- * Recent transcript budget for the classifier call. Same idea as sentiment's
- * `MAX_CONTENT_LENGTH` (bound the prompt regardless of thread length);
- * truncates the same direction as `conversation-summary.service.ts`'s
- * `buildTranscript` (keep the start, mark the cut) for consistency within
- * this codebase's transcript-to-LLM callers.
- */
-const TRANSCRIPT_CHAR_BUDGET = 3000
-
-const CLASSIFICATION_SYSTEM_PROMPT = `You are a classification engine for a customer support conversation.
-
-You will be given a list of attribute definitions (each with a key, a label, a description, and its allowed options with an id/label/description) and the conversation transcript. For EACH attribute in the list, decide which option (if any) applies, based only on the transcript.
-
-Rules:
-- Refer to an option by its id, never its label.
-- If nothing in the transcript clearly supports one option over the others for an attribute, set "optionId" to null. Do not guess.
-- Base your decision only on the transcript given; never invent facts not present in it.
-- Give one short sentence of reasoning per attribute, naming what in the transcript supports (or fails to support) your decision.
-- Include exactly one result per attribute key you were given, in any order.
-
-Respond with ONLY a single JSON object of this exact shape, and nothing else: {"results": [{"key": string, "optionId": string | null, "reasoning": string}]}`
-
-/** Render the transcript as plain "Customer:"/"Agent:" lines, bounded by TRANSCRIPT_CHAR_BUDGET. */
+/** Render the transcript as plain "Customer:"/"Agent:" lines, bounded by TRANSCRIPT_CHAR_BUDGET
+ *  (imported from classification-core.ts — shared with the preview harness). */
 function buildClassificationTranscript(
   messages: readonly { senderType: string; content: string | null }[]
 ): string {
@@ -132,38 +110,20 @@ function buildClassificationTranscript(
     : transcript
 }
 
-/** Render the attribute catalogue for the classifier prompt — descriptions
- *  double as the classifier's applies-if/does-not-apply-if guidance. */
-function renderAttributeCatalogue(definitions: readonly ConversationAttribute[]): string {
-  return definitions
-    .map((d) => {
-      const options = (d.options ?? [])
-        .map((o) => `  - ${o.id}: ${o.label}${o.description ? ` (${o.description})` : ''}`)
-        .join('\n')
-      return [
-        `Attribute "${d.key}" (${d.label}):${d.description ? ` ${d.description}` : ''}`,
-        'Options:',
-        options,
-      ].join('\n')
-    })
-    .join('\n\n')
-}
-
-interface RawClassificationResult {
-  key?: unknown
-  optionId?: unknown
-  reasoning?: unknown
-}
-
-/** Parse + validate the model's raw response into typed rows; malformed shapes yield []. */
-function parseClassificationResponse(responseText: string): RawClassificationResult[] {
-  let parsed: { results?: unknown }
-  try {
-    parsed = JSON.parse(stripCodeFences(responseText))
-  } catch {
-    return []
-  }
-  return Array.isArray(parsed.results) ? (parsed.results as RawClassificationResult[]) : []
+/** Adapt a registry definition to the classification core's structural input shape. */
+function toClassificationDefinitionInput(
+  definitions: readonly ConversationAttribute[]
+): ClassificationDefinitionInput[] {
+  return definitions.map((d) => ({
+    key: d.key,
+    label: d.label,
+    description: d.description,
+    options: (d.options ?? []).map((o) => ({
+      id: o.id,
+      label: o.label,
+      description: o.description ?? null,
+    })),
+  }))
 }
 
 /** One applied change, for the combined audit note. */
@@ -265,72 +225,24 @@ export async function classifyConversationAttributes(
       .limit(1)
     const currentAttributes = (row?.customAttributes ?? {}) as Record<string, unknown>
 
-    const userContent = [
-      'Attributes to classify:',
-      renderAttributeCatalogue(definitions),
-      '',
-      'Conversation transcript:',
+    const results = await runClassificationCall({
+      openai,
+      model,
+      definitions: toClassificationDefinitionInput(definitions),
       transcript,
-    ].join('\n')
-
-    const completion = await withUsageLogging(
-      {
-        pipelineStep: 'classification',
-        callType: 'chat_completion',
-        model,
-        metadata: { conversationId, trigger: opts.trigger },
-      },
-      () =>
-        withRetry(() =>
-          openai.chat.completions.create({
-            model,
-            messages: [
-              { role: 'system', content: CLASSIFICATION_SYSTEM_PROMPT },
-              { role: 'user', content: userContent },
-            ],
-            response_format: { type: 'json_object' },
-            temperature: 0.1,
-            max_tokens: 1500,
-            ...structuredOutputProviderOptions(),
-          })
-        ),
-      (r) => ({
-        inputTokens: r.usage?.prompt_tokens ?? 0,
-        outputTokens: r.usage?.completion_tokens,
-        totalTokens: r.usage?.total_tokens ?? 0,
-      })
-    )
-
-    const responseText = completion.choices?.[0]?.message?.content
-    if (!responseText) return []
-    const rawResults = parseClassificationResponse(responseText)
-    if (rawResults.length === 0) return []
+      usageMetadata: { conversationId, trigger: opts.trigger },
+    })
+    if (results.length === 0) return []
 
     const defsByKey = new Map(definitions.map((d) => [d.key, d]))
     const outcomes: ClassificationOutcome[] = []
     const appliedChanges: AppliedChange[] = []
 
-    for (const raw of rawResults) {
-      if (typeof raw.key !== 'string') continue
+    for (const raw of results) {
       const def = defsByKey.get(raw.key)
-      if (!def) continue // unknown key — drop
-
-      let optionId: string | null
-      if (raw.optionId === null || raw.optionId === undefined) {
-        optionId = null
-      } else if (
-        typeof raw.optionId === 'string' &&
-        (def.options ?? []).some((o) => o.id === raw.optionId)
-      ) {
-        optionId = raw.optionId
-      } else {
-        continue // invalid optionId — drop
-      }
-
-      const reasoning =
-        typeof raw.reasoning === 'string' && raw.reasoning.trim()
-          ? raw.reasoning.trim()
-          : 'No reasoning provided.'
+      if (!def) continue // unknown key — drop (defense in depth; the core already validates against the same catalogue)
+      const optionId = raw.optionId
+      const reasoning = raw.reasoning
 
       // Churn avoidance: a result that would just reproduce the value
       // already on record (whatever its source) never reaches the writer.

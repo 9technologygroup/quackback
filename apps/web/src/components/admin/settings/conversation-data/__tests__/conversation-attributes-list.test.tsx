@@ -12,7 +12,7 @@
  * <select>/<option> pair here — the same pattern condition-editor.test.tsx /
  * import-wizard.test.tsx use.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { render, screen, cleanup, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -60,6 +60,9 @@ const hoisted = vi.hoisted(() => ({
   updateConversationAttributeFn: vi.fn(),
   archiveConversationAttributeFn: vi.fn(),
   restoreConversationAttributeFn: vi.fn(),
+  previewAttributeDetectionFn: vi.fn(),
+  draftAttributeDescriptionsFn: vi.fn(),
+  attributeValueCountsFn: vi.fn(),
 }))
 
 vi.mock('@/lib/server/functions/conversation-attributes', () => ({
@@ -68,6 +71,9 @@ vi.mock('@/lib/server/functions/conversation-attributes', () => ({
   updateConversationAttributeFn: hoisted.updateConversationAttributeFn,
   archiveConversationAttributeFn: hoisted.archiveConversationAttributeFn,
   restoreConversationAttributeFn: hoisted.restoreConversationAttributeFn,
+  previewAttributeDetectionFn: hoisted.previewAttributeDetectionFn,
+  draftAttributeDescriptionsFn: hoisted.draftAttributeDescriptionsFn,
+  attributeValueCountsFn: hoisted.attributeValueCountsFn,
 }))
 
 vi.mock('@/components/ui/select', () => ({
@@ -100,6 +106,19 @@ import { ConversationAttributesList } from '../conversation-attributes-list'
 
 afterEach(cleanup)
 
+// AttributeValueCountsBreakdown always fires for an edit dialog on an
+// aiDetect-enabled definition (FIXTURE_ATTRIBUTES[0]); default it to an
+// empty-but-resolved breakdown so tests unrelated to monitoring don't have
+// to think about it, and override per-test where the breakdown itself is
+// under test.
+beforeEach(() => {
+  hoisted.attributeValueCountsFn.mockResolvedValue([
+    { optionId: 'opt_1', label: 'Billing', count: 0 },
+    { optionId: 'opt_2', label: 'Bug', count: 0 },
+    { optionId: null, label: 'Not set', count: 0 },
+  ])
+})
+
 function renderWithClient(ui: ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>)
@@ -114,6 +133,21 @@ async function openCreateDialog() {
   const user = userEvent.setup()
   renderWithClient(<ConversationAttributesList />)
   await user.click(await screen.findByRole('button', { name: /new attribute/i }))
+  return user
+}
+
+/** Opens the edit dialog on FIXTURE_ATTRIBUTES[0] ("Issue type" — select,
+ *  aiDetect + detectOnClose both on), the row whose editor exercises the
+ *  Phase 3 preview/draft/monitoring sections. */
+async function openEditDialogForIssueType() {
+  hoisted.listConversationAttributesFn.mockResolvedValue(FIXTURE_ATTRIBUTES)
+  const user = userEvent.setup()
+  renderWithClient(<ConversationAttributesList />)
+  const issueTypeRow = (await screen.findByText('Issue type')).closest(
+    '.flex.items-center.gap-4'
+  ) as HTMLElement
+  await user.click(within(issueTypeRow).getByTitle('Edit attribute'))
+  await screen.findByText('Edit attribute')
   return user
 }
 
@@ -237,5 +271,153 @@ describe('ConversationAttributesList', () => {
         data: expect.objectContaining({ aiDetect: false, detectOnClose: false }),
       })
     )
+  })
+
+  // AI-ATTRIBUTES-PARITY-SPEC.md Phase 3: preview harness, draft-descriptions
+  // assist, and the read-only monitoring breakdown.
+  describe('preview harness ("Test detection")', () => {
+    it('only appears once AI detect is enabled on a select attribute', async () => {
+      hoisted.listConversationAttributesFn.mockResolvedValue([])
+      const user = await openCreateDialog()
+      fireEvent.change(typeSelect(), { target: { value: 'select' } })
+      await screen.findByText('Let AI detect this attribute')
+      expect(screen.queryByRole('button', { name: /test detection/i })).not.toBeInTheDocument()
+
+      await user.click(screen.getAllByRole('switch')[0]) // AI detect on
+      expect(await screen.findByRole('button', { name: /test detection/i })).toBeInTheDocument()
+    })
+
+    it('calls previewAttributeDetectionFn with the draft definition + sample message and renders the result', async () => {
+      hoisted.previewAttributeDetectionFn.mockResolvedValue({
+        optionId: 'opt_1',
+        optionLabel: 'Billing',
+        reasoning: 'Customer mentions a duplicate charge.',
+      })
+      const user = await openEditDialogForIssueType()
+
+      await user.type(
+        screen.getByPlaceholderText(/i was charged twice/i),
+        'I got charged twice this month'
+      )
+      await user.click(screen.getByRole('button', { name: /test detection/i }))
+
+      expect(await screen.findByText('Billing')).toBeInTheDocument()
+      expect(await screen.findByText('Customer mentions a duplicate charge.')).toBeInTheDocument()
+      expect(hoisted.previewAttributeDetectionFn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            definition: expect.objectContaining({ key: 'issue_type', label: 'Issue type' }),
+            sampleMessage: 'I got charged twice this month',
+          }),
+        })
+      )
+    })
+
+    it('shows "No option applies" when the predicted optionId is null', async () => {
+      hoisted.previewAttributeDetectionFn.mockResolvedValue({
+        optionId: null,
+        optionLabel: null,
+        reasoning: 'Nothing in the message indicates an issue type.',
+      })
+      const user = await openEditDialogForIssueType()
+      await user.type(screen.getByPlaceholderText(/i was charged twice/i), 'Hello!')
+      await user.click(screen.getByRole('button', { name: /test detection/i }))
+
+      expect(await screen.findByText('No option applies')).toBeInTheDocument()
+    })
+
+    it('disables the button until a sample message is entered', async () => {
+      const user = await openEditDialogForIssueType()
+      expect(screen.getByRole('button', { name: /test detection/i })).toBeDisabled()
+      await user.type(screen.getByPlaceholderText(/i was charged twice/i), 'x')
+      expect(screen.getByRole('button', { name: /test detection/i })).not.toBeDisabled()
+    })
+  })
+
+  describe('"Draft descriptions" assist', () => {
+    it('fills the attribute + option description fields from the draft result', async () => {
+      hoisted.draftAttributeDescriptionsFn.mockResolvedValue({
+        attributeDescription: 'What kind of issue the customer has.',
+        options: [
+          { label: 'Billing', description: 'Applies when the customer asks about a charge.' },
+          { label: 'Bug', description: 'Applies when something is broken.' },
+        ],
+      })
+      const user = await openEditDialogForIssueType()
+
+      await user.click(screen.getByRole('button', { name: /draft descriptions/i }))
+
+      expect(hoisted.draftAttributeDescriptionsFn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { label: 'Issue type', optionLabels: ['Billing', 'Bug'] },
+        })
+      )
+      // FIXTURE_ATTRIBUTES[0] already has a non-empty attribute description,
+      // so this goes through the overwrite-confirmation path.
+      await user.click(await screen.findByRole('button', { name: /^overwrite$/i }))
+
+      expect(
+        await screen.findByDisplayValue('What kind of issue the customer has.')
+      ).toBeInTheDocument()
+      expect(
+        await screen.findByDisplayValue('Applies when the customer asks about a charge.')
+      ).toBeInTheDocument()
+    })
+
+    it('asks for confirmation before overwriting an existing description, and applies only on confirm', async () => {
+      hoisted.draftAttributeDescriptionsFn.mockResolvedValue({
+        attributeDescription: 'New description.',
+        options: [
+          { label: 'Billing', description: 'New billing description.' },
+          { label: 'Bug', description: 'New bug description.' },
+        ],
+      })
+      const user = await openEditDialogForIssueType()
+
+      await user.click(screen.getByRole('button', { name: /draft descriptions/i }))
+      expect(await screen.findByText(/will overwrite existing descriptions/i)).toBeInTheDocument()
+      // Not applied yet — the original description is untouched.
+      expect(screen.queryByDisplayValue('New description.')).not.toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: /^overwrite$/i }))
+      expect(await screen.findByDisplayValue('New description.')).toBeInTheDocument()
+    })
+
+    it('is disabled until at least one option has a label', async () => {
+      hoisted.listConversationAttributesFn.mockResolvedValue([])
+      const user = await openCreateDialog()
+      fireEvent.change(typeSelect(), { target: { value: 'select' } })
+      await screen.findByRole('button', { name: /draft descriptions/i })
+      expect(screen.getByRole('button', { name: /draft descriptions/i })).toBeDisabled()
+
+      await user.click(screen.getByRole('button', { name: /add option/i }))
+      await user.type(screen.getByPlaceholderText('Option label'), 'Billing')
+      expect(screen.getByRole('button', { name: /draft descriptions/i })).not.toBeDisabled()
+    })
+  })
+
+  describe('monitoring breakdown', () => {
+    it('shows per-option counts for an aiDetect-enabled attribute in the edit dialog', async () => {
+      hoisted.attributeValueCountsFn.mockResolvedValue([
+        { optionId: 'opt_1', label: 'Billing', count: 7 },
+        { optionId: 'opt_2', label: 'Bug', count: 3 },
+        { optionId: null, label: 'Not set', count: 2 },
+      ])
+      await openEditDialogForIssueType()
+
+      expect(await screen.findByText('Detections (last 30 days)')).toBeInTheDocument()
+      expect(hoisted.attributeValueCountsFn).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { key: 'issue_type', sinceDays: 30 } })
+      )
+      expect(await screen.findByText('7')).toBeInTheDocument()
+      expect(screen.getByText('3')).toBeInTheDocument()
+      expect(screen.getByText('2')).toBeInTheDocument()
+    })
+
+    it('does not appear in the create dialog (no saved data to show yet)', async () => {
+      hoisted.listConversationAttributesFn.mockResolvedValue([])
+      await openCreateDialog()
+      expect(screen.queryByText('Detections (last 30 days)')).not.toBeInTheDocument()
+    })
   })
 })

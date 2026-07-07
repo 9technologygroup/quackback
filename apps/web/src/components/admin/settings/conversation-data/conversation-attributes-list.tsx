@@ -7,8 +7,8 @@
  * ids), lifecycle is archive/restore only.
  */
 import { useState, useEffect } from 'react'
-import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
-import { PlusIcon, PencilIcon, XMarkIcon } from '@heroicons/react/24/solid'
+import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
+import { PlusIcon, PencilIcon, XMarkIcon, SparklesIcon } from '@heroicons/react/24/solid'
 import { ArchiveBoxIcon, ArrowUturnLeftIcon } from '@heroicons/react/24/outline'
 import { toast } from 'sonner'
 import type { ConversationAttributeId } from '@quackback/ids'
@@ -38,6 +38,8 @@ import {
   updateConversationAttributeFn,
   archiveConversationAttributeFn,
   restoreConversationAttributeFn,
+  previewAttributeDetectionFn,
+  draftAttributeDescriptionsFn,
 } from '@/lib/server/functions/conversation-attributes'
 import {
   conversationAttributeQueries,
@@ -102,6 +104,52 @@ interface AttributeFormValues {
   detectOnClose: boolean
 }
 
+/**
+ * Phase 3 monitoring: a compact per-option bar breakdown of detections over
+ * the last 30 days (AI-ATTRIBUTES-PARITY-SPEC.md Phase 3). Read-only —
+ * drill-through to the filtered conversation list is deferred (no cheap
+ * existing inbox-filter link for a custom attribute value to reuse yet; see
+ * the Phase 4 surfacing gap in the spec).
+ */
+function AttributeValueCountsBreakdown({ attributeKey }: { attributeKey: string }) {
+  const { data, isPending, isError } = useQuery(
+    conversationAttributeQueries.valueCounts(attributeKey, 30)
+  )
+
+  if (isPending || isError || !data) return null
+
+  const total = data.reduce((sum, c) => sum + c.count, 0)
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-border/50 px-3 py-2">
+      <p className="text-sm font-medium">Detections (last 30 days)</p>
+      {total === 0 ? (
+        <p className="text-[11px] text-muted-foreground">No conversations in this window yet.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {data.map((c) => {
+            const pct = Math.round((c.count / total) * 100)
+            return (
+              <div key={c.optionId ?? 'unset'} className="space-y-0.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-foreground">{c.label}</span>
+                  <span className="text-muted-foreground">{c.count}</span>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-muted">
+                  <div
+                    className="h-1.5 rounded-full bg-indigo-500/70"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AttributeFormDialog({
   open,
   onOpenChange,
@@ -127,6 +175,16 @@ function AttributeFormDialog({
   const [aiDetect, setAiDetect] = useState(initialValues?.aiDetect ?? false)
   const [detectOnClose, setDetectOnClose] = useState(initialValues?.detectOnClose ?? false)
   const [otherHintDismissed, setOtherHintDismissed] = useState(false)
+  const [sampleMessage, setSampleMessage] = useState('')
+  const [previewResult, setPreviewResult] = useState<{
+    optionId: string | null
+    optionLabel: string | null
+    reasoning: string
+  } | null>(null)
+  const [pendingDraft, setPendingDraft] = useState<{
+    attributeDescription: string
+    options: { label: string; description: string }[]
+  } | null>(null)
 
   useEffect(() => {
     if (open) {
@@ -140,6 +198,9 @@ function AttributeFormDialog({
       setAiDetect(initialValues?.aiDetect ?? false)
       setDetectOnClose(initialValues?.detectOnClose ?? false)
       setOtherHintDismissed(false)
+      setSampleMessage('')
+      setPreviewResult(null)
+      setPendingDraft(null)
     }
   }, [open])
 
@@ -156,6 +217,67 @@ function AttributeFormDialog({
     setOptions((prev) => prev.map((o, i) => (i === index ? { ...o, ...patch } : o)))
 
   const filledOptions = options.filter((o) => o.label.trim().length > 0)
+
+  const draftDescriptions = useMutation({
+    mutationFn: (input: Parameters<typeof draftAttributeDescriptionsFn>[0]['data']) =>
+      draftAttributeDescriptionsFn({ data: input }),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Failed to draft descriptions'),
+  })
+  const previewDetection = useMutation({
+    mutationFn: (input: Parameters<typeof previewAttributeDetectionFn>[0]['data']) =>
+      previewAttributeDetectionFn({ data: input }),
+    onSuccess: setPreviewResult,
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Failed to test detection'),
+  })
+
+  /** Fills description + per-option descriptions from a draft result, matching
+   *  options by their (trimmed) label — only filled options are touched. */
+  const applyDraft = (draft: {
+    attributeDescription: string
+    options: { label: string; description: string }[]
+  }) => {
+    setDescription(draft.attributeDescription)
+    setOptions((prev) =>
+      prev.map((o) => {
+        const trimmed = o.label.trim()
+        if (!trimmed) return o
+        const match = draft.options.find((r) => r.label === trimmed)
+        return match ? { ...o, description: match.description } : o
+      })
+    )
+  }
+
+  const handleDraftDescriptions = async () => {
+    if (filledOptions.length === 0) return
+    const draft = await draftDescriptions.mutateAsync({
+      label: label.trim() || 'Untitled attribute',
+      optionLabels: filledOptions.map((o) => o.label.trim()),
+    })
+    const hasExisting =
+      description.trim().length > 0 || filledOptions.some((o) => o.description.trim().length > 0)
+    if (hasExisting) {
+      setPendingDraft(draft)
+    } else {
+      applyDraft(draft)
+    }
+  }
+
+  const handleTestDetection = async () => {
+    if (!sampleMessage.trim() || filledOptions.length === 0) return
+    await previewDetection.mutateAsync({
+      definition: {
+        key: key.trim() || undefined,
+        label: label.trim() || 'Untitled attribute',
+        description: description.trim() || undefined,
+        options: filledOptions.map((o) => ({
+          id: o.id,
+          label: o.label.trim(),
+          description: o.description.trim() || undefined,
+        })),
+      },
+      sampleMessage,
+    })
+  }
   const hasOtherFallback = filledOptions.some((o) => OTHER_FALLBACK_PATTERN.test(o.label))
   const showOtherHint =
     aiDetect && supportsAiDetect(fieldType) && !hasOtherFallback && !otherHintDismissed
@@ -264,7 +386,50 @@ function AttributeFormDialog({
 
           {isSelectType(fieldType) && (
             <div className="space-y-1.5">
-              <Label>Options</Label>
+              <div className="flex items-center justify-between">
+                <Label>Options</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                  disabled={filledOptions.length === 0 || draftDescriptions.isPending}
+                  onClick={handleDraftDescriptions}
+                  title="Fill descriptions from the option labels using AI"
+                >
+                  <SparklesIcon className="h-3 w-3" />
+                  {draftDescriptions.isPending ? 'Drafting...' : 'Draft descriptions'}
+                </Button>
+              </div>
+              {pendingDraft && (
+                <div className="flex items-center justify-between gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-2">
+                  <p className="text-[11px] text-amber-700 dark:text-amber-500">
+                    This will overwrite existing descriptions.
+                  </p>
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-6 px-2 text-[11px]"
+                      onClick={() => {
+                        applyDraft(pendingDraft)
+                        setPendingDraft(null)
+                      }}
+                    >
+                      Overwrite
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-[11px]"
+                      onClick={() => setPendingDraft(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div className="space-y-2">
                 {options.map((option, i) => (
                   <div key={option.id ?? `new-${i}`} className="flex items-start gap-1.5">
@@ -358,6 +523,49 @@ function AttributeFormDialog({
                 </div>
               )}
             </div>
+          )}
+
+          {aiDetect && supportsAiDetect(fieldType) && (
+            <div className="space-y-2 rounded-md border border-border/50 px-3 py-2">
+              <div>
+                <p className="text-sm font-medium">Test detection</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Paste a sample customer message to preview what Quinn would detect.
+                </p>
+              </div>
+              <Textarea
+                value={sampleMessage}
+                onChange={(e) => setSampleMessage(e.target.value)}
+                placeholder="e.g. I was charged twice for my subscription this month."
+                rows={2}
+                className="resize-none text-sm"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                disabled={
+                  !sampleMessage.trim() || filledOptions.length === 0 || previewDetection.isPending
+                }
+                onClick={handleTestDetection}
+              >
+                <SparklesIcon className="h-3 w-3" />
+                {previewDetection.isPending ? 'Testing...' : 'Test detection'}
+              </Button>
+              {previewResult && (
+                <div className="rounded-md bg-muted/50 px-2.5 py-2 text-xs">
+                  <p className="font-medium text-foreground">
+                    {previewResult.optionLabel ?? 'No option applies'}
+                  </p>
+                  <p className="mt-0.5 text-muted-foreground">{previewResult.reasoning}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {isEditing && initialValues?.aiDetect && initialValues?.key && (
+            <AttributeValueCountsBreakdown attributeKey={initialValues.key} />
           )}
 
           <div className="flex items-center justify-between rounded-md border border-border/50 px-3 py-2">

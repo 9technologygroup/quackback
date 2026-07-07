@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { PlusIcon, TrashIcon } from '@heroicons/react/24/solid'
 import type { ConversationViewId } from '@quackback/ids'
@@ -13,11 +13,14 @@ import {
   CONVERSATION_SORT_LABELS,
   CONVERSATION_VIEW_RULE_FIELDS,
   TICKET_VIEW_RULE_FIELDS,
+  VALUELESS_ATTRIBUTE_OPERATORS,
   MAX_VIEW_RULES,
   conversationViewFiltersSchema,
   type ConversationSort,
   type ConversationViewDTO,
+  type ConversationViewRule,
   type ConversationViewRuleField,
+  type ConversationAttributeOperator,
 } from '@/lib/shared/conversation/views'
 import { TICKET_TYPES, TICKET_STATUS_CATEGORIES, TICKET_STAGES } from '@/lib/shared/db-types'
 import { TICKET_STATUS_CATEGORY_LABELS, DEFAULT_TICKET_STAGE_LABELS } from '@/lib/shared/tickets'
@@ -27,6 +30,12 @@ import {
   useInboxTeams,
   useSupportTicketsEnabled,
 } from '@/components/admin/conversation/inbox-nav-sidebar'
+import { conversationAttributeQueries } from '@/lib/client/queries/conversation-attributes'
+import type { ConversationAttributeItem } from '@/lib/client/queries/conversation-attributes'
+import {
+  AttributeValueInput,
+  type AttributeInputValue,
+} from '@/components/admin/conversation/attribute-value-input'
 import {
   Dialog,
   DialogContent,
@@ -38,7 +47,9 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
@@ -46,9 +57,76 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { cn } from '@/lib/shared/utils'
 
 // A rule while being edited: value may be blank until the teammate picks one.
-type DraftRule = { field: ConversationViewRuleField; value: string }
+// The fixed-field shape carries a plain string value (as before); an attribute
+// rule (§C2.7) carries its own key/operator alongside a typed
+// AttributeInputValue — AttributeValueInput already emits that shape, so no
+// string encode/decode round-trip is needed the way the workflow condition
+// editor's shared ConditionRuleDraft requires.
+type FixedDraftRule = { field: ConversationViewRuleField; value: string }
+type AttributeDraftRule = {
+  field: 'attribute'
+  key: string
+  operator: ConversationAttributeOperator
+  value: AttributeInputValue
+}
+type DraftRule = FixedDraftRule | AttributeDraftRule
+
+/** The Select's synthetic value for an attribute row — decoded back into
+ *  `{ field: 'attribute', key }` by `setRuleField`. */
+const ATTR_FIELD_PREFIX = 'attr:'
+const attrFieldValue = (key: string) => `${ATTR_FIELD_PREFIX}${key}`
+const isAttrFieldValue = (v: string) => v.startsWith(ATTR_FIELD_PREFIX)
+const attrKeyFromFieldValue = (v: string) => v.slice(ATTR_FIELD_PREFIX.length)
+
+/** Operators offered per attribute field type — mirrors
+ *  ATTRIBUTE_OPERATORS_BY_TYPE in components/admin/automation/workflow-graph.ts
+ *  (re-declared, not imported: that module is workflow-builder-specific and
+ *  pulls in workflow-schema types this dialog has no business depending on). */
+const ATTRIBUTE_OPERATORS_BY_TYPE: Record<
+  ConversationAttributeItem['fieldType'],
+  readonly ConversationAttributeOperator[]
+> = {
+  text: ['contains', 'not_contains', 'eq', 'neq', 'is_set', 'is_empty'],
+  number: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'is_set', 'is_empty'],
+  select: ['eq', 'neq', 'is_set', 'is_empty'],
+  multi_select: ['includes_any', 'excludes_all', 'is_set', 'is_empty'],
+  checkbox: ['eq'],
+  date: ['is_set', 'is_empty'],
+}
+
+const ATTRIBUTE_OPERATOR_LABELS: Record<ConversationAttributeOperator, string> = {
+  eq: 'is',
+  neq: 'is not',
+  contains: 'contains',
+  not_contains: "doesn't contain",
+  gt: 'is more than',
+  gte: 'is at least',
+  lt: 'is less than',
+  lte: 'is at most',
+  includes_any: 'includes any of',
+  excludes_all: 'includes none of',
+  is_set: 'is set',
+  is_empty: 'is empty',
+}
+
+/** The default draft for a freshly-picked attribute — first operator for its
+ *  type, a sensible starting value (or null for valueless-first types). */
+function defaultAttributeRule(key: string, def?: ConversationAttributeItem): AttributeDraftRule {
+  const operators = def ? ATTRIBUTE_OPERATORS_BY_TYPE[def.fieldType] : (['is_set'] as const)
+  const operator = operators[0]!
+  const value: AttributeInputValue =
+    !def || VALUELESS_ATTRIBUTE_OPERATORS.has(operator)
+      ? null
+      : def.fieldType === 'select'
+        ? (def.options?.[0]?.id ?? null)
+        : def.fieldType === 'checkbox'
+          ? false
+          : null
+  return { field: 'attribute', key, operator, value }
+}
 
 const FIELD_LABELS: Record<ConversationViewRuleField, string> = {
   status: 'Status',
@@ -113,6 +191,39 @@ function defaultValueFor(field: ConversationViewRuleField): string {
   }
 }
 
+/** Seed a draft row from a saved rule (edit-open). */
+function ruleToDraft(r: ConversationViewRule): DraftRule {
+  if (r.field === 'attribute') {
+    return {
+      field: 'attribute',
+      key: r.key,
+      operator: r.operator,
+      value: (r.value ?? null) as AttributeInputValue,
+    }
+  }
+  return { field: r.field, value: String(r.value) }
+}
+
+/** Convert one draft row into the schema's rule shape, or null to drop it
+ *  (an empty fixed-field value, an empty attribute key, or a value-required
+ *  attribute operator with no value yet — same "not ready to save" semantics
+ *  the pre-existing `r.value !== ''` filter used for fixed fields). */
+function draftToRule(r: DraftRule): ConversationViewRule | null {
+  if (r.field === 'attribute') {
+    if (!r.key) return null
+    const needsValue = !VALUELESS_ATTRIBUTE_OPERATORS.has(r.operator)
+    if (needsValue && (r.value === null || r.value === undefined || r.value === '')) return null
+    return {
+      field: 'attribute',
+      key: r.key,
+      operator: r.operator,
+      value: needsValue ? (r.value as Exclude<AttributeInputValue, null>) : undefined,
+    } as ConversationViewRule
+  }
+  if (r.value === '') return null
+  return (r.field === 'waiting' ? { field: 'waiting', value: true } : r) as ConversationViewRule
+}
+
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -132,6 +243,12 @@ export function ConversationViewDialog({ open, onOpenChange, editing, onSaved }:
   const { data: tags } = useConversationTagsWithCounts()
   const { data: teams } = useInboxTeams()
   const supportTickets = useSupportTicketsEnabled()
+  // Live (non-archived) attribute definitions back the "Conversation
+  // attribute" field group — same live-definitions provider pattern the
+  // workflow condition editor uses (WorkflowEntitiesProvider), read directly
+  // here since this dialog doesn't otherwise need the workflow entities context.
+  const { data: attributeDefs } = useQuery(conversationAttributeQueries.live())
+  const attributes = attributeDefs ?? []
   // Ticket-only rule fields (§2.8) are hidden from the picker when the
   // workspace hasn't turned tickets on — an existing view already carrying
   // one still runs (the schema/translation don't gate on the flag), it just
@@ -150,7 +267,7 @@ export function ConversationViewDialog({ open, onOpenChange, editing, onSaved }:
     if (!open) return
     if (editing) {
       setName(editing.name)
-      setRules(editing.filters.rules.map((r) => ({ field: r.field, value: String(r.value) })))
+      setRules(editing.filters.rules.map(ruleToDraft))
       setSort(editing.sort ?? '')
       setIsShared(editing.isShared)
     } else {
@@ -169,11 +286,10 @@ export function ConversationViewDialog({ open, onOpenChange, editing, onSaved }:
   const save = useMutation({
     mutationFn: async () => {
       // Build + validate the rule set (drops rows with no value, e.g. an empty
-      // tag/team picker); the zod schema is the same one the server enforces.
+      // tag/team picker or an attribute rule with no value yet); the zod
+      // schema is the same one the server enforces.
       const parsed = conversationViewFiltersSchema.safeParse({
-        rules: rules
-          .filter((r) => r.value !== '')
-          .map((r) => (r.field === 'waiting' ? { field: 'waiting', value: true } : r)),
+        rules: rules.map(draftToRule).filter((r): r is ConversationViewRule => r !== null),
       })
       if (!parsed.success) throw new Error('This view has an invalid rule')
       const filters = parsed.data
@@ -202,10 +318,25 @@ export function ConversationViewDialog({ open, onOpenChange, editing, onSaved }:
 
   const canSave = name.trim().length > 0 && !save.isPending
 
-  const setRuleField = (i: number, field: ConversationViewRuleField) =>
-    setRules((rs) => rs.map((r, j) => (j === i ? { field, value: defaultValueFor(field) } : r)))
+  const setRuleField = (i: number, raw: string) =>
+    setRules((rs) =>
+      rs.map((r, j) => {
+        if (j !== i) return r
+        if (isAttrFieldValue(raw)) {
+          const key = attrKeyFromFieldValue(raw)
+          return defaultAttributeRule(
+            key,
+            attributes.find((d) => d.key === key)
+          )
+        }
+        const field = raw as ConversationViewRuleField
+        return { field, value: defaultValueFor(field) }
+      })
+    )
   const setRuleValue = (i: number, value: string) =>
-    setRules((rs) => rs.map((r, j) => (j === i ? { ...r, value } : r)))
+    setRules((rs) => rs.map((r, j) => (j === i && r.field !== 'attribute' ? { ...r, value } : r)))
+  const setAttributeRule = (i: number, rule: AttributeDraftRule) =>
+    setRules((rs) => rs.map((r, j) => (j === i ? rule : r)))
   const removeRule = (i: number) => setRules((rs) => rs.filter((_, j) => j !== i))
   const addRule = () =>
     setRules((rs) =>
@@ -241,26 +372,54 @@ export function ConversationViewDialog({ open, onOpenChange, editing, onSaved }:
               {rules.map((rule, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <Select
-                    value={rule.field}
-                    onValueChange={(v) => setRuleField(i, v as ConversationViewRuleField)}
+                    value={rule.field === 'attribute' ? attrFieldValue(rule.key) : rule.field}
+                    onValueChange={(v) => setRuleField(i, v)}
                   >
                     <SelectTrigger className="w-32 shrink-0">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {visibleFields.map((f) => (
-                        <SelectItem key={f} value={f}>
-                          {FIELD_LABELS[f]}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        {visibleFields.map((f) => (
+                          <SelectItem key={f} value={f}>
+                            {FIELD_LABELS[f]}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                      {attributes.length > 0 && (
+                        <SelectGroup>
+                          <SelectLabel>Conversation attribute</SelectLabel>
+                          {attributes.map((d) => (
+                            <SelectItem key={d.key} value={attrFieldValue(d.key)}>
+                              {d.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )}
+                      {/* A saved rule can reference an attribute key with no
+                          live definition (archived, or authored before/after
+                          this workspace's current registry) — inject a
+                          selectable item so the trigger still displays it. */}
+                      {rule.field === 'attribute' &&
+                        !attributes.some((d) => d.key === rule.key) && (
+                          <SelectItem value={attrFieldValue(rule.key)}>{rule.key}</SelectItem>
+                        )}
                     </SelectContent>
                   </Select>
-                  <RuleValue
-                    rule={rule}
-                    tags={(tags ?? []).map((t) => ({ id: t.id, name: t.name }))}
-                    teams={(teams ?? []).map((t) => ({ id: t.id, name: t.name }))}
-                    onChange={(v) => setRuleValue(i, v)}
-                  />
+                  {rule.field === 'attribute' ? (
+                    <AttributeRuleControls
+                      rule={rule}
+                      attributes={attributes}
+                      onChange={(next) => setAttributeRule(i, next)}
+                    />
+                  ) : (
+                    <RuleValue
+                      rule={rule}
+                      tags={(tags ?? []).map((t) => ({ id: t.id, name: t.name }))}
+                      teams={(teams ?? []).map((t) => ({ id: t.id, name: t.name }))}
+                      onChange={(v) => setRuleValue(i, v)}
+                    />
+                  )}
                   <button
                     type="button"
                     onClick={() => removeRule(i)}
@@ -325,14 +484,15 @@ export function ConversationViewDialog({ open, onOpenChange, editing, onSaved }:
   )
 }
 
-/** The value control for one rule row — switches on the rule's field. */
+/** The value control for one fixed-field rule row — switches on the rule's
+ *  field. Attribute rows render `AttributeRuleControls` instead. */
 function RuleValue({
   rule,
   tags,
   teams,
   onChange,
 }: {
-  rule: DraftRule
+  rule: FixedDraftRule
   tags: Array<{ id: string; name: string }>
   teams: Array<{ id: string; name: string }>
   onChange: (value: string) => void
@@ -375,5 +535,71 @@ function RuleValue({
         ))}
       </SelectContent>
     </Select>
+  )
+}
+
+/** The operator + value controls for an attribute rule row: an operator
+ *  picker scoped to the definition's field type, then (unless the operator is
+ *  valueless) the same typed `AttributeValueInput` the macro/workflow editors
+ *  use — option-id pickers for select/multi_select, a switch for checkbox,
+ *  etc. Degrades to a bare operator picker with no value control when the key
+ *  has no live definition (archived / unknown), same as the workflow
+ *  condition editor's unknown-attribute fallback. */
+function AttributeRuleControls({
+  rule,
+  attributes,
+  onChange,
+}: {
+  rule: AttributeDraftRule
+  attributes: ConversationAttributeItem[]
+  onChange: (rule: AttributeDraftRule) => void
+}) {
+  const def = attributes.find((d) => d.key === rule.key)
+  const operators = def
+    ? ATTRIBUTE_OPERATORS_BY_TYPE[def.fieldType]
+    : (['is_set', 'is_empty'] as const)
+  const needsValue = !VALUELESS_ATTRIBUTE_OPERATORS.has(rule.operator)
+
+  const setOperator = (operator: ConversationAttributeOperator) =>
+    onChange({
+      ...rule,
+      operator,
+      value: VALUELESS_ATTRIBUTE_OPERATORS.has(operator) ? null : rule.value,
+    })
+
+  return (
+    <>
+      <Select
+        value={rule.operator}
+        onValueChange={(v) => setOperator(v as ConversationAttributeOperator)}
+      >
+        <SelectTrigger className={cn('shrink-0', needsValue ? 'w-36' : 'min-w-0 flex-1')}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {operators.map((op) => (
+            <SelectItem key={op} value={op}>
+              {ATTRIBUTE_OPERATOR_LABELS[op]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {needsValue &&
+        (def ? (
+          <AttributeValueInput
+            definition={def}
+            value={rule.value}
+            onChange={(value) => onChange({ ...rule, value })}
+            className="min-w-0 flex-1"
+          />
+        ) : (
+          <Input
+            value={typeof rule.value === 'string' ? rule.value : ''}
+            onChange={(e) => onChange({ ...rule, value: e.target.value })}
+            placeholder="Value"
+            className="h-8 min-w-0 flex-1 text-sm"
+          />
+        ))}
+    </>
   )
 }

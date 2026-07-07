@@ -3,11 +3,13 @@
  * effectiveness over a date range, for the analytics dashboard. Read-only, gated
  * on analytics.view.
  */
+import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { requireAuth } from './auth-helpers'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { slaAttainment } from '@/lib/server/domains/sla/sla-reporting'
 import { workflowEffectiveness } from '@/lib/server/domains/workflows/workflow-reporting'
+import { attributeValueBreakdown } from '@/lib/server/domains/conversation-attributes/attribute-reporting'
 import { dateRangeSchema } from '@/lib/shared/schemas'
 
 export const slaAttainmentFn = createServerFn({ method: 'GET' })
@@ -29,4 +31,20 @@ export const workflowEffectivenessFn = createServerFn({ method: 'GET' })
       interrupted: w.interrupted,
       waiting: w.waiting,
     }))
+  })
+
+const attributeBreakdownSchema = dateRangeSchema.extend({
+  // Not checked against the live attribute registry here — an unknown/archived
+  // key just returns an all-unset breakdown, same as any other reporting read
+  // over an absent value.
+  key: z.string().trim().min(1).max(100),
+})
+
+/** Per-value conversation counts for one custom attribute over a date range
+ *  (§C2.7 reporting segmentation). Read-only, gated on analytics.view. */
+export const attributeBreakdownFn = createServerFn({ method: 'GET' })
+  .validator(attributeBreakdownSchema)
+  .handler(async ({ data }) => {
+    await requireAuth({ permission: PERMISSIONS.ANALYTICS_VIEW })
+    return attributeValueBreakdown(data.key, new Date(data.from), new Date(data.to))
   })

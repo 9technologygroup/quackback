@@ -4,7 +4,10 @@
  * the macro/workflow definition pickers (live definitions only).
  */
 import { queryOptions } from '@tanstack/react-query'
-import { listConversationAttributesFn } from '@/lib/server/functions/conversation-attributes'
+import {
+  listConversationAttributesFn,
+  attributeValueCountsFn,
+} from '@/lib/server/functions/conversation-attributes'
 
 export type ConversationAttributeItem = Awaited<
   ReturnType<typeof listConversationAttributesFn>
@@ -23,5 +26,13 @@ export const conversationAttributeQueries = {
     queryOptions({
       queryKey: ['admin', 'conversation-attributes', 'registry'],
       queryFn: () => listConversationAttributesFn({ data: { includeArchived: true } }),
+    }),
+  /** Phase 3 monitoring: per-option detection counts for one attribute over
+   *  a rolling window, for the editor's read-only breakdown. */
+  valueCounts: (key: string, sinceDays = 30) =>
+    queryOptions({
+      queryKey: ['admin', 'conversation-attributes', 'value-counts', key, sinceDays],
+      queryFn: () => attributeValueCountsFn({ data: { key, sinceDays } }),
+      staleTime: 30_000,
     }),
 }
