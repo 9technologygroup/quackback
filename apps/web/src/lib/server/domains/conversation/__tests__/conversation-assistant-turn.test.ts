@@ -50,6 +50,23 @@ vi.mock('@/lib/server/domains/settings/settings.office-hours', () => ({
   getOfficeHoursSchedule: vi.fn(async () => ({ enabled: false, timezone: 'UTC', intervals: [] })),
 }))
 
+// Phase 2 live re-check (AI-ATTRIBUTES-PARITY-SPEC.md §3): defaults keep the
+// hook inert (flag off, matching the real DEFAULT_FEATURE_FLAGS default) so
+// every pre-existing test in this file exercises it as a no-op; the dedicated
+// gating tests below flip these per case.
+const mockIsFeatureEnabled = vi.hoisted(() => vi.fn(async () => false))
+vi.mock('@/lib/server/domains/settings/settings.service', () => ({
+  isFeatureEnabled: mockIsFeatureEnabled,
+}))
+const mockGetLiveWorkflowReferencedAttributeKeys = vi.hoisted(() => vi.fn(async () => new Set()))
+vi.mock('@/lib/server/domains/workflows/workflow.service', () => ({
+  getLiveWorkflowReferencedAttributeKeys: mockGetLiveWorkflowReferencedAttributeKeys,
+}))
+const mockClassifyConversationAttributes = vi.hoisted(() => vi.fn(async () => []))
+vi.mock('@/lib/server/domains/conversation-attributes/ai-classification.service', () => ({
+  classifyConversationAttributes: mockClassifyConversationAttributes,
+}))
+
 vi.mock('@/lib/server/realtime/conversation-channels', () => ({
   publishConversationEvent: vi.fn(),
   publishAgentConversationEvent: vi.fn(),
@@ -189,6 +206,9 @@ beforeEach(() => {
   assistantMock.openInvolvement.mockResolvedValue({ id: 'assistant_involvement_1' })
   getMessengerConfig.mockResolvedValue({ assistant: { respond: true, name: 'Quinn' } })
   mockEnforceAiTokenBudget.mockResolvedValue(undefined)
+  mockIsFeatureEnabled.mockResolvedValue(false)
+  mockGetLiveWorkflowReferencedAttributeKeys.mockResolvedValue(new Set())
+  mockClassifyConversationAttributes.mockResolvedValue([])
 })
 
 describe('shouldConsiderAssistant', () => {
@@ -412,5 +432,76 @@ describe('runAssistantTurnForConversation activity snapshot (Redis mirror)', () 
     await runAssistantTurnForConversation(CONV)
     expect(mockWriteActivitySnapshot).not.toHaveBeenCalled()
     expect(mockClearActivitySnapshot).not.toHaveBeenCalled()
+  })
+})
+
+describe('runAssistantTurnForConversation Phase 2 live attribute re-check', () => {
+  it('never fires when the aiAttributeDetection flag is off', async () => {
+    mockIsFeatureEnabled.mockResolvedValue(false)
+    mockGetLiveWorkflowReferencedAttributeKeys.mockResolvedValue(new Set(['issue_type']))
+    assistantMock.runAssistantTurn.mockResolvedValue(answered({}))
+    await runAssistantTurnForConversation(CONV)
+    // The flag gate is checked before the referenced-keys read at all.
+    expect(mockGetLiveWorkflowReferencedAttributeKeys).not.toHaveBeenCalled()
+    expect(mockClassifyConversationAttributes).not.toHaveBeenCalled()
+  })
+
+  it('never fires when no live workflow references any AI attribute', async () => {
+    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockGetLiveWorkflowReferencedAttributeKeys.mockResolvedValue(new Set())
+    assistantMock.runAssistantTurn.mockResolvedValue(answered({}))
+    await runAssistantTurnForConversation(CONV)
+    await vi.waitFor(() => {
+      expect(mockGetLiveWorkflowReferencedAttributeKeys).toHaveBeenCalled()
+    })
+    expect(mockClassifyConversationAttributes).not.toHaveBeenCalled()
+  })
+
+  it('fires with trigger live_recheck restricted to the referenced keys when flag on + referenced', async () => {
+    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockGetLiveWorkflowReferencedAttributeKeys.mockResolvedValue(
+      new Set(['issue_type', 'sentiment'])
+    )
+    assistantMock.runAssistantTurn.mockResolvedValue(answered({}))
+    await runAssistantTurnForConversation(CONV)
+    await vi.waitFor(() => {
+      expect(mockClassifyConversationAttributes).toHaveBeenCalled()
+    })
+    expect(mockClassifyConversationAttributes).toHaveBeenCalledWith(CONV, {
+      trigger: 'live_recheck',
+      restrictToKeys: expect.arrayContaining(['issue_type', 'sentiment']),
+    })
+  })
+
+  it('never fires when the silence rule mutes the turn (a human is handling it)', async () => {
+    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockGetLiveWorkflowReferencedAttributeKeys.mockResolvedValue(new Set(['issue_type']))
+    assistantMock.respondEligible.mockReturnValue(false)
+    await runAssistantTurnForConversation(CONV)
+    expect(mockClassifyConversationAttributes).not.toHaveBeenCalled()
+  })
+
+  it('still fires on a hand-off turn (independent of this turn resolving as a hand-off)', async () => {
+    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockGetLiveWorkflowReferencedAttributeKeys.mockResolvedValue(new Set(['issue_type']))
+    assistantMock.getActiveInvolvement.mockResolvedValue({
+      id: 'assistant_involvement_1',
+      escalationOfferedAt: new Date(),
+    })
+    assistantMock.runAssistantTurn.mockResolvedValue(
+      answered({ escalation: { reason: 'low_confidence', mode: 'handoff' } })
+    )
+    await runAssistantTurnForConversation(CONV)
+    await vi.waitFor(() => {
+      expect(mockClassifyConversationAttributes).toHaveBeenCalled()
+    })
+  })
+
+  it('a re-check failure never propagates into the turn', async () => {
+    mockIsFeatureEnabled.mockResolvedValue(true)
+    mockGetLiveWorkflowReferencedAttributeKeys.mockResolvedValue(new Set(['issue_type']))
+    mockClassifyConversationAttributes.mockRejectedValue(new Error('classification boom'))
+    assistantMock.runAssistantTurn.mockResolvedValue(answered({}))
+    await expect(runAssistantTurnForConversation(CONV)).resolves.toBeUndefined()
   })
 })

@@ -12,11 +12,27 @@
  * "needs-setup-team") instead of a real one. The created workflow stays a
  * draft until someone opens it in the builder and points the step at a real
  * team, policy, or tag.
+ *
+ * The AI-attribute-detection routing templates below (AI-ATTRIBUTES-PARITY-
+ * SPEC.md Phase 2) hit the same problem one level deeper: `conversation.attr.*`
+ * branch conditions need an OPTION id, and those are minted per-workspace at
+ * random by the seed migration (packages/db/drizzle/0178_ai_attribute_detection.sql)
+ * -- there is no fixed id a template could ship with, and (unlike team/SLA/tag
+ * refs) the graph model has no needs-setup-style placeholder slot for a
+ * condition VALUE, only for action refs (`actionIssue` in workflow-graph.ts
+ * checks actions, not conditions). The degraded fallback the builder already
+ * renders correctly: an `eq` condition with `value: ''` — `ruleSummary`
+ * displays it as "… " (an obviously unset choice) and the condition editor's
+ * option picker opens on nothing selected, so the user must pick the real
+ * option before the branch can ever match. Each such template's `benefit`/
+ * step summary calls this out explicitly.
  */
 import type { ComponentType, SVGProps } from 'react'
 import {
   ArrowsRightLeftIcon,
   ClockIcon,
+  FaceFrownIcon,
+  FunnelIcon,
   ShieldCheckIcon,
   TagIcon,
   XCircleIcon,
@@ -244,6 +260,121 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         edges: [
           { from: 'trigger', to: 'mentions_billing' },
           { from: 'mentions_billing', to: 'add_billing_tag' },
+        ],
+      },
+    },
+  },
+  {
+    id: 'route-by-issue-type',
+    title: 'Route by issue type',
+    benefit: 'Pairs with AI attribute detection',
+    categories: ['popular', 'routing'],
+    icon: FunnelIcon,
+    iconClassName: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
+    stepsSummary: 'Branch on issue type (needs option setup) · Assign to team',
+    payload: {
+      name: 'Route by issue type',
+      class: 'customer_facing',
+      // Quinn classifies conversation.attr.issue_type at hand-off (Settings >
+      // Conversation data > "Let Quinn detect") — this branches on it the
+      // moment Quinn hands off, mirroring Intercom's Escalation Rules and
+      // Featurebase's Fibi workflow branches.
+      triggerType: 'assistant.handed_off',
+      graph: {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          {
+            id: 'branch_issue_type',
+            type: 'branch',
+            branches: [
+              // Option ids are minted per-workspace (see the module doc), so
+              // these ship unset ('eq' with an empty value) — open each
+              // branch in the builder and choose the real "Billing" /
+              // "Bug report" option before setting this live.
+              {
+                key: 'billing',
+                condition: { field: 'conversation.attr.issue_type', op: 'eq', value: '' },
+              },
+              {
+                key: 'bug_report',
+                condition: { field: 'conversation.attr.issue_type', op: 'eq', value: '' },
+              },
+              { key: 'everything_else', condition: {} },
+            ],
+          },
+          {
+            id: 'assign_billing',
+            type: 'action',
+            action: { type: 'assign_team', teamId: NEEDS_SETUP_TEAM },
+          },
+          {
+            id: 'set_priority_bug',
+            type: 'action',
+            action: { type: 'set_priority', priority: 'high' },
+          },
+          {
+            id: 'assign_bug',
+            type: 'action',
+            action: { type: 'assign_team', teamId: NEEDS_SETUP_TEAM },
+          },
+          {
+            id: 'assign_other',
+            type: 'action',
+            action: { type: 'assign_team', teamId: NEEDS_SETUP_TEAM },
+          },
+        ],
+        edges: [
+          { from: 'trigger', to: 'branch_issue_type' },
+          { from: 'branch_issue_type', to: 'assign_billing', branch: 'billing' },
+          { from: 'branch_issue_type', to: 'set_priority_bug', branch: 'bug_report' },
+          { from: 'set_priority_bug', to: 'assign_bug' },
+          { from: 'branch_issue_type', to: 'assign_other', branch: 'everything_else' },
+        ],
+      },
+    },
+  },
+  {
+    id: 'escalate-frustrated-customers',
+    title: 'Escalate frustrated customers',
+    benefit: 'Pairs with AI attribute detection',
+    categories: ['popular', 'sla'],
+    icon: FaceFrownIcon,
+    iconClassName: 'bg-red-500/10 text-red-600 dark:text-red-400',
+    stepsSummary: 'Condition on sentiment (needs option setup) · Set priority · Apply SLA',
+    payload: {
+      name: 'Escalate frustrated customers',
+      class: 'background',
+      // Quinn classifies conversation.attr.sentiment at hand-off. Background
+      // (not customer_facing/exclusive) so it can run alongside a routing
+      // workflow on the same trigger instead of competing for the one
+      // exclusive slot.
+      triggerType: 'assistant.handed_off',
+      graph: {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          {
+            id: 'is_negative_sentiment',
+            type: 'condition',
+            // Ships unset — open this gate in the builder and choose the
+            // real "Negative" option (see the module doc on why a fixed
+            // option id can't ship in the template).
+            condition: { field: 'conversation.attr.sentiment', op: 'eq', value: '' },
+          },
+          {
+            id: 'set_priority_urgent',
+            type: 'action',
+            action: { type: 'set_priority', priority: 'urgent' },
+          },
+          {
+            id: 'apply_escalation_sla',
+            type: 'action',
+            action: { type: 'apply_sla', policyId: NEEDS_SETUP_POLICY },
+          },
+        ],
+        edges: [
+          { from: 'trigger', to: 'is_negative_sentiment' },
+          { from: 'is_negative_sentiment', to: 'set_priority_urgent' },
+          { from: 'set_priority_urgent', to: 'apply_escalation_sla' },
         ],
       },
     },

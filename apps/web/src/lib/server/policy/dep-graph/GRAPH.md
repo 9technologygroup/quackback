@@ -48,7 +48,7 @@ Edges (17):
 ## 3. Server domains (lib/server/domains)
 
 Nodes (44): activity, ai, analytics, api, api-keys, assistant, boards, changelog, channel-accounts, comments, companies, company-attributes, connectors, conversation, conversation-attributes, conversation-views, embeddings, feedback, help-center, import, inbox, macros, merge-suggestions, notifications, office-hours, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, segments, sentiment, settings, sla, statuses, subscriptions, summary, teams, tickets, user-attributes, users, webhooks, workflows
-Edges (92):
+Edges (93):
 
 - analytics -> api
 - analytics -> assistant
@@ -68,6 +68,7 @@ Edges (92):
 - assistant -> principals
 - assistant -> settings
 - assistant -> tickets
+- assistant -> workflows
 - boards -> settings
 - changelog -> settings
 - comments -> activity
@@ -147,5 +148,5 @@ Edges (92):
 
 Strongly connected components with more than one domain. A new entry here is a new cycle and needs an explicit decision.
 
-- assistant <-> connectors <-> conversation <-> conversation-attributes <-> tickets
+- assistant <-> connectors <-> conversation <-> conversation-attributes <-> tickets <-> workflows
 - embeddings <-> merge-suggestions <-> posts

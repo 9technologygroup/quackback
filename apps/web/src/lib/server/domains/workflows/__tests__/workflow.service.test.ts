@@ -22,6 +22,8 @@ import {
   setWorkflowStatus,
   softDeleteWorkflow,
   listLiveWorkflowsForTrigger,
+  getLiveWorkflowReferencedAttributeKeys,
+  __resetLiveWorkflowReferencedAttributeKeysCache,
 } from '../workflow.service'
 
 const fixture = await createDbTestFixture({
@@ -117,5 +119,68 @@ describe.skipIf(!fixture.available)('workflow.service (real DB, rolled back)', (
     expect(forMsg.map((w) => w.id)).toEqual([liveB.id, liveA.id])
     expect(forMsg.some((w) => w.id === draft.id)).toBe(false)
     expect(forMsg.some((w) => w.id === otherTrigger.id)).toBe(false)
+  })
+
+  it('getLiveWorkflowReferencedAttributeKeys reads only LIVE, non-deleted workflows', async () => {
+    __resetLiveWorkflowReferencedAttributeKeysCache()
+
+    const live = await createWorkflow({
+      name: 'live with attr condition',
+      class: 'background',
+      triggerType: 'assistant.handed_off',
+      graph: {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          {
+            id: 'g',
+            type: 'condition',
+            condition: { field: 'conversation.attr.issue_type', op: 'is_set' },
+          },
+        ],
+        edges: [{ from: 't', to: 'g' }],
+      },
+    })
+    await setWorkflowStatus(live.id, 'live')
+
+    const draft = await createWorkflow({
+      name: 'draft with attr condition',
+      class: 'background',
+      triggerType: 'assistant.handed_off',
+      graph: {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          {
+            id: 'g',
+            type: 'condition',
+            condition: { field: 'conversation.attr.sentiment', op: 'is_set' },
+          },
+        ],
+        edges: [{ from: 't', to: 'g' }],
+      },
+    })
+    // Left in 'draft' — never transitioned live.
+    void draft
+
+    const deletedLive = await createWorkflow({
+      name: 'deleted live with attr condition',
+      class: 'background',
+      triggerType: 'assistant.handed_off',
+      graph: {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          {
+            id: 'g',
+            type: 'condition',
+            condition: { field: 'conversation.attr.urgency', op: 'is_set' },
+          },
+        ],
+        edges: [{ from: 't', to: 'g' }],
+      },
+    })
+    await setWorkflowStatus(deletedLive.id, 'live')
+    await softDeleteWorkflow(deletedLive.id)
+
+    const keys = await getLiveWorkflowReferencedAttributeKeys()
+    expect([...keys]).toEqual(['issue_type'])
   })
 })

@@ -5,7 +5,12 @@
  * pass: ONE structured-output chat call classifies every `ai_detect=true`
  * select definition against the conversation transcript, at defined "job
  * done" moments (handoff, assistant close, inactivity close, teammate close)
- * rather than depending on tool-call luck.
+ * rather than depending on tool-call luck. Phase 2 adds a fifth moment,
+ * `live_recheck` — every inbound customer message, while Quinn is
+ * participating, when a LIVE workflow condition references an AI attribute
+ * (the assistant orchestrator's cost gate) — narrowed via `restrictToKeys` to
+ * just the attributes that gate actually references, never the full
+ * catalogue.
  *
  * Writes go through the shared `setConversationAttribute` writer with
  * `src: 'ai'`, so the existing precedence rule (AI never overwrites a
@@ -70,6 +75,15 @@ export type ClassificationTrigger =
 
 export interface ClassifyAttributesOptions {
   trigger: ClassificationTrigger
+  /**
+   * Narrow classification to just these keys (Phase 2 live re-check's cost
+   * gate — only the attributes a live workflow condition actually
+   * references, not every `ai_detect` definition). Applied as an
+   * intersection with the per-trigger filter below (e.g. `teammate_close`'s
+   * `detectOnClose` narrowing), never in place of it. Omit to classify every
+   * enabled definition, as before.
+   */
+  restrictToKeys?: readonly string[]
 }
 
 /** One definition's classified outcome this run — only ever an APPLIED write (see module doc). */
@@ -232,8 +246,12 @@ export async function classifyConversationAttributes(
     }
 
     const enabled = await listConversationAttributes({ aiDetectOnly: true })
-    const definitions =
+    let definitions =
       opts.trigger === 'teammate_close' ? enabled.filter((d) => d.detectOnClose) : enabled
+    if (opts.restrictToKeys) {
+      const allow = new Set(opts.restrictToKeys)
+      definitions = definitions.filter((d) => allow.has(d.key))
+    }
     if (definitions.length === 0) return []
 
     const messages = await loadConversationThread(conversationId)

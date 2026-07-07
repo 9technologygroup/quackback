@@ -24,6 +24,7 @@ import { readAttributeValue } from '@/lib/shared/conversation/attribute-values'
 export type ConversationAttributesEditorTarget =
   | { conversationId: ConversationId }
   | { ticketId: TicketId }
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -214,17 +215,32 @@ export function ConversationAttributesEditor({
     <div className="space-y-4 border-t border-border/30 pt-4">
       <span className="text-sm text-muted-foreground">Attributes</span>
       <div className="border-t border-border/30" />
-      {definitions.map((def) => (
-        <div key={def.id} title={provenanceTitle(customAttributes[def.key])}>
-          <Row label={def.label} align="center">
-            <AttributeEditor
-              definition={def}
-              raw={customAttributes[def.key]}
-              onSet={(value) => setValue.mutate({ key: def.key, value })}
-            />
-          </Row>
-        </div>
-      ))}
+      {definitions.map((def) => {
+        const raw = customAttributes[def.key]
+        const isAiSet = readAttributeValue(raw)?.src === 'ai'
+        return (
+          <div key={def.id} title={isAiSet ? undefined : provenanceTitle(raw)}>
+            <Row label={def.label} align="center">
+              <div className="flex items-center gap-1.5">
+                {isAiSet && (
+                  <Badge
+                    variant="secondary"
+                    className="h-5 border border-indigo-500/20 bg-indigo-500/10 px-1.5 text-[10px] text-indigo-600"
+                    title="Set by AI"
+                  >
+                    AI
+                  </Badge>
+                )}
+                <AttributeEditor
+                  definition={def}
+                  raw={raw}
+                  onSet={(value) => setValue.mutate({ key: def.key, value })}
+                />
+              </div>
+            </Row>
+          </div>
+        )
+      })}
     </div>
   )
 }

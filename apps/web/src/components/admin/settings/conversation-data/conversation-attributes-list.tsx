@@ -73,6 +73,16 @@ const SOURCE_HINTS = [
 
 const isSelectType = (t: FieldType) => t === 'select' || t === 'multi_select'
 
+/** AI detection is select-only (enforced again at the service layer) — both
+ *  competitors we benchmarked against (Intercom Fin, Featurebase Fibi) are
+ *  enum-only too; multi_select is a possible future extension, not v1. */
+const supportsAiDetect = (t: FieldType) => t === 'select'
+
+/** Heuristic only: flags the common "Other/Uncategorized/Fallback" catch-all
+ *  patterns so classification doesn't come back empty on non-exhaustive
+ *  taxonomies. Doesn't attempt to detect genuinely exhaustive sets. */
+const OTHER_FALLBACK_PATTERN = /other|uncategori[sz]ed|fallback/i
+
 interface OptionDraft {
   /** Present for saved options (rename-only); absent for a newly added one. */
   id?: string
@@ -88,6 +98,8 @@ interface AttributeFormValues {
   options: OptionDraft[]
   requiredToClose: boolean
   sourceHint: string
+  aiDetect: boolean
+  detectOnClose: boolean
 }
 
 function AttributeFormDialog({
@@ -112,6 +124,9 @@ function AttributeFormDialog({
   const [options, setOptions] = useState<OptionDraft[]>(initialValues?.options ?? [])
   const [requiredToClose, setRequiredToClose] = useState(initialValues?.requiredToClose ?? false)
   const [sourceHint, setSourceHint] = useState(initialValues?.sourceHint ?? 'none')
+  const [aiDetect, setAiDetect] = useState(initialValues?.aiDetect ?? false)
+  const [detectOnClose, setDetectOnClose] = useState(initialValues?.detectOnClose ?? false)
+  const [otherHintDismissed, setOtherHintDismissed] = useState(false)
 
   useEffect(() => {
     if (open) {
@@ -122,13 +137,28 @@ function AttributeFormDialog({
       setOptions(initialValues?.options ?? [])
       setRequiredToClose(initialValues?.requiredToClose ?? false)
       setSourceHint(initialValues?.sourceHint ?? 'none')
+      setAiDetect(initialValues?.aiDetect ?? false)
+      setDetectOnClose(initialValues?.detectOnClose ?? false)
+      setOtherHintDismissed(false)
     }
   }, [open])
+
+  // AI detection is select-only: clear it if the author switches away from
+  // select (only reachable pre-creation, since type locks after that).
+  useEffect(() => {
+    if (!supportsAiDetect(fieldType)) {
+      setAiDetect(false)
+      setDetectOnClose(false)
+    }
+  }, [fieldType])
 
   const updateOption = (index: number, patch: Partial<OptionDraft>) =>
     setOptions((prev) => prev.map((o, i) => (i === index ? { ...o, ...patch } : o)))
 
   const filledOptions = options.filter((o) => o.label.trim().length > 0)
+  const hasOtherFallback = filledOptions.some((o) => OTHER_FALLBACK_PATTERN.test(o.label))
+  const showOtherHint =
+    aiDetect && supportsAiDetect(fieldType) && !hasOtherFallback && !otherHintDismissed
   const canSubmit =
     key.trim().length > 0 &&
     label.trim().length > 0 &&
@@ -144,6 +174,8 @@ function AttributeFormDialog({
       options: isSelectType(fieldType) ? filledOptions : [],
       requiredToClose,
       sourceHint,
+      aiDetect: supportsAiDetect(fieldType) ? aiDetect : false,
+      detectOnClose: supportsAiDetect(fieldType) ? aiDetect && detectOnClose : false,
     })
   }
 
@@ -219,6 +251,15 @@ function AttributeFormDialog({
               rows={2}
               className="resize-none text-sm"
             />
+            {aiDetect && supportsAiDetect(fieldType) && (
+              <p className="text-[11px] text-muted-foreground">
+                This is the whole prompt Quinn sees, so be explicit: when the value applies, when it
+                does not, and typical customer phrasing. Example: &quot;Applies when the customer
+                reports being charged the wrong amount. Does not apply to general billing questions.
+                Customers usually say things like &apos;double charged&apos; or &apos;wrong
+                price&apos;.&quot;
+              </p>
+            )}
           </div>
 
           {isSelectType(fieldType) && (
@@ -272,6 +313,49 @@ function AttributeFormDialog({
                   Existing options can be renamed but not removed, because stored values reference
                   them.
                 </p>
+              )}
+              {showOtherHint && (
+                <div className="flex items-start justify-between gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-2">
+                  <p className="text-[11px] text-amber-700 dark:text-amber-500">
+                    Consider adding an &quot;Other&quot; or &quot;Uncategorized&quot; option so
+                    classification never comes back empty when nothing else fits.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-5 shrink-0 px-1 text-amber-700 hover:text-amber-800 dark:text-amber-500"
+                    onClick={() => setOtherHintDismissed(true)}
+                    title="Dismiss"
+                  >
+                    <XMarkIcon className="h-3 w-3" />
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {supportsAiDetect(fieldType) && (
+            <div className="space-y-2 rounded-md border border-border/50 px-3 py-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">Let AI detect this attribute</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Quinn classifies conversations it participates in.
+                  </p>
+                </div>
+                <Switch checked={aiDetect} onCheckedChange={setAiDetect} />
+              </div>
+              {aiDetect && (
+                <div className="flex items-center justify-between border-t border-border/50 pt-2">
+                  <div>
+                    <p className="text-sm font-medium">Re-check on close</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Runs once more when a teammate closes the conversation.
+                    </p>
+                  </div>
+                  <Switch checked={detectOnClose} onCheckedChange={setDetectOnClose} />
+                </div>
               )}
             </div>
           )}
@@ -362,6 +446,18 @@ function AttributeRow({
           {attribute.sourceHint && (
             <span className="inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded border bg-muted text-muted-foreground border-border/50 capitalize">
               {attribute.sourceHint}
+            </span>
+          )}
+          {attribute.aiDetect && (
+            <span
+              className="inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded border bg-indigo-500/10 text-indigo-600 border-indigo-500/20"
+              title={
+                attribute.detectOnClose
+                  ? 'Quinn classifies this attribute and re-checks on close'
+                  : 'Quinn classifies this attribute'
+              }
+            >
+              AI
             </span>
           )}
           {attribute.requiredToClose && (
@@ -470,6 +566,8 @@ export function ConversationAttributesList() {
         values.sourceHint === 'none'
           ? undefined
           : (values.sourceHint as 'ai' | 'workflow' | 'agent'),
+      aiDetect: values.aiDetect,
+      detectOnClose: values.detectOnClose,
     })
     setCreateOpen(false)
   }
@@ -490,6 +588,8 @@ export function ConversationAttributesList() {
       requiredToClose: values.requiredToClose,
       sourceHint:
         values.sourceHint === 'none' ? null : (values.sourceHint as 'ai' | 'workflow' | 'agent'),
+      aiDetect: values.aiDetect,
+      detectOnClose: values.detectOnClose,
     })
     setEditTarget(null)
   }
@@ -557,6 +657,8 @@ export function ConversationAttributesList() {
                 })),
                 requiredToClose: editTarget.requiredToClose,
                 sourceHint: editTarget.sourceHint ?? 'none',
+                aiDetect: editTarget.aiDetect,
+                detectOnClose: editTarget.detectOnClose,
               }
             : undefined
         }

@@ -4,11 +4,16 @@
  * (draft -> live -> paused) + drag order. Pure CRUD, no gate here — the fn layer
  * gates on `workflow.manage`. The dispatcher reads live workflows for a trigger
  * via listLiveWorkflowsForTrigger; the graph itself is walked by graph.ts.
+ *
+ * Also home to `getLiveWorkflowReferencedAttributeKeys` (AI-ATTRIBUTES-PARITY-
+ * SPEC.md Phase 2): the assistant domain's cost gate for the mid-conversation
+ * attribute re-check — see that function's doc.
  */
 import { db, eq, and, isNull, asc, workflows, type Workflow } from '@/lib/server/db'
 import type { WorkflowClass, WorkflowStatus } from '@/lib/server/db'
 import type { WorkflowId, PrincipalId } from '@quackback/ids'
-import type { WorkflowGraph } from './graph'
+import type { WorkflowGraph, WorkflowNode } from './graph'
+import { ATTRIBUTE_FIELD_PREFIX, type WorkflowCondition } from './condition.evaluator'
 
 export interface WorkflowInput {
   name: string
@@ -114,4 +119,81 @@ export async function listLiveWorkflowsForTrigger(triggerType: string): Promise<
       )
     )
     .orderBy(asc(workflows.sortOrder), asc(workflows.createdAt))
+}
+
+// --- Live-workflow attribute references (AI-ATTRIBUTES-PARITY-SPEC.md Phase 2) ---
+//
+// The Phase-2 live re-check cost gate: mirrors both Intercom's and
+// Featurebase's rule that a mid-conversation re-classification only runs when
+// some LIVE workflow condition actually branches on the attribute. No live
+// workflow references any AI attribute -> no re-check ever fires, so the
+// assistant orchestrator (a hot per-message path) can cheaply ask "is there
+// anything to re-check at all?" before spending on a classification call.
+
+/** Read the stored graph defensively — a malformed shape (or a still-empty
+ *  draft) contributes no nodes rather than throwing. Mirrors
+ *  workflow.engine.ts's `readGraph`, duplicated locally rather than imported
+ *  to avoid a workflow.service -> workflow.engine edge (engine already
+ *  depends on service for `getWorkflow`). */
+function readGraphNodes(graph: unknown): WorkflowNode[] {
+  const g = graph as Partial<WorkflowGraph> | null
+  return Array.isArray(g?.nodes) ? g!.nodes : []
+}
+
+/** Recurse a condition tree (leaf or all/any group), collecting the key off
+ *  every `conversation.attr.<key>` leaf into `into`. */
+function collectAttributeKeys(condition: WorkflowCondition, into: Set<string>): void {
+  if ('field' in condition) {
+    if (condition.field.startsWith(ATTRIBUTE_FIELD_PREFIX)) {
+      const key = condition.field.slice(ATTRIBUTE_FIELD_PREFIX.length)
+      if (key) into.add(key)
+    }
+    return
+  }
+  for (const child of condition.all ?? []) collectAttributeKeys(child, into)
+  for (const child of condition.any ?? []) collectAttributeKeys(child, into)
+}
+
+/** Every `conversation.attr.<key>` reference in one workflow's graph: both a
+ *  standalone `condition` gate node and every branch of a `branch` node. */
+function collectAttributeKeysFromGraph(graph: unknown, into: Set<string>): void {
+  for (const node of readGraphNodes(graph)) {
+    if (node.type === 'condition') {
+      collectAttributeKeys(node.condition, into)
+    } else if (node.type === 'branch') {
+      for (const branch of node.branches) collectAttributeKeys(branch.condition, into)
+    }
+  }
+}
+
+/** Short-lived cache: a live workflow's conditions rarely change second to
+ *  second, and this is read on every inbound customer message via the
+ *  assistant orchestrator, so a module-level TTL cache (no existing caching
+ *  idiom in this domain to follow) avoids a DB round trip per message. */
+const LIVE_ATTRIBUTE_KEYS_CACHE_TTL_MS = 30_000
+let liveAttributeKeysCache: { keys: ReadonlySet<string>; expiresAt: number } | null = null
+
+/**
+ * The set of attribute keys referenced as `conversation.attr.<key>` anywhere
+ * in a condition or branch path of a currently-LIVE (not draft/paused)
+ * workflow. Cached in-memory for `LIVE_ATTRIBUTE_KEYS_CACHE_TTL_MS`.
+ */
+export async function getLiveWorkflowReferencedAttributeKeys(): Promise<ReadonlySet<string>> {
+  const now = Date.now()
+  if (liveAttributeKeysCache && liveAttributeKeysCache.expiresAt > now) {
+    return liveAttributeKeysCache.keys
+  }
+  const live = await db
+    .select({ graph: workflows.graph })
+    .from(workflows)
+    .where(and(eq(workflows.status, 'live'), isNull(workflows.deletedAt)))
+  const keys = new Set<string>()
+  for (const row of live) collectAttributeKeysFromGraph(row.graph, keys)
+  liveAttributeKeysCache = { keys, expiresAt: now + LIVE_ATTRIBUTE_KEYS_CACHE_TTL_MS }
+  return keys
+}
+
+/** Test-only: clear the in-process cache between cases. */
+export function __resetLiveWorkflowReferencedAttributeKeysCache(): void {
+  liveAttributeKeysCache = null
 }

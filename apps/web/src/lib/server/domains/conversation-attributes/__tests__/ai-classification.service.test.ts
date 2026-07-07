@@ -247,6 +247,75 @@ describe('classifyConversationAttributes: gating', () => {
     expect(result).toEqual([])
     expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
   })
+
+  // Phase 2 live re-check's restrictToKeys filter (AI-ATTRIBUTES-PARITY-
+  // SPEC.md §3): narrows the enabled catalogue to the intersection with the
+  // caller-supplied keys, independent of the per-trigger (detectOnClose)
+  // narrowing.
+  describe('restrictToKeys', () => {
+    beforeEach(() => {
+      mockListConversationAttributes.mockResolvedValue([
+        fakeDefinition({ key: 'issue_type' }),
+        fakeDefinition({ key: 'sentiment' }),
+      ])
+    })
+
+    it('classifies only the definitions whose key is in restrictToKeys', async () => {
+      mockOpenAI.chat.completions.create.mockResolvedValue(
+        chatResponse({ results: [{ key: 'sentiment', optionId: 'opt_billing', reasoning: 'x' }] })
+      )
+      await classifyConversationAttributes(conversationId, {
+        trigger: 'live_recheck',
+        restrictToKeys: ['sentiment'],
+      })
+      const userMessage = mockOpenAI.chat.completions.create.mock.calls[0][0].messages.find(
+        (m: { role: string }) => m.role === 'user'
+      ).content
+      expect(userMessage).toContain('sentiment')
+      expect(userMessage).not.toContain('issue_type')
+    })
+
+    it('is a no-op when restrictToKeys intersects nothing enabled', async () => {
+      const result = await classifyConversationAttributes(conversationId, {
+        trigger: 'live_recheck',
+        restrictToKeys: ['not_an_enabled_key'],
+      })
+      expect(result).toEqual([])
+      expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    })
+
+    it('classifies the full enabled catalogue when restrictToKeys is omitted', async () => {
+      mockOpenAI.chat.completions.create.mockResolvedValue(
+        chatResponse({
+          results: [
+            { key: 'issue_type', optionId: 'opt_billing', reasoning: 'x' },
+            { key: 'sentiment', optionId: 'opt_billing', reasoning: 'y' },
+          ],
+        })
+      )
+      await classifyConversationAttributes(conversationId, { trigger: 'live_recheck' })
+      const userMessage = mockOpenAI.chat.completions.create.mock.calls[0][0].messages.find(
+        (m: { role: string }) => m.role === 'user'
+      ).content
+      expect(userMessage).toContain('sentiment')
+      expect(userMessage).toContain('issue_type')
+    })
+
+    it('intersects restrictToKeys with the teammate_close detectOnClose narrowing', async () => {
+      mockListConversationAttributes.mockResolvedValue([
+        fakeDefinition({ key: 'issue_type', detectOnClose: true }),
+        fakeDefinition({ key: 'sentiment', detectOnClose: false }),
+      ])
+      // sentiment is in restrictToKeys but isn't detectOnClose, so it's
+      // dropped by the trigger narrowing before restrictToKeys ever applies.
+      const result = await classifyConversationAttributes(conversationId, {
+        trigger: 'teammate_close',
+        restrictToKeys: ['sentiment'],
+      })
+      expect(result).toEqual([])
+      expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    })
+  })
 })
 
 describe('classifyConversationAttributes: happy path', () => {

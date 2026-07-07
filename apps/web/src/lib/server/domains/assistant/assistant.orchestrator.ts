@@ -25,6 +25,9 @@ import {
 } from '@/lib/server/domains/assistant/assistant-activity-snapshot'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
+import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service'
+import { getLiveWorkflowReferencedAttributeKeys } from '@/lib/server/domains/workflows/workflow.service'
+import { classifyConversationAttributes } from '@/lib/server/domains/conversation-attributes/ai-classification.service'
 import {
   ensureAssistantPrincipal,
   getAssistantPrincipal,
@@ -61,6 +64,31 @@ async function ensureAssistantPrincipalId(): Promise<PrincipalId> {
 /** Test-only: clear the in-process principal-id memo between cases. */
 export function __resetAssistantPrincipalMemo(): void {
   memoizedAssistantPrincipalId = null
+}
+
+/**
+ * Phase 2 live re-check (AI-ATTRIBUTES-PARITY-SPEC.md §3): on an inbound
+ * customer message, while Quinn is participating, re-classify JUST the
+ * attribute keys some LIVE workflow condition actually references — so a
+ * mid-conversation intent change is fresh by the time a handoff-triggered
+ * workflow branches on it. Mirrors both competitors' cost gate: no live
+ * workflow references an AI attribute at all, and this never even reaches
+ * the classifier. Fire-and-forget from the caller; every gate here is a
+ * cheap read and `classifyConversationAttributes` never throws on its own,
+ * so the catch is defense in depth, not the primary safety net.
+ */
+async function triggerLiveAttributeRecheck(conversationId: ConversationId): Promise<void> {
+  try {
+    if (!(await isFeatureEnabled('aiAttributeDetection'))) return
+    const keys = await getLiveWorkflowReferencedAttributeKeys()
+    if (keys.size === 0) return
+    await classifyConversationAttributes(conversationId, {
+      trigger: 'live_recheck',
+      restrictToKeys: [...keys],
+    })
+  } catch (err) {
+    log.warn({ err, conversationId }, 'live attribute re-check failed')
+  }
 }
 
 /**
@@ -105,6 +133,13 @@ export async function runAssistantTurnForConversation(
   // Silence rule: a human is handling it. Bail before touching the involvement
   // record (no revive, no active lookup) or spending on the model.
   if (!respondEligible(messages)) return
+
+  // Phase 2 live re-check: fire-and-forget, independent of how this turn
+  // resolves (answer, hand-off, or an internally-suppressed reply all still
+  // want fresh attribute values before any live workflow branches on them).
+  // `messages` already reflects the just-persisted customer message, so the
+  // re-check classifies against the freshest transcript.
+  void triggerLiveAttributeRecheck(conversationId)
 
   // A returning customer revives an assumed-resolved involvement rather than
   // opening a new one; reuse the revived row as the active one when present.
