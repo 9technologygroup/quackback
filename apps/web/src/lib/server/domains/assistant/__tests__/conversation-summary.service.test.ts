@@ -248,6 +248,19 @@ describe('summarizeConversationOnClose', () => {
     expect(mockInsertValues).not.toHaveBeenCalled()
   })
 
+  it('loads the on-close transcript note-free (never opts into includeInternal), so an internal note can never leak into the persisted summary (D1)', async () => {
+    // The leak boundary is the persisted summary: unlike the copilot grounding
+    // block, this path must never pass includeInternal, so a note is filtered
+    // out in SQL and never reaches the summarizer or the retrievable summary.
+    await summarizeConversationOnClose(CONVERSATION_ID)
+
+    expect(mockLoadConversationThread).toHaveBeenCalledWith(CONVERSATION_ID)
+    const optsArg = mockLoadConversationThread.mock.calls[0]?.[1] as
+      | { includeInternal?: boolean }
+      | undefined
+    expect(optsArg?.includeInternal).not.toBe(true)
+  })
+
   it('still saves the summary text when embedding generation is unavailable', async () => {
     mockGenerateEmbedding.mockResolvedValue(null)
 

@@ -14,7 +14,10 @@
  * mapper (and no longer consume window slots).
  */
 import type { PrincipalId, ConversationId } from '@quackback/ids'
-import { listMessages } from '@/lib/server/domains/conversation/conversation.query'
+import {
+  listMessages,
+  listConversationMessagesForGrounding,
+} from '@/lib/server/domains/conversation/conversation.query'
 import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
 import type { AssistantThreadMessage } from './assistant.runtime'
 
@@ -47,15 +50,34 @@ export function mapRowsToThreadMessages(
 
 /**
  * Load a conversation's recent thread (oldest-first) as message DTOs. Internal
- * notes are excluded in SQL via `includeInternal: false`, so the window is spent
- * only on customer-visible turns. The caller pairs these with the assistant
- * principal id through `mapRowsToThreadMessages` — the raw read is
- * principal-independent, so it can run in parallel with the principal lookup.
+ * notes are excluded in SQL by default (`includeInternal: false`), so the window
+ * is spent only on customer-visible turns — the byte-identical default every
+ * existing caller (the summary paths, attribute classification, the
+ * orchestrator) relies on. The copilot grounding block opts into
+ * `includeInternal: true` so Quinn can see a teammate's notes on the open thread
+ * (D1); no other caller passes it, and no non-team surface ever should. The
+ * caller pairs these with the assistant principal id through
+ * `mapRowsToThreadMessages` — the raw read is principal-independent, so it can
+ * run in parallel with the principal lookup.
+ *
+ * `all: true` bypasses the newest-`ASSISTANT_THREAD_WINDOW` window and loads the
+ * whole thread (oldest-first), for the copilot grounding block whose
+ * `budgetTranscript` needs the thread head as well as its tail; the windowed
+ * default would drop the customer's original request on a long conversation.
+ * `limit` is ignored when `all` is set.
  */
 export async function loadConversationThread(
   conversationId: ConversationId,
-  limit: number = ASSISTANT_THREAD_WINDOW
+  opts: { limit?: number; includeInternal?: boolean; all?: boolean } = {}
 ): Promise<ConversationMessageDTO[]> {
-  const { messages } = await listMessages(conversationId, { includeInternal: false, limit })
+  if (opts.all) {
+    return listConversationMessagesForGrounding(conversationId, {
+      includeInternal: opts.includeInternal ?? false,
+    })
+  }
+  const { messages } = await listMessages(conversationId, {
+    includeInternal: opts.includeInternal ?? false,
+    limit: opts.limit ?? ASSISTANT_THREAD_WINDOW,
+  })
   return messages
 }

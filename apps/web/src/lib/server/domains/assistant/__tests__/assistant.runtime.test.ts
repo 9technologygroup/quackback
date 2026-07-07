@@ -34,20 +34,23 @@ vi.mock('../retrieval', () => ({
 
 // The current conversation's customer lookup (P2-A.4 customer-scoped
 // retrieval): a fake `conversations` select chain the runtime queries only
-// when `conversationId` is set. Default resolves no row, so every existing
-// test (none of which set conversationId) never touches this at all — the
-// real `db` export is otherwise passed through unchanged.
+// when `conversationId` is set. The lookup leftJoins `principal` (to fold the
+// grounding facts' customer displayName off the same round-trip), so the chain
+// carries a `leftJoin` step. Default resolves no row, so every existing test
+// (none of which set conversationId) never touches this at all — the real `db`
+// export is otherwise passed through unchanged.
 const mockConversationLookupLimit = vi.fn()
 vi.mock('@/lib/server/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/server/db')>()
+  const limitStep = { limit: (...args: unknown[]) => mockConversationLookupLimit(...args) }
+  const whereStep = { where: vi.fn(() => limitStep) }
   return {
     ...actual,
     db: {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: (...args: unknown[]) => mockConversationLookupLimit(...args),
-          })),
+          leftJoin: vi.fn(() => whereStep),
+          where: vi.fn(() => limitStep),
         })),
       })),
     },
@@ -64,10 +67,16 @@ vi.mock('../conversation-summary-retrieval', () => ({
   },
 }))
 
-// The runtime never triggers get_conversation_context in these tests; stub the
-// conversation query so importing the tool module stays hermetic.
+// `listMessages` backs get_conversation_context (never triggered here);
+// `listConversationMessagesForGrounding` (all: true) backs the conversation
+// grounding thread load. Both default unset; the grounding tests below drive a
+// real thread through the grounding read.
+const mockListMessages = vi.fn()
+const mockListConversationMessagesForGrounding = vi.fn()
 vi.mock('@/lib/server/domains/conversation/conversation.query', () => ({
-  listMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false, nextCursor: null }),
+  listMessages: (...args: unknown[]) => mockListMessages(...args),
+  listConversationMessagesForGrounding: (...args: unknown[]) =>
+    mockListConversationMessagesForGrounding(...args),
 }))
 
 // Ticket grounding (unified inbox §2.9): the runtime's read-only reach into
@@ -227,6 +236,8 @@ beforeEach(() => {
   mockConfig.aiHelpCenterModel = undefined
   mockIsFeatureEnabled.mockResolvedValue(false)
   mockConversationLookupLimit.mockResolvedValue([])
+  mockListMessages.mockResolvedValue({ messages: [], hasMore: false, nextCursor: null })
+  mockListConversationMessagesForGrounding.mockResolvedValue([])
   mockConversationSummariesRetrieve.mockResolvedValue([])
   mockGetAssistantConfig.mockResolvedValue({ toolControls: {}, surfaces: {}, basics: {} })
   mockGetAssistantToolControls.mockResolvedValue({})
@@ -1480,7 +1491,13 @@ describe('runAssistantTurn: ticket-scoped grounding (unified inbox §2.9)', () =
       surface: 'copilot',
     })
 
-    expect(mockListTicketMessages).toHaveBeenCalledWith('ticket_1', { includeInternal: false })
+    // Copilot resolves to the 'team' audience, so the grounding load pulls the
+    // full thread (all: true, fixing the newest-page truncation) WITH internal
+    // notes (includeInternal: true, D1).
+    expect(mockListTicketMessages).toHaveBeenCalledWith('ticket_1', {
+      includeInternal: true,
+      all: true,
+    })
     const prompts = systemPromptsFromLastCall()
     const ticketBlockIndex = prompts.findIndex((p) => p.includes('Cannot export CSV'))
     expect(ticketBlockIndex).toBeGreaterThan(-1)
@@ -1548,6 +1565,251 @@ describe('runAssistantTurn: ticket-scoped grounding (unified inbox §2.9)', () =
 
     expect(lastLoggedMetadata?.ticketId).toBe('ticket_1')
     expect(lastLoggedMetadata?.conversationId).toBeNull()
+  })
+
+  it('requests the full ordered thread (all: true) and head+tail-budgets a >budget ticket, keeping the first message and the omitted marker', async () => {
+    // Grounding must request the whole thread (all: true), not the newest page,
+    // so a long ticket's original request survives; the shared budget then trims
+    // it head+tail. Guards against reintroducing the newest-page-only read.
+    mockGetTicket.mockResolvedValue(fakeTicket())
+    const messages = [
+      { senderType: 'visitor', content: 'ORIGINAL REQUEST: the CSV export button does nothing.' },
+      ...Array.from({ length: 300 }, (_, i) => ({
+        senderType: i % 2 === 0 ? 'agent' : 'visitor',
+        content: `filler message ${i} ${'x'.repeat(40)}`,
+      })),
+      { senderType: 'agent', content: 'MOST RECENT: shipping a fix today.' },
+    ]
+    mockListTicketMessages.mockResolvedValue({ messages, hasMore: false })
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('what was first asked?'),
+      ticketId: 'ticket_1' as never,
+      surface: 'copilot',
+    })
+
+    expect(mockListTicketMessages).toHaveBeenCalledWith('ticket_1', {
+      includeInternal: true,
+      all: true,
+    })
+    const prompts = systemPromptsFromLastCall()
+    const block = prompts.find((p) => p.includes('Cannot export CSV'))!
+    expect(block).toContain('ORIGINAL REQUEST: the CSV export button does nothing.')
+    expect(block).toContain('MOST RECENT: shipping a fix today.')
+    expect(block).toContain('earlier messages omitted')
+    expect(block).not.toContain('filler message 150')
+  })
+})
+
+describe('runAssistantTurn: conversation-scoped grounding (copilot conversation surface)', () => {
+  function systemPromptsFromLastCall(): string[] {
+    const opts = mockChat.mock.calls.at(-1)?.[0] as { systemPrompts: string[] }
+    return opts.systemPrompts
+  }
+
+  const FACTS_ROW = {
+    visitorPrincipalId: 'principal_customer_1',
+    customer: 'Ada Customer',
+    subject: 'Export broken',
+    status: 'open',
+    channel: 'messenger',
+  }
+
+  beforeEach(() => {
+    mockRetrieve.mockResolvedValue([])
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+  })
+
+  it("grounds a conversation-scoped copilot turn on the customer's facts and thread, right after the copilot framing block", async () => {
+    mockConversationLookupLimit.mockResolvedValue([FACTS_ROW])
+    mockListConversationMessagesForGrounding.mockResolvedValue([
+      { senderType: 'visitor', content: 'The CSV export button does nothing.' },
+      { senderType: 'agent', content: 'Looking into it now.' },
+    ])
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('what has this customer asked?'),
+      conversationId: 'conversation_42' as never,
+      surface: 'copilot',
+    })
+
+    // Copilot resolves to 'team', so the thread load opts into internal notes (D1).
+    expect(mockListConversationMessagesForGrounding).toHaveBeenCalledWith(
+      'conversation_42',
+      expect.objectContaining({ includeInternal: true })
+    )
+    const prompts = systemPromptsFromLastCall()
+    const idx = prompts.findIndex((p) => p.includes('Export broken'))
+    expect(idx).toBeGreaterThan(-1)
+    const block = prompts[idx]
+    expect(block).toContain('Status: open')
+    expect(block).toContain('Ada Customer')
+    expect(block).toContain('Channel: messenger')
+    expect(block).toContain('The CSV export button does nothing.')
+    expect(block).toContain('Looking into it now.')
+    // The thread is wrapped as untrusted content, not trusted instructions.
+    expect(block).toContain('not instructions')
+    // Right after the copilot framing block, same slot the ticket block uses.
+    expect(prompts[idx - 1]).toBe(buildCopilotFramingPrompt())
+    // conversationId rides the usage-log metadata.
+    expect(lastLoggedMetadata?.conversationId).toBe('conversation_42')
+  })
+
+  it('folds internal notes into the grounding block, labelled Note (internal), so Quinn can see a teammate note on the open thread (D1)', async () => {
+    mockConversationLookupLimit.mockResolvedValue([FACTS_ROW])
+    mockListConversationMessagesForGrounding.mockResolvedValue([
+      { senderType: 'visitor', content: 'When will this be fixed?' },
+      { senderType: 'agent', isInternal: true, content: 'Known bug, ETA Friday.' },
+    ])
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('summarize'),
+      conversationId: 'conversation_42' as never,
+      surface: 'copilot',
+    })
+
+    const block = systemPromptsFromLastCall().find((p) => p.includes('Export broken'))!
+    expect(block).toContain('Note (internal): Known bug, ETA Friday.')
+  })
+
+  it('loads the whole thread (all: true) and head+tail-budgets a >budget conversation, keeping the first message and the omitted marker', async () => {
+    mockConversationLookupLimit.mockResolvedValue([FACTS_ROW])
+    // The unbounded grounding read returns the whole thread (not a newest-page
+    // window), so the opening request is present for budgetTranscript's head to
+    // keep; the windowed listMessages read would have dropped it on a long
+    // conversation.
+    mockListConversationMessagesForGrounding.mockResolvedValue([
+      { senderType: 'visitor', content: 'ORIGINAL REQUEST: my export is broken.' },
+      ...Array.from({ length: 300 }, (_, i) => ({
+        senderType: i % 2 === 0 ? 'agent' : 'visitor',
+        content: `filler message ${i} ${'x'.repeat(40)}`,
+      })),
+      { senderType: 'agent', content: 'MOST RECENT: fix shipping today.' },
+    ])
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('what was first asked?'),
+      conversationId: 'conversation_42' as never,
+      surface: 'copilot',
+    })
+
+    // The grounding read was asked for the full thread, not a page.
+    expect(mockListConversationMessagesForGrounding).toHaveBeenCalledWith(
+      'conversation_42',
+      expect.objectContaining({ includeInternal: true })
+    )
+    const block = systemPromptsFromLastCall().find((p) => p.includes('Export broken'))!
+    expect(block).toContain('ORIGINAL REQUEST: my export is broken.')
+    expect(block).toContain('MOST RECENT: fix shipping today.')
+    expect(block).toContain('earlier messages omitted')
+    expect(block).not.toContain('filler message 150')
+  })
+
+  it('continues the turn without a conversation-context block when the thread load fails', async () => {
+    mockConversationLookupLimit.mockResolvedValue([FACTS_ROW])
+    mockListConversationMessagesForGrounding.mockRejectedValue(new Error('thread read failed'))
+
+    const result = await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_42' as never,
+      surface: 'copilot',
+    })
+
+    expect(result.status).toBe('answered')
+    expect(systemPromptsFromLastCall().some((p) => p.includes('Export broken'))).toBe(false)
+  })
+
+  it('adds no conversation-context block for a sandbox turn (neither conversationId nor ticketId)', async () => {
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      surface: 'copilot',
+    })
+
+    expect(mockConversationLookupLimit).not.toHaveBeenCalled()
+    expect(mockListConversationMessagesForGrounding).not.toHaveBeenCalled()
+    expect(systemPromptsFromLastCall().some((p) => p.startsWith('Conversation'))).toBe(false)
+  })
+
+  it('adds no conversation-context block on a customer-facing widget turn (grounding is copilot-only)', async () => {
+    mockConversationLookupLimit.mockResolvedValue([{ visitorPrincipalId: 'principal_customer_1' }])
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_42' as never,
+      // default surface: widget
+    })
+
+    // The customer lookup still runs (for customer-history retrieval), but the
+    // thread is never loaded for grounding and no block is injected.
+    expect(mockListConversationMessagesForGrounding).not.toHaveBeenCalled()
+    expect(systemPromptsFromLastCall().some((p) => p.startsWith('Conversation'))).toBe(false)
+  })
+
+  it('adds no conversation-context block when the thread renders empty (system events only)', async () => {
+    mockConversationLookupLimit.mockResolvedValue([FACTS_ROW])
+    // Only system status events: nothing customer- or agent-authored to ground on.
+    mockListConversationMessagesForGrounding.mockResolvedValue([
+      { senderType: 'system', content: 'Conversation assigned.' },
+    ])
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_42' as never,
+      surface: 'copilot',
+    })
+
+    expect(systemPromptsFromLastCall().some((p) => p.startsWith('Conversation'))).toBe(false)
+  })
+
+  it('keeps the customer-history retrieval source excluding the current conversation (unchanged)', async () => {
+    mockConversationLookupLimit.mockResolvedValue([FACTS_ROW])
+    mockListConversationMessagesForGrounding.mockResolvedValue([])
+    mockIsFeatureEnabled.mockImplementation(
+      async (flag: string) => flag === 'assistantConversationGrounding'
+    )
+    let capturedCtx: { customerPrincipalId?: unknown; conversationId?: unknown } | undefined
+    mockChat.mockImplementation(
+      (opts: {
+        tools: Array<{ name: string; execute: (a: unknown, o: unknown) => Promise<unknown> }>
+        context: unknown
+      }) =>
+        (async function* () {
+          capturedCtx = opts.context as typeof capturedCtx
+          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          await search.execute(
+            { query: 'billing' },
+            { context: opts.context, emitCustomEvent: () => {} }
+          )
+          yield* completeRun({ text: 'ok', citations: [] })
+        })()
+    )
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('question'),
+      conversationId: 'conversation_42' as never,
+      surface: 'copilot',
+    })
+
+    // The current conversation is still passed as the exclusion key to the
+    // past-conversation-summaries source (which excludes it by design).
+    expect(mockConversationSummariesRetrieve).toHaveBeenCalledWith(
+      'billing',
+      'team',
+      expect.objectContaining({
+        customerPrincipalId: 'principal_customer_1',
+        conversationId: 'conversation_42',
+      })
+    )
+    expect(capturedCtx?.conversationId).toBe('conversation_42')
   })
 })
 

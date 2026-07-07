@@ -14,7 +14,7 @@
 import { parsePartialJSON, maxIterations } from '@tanstack/ai'
 import { z } from 'zod'
 import { config } from '@/lib/server/config'
-import { db, conversations, eq, ASSISTANT_HANDOFF_REASONS } from '@/lib/server/db'
+import { db, conversations, principal, eq, ASSISTANT_HANDOFF_REASONS } from '@/lib/server/db'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
 import { isAiClientConfigured, stripCodeFences } from '@/lib/server/domains/ai/config'
 import { getChatModel } from '@/lib/server/domains/ai/models'
@@ -30,7 +30,7 @@ import type { AssistantHandoffReason } from '@/lib/server/db'
 import type { PrincipalId, ConversationId, TicketId, AssistantInvolvementId } from '@quackback/ids'
 import type { AssistantSurface } from '@/lib/shared/assistant/surfaces'
 import type { AssistantActivityStatus } from '@/lib/shared/conversation/types'
-import { resolveContentAudience } from './audience'
+import { resolveContentAudience, type ContentAudience } from './audience'
 import { assembleAssistantToolset } from './assistant.tools'
 import { makeAssistantToolContext } from './assistant.toolspec'
 import { listConversationAttributes } from '@/lib/server/domains/conversation-attributes/conversation-attribute.service'
@@ -56,7 +56,8 @@ import { wrapUntrustedText } from './injection-guard'
 // files are owned by a concurrent unified-inbox workstream.
 import { getTicket } from '@/lib/server/domains/tickets/ticket.service'
 import { listTicketMessages } from '@/lib/server/domains/tickets/ticket-message.service'
-import { buildTicketTranscript } from './ticket-transcript'
+import { loadConversationThread } from './assistant.thread'
+import { buildTicketTranscript, buildConversationTranscript, budgetTranscript } from './transcript'
 
 const log = logger.child({ component: 'assistant-runtime' })
 
@@ -626,14 +627,24 @@ export function buildTicketContextPrompt(ticket: TicketGroundingFacts, transcrip
  * failing the whole turn; the turn still runs, just without ticket-specific
  * grounding, the same fallback shape a missing customer row already gets
  * above for the conversation branch.
+ *
+ * `all: true` pulls the ENTIRE ordered thread (not the default newest-page
+ * window, which silently drops the original request on a long ticket); the
+ * shared `budgetTranscript` then trims by chars with a head+tail window, so the
+ * opening messages survive even when the thread is over budget. `includeInternal`
+ * follows the audience (D1): the copilot resolves to 'team', so internal notes
+ * are folded into the (teammate-only, never-persisted) grounding block; any
+ * future non-team surface passes 'public' and gets the byte-identical notes-free
+ * render.
  */
 async function loadTicketGroundingContext(
-  ticketId: TicketId
+  ticketId: TicketId,
+  audience: ContentAudience
 ): Promise<{ facts: TicketGroundingFacts; transcript: string } | null> {
   try {
     const [ticket, thread] = await Promise.all([
       getTicket(ticketId),
-      listTicketMessages(ticketId, { includeInternal: false }),
+      listTicketMessages(ticketId, { includeInternal: audience === 'team', all: true }),
     ])
     return {
       facts: {
@@ -642,10 +653,100 @@ async function loadTicketGroundingContext(
         stage: ticket.stage.label,
         requester: ticket.requester?.displayName ?? 'None',
       },
-      transcript: buildTicketTranscript(thread.messages),
+      transcript: budgetTranscript(buildTicketTranscript(thread.messages)),
     }
   } catch (err) {
     log.warn({ err, ticketId }, 'failed to load ticket grounding context; continuing without it')
+    return null
+  }
+}
+
+/**
+ * The conversation facts `buildConversationContextPrompt` composes into its
+ * structural line — the conversation analog of `TicketGroundingFacts`. Folded
+ * off the same lookup that resolves the customer principal id (see
+ * `runAssistantTurn`), so it costs no extra round-trip.
+ */
+export interface ConversationGroundingFacts {
+  /** Requester displayName, or 'None' when the visitor has no name. */
+  customer: string
+  /** Conversation subject/title if present, else null. */
+  subject: string | null
+  /** open/snoozed/closed/... */
+  status: string
+  /** messenger/email/web_form, or null when unknown. */
+  channel: string | null
+}
+
+/**
+ * Neutralize a customer-controllable fact (conversation subject, customer
+ * display name) before it goes into the trusted structural line: strip newlines
+ * and other control chars so a crafted subject/name can't break out of its line
+ * to inject a fake instruction, and cap the length so one field can't crowd the
+ * prompt. The thread body is separately fenced via `wrapUntrustedText`; this
+ * guards the one place a caller-authored value sits on a trusted line.
+ */
+function sanitizeFactValue(value: string, max = 200): string {
+  // eslint-disable-next-line no-control-regex
+  const flattened = value.replace(/[\u0000-\u001F\u007F]+/g, ' ').trim()
+  return flattened.length > max ? `${flattened.slice(0, max)}…` : flattened
+}
+
+/**
+ * Conversation grounding block (the sibling of `buildTicketContextPrompt`): the
+ * conversation-scoped copilot's parallel to the ticket surface's grounding,
+ * added right after the copilot framing block. Status/channel are system values;
+ * subject and customer name are customer-controllable, so they pass through
+ * `sanitizeFactValue` before joining the trusted structural line. The thread
+ * itself is customer-authored text, so it's wrapped via `wrapUntrustedText`
+ * (injection-guard.ts) exactly like the ticket block rather than trusted as
+ * instructions.
+ */
+export function buildConversationContextPrompt(
+  facts: ConversationGroundingFacts,
+  transcript: string
+): string {
+  const subject = facts.subject ? ` "${sanitizeFactValue(facts.subject)}".` : ''
+  const channel = facts.channel ? ` Channel: ${facts.channel}.` : ''
+  return [
+    `Conversation${subject} Status: ${facts.status}. Customer: ${sanitizeFactValue(facts.customer)}.${channel}`,
+    wrapUntrustedText('The conversation thread you are answering questions about', transcript),
+  ].join('\n')
+}
+
+/**
+ * Resolve the conversation-grounding thread for a conversation-scoped copilot
+ * turn. The `facts` are already in hand from the customer-lookup round-trip in
+ * `runAssistantTurn` (folded there to avoid a second query), so this only loads
+ * and renders the thread. Best-effort in exactly the same shape as
+ * `loadTicketGroundingContext`: a failed thread load logs `warn` and returns
+ * null so the turn still runs, just ungrounded. It also returns null when the
+ * thread renders empty (a conversation with only system events), so an empty
+ * grounding block is never pushed. `all: true` loads the whole thread, not the
+ * newest window, so a long conversation's original request survives into
+ * `budgetTranscript`'s head. `includeInternal` follows the audience (D1) — the
+ * copilot resolves to 'team', so a teammate's internal notes on the open thread
+ * are visible to Quinn here (labelled `Note (internal):` by the renderer); the
+ * persisted on-close summary loads the thread notes-free and is unaffected.
+ */
+async function loadConversationGroundingContext(
+  conversationId: ConversationId,
+  facts: ConversationGroundingFacts,
+  audience: ContentAudience
+): Promise<{ facts: ConversationGroundingFacts; transcript: string } | null> {
+  try {
+    const messages = await loadConversationThread(conversationId, {
+      includeInternal: audience === 'team',
+      all: true,
+    })
+    const transcript = budgetTranscript(buildConversationTranscript(messages))
+    if (!transcript) return null
+    return { facts, transcript }
+  } catch (err) {
+    log.warn(
+      { err, conversationId },
+      'failed to load conversation grounding; continuing without it'
+    )
     return null
   }
 }
@@ -749,21 +850,64 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // MUST return nothing in that case rather than fall back to unscoped (see
   // its own module doc) — a ticket-scoped turn deliberately never resolves
   // this, per the ticket branch's "skip customer-history grounding" contract.
+  // Only the copilot surface grounds on the open conversation, so only it pays
+  // for the grounding FACTS (customer displayName via the principal join, plus
+  // subject/status/channel); the customer-facing widget path keeps the narrow
+  // single-column read it always had, since all it needs off this row is
+  // `customerPrincipalId` for the past-conversation source.
   let customerPrincipalId: PrincipalId | undefined
+  let conversationFacts: ConversationGroundingFacts | null = null
   if (conversationId) {
-    const [conversationRow] = await execDb
-      .select({ visitorPrincipalId: conversations.visitorPrincipalId })
-      .from(conversations)
-      .where(eq(conversations.id, conversationId))
-      .limit(1)
-    customerPrincipalId = conversationRow?.visitorPrincipalId
+    if (surface === 'copilot') {
+      const [conversationRow] = await execDb
+        .select({
+          visitorPrincipalId: conversations.visitorPrincipalId,
+          customer: principal.displayName,
+          subject: conversations.subject,
+          status: conversations.status,
+          channel: conversations.channel,
+        })
+        .from(conversations)
+        .leftJoin(principal, eq(principal.id, conversations.visitorPrincipalId))
+        .where(eq(conversations.id, conversationId))
+        .limit(1)
+      customerPrincipalId = conversationRow?.visitorPrincipalId
+      if (conversationRow) {
+        conversationFacts = {
+          customer: conversationRow.customer ?? 'None',
+          subject: conversationRow.subject,
+          status: conversationRow.status,
+          channel: conversationRow.channel,
+        }
+      }
+    } else {
+      const [conversationRow] = await execDb
+        .select({ visitorPrincipalId: conversations.visitorPrincipalId })
+        .from(conversations)
+        .where(eq(conversations.id, conversationId))
+        .limit(1)
+      customerPrincipalId = conversationRow?.visitorPrincipalId
+    }
   }
 
   // Ticket grounding (unified inbox §2.9): resolved alongside the customer
   // lookup above, before tool assembly, so it's ready to fold into the system
   // prompt below. Null when there's no ticket to ground on, or the lookup
   // failed (see `loadTicketGroundingContext`'s own doc).
-  const ticketGrounding = ticketId ? await loadTicketGroundingContext(ticketId) : null
+  const ticketGrounding = ticketId ? await loadTicketGroundingContext(ticketId, audience) : null
+
+  // Conversation grounding (copilot conversation surface): the sibling of the
+  // ticket block. `conversationFacts` is only ever populated on the copilot
+  // surface above, so its presence already implies that surface (a widget turn
+  // grounds the customer IS in the thread and needs no "the thread you are
+  // answering about" block). Uses the facts folded off the lookup plus the
+  // rendered thread; null when there's no conversation, no facts row, or the
+  // thread load failed. A turn has either a conversationId or a ticketId, never
+  // both, so at most one grounding block is ever pushed below.
+  const conversationGrounding =
+    conversationId && conversationFacts
+      ? await loadConversationGroundingContext(conversationId, conversationFacts, audience)
+      : null
 
   // Shared construction point (simulate derives from the null conversation =
   // sandbox; actor defaults to Quinn's bounded set).
@@ -830,10 +974,16 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     systemPrompts.push(buildCopilotFramingPrompt())
   }
   // Ticket grounding (unified inbox §2.9): right after the copilot framing,
-  // before basics/surface instructions/guidance — same slot a conversation's
-  // own grounding would occupy, were there an equivalent block for it today.
+  // before basics/surface instructions/guidance. Its conversation sibling
+  // occupies the exact same slot; a turn has exactly one of the two, so at most
+  // one of these pushes ever fires.
   if (ticketGrounding) {
     systemPrompts.push(buildTicketContextPrompt(ticketGrounding.facts, ticketGrounding.transcript))
+  }
+  if (conversationGrounding) {
+    systemPrompts.push(
+      buildConversationContextPrompt(conversationGrounding.facts, conversationGrounding.transcript)
+    )
   }
   // Ids of the guidance rules actually folded into this turn's prompt (after
   // the budget cap), logged onto every attempt below for the per-rule

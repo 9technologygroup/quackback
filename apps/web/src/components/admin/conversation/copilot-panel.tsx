@@ -619,8 +619,8 @@ function CopilotEmptyState() {
         <li className="flex items-start gap-2">
           <MagnifyingGlassIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
-            Finds answers from your help center, snippets, roadmap posts, and this customer&apos;s
-            past conversations.
+            Reads this conversation, then finds answers in your help center, snippets, roadmap
+            posts, and this customer&apos;s past conversations.
           </span>
         </li>
         <li className="flex items-start gap-2">

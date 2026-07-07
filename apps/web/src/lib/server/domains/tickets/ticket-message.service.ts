@@ -17,6 +17,7 @@ import {
   and,
   lt,
   or,
+  asc,
   desc,
   isNull,
   type Ticket,
@@ -229,11 +230,42 @@ export interface TicketMessagePage {
  * A page of a ticket's thread, newest-loaded last (keyset on createdAt,id before
  * the cursor). `includeInternal` gates agent-only notes; a requester view passes
  * false. Soft-deleted messages are excluded.
+ *
+ * `all: true` returns the ENTIRE ordered thread (oldest-first, no page window,
+ * no cursor), for callers that need the thread head as well as its tail — the
+ * copilot grounding loader (`loadTicketGroundingContext`), which must never drop
+ * the original request on a long thread the way the default newest-page window
+ * silently would. Every other caller (the inbox pager, the requester portal, the
+ * transcript export, the Summarize chip) omits it and keeps the byte-identical
+ * newest-`MESSAGE_PAGE_SIZE` page behavior.
  */
 export async function listTicketMessages(
   ticketId: TicketId,
-  opts: { before?: string; includeInternal?: boolean } = {}
+  opts: { before?: string; includeInternal?: boolean; all?: boolean } = {}
 ): Promise<TicketMessagePage> {
+  if (opts.all) {
+    const rows = await db
+      .select()
+      .from(conversationMessages)
+      .where(
+        and(
+          eq(conversationMessages.ticketId, ticketId),
+          isNull(conversationMessages.deletedAt),
+          opts.includeInternal ? undefined : eq(conversationMessages.isInternal, false)
+        )
+      )
+      .orderBy(asc(conversationMessages.createdAt), asc(conversationMessages.id))
+
+    const authors = await loadAuthors(rows.map((m) => m.principalId))
+    const messages = rows.map((m) =>
+      toMessageDTO(
+        m,
+        m.principalId ? (authors.get(m.principalId) ?? fallbackAuthor(m.principalId)) : null
+      )
+    )
+    return { messages, hasMore: false }
+  }
+
   const cursor = opts.before
     ? await db
         .select({ createdAt: conversationMessages.createdAt, id: conversationMessages.id })

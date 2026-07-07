@@ -869,6 +869,47 @@ export async function listMessages(
   }
 }
 
+/**
+ * Load a conversation's ENTIRE thread (oldest-first, no page window) as message
+ * DTOs, for the copilot grounding block (`loadConversationGroundingContext`).
+ * Grounding must see the thread head as well as its tail: the windowed
+ * `listMessages` read returns only the newest page (capped at 100), which would
+ * silently drop the customer's original request on a long conversation. The
+ * shared `budgetTranscript` trims the rendered result by chars, so this
+ * unbounded row read is bounded downstream. `includeInternal` gates agent-only
+ * notes exactly as `listMessages` does; soft-deleted rows are excluded. This
+ * lean read carries none of `listMessages`'s metadata-map enrichment (post
+ * suggestions, pending actions), which grounding does not use.
+ */
+export async function listConversationMessagesForGrounding(
+  conversationId: ConversationId,
+  opts?: { includeInternal?: boolean }
+): Promise<ConversationMessageDTO[]> {
+  const rows = await db
+    .select()
+    .from(conversationMessages)
+    .where(
+      and(
+        eq(conversationMessages.conversationId, conversationId),
+        isNull(conversationMessages.deletedAt),
+        opts?.includeInternal ? undefined : eq(conversationMessages.isInternal, false)
+      )
+    )
+    .orderBy(asc(conversationMessages.createdAt), asc(conversationMessages.id))
+
+  const [authors, assistantPrincipalId] = await Promise.all([
+    loadAuthors(rows.map((m) => m.principalId)),
+    assistantPrincipalIdOnce(),
+  ])
+  return rows.map((m) =>
+    toMessageDTO(
+      m,
+      m.principalId ? (authors.get(m.principalId) ?? fallbackAuthor(m.principalId)) : null,
+      assistantPrincipalId
+    )
+  )
+}
+
 export interface ConversationListFilter {
   status?: ConversationStatus
   /** Inbound source discriminator ('widget' today; email/others join later).

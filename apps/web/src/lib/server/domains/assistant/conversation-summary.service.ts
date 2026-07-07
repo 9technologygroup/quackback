@@ -50,9 +50,12 @@ import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { generateEmbedding } from '@/lib/server/domains/embeddings/embedding.service'
 import { loadConversationThread } from './assistant.thread'
-import { buildTicketTranscript } from './ticket-transcript'
+import {
+  buildTicketTranscript,
+  buildConversationTranscript,
+  GROUNDING_CHAR_BUDGET,
+} from './transcript'
 import { createId, type ConversationId, type TicketId } from '@quackback/ids'
-import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
 import { logger } from '@/lib/server/logger'
 // Read-only reach into the tickets domain for the ticket-scoped on-demand
 // summary (unified inbox §2.9) — an existing edge (assistant.toolspec.ts's
@@ -79,9 +82,6 @@ Rules for "summary" (2-4 sentences):
 - BAD: "The customer had a billing question."
 - GOOD: "Customer was double-charged for their March invoice after a plan upgrade; refunded $40 and confirmed by the customer."`
 
-/** Max transcript chars sent to the model, mirroring the post summary's budget. */
-const TRANSCRIPT_CHAR_BUDGET = 6000
-
 interface ConversationSummaryJson {
   summary: string
 }
@@ -103,24 +103,6 @@ Rules:
 export interface ConversationSummaryNow {
   question: string
   bullets: string[]
-}
-
-/**
- * Render the customer-visible transcript as plain "Speaker: content" lines.
- * System status events (already excluded from `loadConversationThread`'s
- * internal-note filter, but still present for e.g. assignment notices) and
- * text-less messages carry nothing for the model to summarize, so both are
- * skipped — mirrors `mapRowsToThreadMessages`'s own skip rules.
- */
-function buildTranscript(messages: ConversationMessageDTO[]): string {
-  const lines: string[] = []
-  for (const m of messages) {
-    if (m.senderType === 'system') continue
-    const content = m.content?.trim()
-    if (!content) continue
-    lines.push(`${m.senderType === 'visitor' ? 'Customer' : 'Agent'}: ${content}`)
-  }
-  return lines.join('\n')
 }
 
 /**
@@ -150,12 +132,12 @@ async function loadConversationSummaryInput(conversationId: ConversationId) {
     return null
   }
 
-  const transcript = buildTranscript(messages)
+  const transcript = buildConversationTranscript(messages)
   if (!transcript) return null // nothing customer-visible happened; no summary to write
 
   const truncated =
-    transcript.length > TRANSCRIPT_CHAR_BUDGET
-      ? transcript.slice(0, TRANSCRIPT_CHAR_BUDGET) + '\n\n[truncated]'
+    transcript.length > GROUNDING_CHAR_BUDGET
+      ? transcript.slice(0, GROUNDING_CHAR_BUDGET) + '\n\n[truncated]'
       : transcript
 
   return { openai, model, conversationRow, transcript: truncated }
@@ -348,8 +330,8 @@ async function loadTicketSummaryInput(ticketId: TicketId) {
   if (!transcript) return null // nothing customer-visible happened; no summary to write
 
   const truncated =
-    transcript.length > TRANSCRIPT_CHAR_BUDGET
-      ? transcript.slice(0, TRANSCRIPT_CHAR_BUDGET) + '\n\n[truncated]'
+    transcript.length > GROUNDING_CHAR_BUDGET
+      ? transcript.slice(0, GROUNDING_CHAR_BUDGET) + '\n\n[truncated]'
       : transcript
 
   return { openai, model, transcript: truncated }
