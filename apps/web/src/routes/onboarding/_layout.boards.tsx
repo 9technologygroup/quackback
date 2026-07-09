@@ -9,7 +9,7 @@ import { listBoardsForOnboarding } from '@/lib/server/functions/onboarding'
 import {
   getBoardsForUseCase,
   getBoardOptionsForUseCase,
-  getUseCaseLabel,
+  getBoardsStepCopy,
 } from '@/components/onboarding/default-boards'
 import { pickOnboardingStep } from './-onboarding-step'
 import { buildSigninRedirect } from '@/lib/shared/auth-prompt'
@@ -22,7 +22,7 @@ export const Route = createFileRoute('/onboarding/_layout/boards')({
       throw redirect({ to: '/onboarding/account' })
     }
 
-    const state = await checkOnboardingState({ data: session.user.id })
+    const state = await checkOnboardingState()
 
     if (state.needsInvitation) {
       throw redirect(buildSigninRedirect('/admin'))
@@ -169,15 +169,14 @@ function BoardsStep() {
       (b) => selectedBoards.has(b.id) && !existingBoardNames.has(b.name.toLowerCase())
     ).length + customBoards.filter((b) => !existingBoardNames.has(b.name.toLowerCase())).length
 
+  const boardsCopy = getBoardsStepCopy(useCase)
+
   return (
     <div className="w-full max-w-xl mx-auto">
-      {/* Header */}
+      {/* Header — outcome-aware so support/help ICPs aren't forced through a feedback wizard */}
       <div className="text-center mb-8">
-        <h1 className="text-2xl font-bold mb-2">Create your first boards</h1>
-        <p className="text-muted-foreground">
-          Boards help organize feedback by topic.
-          {useCase && ` Here are some suggestions for ${getUseCaseLabel(useCase)}.`}
-        </p>
+        <h1 className="text-2xl font-bold mb-2">{boardsCopy.title}</h1>
+        <p className="text-muted-foreground">{boardsCopy.description}</p>
       </div>
 
       {error && (
@@ -327,7 +326,7 @@ function BoardsStep() {
           disabled={isLoading}
           className="flex-1 h-11"
         >
-          Skip
+          {boardsCopy.skipHint ?? 'Skip'}
         </Button>
         <Button type="button" onClick={handleContinue} disabled={isLoading} className="flex-1 h-11">
           {isLoading ? (

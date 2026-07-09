@@ -122,8 +122,17 @@ export async function reconcileFileIntoDb(
 interface SetupStateShape {
   version: number
   steps: { core: boolean; workspace: boolean; boards: boolean }
-  useCase?: 'saas' | 'consumer' | 'marketplace' | 'internal'
+  useCase?:
+    | 'product_feedback'
+    | 'customer_support'
+    | 'help_center'
+    | 'internal'
+    | 'saas'
+    | 'consumer'
+    | 'marketplace'
   completedAt?: string
+  /** Not config-file-managed — carried forward as-is so reconciling doesn't wipe it. */
+  skippedLaunchTasks?: string[]
 }
 
 function mergeSetupState(
@@ -131,7 +140,14 @@ function mergeSetupState(
   workspace: {
     name?: string
     slug?: string
-    useCase?: 'saas' | 'consumer' | 'marketplace' | 'internal'
+    useCase?:
+      | 'product_feedback'
+      | 'customer_support'
+      | 'help_center'
+      | 'internal'
+      | 'saas'
+      | 'consumer'
+      | 'marketplace'
     onboardingComplete?: boolean
   }
 ): SetupStateShape {
@@ -158,6 +174,7 @@ function mergeSetupState(
     },
     useCase: workspace.useCase ?? parsed?.useCase,
     completedAt,
+    skippedLaunchTasks: parsed?.skippedLaunchTasks,
   }
 }
 

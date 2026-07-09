@@ -215,8 +215,35 @@ export interface RawFeedbackItemContextEnvelope {
 }
 
 // Use case types for personalized onboarding
-export const USE_CASE_TYPES = ['saas', 'consumer', 'marketplace', 'internal'] as const
+/**
+ * First-run intent — ideally an *outcome* ICP would name (Featurebase /
+ * Intercom / Statuspage style), not an industry vertical.
+ *
+ * UI offers: product_feedback | customer_support | help_center | internal.
+ * Legacy saas | consumer | marketplace still parse (config-file / old rows)
+ * and collapse onto an outcome via normalizeOnboardingOutcome (apps/web
+ * shared db-types).
+ */
+export const USE_CASE_TYPES = [
+  'product_feedback',
+  'customer_support',
+  'help_center',
+  'internal',
+  // Legacy — do not show in the picker
+  'saas',
+  'consumer',
+  'marketplace',
+] as const
 export type UseCaseType = (typeof USE_CASE_TYPES)[number]
+
+/** Outcomes shown in the onboarding picker (stable subset of UseCaseType). */
+export const ONBOARDING_OUTCOMES = [
+  'product_feedback',
+  'customer_support',
+  'help_center',
+  'internal',
+] as const
+export type OnboardingOutcome = (typeof ONBOARDING_OUTCOMES)[number]
 
 // Setup state for tracking onboarding/provisioning (stored in settings.setup_state)
 export interface SetupState {
@@ -227,7 +254,10 @@ export interface SetupState {
     boards: boolean // At least one board created or explicitly skipped
   }
   completedAt?: string // ISO timestamp when onboarding was fully completed
-  useCase?: UseCaseType // Product type for personalized board recommendations
+  /** ICP outcome (or legacy value) for board / activation personalization */
+  useCase?: UseCaseType
+  /** Launch-checklist task ids the admin explicitly dismissed (post-onboarding, not part of the wizard) */
+  skippedLaunchTasks?: string[]
 }
 
 export const DEFAULT_SETUP_STATE: SetupState = {

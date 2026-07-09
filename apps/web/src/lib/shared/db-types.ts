@@ -10,7 +10,12 @@
  * import { REACTION_EMOJIS } from '@/lib/shared/db-types'
  */
 
-import type { SetupState } from '@quackback/db/types'
+import {
+  ONBOARDING_OUTCOMES,
+  type SetupState,
+  type UseCaseType,
+  type OnboardingOutcome,
+} from '@quackback/db/types'
 
 // Re-export types only to keep this module client-safe.
 export type * from '@quackback/db/types'
@@ -29,6 +34,8 @@ export {
   TICKET_TYPES,
   TICKET_STATUS_CATEGORIES,
   TICKET_STAGES,
+  USE_CASE_TYPES,
+  ONBOARDING_OUTCOMES,
 } from '@quackback/db/types'
 export type {
   AccessTier,
@@ -39,6 +46,9 @@ export type {
   TicketType,
   TicketStatusCategory,
   TicketStage,
+  UseCaseType,
+  OnboardingOutcome,
+  SetupState,
 } from '@quackback/db/types'
 
 // Schema types needed by client components (type-only = no side effects)
@@ -74,4 +84,28 @@ export function getSetupState(setupStateJson: string | null): SetupState | null 
 export function isOnboardingComplete(setupState: SetupState | null): boolean {
   if (!setupState) return false
   return setupState.steps.core && setupState.steps.workspace && setupState.steps.boards
+}
+
+/**
+ * Single source of truth for collapsing a stored `useCase` (including the
+ * legacy saas/consumer/marketplace values) onto the outcome it should
+ * display/behave as. Used by the onboarding picker, board templates, and the
+ * launch checklist — previously each had its own copy of this mapping.
+ * Returns undefined when unset or unrecognized; callers decide their own default.
+ */
+export function normalizeOnboardingOutcome(
+  useCase?: UseCaseType | null
+): OnboardingOutcome | undefined {
+  if (!useCase) return undefined
+  if ((ONBOARDING_OUTCOMES as readonly string[]).includes(useCase)) {
+    return useCase as OnboardingOutcome
+  }
+  switch (useCase) {
+    case 'saas':
+    case 'consumer':
+    case 'marketplace':
+      return 'product_feedback'
+    default:
+      return undefined
+  }
 }

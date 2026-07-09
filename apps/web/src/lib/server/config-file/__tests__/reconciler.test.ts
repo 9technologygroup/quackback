@@ -82,6 +82,26 @@ describe('reconcileFileIntoDb', () => {
     expect(deps.updateSettings).not.toHaveBeenCalled()
   })
 
+  it('carries forward skippedLaunchTasks (not config-file-managed) across a reconcile', async () => {
+    const deps = baseDeps()
+    deps.readSettings = vi.fn(async () => ({
+      id: 'ws_1',
+      name: 'Old',
+      slug: 'old',
+      setupState: JSON.stringify({
+        version: 1,
+        steps: { core: true, workspace: false, boards: false },
+        skippedLaunchTasks: ['customize-branding'],
+      }),
+      tierLimits: null,
+      managedFieldPaths: [],
+    }))
+    await reconcileFileIntoDb({ workspace: { name: 'Acme', slug: 'acme' } }, deps)
+    const arg = (deps.updateSettings as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+    const setup = JSON.parse(arg.setupState as string)
+    expect(setup.skippedLaunchTasks).toEqual(['customize-branding'])
+  })
+
   it('does NOT force boards step when workspace.onboardingComplete is absent', async () => {
     const deps = baseDeps()
     await reconcileFileIntoDb({ workspace: { name: 'Acme', slug: 'acme' } }, deps)

@@ -18,7 +18,7 @@ export const Route = createFileRoute('/onboarding/_layout/usecase')({
       throw redirect({ to: '/onboarding/account' })
     }
 
-    const state = await checkOnboardingState({ data: session.user.id })
+    const state = await checkOnboardingState()
 
     if (state.needsInvitation) {
       throw redirect(buildSigninRedirect('/admin'))
@@ -83,8 +83,11 @@ function UseCaseStep() {
     <div className="w-full max-w-2xl mx-auto">
       {/* Header */}
       <div className="text-center mb-8">
-        <h1 className="text-2xl font-bold mb-2">How are you planning to use Quackback?</h1>
-        <p className="text-muted-foreground">We'll tailor your setup experience accordingly.</p>
+        <h1 className="text-2xl font-bold mb-2">What's your first goal?</h1>
+        <p className="text-muted-foreground">
+          Pick the goal that matters most right now. Your launch checklist will focus on it, and you
+          can pull up the others anytime.
+        </p>
       </div>
 
       {error && (

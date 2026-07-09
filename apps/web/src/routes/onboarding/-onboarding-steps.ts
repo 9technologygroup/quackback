@@ -14,7 +14,7 @@ export type OnboardingStepDef = { path: string; label: string }
  */
 export const ALL_ONBOARDING_STEPS: readonly OnboardingStepDef[] = [
   { path: '/onboarding/account', label: 'Account' },
-  { path: '/onboarding/usecase', label: 'Use case' },
+  { path: '/onboarding/usecase', label: 'Goals' },
   { path: '/onboarding/workspace', label: 'Workspace' },
   { path: '/onboarding/boards', label: 'Boards' },
 ] as const

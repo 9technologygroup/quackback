@@ -1,44 +1,67 @@
 'use client'
 
 import {
-  ComputerDesktopIcon,
-  DevicePhoneMobileIcon,
-  BuildingStorefrontIcon,
+  LightBulbIcon,
+  ChatBubbleLeftRightIcon,
+  BookOpenIcon,
   UserGroupIcon,
 } from '@heroicons/react/24/outline'
-import type { UseCaseType } from '@/lib/shared/db-types'
+import {
+  normalizeOnboardingOutcome,
+  type UseCaseType,
+  type OnboardingOutcome,
+} from '@/lib/shared/db-types'
+import { Badge } from '@/components/ui/badge'
 import type { ComponentType } from 'react'
 
-interface UseCaseOption {
-  id: UseCaseType
+interface OutcomeOption {
+  id: OnboardingOutcome
   label: string
   description: string
+  /** Who this is for — ICP cue, not jargon */
+  forWhom: string
   icon: ComponentType<{ className?: string }>
 }
 
-const USE_CASE_OPTIONS: UseCaseOption[] = [
+/**
+ * Outcome-first picker, modeled on how Intercom / Featurebase / Statuspage
+ * ICPs actually buy:
+ *
+ *  - Product feedback  → Featurebase / Canny PM & founder ICP
+ *  - Customer support  → Intercom support / CX ICP
+ *  - Help center       → Self-serve / deflect volume
+ *  - Internal          → Employee voice / ops feedback
+ *
+ * Stored as setupState.useCase. Legacy saas|consumer|marketplace map in
+ * display via normalizeOnboardingOutcome.
+ */
+const OUTCOME_OPTIONS: OutcomeOption[] = [
   {
-    id: 'saas',
-    label: 'SaaS product',
-    description: 'Feature requests from business customers',
-    icon: ComputerDesktopIcon,
+    id: 'product_feedback',
+    label: 'Collect product feedback',
+    description: 'Feature ideas, votes, a public roadmap, and changelogs',
+    forWhom: 'Product & eng',
+    icon: LightBulbIcon,
   },
   {
-    id: 'consumer',
-    label: 'Consumer app',
-    description: 'Feedback from your users',
-    icon: DevicePhoneMobileIcon,
+    id: 'customer_support',
+    label: 'Talk to customers',
+    description: 'Live chat and a shared inbox your team works from',
+    forWhom: 'Support & CX',
+    icon: ChatBubbleLeftRightIcon,
   },
   {
-    id: 'marketplace',
-    label: 'Marketplace',
-    description: 'Feedback from buyers and sellers',
-    icon: BuildingStorefrontIcon,
+    id: 'help_center',
+    label: 'Help people help themselves',
+    description: 'A searchable knowledge base that deflects repetitive questions',
+    forWhom: 'Support & docs',
+    icon: BookOpenIcon,
   },
   {
     id: 'internal',
-    label: 'Internal team',
-    description: 'Ideas and improvements',
+    label: 'Hear from our own team',
+    description: 'Ideas and process improvements from colleagues',
+    forWhom: 'Internal',
     icon: UserGroupIcon,
   },
 ]
@@ -50,10 +73,12 @@ interface UseCaseSelectorProps {
 }
 
 export function UseCaseSelector({ value, onChange, disabled }: UseCaseSelectorProps) {
+  const displayValue = normalizeOnboardingOutcome(value)
+
   return (
-    <div className="space-y-2 max-w-sm mx-auto">
-      {USE_CASE_OPTIONS.map((option) => {
-        const isSelected = value === option.id
+    <div className="space-y-2 max-w-md mx-auto">
+      {OUTCOME_OPTIONS.map((option) => {
+        const isSelected = displayValue === option.id
         const Icon = option.icon
         return (
           <button
@@ -72,7 +97,6 @@ export function UseCaseSelector({ value, onChange, disabled }: UseCaseSelectorPr
               }
             `}
           >
-            {/* Icon */}
             <div
               className={`
               shrink-0 p-2.5 rounded-lg transition-colors
@@ -84,12 +108,16 @@ export function UseCaseSelector({ value, onChange, disabled }: UseCaseSelectorPr
               />
             </div>
 
-            {/* Text */}
-            <div className="text-left min-w-0">
-              <div
-                className={`font-medium text-sm ${isSelected ? 'text-foreground' : 'text-foreground/90'}`}
-              >
-                {option.label}
+            <div className="text-left min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div
+                  className={`font-medium text-sm ${isSelected ? 'text-foreground' : 'text-foreground/90'}`}
+                >
+                  {option.label}
+                </div>
+                <Badge size="sm" shape="pill" variant="secondary">
+                  {option.forWhom}
+                </Badge>
               </div>
               <div className="text-xs text-muted-foreground mt-0.5">{option.description}</div>
             </div>

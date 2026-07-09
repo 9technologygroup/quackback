@@ -13,7 +13,7 @@ export const Route = createFileRoute('/onboarding/_layout/complete')({
       throw redirect({ to: '/onboarding/account' })
     }
 
-    const state = await checkOnboardingState({ data: session.user.id })
+    const state = await checkOnboardingState()
 
     if (state.needsInvitation) {
       throw redirect(buildSigninRedirect('/admin'))
@@ -41,27 +41,30 @@ function CompleteStep() {
 
   return (
     <div className="w-full max-w-md mx-auto text-center">
-      {/* Success icon */}
       <div className="mb-6">
         <div className="inline-flex items-center justify-center h-16 w-16 rounded-full bg-green-500/10">
           <CheckCircleIcon className="h-10 w-10 text-green-500" />
         </div>
       </div>
 
-      {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl font-bold mb-2">You're all set!</h1>
-        <p className="text-muted-foreground">{workspaceName} is ready to collect feedback.</p>
+        <h1 className="text-2xl font-bold mb-2">Welcome to {workspaceName}</h1>
+        <p className="text-muted-foreground">
+          Your workspace is ready. Next: get your first customer response.
+        </p>
       </div>
 
-      {/* Actions */}
       <div className="space-y-3 max-w-xs mx-auto">
-        <Button onClick={() => navigate({ to: '/admin' })} className="w-full h-11">
-          Go to dashboard
+        <Button onClick={() => navigate({ to: '/admin/getting-started' })} className="w-full h-11">
+          See your launch checklist
           <ArrowRightIcon className="ml-2 h-4 w-4" />
         </Button>
-        <Button variant="ghost" onClick={() => navigate({ to: '/' })} className="w-full h-11">
-          View your feedback portal
+        <Button
+          variant="ghost"
+          onClick={() => navigate({ to: '/admin/feedback' })}
+          className="w-full h-11"
+        >
+          I&apos;ll explore on my own
         </Button>
       </div>
     </div>

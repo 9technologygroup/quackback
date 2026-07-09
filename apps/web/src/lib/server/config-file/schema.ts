@@ -14,7 +14,16 @@ import { httpsUrl } from '@/lib/shared/schemas/auth'
  * and prevents the file from growing into a kitchen-sink schema.
  */
 
-const useCaseSchema = z.enum(['saas', 'consumer', 'marketplace', 'internal'])
+const useCaseSchema = z.enum([
+  'product_feedback',
+  'customer_support',
+  'help_center',
+  'internal',
+  // Legacy values still accepted in config files
+  'saas',
+  'consumer',
+  'marketplace',
+])
 
 const workspaceSchema = z
   .object({
