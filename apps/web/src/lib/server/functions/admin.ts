@@ -16,8 +16,19 @@ import {
 } from '@/lib/server/db'
 import type { TiptapContent } from '@/lib/shared/schemas/posts'
 import { requireAuth } from './auth-helpers'
+import { getSession } from '@/lib/server/auth/session'
 import { getSettings } from './workspace'
-import { db, invitation, principal, user, eq, and, gt } from '@/lib/server/db'
+import {
+  db,
+  invitation,
+  principal,
+  user,
+  integrations,
+  eq,
+  and,
+  gt,
+  inArray,
+} from '@/lib/server/db'
 import {
   createPrincipal,
   ensurePrincipalForUser,
@@ -382,33 +393,142 @@ export const removeTeamMemberFn = createServerFn({ method: 'POST' })
   })
 
 /**
- * Check onboarding completion status
+ * Check onboarding / launch-checklist completion status.
+ * Used by Getting Started and the admin shell badge.
  */
 export const fetchOnboardingStatus = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch onboarding status')
   try {
     await requireAuth({ permission: PERMISSIONS.MEMBER_VIEW })
 
-    const [orgBoards, members] = await Promise.all([
+    const { getWidgetConfig } = await import('@/lib/server/domains/settings/settings.widget')
+    const { helpCenterArticles, statusComponents, isNull } = await import('@/lib/server/db')
+    const { getSetupState } = await import('@/lib/shared/db-types')
+
+    const [
+      orgBoards,
+      humanMembers,
+      orgSettings,
+      widgetConfig,
+      connectedIntegration,
+      helpArticle,
+      statusComponent,
+    ] = await Promise.all([
       db.query.boards.findMany({
         columns: { id: true },
       }),
-      db.select({ id: principal.id }).from(principal),
+      // Teammates only (admin/member) — portal role=user must not complete "invite"
+      db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(and(eq(principal.type, 'user'), inArray(principal.role, ['admin', 'member']))),
+      getSettings(),
+      getWidgetConfig(),
+      db.query.integrations.findFirst({
+        columns: { id: true },
+        where: eq(integrations.status, 'connected'),
+      }),
+      db.query.helpCenterArticles.findFirst({
+        columns: { id: true },
+        where: isNull(helpCenterArticles.deletedAt),
+      }),
+      db.query.statusComponents.findFirst({
+        columns: { id: true },
+        where: isNull(statusComponents.deletedAt),
+      }),
     ])
 
+    const setupState = getSetupState(orgSettings?.setupState ?? null)
+    const hasBranding = Boolean(orgSettings?.logoKey)
+    const hasWidgetEnabled = widgetConfig.enabled === true
+    // Messenger is "live" when the messenger surface is on and the widget is enabled
+    const hasMessengerEnabled =
+      hasWidgetEnabled &&
+      (widgetConfig.messenger?.enabled ?? false) &&
+      (widgetConfig.tabs?.messenger ?? false)
+    const hasIntegration = Boolean(connectedIntegration)
+
     log.debug(
-      { has_boards: orgBoards.length > 0, member_count: members.length },
+      {
+        has_boards: orgBoards.length > 0,
+        member_count: humanMembers.length,
+        has_branding: hasBranding,
+        has_widget: hasWidgetEnabled,
+        has_messenger: hasMessengerEnabled,
+        has_help_article: Boolean(helpArticle),
+        has_status_component: Boolean(statusComponent),
+        use_case: setupState?.useCase,
+      },
       'fetch onboarding status'
     )
     return {
       hasBoards: orgBoards.length > 0,
-      memberCount: members.length,
+      memberCount: humanMembers.length,
+      hasBranding,
+      hasWidgetEnabled,
+      hasMessengerEnabled,
+      hasHelpArticle: Boolean(helpArticle),
+      hasStatusComponent: Boolean(statusComponent),
+      hasIntegration,
+      useCase: setupState?.useCase ?? null,
+      skippedLaunchTasks: setupState?.skippedLaunchTasks ?? [],
     }
   } catch (error) {
     log.error({ err: error }, 'fetch onboarding status failed')
     throw error
   }
 })
+
+/**
+ * Explicitly skip (or unskip) a launch-checklist task. Distinct from the
+ * onboarding wizard's own setupState.steps — this only affects the
+ * post-onboarding Getting Started checklist, so an admin who doesn't want a
+ * status page (say) can dismiss it without the task nagging forever.
+ */
+export const toggleLaunchTaskSkipFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ taskId: z.string(), skipped: z.boolean() }))
+  .handler(async ({ data }) => {
+    log.debug({ task_id: data.taskId, skipped: data.skipped }, 'toggle launch task skip')
+    try {
+      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
+
+      const { getSetupState } = await import('@/lib/shared/db-types')
+      const { invalidateSettingsCache } =
+        await import('@/lib/server/domains/settings/settings.helpers')
+      const { settings } = await import('@/lib/server/db')
+
+      const existingSettings = await getSettings()
+      if (!existingSettings) {
+        throw new Error('Workspace is not set up yet')
+      }
+
+      const setupState = getSetupState(existingSettings.setupState) ?? {
+        version: 1,
+        steps: { core: true, workspace: true, boards: true },
+      }
+
+      const current = new Set(setupState.skippedLaunchTasks ?? [])
+      if (data.skipped) {
+        current.add(data.taskId)
+      } else {
+        current.delete(data.taskId)
+      }
+      const skippedLaunchTasks = [...current]
+
+      await db
+        .update(settings)
+        .set({ setupState: JSON.stringify({ ...setupState, skippedLaunchTasks }) })
+        .where(eq(settings.id, existingSettings.id))
+
+      await invalidateSettingsCache()
+
+      log.info({ task_id: data.taskId, skipped: data.skipped }, 'toggle launch task skip: saved')
+      return { skippedLaunchTasks }
+    } catch (error) {
+      log.error({ err: error }, 'toggle launch task skip failed')
+      throw error
+    }
+  })
 
 /**
  * Fetch boards list for settings page
@@ -598,93 +718,97 @@ export const getPublicAuthConfig = createServerFn({ method: 'GET' }).handler(asy
 })
 
 /**
- * Check onboarding state for a user
+ * Check onboarding state for the calling user
  * Returns member record, step, and whether boards exist
  * Note: This function is called during onboarding and may create member records
+ *
+ * The acting user is derived from the session, never from input: this fn
+ * creates the bootstrap admin principal on the first-user path, so a
+ * caller-supplied id would let anyone mint an admin for an arbitrary user.
+ * Unauthenticated callers get the same empty state as pre-signup visitors
+ * rather than a readout of the instance's setup progress.
  */
-export const checkOnboardingState = createServerFn({ method: 'GET' })
-  .validator(z.string().optional())
-  .handler(async ({ data }) => {
-    log.debug('check onboarding state')
-    try {
-      // Allow unauthenticated access for onboarding
-      const userId = data
+export const checkOnboardingState = createServerFn({ method: 'GET' }).handler(async () => {
+  log.debug('check onboarding state')
+  try {
+    const session = await getSession()
+    const userId = session?.user?.id
 
-      if (!userId) {
-        log.debug('check onboarding state no user id')
+    if (!userId) {
+      log.debug('check onboarding state no user id')
+      return {
+        principalRecord: null,
+        hasSettings: false,
+        setupState: null,
+        isOnboardingComplete: false,
+      }
+    }
+
+    // Check if user has a principal record
+    let principalRecord = await db.query.principal.findFirst({
+      where: eq(principal.userId, userId as UserId),
+    })
+
+    if (!principalRecord) {
+      // Check if any human admin exists (exclude service principals)
+      const existingAdmin = await db.query.principal.findFirst({
+        where: and(eq(principal.role, 'admin'), eq(principal.type, 'user')),
+      })
+
+      if (existingAdmin) {
+        // Not first user - they need an invitation
+        log.debug({ needs_invitation: true }, 'check onboarding state')
         return {
           principalRecord: null,
+          needsInvitation: true,
           hasSettings: false,
           setupState: null,
           isOnboardingComplete: false,
         }
       }
 
-      // Check if user has a principal record
-      let principalRecord = await db.query.principal.findFirst({
-        where: eq(principal.userId, userId as UserId),
+      // First user - create admin principal record (race-safe).
+      const { principal: newPrincipal, created } = await ensurePrincipalForUser({
+        userId: userId as UserId,
+        role: 'admin',
       })
-
-      if (!principalRecord) {
-        // Check if any human admin exists (exclude service principals)
-        const existingAdmin = await db.query.principal.findFirst({
-          where: and(eq(principal.role, 'admin'), eq(principal.type, 'user')),
-        })
-
-        if (existingAdmin) {
-          // Not first user - they need an invitation
-          log.debug({ needs_invitation: true }, 'check onboarding state')
-          return {
-            principalRecord: null,
-            needsInvitation: true,
-            hasSettings: false,
-            setupState: null,
-            isOnboardingComplete: false,
-          }
-        }
-
-        // First user - create admin principal record (race-safe).
-        const { principal: newPrincipal, created } = await ensurePrincipalForUser({
-          userId: userId as UserId,
-          role: 'admin',
-        })
-        // A concurrent lazy create may have seeded role 'user'; promote so the
-        // first user still lands as admin.
-        if (!created && !isAdmin(newPrincipal.role)) {
-          await setPrincipalRole({ userId: userId as UserId }, 'admin')
-          newPrincipal.role = 'admin'
-        }
-        principalRecord = newPrincipal
-        log.info({ principal_id: principalRecord.id }, 'created admin principal')
+      // A concurrent lazy create may have seeded role 'user'; promote so the
+      // first user still lands as admin.
+      if (!created && !isAdmin(newPrincipal.role)) {
+        await setPrincipalRole({ userId: userId as UserId }, 'admin')
+        newPrincipal.role = 'admin'
       }
-
-      // Get settings to check setup state
-      const currentSettings = await getSettings()
-      const setupState = getSetupState(currentSettings?.setupState ?? null)
-      const isOnboardingComplete = checkComplete(setupState)
-
-      log.debug(
-        { setup_state: setupState, is_complete: isOnboardingComplete },
-        'check onboarding state'
-      )
-      return {
-        principalRecord: principalRecord
-          ? {
-              id: principalRecord.id,
-              userId: principalRecord.userId,
-              role: principalRecord.role,
-            }
-          : null,
-        needsInvitation: false,
-        hasSettings: !!currentSettings,
-        setupState,
-        isOnboardingComplete,
-      }
-    } catch (error) {
-      log.error({ err: error }, 'check onboarding state failed')
-      throw error
+      principalRecord = newPrincipal
+      log.info({ principal_id: principalRecord.id }, 'created admin principal')
     }
-  })
+
+    // Get settings to check setup state
+    const currentSettings = await getSettings()
+    const setupState = getSetupState(currentSettings?.setupState ?? null)
+    const isOnboardingComplete = checkComplete(setupState)
+
+    log.debug(
+      { setup_state: setupState, is_complete: isOnboardingComplete },
+      'check onboarding state'
+    )
+    return {
+      principalRecord: principalRecord
+        ? {
+            id: principalRecord.id,
+            userId: principalRecord.userId,
+            role: principalRecord.role,
+          }
+        : null,
+      needsInvitation: false,
+      hasSettings: !!currentSettings,
+      setupState,
+      isOnboardingComplete,
+    }
+  } catch (error) {
+    log.error({ err: error }, 'check onboarding state failed')
+    throw error
+  }
+})
 
 // ============================================
 // Portal Users Operations

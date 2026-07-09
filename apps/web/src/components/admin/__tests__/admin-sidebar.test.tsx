@@ -34,6 +34,10 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({ mutate: vi.fn() }),
+  // Launch-checklist badge query; undefined data = checklist state unknown,
+  // which renders the nav item without a count.
+  useQuery: () => ({ data: undefined }),
+  queryOptions: (opts: unknown) => opts,
 }))
 
 vi.mock('@/lib/client/auth-client', () => ({ signOut: vi.fn() }))

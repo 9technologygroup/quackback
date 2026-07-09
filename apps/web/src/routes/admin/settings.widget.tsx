@@ -219,14 +219,17 @@ function WidgetToggle({ initialEnabled }: { initialEnabled: boolean }) {
   }
 
   return (
-    <SettingsCard title="Widget" description="Enable or disable the embeddable widget">
+    <SettingsCard
+      title="Add to your site"
+      description="Show Quackback on your product so customers can send feedback and messages"
+    >
       <div className="flex items-center justify-between rounded-lg border border-border/50 p-4">
         <div>
           <Label htmlFor="widget-toggle" className="text-sm font-medium cursor-pointer">
-            Enable Widget
+            Show on your website
           </Label>
           <p className="text-xs text-muted-foreground mt-0.5">
-            When enabled, you can embed the widget on any website using a script tag
+            Paste the install snippet below after turning this on
           </p>
         </div>
         <div className="flex items-center gap-2">

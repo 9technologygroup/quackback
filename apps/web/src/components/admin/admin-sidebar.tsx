@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useRouter, useRouterState, useRouteContext } from '@tanstack/react-router'
 import {
   ChatBubbleLeftIcon,
@@ -14,6 +14,7 @@ import {
   ChartBarIcon,
   QuestionMarkCircleIcon,
   SparklesIcon,
+  RocketLaunchIcon,
 } from '@heroicons/react/24/solid'
 import { SignalIcon } from '@heroicons/react/24/outline'
 import { Button } from '@/components/ui/button'
@@ -35,6 +36,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import type { LatestVersionResult } from '@/lib/server/functions/version'
 import type { SettingsBrandingData } from '@/lib/server/domains/settings/settings.types'
 import { setAgentAvailabilityFn } from '@/lib/server/functions/conversation'
+import { adminQueries } from '@/lib/client/queries/admin'
+import { launchChecklistSummary } from '@/lib/shared/launch-checklist'
 
 /** Availability toggle for the account menu (conversation routing). The label shows the
  *  state you'll switch to; the avatar dot shows the current one. */
@@ -88,12 +91,15 @@ function NavItem({
   label,
   isActive,
   onClick,
+  badge,
 }: {
   href: string
   icon: typeof ChatBubbleLeftIcon
   label: string
   isActive: boolean
   onClick?: () => void
+  /** Optional count or short mark (e.g. remaining launch steps) */
+  badge?: string | number | null
 }) {
   return (
     <Tooltip>
@@ -108,6 +114,18 @@ function NavItem({
           )}
         >
           <Icon className="h-5 w-5" />
+          {badge != null && badge !== '' && (
+            <span
+              className={cn(
+                'absolute -top-0.5 -right-0.5 flex items-center justify-center',
+                'min-w-[18px] h-[18px] px-1 rounded-full',
+                'bg-primary text-primary-foreground text-[11px] font-semibold',
+                'border-2 border-card'
+              )}
+            >
+              {badge}
+            </span>
+          )}
           <span className="sr-only">{label}</span>
         </Link>
       </TooltipTrigger>
@@ -125,6 +143,16 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
   // The settings area is admin-only (every tab gates on requireAuth(['admin'])).
   // Members would only ever land on the access-denied page, so hide the cog.
   const isAdmin = userRole === 'admin'
+  // Launch checklist progress for the shell badge (admins only)
+  const onboardingQuery = useQuery({
+    ...adminQueries.onboardingStatus(),
+    enabled: isAdmin,
+  })
+  const launchSummary = onboardingQuery.data ? launchChecklistSummary(onboardingQuery.data) : null
+  const showLaunchNav = isAdmin && (!launchSummary || !launchSummary.allComplete)
+  const launchRemaining =
+    launchSummary && !launchSummary.allComplete ? launchSummary.remaining : null
+
   const flags = settings?.featureFlags as
     | {
         helpCenter?: boolean
@@ -217,6 +245,21 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
 
             {/* Bottom Section */}
             <div className="flex flex-col items-center gap-3">
+              {/* Launch checklist — first-run path; hide when all tasks done */}
+              {showLaunchNav && (
+                <NavItem
+                  href="/admin/getting-started"
+                  icon={RocketLaunchIcon}
+                  label={
+                    launchRemaining != null
+                      ? `Launch checklist · ${launchRemaining} left`
+                      : 'Launch checklist'
+                  }
+                  isActive={isNavActive(pathname, '/admin/getting-started')}
+                  badge={launchRemaining}
+                />
+              )}
+
               {/* Settings (admin-only) */}
               {isAdmin && (
                 <NavItem
@@ -397,6 +440,23 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
                 )
               })}
               <div className="h-px bg-border/40 my-4" />
+              {showLaunchNav && (
+                <Link
+                  to="/admin/getting-started"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={cn(
+                    'flex items-center gap-3 px-4 py-3 rounded-lg text-sm transition-colors',
+                    'text-muted-foreground/80 hover:text-foreground hover:bg-muted/50',
+                    isNavActive(pathname, '/admin/getting-started') &&
+                      'bg-muted/80 text-foreground font-medium'
+                  )}
+                >
+                  <RocketLaunchIcon className="h-5 w-5" />
+                  {launchRemaining != null
+                    ? `Launch checklist · ${launchRemaining} left`
+                    : 'Launch checklist'}
+                </Link>
+              )}
               {isAdmin && (
                 <Link
                   to="/admin/settings"
