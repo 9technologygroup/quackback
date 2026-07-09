@@ -893,7 +893,7 @@ export const regenerateWidgetSecretFn = createServerFn({ method: 'POST' }).handl
 export const fetchOfficeHoursFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch office hours')
   try {
-    await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
+    await requireAuth({ permission: PERMISSIONS.OFFICE_HOURS_MANAGE })
     const { getOfficeHoursSchedule } =
       await import('@/lib/server/domains/settings/settings.office-hours')
     return await getOfficeHoursSchedule()
@@ -908,7 +908,7 @@ export const updateOfficeHoursFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     log.info({ enabled: data.enabled, intervals: data.intervals.length }, 'update office hours')
     try {
-      await requireAuth({ permission: PERMISSIONS.SETTINGS_MANAGE })
+      await requireAuth({ permission: PERMISSIONS.OFFICE_HOURS_MANAGE })
       const { updateOfficeHoursSchedule } =
         await import('@/lib/server/domains/settings/settings.office-hours')
       return await updateOfficeHoursSchedule(data)
