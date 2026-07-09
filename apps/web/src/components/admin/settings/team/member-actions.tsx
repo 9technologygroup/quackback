@@ -59,8 +59,7 @@ export function MemberActions({
       await updateMemberRoleFn({ data: { principalId, role: newRole } })
       await queryClient.invalidateQueries({ queryKey: ['settings', 'team'] })
     } catch (error) {
-      console.error('Failed to update role:', error)
-      alert(error instanceof Error ? error.message : 'Failed to update role')
+      toast.error(error instanceof Error ? error.message : "Couldn't update role. Try again.")
     } finally {
       setIsLoading(false)
       setRoleDialogOpen(false)
@@ -73,8 +72,7 @@ export function MemberActions({
       await removeTeamMemberFn({ data: { principalId } })
       await queryClient.invalidateQueries({ queryKey: ['settings', 'team'] })
     } catch (error) {
-      console.error('Failed to remove member:', error)
-      alert(error instanceof Error ? error.message : 'Failed to remove team member')
+      toast.error(error instanceof Error ? error.message : "Couldn't remove teammate. Try again.")
     } finally {
       setIsLoading(false)
       setRemoveDialogOpen(false)
@@ -88,8 +86,9 @@ export function MemberActions({
       await adminResetTwoFactorFn({ data: { userId } })
       await queryClient.invalidateQueries({ queryKey: ['settings', 'team'] })
     } catch (error) {
-      console.error('Failed to reset 2FA:', error)
-      alert(error instanceof Error ? error.message : 'Failed to reset two-factor')
+      toast.error(
+        error instanceof Error ? error.message : "Couldn't reset two-factor authentication."
+      )
     } finally {
       setIsLoading(false)
       setResetTfaDialogOpen(false)

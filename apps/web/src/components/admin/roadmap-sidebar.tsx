@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { toast } from 'sonner'
 import {
   PlusIcon,
   MapIcon,
@@ -71,7 +72,7 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
       setIsCreateDialogOpen(false)
       onSelectRoadmap(newRoadmap.id)
     } catch (error) {
-      console.error('Failed to create roadmap:', error)
+      toast.error(error instanceof Error ? error.message : "Couldn't create roadmap. Try again.")
     }
   }
 
@@ -96,7 +97,7 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
       setIsEditDialogOpen(false)
       setEditingRoadmap(null)
     } catch (error) {
-      console.error('Failed to update roadmap:', error)
+      toast.error(error instanceof Error ? error.message : "Couldn't update roadmap. Try again.")
     }
   }
 
@@ -111,7 +112,7 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
         onSelectRoadmap(roadmaps?.[0]?.id ?? null)
       }
     } catch (error) {
-      console.error('Failed to delete roadmap:', error)
+      toast.error(error instanceof Error ? error.message : "Couldn't delete roadmap. Try again.")
     }
   }
 

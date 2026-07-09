@@ -1,4 +1,5 @@
 import { memo, useState, type ReactNode } from 'react'
+import { Link, useRouteContext } from '@tanstack/react-router'
 import type { ConversationPriority } from '@/lib/shared/conversation/types'
 import type { InboxItemDTO, InboxTriageFacet } from '@/lib/shared/inbox/items'
 import { ChevronDownIcon, PencilSquareIcon, BarsArrowDownIcon } from '@heroicons/react/24/solid'
@@ -34,6 +35,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/shared/utils'
 
 const TRIAGE_FACETS: readonly InboxTriageFacet[] = ['open', 'waiting', 'closed']
@@ -83,7 +85,9 @@ function emptyStateMessage(nav: InboxNavItem, facet: InboxTriageFacet, scopeLabe
     }
     return `No ${facetPart}conversations`
   }
-  return `No ${facet === 'all' ? '' : `${facet} `}conversations`
+  // Unscoped empty inbox — first-run friendly, not filter-blame.
+  if (facet === 'all') return 'No conversations yet'
+  return `No ${facet} conversations`
 }
 
 /** A minimal category-tinted chip for the linked-customer-ticket summary on a
@@ -224,6 +228,7 @@ export function ConversationListColumn({
   onToggleSelectAll,
   selectionActive,
 }: ConversationListColumnProps) {
+  const { userRole } = useRouteContext({ from: '__root__' })
   const [composeOpen, setComposeOpen] = useState(false)
   const allSelected = items.length > 0 && items.every((it) => selectedIds.has(itemId(it)))
   const someSelected = items.some((it) => selectedIds.has(itemId(it)))
@@ -379,9 +384,32 @@ export function ConversationListColumn({
             <Spinner />
           </div>
         ) : items.length === 0 ? (
-          <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-            {emptyStateMessage(nav, facet, scopeLabel)}
-          </div>
+          (() => {
+            const emptyMsg = emptyStateMessage(nav, facet, scopeLabel)
+            // First-run CTA on the main conversation queues (not tickets/labels).
+            const showMessengerCta =
+              nav.kind === 'view' &&
+              (nav.view === 'mine' || nav.view === 'unassigned' || nav.view === 'all')
+            return (
+              <div className="px-4 py-10 text-center space-y-3">
+                <p className="text-sm font-medium text-foreground">{emptyMsg}</p>
+                {showMessengerCta && (
+                  <>
+                    <p className="text-xs text-muted-foreground max-w-[16rem] mx-auto">
+                      When customers message you, conversations show up here.
+                    </p>
+                    {/* Widget settings are admin-only; members get the message
+                        without a button they can't use. */}
+                    {userRole === 'admin' && (
+                      <Button size="sm" variant="outline" asChild>
+                        <Link to="/admin/settings/widget">Let customers message you</Link>
+                      </Button>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          })()
         ) : (
           items.map((item) => {
             const id = itemId(item)

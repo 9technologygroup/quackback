@@ -272,9 +272,15 @@ export function StatusComponentsView() {
       </DndContext>
 
       {groups.length === 0 && ungrouped.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No components yet — add one to start tracking status.
-        </p>
+        <div className="text-center py-10 space-y-3">
+          <p className="text-sm font-medium text-foreground">Add a status component</p>
+          <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+            Track a service so you can publish incidents, maintenance, and uptime.
+          </p>
+          <Button size="sm" onClick={() => setCreateGroupId(null)}>
+            Add component
+          </Button>
+        </div>
       )}
 
       <p className="text-xs text-muted-foreground max-w-2xl">

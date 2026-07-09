@@ -16,6 +16,7 @@ import { ReactionChip } from '@/components/shared/reaction-chip'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { TimeAgo } from '@/components/ui/time-ago'
 import { REACTION_EMOJIS } from '@/lib/shared/db-types'
@@ -346,6 +347,7 @@ function CommentItem({
   const [editContent, setEditContent] = useState(comment.content)
   const editJsonRef = useRef<TiptapContent | null>(comment.contentJson ?? null)
   const [editError, setEditError] = useState<string | null>(null)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
 
   // Stored doc preferred; legacy rows fall back to a markdown parse.
   const editInitialJson = useMemo<TiptapContent>(() => {
@@ -887,7 +889,7 @@ function CommentItem({
                 variant="ghost"
                 size="sm"
                 className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive"
-                onClick={() => onDeleteComment!(comment.id as PostCommentId)}
+                onClick={() => setDeleteConfirmOpen(true)}
                 disabled={isBeingDeleted}
               >
                 <TrashIcon className="h-3 w-3 me-1" />
@@ -901,6 +903,34 @@ function CommentItem({
                       defaultMessage: 'Delete',
                     })}
               </Button>
+            )}
+            {canDelete && (
+              <ConfirmDialog
+                open={deleteConfirmOpen}
+                onOpenChange={setDeleteConfirmOpen}
+                title={intl.formatMessage({
+                  id: 'portal.commentThread.deleteConfirmTitle',
+                  defaultMessage: 'Delete this comment?',
+                })}
+                description={intl.formatMessage({
+                  id: 'portal.commentThread.deleteConfirmDescription',
+                  defaultMessage: "It will be removed from the thread. This can't be undone.",
+                })}
+                confirmLabel={intl.formatMessage({
+                  id: 'portal.commentThread.delete',
+                  defaultMessage: 'Delete',
+                })}
+                cancelLabel={intl.formatMessage({
+                  id: 'portal.commentThread.keepIt',
+                  defaultMessage: 'Keep it',
+                })}
+                variant="destructive"
+                isPending={isBeingDeleted}
+                onConfirm={() => {
+                  onDeleteComment!(comment.id as PostCommentId)
+                  setDeleteConfirmOpen(false)
+                }}
+              />
             )}
           </div>
 

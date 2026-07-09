@@ -359,17 +359,32 @@ export function FeedbackContainer({
 
           <div className="mt-5">
             {posts.length === 0 && !isLoading ? (
-              <p className="text-muted-foreground text-center py-8">
-                {activeSearch || activeFilterCount > 0
-                  ? intl.formatMessage({
-                      id: 'portal.feedback.list.noPostsFiltered',
-                      defaultMessage: 'No posts match your filters.',
-                    })
-                  : intl.formatMessage({
-                      id: 'portal.feedback.list.noPostsYet',
-                      defaultMessage: 'No posts yet.',
+              activeSearch || activeFilterCount > 0 ? (
+                <p className="text-muted-foreground text-center py-8">
+                  {intl.formatMessage({
+                    id: 'portal.feedback.list.noPostsFiltered',
+                    defaultMessage: 'No posts match your filters.',
+                  })}
+                </p>
+              ) : (
+                <div className="text-center py-10 px-4 space-y-3">
+                  <p className="text-base font-medium text-foreground">
+                    {intl.formatMessage({
+                      id: 'portal.feedback.list.noPostsYetTitle',
+                      defaultMessage: 'Got an idea? Be the first to share it',
                     })}
-              </p>
+                  </p>
+                  <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                    {intl.formatMessage(
+                      {
+                        id: 'portal.feedback.list.noPostsYetDescription',
+                        defaultMessage: 'The {workspace} team reads every request.',
+                      },
+                      { workspace: workspaceName }
+                    )}
+                  </p>
+                </div>
+              )
             ) : (
               <>
                 <div

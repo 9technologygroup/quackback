@@ -206,7 +206,12 @@ function LiveHelpCenterFinder({
                       ? 'No articles match your filters'
                       : currentCategory
                         ? 'No articles in this category yet'
-                        : 'No articles yet'
+                        : 'Write your first article'
+                }
+                description={
+                  !filters.search && !hasActiveFilters && !currentCategory
+                    ? 'Answers customers can find without opening a ticket.'
+                    : undefined
                 }
                 action={
                   hasActiveFilters ? (

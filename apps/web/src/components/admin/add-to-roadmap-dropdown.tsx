@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { toast } from 'sonner'
 import { MapIcon, PlusIcon, CheckIcon, ArrowPathIcon } from '@heroicons/react/24/solid'
 import { Button } from '@/components/ui/button'
 import {
@@ -53,7 +54,7 @@ export function AddToRoadmapDropdown({
       }
       onSuccess?.()
     } catch (error) {
-      console.error('Failed to toggle roadmap:', error)
+      toast.error(error instanceof Error ? error.message : "Couldn't update roadmap. Try again.")
     } finally {
       setPendingRoadmapId(null)
     }

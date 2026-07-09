@@ -576,6 +576,8 @@ function getSlashMenuItems(
             editor.commands.setResizableImage({ src, 'data-keep-ratio': true })
           } catch (error) {
             console.error('Failed to upload image:', error)
+            const { toast } = await import('sonner')
+            toast.error("Couldn't upload image. Try again.")
           }
         }
         input.click()
@@ -1616,6 +1618,9 @@ function handleImageDrop(
         })
         .catch((err) => {
           console.error('[RichTextEditor] Image drop upload failed:', err)
+          void import('sonner').then(({ toast }) =>
+            toast.error("Couldn't upload image. Try again.")
+          )
         })
     })
 
@@ -1656,6 +1661,9 @@ function handleImagePaste(
         })
         .catch((err) => {
           console.error('[RichTextEditor] Image paste upload failed:', err)
+          void import('sonner').then(({ toast }) =>
+            toast.error("Couldn't upload image. Try again.")
+          )
         })
     })
 
@@ -2185,6 +2193,8 @@ function MenuBar({
         editor.commands.setResizableImage({ src, 'data-keep-ratio': true })
       } catch (error) {
         console.error('Failed to upload image:', error)
+        const { toast } = await import('sonner')
+        toast.error("Couldn't upload image. Try again.")
       }
     }
     input.click()
