@@ -1142,6 +1142,13 @@
       "when": 1784767260000,
       "tag": "0179_status_product",
       "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1784767440000,
+      "tag": "0182_kb_category_segments",
+      "breakpoints": true
     }
   ]
 }

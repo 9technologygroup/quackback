@@ -2,6 +2,7 @@ import {
   db,
   helpCenterCategories,
   helpCenterArticles,
+  segments,
   eq,
   and,
   isNull,
@@ -10,7 +11,7 @@ import {
   sql,
   inArray,
 } from '@/lib/server/db'
-import type { KbCategoryId } from '@quackback/ids'
+import type { KbCategoryId, SegmentId } from '@quackback/ids'
 import { NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { slugify } from '@/lib/shared/utils'
 import { uniqueHelpCenterSlug } from './help-center.slug'
@@ -231,6 +232,26 @@ const findCategorySlugConflict = (slug: string) =>
     columns: { id: true },
   })
 
+/**
+ * Validate a segment-gate list: every id must be an existing, non-deleted
+ * segment. Returns the deduplicated list. Rejecting unknown ids (rather than
+ * silently dropping them) surfaces admin typos and stale client state.
+ */
+async function validateSegmentIds(segmentIds: string[]): Promise<string[]> {
+  const unique = [...new Set(segmentIds)]
+  if (unique.length === 0) return []
+  const rows = await db.query.segments.findMany({
+    where: and(inArray(segments.id, unique as SegmentId[]), isNull(segments.deletedAt)),
+    columns: { id: true },
+  })
+  const valid = new Set<string>(rows.map((r) => r.id))
+  const unknown = unique.filter((id) => !valid.has(id))
+  if (unknown.length > 0) {
+    throw new ValidationError('VALIDATION_ERROR', `Unknown segment id(s): ${unknown.join(', ')}`)
+  }
+  return unique
+}
+
 export async function createCategory(input: CreateCategoryInput): Promise<HelpCenterCategory> {
   const name = input.name?.trim()
   if (!name) throw new ValidationError('VALIDATION_ERROR', 'Name is required')
@@ -260,6 +281,7 @@ export async function createCategory(input: CreateCategoryInput): Promise<HelpCe
       slug,
       description: input.description?.trim() || null,
       isPublic: input.isPublic ?? true,
+      segmentIds: input.segmentIds ? await validateSegmentIds(input.segmentIds) : [],
       position: input.position ?? 0,
       parentId: (input.parentId as KbCategoryId) ?? null,
       icon: input.icon ?? null,
@@ -284,6 +306,8 @@ export async function updateCategory(
     )
   if (input.description !== undefined) updateData.description = input.description?.trim() || null
   if (input.isPublic !== undefined) updateData.isPublic = input.isPublic
+  if (input.segmentIds !== undefined)
+    updateData.segmentIds = await validateSegmentIds(input.segmentIds)
   if (input.position !== undefined) updateData.position = input.position
   if (input.icon !== undefined) updateData.icon = input.icon ?? null
 
