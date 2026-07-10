@@ -12,6 +12,7 @@ import {
   fetchDeveloperConfig,
   fetchWidgetConfig,
   fetchWidgetSecret,
+  fetchWorkflowAbandonedAutoCloseFn,
 } from '@/lib/server/functions/settings'
 import { getHelpCenterConfigFn } from '@/lib/server/functions/help-center-settings'
 import { getHelpCenterDomainStatusFn } from '@/lib/server/functions/help-center-domain'
@@ -177,6 +178,13 @@ export const settingsQueries = {
     queryOptions({
       queryKey: ['settings', 'helpCenterRedirectRules'],
       queryFn: () => listRedirectRulesFn({ data: {} }),
+      staleTime: STALE_TIME_MEDIUM,
+    }),
+
+  workflowAbandonedAutoClose: () =>
+    queryOptions({
+      queryKey: ['settings', 'workflowAbandonedAutoClose'],
+      queryFn: fetchWorkflowAbandonedAutoCloseFn,
       staleTime: STALE_TIME_MEDIUM,
     }),
 }

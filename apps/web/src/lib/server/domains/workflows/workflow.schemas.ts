@@ -20,10 +20,23 @@
 import { z } from 'zod'
 import {
   ATTRIBUTE_FIELD_PREFIX,
+  PERSON_ATTRIBUTE_FIELD_PREFIX,
+  COMPANY_ATTRIBUTE_FIELD_PREFIX,
   CONDITION_FIELDS,
   type WorkflowCondition,
 } from './condition.evaluator'
 import { DISPATCHABLE_TRIGGER_TYPES } from '@/lib/shared/workflow-trigger-types'
+import { MAX_CONVERSATION_MESSAGE_LENGTH } from '@/lib/shared/conversation/types'
+
+/** Every dynamic attribute prefix a condition field may carry, alongside the
+ *  static CONDITION_FIELDS catalogue — conversation/person/company
+ *  attributes each key their own store (see condition.evaluator.ts), but
+ *  share the same "prefix + non-empty key" authoring shape. */
+const DYNAMIC_ATTRIBUTE_FIELD_PREFIXES = [
+  ATTRIBUTE_FIELD_PREFIX,
+  PERSON_ATTRIBUTE_FIELD_PREFIX,
+  COMPANY_ATTRIBUTE_FIELD_PREFIX,
+] as const
 
 const conditionOperator = z.enum([
   'eq',
@@ -42,14 +55,18 @@ const conditionOperator = z.enum([
 
 const conditionLeaf = z.object({
   // Validated against the evaluator's field catalogue so a typo is caught on
-  // save. Attribute predicates are dynamic (conversation.attr.<key>) so they
-  // pass by prefix instead of the static enum.
+  // save. Attribute predicates are dynamic (conversation.attr.<key>,
+  // person.attr.<key>, company.attr.<key>) so they pass by prefix instead of
+  // the static enum.
   field: z.union([
     z.enum(CONDITION_FIELDS),
     z
       .string()
       .refine(
-        (f) => f.startsWith(ATTRIBUTE_FIELD_PREFIX) && f.length > ATTRIBUTE_FIELD_PREFIX.length,
+        (f) =>
+          DYNAMIC_ATTRIBUTE_FIELD_PREFIXES.some(
+            (prefix) => f.startsWith(prefix) && f.length > prefix.length
+          ),
         { message: 'Unknown condition field' }
       ),
   ]),
@@ -110,6 +127,15 @@ const actionSchema = z.union([
   z.object({ type: z.literal('reopen') }),
   z.object({ type: z.literal('apply_sla'), policyId: z.string().min(1) }),
   z.object({ type: z.literal('set_attribute'), key: z.string().min(1), value: z.unknown() }),
+  // Plain-text v1 (no rich body / mentions yet — see action.executor.ts's
+  // WorkflowAction doc): bounded to the same length the underlying note write
+  // path (conversation.service.ts's addAgentNote -> validateContent) already
+  // enforces, so a graph can never store a body the executor would reject at
+  // run time.
+  z.object({
+    type: z.literal('add_note'),
+    body: z.string().min(1).max(MAX_CONVERSATION_MESSAGE_LENGTH),
+  }),
 ])
 
 // Conversational block kinds (Phase C, slice C-1). `blockBodySchema` is a
@@ -404,14 +430,95 @@ const frequencyCapSchema = z.discriminatedUnion('type', [
 ])
 export type FrequencyCap = z.infer<typeof frequencyCapSchema>
 
+/** `triggerSettings.audience` (support platform §4.6 audience targeting): an
+ *  optional condition tree in the EXISTING conditionSchema shape — reused,
+ *  not a parallel predicate format, so it evaluates through the same
+ *  evaluateCondition every other condition in a run does. Enforced at
+ *  dispatch by dispatcher.guards.ts's audienceAllows, beside channelAllows:
+ *  a non-matching audience means the workflow is never matched (no
+ *  first-match slot consumption for customer_facing). Defensive by the same
+ *  "settings bag" philosophy as frequencyCap/channels above: a stored value
+ *  that doesn't parse as a condition is caught there (not here) and allows
+ *  through rather than blocking dispatch — see audienceAllows' doc. */
+export const audienceConditionSchema = conditionSchema
+
+/** `triggerSettings.sendWindow` (support platform §4.6): restricts a
+ *  trigger to firing only inside/outside the workspace's office-hours
+ *  schedule. 'any' (the default when the key is absent) never restricts.
+ *  Enforced at dispatch by dispatcher.guards.ts's sendWindowAllows, beside
+ *  channelAllows/audienceAllows, off the same office-hours snapshot the
+ *  dispatch-resolved ConditionContext already carries (ctx.officeHours) —
+ *  no extra DB read. */
+export const sendWindowSchema = z.enum(['any', 'inside_office_hours', 'outside_office_hours'])
+export type SendWindow = z.infer<typeof sendWindowSchema>
+
+/** Per-workflow silence threshold for the two timer-driven unresponsive
+ *  triggers (conversation.customer_unresponsive / teammate_unresponsive —
+ *  support platform §4.6): workflow-sweep.ts reads this straight off each
+ *  LIVE workflow's stored `triggerSettings` (not from an authored condition)
+ *  to decide which conversations qualify FOR THAT WORKFLOW. Bounded 1 minute
+ *  to 14 days — generous but finite, same rationale as MAX_WAIT_SECONDS (an
+ *  unbounded value reads as "never", which isn't a real config). Default 60,
+ *  applied by the trigger-editor and by workflow-sweep.ts's reader alike when
+ *  the key is absent (a workflow authored before this field existed, or saved
+ *  via the API without it). */
+export const MAX_INACTIVITY_MINUTES = 14 * 24 * 60
+export const DEFAULT_INACTIVITY_MINUTES = 60
+
+/** Per-workflow lead time for sla.approaching_breach (support platform §4.6):
+ *  how long before a clock's due date the warning fires. Bounded 1 minute to
+ *  24 hours. Default 15. See sla.service.ts's sweepApproachingSlaBreaches for
+ *  how multiple live workflows with different lead times are reconciled (the
+ *  widest configured lead governs the single fire-once claim). */
+export const MAX_BREACH_LEAD_MINUTES = 24 * 60
+export const DEFAULT_BREACH_LEAD_MINUTES = 15
+
 /** Trigger settings stay an open bag (channels, and whatever else the
- *  authoring surface adds later) — only `frequencyCap` gets a validated
- *  shape when present, via `.catchall(z.unknown())` rather than `.strict()`
- *  or a plain `z.record`, so an unrecognized key still round-trips instead
- *  of being rejected or silently dropped. */
+ *  authoring surface adds later) — only `frequencyCap`/`audience`/
+ *  `sendWindow`/`inactivityMinutes`/`breachLeadMinutes` get a validated shape
+ *  when present, via `.catchall(z.unknown())` rather than `.strict()` or a
+ *  plain `z.record`, so an unrecognized key still round-trips instead of
+ *  being rejected or silently dropped. */
 export const triggerSettingsSchema = z
-  .object({ frequencyCap: frequencyCapSchema.optional() })
+  .object({
+    frequencyCap: frequencyCapSchema.optional(),
+    audience: audienceConditionSchema.optional(),
+    sendWindow: sendWindowSchema.optional(),
+    inactivityMinutes: z.number().int().min(1).max(MAX_INACTIVITY_MINUTES).optional(),
+    breachLeadMinutes: z.number().int().min(1).max(MAX_BREACH_LEAD_MINUTES).optional(),
+  })
   .catchall(z.unknown())
+
+/**
+ * Validate a raw `inactivityMinutes`/`breachLeadMinutes` value against its
+ * bounded-int shape straight off `triggerSettingsSchema`, collapsing anything
+ * malformed (wrong type, not an integer, out of bounds, or simply absent)
+ * down to `undefined` — ONE predicate (derived from the same zod shape the
+ * authoring write path validates against, so the two can never drift) shared
+ * by every reader of a stored `triggerSettings` bag: workflow-graph.ts's
+ * client-side sanitizeInactivityMinutes/sanitizeBreachLeadMinutes and
+ * workflow-sweep.ts's server-side readInactivityMinutes/readBreachLeadMinutes
+ * previously each hand-copied this exact min/max/integer check. Callers
+ * differ only in their FALLBACK when this returns undefined — the client
+ * drops the key entirely, the sweep falls back to
+ * DEFAULT_INACTIVITY_MINUTES/DEFAULT_BREACH_LEAD_MINUTES — so the fallback
+ * stays at each call site, not here.
+ */
+function parseBoundedTriggerSetting(
+  schema: z.ZodOptional<z.ZodNumber>,
+  raw: unknown
+): number | undefined {
+  const parsed = schema.safeParse(raw)
+  return parsed.success ? parsed.data : undefined
+}
+
+export function parseInactivityMinutes(raw: unknown): number | undefined {
+  return parseBoundedTriggerSetting(triggerSettingsSchema.shape.inactivityMinutes, raw)
+}
+
+export function parseBreachLeadMinutes(raw: unknown): number | undefined {
+  return parseBoundedTriggerSetting(triggerSettingsSchema.shape.breachLeadMinutes, raw)
+}
 
 /** Which trigger types a workflow can actually be dispatched on — see
  *  lib/shared/workflow-trigger-types.ts for the canonical list and how it's

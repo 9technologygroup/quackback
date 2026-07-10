@@ -18,10 +18,21 @@ export const DISPATCHABLE_TRIGGER_TYPES = [
   'conversation.status_changed',
   'conversation.assigned',
   'conversation.priority_changed',
+  'conversation.attribute_changed',
   'conversation.csat_submitted',
   'message.created',
   'message.note_created',
   'assistant.handed_off',
+  // Timer-driven triggers (support platform §4.6): synthetic events emitted by
+  // workflow-sweep.ts's 5-minute tick (the unresponsive pair) or the SLA
+  // domain's deadline scan (the SLA pair), never by a real user/system action.
+  // See event-trigger.ts's eventToWorkflowTrigger and dispatcher.ts's
+  // dispatchWorkflowTrigger `targetWorkflowId` for how these route
+  // differently from every trigger above.
+  'conversation.customer_unresponsive',
+  'conversation.teammate_unresponsive',
+  'sla.approaching_breach',
+  'sla.breached',
 ] as const
 
 export type DispatchableTriggerType = (typeof DISPATCHABLE_TRIGGER_TYPES)[number]

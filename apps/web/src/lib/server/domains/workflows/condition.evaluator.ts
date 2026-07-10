@@ -47,7 +47,26 @@ export interface ConditionContext {
     visitorPrincipalId?: string | null
   }
   message?: { body: string; senderType?: 'visitor' | 'agent' } | null
-  person?: { segmentIds: string[] } | null
+  person?: {
+    segmentIds: string[]
+    /** realEmail()-sanitized — the synthetic anonymous placeholder
+     *  (temp-<id>@anon.quackback.io) never surfaces here, so `person.email`
+     *  reads as unresolved (MISSING) for an anonymous visitor, same as one
+     *  with no email captured at all. */
+    email?: string | null
+    /** The identified visitor's own attributes (user.metadata), bare values
+     *  (no envelope — unlike conversation.attributes, this store was never
+     *  enveloped). Absent/undefined for an anonymous visitor. */
+    attributes?: Record<string, unknown>
+  } | null
+  /** The visitor's company (principal.company_id -> companies), when linked.
+   *  Absent when the visitor has no company (including every anonymous
+   *  visitor, who can never be linked). */
+  company?: {
+    /** Bare values in companies.custom_attributes — no envelope, same as
+     *  person.attributes. */
+    attributes?: Record<string, unknown>
+  } | null
   /** Whether the workspace is within office hours at evaluation time. */
   officeHours?: boolean | null
   /** The conversation's last CSAT rating (1-5), or null. */
@@ -108,6 +127,26 @@ export interface ConditionGroup {
 export type WorkflowCondition = ConditionLeaf | ConditionGroup
 
 /**
+ * Recursively test whether ANY leaf field in a condition tree (leaf or
+ * all/any group, arbitrarily nested) satisfies `predicate` — shared by
+ * anything that needs to know IF a condition tree references a certain KIND
+ * of field without caring which specific one (e.g. dispatcher.ts's
+ * person/company join gate). Kept here rather than duplicated per caller so
+ * a future group shape (this module's own recursion) can't drift from
+ * evaluateCondition's own walk.
+ */
+export function someConditionField(
+  condition: WorkflowCondition,
+  predicate: (field: string) => boolean
+): boolean {
+  if ('field' in condition) return predicate(condition.field)
+  return (
+    (condition.all ?? []).some((c) => someConditionField(c, predicate)) ||
+    (condition.any ?? []).some((c) => someConditionField(c, predicate))
+  )
+}
+
+/**
  * The condition fields the evaluator knows — the single catalogue the authoring
  * validation (workflow.schemas) derives its allowed set from, so a typo'd field
  * (conversation.stattus) is rejected on save instead of silently never matching.
@@ -123,6 +162,7 @@ export const CONDITION_FIELDS = [
   'message.body',
   'message.sender',
   'person.segments',
+  'person.email',
   'office_hours',
   'csat.rating',
 ] as const
@@ -135,12 +175,33 @@ export const CONDITION_FIELDS = [
  */
 export const ATTRIBUTE_FIELD_PREFIX = 'conversation.attr.'
 
+/**
+ * Dynamic person/company attribute predicates: `person.attr.<key>` /
+ * `company.attr.<key>` resolve the value stored under `<key>` in, respectively,
+ * the visitor's user.metadata and their company's custom_attributes. Unlike
+ * ATTRIBUTE_FIELD_PREFIX's conversation attributes, neither store uses the
+ * `{ v, src, at }` envelope (verified against user.attributes.ts's
+ * parseUserAttributes and the segment evaluator's raw company_attr JSON
+ * reads) — values here are read bare, no readAttributeValue unwrap.
+ */
+export const PERSON_ATTRIBUTE_FIELD_PREFIX = 'person.attr.'
+export const COMPANY_ATTRIBUTE_FIELD_PREFIX = 'company.attr.'
+
 /** Pull the value a `field` names out of the resolved context (undefined = the
  *  field isn't known, which every operator treats as a non-match). */
 function resolveField(field: string, ctx: ConditionContext): unknown {
   if (field.startsWith(ATTRIBUTE_FIELD_PREFIX)) {
     const key = field.slice(ATTRIBUTE_FIELD_PREFIX.length)
     return readAttributeValue(ctx.conversation.attributes?.[key])?.v
+  }
+  if (field.startsWith(PERSON_ATTRIBUTE_FIELD_PREFIX)) {
+    // Bare values, not envelopes — see PERSON_ATTRIBUTE_FIELD_PREFIX's doc.
+    const key = field.slice(PERSON_ATTRIBUTE_FIELD_PREFIX.length)
+    return ctx.person?.attributes?.[key]
+  }
+  if (field.startsWith(COMPANY_ATTRIBUTE_FIELD_PREFIX)) {
+    const key = field.slice(COMPANY_ATTRIBUTE_FIELD_PREFIX.length)
+    return ctx.company?.attributes?.[key]
   }
   switch (field) {
     case 'conversation.status':
@@ -166,6 +227,11 @@ function resolveField(field: string, ctx: ConditionContext): unknown {
       return ctx.message?.senderType ?? null
     case 'person.segments':
       return ctx.person?.segmentIds ?? []
+    // null (an anonymous visitor, or an identified one with no captured
+    // email) and undefined (no person at all) are both unresolved per
+    // isUnresolved — either way `person.email` is a non-match except is_empty.
+    case 'person.email':
+      return ctx.person?.email
     case 'office_hours':
       return ctx.officeHours ?? null
     case 'csat.rating':

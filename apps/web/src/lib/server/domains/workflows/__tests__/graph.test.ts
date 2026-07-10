@@ -8,18 +8,24 @@
 import { describe, it, expect } from 'vitest'
 import { walkWorkflow, type WorkflowGraph } from '../graph'
 import type { ConditionContext, BlockAnswer, AssistantOutcome } from '../condition.evaluator'
+import { makeConditionContext } from './workflow-test-utils'
 
-const ctx = (over: Partial<ConditionContext['conversation']> = {}): ConditionContext => ({
-  conversation: {
-    status: 'open',
-    channel: 'messenger',
-    priority: 'high',
-    waitingMinutes: 10,
-    tagIds: [],
-    assignedTeamId: null,
-    ...over,
-  },
-})
+// This suite only ever branches on conversation.priority (see every `field:`
+// literal below), so the shared builder's message/person/company/attributes
+// defaults are inert here — passed through unread, same as the previous
+// hand-rolled literal that omitted them (undefined) entirely.
+const ctx = (over: Partial<ConditionContext['conversation']> = {}): ConditionContext =>
+  makeConditionContext({
+    conversation: {
+      status: 'open',
+      channel: 'messenger',
+      priority: 'high',
+      waitingMinutes: 10,
+      tagIds: [],
+      assignedTeamId: null,
+      ...over,
+    },
+  })
 
 const ctxWithAnswer = (blockAnswer: BlockAnswer): ConditionContext => ({
   ...ctx(),

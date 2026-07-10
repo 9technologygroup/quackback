@@ -55,6 +55,7 @@ import {
   ArrowUturnLeftIcon,
   CheckCircleIcon,
   ClockIcon,
+  DocumentTextIcon,
   FlagIcon,
   ShieldCheckIcon,
   TagIcon,
@@ -65,7 +66,13 @@ import { cn } from '@/lib/shared/utils'
 import { useWorkflowEntities } from './entities'
 import { BLOCK_ICONS, ConfirmDeleteDialog, TONE_TILE } from './step-visuals'
 import type { BuilderSelection } from './types'
-import type { FrequencyCap, StepLocation, WorkflowTree } from '../workflow-graph'
+import type {
+  FrequencyCap,
+  GraphCondition,
+  SendWindow,
+  StepLocation,
+  WorkflowTree,
+} from '../workflow-graph'
 import {
   buildFlowEdges,
   buildFlowNodes,
@@ -98,6 +105,7 @@ const ICONS: Record<IconKey, ComponentType<{ className?: string }>> = {
   reopen: ArrowUturnLeftIcon,
   apply_sla: ShieldCheckIcon,
   set_attribute: AdjustmentsHorizontalIcon,
+  add_note: DocumentTextIcon,
   ...BLOCK_ICONS,
 }
 
@@ -449,6 +457,8 @@ export function WorkflowBuilderCanvas({
   triggerLabel,
   triggerChannels,
   triggerFrequencyCap,
+  triggerAudience,
+  triggerSendWindow,
   selection,
   stepIssues,
   onSelectNode,
@@ -463,6 +473,12 @@ export function WorkflowBuilderCanvas({
   /** The trigger's per-person run cap, for the trigger card's "Frequency
    *  cap" section. */
   triggerFrequencyCap?: FrequencyCap
+  /** The trigger's audience condition, for the trigger card's "Audience"
+   *  section — omitted entirely (no chip) when unconfigured. */
+  triggerAudience?: GraphCondition
+  /** The trigger's office-hours restriction, for the trigger card's "Send
+   *  window" section — omitted entirely (no chip) when 'any'/unset. */
+  triggerSendWindow?: SendWindow
   selection: BuilderSelection
   stepIssues: ReadonlyMap<string, string>
   onSelectNode: (id: string) => void
@@ -478,11 +494,23 @@ export function WorkflowBuilderCanvas({
       triggerLabel,
       triggerChannels,
       triggerFrequencyCap,
+      triggerAudience,
+      triggerSendWindow,
       labels,
       stepIssues,
       selectedId: selection?.kind === 'node' ? selection.id : null,
     }),
-    [tree, triggerLabel, triggerChannels, triggerFrequencyCap, labels, stepIssues, selection]
+    [
+      tree,
+      triggerLabel,
+      triggerChannels,
+      triggerFrequencyCap,
+      triggerAudience,
+      triggerSendWindow,
+      labels,
+      stepIssues,
+      selection,
+    ]
   )
 
   const actions = useMemo<CanvasActions>(

@@ -13,6 +13,7 @@ import {
   ChatBubbleLeftRightIcon,
   CheckCircleIcon,
   ClipboardDocumentListIcon,
+  DocumentTextIcon,
   FaceSmileIcon,
   FlagIcon,
   MoonIcon,
@@ -49,6 +50,7 @@ export const ACTION_ICONS: Record<ActionType, typeof BoltIcon> = {
   reopen: ArrowUturnLeftIcon,
   apply_sla: ShieldCheckIcon,
   set_attribute: AdjustmentsHorizontalIcon,
+  add_note: DocumentTextIcon,
 }
 
 /** Icons for the 8 conversational block kinds (Phase C, slice C-5) — every

@@ -13,21 +13,42 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import type { TriggerSettingsDraft } from '../use-workflow-builder'
-import { ClampedIntInput, Field } from './shared'
+import { ClampedIntInput, Field, MinutesField, setDroppableSetting } from './shared'
+import { RuleGroupBuilder } from './rule-group-builder'
 import {
+  DEFAULT_BREACH_LEAD_MINUTES,
+  DEFAULT_INACTIVITY_MINUTES,
   FREQUENCY_CAP_LABELS,
   FREQUENCY_CAP_TYPES,
+  MAX_BREACH_LEAD_MINUTES,
   MAX_FREQUENCY_CAP_COUNT,
   MAX_FREQUENCY_CAP_DAYS,
+  MAX_INACTIVITY_MINUTES,
+  SEND_WINDOW_LABELS,
+  SEND_WINDOW_TYPES,
   TRIGGER_CHANNELS,
+  TRIGGER_DESCRIPTIONS,
   TRIGGER_LABELS,
   TRIGGER_TYPES,
+  UNRESPONSIVE_TRIGGER_TYPES,
   WORKFLOW_CLASSES,
+  audienceUnreachableFieldWarning,
   defaultFrequencyCap,
   type FrequencyCap,
   type FrequencyCapType,
+  type GraphCondition,
+  type SendWindow,
   type WorkflowClassValue,
 } from '../../workflow-graph'
+
+/** The trigger's Audience section has no JSON-mode escape hatch of its own
+ *  (unlike the condition step / branch paths, which sit inside the graph's
+ *  "Edit as JSON" toggle) — a too-deep stored audience still renders (as a
+ *  read-only notice, never blocking) but points at removing/replacing it
+ *  here rather than "use JSON mode", which doesn't exist for trigger
+ *  settings. */
+const AUDIENCE_ADVANCED_FALLBACK =
+  'This audience condition is nested more deeply than this editor supports. It still applies as configured — remove it here to replace it.'
 
 export function TriggerEditor({
   triggerType,
@@ -59,14 +80,14 @@ export function TriggerEditor({
     type: 'unlimited',
   }
 
-  const setFrequencyCapType = (type: FrequencyCapType) => {
-    if (type === 'unlimited') {
-      const { frequencyCap: _drop, ...rest } = triggerSettings
-      onChangeTriggerSettings(rest as TriggerSettingsDraft)
-      return
-    }
-    onChangeTriggerSettings({ ...triggerSettings, frequencyCap: defaultFrequencyCap(type) })
-  }
+  const setFrequencyCapType = (type: FrequencyCapType) =>
+    setDroppableSetting(
+      triggerSettings,
+      onChangeTriggerSettings,
+      'frequencyCap',
+      type === 'unlimited' ? undefined : defaultFrequencyCap(type),
+      type === 'unlimited'
+    )
 
   const setFrequencyCapDays = (days: number) =>
     onChangeTriggerSettings({
@@ -76,6 +97,52 @@ export function TriggerEditor({
 
   const setFrequencyCapCount = (count: number) =>
     onChangeTriggerSettings({ ...triggerSettings, frequencyCap: { type: 'n_total', count } })
+
+  // 'any' is never written back either, same "absence reads identically to
+  // the no-op value" convention frequencyCap's 'unlimited' uses above.
+  const sendWindow = (triggerSettings.sendWindow as SendWindow | undefined) ?? 'any'
+  const setSendWindow = (next: SendWindow) =>
+    setDroppableSetting(
+      triggerSettings,
+      onChangeTriggerSettings,
+      'sendWindow',
+      next,
+      next === 'any'
+    )
+
+  const audience = (triggerSettings.audience as GraphCondition | undefined) ?? {}
+  const setAudience = (next: GraphCondition) =>
+    // {} ("matches everything") is the same as no audience configured at
+    // all — drop the key instead of storing a no-op condition, mirroring
+    // frequencyCap's 'unlimited'/sendWindow's 'any' convention above.
+    setDroppableSetting(
+      triggerSettings,
+      onChangeTriggerSettings,
+      'audience',
+      next,
+      Object.keys(next).length === 0
+    )
+  const audienceWarning = audienceUnreachableFieldWarning(triggerType, audience)
+
+  // The timer-driven triggers' own per-workflow threshold (support platform
+  // §4.6): workflow-sweep.ts / sla.service.ts read these straight off the
+  // stored triggerSettings, not from a condition, so — unlike frequencyCap/
+  // sendWindow/audience above — there's no "unconfigured" sentinel to drop
+  // back to; an absent key just reads as the same default the sweep falls
+  // back to (see workflow.schemas.ts's DEFAULT_INACTIVITY_MINUTES /
+  // DEFAULT_BREACH_LEAD_MINUTES), so this always writes a concrete value.
+  const isUnresponsiveTrigger = (UNRESPONSIVE_TRIGGER_TYPES as readonly string[]).includes(
+    triggerType
+  )
+  const isApproachingBreachTrigger = triggerType === 'sla.approaching_breach'
+  const inactivityMinutes =
+    (triggerSettings.inactivityMinutes as number | undefined) ?? DEFAULT_INACTIVITY_MINUTES
+  const setInactivityMinutes = (value: number) =>
+    onChangeTriggerSettings({ ...triggerSettings, inactivityMinutes: value })
+  const breachLeadMinutes =
+    (triggerSettings.breachLeadMinutes as number | undefined) ?? DEFAULT_BREACH_LEAD_MINUTES
+  const setBreachLeadMinutes = (value: number) =>
+    onChangeTriggerSettings({ ...triggerSettings, breachLeadMinutes: value })
 
   return (
     <div className="space-y-4">
@@ -92,7 +159,34 @@ export function TriggerEditor({
             ))}
           </SelectContent>
         </Select>
+        {TRIGGER_DESCRIPTIONS[triggerType as (typeof TRIGGER_TYPES)[number]] && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {TRIGGER_DESCRIPTIONS[triggerType as (typeof TRIGGER_TYPES)[number]]}
+          </p>
+        )}
       </Field>
+
+      {isUnresponsiveTrigger && (
+        <MinutesField
+          label="Silence threshold"
+          prefix="After"
+          suffix="minutes of silence"
+          value={inactivityMinutes}
+          max={MAX_INACTIVITY_MINUTES}
+          onCommit={setInactivityMinutes}
+        />
+      )}
+
+      {isApproachingBreachTrigger && (
+        <MinutesField
+          label="Lead time"
+          prefix="Warn"
+          suffix="minutes before the deadline"
+          value={breachLeadMinutes}
+          max={MAX_BREACH_LEAD_MINUTES}
+          onCommit={setBreachLeadMinutes}
+        />
+      )}
 
       <Field label="Channels">
         <div className="space-y-1.5">
@@ -167,6 +261,40 @@ export function TriggerEditor({
         <p className="mt-1 text-[11px] text-muted-foreground">
           Limits how many times this workflow can run for the same person.
         </p>
+      </Field>
+
+      <Field label="Send window">
+        <Select value={sendWindow} onValueChange={(v) => setSendWindow(v as SendWindow)}>
+          <SelectTrigger size="sm" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SEND_WINDOW_TYPES.map((t) => (
+              <SelectItem key={t} value={t}>
+                {SEND_WINDOW_LABELS[t]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Restricts this trigger to fire only inside or outside the workspace&apos;s office hours.
+        </p>
+      </Field>
+
+      <Field label="Audience">
+        <RuleGroupBuilder
+          subject="Only run for"
+          condition={audience}
+          onChange={setAudience}
+          advancedFallback={AUDIENCE_ADVANCED_FALLBACK}
+        />
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Limits this trigger to conversations, people, and companies matching these rules. No rules
+          runs for everyone.
+        </p>
+        {audienceWarning && (
+          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-500">{audienceWarning}</p>
+        )}
       </Field>
 
       <Field label="Workflow class">

@@ -16,11 +16,14 @@ import {
   triggerTypeSchema,
   triggerSettingsSchema,
   MAX_WAIT_SECONDS,
+  MAX_INACTIVITY_MINUTES,
+  MAX_BREACH_LEAD_MINUTES,
   duplicateStepIdMessage,
   missingStepMessage,
   undeclaredBranchPathMessage,
   classRestrictedNodeIssue,
 } from '../workflow.schemas'
+import { MAX_CONVERSATION_MESSAGE_LENGTH } from '@/lib/shared/conversation/types'
 
 describe('workflowGraphSchema', () => {
   it('accepts a full graph across every node kind', () => {
@@ -248,6 +251,49 @@ describe('workflowGraphSchema', () => {
       edges: [],
     }
     expect(workflowGraphSchema.safeParse(typo).success).toBe(false)
+  })
+
+  it('accepts person.email', () => {
+    const graph = {
+      nodes: [
+        {
+          id: 'g',
+          type: 'condition',
+          condition: { field: 'person.email', op: 'contains', value: '@example.com' },
+        },
+      ],
+      edges: [],
+    }
+    expect(workflowGraphSchema.safeParse(graph).success).toBe(true)
+  })
+
+  it('accepts person.attr.<key> and company.attr.<key> for any non-empty key', () => {
+    const graph = {
+      nodes: [
+        {
+          id: 'g',
+          type: 'condition',
+          condition: {
+            all: [
+              { field: 'person.attr.plan', op: 'eq', value: 'enterprise' },
+              { field: 'company.attr.tier', op: 'eq', value: 'gold' },
+            ],
+          },
+        },
+      ],
+      edges: [],
+    }
+    expect(workflowGraphSchema.safeParse(graph).success).toBe(true)
+  })
+
+  it('rejects an empty person.attr./company.attr. key and unrelated lookalike prefixes', () => {
+    for (const field of ['person.attr.', 'company.attr.', 'person.attrs.plan', 'person.stattus']) {
+      const graph = {
+        nodes: [{ id: 'g', type: 'condition', condition: { field, op: 'eq', value: 'x' } }],
+        edges: [],
+      }
+      expect(workflowGraphSchema.safeParse(graph).success).toBe(false)
+    }
   })
 
   it('rejects a node missing its id and a malformed edge', () => {
@@ -480,10 +526,15 @@ describe('triggerTypeSchema', () => {
       'conversation.status_changed',
       'conversation.assigned',
       'conversation.priority_changed',
+      'conversation.attribute_changed',
       'conversation.csat_submitted',
       'message.created',
       'message.note_created',
       'assistant.handed_off',
+      'conversation.customer_unresponsive',
+      'conversation.teammate_unresponsive',
+      'sla.approaching_breach',
+      'sla.breached',
     ]) {
       expect(triggerTypeSchema.safeParse(t).success).toBe(true)
     }
@@ -546,6 +597,43 @@ describe('snooze action: relative + legacy', () => {
   })
 })
 
+describe('add_note action', () => {
+  const graphWithNote = (action: unknown) => ({
+    nodes: [{ id: 'a', type: 'action', action }],
+    edges: [],
+  })
+
+  it('accepts a non-empty plain-text body', () => {
+    expect(
+      workflowGraphSchema.safeParse(graphWithNote({ type: 'add_note', body: 'Escalated to VIP' }))
+        .success
+    ).toBe(true)
+  })
+
+  it('rejects an empty body', () => {
+    expect(
+      workflowGraphSchema.safeParse(graphWithNote({ type: 'add_note', body: '' })).success
+    ).toBe(false)
+  })
+
+  it('rejects a body over MAX_CONVERSATION_MESSAGE_LENGTH, accepts one at the limit', () => {
+    expect(
+      workflowGraphSchema.safeParse(
+        graphWithNote({ type: 'add_note', body: 'x'.repeat(MAX_CONVERSATION_MESSAGE_LENGTH + 1) })
+      ).success
+    ).toBe(false)
+    expect(
+      workflowGraphSchema.safeParse(
+        graphWithNote({ type: 'add_note', body: 'x'.repeat(MAX_CONVERSATION_MESSAGE_LENGTH) })
+      ).success
+    ).toBe(true)
+  })
+
+  it('rejects a missing body', () => {
+    expect(workflowGraphSchema.safeParse(graphWithNote({ type: 'add_note' })).success).toBe(false)
+  })
+})
+
 describe('triggerSettingsSchema: frequencyCap', () => {
   it('stays an open bag when frequencyCap is absent — unrelated keys round-trip untouched', () => {
     const settings = { channels: ['email'], someFutureKey: 42 }
@@ -589,6 +677,91 @@ describe('triggerSettingsSchema: frequencyCap', () => {
     // Only the known `frequencyCap` key is shape-validated — every other key
     // in the bag, however misspelled, is a free-form pass-through.
     expect(triggerSettingsSchema.safeParse({ chanels: ['email'] }).success).toBe(true)
+  })
+})
+
+describe('triggerSettingsSchema: audience', () => {
+  it('accepts an absent audience, and a leaf/group condition in the exact conditionSchema shape', () => {
+    expect(triggerSettingsSchema.safeParse({}).success).toBe(true)
+    expect(
+      triggerSettingsSchema.safeParse({
+        audience: { field: 'conversation.status', op: 'eq', value: 'open' },
+      }).success
+    ).toBe(true)
+    expect(
+      triggerSettingsSchema.safeParse({
+        audience: {
+          any: [
+            { field: 'person.attr.plan', op: 'eq', value: 'pro' },
+            { all: [{ field: 'company.attr.tier', op: 'eq', value: 'enterprise' }] },
+          ],
+        },
+      }).success
+    ).toBe(true)
+  })
+
+  it('rejects an audience leaf with an unknown field, same as any other condition node', () => {
+    expect(
+      triggerSettingsSchema.safeParse({
+        audience: { field: 'conversation.stattus', op: 'eq', value: 'open' },
+      }).success
+    ).toBe(false)
+  })
+
+  it('rejects a non-object audience — the dispatcher guard fails open on this, but authoring still rejects it', () => {
+    expect(triggerSettingsSchema.safeParse({ audience: 'garbage' }).success).toBe(false)
+    expect(triggerSettingsSchema.safeParse({ audience: 42 }).success).toBe(false)
+  })
+})
+
+describe('triggerSettingsSchema: sendWindow', () => {
+  it('accepts every sendWindow variant and an absent key', () => {
+    expect(triggerSettingsSchema.safeParse({}).success).toBe(true)
+    for (const sendWindow of ['any', 'inside_office_hours', 'outside_office_hours']) {
+      expect(triggerSettingsSchema.safeParse({ sendWindow }).success).toBe(true)
+    }
+  })
+
+  it('rejects an unrecognized sendWindow value', () => {
+    expect(triggerSettingsSchema.safeParse({ sendWindow: 'sometimes' }).success).toBe(false)
+  })
+})
+
+describe('triggerSettingsSchema: inactivityMinutes (timer-driven unresponsive triggers)', () => {
+  it('accepts an absent key and every in-bounds integer', () => {
+    expect(triggerSettingsSchema.safeParse({}).success).toBe(true)
+    expect(triggerSettingsSchema.safeParse({ inactivityMinutes: 1 }).success).toBe(true)
+    expect(triggerSettingsSchema.safeParse({ inactivityMinutes: 60 }).success).toBe(true)
+    expect(
+      triggerSettingsSchema.safeParse({ inactivityMinutes: MAX_INACTIVITY_MINUTES }).success
+    ).toBe(true)
+  })
+
+  it('rejects zero, a non-integer, and anything past the 14-day ceiling', () => {
+    expect(triggerSettingsSchema.safeParse({ inactivityMinutes: 0 }).success).toBe(false)
+    expect(triggerSettingsSchema.safeParse({ inactivityMinutes: 1.5 }).success).toBe(false)
+    expect(
+      triggerSettingsSchema.safeParse({ inactivityMinutes: MAX_INACTIVITY_MINUTES + 1 }).success
+    ).toBe(false)
+  })
+})
+
+describe('triggerSettingsSchema: breachLeadMinutes (sla.approaching_breach)', () => {
+  it('accepts an absent key and every in-bounds integer', () => {
+    expect(triggerSettingsSchema.safeParse({}).success).toBe(true)
+    expect(triggerSettingsSchema.safeParse({ breachLeadMinutes: 1 }).success).toBe(true)
+    expect(triggerSettingsSchema.safeParse({ breachLeadMinutes: 15 }).success).toBe(true)
+    expect(
+      triggerSettingsSchema.safeParse({ breachLeadMinutes: MAX_BREACH_LEAD_MINUTES }).success
+    ).toBe(true)
+  })
+
+  it('rejects zero, a non-integer, and anything past the 24-hour ceiling', () => {
+    expect(triggerSettingsSchema.safeParse({ breachLeadMinutes: 0 }).success).toBe(false)
+    expect(triggerSettingsSchema.safeParse({ breachLeadMinutes: 2.5 }).success).toBe(false)
+    expect(
+      triggerSettingsSchema.safeParse({ breachLeadMinutes: MAX_BREACH_LEAD_MINUTES + 1 }).success
+    ).toBe(false)
   })
 })
 

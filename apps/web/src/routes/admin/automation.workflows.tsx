@@ -5,11 +5,15 @@ import { BackLink } from '@/components/ui/back-link'
 import { PageHeader } from '@/components/shared/page-header'
 import { settingsQueries } from '@/lib/client/queries/settings'
 import { AgentPriorityBanner } from '@/components/admin/automation/agent-priority-banner'
+import { AbandonedJourneyAutoCloseCard } from '@/components/admin/automation/abandoned-journey-auto-close-card'
 import { WorkflowsManager } from '@/components/admin/automation/workflows-manager'
 
 export const Route = createFileRoute('/admin/automation/workflows')({
   loader: async ({ context }) => {
-    await context.queryClient.ensureQueryData(settingsQueries.widgetConfig())
+    await Promise.all([
+      context.queryClient.ensureQueryData(settingsQueries.widgetConfig()),
+      context.queryClient.ensureQueryData(settingsQueries.workflowAbandonedAutoClose()),
+    ])
     return {}
   },
   component: WorkflowsPageRoute,
@@ -37,6 +41,7 @@ function WorkflowsPage() {
         description="Trigger-driven automation for conversations and tickets"
       />
       <AgentPriorityBanner />
+      <AbandonedJourneyAutoCloseCard />
       <WorkflowsManager />
     </div>
   )

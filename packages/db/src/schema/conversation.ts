@@ -189,6 +189,23 @@ export const conversations = pgTable(
     index('conversations_snoozed_until_idx')
       .on(table.snoozedUntil)
       .where(sql`status = 'snoozed' AND snoozed_until IS NOT NULL`),
+    // SLA sweep passes (sla.service.ts's sweepOverdueSlaBreaches +
+    // sweepApproachingSlaBreaches + sweepSlaBreachTriggers, via the shared
+    // scanAndClaimSlaClocks) all scan on `sla_applied IS NOT NULL` plus "at
+    // least one clock still unsettled" as their base filter, with every
+    // further predicate evaluated against JSON keys inside that column (no
+    // other single column narrows the scan). `sla_applied` is never cleared
+    // once set (a settle just flips fields on the same blob), so a plain
+    // `IS NOT NULL` predicate's selectivity degrades monotonically as a
+    // workspace ages — narrowed to the real, bounded candidate set instead
+    // (migration 0187, replacing 0186's `conversations_sla_applied_idx`; see
+    // that migration's own comment and scanAndClaimSlaClocks' matching extra
+    // AND clause for why the predicate is repeated verbatim there).
+    index('conversations_sla_unsettled_idx')
+      .on(table.id)
+      .where(
+        sql`sla_applied IS NOT NULL AND ((sla_applied ->> 'firstResponseAt') IS NULL OR (sla_applied ->> 'resolvedAt') IS NULL)`
+      ),
   ]
 )
 

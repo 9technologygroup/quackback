@@ -47,6 +47,7 @@ import {
   type WaitKind,
 } from './workflow-wait-queue'
 import { hasFrequencyCap, claimFrequencyCapSlot } from './dispatcher.guards'
+import { getWorkflowAbandonedAutoCloseSettings } from '@/lib/server/domains/settings/settings.workflows'
 
 const log = logger.child({ component: 'workflow-engine' })
 
@@ -328,6 +329,21 @@ async function applyPlanAndSettle(
     // extra block-correlation fields; 'assistant' has nothing else to
     // stamp beyond the node to resume at.
     const waitSeq = (readCursor(run).waitSeq ?? 0) + 1
+    // Abandoned-journey auto-close (rides the sweeper's expiry pass,
+    // workflow-sweep.ts): only an 'input' park is ever abandoned by the
+    // customer — an 'assistant' park ends via Quinn's own hand-off/close
+    // signal, never customer silence, so it is never stamped with an
+    // expiry regardless of this setting. Read once, only for an 'input'
+    // park, so an 'assistant' park never pays for a settings lookup it
+    // can't use.
+    const expiresAt =
+      plan.waitKind === 'input'
+        ? await (async () => {
+            const autoClose = await getWorkflowAbandonedAutoCloseSettings()
+            if (!autoClose.enabled) return null
+            return new Date(Date.now() + autoClose.waitMinutes * 60_000).toISOString()
+          })()
+        : null
     const cursor: WaitCursor | InputWaitCursor =
       plan.waitKind === 'input'
         ? {
@@ -336,7 +352,7 @@ async function applyPlanAndSettle(
             blockMessageId: blockMessageId ?? '',
             blockKind: plan.blockKind!,
             allowTypingInterrupt: plan.allowTypingInterrupt ?? false,
-            expiresAt: null,
+            expiresAt,
             waitSeconds: 0,
             waitSeq,
             waitStartedAt: new Date().toISOString(),

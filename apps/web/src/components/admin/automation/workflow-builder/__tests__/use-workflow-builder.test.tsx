@@ -106,6 +106,17 @@ describe('save(): dirty-gates triggerType / triggerSettings', () => {
     expect(payload).not.toHaveProperty('triggerSettings')
   })
 
+  it('round-trips the conversation.attribute_changed trigger type through the builder', () => {
+    const { result } = renderBuilder(fixtureWorkflow())
+
+    act(() => result.current.changeTriggerType('conversation.attribute_changed'))
+    expect(result.current.triggerType).toBe('conversation.attribute_changed')
+    act(() => result.current.save())
+
+    const payload = mutate.mock.calls[0]![0]
+    expect(payload.triggerType).toBe('conversation.attribute_changed')
+  })
+
   it('includes triggerSettings when its content was actually changed', () => {
     const { result } = renderBuilder(fixtureWorkflow({ triggerSettings: { channels: ['email'] } }))
 

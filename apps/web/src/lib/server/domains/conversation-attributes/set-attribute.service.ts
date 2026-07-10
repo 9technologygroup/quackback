@@ -24,6 +24,8 @@ import {
   type ConversationAttributeEnvelope,
   type ConversationAttributeSource,
 } from '@/lib/shared/conversation/attribute-values'
+import type { EventActor } from '@/lib/server/events/types'
+import { dispatchConversationAttributeChanged } from '@/lib/server/events/dispatch'
 
 /** Attributes live on conversations AND tickets; one writer serves both. */
 export type SetAttributeTarget = { conversationId: ConversationId } | { ticketId: TicketId }
@@ -75,6 +77,28 @@ export function validateAttributeValue(
     default:
       return fail('a supported field type')
   }
+}
+
+/** The conversation.attribute_changed event actor, derived from `src` alone
+ *  (this generic writer has no caller identity to thread through — every
+ *  caller already records its own identity elsewhere, e.g. the classification
+ *  note's Quinn author, the macro/inbox audit log). AI writes are
+ *  service-actored, displayName resolved from the configured assistant name
+ *  (settings.widget's messenger.assistant.name, falling back to 'Quinn' when
+ *  unset) — the same `messenger.assistant?.name ?? 'Quinn'` convention every
+ *  other assistant-actor site follows (assistant.orchestrator.ts,
+ *  action.executor.ts's sendBlock), rather than hardcoding the default name.
+ *  Consumers of this event's actor (e.g. the notification handler's
+ *  `event.actor.displayName`) show it verbatim to a human, so a renamed
+ *  assistant must actually carry through here, not merely omit the field.
+ *  Teammate and customer writes are 'user' actors, matching how
+ *  conversation.webhooks.ts's toEventActor treats every non-service principal
+ *  (including anonymous visitors) as 'user'. */
+async function attributeChangeActor(src: ConversationAttributeSource): Promise<EventActor> {
+  if (src !== 'ai') return { type: 'user' }
+  const { getMessengerConfig } = await import('@/lib/server/domains/settings/settings.widget')
+  const messenger = await getMessengerConfig()
+  return { type: 'service', displayName: messenger.assistant?.name ?? 'Quinn' }
 }
 
 /** The visible refusal thrown when a customer-sourced write loses the
@@ -167,5 +191,59 @@ export async function setConversationAttribute(
     .set({ customAttributes: patch, updatedAt: new Date() })
     .where(eq(table.id, id))
     .returning({ customAttributes: table.customAttributes })
+
+  // Fire conversation.attribute_changed so a workflow can trigger directly off
+  // an AI classification (or a teammate/customer edit) instead of only being
+  // able to branch on it at handoff. CRITICAL LOOP RULE: never emit for
+  // src === 'workflow' — a workflow's own set_attribute action writes through
+  // this exact function, and re-firing this event for that write would let a
+  // workflow retrigger itself (directly, or transitively through another
+  // workflow on this same trigger) forever. 'ai', 'teammate', and 'customer'
+  // are all real, non-workflow-originated writes and DO emit. This is the
+  // only gate the loop needs: the trigger side (event-trigger.ts) separately
+  // sets `allowServiceActor: true` for this trigger, but that is ONLY about
+  // letting an AI (service-actored) write reach the dispatcher at all — it is
+  // not a second copy of the loop rule, which lives here, once, upstream of
+  // every caller. Scoped to conversations: a ticket target has no
+  // conversationId for the payload, and ticket-scoped triggers don't exist
+  // yet (see event-trigger.ts's module doc).
+  if (src !== 'workflow' && 'conversationId' in target) {
+    // The actor is resolved (awaited) inline — a cheap settings read only for
+    // src 'ai', a same-tick resolve otherwise — so the dispatch call below is
+    // invoked synchronously relative to this function's own return, exactly
+    // as it was before this was a lookup: only the dispatch ITSELF stays
+    // fire-and-forget (void), same as ever.
+    const actor = await attributeChangeActor(src)
+    // A small extra SELECT (scoped to this branch only) to build the
+    // EventConversationRef every sibling conversation event embeds — the
+    // update above only returned customAttributes, not the ref fields, and
+    // `table` above is generic over conversations/tickets (tickets has no
+    // `channel` column), so it can't be widened for both branches at once.
+    const [convRow] = await db
+      .select({
+        status: conversations.status,
+        channel: conversations.channel,
+        priority: conversations.priority,
+        assignedTeamId: conversations.assignedTeamId,
+      })
+      .from(conversations)
+      .where(eq(conversations.id, target.conversationId))
+    if (convRow) {
+      void dispatchConversationAttributeChanged(
+        actor,
+        {
+          id: target.conversationId,
+          status: convRow.status,
+          channel: convRow.channel,
+          priority: convRow.priority,
+          assignedTeamId: convRow.assignedTeamId ?? null,
+        },
+        key,
+        normalized as JsonValue | null,
+        src
+      )
+    }
+  }
+
   return updated.customAttributes as Record<string, JsonValue>
 }

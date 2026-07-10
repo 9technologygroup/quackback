@@ -36,6 +36,7 @@ import type {
   ConversationId,
   PrincipalId,
   ConversationMessageId,
+  WorkflowId,
   WorkflowRunId,
 } from '@quackback/ids'
 import type { PrincipalType } from '@/lib/server/policy/types'
@@ -92,6 +93,25 @@ export function eventToWorkflowTrigger(event: EventData): WorkflowTrigger | null
         message: { body: m.content, senderType: m.senderType },
       }
     }
+    case 'conversation.attribute_changed': {
+      // An AI classification write is service-actored (Quinn), same as
+      // assistant.handed_off below, so this trigger opts out of the
+      // automated-actor gate the same way. IMPORTANT: this opt-out is NOT
+      // where the re-trigger loop is prevented — a workflow's own
+      // set_attribute action never even reaches here, because
+      // set-attribute.service.ts (the emit site) never fires this event for
+      // src 'workflow' in the first place. allowServiceActor only lets a
+      // real AI write (src 'ai', service-actored) through; actorType stays
+      // truthful for any other consumer.
+      return {
+        triggerType: event.type,
+        conversationId: event.data.conversationId as ConversationId,
+        actorType,
+        allowServiceActor: true,
+        subjectPrincipalId: null,
+        message: null,
+      }
+    }
     case 'assistant.handed_off': {
       // The assistant's own service principal authors this event, so the
       // dispatcher's automated-actor gate would silently swallow it. That gate
@@ -100,6 +120,56 @@ export function eventToWorkflowTrigger(event: EventData): WorkflowTrigger | null
       // signal is not that loop (no workflow action can produce it), so the
       // trigger opts out explicitly — actorType stays truthful for any other
       // consumer.
+      return {
+        triggerType: event.type,
+        conversationId: event.data.conversationId as ConversationId,
+        actorType,
+        allowServiceActor: true,
+        subjectPrincipalId: null,
+        message: null,
+      }
+    }
+    case 'conversation.customer_unresponsive':
+    case 'conversation.teammate_unresponsive': {
+      // Synthetic, timer-driven (workflow-sweep.ts's 5-minute tick) — no human
+      // or service principal ever "causes" silence, so this opts out of the
+      // automated-actor gate the same way assistant.handed_off does above.
+      // Mapped here mainly so processEvent's own eventToWorkflowTrigger
+      // pre-check (events/process.ts) enqueues the event onto the durable
+      // dispatch queue at all, and so this switch keeps its 1:1 coverage of
+      // DISPATCHABLE_TRIGGER_TYPES. dispatchWorkflowsForEvent below hands this
+      // trigger to dispatchWorkflowTrigger with `targetWorkflowId:
+      // event.data.workflowId` — the ONE live workflow the sweep already
+      // determined qualifies (its own inactivityMinutes threshold) — rather
+      // than the untargeted generic fan-out, because the fan-out has no
+      // concept of a per-workflow threshold.
+      //
+      // subjectPrincipalId is deliberately OMITTED (not set to null): this
+      // event's payload (conversationId/workflowId/silenceMinutes/sinceAt)
+      // never carries the visitor's principal id, so there is nothing to put
+      // here — dispatchWorkflowTrigger derives the real subject itself from
+      // the resolved ctx.conversation.visitorPrincipalId once it has a
+      // context to read (see its own doc). The conversation's visitor IS the
+      // frequency-cap subject for "this customer/teammate has gone quiet".
+      return {
+        triggerType: event.type,
+        conversationId: event.data.conversationId as ConversationId,
+        actorType,
+        allowServiceActor: true,
+        message: null,
+      }
+    }
+    case 'sla.approaching_breach':
+    case 'sla.breached': {
+      // Synthetic, timer-driven (the SLA domain's deadline scan, see
+      // sla.service.ts) — same automated-actor opt-out rationale as the
+      // unresponsive pair above. Unlike that pair, THIS trigger type DOES
+      // dispatch through the normal multi-workflow fan-out below: the SLA
+      // domain's fire-once dedupe is a CAS-guarded marker on `sla_applied`
+      // scoped per (conversation, clock), not per workflow, so there is no
+      // single target workflow to route to (see sla.service.ts's
+      // sweepApproachingSlaBreaches doc for the trade-off this implies).
+      // subjectPrincipalId is null: SLA frequency caps aren't per-person.
       return {
         triggerType: event.type,
         conversationId: event.data.conversationId as ConversationId,
@@ -286,6 +356,24 @@ function isRunStillActive(resumed: WorkflowRun | null): boolean {
  * other triggers for this same event still dispatch afterward.
  */
 export async function dispatchWorkflowsForEvent(event: EventData): Promise<void> {
+  // The unresponsive pair routes to a single pre-selected workflow — see
+  // dispatchWorkflowTrigger's `targetWorkflowId` doc — instead of the generic
+  // fan-out below — never interrupts/resumes anything (silence can't matter
+  // to a parked wait the way a reply or close does), so this returns
+  // immediately rather than falling into the interrupt-then-dispatch
+  // machinery below.
+  if (
+    event.type === 'conversation.customer_unresponsive' ||
+    event.type === 'conversation.teammate_unresponsive'
+  ) {
+    const trigger = eventToWorkflowTrigger(event)
+    if (!trigger) return // unreachable: the switch above always maps these two types
+    await dispatchWorkflowTrigger(trigger, {
+      targetWorkflowId: event.data.workflowId as WorkflowId,
+    })
+    return
+  }
+
   const trigger = eventToWorkflowTrigger(event)
   if (!trigger) return
 

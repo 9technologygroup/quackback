@@ -15,11 +15,17 @@ import {
   MAX_FREQUENCY_CAP_DAYS,
   MAX_WAIT_SECONDS,
   MAX_ASSISTANT_STEP_INSTRUCTIONS,
+  MAX_INACTIVITY_MINUTES,
+  DEFAULT_INACTIVITY_MINUTES,
+  MAX_BREACH_LEAD_MINUTES,
+  DEFAULT_BREACH_LEAD_MINUTES,
   PARKING_BLOCK_KINDS,
   classRestrictedNodeIssue,
   duplicateStepIdMessage,
   missingStepMessage,
   undeclaredBranchPathMessage,
+  parseInactivityMinutes,
+  parseBreachLeadMinutes,
 } from '@/lib/server/domains/workflows/workflow.schemas'
 import type {
   FrequencyCap,
@@ -28,13 +34,25 @@ import type {
 // Re-exported so every other cap symbol (and now these two bounds) flows
 // through this module: the one client-side boundary onto workflow.schemas.ts
 // for the feature, instead of individual editors reaching past it.
-export { MAX_FREQUENCY_CAP_COUNT, MAX_FREQUENCY_CAP_DAYS, MAX_ASSISTANT_STEP_INSTRUCTIONS }
+export {
+  MAX_FREQUENCY_CAP_COUNT,
+  MAX_FREQUENCY_CAP_DAYS,
+  MAX_ASSISTANT_STEP_INSTRUCTIONS,
+  MAX_INACTIVITY_MINUTES,
+  DEFAULT_INACTIVITY_MINUTES,
+  MAX_BREACH_LEAD_MINUTES,
+  DEFAULT_BREACH_LEAD_MINUTES,
+}
 import type {
   ATTRIBUTE_FIELD_PREFIX as ServerAttributeFieldPrefix,
+  PERSON_ATTRIBUTE_FIELD_PREFIX as ServerPersonAttributeFieldPrefix,
+  COMPANY_ATTRIBUTE_FIELD_PREFIX as ServerCompanyAttributeFieldPrefix,
   CONDITION_FIELDS,
 } from '@/lib/server/domains/workflows/condition.evaluator'
 
 export type { FrequencyCap } from '@/lib/server/domains/workflows/workflow.schemas'
+export type { SendWindow } from '@/lib/server/domains/workflows/workflow.schemas'
+import type { SendWindow } from '@/lib/server/domains/workflows/workflow.schemas'
 import { DISPATCHABLE_TRIGGER_TYPES } from '@/lib/shared/workflow-trigger-types'
 
 export type { ConditionOperator } from '@/lib/server/domains/workflows/condition.evaluator'
@@ -42,6 +60,7 @@ import type { ConditionOperator } from '@/lib/server/domains/workflows/condition
 import { CSAT_FACES } from '@/lib/shared/db-types'
 import type { TiptapContent } from '@/lib/shared/db-types'
 import { isEmptyTiptapDoc } from '@/lib/shared/utils/is-empty-tiptap-doc'
+import { truncate } from '@/lib/shared/utils/string'
 
 // ---------------------------------------------------------------------------
 // Graph JSON types (plain-string ids: the exact shape the save mutation takes)
@@ -220,12 +239,25 @@ export const COLLECT_FIELD_TYPES: readonly CollectFieldType[] = ['text', 'number
  * its types), so the string itself has to be re-declared, not re-exported.
  */
 export const ATTRIBUTE_FIELD_PREFIX: typeof ServerAttributeFieldPrefix = 'conversation.attr.'
+/** Mirrors condition.evaluator's PERSON_ATTRIBUTE_FIELD_PREFIX / COMPANY_ATTRIBUTE_FIELD_PREFIX
+ *  — same re-declaration rationale as ATTRIBUTE_FIELD_PREFIX above. */
+export const PERSON_ATTRIBUTE_FIELD_PREFIX: typeof ServerPersonAttributeFieldPrefix = 'person.attr.'
+export const COMPANY_ATTRIBUTE_FIELD_PREFIX: typeof ServerCompanyAttributeFieldPrefix =
+  'company.attr.'
 
-/** The 11 built-in condition fields (mirrors the server's CONDITION_FIELDS). */
+/** The built-in condition fields (mirrors the server's CONDITION_FIELDS). */
 export type StaticConditionField = (typeof CONDITION_FIELDS)[number]
-/** A dynamic `conversation.attr.<key>` predicate against a live attribute definition. */
+/** A dynamic `conversation.attr.<key>` predicate against a live conversation attribute definition. */
 export type AttributeConditionField = `${typeof ATTRIBUTE_FIELD_PREFIX}${string}`
-export type ConditionField = StaticConditionField | AttributeConditionField
+/** A dynamic `person.attr.<key>` predicate against a live user attribute definition. */
+export type PersonAttributeConditionField = `${typeof PERSON_ATTRIBUTE_FIELD_PREFIX}${string}`
+/** A dynamic `company.attr.<key>` predicate against a live company attribute definition. */
+export type CompanyAttributeConditionField = `${typeof COMPANY_ATTRIBUTE_FIELD_PREFIX}${string}`
+export type ConditionField =
+  | StaticConditionField
+  | AttributeConditionField
+  | PersonAttributeConditionField
+  | CompanyAttributeConditionField
 
 type Priority = Extract<GraphAction, { type: 'set_priority' }>['priority']
 
@@ -306,11 +338,63 @@ export const CONDITION_FIELD_META: Record<ConditionField, ConditionFieldMeta> = 
     kind: 'list',
     placeholder: 'Segment IDs, comma-separated',
   },
+  'person.email': {
+    label: 'Person email',
+    kind: 'text',
+    placeholder: 'name@example.com',
+  },
   office_hours: { label: 'Within office hours', kind: 'boolean' },
   'csat.rating': { label: 'CSAT rating', kind: 'number' },
 }
 
 export const CONDITION_FIELD_LIST = Object.keys(CONDITION_FIELD_META) as StaticConditionField[]
+
+/**
+ * The static field picker organized by entity group (RuleGroupBuilder,
+ * consumed by condition-editor.tsx / branch-editor.tsx's paths / the
+ * trigger's Audience section): Conversation / Message / Person / Availability
+ * — the dynamic attribute groups (Conversation attribute / Person attribute /
+ * Company attribute) render as their own SelectGroups alongside these, keyed
+ * off the live registries instead of this static catalogue. A Record (not a
+ * loop over CONDITION_FIELD_LIST) so a newly added static field fails
+ * typecheck here until it's placed in a group, the same "exhaustive by
+ * construction" pattern CONDITION_FIELD_META itself uses.
+ */
+export const STATIC_CONDITION_FIELD_GROUP: Record<StaticConditionField, string> = {
+  'conversation.status': 'Conversation',
+  'conversation.channel': 'Conversation',
+  'conversation.priority': 'Conversation',
+  'conversation.waiting_minutes': 'Conversation',
+  'conversation.tags': 'Conversation',
+  'conversation.team': 'Conversation',
+  'csat.rating': 'Conversation',
+  'message.body': 'Message',
+  'message.sender': 'Message',
+  'person.segments': 'Person',
+  'person.email': 'Person',
+  office_hours: 'Availability',
+}
+
+/** Group display order for the field picker; a group with no fields (never
+ *  the case for the static ones, always possible for a live attribute group
+ *  the workspace hasn't defined any of) is simply skipped by the caller. */
+export const CONDITION_FIELD_GROUP_ORDER = [
+  'Conversation',
+  'Message',
+  'Person',
+  'Availability',
+] as const
+
+/** `STATIC_CONDITION_FIELD_GROUP` inverted into picker-ready groups, in
+ *  `CONDITION_FIELD_GROUP_ORDER`. Computed once at module load — the
+ *  catalogue is static, so there's nothing to recompute per render. */
+export const STATIC_CONDITION_FIELD_GROUPS: readonly {
+  label: string
+  fields: readonly StaticConditionField[]
+}[] = CONDITION_FIELD_GROUP_ORDER.map((label) => ({
+  label,
+  fields: CONDITION_FIELD_LIST.filter((f) => STATIC_CONDITION_FIELD_GROUP[f] === label),
+}))
 
 export const OPERATOR_LABELS: Record<ConditionOperator, string> = {
   eq: 'is',
@@ -418,27 +502,110 @@ export function toAttributeFieldDefs(
   )
 }
 
+// ---------------------------------------------------------------------------
+// person.attr.<key> / company.attr.<key>: the same data-driven pattern as
+// conversation.attr above, backed instead by the live user/company attribute
+// registries (user_attribute_definitions / company_attribute_definitions).
+// Structurally simpler than conversation attributes: no select/multi_select
+// (so never any `options`), and the field type comes from a different
+// registry shape (`type`, not `fieldType`) — hence a distinct
+// PersonCompanyAttributeFieldDef rather than reusing AttributeFieldDef.
+// ---------------------------------------------------------------------------
+
+/** Mirrors user_attribute_definitions.type / company_attribute_definitions.type. */
+export type PersonCompanyAttributeType = 'string' | 'number' | 'boolean' | 'date' | 'currency'
+
+export interface PersonCompanyAttributeFieldDef {
+  key: string
+  label: string
+  type: PersonCompanyAttributeType
+}
+
+/** The operators offered per person/company attribute type (mirrors
+ *  ATTRIBUTE_OPERATORS_BY_TYPE's shape; v1: date stays valueless-only,
+ *  currency compares numerically like number). */
+export const PERSON_COMPANY_ATTRIBUTE_OPERATORS_BY_TYPE: Record<
+  PersonCompanyAttributeType,
+  readonly ConditionOperator[]
+> = {
+  string: ['contains', 'not_contains', 'eq', 'neq', 'is_set', 'is_empty'],
+  number: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'is_set', 'is_empty'],
+  boolean: ['eq'],
+  date: ['is_set', 'is_empty'],
+  currency: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'is_set', 'is_empty'],
+}
+
+const PERSON_COMPANY_ATTRIBUTE_VALUE_KIND: Record<PersonCompanyAttributeType, ConditionValueKind> =
+  {
+    string: 'text',
+    number: 'number',
+    boolean: 'boolean',
+    // Never actually rendered: date only ever offers valueless operators.
+    date: 'text',
+    currency: 'number',
+  }
+
+export function isPersonAttributeField(field: string): field is PersonAttributeConditionField {
+  return (
+    field.startsWith(PERSON_ATTRIBUTE_FIELD_PREFIX) &&
+    field.length > PERSON_ATTRIBUTE_FIELD_PREFIX.length
+  )
+}
+export function personAttributeKeyFromField(field: PersonAttributeConditionField): string {
+  return field.slice(PERSON_ATTRIBUTE_FIELD_PREFIX.length)
+}
+export function personAttributeFieldForKey(key: string): PersonAttributeConditionField {
+  return `${PERSON_ATTRIBUTE_FIELD_PREFIX}${key}` as PersonAttributeConditionField
+}
+
+export function isCompanyAttributeField(field: string): field is CompanyAttributeConditionField {
+  return (
+    field.startsWith(COMPANY_ATTRIBUTE_FIELD_PREFIX) &&
+    field.length > COMPANY_ATTRIBUTE_FIELD_PREFIX.length
+  )
+}
+export function companyAttributeKeyFromField(field: CompanyAttributeConditionField): string {
+  return field.slice(COMPANY_ATTRIBUTE_FIELD_PREFIX.length)
+}
+export function companyAttributeFieldForKey(key: string): CompanyAttributeConditionField {
+  return `${COMPANY_ATTRIBUTE_FIELD_PREFIX}${key}` as CompanyAttributeConditionField
+}
+
+/** Shared by the person/company attribute registry loaders — both
+ *  (UserAttributeItem / CompanyAttributeItem) carry the same key/label/type
+ *  shape, duck-typed so this module stays decoupled from the query layer's
+ *  concrete types. */
+export function toPersonCompanyAttributeFieldDefs(
+  items: readonly { key: string; label: string; type: PersonCompanyAttributeType }[]
+): ReadonlyMap<string, PersonCompanyAttributeFieldDef> {
+  return new Map(items.map((d) => [d.key, { key: d.key, label: d.label, type: d.type }]))
+}
+
 export interface ResolvedConditionField {
   label: string
   kind: ConditionValueKind
   operators: readonly ConditionOperator[]
   options?: readonly { value: string; label: string }[]
   placeholder?: string
-  /** A `conversation.attr.*` field with no matching live definition (archived
-   *  or a key from before/after this workspace's current registry). Still
-   *  editable — just degraded to a raw value input, never blocking. */
+  /** A `conversation.attr.*` / `person.attr.*` / `company.attr.*` field with
+   *  no matching live definition (archived or a key from before/after this
+   *  workspace's current registry). Still editable — just degraded to a raw
+   *  value input, never blocking. */
   unresolved?: boolean
 }
 
-/** Field metadata for both the static catalogue and attribute fields, the
- *  single place the visual editor and the canvas/outline summaries resolve
- *  a field's label / operators / value options from. `teams` fills in
- *  conversation.team's options (id -> name, from the live team list) since
- *  it — unlike the rest of the static catalogue — has no fixed option set. */
+/** Field metadata for the static catalogue and all three attribute-field
+ *  groups, the single place the visual editor and the canvas/outline
+ *  summaries resolve a field's label / operators / value options from.
+ *  `teams` fills in conversation.team's options (id -> name, from the live
+ *  team list) since it — unlike the rest of the static catalogue — has no
+ *  fixed option set. */
 export function resolveConditionField(
   field: ConditionField,
   attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
-  teams: ReadonlyMap<string, string> = new Map()
+  teams: ReadonlyMap<string, string> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): ResolvedConditionField {
   if (isAttributeField(field)) {
     const key = attributeKeyFromField(field)
@@ -456,6 +623,25 @@ export function resolveConditionField(
       kind: ATTRIBUTE_VALUE_KIND[def.fieldType],
       operators: ATTRIBUTE_OPERATORS_BY_TYPE[def.fieldType],
       options: def.options?.map((o) => ({ value: o.id, label: o.label })),
+    }
+  }
+  if (isPersonAttributeField(field) || isCompanyAttributeField(field)) {
+    const key = isPersonAttributeField(field)
+      ? personAttributeKeyFromField(field)
+      : companyAttributeKeyFromField(field)
+    const def = (isPersonAttributeField(field) ? personAttributes : companyAttributes).get(key)
+    if (!def) {
+      return {
+        label: `Unknown attribute ${key}`,
+        kind: 'text',
+        operators: ALL_OPERATORS,
+        unresolved: true,
+      }
+    }
+    return {
+      label: def.label,
+      kind: PERSON_COMPANY_ATTRIBUTE_VALUE_KIND[def.type],
+      operators: PERSON_COMPANY_ATTRIBUTE_OPERATORS_BY_TYPE[def.type],
     }
   }
   const meta = CONDITION_FIELD_META[field]
@@ -487,6 +673,8 @@ export const ACTION_LABELS: Record<ActionType, string> = {
   reopen: 'Reopen conversation',
   apply_sla: 'Apply SLA policy',
   set_attribute: 'Set attribute',
+  // Plain-text v1 internal note — see action.executor.ts's `add_note` doc.
+  add_note: 'Add internal note',
 }
 export const ACTION_TYPES = Object.keys(ACTION_LABELS) as ActionType[]
 
@@ -509,13 +697,94 @@ export const TRIGGER_LABELS: Record<TriggerType, string> = {
   'conversation.assigned': 'Assigned to team or agent',
   'assistant.handed_off': 'AI agent handed off to a human',
   'conversation.priority_changed': 'Priority changed',
+  'conversation.attribute_changed': 'Attribute changed',
   'conversation.csat_submitted': 'CSAT rating submitted',
   'message.note_created': 'Internal note added',
+  'conversation.customer_unresponsive': 'Customer stopped responding',
+  'conversation.teammate_unresponsive': 'Teammate hasn’t responded',
+  'sla.approaching_breach': 'SLA approaching breach',
+  'sla.breached': 'SLA breached',
+}
+
+/** The two timer-driven unresponsive triggers (support platform §4.6) — the
+ *  ONE trigger-editor addition this pair owns: an `inactivityMinutes` control
+ *  (see workflow.schemas.ts's triggerSettingsSchema) shown only for these.
+ *  Exported so trigger-editor.tsx can gate its control without re-deriving
+ *  the pair inline. */
+export const UNRESPONSIVE_TRIGGER_TYPES = [
+  'conversation.customer_unresponsive',
+  'conversation.teammate_unresponsive',
+] as const
+
+/** Extra guidance shown under the trigger picker for a trigger whose firing
+ *  condition isn't self-explanatory from its label alone. Sparse by design —
+ *  most triggers need none. */
+export const TRIGGER_DESCRIPTIONS: Partial<Record<TriggerType, string>> = {
+  'conversation.attribute_changed':
+    'Runs when an attribute is set or changed by AI or a teammate. Pair it with a conversation.attr.<key> condition or branch to react to the value.',
+  'conversation.customer_unresponsive':
+    'Runs once when the customer has been silent for the configured time after the last teammate or AI reply. Never fires on a closed or snoozed conversation.',
+  'conversation.teammate_unresponsive':
+    'Runs once when no teammate has replied for the configured time after the customer’s last message. Never fires on a closed or snoozed conversation.',
+  'sla.approaching_breach':
+    'Runs once when an applied SLA’s first-response or resolution clock enters its lead window. Set the lead time below.',
+  'sla.breached':
+    'Runs once when an applied SLA’s first-response or resolution clock passes its due date with nothing settling it.',
 }
 
 /** Trigger label for a stored triggerType, tolerant of an unknown/legacy value. */
 export function triggerLabel(triggerType: string): string {
   return (TRIGGER_LABELS as Record<string, string | undefined>)[triggerType] ?? triggerType
+}
+
+/**
+ * Trigger types whose dispatched event actually carries a `message` (mirrors
+ * event-trigger.ts's eventToWorkflowTrigger switch: EVERY case there sets
+ * `message: null` except message.created/message.note_created, which set
+ * `message: { body, senderType }`). Re-declared here rather than imported —
+ * event-trigger.ts is server-only — the same client-safe-literal boundary
+ * ATTRIBUTE_FIELD_PREFIX/PERSON_ATTRIBUTE_FIELD_PREFIX above already use for
+ * a server module's runtime shape. A future trigger case added there without
+ * updating this set only degrades this authoring warning (a message.* rule
+ * that's actually reachable would wrongly still warn, or vice versa) — the
+ * dispatch itself is unaffected either way.
+ */
+export const MESSAGE_CARRYING_TRIGGER_TYPES: readonly TriggerType[] = [
+  'message.created',
+  'message.note_created',
+]
+
+/** True when `condition` (a leaf or an all/any group, recursively) has any
+ *  leaf on a `message.*` field — used by audienceUnreachableFieldWarning
+ *  below. */
+function conditionReferencesMessageField(condition: GraphCondition | undefined): boolean {
+  if (!condition) return false
+  if ('field' in condition) return condition.field.startsWith('message.')
+  const children = [...(condition.all ?? []), ...(condition.any ?? [])]
+  return children.some(conditionReferencesMessageField)
+}
+
+/**
+ * Non-blocking authoring warning (support platform §4.6): a trigger's
+ * Audience references a `message.*` field (message.body / message.sender)
+ * while the selected trigger's event never carries a message — every trigger
+ * except message.created/message.note_created (MESSAGE_CARRYING_TRIGGER_TYPES
+ * above). resolveField (condition.evaluator.ts) reads an absent `message` as
+ * MISSING for any op except is_empty, so the rule silently never matches —
+ * the audience quietly excludes every conversation instead of erroring. This
+ * is a WARNING, not a save-blocking error (mirrors draftIssues' `blocking` vs
+ * `count` split): the trigger might change later, or the rule might be
+ * authored ahead of a trigger switch — so it's surfaced next to the Audience
+ * editor (trigger-editor.tsx) rather than gating Set Live.
+ */
+export function audienceUnreachableFieldWarning(
+  triggerType: string,
+  audience: GraphCondition | undefined
+): string | null {
+  if (!audience) return null
+  if (MESSAGE_CARRYING_TRIGGER_TYPES.includes(triggerType as TriggerType)) return null
+  if (!conditionReferencesMessageField(audience)) return null
+  return `This audience checks the message, but "${triggerLabel(triggerType)}" never carries one — it will never match.`
 }
 
 export const WORKFLOW_CLASSES = [
@@ -613,6 +882,63 @@ export function frequencyCapSummary(cap: FrequencyCap | undefined): string {
   }
 }
 
+/** A stored `inactivityMinutes` too malformed to parse (out of bounds, not an
+ *  integer, a non-UI writer) reads as `undefined` rather than blocking every
+ *  future save — the same "sanitize down to unconfigured" pattern
+ *  sanitizeFrequencyCap uses. The trigger-editor's own read then falls back
+ *  to DEFAULT_INACTIVITY_MINUTES, matching workflow-sweep.ts's reader. Both
+ *  this and sanitizeBreachLeadMinutes below delegate to workflow.schemas.ts's
+ *  parseInactivityMinutes/parseBreachLeadMinutes — the SAME bounded-int
+ *  predicate (derived from triggerSettingsSchema) the server-side sweep
+ *  reader uses, so client and server can never drift on what counts as a
+ *  valid value. */
+export function sanitizeInactivityMinutes(raw: unknown): number | undefined {
+  return parseInactivityMinutes(raw)
+}
+
+/** Mirrors sanitizeInactivityMinutes for `breachLeadMinutes`. */
+export function sanitizeBreachLeadMinutes(raw: unknown): number | undefined {
+  return parseBreachLeadMinutes(raw)
+}
+
+// ---------------------------------------------------------------------------
+// Send window: the trigger's restriction to inside/outside office hours
+// (mirrors workflow.schemas.ts's sendWindowSchema — see dispatcher.guards.ts's
+// sendWindowAllows for what actually enforces it). 'any' is never written
+// back, same "absence reads identically to the no-op value" convention
+// frequencyCap's 'unlimited' already uses.
+// ---------------------------------------------------------------------------
+
+export const SEND_WINDOW_LABELS: Record<SendWindow, string> = {
+  any: 'Any time',
+  inside_office_hours: 'Only inside office hours',
+  outside_office_hours: 'Only outside office hours',
+}
+export const SEND_WINDOW_TYPES = Object.keys(SEND_WINDOW_LABELS) as SendWindow[]
+
+/** A stored `sendWindow` too malformed to parse reads as "Any time" rather
+ *  than blocking every future save — same fallback rationale as
+ *  sanitizeFrequencyCap below. */
+export function sanitizeSendWindow(raw: unknown): SendWindow | undefined {
+  return raw === 'inside_office_hours' || raw === 'outside_office_hours' ? raw : undefined
+}
+
+export function sendWindowSummary(sendWindow: SendWindow | undefined): string {
+  return SEND_WINDOW_LABELS[sendWindow ?? 'any']
+}
+
+/** A stored `audience` too malformed to be a condition (see
+ *  validateCondition below — the same structural check validateGraph runs
+ *  for every graph condition node) reads as "no audience" rather than
+ *  blocking every future save, mirroring sanitizeFrequencyCap/
+ *  sanitizeSendWindow's fallback rationale. Unlike those two, a well-formed
+ *  audience is returned AS-IS (not re-typed) — RuleGroupBuilder decodes it
+ *  itself via conditionToGroupDraft, same as any other condition. */
+export function sanitizeAudience(raw: unknown): GraphCondition | undefined {
+  if (raw === undefined) return undefined
+  return validateCondition(raw, 'audience') === null ? (raw as GraphCondition) : undefined
+}
+
 /** A fresh action of the given type with editable defaults. */
 export function defaultAction(type: ActionType): GraphAction {
   switch (type) {
@@ -636,15 +962,24 @@ export function defaultAction(type: ActionType): GraphAction {
       return { type, policyId: '' }
     case 'set_attribute':
       return { type, key: '', value: '' }
+    case 'add_note':
+      return { type, body: '' }
   }
 }
 
-/** Accepts both the static catalogue and the `conversation.attr.<key>`
- *  prefix — an unknown/archived key still passes (see resolveConditionField's
+/** Accepts the static catalogue and all three dynamic attribute prefixes
+ *  (`conversation.attr.<key>`, `person.attr.<key>`, `company.attr.<key>`) —
+ *  an unknown/archived key still passes (see resolveConditionField's
  *  "unresolved" fallback); only the shape of the field string is checked
  *  here, same as the server's authoring schema. */
 export function isConditionField(v: unknown): v is ConditionField {
-  return typeof v === 'string' && (v in CONDITION_FIELD_META || isAttributeField(v))
+  return (
+    typeof v === 'string' &&
+    (v in CONDITION_FIELD_META ||
+      isAttributeField(v) ||
+      isPersonAttributeField(v) ||
+      isCompanyAttributeField(v))
+  )
 }
 function isOperator(v: unknown): v is ConditionOperator {
   return typeof v === 'string' && v in OPERATOR_LABELS
@@ -988,6 +1323,8 @@ function validateAction(v: unknown, where: string): string | null {
       return nonEmptyString(v.policyId) ? null : `${where}: enter an SLA policy id`
     case 'set_attribute':
       return nonEmptyString(v.key) ? null : `${where}: enter an attribute key`
+    case 'add_note':
+      return nonEmptyString(v.body) ? null : `${where}: write the note`
   }
 }
 
@@ -1565,11 +1902,14 @@ function leafToRule(leaf: ConditionLeaf): ConditionRuleDraft | null {
   const { field, op } = leaf
   if (VALUELESS_OPERATORS.has(op)) return { field, op, value: '' }
   const v = leaf.value
-  // Attribute fields don't need their live definition to read a leaf back
-  // into draft form: the stored JSON value's own runtime type says whether
-  // it's a checkbox boolean, a number, a multi_select array, or a plain
-  // string (select ids and text share the same string representation).
-  if (isAttributeField(field)) {
+  // Attribute fields (all three prefixes) don't need their live definition to
+  // read a leaf back into draft form: the stored JSON value's own runtime
+  // type says whether it's a checkbox/boolean, a number, a multi_select
+  // array, or a plain string (select ids and text share the same string
+  // representation). person.attr/company.attr never carry an array value in
+  // practice (no multi-value type in that registry), but the same decode
+  // stays harmless if one ever shows up via JSON-mode authoring.
+  if (isAttributeField(field) || isPersonAttributeField(field) || isCompanyAttributeField(field)) {
     if (typeof v === 'boolean') return { field, op, value: v ? 'true' : 'false' }
     if (typeof v === 'number' && Number.isFinite(v)) return { field, op, value: String(v) }
     if (Array.isArray(v) && v.every((x) => typeof x === 'string'))
@@ -1611,15 +1951,16 @@ export function conditionToDraft(condition: GraphCondition): ConditionDraft {
   return { kind: 'simple', mode: hasAll ? 'all' : 'any', rules }
 }
 
-/** Encode an attribute rule's string-form value back to typed JSON. The
- *  operator alone disambiguates the array (includes_any/excludes_all) and
- *  numeric (gt/gte/lt/lte) cases; only eq/neq/contains/not_contains need the
- *  live definition to tell a checkbox boolean apart from select/text text —
- *  an unresolved (archived/unknown) key falls back to the raw string, same
- *  as the set_attribute action editor's raw-JSON fallback for unknown keys. */
-function encodeAttributeConditionValue(
+/** Shared by encodeAttributeConditionValue and its person/company-attribute
+ *  counterpart: the operator alone disambiguates the array
+ *  (includes_any/excludes_all) and numeric (gt/gte/lt/lte) cases; only
+ *  eq/neq/contains/not_contains need the caller's boolean/number hint (from
+ *  the live definition) to tell a checkbox/boolean or numeric value apart
+ *  from plain text. */
+function encodeDynamicAttributeConditionValue(
   rule: ConditionRuleDraft,
-  attributes: ReadonlyMap<string, AttributeFieldDef>
+  isBooleanValue: boolean,
+  isNumberValue: boolean
 ): unknown {
   if (rule.op === 'includes_any' || rule.op === 'excludes_all') {
     return rule.value
@@ -1631,20 +1972,56 @@ function encodeAttributeConditionValue(
     const n = Number(rule.value)
     return Number.isFinite(n) ? n : 0
   }
-  const def = isAttributeField(rule.field)
-    ? attributes.get(attributeKeyFromField(rule.field))
-    : undefined
-  if (def?.fieldType === 'checkbox') return rule.value === 'true'
-  if (def?.fieldType === 'number') {
+  if (isBooleanValue) return rule.value === 'true'
+  if (isNumberValue) {
     const n = Number(rule.value)
     return Number.isFinite(n) ? n : 0
   }
   return rule.value
 }
 
+/** Encode a conversation.attr rule's string-form value back to typed JSON —
+ *  an unresolved (archived/unknown) key falls back to the raw string, same
+ *  as the set_attribute action editor's raw-JSON fallback for unknown keys. */
+function encodeAttributeConditionValue(
+  rule: ConditionRuleDraft,
+  attributes: ReadonlyMap<string, AttributeFieldDef>
+): unknown {
+  const def = isAttributeField(rule.field)
+    ? attributes.get(attributeKeyFromField(rule.field))
+    : undefined
+  return encodeDynamicAttributeConditionValue(
+    rule,
+    def?.fieldType === 'checkbox',
+    def?.fieldType === 'number'
+  )
+}
+
+/** Encode a person.attr/company.attr rule's string-form value back to typed
+ *  JSON — mirrors encodeAttributeConditionValue, keyed off the
+ *  PersonCompanyAttributeFieldDef registry instead. */
+function encodePersonCompanyAttributeConditionValue(
+  rule: ConditionRuleDraft,
+  defs: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
+): unknown {
+  const key = isPersonAttributeField(rule.field)
+    ? personAttributeKeyFromField(rule.field)
+    : isCompanyAttributeField(rule.field)
+      ? companyAttributeKeyFromField(rule.field)
+      : undefined
+  const def = key !== undefined ? defs.get(key) : undefined
+  return encodeDynamicAttributeConditionValue(
+    rule,
+    def?.type === 'boolean',
+    def?.type === 'number' || def?.type === 'currency'
+  )
+}
+
 function ruleToLeaf(
   rule: ConditionRuleDraft,
-  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): GraphCondition {
   if (VALUELESS_OPERATORS.has(rule.op)) return { field: rule.field, op: rule.op }
   if (isAttributeField(rule.field)) {
@@ -1652,6 +2029,20 @@ function ruleToLeaf(
       field: rule.field,
       op: rule.op,
       value: encodeAttributeConditionValue(rule, attributes),
+    }
+  }
+  if (isPersonAttributeField(rule.field)) {
+    return {
+      field: rule.field,
+      op: rule.op,
+      value: encodePersonCompanyAttributeConditionValue(rule, personAttributes),
+    }
+  }
+  if (isCompanyAttributeField(rule.field)) {
+    return {
+      field: rule.field,
+      op: rule.op,
+      value: encodePersonCompanyAttributeConditionValue(rule, companyAttributes),
     }
   }
   let value: unknown
@@ -1678,16 +2069,158 @@ function ruleToLeaf(
 
 export function draftToCondition(
   draft: SimpleConditionDraft,
-  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): GraphCondition {
   if (draft.rules.length === 0) return {}
-  const leaves = draft.rules.map((rule) => ruleToLeaf(rule, attributes))
+  const leaves = draft.rules.map((rule) =>
+    ruleToLeaf(rule, attributes, personAttributes, companyAttributes)
+  )
   if (leaves.length === 1) return leaves[0]!
   return draft.mode === 'all' ? { all: leaves } : { any: leaves }
 }
 
 export function defaultRule(): ConditionRuleDraft {
   return { field: 'conversation.status', op: 'eq', value: 'open' }
+}
+
+// ---------------------------------------------------------------------------
+// Rule GROUP drafts (RuleGroupBuilder): one level up from the flat
+// SimpleConditionDraft above. The stored shape a 2-level condition needs is
+// an OR of groups — `{ any: [ {all: [...leaves]}, {any: [...leaves]}, ... ] }`
+// — each group itself an all/any of LEAVES ONLY (no further nesting). A
+// single group collapses to (and round-trips through) the exact flat shape
+// SimpleConditionDraft already produces, so every condition the old
+// one-level editor could show renders identically here — RuleGroupBuilder
+// only ADDS the ability to combine multiple such groups with OR, and to
+// render (read-only degrade aside) a condition already stored that way.
+// Anything deeper (a group containing a group, an AND of groups, a top level
+// mixing bare leaves with groups) stays 'advanced' — exactly like
+// SimpleConditionDraft's own 'advanced' bail, just one level further out.
+// ---------------------------------------------------------------------------
+
+export interface RuleGroupDraft {
+  mode: 'all' | 'any'
+  rules: ConditionRuleDraft[]
+}
+
+export type ConditionGroupsDraft =
+  | { kind: 'groups'; groups: RuleGroupDraft[] }
+  | { kind: 'advanced'; condition: GraphCondition }
+
+const isLeafCondition = (c: GraphCondition): c is ConditionLeaf => 'field' in c
+
+/** A group's own all/any of leaves, decoded the same way leafToRule already
+ *  decodes a flat draft's rules — null when any child isn't a plain leaf
+ *  (nested further) or doesn't decode (an unrecognized field/shape). */
+function groupFromLeafChildren(
+  children: GraphCondition[],
+  mode: 'all' | 'any'
+): RuleGroupDraft | null {
+  const rules: ConditionRuleDraft[] = []
+  for (const child of children) {
+    if (!isLeafCondition(child)) return null
+    const rule = leafToRule(child)
+    if (!rule) return null
+    rules.push(rule)
+  }
+  return { mode, rules }
+}
+
+/** One `{all:[...]}` / `{any:[...]}` / `{}` group-shaped child of a top-level
+ *  OR-of-groups condition, decoded to a RuleGroupDraft — null when the child
+ *  isn't a clean single-mode group of leaves (e.g. it carries both `all` and
+ *  `any`, or nests a group inside). */
+function decodeGroupChild(child: GraphCondition): RuleGroupDraft | null {
+  if (isLeafCondition(child)) return null // handled by the caller (mixed leaf+group)
+  const hasAll = child.all !== undefined && child.all.length > 0
+  const hasAny = child.any !== undefined && child.any.length > 0
+  if (hasAll && hasAny) return null
+  return groupFromLeafChildren(
+    hasAll ? child.all! : hasAny ? child.any! : [],
+    hasAll ? 'all' : 'any'
+  )
+}
+
+/**
+ * Decode a stored condition into the groups draft. Tries the flat one-level
+ * shape first (conditionToDraft) so every condition today's editor already
+ * renders keeps rendering as a single implicit group, unchanged; only a
+ * shape conditionToDraft itself calls 'advanced' is inspected for the
+ * one-level-deeper OR-of-groups shape before this, too, gives up.
+ */
+export function conditionToGroupDraft(condition: GraphCondition): ConditionGroupsDraft {
+  const advanced: ConditionGroupsDraft = { kind: 'advanced', condition }
+  const flat = conditionToDraft(condition)
+  if (flat.kind === 'simple') {
+    return { kind: 'groups', groups: [{ mode: flat.mode, rules: flat.rules }] }
+  }
+  // Only representable deeper shape: a top-level `any` (never `all`, per the
+  // module doc) of clean single-mode groups — no bare leaf mixed in among
+  // them (that's just a flat draft, already handled above) and no group
+  // nesting a group.
+  if (isLeafCondition(condition)) return advanced
+  const anyChildren = condition.all === undefined ? condition.any : undefined
+  if (!anyChildren || anyChildren.length === 0) return advanced
+  const groups: RuleGroupDraft[] = []
+  for (const child of anyChildren) {
+    const group = decodeGroupChild(child)
+    if (!group) return advanced
+    groups.push(group)
+  }
+  return { kind: 'groups', groups }
+}
+
+/** Encode groups back to a stored condition. A single group collapses through
+ *  draftToCondition exactly like today's flat editor (a lone rule becomes a
+ *  bare leaf, not a wrapped `{all:[...]}`) — the round-trip a plain
+ *  ConditionEditor / branch path relies on. Two or more groups always wrap
+ *  EACH group explicitly (`{all:[...]}` / `{any:[...]}`, even a
+ *  single-rule one) inside a top-level `any`, so the group boundary survives
+ *  the round trip regardless of how many rules a given group holds.
+ *
+ *  An emptied group (`rules: []`) is dropped BEFORE wrapping whenever it's one
+ *  of several — encoding it as `{all:[]}` / `{any:[]}` would be vacuously true
+ *  in evaluateCondition (condition.evaluator.ts: an empty `all` has nothing to
+ *  fail, an empty `any` is "no constraint"), which inside a top-level `any`
+ *  makes the WHOLE OR match every input, silently overriding every other
+ *  group's real rules the moment one group in the OR is emptied out (e.g.
+ *  deleting a group's last rule instead of removing the group). "No rules
+ *  yet, so everything matches" (RuleGroup's empty-state copy) stays true only
+ *  for a single group — the branch below — never as a side effect of one
+ *  group among several being emptied. All-groups-emptied collapses to `{}`,
+ *  same as zero groups; exactly one survivor re-collapses through the
+ *  single-group branch too, so it never stays wrapped in a pointless `any`. */
+export function groupsToCondition(
+  groups: RuleGroupDraft[],
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
+): GraphCondition {
+  const relevant = groups.length > 1 ? groups.filter((g) => g.rules.length > 0) : groups
+  if (relevant.length === 0) return {}
+  if (relevant.length === 1) {
+    const only = relevant[0]!
+    return draftToCondition(
+      { kind: 'simple', mode: only.mode, rules: only.rules },
+      attributes,
+      personAttributes,
+      companyAttributes
+    )
+  }
+  const wrapped = relevant.map((g): GraphCondition => {
+    const leaves = g.rules.map((r) =>
+      ruleToLeaf(r, attributes, personAttributes, companyAttributes)
+    )
+    return g.mode === 'all' ? { all: leaves } : { any: leaves }
+  })
+  return { any: wrapped }
+}
+
+/** A fresh single-rule group, for "Add group". */
+export function defaultRuleGroup(): RuleGroupDraft {
+  return { mode: 'all', rules: [defaultRule()] }
 }
 
 // ---------------------------------------------------------------------------
@@ -1703,6 +2236,11 @@ export interface EntityLabels {
   /** Attribute key -> live definition, for conversation.attr.* condition
    *  summaries (canvas rule pills, outline rows, branch path rows). */
   attributes?: ReadonlyMap<string, AttributeFieldDef>
+  /** Attribute key -> live definition, for person.attr.* / company.attr.*
+   *  condition summaries — same role as `attributes` above, one map per
+   *  registry since the three attribute stores are keyed independently. */
+  personAttributes?: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
+  companyAttributes?: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
 }
 
 const shortId = (id: string): string => (id.length > 14 ? `${id.slice(0, 14)}…` : id)
@@ -1736,15 +2274,25 @@ export function actionSummary(action: GraphAction, labels: EntityLabels = {}): s
       return `Apply SLA ${named(action.policyId, labels.slaPolicies, '…')}`
     case 'set_attribute':
       return action.key ? `Set ${action.key}` : 'Set an attribute…'
+    case 'add_note':
+      return action.body.trim() ? `Note: ${truncate(action.body.trim(), 60)}` : 'Add a note…'
   }
 }
 
 function ruleSummary(
   rule: ConditionRuleDraft,
   attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
-  teams: ReadonlyMap<string, string> = new Map()
+  teams: ReadonlyMap<string, string> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): string {
-  const meta = resolveConditionField(rule.field, attributes, teams)
+  const meta = resolveConditionField(
+    rule.field,
+    attributes,
+    teams,
+    personAttributes,
+    companyAttributes
+  )
   const op = OPERATOR_LABELS[rule.op]
   if (VALUELESS_OPERATORS.has(rule.op)) return `${meta.label} ${op}`
   let value = rule.value
@@ -1765,17 +2313,43 @@ function ruleSummary(
   return `${meta.label} ${op} ${value || '…'}`
 }
 
+/** One group's own summary text, reusing the same "first rule, +N more" shape
+ *  the flat (single-group) case has always used. */
+function ruleGroupSummary(
+  group: RuleGroupDraft,
+  attributes: ReadonlyMap<string, AttributeFieldDef>,
+  teams: ReadonlyMap<string, string>,
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef>,
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
+): string {
+  if (group.rules.length === 0) return 'matches everything'
+  const first = ruleSummary(group.rules[0]!, attributes, teams, personAttributes, companyAttributes)
+  if (group.rules.length === 1) return first
+  return `${first} +${group.rules.length - 1} more`
+}
+
+/** A single-line summary of a condition, for canvas rule pills, outline rows,
+ *  and branch path rows. Handles the flat single-group shape (unchanged
+ *  wording) and the RuleGroupBuilder's OR-of-groups shape ("any of N
+ *  groups matched") instead of bailing to "Custom condition" the way it used
+ *  to for every nested shape — only a condition genuinely too deep for
+ *  RuleGroupBuilder to render (see conditionToGroupDraft's doc) still falls
+ *  back to that. */
 export function conditionSummary(
   condition: GraphCondition,
   attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
-  teams: ReadonlyMap<string, string> = new Map()
+  teams: ReadonlyMap<string, string> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): string {
-  const draft = conditionToDraft(condition)
+  const draft = conditionToGroupDraft(condition)
   if (draft.kind === 'advanced') return 'Custom condition'
-  if (draft.rules.length === 0) return 'Matches everything'
-  const first = ruleSummary(draft.rules[0]!, attributes, teams)
-  if (draft.rules.length === 1) return first
-  return `${first} +${draft.rules.length - 1} more`
+  if (draft.groups.length > 1) {
+    return `Any of ${draft.groups.length} groups matched`
+  }
+  const only = draft.groups[0]
+  if (!only || only.rules.length === 0) return 'Matches everything'
+  return ruleGroupSummary(only, attributes, teams, personAttributes, companyAttributes)
 }
 
 export const WAIT_UNITS = [
@@ -2098,6 +2672,8 @@ export function actionIssue(action: GraphAction): string | null {
       // the legacy absolute/until-reply form has no equivalent "unset" state
       // (untilIso is always either a real timestamp or explicitly null).
       return 'seconds' in action && action.seconds <= 0 ? 'Choose how long to snooze for' : null
+    case 'add_note':
+      return action.body.trim() ? null : 'Write the note'
     case 'set_priority':
     case 'close':
     case 'reopen':
@@ -2210,7 +2786,13 @@ function stepLabel(step: TreeStep, labels: EntityLabels): string {
     case 'action':
       return actionSummary(step.action, labels)
     case 'condition':
-      return conditionSummary(step.condition, labels.attributes)
+      return conditionSummary(
+        step.condition,
+        labels.attributes,
+        labels.teams,
+        labels.personAttributes,
+        labels.companyAttributes
+      )
     case 'wait':
       return waitSummary(step.seconds)
     case 'branch':

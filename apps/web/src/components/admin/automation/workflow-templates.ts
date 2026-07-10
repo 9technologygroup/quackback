@@ -26,6 +26,20 @@
  * option picker opens on nothing selected, so the user must pick the real
  * option before the branch can ever match. Each such template's `benefit`/
  * step summary calls this out explicitly.
+ *
+ * `triggerSettings.audience` (an arbitrary condition tree gating dispatch,
+ * not a graph node -- see workflow.schemas.ts's audienceConditionSchema and
+ * dispatcher.guards.ts's audienceAllows) hits a variant of the same problem
+ * for 'vip-concierge-lane' below: a `company.attr.<key>` audience predicate
+ * is exactly as workspace-specific as an option id, but there is no
+ * needs-setup-style gate for it. collectStepIssues (workflow-graph.ts) only
+ * walks the graph's tree of steps -- it never looks at triggerSettings at
+ * all, so a needs-setup-shaped attribute key here would silently never
+ * surface as an unresolved issue (nothing reads that sentinel out of
+ * triggerSettings.audience). Rather than ship a config that reads as "ready"
+ * but silently never matches, this template ships a real-looking example
+ * (`company.attr.plan` equals `enterprise`) and says so in its step summary
+ * -- an honest placeholder instead of a falsely-reassuring one.
  */
 import type { ComponentType, SVGProps } from 'react'
 import {
@@ -36,6 +50,7 @@ import {
   FunnelIcon,
   ShieldCheckIcon,
   SparklesIcon,
+  StarIcon,
   TagIcon,
   XCircleIcon,
 } from '@heroicons/react/24/outline'
@@ -409,6 +424,70 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           { from: 'trigger', to: 'is_negative_sentiment' },
           { from: 'is_negative_sentiment', to: 'set_priority_urgent' },
           { from: 'set_priority_urgent', to: 'apply_escalation_sla' },
+        ],
+      },
+    },
+  },
+  {
+    id: 'vip-concierge-lane',
+    title: 'VIP concierge lane',
+    // Phase T (PHASE-C-CONVERSATIONAL-UX-BRIEF.md §9.5, WORKFLOWS-GAP-ANALYSIS.md):
+    // shipped now that triggerSettings.audience + company.attr.*/person.attr.*
+    // condition fields exist. The audience filter below is a real-looking
+    // EXAMPLE ("plan equals enterprise"), not a needs-setup sentinel -- see
+    // the module doc for why an audience predicate's key/value can't ship
+    // unset the way an action ref can. Say so plainly in the step summary.
+    benefit: 'Fast-track your best accounts',
+    categories: ['customer_facing'],
+    icon: StarIcon,
+    iconClassName: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400',
+    stepsSummary:
+      'Audience: company plan = enterprise (adjust to your real plan attribute) · ' +
+      'Set priority high · Apply SLA (needs setup) · Assign team (needs setup — routes ' +
+      "through the team's own round-robin) · Concierge greeting",
+    payload: {
+      name: 'VIP concierge lane',
+      class: 'customer_facing',
+      triggerType: 'conversation.created',
+      triggerSettings: {
+        channels: ['messenger'],
+        // EXAMPLE placeholder, not a needs-setup sentinel (see the module
+        // doc's audience-gap note) -- open the trigger editor and point this
+        // at the workspace's actual "plan" company attribute and value
+        // before setting this workflow live.
+        audience: { field: 'company.attr.plan', op: 'eq', value: 'enterprise' },
+      },
+      graph: {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          {
+            id: 'set_priority_high',
+            type: 'action',
+            action: { type: 'set_priority', priority: 'high' },
+          },
+          {
+            id: 'apply_vip_sla',
+            type: 'action',
+            action: { type: 'apply_sla', policyId: NEEDS_SETUP_POLICY },
+          },
+          {
+            id: 'assign_concierge_team',
+            type: 'action',
+            action: { type: 'assign_team', teamId: NEEDS_SETUP_TEAM },
+          },
+          {
+            id: 'concierge_message',
+            type: 'message',
+            body: body(
+              "Hi {first_name|there} — you've reached our priority line. A specialist is on it."
+            ),
+          },
+        ],
+        edges: [
+          { from: 'trigger', to: 'set_priority_high' },
+          { from: 'set_priority_high', to: 'apply_vip_sla' },
+          { from: 'apply_vip_sla', to: 'assign_concierge_team' },
+          { from: 'assign_concierge_team', to: 'concierge_message' },
         ],
       },
     },

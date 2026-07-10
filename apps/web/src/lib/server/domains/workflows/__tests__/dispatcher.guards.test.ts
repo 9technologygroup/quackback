@@ -32,10 +32,13 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
 
 import {
   channelAllows,
+  audienceAllows,
+  sendWindowAllows,
   frequencyCapAllows,
   claimFrequencyCapSlot,
   hasActiveCustomerFacingRun,
 } from '../dispatcher.guards'
+import { makeConditionContext } from './workflow-test-utils'
 
 const fixture = await createDbTestFixture({
   probe: async (db) => {
@@ -116,6 +119,116 @@ describe('channelAllows', () => {
     expect(channelAllows(wf, 'messenger')).toBe(true)
     expect(channelAllows(wf, 'email')).toBe(true)
     expect(channelAllows(wf, 'web_form')).toBe(false)
+  })
+})
+
+function workflowWithSettings(triggerSettings: Record<string, unknown>): Workflow {
+  return { id: 'workflow_test', triggerSettings } as unknown as Workflow
+}
+
+const baseCtx = makeConditionContext({
+  conversation: {
+    status: 'open',
+    channel: 'messenger',
+    priority: 'none',
+    waitingMinutes: null,
+    tagIds: [],
+    assignedTeamId: null,
+  },
+})
+
+// Pure — no DB.
+describe('audienceAllows', () => {
+  it('allows when no audience is configured (absent or null)', () => {
+    expect(audienceAllows(workflowWithSettings({}), baseCtx)).toBe(true)
+    expect(audienceAllows(workflowWithSettings({ audience: null }), baseCtx)).toBe(true)
+  })
+
+  it('matches the SAME resolved context every other condition in the run reads', () => {
+    const wf = workflowWithSettings({
+      audience: { field: 'conversation.status', op: 'eq', value: 'open' },
+    })
+    expect(audienceAllows(wf, baseCtx)).toBe(true)
+    expect(
+      audienceAllows(wf, {
+        ...baseCtx,
+        conversation: { ...baseCtx.conversation, status: 'closed' },
+      })
+    ).toBe(false)
+  })
+
+  it('evaluates a dynamic person/company attribute predicate through the same evaluateCondition', () => {
+    const wf = workflowWithSettings({
+      audience: { field: 'person.attr.plan', op: 'eq', value: 'pro' },
+    })
+    expect(
+      audienceAllows(wf, { ...baseCtx, person: { segmentIds: [], attributes: { plan: 'pro' } } })
+    ).toBe(true)
+    expect(
+      audienceAllows(wf, { ...baseCtx, person: { segmentIds: [], attributes: { plan: 'free' } } })
+    ).toBe(false)
+  })
+
+  it('evaluates a nested all/any group', () => {
+    const wf = workflowWithSettings({
+      audience: {
+        any: [
+          { field: 'conversation.priority', op: 'eq', value: 'urgent' },
+          { field: 'conversation.status', op: 'eq', value: 'open' },
+        ],
+      },
+    })
+    expect(audienceAllows(wf, baseCtx)).toBe(true) // status matches
+  })
+
+  it('fails open (allows) for a stored audience that is not a plain-object condition', () => {
+    expect(audienceAllows(workflowWithSettings({ audience: 'garbage' }), baseCtx)).toBe(true)
+    expect(audienceAllows(workflowWithSettings({ audience: 42 }), baseCtx)).toBe(true)
+    expect(
+      audienceAllows(workflowWithSettings({ audience: ['not', 'a', 'condition'] }), baseCtx)
+    ).toBe(true)
+  })
+
+  it('an empty group ({}) is vacuously true — matches everything, same as the visual editor default', () => {
+    expect(audienceAllows(workflowWithSettings({ audience: {} }), baseCtx)).toBe(true)
+  })
+})
+
+describe('sendWindowAllows', () => {
+  it('allows unconditionally when unset, "any", or an unrecognized value', () => {
+    expect(sendWindowAllows(workflowWithSettings({}), { ...baseCtx, officeHours: false })).toBe(
+      true
+    )
+    expect(
+      sendWindowAllows(workflowWithSettings({ sendWindow: 'any' }), {
+        ...baseCtx,
+        officeHours: false,
+      })
+    ).toBe(true)
+    expect(
+      sendWindowAllows(workflowWithSettings({ sendWindow: 'sometimes' }), {
+        ...baseCtx,
+        officeHours: false,
+      })
+    ).toBe(true)
+  })
+
+  it('inside_office_hours matches officeHours true, blocks false', () => {
+    const wf = workflowWithSettings({ sendWindow: 'inside_office_hours' })
+    expect(sendWindowAllows(wf, { ...baseCtx, officeHours: true })).toBe(true)
+    expect(sendWindowAllows(wf, { ...baseCtx, officeHours: false })).toBe(false)
+  })
+
+  it('outside_office_hours matches officeHours false, blocks true', () => {
+    const wf = workflowWithSettings({ sendWindow: 'outside_office_hours' })
+    expect(sendWindowAllows(wf, { ...baseCtx, officeHours: false })).toBe(true)
+    expect(sendWindowAllows(wf, { ...baseCtx, officeHours: true })).toBe(false)
+  })
+
+  it('fails open when officeHours is unresolved (null/undefined) on the context', () => {
+    const wf = workflowWithSettings({ sendWindow: 'inside_office_hours' })
+    expect(sendWindowAllows(wf, { ...baseCtx, officeHours: null })).toBe(true)
+    expect(sendWindowAllows(wf, baseCtx)).toBe(true) // officeHours absent entirely
   })
 })
 

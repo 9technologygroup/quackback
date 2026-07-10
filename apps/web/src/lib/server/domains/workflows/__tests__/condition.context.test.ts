@@ -12,6 +12,7 @@ import {
   type ConversationId,
   type SegmentId,
   type ConversationTagId,
+  type CompanyId,
 } from '@quackback/ids'
 
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
@@ -24,7 +25,9 @@ import {
   user,
   principal,
   teams,
+  companies,
 } from '@/lib/server/db'
+import { ANON_EMAIL_DOMAIN } from '@quackback/email/anon'
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
@@ -56,13 +59,44 @@ const fixture = await createDbTestFixture({
 
 const suffix = () => `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 
-async function seedPrincipal(): Promise<PrincipalId> {
+async function seedPrincipal(
+  opts: {
+    email?: string | null
+    metadata?: Record<string, unknown>
+    companyId?: CompanyId | null
+  } = {}
+): Promise<PrincipalId> {
   const userId = createId('user') as UserId
   const principalId = createId('principal') as PrincipalId
-  await testDb.insert(user).values({ id: userId, name: `Visitor-${suffix()}` })
+  await testDb.insert(user).values({
+    id: userId,
+    name: `Visitor-${suffix()}`,
+    email: opts.email,
+    metadata: opts.metadata ? JSON.stringify(opts.metadata) : null,
+  })
+  await testDb.insert(principal).values({
+    id: principalId,
+    userId,
+    role: 'member',
+    type: 'user',
+    createdAt: new Date(),
+    companyId: opts.companyId ?? null,
+  })
+  return principalId
+}
+
+/** An unidentified visitor: no user row, so both attribute stores miss. */
+async function seedAnonymousPrincipal(): Promise<PrincipalId> {
+  const principalId = createId('principal') as PrincipalId
   await testDb
     .insert(principal)
-    .values({ id: principalId, userId, role: 'member', type: 'user', createdAt: new Date() })
+    .values({
+      id: principalId,
+      userId: null,
+      role: 'user',
+      type: 'anonymous',
+      createdAt: new Date(),
+    })
   return principalId
 }
 
@@ -181,5 +215,111 @@ describe.skipIf(!fixture.available)('resolveConditionContext (real DB, rolled ba
     expect(inside!.officeHours).toBe(true)
     const outside = await resolveConditionContext(conv.id, { at: new Date('2026-01-05T20:00:00Z') })
     expect(outside!.officeHours).toBe(false)
+  })
+
+  it("resolves an identified visitor's own attributes and email for person.attr.<key> / person.email", async () => {
+    const principalId = await seedPrincipal({
+      email: `ana-${suffix()}@example.com`,
+      metadata: { plan: 'enterprise', seats: 25 },
+    })
+    const [conv] = await testDb
+      .insert(conversations)
+      .values({ visitorPrincipalId: principalId, channel: 'messenger' })
+      .returning()
+
+    const ctx = await resolveConditionContext(conv.id)
+    expect(ctx!.person!.attributes).toEqual({ plan: 'enterprise', seats: 25 })
+    expect(ctx!.person!.email).toMatch(/^ana-.*@example\.com$/)
+    expect(ctx!.company).toBeNull()
+
+    expect(
+      evaluateCondition({ field: 'person.attr.plan', op: 'eq', value: 'enterprise' }, ctx!)
+    ).toBe(true)
+    expect(evaluateCondition({ field: 'person.attr.seats', op: 'gt', value: 10 }, ctx!)).toBe(true)
+    expect(
+      evaluateCondition({ field: 'person.email', op: 'contains', value: '@example.com' }, ctx!)
+    ).toBe(true)
+  })
+
+  it("resolves the visitor's linked company's attributes for company.attr.<key>", async () => {
+    const [company] = await testDb
+      .insert(companies)
+      .values({
+        name: `Acme-${suffix()}`,
+        plan: 'growth',
+        customAttributes: { tier: 'gold', arr: 120000 },
+      })
+      .returning()
+    const principalId = await seedPrincipal({ companyId: company!.id })
+    const [conv] = await testDb
+      .insert(conversations)
+      .values({ visitorPrincipalId: principalId, channel: 'messenger' })
+      .returning()
+
+    const ctx = await resolveConditionContext(conv.id)
+    expect(ctx!.company!.attributes).toEqual({ tier: 'gold', arr: 120000 })
+    expect(evaluateCondition({ field: 'company.attr.tier', op: 'eq', value: 'gold' }, ctx!)).toBe(
+      true
+    )
+    expect(evaluateCondition({ field: 'company.attr.arr', op: 'gte', value: 100000 }, ctx!)).toBe(
+      true
+    )
+  })
+
+  it('resolves every person/company attribute field as unresolved (undefined) for an anonymous visitor', async () => {
+    const principalId = await seedAnonymousPrincipal()
+    const [conv] = await testDb
+      .insert(conversations)
+      .values({ visitorPrincipalId: principalId, channel: 'messenger' })
+      .returning()
+
+    const ctx = await resolveConditionContext(conv.id)
+    expect(ctx!.person!.attributes).toEqual({})
+    expect(ctx!.person!.email).toBeNull()
+    expect(ctx!.company).toBeNull()
+
+    // The unresolved-subject contract: only is_empty matches.
+    expect(evaluateCondition({ field: 'person.attr.plan', op: 'is_empty' }, ctx!)).toBe(true)
+    expect(evaluateCondition({ field: 'person.attr.plan', op: 'is_set' }, ctx!)).toBe(false)
+    expect(evaluateCondition({ field: 'company.attr.tier', op: 'is_empty' }, ctx!)).toBe(true)
+    expect(evaluateCondition({ field: 'person.email', op: 'is_empty' }, ctx!)).toBe(true)
+    expect(evaluateCondition({ field: 'person.email', op: 'is_set' }, ctx!)).toBe(false)
+  })
+
+  it('resolvePersonCompany: false skips the person/company join entirely — the snapshot reads unresolved even though the DB has real values', async () => {
+    const principalId = await seedPrincipal({
+      email: `gated-${suffix()}@example.com`,
+      metadata: { plan: 'enterprise' },
+    })
+    const [conv] = await testDb
+      .insert(conversations)
+      .values({ visitorPrincipalId: principalId, channel: 'messenger' })
+      .returning()
+
+    const ctx = await resolveConditionContext(conv.id, { resolvePersonCompany: false })
+    expect(ctx!.person!.email).toBeNull()
+    expect(ctx!.person!.attributes).toEqual({})
+    expect(ctx!.company).toBeNull()
+    // person.segments is a separate, unconditional resolution — unaffected.
+    expect(ctx!.person!.segmentIds).toEqual([])
+  })
+
+  it('sanitizes the synthetic anonymous placeholder email — person.email resolves MISSING, never the placeholder', async () => {
+    const principalId = await seedPrincipal({
+      email: `temp-${suffix()}@${ANON_EMAIL_DOMAIN}`,
+      metadata: { plan: 'starter' },
+    })
+    const [conv] = await testDb
+      .insert(conversations)
+      .values({ visitorPrincipalId: principalId, channel: 'messenger' })
+      .returning()
+
+    const ctx = await resolveConditionContext(conv.id)
+    expect(ctx!.person!.email).toBeNull()
+    // Attributes on the same (synthetic-email) row are unaffected — only the
+    // email is sanitized.
+    expect(ctx!.person!.attributes).toEqual({ plan: 'starter' })
+    expect(evaluateCondition({ field: 'person.email', op: 'is_set' }, ctx!)).toBe(false)
+    expect(evaluateCondition({ field: 'person.email', op: 'is_empty' }, ctx!)).toBe(true)
   })
 })

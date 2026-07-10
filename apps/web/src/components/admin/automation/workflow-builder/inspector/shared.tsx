@@ -23,6 +23,7 @@ import {
 } from '../../workflow-graph'
 import type { EntityOption } from '../entities'
 import { ConfirmDeleteDialog } from '../step-visuals'
+import type { TriggerSettingsDraft } from '../use-workflow-builder'
 
 export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -115,6 +116,72 @@ export function ClampedIntInput({
       }}
       className={className}
     />
+  )
+}
+
+/**
+ * Write helper for a `triggerSettings` key whose "unconfigured" value is a
+ * specific no-op (frequencyCap's 'unlimited', sendWindow's 'any', audience's
+ * `{}`) rather than simply "absent" — an absent key and a stored no-op must
+ * read identically at dispatch (see dispatcher.guards.ts's readFrequencyCap),
+ * so writing the no-op value drops the key entirely instead of storing it.
+ * `isNoop` is the caller's own test of `next` (it already knows: `type ===
+ * 'unlimited'`, `next === 'any'`, `Object.keys(next).length === 0`) — this
+ * only owns the shared drop-or-merge mechanics, previously hand-rolled three
+ * times in trigger-editor.tsx (frequencyCap/sendWindow/audience).
+ */
+export function setDroppableSetting(
+  triggerSettings: TriggerSettingsDraft,
+  onChangeTriggerSettings: (v: TriggerSettingsDraft) => void,
+  key: string,
+  next: unknown,
+  isNoop: boolean
+): void {
+  if (isNoop) {
+    const { [key]: _drop, ...rest } = triggerSettings
+    onChangeTriggerSettings(rest as TriggerSettingsDraft)
+    return
+  }
+  onChangeTriggerSettings({ ...triggerSettings, [key]: next })
+}
+
+/**
+ * A labeled "<prefix> [N] <suffix>" minutes input — the trigger inspector's
+ * Silence-threshold (conversation.customer_unresponsive/teammate_unresponsive)
+ * and Lead-time (sla.approaching_breach) fields were structurally identical
+ * (a Field wrapping a ClampedIntInput between two short strings, min always
+ * 1), differing only in label/prefix/suffix/max/value/onCommit — collapsed
+ * into this one component.
+ */
+export function MinutesField({
+  label,
+  prefix,
+  suffix,
+  value,
+  max,
+  onCommit,
+}: {
+  label: string
+  prefix: string
+  suffix: string
+  value: number
+  max: number
+  onCommit: (value: number) => void
+}) {
+  return (
+    <Field label={label}>
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs text-muted-foreground">{prefix}</span>
+        <ClampedIntInput
+          value={value}
+          min={1}
+          max={max}
+          onCommit={onCommit}
+          className="h-8 w-20 text-sm"
+        />
+        <span className="text-xs text-muted-foreground">{suffix}</span>
+      </div>
+    </Field>
   )
 }
 

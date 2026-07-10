@@ -129,6 +129,25 @@ describe('dispatchWorkflowsForEvent', () => {
     )
   })
 
+  it('dispatches conversation.attribute_changed (service-actored AI write) without interrupting waits, subject null for the frequency cap', async () => {
+    await dispatchWorkflowsForEvent({
+      ...base,
+      type: 'conversation.attribute_changed',
+      actor: { type: 'service' as const, principalId: 'principal_assistant' },
+      data: { conversationId: 'conversation_5', key: 'plan', value: 'pro', source: 'ai' },
+    } as unknown as EventData)
+    expect(interruptWaitingRuns).not.toHaveBeenCalled()
+    expect(dispatchWorkflowTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        triggerType: 'conversation.attribute_changed',
+        conversationId: 'conversation_5',
+        actorType: 'service',
+        allowServiceActor: true,
+        subjectPrincipalId: null,
+      })
+    )
+  })
+
   it('does nothing for a non-conversation event (no trigger, no interrupt)', async () => {
     await dispatchWorkflowsForEvent({
       ...base,

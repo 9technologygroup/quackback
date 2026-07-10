@@ -110,6 +110,39 @@ describe('eventToWorkflowTrigger', () => {
     expect(eventToWorkflowTrigger(event)?.actorType).toBe('service')
   })
 
+  it('does NOT opt a service-authored message.note_created out of the automated-actor gate (loop guard: a workflow add_note action must not re-trigger note-triggered workflows)', () => {
+    // A workflow's add_note action (action.executor.ts) posts through
+    // addAgentNote as the assistant's service principal, so the
+    // message.note_created event it fires carries a service actor exactly
+    // like this one. Unlike assistant.handed_off (a terminal, one-time
+    // signal no workflow action can itself produce), a note IS something a
+    // workflow action produces, so this mapping must stay truthful
+    // (actorType: 'service') with no allowServiceActor — the dispatcher's
+    // human-actor gate is what actually blocks the retrigger (see
+    // dispatcher.test.ts's matching regression test).
+    const event = {
+      ...base,
+      type: 'message.note_created',
+      actor: { type: 'service' as const, principalId: 'principal_quinn' },
+      data: {
+        message: {
+          id: 'm_note1',
+          conversationId: 'conversation_1',
+          senderType: 'agent',
+          authorPrincipalId: 'principal_quinn',
+          content: 'Escalated to VIP',
+        },
+        conversation: { id: 'conversation_1' },
+      },
+    } as unknown as EventData
+    const trigger = eventToWorkflowTrigger(event)
+    expect(trigger).toMatchObject({
+      triggerType: 'message.note_created',
+      actorType: 'service',
+    })
+    expect(trigger?.allowServiceActor).toBeFalsy()
+  })
+
   it('maps assistant.handed_off truthfully as service-authored, opted out of the automated-actor gate', () => {
     const event = {
       ...base,
@@ -124,6 +157,38 @@ describe('eventToWorkflowTrigger', () => {
       allowServiceActor: true,
       subjectPrincipalId: null,
       message: null,
+    })
+  })
+
+  it('maps conversation.attribute_changed truthfully as service-authored when AI wrote it, opted out of the automated-actor gate, with no subject/message', () => {
+    const event = {
+      ...base,
+      type: 'conversation.attribute_changed',
+      actor: { type: 'service' as const, principalId: 'principal_assistant' },
+      data: { conversationId: 'conversation_5', key: 'plan', value: 'pro', source: 'ai' },
+    } as unknown as EventData
+    expect(eventToWorkflowTrigger(event)).toEqual({
+      triggerType: 'conversation.attribute_changed',
+      conversationId: 'conversation_5',
+      actorType: 'service',
+      allowServiceActor: true,
+      subjectPrincipalId: null,
+      message: null,
+    })
+  })
+
+  it('maps conversation.attribute_changed for a teammate write as a plain user actor (still allowServiceActor: true, unused here)', () => {
+    const event = {
+      ...base,
+      type: 'conversation.attribute_changed',
+      actor: userActor,
+      data: { conversationId: 'conversation_5', key: 'plan', value: 'pro', source: 'teammate' },
+    } as unknown as EventData
+    expect(eventToWorkflowTrigger(event)).toMatchObject({
+      triggerType: 'conversation.attribute_changed',
+      conversationId: 'conversation_5',
+      actorType: 'user',
+      subjectPrincipalId: null,
     })
   })
 
@@ -194,8 +259,30 @@ describe('DISPATCHABLE_TRIGGER_TYPES stays in sync with the switch', () => {
           },
           conversation: { id: 'conversation_1' },
         })
+      case 'conversation.attribute_changed':
+        return withData(type, {
+          conversationId: 'conversation_1',
+          key: 'plan',
+          value: 'pro',
+          source: 'ai',
+        })
       case 'assistant.handed_off':
         return withData(type, { conversationId: 'conversation_1', reason: 'low_confidence' })
+      case 'conversation.customer_unresponsive':
+      case 'conversation.teammate_unresponsive':
+        return withData(type, {
+          conversationId: 'conversation_1',
+          workflowId: 'workflow_1',
+          silenceMinutes: 60,
+          sinceAt: '2026-01-05T09:00:00Z',
+        })
+      case 'sla.approaching_breach':
+      case 'sla.breached':
+        return withData(type, {
+          conversationId: 'conversation_1',
+          clock: 'first_response',
+          dueAt: '2026-01-05T11:00:00Z',
+        })
     }
   }
 

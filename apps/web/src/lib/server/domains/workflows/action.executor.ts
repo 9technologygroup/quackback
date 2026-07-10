@@ -37,6 +37,21 @@
  * parallel system) — the engine calls this action with the conversation's
  * VISITOR as the actor (recordCsat requires the caller to BE the visitor),
  * never the run's own service actor.
+ *
+ * `add_note` posts an agent-only internal note through the SAME write path a
+ * teammate's note button uses (conversation.service.ts's addAgentNote) —
+ * reused, not hand-rolled — authored by the assistant's service principal
+ * (ensureAssistantPrincipal, the same identity send_block posts as) rather
+ * than the engine's principalId-less service actor, since addAgentNote's
+ * inserted row needs a real principal to attribute the note to. Loop safety:
+ * addAgentNote fires message.note_created same as a human-authored note, but
+ * the actor threaded through here stays `principalType: 'service'`
+ * (workflowActor(), workflow.engine.ts) and event-trigger.ts's
+ * message.note_created mapping does NOT set `allowServiceActor` — so
+ * dispatchWorkflowTrigger's automated-actor gate blocks a workflow's own
+ * add_note from ever re-triggering a note-triggered workflow. Plain text v1
+ * (bounded by MAX_CONVERSATION_MESSAGE_LENGTH at the schema, workflow.schemas.ts)
+ * — no rich body / mentions yet.
  */
 import type {
   ConversationId,
@@ -164,6 +179,8 @@ export type WorkflowAction =
   // runAssistantTurnForConversation's opts below), never persisted config.
   | { type: 'let_assistant_answer'; instructions?: string }
   | { type: 'record_csat'; rating: number; comment?: string }
+  // Plain-text v1 internal note — see the module doc's `add_note` paragraph.
+  | { type: 'add_note'; body: string }
 
 export interface ActionResult {
   /** A short label of what happened, or null for a deferred no-op. */
@@ -398,5 +415,19 @@ export async function applyAction(
       // never its own service actor.
       await conversationService.recordCsat(conversationId, action.rating, action.comment, actor)
       return label('csat recorded')
+    case 'add_note': {
+      // Authored by the assistant's service principal (see the module doc) —
+      // the same identity send_block posts as — not ctx.actor's own
+      // principalId-less service actor, since addAgentNote needs a real
+      // principal to attribute the note to.
+      const assistant = await ensureAssistantPrincipal()
+      await conversationService.addAgentNote(
+        conversationId,
+        action.body,
+        { principalId: assistant.id, displayName: assistant.displayName },
+        actor
+      )
+      return label('note added')
+    }
   }
 }

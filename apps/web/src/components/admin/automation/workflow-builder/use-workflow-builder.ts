@@ -23,7 +23,11 @@ import {
   insertStepAt,
   parseWorkflowGraphText,
   removeStepById,
+  sanitizeAudience,
+  sanitizeBreachLeadMinutes,
   sanitizeFrequencyCap,
+  sanitizeInactivityMinutes,
+  sanitizeSendWindow,
   treeToGraph,
   triggerLabel,
   updateStepById,
@@ -44,10 +48,11 @@ export interface TriggerSettingsDraft {
 }
 
 /** Builds the editable draft from a stored row's settings, sanitizing a
- *  `frequencyCap` that doesn't parse against the cap schema (any non-UI
- *  writer, or a value predating a bounds tightening) down to "No limit"
- *  instead of carrying a shape the server rejects. See save()'s dirty-gate
- *  for why a bad stored cap would otherwise brick every future save. */
+ *  `frequencyCap`/`audience`/`sendWindow` that doesn't parse against its own
+ *  schema (any non-UI writer, or a value predating a bounds tightening) down
+ *  to "unset" instead of carrying a shape the server rejects. See save()'s
+ *  dirty-gate for why a bad stored value would otherwise brick every future
+ *  save. */
 function toTriggerSettingsDraft(raw: Record<string, unknown>): TriggerSettingsDraft {
   const channels = Array.isArray(raw.channels)
     ? raw.channels.filter((c): c is string => typeof c === 'string')
@@ -56,6 +61,18 @@ function toTriggerSettingsDraft(raw: Record<string, unknown>): TriggerSettingsDr
   const frequencyCap = sanitizeFrequencyCap(raw.frequencyCap)
   if (frequencyCap === undefined) delete draft.frequencyCap
   else draft.frequencyCap = frequencyCap
+  const audience = sanitizeAudience(raw.audience)
+  if (audience === undefined) delete draft.audience
+  else draft.audience = audience
+  const sendWindow = sanitizeSendWindow(raw.sendWindow)
+  if (sendWindow === undefined) delete draft.sendWindow
+  else draft.sendWindow = sendWindow
+  const inactivityMinutes = sanitizeInactivityMinutes(raw.inactivityMinutes)
+  if (inactivityMinutes === undefined) delete draft.inactivityMinutes
+  else draft.inactivityMinutes = inactivityMinutes
+  const breachLeadMinutes = sanitizeBreachLeadMinutes(raw.breachLeadMinutes)
+  if (breachLeadMinutes === undefined) delete draft.breachLeadMinutes
+  else draft.breachLeadMinutes = breachLeadMinutes
   return draft
 }
 

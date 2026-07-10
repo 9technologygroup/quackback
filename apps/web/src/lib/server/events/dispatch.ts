@@ -16,6 +16,7 @@ import type {
 } from '@quackback/ids'
 
 import type {
+  ConversationUnresponsivePayload,
   EventActor,
   EventConversationData,
   EventConversationRef,
@@ -25,7 +26,10 @@ import type {
   EventTicketData,
   EventTicketMessageAttachment,
   EventTicketRef,
+  SlaTimerPayload,
 } from './types.js'
+import type { JsonValue } from '@/lib/shared/json'
+import type { ConversationAttributeSource } from '@/lib/shared/conversation/attribute-values'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import { logger } from '@/lib/server/logger'
 
@@ -361,6 +365,20 @@ export async function dispatchConversationPriorityChanged(
   })
 }
 
+export async function dispatchConversationAttributeChanged(
+  actor: EventActor,
+  conversation: EventConversationRef,
+  key: string,
+  value: JsonValue | null,
+  source: ConversationAttributeSource
+): Promise<void> {
+  await dispatchEvent({
+    ...eventEnvelope(actor),
+    type: 'conversation.attribute_changed',
+    data: { conversationId: conversation.id, conversation, key, value, source },
+  })
+}
+
 export async function dispatchConversationCsatSubmitted(
   actor: EventActor,
   conversation: EventConversationRef,
@@ -504,5 +522,94 @@ export async function dispatchAssistantHandedOff(
     ...eventEnvelope(actor),
     type: 'assistant.handed_off',
     data: { conversationId, reason },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Timer-driven workflow triggers (support platform §4.6): synthetic events
+// raised by workflow-sweep.ts's 5-minute tick or the SLA domain's deadline
+// scan, never by a human/system action. No human or service PRINCIPAL causes
+// these — the actor is a fixed, non-attributable marker, distinct from a real
+// service actor (Quinn, an integration) which always carries a principalId.
+// ---------------------------------------------------------------------------
+
+/** The fixed actor every timer-driven trigger carries — there is no
+ *  principal to attribute a scheduled sweep tick to. `actorType` reads
+ *  'service' downstream (event-trigger.ts), same as any other automated
+ *  actor, but these four trigger types opt out of the automated-actor gate
+ *  entirely (see event-trigger.ts's switch) since a workflow action can never
+ *  itself produce silence or an SLA deadline — there is no re-trigger loop to
+ *  guard against here. */
+const TIMER_TRIGGER_ACTOR: EventActor = { type: 'service', displayName: 'Scheduled sweep' }
+
+/**
+ * Envelope for a synthetic timer-driven event, with a CALLER-SUPPLIED `id`
+ * instead of eventEnvelope's random UUID. This is deliberate, not an
+ * oversight: workflow-dispatch-queue.ts keys its BullMQ job id off
+ * `event.id`, so a deterministic id (built by the caller from the trigger
+ * type + workflow + conversation + a stable anchor — see
+ * workflow-sweep.ts/sla.service.ts) is what makes repeated sweep ticks over
+ * the same still-qualifying condition dedupe at the queue instead of firing a
+ * fresh run every tick.
+ */
+function timerEventEnvelope(id: string) {
+  return { id, timestamp: new Date().toISOString(), actor: TIMER_TRIGGER_ACTOR } as const
+}
+
+/**
+ * Fire conversation.customer_unresponsive for the ONE workflow
+ * workflow-sweep.ts determined crossed its own `inactivityMinutes` threshold.
+ * `id` must be deterministic (see timerEventEnvelope) — workflow-sweep.ts
+ * derives it from (triggerType, workflowId, conversationId, sinceAt) so a
+ * later tick over the same unbroken silence period reuses the same id.
+ */
+export async function dispatchConversationCustomerUnresponsive(
+  id: string,
+  payload: ConversationUnresponsivePayload
+): Promise<void> {
+  await dispatchEvent({
+    ...timerEventEnvelope(id),
+    type: 'conversation.customer_unresponsive',
+    data: payload,
+  })
+}
+
+/** Fire conversation.teammate_unresponsive — mirrors
+ *  dispatchConversationCustomerUnresponsive; see that doc. */
+export async function dispatchConversationTeammateUnresponsive(
+  id: string,
+  payload: ConversationUnresponsivePayload
+): Promise<void> {
+  await dispatchEvent({
+    ...timerEventEnvelope(id),
+    type: 'conversation.teammate_unresponsive',
+    data: payload,
+  })
+}
+
+/**
+ * Fire sla.approaching_breach once a conversation's clock enters the lead
+ * window. Unlike the unresponsive pair above, `id` need not be reused across
+ * ticks for correctness — sla.service.ts's CAS-guarded stamp on
+ * `sla_applied` is the actual fire-once dedupe (see its module doc) — but a
+ * caller still derives a stable id (conversationId + clock + the SLA
+ * application's own `appliedAt`) so a duplicate BullMQ job is never queued
+ * for the same claim within the queue's retention window either.
+ */
+export async function dispatchSlaApproachingBreach(id: string, payload: SlaTimerPayload) {
+  await dispatchEvent({
+    ...timerEventEnvelope(id),
+    type: 'sla.approaching_breach',
+    data: payload,
+  })
+}
+
+/** Fire sla.breached once a conversation's clock passes its due date with no
+ *  settling event. Mirrors dispatchSlaApproachingBreach; see that doc. */
+export async function dispatchSlaBreached(id: string, payload: SlaTimerPayload) {
+  await dispatchEvent({
+    ...timerEventEnvelope(id),
+    type: 'sla.breached',
+    data: payload,
   })
 }

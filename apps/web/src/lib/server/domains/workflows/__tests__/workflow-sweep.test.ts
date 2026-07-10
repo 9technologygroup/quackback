@@ -13,6 +13,7 @@ import { createId, type PrincipalId, type UserId, type ConversationId } from '@q
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
 import {
   conversations,
+  conversationMessages,
   workflowRuns,
   workflowRunEvents,
   user,
@@ -39,10 +40,68 @@ vi.mock('../workflow-wait-queue', async (importOriginal) => ({
   scheduleWorkflowResume,
 }))
 
+// The abandoned-journey auto-close pass's close half is mocked the same way
+// action.executor.test.ts mocks it for the 'close' action: setConversationStatus's
+// own side effects (system notice, SSE publish, async status_changed event) are
+// tested elsewhere. Here only the DECISION (was it called, with what args) matters.
+const { setConversationStatus, getWorkflowAbandonedAutoCloseSettings } = vi.hoisted(() => ({
+  setConversationStatus: vi.fn().mockResolvedValue({}),
+  getWorkflowAbandonedAutoCloseSettings: vi.fn(async () => ({
+    enabled: true,
+    waitMinutes: 5,
+    keepIfEmailCaptured: true,
+  })),
+}))
+vi.mock('@/lib/server/domains/conversation/conversation.service', () => ({
+  setConversationStatus,
+}))
+vi.mock('@/lib/server/domains/settings/settings.workflows', () => ({
+  getWorkflowAbandonedAutoCloseSettings,
+}))
+
+// The two timer-driven unresponsive triggers dispatch through
+// events/dispatch.ts (which itself fans out via processEvent — a whole
+// separate pipeline exercised elsewhere); here only WHICH synthetic event was
+// raised, with what id/payload, matters.
+const {
+  dispatchConversationCustomerUnresponsive,
+  dispatchConversationTeammateUnresponsive,
+  dispatchSlaApproachingBreach,
+  dispatchSlaBreached,
+} = vi.hoisted(() => ({
+  dispatchConversationCustomerUnresponsive: vi.fn().mockResolvedValue(undefined),
+  dispatchConversationTeammateUnresponsive: vi.fn().mockResolvedValue(undefined),
+  dispatchSlaApproachingBreach: vi.fn().mockResolvedValue(undefined),
+  dispatchSlaBreached: vi.fn().mockResolvedValue(undefined),
+}))
+vi.mock('@/lib/server/events/dispatch', () => ({
+  dispatchConversationCustomerUnresponsive,
+  dispatchConversationTeammateUnresponsive,
+  dispatchSlaApproachingBreach,
+  dispatchSlaBreached,
+}))
+
+// The SLA domain's own scan/claim correctness (fire-once markers, pause
+// shifting, ...) is covered by sla.service.timer-triggers.test.ts; here the
+// orchestration is what's under test (which live workflows gate the scan,
+// what lead time is resolved, how a claimed candidate becomes a dispatch
+// call) so the underlying scans are stubbed.
+const { sweepApproachingSlaBreaches, sweepSlaBreachTriggers } = vi.hoisted(() => ({
+  sweepApproachingSlaBreaches: vi.fn().mockResolvedValue([]),
+  sweepSlaBreachTriggers: vi.fn().mockResolvedValue([]),
+}))
+vi.mock('@/lib/server/domains/sla/sla.service', () => ({
+  sweepApproachingSlaBreaches,
+  sweepSlaBreachTriggers,
+}))
+
 import { createWorkflow } from '../workflow.service'
 import {
   sweepStaleRunningRuns,
   sweepOrphanedWaitingRuns,
+  sweepExpiredInputWaits,
+  sweepUnresponsiveConversations,
+  sweepSlaTimerTriggers,
   sweepWorkflowRuns,
 } from '../workflow-sweep'
 import { workflowWaitJobId } from '../workflow-wait-queue'
@@ -58,18 +117,50 @@ const suffix = () => `${Date.now().toString(36)}_${Math.random().toString(36).sl
 
 const emptyGraph: WorkflowGraph = { nodes: [], edges: [] }
 
-async function seedConversation(): Promise<ConversationId> {
+async function seedConversation(opts: { visitorEmail?: string } = {}): Promise<ConversationId> {
   const userId = createId('user') as UserId
   const principalId = createId('principal') as PrincipalId
+  // No email on the user/principal by default — resolveReplyRecipient then
+  // falls through to `visitorEmail` (the conversation's own captured
+  // column), which opts.visitorEmail lets a test seed directly.
   await testDb.insert(user).values({ id: userId, name: `Visitor-${suffix()}` })
   await testDb
     .insert(principal)
     .values({ id: principalId, userId, role: 'member', type: 'user', createdAt: new Date() })
   const [row] = await testDb
     .insert(conversations)
-    .values({ visitorPrincipalId: principalId, channel: 'messenger', priority: 'none' })
+    .values({
+      visitorPrincipalId: principalId,
+      channel: 'messenger',
+      priority: 'none',
+      visitorEmail: opts.visitorEmail ?? null,
+    })
     .returning()
   return row.id
+}
+
+/** Insert a message directly (bypassing the messaging service, same idiom as
+ *  conversation-unread-aggregate.test.ts's addMessage) so a test controls
+ *  exactly whether/how a conversation has visitor engagement. */
+async function addMessage(
+  conversationId: ConversationId,
+  senderType: 'agent' | 'visitor' | 'system' = 'visitor'
+): Promise<void> {
+  await testDb.insert(conversationMessages).values({ conversationId, senderType, content: 'msg' })
+}
+
+/** The EventConversationRef a plain seedConversation() row resolves to
+ *  (status 'open' by default, channel 'messenger', priority 'none',
+ *  unassigned) — matches the timer-trigger dispatch payload tests below,
+ *  which don't change those columns. */
+function conversationRef(conversationId: ConversationId) {
+  return {
+    id: conversationId,
+    status: 'open',
+    channel: 'messenger',
+    priority: 'none',
+    assignedTeamId: null,
+  }
 }
 
 async function seedWorkflow(cls: 'customer_facing' | 'background' = 'background') {
@@ -81,9 +172,59 @@ async function seedWorkflow(cls: 'customer_facing' | 'background' = 'background'
   })
 }
 
+/** A live workflow subscribed to one of the timer-driven trigger types, with
+ *  its own triggerSettings threshold. `createWorkflow` defaults to 'draft' —
+ *  live is set explicitly via a second call since createWorkflow's own input
+ *  has no status field. */
+async function seedLiveTimerWorkflow(
+  triggerType: string,
+  triggerSettings: Record<string, unknown> = {}
+) {
+  const { setWorkflowStatus } = await import('../workflow.service')
+  const wf = await createWorkflow({
+    name: `timer trigger test ${suffix()}`,
+    class: 'background',
+    triggerType,
+    triggerSettings,
+    graph: emptyGraph,
+  })
+  return setWorkflowStatus(wf.id, 'live')
+}
+
+/** Directly set the conversation columns the unresponsive scan reads —
+ *  bypassing the messaging service so a test pins the exact silence anchor
+ *  and status a stranded conversation would have. */
+async function setConversationSilence(
+  conversationId: ConversationId,
+  opts: { waitingSince: Date | null; lastMessageAt: Date; status?: 'open' | 'snoozed' | 'closed' }
+): Promise<void> {
+  await testDb
+    .update(conversations)
+    .set({
+      waitingSince: opts.waitingSince,
+      lastMessageAt: opts.lastMessageAt,
+      status: opts.status ?? 'open',
+    })
+    .where(eq(conversations.id, conversationId))
+}
+
 beforeEach(() => {
   getWorkflowWaitJob.mockReset()
   scheduleWorkflowResume.mockClear()
+  setConversationStatus.mockClear()
+  setConversationStatus.mockResolvedValue({})
+  getWorkflowAbandonedAutoCloseSettings.mockReset()
+  getWorkflowAbandonedAutoCloseSettings.mockResolvedValue({
+    enabled: true,
+    waitMinutes: 5,
+    keepIfEmailCaptured: true,
+  })
+  dispatchConversationCustomerUnresponsive.mockClear()
+  dispatchConversationTeammateUnresponsive.mockClear()
+  dispatchSlaApproachingBreach.mockClear()
+  dispatchSlaBreached.mockClear()
+  sweepApproachingSlaBreaches.mockReset().mockResolvedValue([])
+  sweepSlaBreachTriggers.mockReset().mockResolvedValue([])
 })
 
 describe.skipIf(!fixture.available)('workflow run sweeper (real DB, rolled back)', () => {
@@ -498,8 +639,500 @@ describe.skipIf(!fixture.available)('workflow run sweeper (real DB, rolled back)
     })
   })
 
+  describe('sweepExpiredInputWaits (abandoned-journey auto-close)', () => {
+    /** An expired InputWaitCursor — expiresAt in the past, matching what the
+     *  engine stamps at park time when the setting is enabled. */
+    function expiredInputCursor(overrides: Record<string, unknown> = {}) {
+      return {
+        waitKind: 'input',
+        resumeNodeId: 'n1',
+        blockMessageId: 'conversation_message_block1',
+        blockKind: 'buttons',
+        allowTypingInterrupt: false,
+        expiresAt: new Date(Date.now() - 60 * 1000).toISOString(), // 1 min ago
+        waitSeconds: 0,
+        waitSeq: 1,
+        waitStartedAt: new Date(Date.now() - 6 * 60 * 1000).toISOString(),
+        ...overrides,
+      }
+    }
+
+    async function seedExpiredRun(
+      conversationId: ConversationId,
+      overrides: Record<string, unknown> = {}
+    ) {
+      const wf = await seedWorkflow('customer_facing')
+      const [run] = await testDb
+        .insert(workflowRuns)
+        .values({
+          workflowId: wf.id,
+          conversationId,
+          state: 'waiting',
+          customerFacing: true,
+          cursor: expiredInputCursor(overrides),
+        })
+        .returning()
+      return run
+    }
+
+    it('settles an expired never-engaged, no-email run to interrupted, logs swept_expired, and closes the conversation', async () => {
+      const conversationId = await seedConversation()
+      const run = await seedExpiredRun(conversationId)
+
+      const count = await sweepExpiredInputWaits(new Date())
+      expect(count).toBe(1)
+
+      const [after] = await testDb.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
+      expect(after.state).toBe('interrupted')
+      expect(after.endedAt).not.toBeNull()
+
+      const events = await testDb
+        .select()
+        .from(workflowRunEvents)
+        .where(eq(workflowRunEvents.runId, run.id))
+      expect(events.map((e) => e.kind)).toEqual(['swept_expired'])
+
+      // Never engaged (no visitor message) and no captured email: closed.
+      expect(setConversationStatus).toHaveBeenCalledTimes(1)
+      expect(setConversationStatus).toHaveBeenCalledWith(
+        conversationId,
+        'closed',
+        expect.objectContaining({ principalType: 'service' })
+      )
+    })
+
+    it('ends the run but leaves an engaged conversation open (a visitor message means a human should still see it)', async () => {
+      const conversationId = await seedConversation()
+      await addMessage(conversationId, 'visitor')
+      const run = await seedExpiredRun(conversationId)
+
+      const count = await sweepExpiredInputWaits(new Date())
+      expect(count).toBe(1)
+
+      const [after] = await testDb.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
+      expect(after.state).toBe('interrupted') // the run still ends...
+
+      const events = await testDb
+        .select()
+        .from(workflowRunEvents)
+        .where(eq(workflowRunEvents.runId, run.id))
+      expect(events.map((e) => e.kind)).toEqual(['swept_expired'])
+
+      expect(setConversationStatus).not.toHaveBeenCalled() // ...but the conversation stays open
+    })
+
+    it('leaves a never-engaged conversation open when an email was captured and keepIfEmailCaptured is on (default)', async () => {
+      const conversationId = await seedConversation({ visitorEmail: 'visitor@example.com' })
+      getWorkflowAbandonedAutoCloseSettings.mockResolvedValue({
+        enabled: true,
+        waitMinutes: 5,
+        keepIfEmailCaptured: true,
+      })
+      await seedExpiredRun(conversationId)
+
+      const count = await sweepExpiredInputWaits(new Date())
+      expect(count).toBe(1)
+      expect(setConversationStatus).not.toHaveBeenCalled()
+    })
+
+    it('closes a never-engaged conversation with a captured email when keepIfEmailCaptured is off', async () => {
+      const conversationId = await seedConversation({ visitorEmail: 'visitor@example.com' })
+      getWorkflowAbandonedAutoCloseSettings.mockResolvedValue({
+        enabled: true,
+        waitMinutes: 5,
+        keepIfEmailCaptured: false,
+      })
+      await seedExpiredRun(conversationId)
+
+      const count = await sweepExpiredInputWaits(new Date())
+      expect(count).toBe(1)
+      expect(setConversationStatus).toHaveBeenCalledWith(
+        conversationId,
+        'closed',
+        expect.anything()
+      )
+    })
+
+    it('leaves an already-closed conversation alone (no redundant close)', async () => {
+      const conversationId = await seedConversation()
+      await testDb
+        .update(conversations)
+        .set({ status: 'closed' })
+        .where(eq(conversations.id, conversationId))
+      await seedExpiredRun(conversationId)
+
+      const count = await sweepExpiredInputWaits(new Date())
+      expect(count).toBe(1) // the run still ends...
+      expect(setConversationStatus).not.toHaveBeenCalled() // ...but no redundant close call
+    })
+
+    it('never examines a parked assistant wait, even with a stray expiresAt in its cursor', async () => {
+      const conversationId = await seedConversation()
+      const wf = await seedWorkflow('customer_facing')
+      const [run] = await testDb
+        .insert(workflowRuns)
+        .values({
+          workflowId: wf.id,
+          conversationId,
+          state: 'waiting',
+          customerFacing: true,
+          cursor: {
+            waitKind: 'assistant',
+            resumeNodeId: 'la',
+            waitSeconds: 0,
+            waitSeq: 1,
+            waitStartedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+            // An assistant wait never carries this field in practice (the
+            // engine only stamps expiresAt onto an 'input' cursor) — present
+            // here defensively to prove the sweep gates on waitKind, not
+            // merely on expiresAt's presence.
+            expiresAt: new Date(Date.now() - 60 * 1000).toISOString(),
+          },
+        })
+        .returning()
+
+      const count = await sweepExpiredInputWaits(new Date())
+      expect(count).toBe(0)
+      expect(setConversationStatus).not.toHaveBeenCalled()
+
+      const [after] = await testDb.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
+      expect(after.state).toBe('waiting') // left parked, untouched
+    })
+
+    it('never examines a plain timer wait (no waitKind, no expiresAt)', async () => {
+      const conversationId = await seedConversation()
+      const wf = await seedWorkflow()
+      const [run] = await testDb
+        .insert(workflowRuns)
+        .values({
+          workflowId: wf.id,
+          conversationId,
+          state: 'waiting',
+          cursor: {
+            resumeNodeId: 'a2',
+            waitSeconds: 3600,
+            waitSeq: 1,
+            waitStartedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+          },
+        })
+        .returning()
+
+      const count = await sweepExpiredInputWaits(new Date())
+      expect(count).toBe(0)
+      expect(setConversationStatus).not.toHaveBeenCalled()
+
+      const [after] = await testDb.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
+      expect(after.state).toBe('waiting')
+    })
+
+    it('does not examine an input wait whose expiry has not yet passed', async () => {
+      const conversationId = await seedConversation()
+      const run = await seedExpiredRun(conversationId, {
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // an hour from now
+      })
+
+      const count = await sweepExpiredInputWaits(new Date())
+      expect(count).toBe(0)
+      expect(setConversationStatus).not.toHaveBeenCalled()
+
+      const [after] = await testDb.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
+      expect(after.state).toBe('waiting')
+    })
+
+    it('settles and closes only once when two sweeps race the same expired run (guarded settle no-ops for the loser)', async () => {
+      const conversationId = await seedConversation()
+      const run = await seedExpiredRun(conversationId)
+
+      const [a, b] = await Promise.all([
+        sweepExpiredInputWaits(new Date()),
+        sweepExpiredInputWaits(new Date()),
+      ])
+      expect(a + b).toBe(1) // exactly one of the two counted it as swept
+
+      const [after] = await testDb.select().from(workflowRuns).where(eq(workflowRuns.id, run.id))
+      expect(after.state).toBe('interrupted')
+
+      const events = await testDb
+        .select()
+        .from(workflowRunEvents)
+        .where(eq(workflowRunEvents.runId, run.id))
+      expect(events.map((e) => e.kind)).toEqual(['swept_expired']) // no duplicate
+
+      // The loser's guarded update affected zero rows, so it never reached
+      // the close decision at all — exactly one close, not two.
+      expect(setConversationStatus).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('sweepUnresponsiveConversations', () => {
+    it('fires conversation.teammate_unresponsive when the last message is from the customer and the threshold has just passed', async () => {
+      const wf = await seedLiveTimerWorkflow('conversation.teammate_unresponsive', {
+        inactivityMinutes: 60,
+      })
+      const conversationId = await seedConversation()
+      await addMessage(conversationId, 'visitor')
+      const waitingSince = new Date(Date.now() - 65 * 60 * 1000) // 65 min of silence, threshold 60
+      await setConversationSilence(conversationId, { waitingSince, lastMessageAt: waitingSince })
+
+      const fired = await sweepUnresponsiveConversations(new Date())
+      expect(fired).toBe(1)
+      expect(dispatchConversationTeammateUnresponsive).toHaveBeenCalledTimes(1)
+      const [jobId, payload] = dispatchConversationTeammateUnresponsive.mock.calls[0]
+      expect(jobId).toBe(
+        `timer:conversation.teammate_unresponsive:${wf.id}:${conversationId}:${waitingSince.toISOString()}`
+      )
+      expect(payload).toMatchObject({
+        conversationId,
+        // The webhook payload contract every sibling conversation event
+        // embeds (EventConversationRef) — see events/types.ts's
+        // ConversationUnresponsivePayload doc.
+        conversation: conversationRef(conversationId),
+        workflowId: wf.id,
+        sinceAt: waitingSince.toISOString(),
+      })
+      expect(dispatchConversationCustomerUnresponsive).not.toHaveBeenCalled()
+    })
+
+    it('fires conversation.customer_unresponsive when the last message is from a teammate/assistant', async () => {
+      await seedLiveTimerWorkflow('conversation.customer_unresponsive', {
+        inactivityMinutes: 30,
+      })
+      const conversationId = await seedConversation()
+      await addMessage(conversationId, 'agent')
+      const lastMessageAt = new Date(Date.now() - 35 * 60 * 1000) // 35 min, threshold 30
+      await setConversationSilence(conversationId, { waitingSince: null, lastMessageAt })
+
+      const fired = await sweepUnresponsiveConversations(new Date())
+      expect(fired).toBe(1)
+      expect(dispatchConversationCustomerUnresponsive).toHaveBeenCalledTimes(1)
+      expect(dispatchConversationTeammateUnresponsive).not.toHaveBeenCalled()
+    })
+
+    it('an assistant reply disarms teammate_unresponsive and arms customer_unresponsive instead (waitingSince cleared)', async () => {
+      // Mirrors appendAssistantReply's own write (senderType 'agent',
+      // waitingSince: null) — see conversation.service.ts's doc: an
+      // assistant answer counts as a response for this rule, same as a human
+      // teammate's.
+      const customerWf = await seedLiveTimerWorkflow('conversation.customer_unresponsive', {
+        inactivityMinutes: 20,
+      })
+      const conversationId = await seedConversation()
+      await addMessage(conversationId, 'agent') // stands in for the assistant's own reply
+      const lastMessageAt = new Date(Date.now() - 25 * 60 * 1000)
+      await setConversationSilence(conversationId, { waitingSince: null, lastMessageAt })
+
+      const fired = await sweepUnresponsiveConversations(new Date())
+      expect(fired).toBe(1)
+      expect(dispatchConversationCustomerUnresponsive).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ workflowId: customerWf.id })
+      )
+    })
+
+    it('never fires on a closed or snoozed conversation', async () => {
+      await seedLiveTimerWorkflow('conversation.teammate_unresponsive', { inactivityMinutes: 10 })
+      const closed = await seedConversation()
+      const snoozed = await seedConversation()
+      await addMessage(closed, 'visitor')
+      await addMessage(snoozed, 'visitor')
+      const waitingSince = new Date(Date.now() - 20 * 60 * 1000)
+      await setConversationSilence(closed, {
+        waitingSince,
+        lastMessageAt: waitingSince,
+        status: 'closed',
+      })
+      await setConversationSilence(snoozed, {
+        waitingSince,
+        lastMessageAt: waitingSince,
+        status: 'snoozed',
+      })
+
+      const fired = await sweepUnresponsiveConversations(new Date())
+      expect(fired).toBe(0)
+      expect(dispatchConversationTeammateUnresponsive).not.toHaveBeenCalled()
+    })
+
+    it("respects each live workflow's own threshold independently", async () => {
+      const shortWf = await seedLiveTimerWorkflow('conversation.teammate_unresponsive', {
+        inactivityMinutes: 10,
+      })
+      await seedLiveTimerWorkflow('conversation.teammate_unresponsive', {
+        inactivityMinutes: 120,
+      })
+      const conversationId = await seedConversation()
+      await addMessage(conversationId, 'visitor')
+      // 12 minutes of silence: inside the 10-minute workflow's crossing
+      // window (threshold 10, +15 min slack -> [10, 25)) but nowhere near
+      // crossing the 120-minute one.
+      const waitingSince = new Date(Date.now() - 12 * 60 * 1000)
+      await setConversationSilence(conversationId, { waitingSince, lastMessageAt: waitingSince })
+
+      const fired = await sweepUnresponsiveConversations(new Date())
+      expect(fired).toBe(1)
+      expect(dispatchConversationTeammateUnresponsive).toHaveBeenCalledTimes(1)
+      expect(dispatchConversationTeammateUnresponsive).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ workflowId: shortWf.id })
+      )
+    })
+
+    it('does not fire before the threshold is reached', async () => {
+      await seedLiveTimerWorkflow('conversation.teammate_unresponsive', { inactivityMinutes: 60 })
+      const conversationId = await seedConversation()
+      await addMessage(conversationId, 'visitor')
+      const waitingSince = new Date(Date.now() - 5 * 60 * 1000) // only 5 min of silence
+      await setConversationSilence(conversationId, { waitingSince, lastMessageAt: waitingSince })
+
+      expect(await sweepUnresponsiveConversations(new Date())).toBe(0)
+    })
+
+    it('dedupes across two sweep ticks over the same continuous silence period (same jobId)', async () => {
+      const wf = await seedLiveTimerWorkflow('conversation.teammate_unresponsive', {
+        inactivityMinutes: 60,
+      })
+      const conversationId = await seedConversation()
+      await addMessage(conversationId, 'visitor')
+      const waitingSince = new Date(Date.now() - 61 * 60 * 1000)
+      await setConversationSilence(conversationId, { waitingSince, lastMessageAt: waitingSince })
+
+      await sweepUnresponsiveConversations(new Date())
+      await sweepUnresponsiveConversations(new Date(Date.now() + 60 * 1000)) // next tick, same silence period
+      expect(dispatchConversationTeammateUnresponsive).toHaveBeenCalledTimes(2)
+      const [firstJobId] = dispatchConversationTeammateUnresponsive.mock.calls[0]
+      const [secondJobId] = dispatchConversationTeammateUnresponsive.mock.calls[1]
+      // Same anchor -> same deterministic id both ticks; BullMQ's own jobId
+      // dedupe (not exercised here, dispatch is mocked) is what actually
+      // collapses these into one job downstream.
+      expect(firstJobId).toBe(secondJobId)
+      expect(firstJobId).toContain(wf.id)
+    })
+
+    it('one failed dispatch does not stop the rest of the batch (bounded-concurrency fan-out)', async () => {
+      await seedLiveTimerWorkflow('conversation.teammate_unresponsive', { inactivityMinutes: 60 })
+      const waitingSince = new Date(Date.now() - 61 * 60 * 1000)
+      const failingConversationId = await seedConversation()
+      await addMessage(failingConversationId, 'visitor')
+      await setConversationSilence(failingConversationId, {
+        waitingSince,
+        lastMessageAt: waitingSince,
+      })
+      const okConversationId = await seedConversation()
+      await addMessage(okConversationId, 'visitor')
+      await setConversationSilence(okConversationId, { waitingSince, lastMessageAt: waitingSince })
+
+      dispatchConversationTeammateUnresponsive.mockImplementation(async (_jobId, payload) => {
+        if (payload.conversationId === failingConversationId) {
+          throw new Error('transient dispatch failure')
+        }
+      })
+
+      const fired = await sweepUnresponsiveConversations(new Date())
+      // Only the successful one counts, but the batch still ran both — the
+      // failing conversation's dispatch attempt didn't stop its sibling.
+      expect(fired).toBe(1)
+      expect(dispatchConversationTeammateUnresponsive).toHaveBeenCalledTimes(2)
+      expect(dispatchConversationTeammateUnresponsive).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ conversationId: okConversationId })
+      )
+    })
+  })
+
+  describe('sweepSlaTimerTriggers', () => {
+    it('does nothing when no live workflow subscribes to either SLA trigger', async () => {
+      const fired = await sweepSlaTimerTriggers(new Date())
+      expect(fired).toBe(0)
+      expect(sweepApproachingSlaBreaches).not.toHaveBeenCalled()
+      expect(sweepSlaBreachTriggers).not.toHaveBeenCalled()
+    })
+
+    it('resolves the widest breachLeadMinutes across live approaching_breach workflows and dispatches each claimed candidate', async () => {
+      await seedLiveTimerWorkflow('sla.approaching_breach', { breachLeadMinutes: 10 })
+      await seedLiveTimerWorkflow('sla.approaching_breach', { breachLeadMinutes: 30 })
+      const conversationId = await seedConversation()
+      sweepApproachingSlaBreaches.mockResolvedValue([
+        {
+          conversationId,
+          conversation: conversationRef(conversationId),
+          policyId: 'sla_policy_1',
+          clock: 'first_response',
+          dueAt: '2026-01-05T11:00:00.000Z',
+        },
+      ])
+
+      const fired = await sweepSlaTimerTriggers(new Date('2026-01-05T10:35:00Z'))
+      expect(fired).toBe(1)
+      expect(sweepApproachingSlaBreaches).toHaveBeenCalledWith(30, expect.any(Date))
+      expect(dispatchSlaApproachingBreach).toHaveBeenCalledWith(
+        expect.stringContaining(`timer:sla.approaching_breach:${conversationId}`),
+        {
+          conversationId,
+          conversation: conversationRef(conversationId),
+          clock: 'first_response',
+          dueAt: '2026-01-05T11:00:00.000Z',
+        }
+      )
+    })
+
+    it('dispatches sla.breached for each claimed candidate only when a live workflow subscribes', async () => {
+      await seedLiveTimerWorkflow('sla.breached', {})
+      const conversationId = await seedConversation()
+      sweepSlaBreachTriggers.mockResolvedValue([
+        {
+          conversationId,
+          conversation: conversationRef(conversationId),
+          policyId: 'sla_policy_1',
+          clock: 'resolution',
+          dueAt: '2026-01-05T09:00:00.000Z',
+        },
+      ])
+
+      const fired = await sweepSlaTimerTriggers(new Date())
+      expect(fired).toBe(1)
+      expect(dispatchSlaBreached).toHaveBeenCalledWith(expect.any(String), {
+        conversationId,
+        conversation: conversationRef(conversationId),
+        clock: 'resolution',
+        dueAt: '2026-01-05T09:00:00.000Z',
+      })
+    })
+
+    it('one failed sla.breached dispatch does not stop the rest of the claimed batch', async () => {
+      await seedLiveTimerWorkflow('sla.breached', {})
+      const failingConversationId = await seedConversation()
+      const okConversationId = await seedConversation()
+      sweepSlaBreachTriggers.mockResolvedValue([
+        {
+          conversationId: failingConversationId,
+          conversation: conversationRef(failingConversationId),
+          policyId: 'sla_policy_1',
+          clock: 'resolution',
+          dueAt: '2026-01-05T09:00:00.000Z',
+        },
+        {
+          conversationId: okConversationId,
+          conversation: conversationRef(okConversationId),
+          policyId: 'sla_policy_1',
+          clock: 'resolution',
+          dueAt: '2026-01-05T09:00:00.000Z',
+        },
+      ])
+      dispatchSlaBreached.mockImplementation(async (_jobId, payload) => {
+        if (payload.conversationId === failingConversationId) throw new Error('transient failure')
+      })
+
+      const fired = await sweepSlaTimerTriggers(new Date())
+      expect(fired).toBe(1)
+      expect(dispatchSlaBreached).toHaveBeenCalledTimes(2)
+      expect(dispatchSlaBreached).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ conversationId: okConversationId })
+      )
+    })
+  })
+
   describe('sweepWorkflowRuns', () => {
-    it('runs both passes without throwing when there is nothing to sweep', async () => {
+    it('runs every pass without throwing when there is nothing to sweep', async () => {
       getWorkflowWaitJob.mockResolvedValue(undefined)
       await expect(sweepWorkflowRuns()).resolves.toBeUndefined()
     })

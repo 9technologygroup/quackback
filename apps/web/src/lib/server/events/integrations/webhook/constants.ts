@@ -98,6 +98,11 @@ export const WEBHOOK_EVENT_CONFIG = [
     description: 'When a conversation priority is changed',
   },
   {
+    id: 'conversation.attribute_changed',
+    label: 'Conversation Attribute Changed',
+    description: 'When a conversation attribute is set or cleared by AI, a teammate, or a customer',
+  },
+  {
     id: 'conversation.csat_submitted',
     label: 'CSAT Submitted',
     description: 'When a visitor submits a satisfaction rating',
@@ -111,6 +116,28 @@ export const WEBHOOK_EVENT_CONFIG = [
     id: 'assistant.handed_off',
     label: 'Assistant Handed Off',
     description: 'When the AI assistant hands a conversation to the team',
+  },
+  {
+    id: 'conversation.customer_unresponsive',
+    label: 'Customer Unresponsive',
+    description:
+      'When the customer has been silent for a workflow-configured time after the last teammate or AI reply',
+  },
+  {
+    id: 'conversation.teammate_unresponsive',
+    label: 'Teammate Unresponsive',
+    description:
+      "When no teammate has replied for a workflow-configured time after the customer's last message",
+  },
+  {
+    id: 'sla.approaching_breach',
+    label: 'SLA Approaching Breach',
+    description: 'When an applied SLA clock enters its lead-time warning window',
+  },
+  {
+    id: 'sla.breached',
+    label: 'SLA Breached',
+    description: 'When an applied SLA clock passes its due date unsettled',
   },
   {
     id: 'message.created',

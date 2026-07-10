@@ -19,7 +19,7 @@ import { WorkflowBuilderCanvas } from './canvas'
 import { JsonPanel } from './json-panel'
 import { InspectorPanel } from './inspector/inspector-panel'
 import { useWorkflowBuilder } from './use-workflow-builder'
-import type { FrequencyCap } from '../workflow-graph'
+import type { FrequencyCap, GraphCondition, SendWindow } from '../workflow-graph'
 
 export function WorkflowBuilder({ workflowId }: { workflowId: string }) {
   const { data: workflow, isLoading } = useQuery(workflowDetailQuery(workflowId))
@@ -92,6 +92,8 @@ function WorkflowBuilderShell({ workflow }: { workflow: WorkflowDTO }) {
             triggerLabel={b.triggerLabelText}
             triggerChannels={b.triggerSettings.channels}
             triggerFrequencyCap={b.triggerSettings.frequencyCap as FrequencyCap | undefined}
+            triggerAudience={b.triggerSettings.audience as GraphCondition | undefined}
+            triggerSendWindow={b.triggerSettings.sendWindow as SendWindow | undefined}
             selection={b.selection}
             stepIssues={b.stepIssues}
             onSelectNode={b.selectNode}

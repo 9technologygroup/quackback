@@ -26,6 +26,7 @@ const {
   setConversationStatus,
   appendAssistantReply,
   recordCsat,
+  addAgentNote,
   attachTag,
   detachTag,
   applySlaToConversation,
@@ -44,6 +45,7 @@ const {
   setConversationStatus: vi.fn(),
   appendAssistantReply: vi.fn(),
   recordCsat: vi.fn(),
+  addAgentNote: vi.fn(),
   attachTag: vi.fn(),
   detachTag: vi.fn(),
   applySlaToConversation: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock('@/lib/server/domains/conversation/conversation.service', () => ({
   setConversationStatus,
   appendAssistantReply,
   recordCsat,
+  addAgentNote,
 }))
 vi.mock('@/lib/server/domains/conversation/conversation-tag.service', () => ({
   attachTag,
@@ -468,6 +471,33 @@ describe('applyAction', () => {
         )
       ).toMatchObject({ label: 'csat recorded' })
       expect(recordCsat).toHaveBeenCalledWith(conversationId, 5, 'Great!', visitorActor)
+    })
+  })
+
+  describe('add_note', () => {
+    it('posts through the shared addAgentNote seam, authored by the assistant service principal, under the run actor', async () => {
+      ensureAssistantPrincipal.mockResolvedValue({ id: 'principal_quinn', displayName: 'Quinn' })
+      addAgentNote.mockResolvedValue({
+        conversation: { id: conversationId },
+        message: { id: 'conversation_message_note_1' },
+      })
+      expect(await applyAction({ type: 'add_note', body: 'Escalated to VIP' }, ctx)).toMatchObject({
+        label: 'note added',
+      })
+      expect(addAgentNote).toHaveBeenCalledWith(
+        conversationId,
+        'Escalated to VIP',
+        { principalId: 'principal_quinn', displayName: 'Quinn' },
+        actor
+      )
+    })
+
+    it('propagates a failure from the note write path (e.g. an empty/over-long body slipping past the schema)', async () => {
+      ensureAssistantPrincipal.mockResolvedValue({ id: 'principal_quinn', displayName: 'Quinn' })
+      addAgentNote.mockRejectedValue(new Error('Message cannot be empty'))
+      await expect(applyAction({ type: 'add_note', body: '' }, ctx)).rejects.toThrow(
+        'Message cannot be empty'
+      )
     })
   })
 })

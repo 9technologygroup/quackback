@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import {
   workflowGraphSchema,
   classRestrictedNodeIssue,
+  triggerSettingsSchema,
 } from '@/lib/server/domains/workflows/workflow.schemas'
 import {
   collectStepIssues,
@@ -37,6 +38,17 @@ describe('WORKFLOW_TEMPLATES', () => {
   it.each(WORKFLOW_TEMPLATES)('$id uses a known trigger type', (template) => {
     expect(TRIGGER_TYPES).toContain(template.payload.triggerType)
   })
+
+  it.each(WORKFLOW_TEMPLATES.filter((t) => t.payload.triggerSettings))(
+    '$id triggerSettings passes triggerSettingsSchema (the same schema createWorkflowFn validates against)',
+    (template) => {
+      const result = triggerSettingsSchema.safeParse(template.payload.triggerSettings)
+      expect(
+        result.success,
+        result.success ? undefined : JSON.stringify(result.error?.issues)
+      ).toBe(true)
+    }
+  )
 
   // Bumped from 8 by the Phase C, slice C-5 launch templates (front-door
   // triage bot, AI-first support, post-resolution follow-up) — see
@@ -227,6 +239,73 @@ describe('WORKFLOW_TEMPLATES', () => {
       const t = byId('auto-close-idle')
       expect(t.payload.graph.nodes.some((n) => n.type === 'message')).toBe(true)
       expect(t.payload.graph.nodes.map((n) => n.type)).toContain('wait')
+    })
+  })
+
+  // PHASE-C-CONVERSATIONAL-UX-BRIEF.md §9.5 / WORKFLOWS-GAP-ANALYSIS.md Phase T:
+  // the VIP concierge lane, unblocked once triggerSettings.audience and
+  // company.attr./person.attr. condition fields landed.
+  describe('vip-concierge-lane', () => {
+    const byId = (id: string) => {
+      const t = WORKFLOW_TEMPLATES.find((tpl) => tpl.id === id)
+      expect(t, `missing template ${id}`).toBeDefined()
+      return t!
+    }
+
+    it('is customer_facing, triggers on conversation.created, and is gallery-tagged Customer facing', () => {
+      const t = byId('vip-concierge-lane')
+      expect(t.payload.class).toBe('customer_facing')
+      expect(t.payload.triggerType).toBe('conversation.created')
+      expect(t.categories).toContain('customer_facing')
+    })
+
+    it('ships an audience condition gating on company.attr.plan', () => {
+      const t = byId('vip-concierge-lane')
+      const audience = t.payload.triggerSettings?.audience as
+        | { field: string; op: string; value?: unknown }
+        | undefined
+      expect(audience).toBeDefined()
+      expect(audience?.field).toBe('company.attr.plan')
+      expect(audience?.op).toBe('eq')
+      // Unlike the AI-attribute routing templates' unset ('') placeholders,
+      // this ships a real-looking example value -- there is no needs-setup-
+      // style gate for an audience predicate (collectStepIssues never reads
+      // triggerSettings at all), so an empty value here would silently never
+      // surface as an unresolved issue. The step summary calls out that this
+      // is an example to adjust, not a sentinel.
+      expect(audience?.value).toBe('enterprise')
+      expect(t.stepsSummary.toLowerCase()).toContain('adjust')
+    })
+
+    it('scopes the trigger to the messenger channel', () => {
+      const t = byId('vip-concierge-lane')
+      expect(t.payload.triggerSettings?.channels).toEqual(['messenger'])
+    })
+
+    it('graph sets priority high, applies SLA, assigns a team, then sends the concierge greeting', () => {
+      const t = byId('vip-concierge-lane')
+      const kinds = t.payload.graph.nodes.map((n) => n.type)
+      expect(kinds).toEqual(['trigger', 'action', 'action', 'action', 'message'])
+      const actions = t.payload.graph.nodes
+        .filter((n) => n.type === 'action')
+        .map(
+          (n) =>
+            (n as Extract<(typeof t.payload.graph.nodes)[number], { type: 'action' }>).action.type
+        )
+      expect(actions).toEqual(['set_priority', 'apply_sla', 'assign_team'])
+      const message = t.payload.graph.nodes.find((n) => n.type === 'message')
+      const text = JSON.stringify(message)
+      expect(text).toContain('{first_name|there}')
+      expect(text.toLowerCase()).toContain('priority line')
+    })
+
+    it('every needs-setup ref (SLA policy, team) is flagged by the issues gate', () => {
+      const t = byId('vip-concierge-lane')
+      const tree = graphToTree(t.payload.graph)
+      expect(tree.ok, tree.ok ? undefined : tree.error).toBe(true)
+      if (!tree.ok) return
+      const issues = collectStepIssues(tree.value)
+      expect(issues.size).toBeGreaterThan(0)
     })
   })
 })

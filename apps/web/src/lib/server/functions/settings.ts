@@ -37,6 +37,7 @@ import { db, principal, user, invitation, account, eq, ne, and } from '@/lib/ser
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { officeHoursScheduleSchema } from '@/lib/server/domains/settings/settings.office-hours'
 import { changelogSettingsSchema } from '@/lib/shared/changelog-settings'
+import { workflowAbandonedAutoCloseSchema } from '@/lib/shared/workflows/abandoned-auto-close'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'settings' })
@@ -946,6 +947,45 @@ export const updateChangelogSettingsFn = createServerFn({ method: 'POST' })
       return await updateChangelogSettings(data)
     } catch (error) {
       log.error({ err: error }, 'update changelog settings failed')
+      throw error
+    }
+  })
+
+// ============================================
+// Abandoned-Journey Auto-Close Operations
+// ============================================
+
+// Gated like the rest of the automation page these settings live on
+// (functions/workflows.ts's precedent: read = ROUTING_MANAGE, write =
+// WORKFLOW_MANAGE), NOT settings.manage — a custom role holding only those
+// two (the page's actual read/write split) still needs its route loader's
+// fetch to succeed.
+export const fetchWorkflowAbandonedAutoCloseFn = createServerFn({ method: 'GET' }).handler(
+  async () => {
+    log.debug('fetch workflow abandoned auto-close settings')
+    try {
+      await requireAuth({ permission: PERMISSIONS.ROUTING_MANAGE })
+      const { getWorkflowAbandonedAutoCloseSettings } =
+        await import('@/lib/server/domains/settings/settings.workflows')
+      return await getWorkflowAbandonedAutoCloseSettings()
+    } catch (error) {
+      log.error({ err: error }, 'fetch workflow abandoned auto-close settings failed')
+      throw error
+    }
+  }
+)
+
+export const updateWorkflowAbandonedAutoCloseFn = createServerFn({ method: 'POST' })
+  .validator(workflowAbandonedAutoCloseSchema)
+  .handler(async ({ data }) => {
+    log.info(data, 'update workflow abandoned auto-close settings')
+    try {
+      await requireAuth({ permission: PERMISSIONS.WORKFLOW_MANAGE })
+      const { updateWorkflowAbandonedAutoCloseSettings } =
+        await import('@/lib/server/domains/settings/settings.workflows')
+      return await updateWorkflowAbandonedAutoCloseSettings(data)
+    } catch (error) {
+      log.error({ err: error }, 'update workflow abandoned auto-close settings failed')
       throw error
     }
   })

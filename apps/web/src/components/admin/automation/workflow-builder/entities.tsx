@@ -15,7 +15,14 @@ import {
   conversationAttributeQueries,
   type ConversationAttributeItem,
 } from '@/lib/client/queries/conversation-attributes'
-import { toAttributeFieldDefs, type EntityLabels } from '../workflow-graph'
+import { useUserAttributes } from '@/lib/client/hooks/use-user-attributes-queries'
+import { useCompanyAttributes } from '@/lib/client/hooks/use-company-attributes-queries'
+import {
+  toAttributeFieldDefs,
+  toPersonCompanyAttributeFieldDefs,
+  type EntityLabels,
+  type PersonCompanyAttributeFieldDef,
+} from '../workflow-graph'
 
 export interface EntityOption {
   id: string
@@ -31,6 +38,11 @@ export interface WorkflowEntities {
   /** Live attribute definitions (full shape: the value editor needs field
    *  type + options, not just id/name). */
   attributes: ConversationAttributeItem[]
+  /** Live user/company attribute definitions, for the person.attr.* /
+   *  company.attr.* condition field groups — same role as `attributes`
+   *  above, one array per registry (they're independently keyed stores). */
+  personAttributes: PersonCompanyAttributeFieldDef[]
+  companyAttributes: PersonCompanyAttributeFieldDef[]
   labels: EntityLabels
 }
 
@@ -58,6 +70,14 @@ export function WorkflowEntitiesProvider({ children }: { children: ReactNode }) 
     staleTime: 60_000,
   })
   const { data: attributes } = useQuery(conversationAttributeQueries.live())
+  // Gated per their own domain's view permission (USER_ATTRIBUTE_VIEW /
+  // COMPANY_VIEW respectively — see listUserAttributesFn/listCompanyAttributesFn),
+  // same as conversationAttributeQueries.live() above is gated CONVERSATION_VIEW:
+  // each attribute-field group stays behind the read gate its own registry
+  // already uses everywhere else, so a builder viewer with no company/user-
+  // attribute access simply sees that group stay empty rather than erroring.
+  const { data: personAttributeDefs } = useUserAttributes()
+  const { data: companyAttributeDefs } = useCompanyAttributes()
 
   const value = useMemo<WorkflowEntities>(() => {
     const memberOptions = (members ?? []).map((m) => ({ id: m.id, name: m.name ?? 'Unnamed' }))
@@ -70,15 +90,19 @@ export function WorkflowEntitiesProvider({ children }: { children: ReactNode }) 
       tags: tagOptions,
       slaPolicies: slaOptions,
       attributes: attributes ?? [],
+      personAttributes: personAttributeDefs ?? [],
+      companyAttributes: companyAttributeDefs ?? [],
       labels: {
         members: toMap(memberOptions),
         teams: toMap(teamOptions),
         tags: toMap(tagOptions),
         slaPolicies: toMap(slaOptions),
         attributes: toAttributeFieldDefs(attributes ?? []),
+        personAttributes: toPersonCompanyAttributeFieldDefs(personAttributeDefs ?? []),
+        companyAttributes: toPersonCompanyAttributeFieldDefs(companyAttributeDefs ?? []),
       },
     }
-  }, [members, teams, tags, slaPolicies, attributes])
+  }, [members, teams, tags, slaPolicies, attributes, personAttributeDefs, companyAttributeDefs])
 
   return (
     <WorkflowEntitiesContext.Provider value={value}>{children}</WorkflowEntitiesContext.Provider>

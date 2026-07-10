@@ -9,18 +9,20 @@ import type { ConversationId } from '@quackback/ids'
 
 const {
   listLiveWorkflowsForTrigger,
+  getWorkflow,
   resolveConditionContext,
   runWorkflow,
   frequencyCapAllows,
   hasActiveCustomerFacingRun,
 } = vi.hoisted(() => ({
   listLiveWorkflowsForTrigger: vi.fn(),
+  getWorkflow: vi.fn(),
   resolveConditionContext: vi.fn(),
   runWorkflow: vi.fn(),
   frequencyCapAllows: vi.fn(),
   hasActiveCustomerFacingRun: vi.fn(),
 }))
-vi.mock('../workflow.service', () => ({ listLiveWorkflowsForTrigger }))
+vi.mock('../workflow.service', () => ({ listLiveWorkflowsForTrigger, getWorkflow }))
 vi.mock('../condition.context', () => ({ resolveConditionContext }))
 vi.mock('../workflow.engine', () => ({ runWorkflow }))
 // channelAllows is left real (pure, no IO) so these tests exercise the actual
@@ -60,6 +62,15 @@ const ranIds = () => runWorkflow.mock.calls.map((c) => (c[0] as { id: string }).
 describe('dispatchWorkflowTrigger', () => {
   it('gates out an automated (service) actor before any load', async () => {
     await dispatchWorkflowTrigger(trigger({ actorType: 'service' }))
+    expect(listLiveWorkflowsForTrigger).not.toHaveBeenCalled()
+    expect(runWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('loop guard: a service-authored message.note_created trigger (a workflow add_note action posting its own note) never dispatches — eventToWorkflowTrigger does not opt it out of the human-actor gate (see event-trigger.test.ts)', async () => {
+    listLiveWorkflowsForTrigger.mockResolvedValue([wf('note_wf', 'background')])
+    await dispatchWorkflowTrigger(
+      trigger({ triggerType: 'message.note_created', actorType: 'service' })
+    )
     expect(listLiveWorkflowsForTrigger).not.toHaveBeenCalled()
     expect(runWorkflow).not.toHaveBeenCalled()
   })
@@ -169,5 +180,217 @@ describe('dispatchWorkflowTrigger', () => {
     resolveConditionContext.mockRejectedValue(new Error('db unavailable'))
     await expect(dispatchWorkflowTrigger(trigger())).rejects.toThrow('db unavailable')
     expect(runWorkflow).not.toHaveBeenCalled()
+  })
+})
+
+describe('dispatchWorkflowTrigger — audience', () => {
+  it('a matching audience runs; a non-matching one is skipped (customer_facing) without consuming the exclusive slot', async () => {
+    resolveConditionContext.mockResolvedValue({
+      conversation: { channel: 'messenger', status: 'open' },
+    })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('cf1', 'customer_facing', {
+        audience: { field: 'conversation.status', op: 'eq', value: 'closed' },
+      }),
+      wf('cf2', 'customer_facing', {
+        audience: { field: 'conversation.status', op: 'eq', value: 'open' },
+      }),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    // cf1's audience never matches -> never tried; cf2 matches and runs.
+    expect(ranIds()).toEqual(['cf2'])
+  })
+
+  it('a matching audience runs; a non-matching one is skipped (background) — every cap-permitted match runs in parallel', async () => {
+    resolveConditionContext.mockResolvedValue({
+      conversation: { channel: 'messenger', status: 'open' },
+    })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('bg1', 'background', {
+        audience: { field: 'conversation.status', op: 'eq', value: 'closed' },
+      }),
+      wf('bg2', 'background', {
+        audience: { field: 'conversation.status', op: 'eq', value: 'open' },
+      }),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(ranIds()).toEqual(['bg2'])
+  })
+
+  it('no audience configured always runs (both classes)', async () => {
+    resolveConditionContext.mockResolvedValue({ conversation: { channel: 'messenger' } })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('cf1', 'customer_facing'),
+      wf('bg1', 'background'),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(ranIds().sort()).toEqual(['bg1', 'cf1'])
+  })
+
+  it('a stored audience that is not a well-formed condition (a stray string) fails open — allows and does not throw', async () => {
+    resolveConditionContext.mockResolvedValue({ conversation: { channel: 'messenger' } })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('bg1', 'background', { audience: 'not-a-condition' }),
+    ])
+    await expect(dispatchWorkflowTrigger(trigger())).resolves.toBeUndefined()
+    expect(ranIds()).toEqual(['bg1'])
+  })
+
+  it('an audience over a dynamic attribute participates in the same first-match ordering as any other predicate', async () => {
+    resolveConditionContext.mockResolvedValue({
+      conversation: { channel: 'messenger' },
+      person: { segmentIds: [], attributes: { plan: 'pro' } },
+    })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('cf1', 'customer_facing', {
+        audience: { field: 'person.attr.plan', op: 'eq', value: 'free' },
+      }),
+      wf('cf2', 'customer_facing', {
+        audience: { field: 'person.attr.plan', op: 'eq', value: 'pro' },
+      }),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(ranIds()).toEqual(['cf2'])
+  })
+})
+
+describe('dispatchWorkflowTrigger — sendWindow', () => {
+  it('inside_office_hours runs when officeHours is true, is skipped when false (customer_facing, slot passes to the next)', async () => {
+    resolveConditionContext.mockResolvedValue({
+      conversation: { channel: 'messenger' },
+      officeHours: false,
+    })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('cf1', 'customer_facing', { sendWindow: 'inside_office_hours' }),
+      wf('cf2', 'customer_facing'),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(ranIds()).toEqual(['cf2'])
+  })
+
+  it('outside_office_hours runs when officeHours is false, is skipped when true (background)', async () => {
+    resolveConditionContext.mockResolvedValue({
+      conversation: { channel: 'messenger' },
+      officeHours: true,
+    })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('bg1', 'background', { sendWindow: 'outside_office_hours' }),
+      wf('bg2', 'background', { sendWindow: 'inside_office_hours' }),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(ranIds()).toEqual(['bg2'])
+  })
+
+  it('"any" (or an absent key) never restricts, regardless of officeHours', async () => {
+    resolveConditionContext.mockResolvedValue({
+      conversation: { channel: 'messenger' },
+      officeHours: false,
+    })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('bg1', 'background', { sendWindow: 'any' }),
+      wf('bg2', 'background'),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(ranIds().sort()).toEqual(['bg1', 'bg2'])
+  })
+})
+
+describe('dispatchWorkflowTrigger — person/company context gating', () => {
+  it('skips the person/company join when no live workflow references a person./company. field', async () => {
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('bg1', 'background', {
+        audience: { field: 'conversation.status', op: 'eq', value: 'open' },
+      }),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(resolveConditionContext).toHaveBeenCalledWith(
+      conversationId,
+      expect.objectContaining({ resolvePersonCompany: false })
+    )
+  })
+
+  it('resolves the join when a workflow AUDIENCE references a person attribute', async () => {
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('bg1', 'background', {
+        audience: { field: 'person.attr.plan', op: 'eq', value: 'pro' },
+      }),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(resolveConditionContext).toHaveBeenCalledWith(
+      conversationId,
+      expect.objectContaining({ resolvePersonCompany: true })
+    )
+  })
+
+  it('resolves the join when a workflow GRAPH condition node references a company attribute', async () => {
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      {
+        id: 'bg1',
+        class: 'background',
+        triggerSettings: {},
+        graph: {
+          nodes: [
+            {
+              id: 'c1',
+              type: 'condition',
+              condition: { field: 'company.attr.tier', op: 'eq', value: 'gold' },
+            },
+          ],
+        },
+      } as never,
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(resolveConditionContext).toHaveBeenCalledWith(
+      conversationId,
+      expect.objectContaining({ resolvePersonCompany: true })
+    )
+  })
+
+  it('resolves the join when a BRANCH path references person.email', async () => {
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      {
+        id: 'bg1',
+        class: 'background',
+        triggerSettings: {},
+        graph: {
+          nodes: [
+            {
+              id: 'b1',
+              type: 'branch',
+              branches: [{ key: 'has_email', condition: { field: 'person.email', op: 'is_set' } }],
+            },
+          ],
+        },
+      } as never,
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(resolveConditionContext).toHaveBeenCalledWith(
+      conversationId,
+      expect.objectContaining({ resolvePersonCompany: true })
+    )
+  })
+
+  it('does NOT gate on person.segments — its own pre-existing resolution is unconditional', async () => {
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      {
+        id: 'bg1',
+        class: 'background',
+        triggerSettings: {},
+        graph: {
+          nodes: [
+            {
+              id: 'c1',
+              type: 'condition',
+              condition: { field: 'person.segments', op: 'includes_any', value: ['seg_1'] },
+            },
+          ],
+        },
+      } as never,
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(resolveConditionContext).toHaveBeenCalledWith(
+      conversationId,
+      expect.objectContaining({ resolvePersonCompany: false })
+    )
   })
 })

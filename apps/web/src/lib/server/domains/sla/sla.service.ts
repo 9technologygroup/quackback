@@ -21,6 +21,7 @@ import {
   type SlaPolicy,
 } from '@/lib/server/db'
 import type { ConversationId, SlaPolicyId } from '@quackback/ids'
+import type { EventConversationRef } from '@/lib/server/events/types'
 import { getSlaPolicy } from './sla-policy.service'
 import {
   addOfficeHoursSeconds,
@@ -54,6 +55,21 @@ export type SlaApplied = {
   // exactly-once on the sla_events log. Unset on old stamps = not yet noted.
   firstResponseBreachedAt?: string | null
   resolutionBreachedAt?: string | null
+  // Timer-driven workflow-trigger fire markers (support platform §4.6) —
+  // DISTINCT from the breach-noted markers above, which exist purely to keep
+  // the sla_events reporting log exactly-once and are read/written by
+  // recordFirstResponse/recordResolution/sweepOverdueSlaBreaches regardless
+  // of whether any workflow cares. These four exist only so
+  // sweepApproachingSlaBreaches / sweepSlaBreachTriggers (below) fire
+  // conversation.customer_unresponsive's SLA siblings — sla.approaching_breach
+  // and sla.breached — at most once per clock per SLA application. Set the
+  // moment that trigger's dispatch is enqueued (CAS-guarded the same way as
+  // the breach-noted markers), cleared implicitly on a fresh apply (a new
+  // `appliedAt` reads every marker below as absent again).
+  firstResponseWarningFiredAt?: string | null
+  resolutionWarningFiredAt?: string | null
+  firstResponseBreachTriggerFiredAt?: string | null
+  resolutionBreachTriggerFiredAt?: string | null
   // Snapshot of the policy's pause rule so the inbox chip can show a paused
   // state without a join back to the policy. Stamps written before this field
   // existed read as true (the policy default).
@@ -149,7 +165,11 @@ async function loadSlaApplied(conversationId: ConversationId): Promise<SlaApplie
  * over this one rather than get overwritten. One helper so the three call
  * sites can't drift on the predicate shape.
  */
-function slaStampGuard(conversationId: ConversationId, appliedAt: string, pausedAt: string | null) {
+export function slaStampGuard(
+  conversationId: ConversationId,
+  appliedAt: string,
+  pausedAt: string | null
+) {
   return and(
     eq(conversations.id, conversationId),
     sql`${conversations.slaApplied} ->> 'appliedAt' = ${appliedAt}`,
@@ -444,22 +464,167 @@ export async function resumeSlaFromSnooze(
 // minute for the next tick (the SQL filter keeps re-finding them).
 const SWEEP_BATCH_LIMIT = 500
 
-// The two stamped clocks the sweep can find overdue, as stamp-field descriptors
-// so both run through the one claim-then-log path below.
-const SWEEP_CLOCKS = [
+// The two SLA clocks every sweep pass reads, as ONE stamp-field descriptor
+// table (support platform §4.6) — merged from what were two nearly-identical
+// tables (a SWEEP_CLOCKS for this per-minute reporting sweep, a separate
+// TIMER_TRIGGER_CLOCKS for the two 5-minute workflow-trigger sweeps further
+// below): `breachedField` here is the SAME stamp field both former tables
+// independently named (SWEEP_CLOCKS' `markerField` / TIMER_TRIGGER_CLOCKS'
+// `breachNotedField`) — `*BreachedAt`, set the moment this sweep (or the lazy
+// evaluator) first notes the breach. `warningMarkerField`/`breachMarkerField`
+// are the SEPARATE, independent workflow-trigger fire-once markers — see
+// sweepSlaBreachTriggers' doc below for why they're never the same field as
+// `breachedField`. `reportKind` is the sla_events `kind` THIS sweep logs;
+// `clock` is the public clock name the workflow-trigger sweeps' dispatched
+// event payload uses (a different vocabulary — 'first_response_breached' vs
+// 'first_response' — so both names are kept, not just one).
+const SLA_CLOCKS = [
   {
-    kind: 'first_response_breached',
+    reportKind: 'first_response_breached',
+    clock: 'first_response',
     dueField: 'firstResponseDueAt',
     settledField: 'firstResponseAt',
-    markerField: 'firstResponseBreachedAt',
+    breachedField: 'firstResponseBreachedAt',
+    warningMarkerField: 'firstResponseWarningFiredAt',
+    breachMarkerField: 'firstResponseBreachTriggerFiredAt',
   },
   {
-    kind: 'resolution_breached',
+    reportKind: 'resolution_breached',
+    clock: 'resolution',
     dueField: 'timeToCloseDueAt',
     settledField: 'resolvedAt',
-    markerField: 'resolutionBreachedAt',
+    breachedField: 'resolutionBreachedAt',
+    warningMarkerField: 'resolutionWarningFiredAt',
+    breachMarkerField: 'resolutionBreachTriggerFiredAt',
   },
 ] as const
+
+type SlaClock = (typeof SLA_CLOCKS)[number]
+
+/** A row scanAndClaimSlaClocks selects: the SLA stamp plus the
+ *  EventConversationRef fields the two timer-trigger sweeps need to build
+ *  each claimed candidate's `conversation` ref (webhook payload parity). */
+interface SlaSweepRow {
+  id: ConversationId
+  slaApplied: unknown
+  status: string
+  channel: string
+  priority: string
+  assignedTeamId: string | null
+}
+
+/** Build the EventConversationRef every sibling conversation event embeds,
+ *  from a scanAndClaimSlaClocks row. */
+function conversationRefFromRow(row: SlaSweepRow): EventConversationRef {
+  return {
+    id: row.id,
+    status: row.status as EventConversationRef['status'],
+    channel: row.channel as EventConversationRef['channel'],
+    priority: row.priority as EventConversationRef['priority'],
+    assignedTeamId: row.assignedTeamId,
+  }
+}
+
+/**
+ * The generic scan-and-claim skeleton shared by every SLA sweep pass below
+ * (sweepOverdueSlaBreaches here, plus sweepApproachingSlaBreaches /
+ * sweepSlaBreachTriggers further down): fetch every conversation with an
+ * active (non-paused) SLA whose stamp satisfies `buildWindowSql` (batched at
+ * SWEEP_BATCH_LIMIT), then for each of SLA_CLOCKS' two clocks on each row,
+ * re-check `isEligible` in JS (SQL only narrows the scan; the
+ * recording/claiming rule always lives in JS, per every sweep in this module)
+ * and, if still eligible, atomically claim `markerField(clock)` — CAS-guarded
+ * by slaStampGuard the same way every stamp writer in this module is, plus
+ * whatever `extraUnsetFields(clock)` names must ALSO still be unset under
+ * that same guard (only sweepOverdueSlaBreaches uses this, to re-check
+ * `settledField` in the claim itself — see its own call site for why).
+ * `onClaimed` runs only after a landed claim: the one place the three
+ * passes actually diverge (log an sla_events row vs. push a workflow-trigger
+ * candidate).
+ *
+ * Deliberately status-blind: none of the three sweeps below filter on
+ * `conversations.status` at all (contrast workflow-sweep.ts's
+ * scanUnresponsiveForWorkflow, which explicitly excludes closed/snoozed
+ * conversations by SQL filter for the customer/teammate_unresponsive pair).
+ * A snoozed conversation only stops its clock when the policy opted into
+ * `pauseOnSnooze` (pauseSlaOnSnooze/resumeSlaFromSnooze, above) — under a
+ * no-pause policy it keeps running and can legitimately breach while
+ * snoozed. A closed conversation whose first-response (or resolution) clock
+ * was never settled before close is a real, reportable fact — "nobody
+ * responded before this was closed" — not a scan artifact to suppress.
+ * Whether that fact is still actionable for a given workflow (e.g. "don't
+ * reopen a closed conversation just because it breached") is left to that
+ * workflow's OWN condition/branch on `conversation.status`, the same way any
+ * other trigger's downstream filtering works — it is not baked into the scan.
+ */
+async function scanAndClaimSlaClocks(
+  at: Date,
+  buildWindowSql: (nowIso: string) => ReturnType<typeof sql>,
+  isEligible: (clock: SlaClock, applied: SlaApplied, dueAt: string) => boolean,
+  markerField: (clock: SlaClock) => keyof SlaApplied,
+  extraUnsetFields: (clock: SlaClock) => (keyof SlaApplied)[],
+  onClaimed: (
+    row: SlaSweepRow,
+    applied: SlaApplied,
+    clock: SlaClock,
+    dueAt: string
+  ) => Promise<void>
+): Promise<void> {
+  const nowIso = at.toISOString() // ISO-8601 compares lexicographically = chronologically
+  const rows = await db
+    .select({
+      id: conversations.id,
+      slaApplied: conversations.slaApplied,
+      // Only sweepApproachingSlaBreaches/sweepSlaBreachTriggers actually use
+      // these (to build each claimed candidate's EventConversationRef —
+      // support platform §4.6, webhook payload parity); sweepOverdueSlaBreaches
+      // ignores them. Selected unconditionally rather than threading a second
+      // query shape through this shared skeleton for one caller.
+      status: conversations.status,
+      channel: conversations.channel,
+      priority: conversations.priority,
+      assignedTeamId: conversations.assignedTeamId,
+    })
+    .from(conversations)
+    .where(
+      and(
+        isNotNull(conversations.slaApplied),
+        sql`(${conversations.slaApplied} ->> 'pausedAt') IS NULL`,
+        // Redundant given buildWindowSql's own OR'd window below (every
+        // candidate row already has at least one of the two settledFields
+        // null, since each OR branch requires its own clock's settledField
+        // IS NULL) — repeated here VERBATIM as its own top-level AND clause,
+        // matching conversations_sla_unsettled_idx's predicate (migration
+        // 0187 / schema/conversation.ts), so the planner can prove the
+        // partial index applies via a literal clause match instead of having
+        // to reason through the OR structure itself.
+        sql`((${conversations.slaApplied} ->> 'firstResponseAt') IS NULL OR (${conversations.slaApplied} ->> 'resolvedAt') IS NULL)`,
+        buildWindowSql(nowIso)
+      )
+    )
+    .limit(SWEEP_BATCH_LIMIT)
+
+  for (const row of rows) {
+    // Re-check in JS (the recording rule lives here; SQL only narrows the scan).
+    const applied = row.slaApplied as SlaApplied
+    if (applied.pausedAt) continue // paused clocks are stopped, never eligible
+    for (const clock of SLA_CLOCKS) {
+      const dueAt = applied[clock.dueField]
+      if (!dueAt || !isEligible(clock, applied, dueAt)) continue
+      const landed = await claimSlaClockMarker(
+        row.id,
+        applied,
+        clock.dueField,
+        markerField(clock),
+        dueAt,
+        at,
+        extraUnsetFields(clock)
+      )
+      if (!landed) continue // settled, paused, re-applied, or claimed meanwhile
+      await onClaimed(row, applied, clock, dueAt)
+    }
+  }
+}
 
 /**
  * The breach sweep (run every minute by sla-breach-sweep-queue): find
@@ -472,9 +637,14 @@ const SWEEP_CLOCKS = [
  * (pause/resume/settle) uses — narrowed to the clock being claimed: the due
  * date must still be the scanned one (a pause+resume cycle between scan and
  * write keeps pausedAt null but shifts the deadline) and the clock must still
- * be unsettled and unmarked. So a lazy evaluation (agent reply / close), a
- * pause, or a re-apply racing the sweep across its wide scan-to-write span
- * can't produce a duplicate event, and the jsonb merge can never clobber a
+ * be unsettled and unmarked (this sweep's claim ALSO re-checks `settledField`
+ * itself, unlike the two workflow-trigger sweeps below — passed here as
+ * `extraUnsetFields` — closing a narrow race a lazy settle landing between
+ * this sweep's SELECT and its own UPDATE would otherwise slip through: the
+ * settle doesn't change `appliedAt`/`pausedAt`, so slaStampGuard alone
+ * wouldn't catch it). So a lazy evaluation (agent reply / close), a pause, or
+ * a re-apply racing the sweep across its wide scan-to-write span can't
+ * produce a duplicate event, and the jsonb merge can never clobber a
  * concurrently-settled stamp.
  *
  * Pause-aware: a stamp whose clock is currently paused (pausedAt set, not yet
@@ -486,58 +656,205 @@ const SWEEP_CLOCKS = [
 export async function sweepOverdueSlaBreaches(
   at: Date = new Date()
 ): Promise<{ recorded: number }> {
-  const now = at.toISOString() // ISO-8601 compares lexicographically = chronologically
-  const rows = await db
-    .select({ id: conversations.id, slaApplied: conversations.slaApplied })
-    .from(conversations)
-    .where(
-      and(
-        isNotNull(conversations.slaApplied),
-        sql`(${conversations.slaApplied} ->> 'pausedAt') IS NULL`,
-        sql`(
-          ((${conversations.slaApplied} ->> 'firstResponseDueAt') < ${now}
+  let recorded = 0
+  await scanAndClaimSlaClocks(
+    at,
+    (nowIso) => sql`(
+          ((${conversations.slaApplied} ->> 'firstResponseDueAt') < ${nowIso}
             AND (${conversations.slaApplied} ->> 'firstResponseAt') IS NULL
             AND (${conversations.slaApplied} ->> 'firstResponseBreachedAt') IS NULL)
-          OR ((${conversations.slaApplied} ->> 'timeToCloseDueAt') < ${now}
+          OR ((${conversations.slaApplied} ->> 'timeToCloseDueAt') < ${nowIso}
             AND (${conversations.slaApplied} ->> 'resolvedAt') IS NULL
             AND (${conversations.slaApplied} ->> 'resolutionBreachedAt') IS NULL)
-        )`
-      )
-    )
-    .limit(SWEEP_BATCH_LIMIT)
-
-  let recorded = 0
-  for (const row of rows) {
-    // Re-check in JS (the recording rule lives here; SQL only narrows the scan).
-    const applied = row.slaApplied as SlaApplied
-    if (applied.pausedAt) continue // paused clocks are stopped, never overdue
-    for (const clock of SWEEP_CLOCKS) {
-      const dueAt = applied[clock.dueField]
-      if (!dueAt || applied[clock.settledField] || applied[clock.markerField]) continue
-      if (at.getTime() <= new Date(dueAt).getTime()) continue
-      const claimed = await db
-        .update(conversations)
-        .set({
-          slaApplied: sql`${conversations.slaApplied} || ${JSON.stringify({
-            [clock.markerField]: at.toISOString(),
-          })}::jsonb`,
-          updatedAt: at,
-        })
-        .where(
-          and(
-            slaStampGuard(row.id, applied.appliedAt, null),
-            sql`(${conversations.slaApplied} ->> ${clock.dueField}) = ${dueAt}`,
-            sql`(${conversations.slaApplied} ->> ${clock.settledField}) IS NULL`,
-            sql`(${conversations.slaApplied} ->> ${clock.markerField}) IS NULL`
-          )
-        )
-        .returning({ id: conversations.id })
-      if (claimed.length === 0) continue // settled, paused, re-applied, or noted meanwhile
-      await insertClockEvent(row.id, applied.policyId, clock.kind, dueAt, at)
+        )`,
+    (clock, applied, dueAt) =>
+      !applied[clock.settledField] &&
+      !applied[clock.breachedField] &&
+      at.getTime() > new Date(dueAt).getTime(),
+    (clock) => clock.breachedField,
+    (clock) => [clock.settledField],
+    async (row, applied, clock, dueAt) => {
+      await insertClockEvent(row.id, applied.policyId, clock.reportKind, dueAt, at)
       recorded++
     }
-  }
+  )
   return { recorded }
+}
+
+// ---------------------------------------------------------------------------
+// Timer-driven workflow triggers (support platform §4.6): sla.approaching_breach
+// / sla.breached. Both are called from workflow-sweep.ts's 5-minute tick (NOT
+// the per-minute sla-breach-sweep-queue above, which exists purely for
+// sla_events reporting and is otherwise unrelated) and dispatch through the
+// STANDARD multi-workflow fan-out (dispatchWorkflowTrigger, via
+// dispatchSlaApproachingBreach/dispatchSlaBreached -> processEvent), unlike
+// the conversation.customer_unresponsive / teammate_unresponsive pair in
+// event-trigger.ts, which routes to one pre-selected workflow instead.
+//
+// Why the difference: that pair's fire-once dedupe is a BullMQ jobId keyed by
+// (workflowId, conversationId, silence-start), so scanning "per live workflow,
+// with that workflow's own threshold" costs nothing extra — each workflow
+// naturally gets its own independent firing. SLA's fire-once dedupe is a
+// CAS-guarded marker stamped on `sla_applied` (below), which — per the task
+// spec — is scoped per (conversation, clock), not per workflow: there is only
+// ONE `firstResponseWarningFiredAt` slot per SLA application, not one per
+// live workflow. So when more than one live workflow subscribes to
+// sla.approaching_breach with DIFFERENT `breachLeadMinutes`, there is no way
+// to fire each independently off a single scalar marker — workflow-sweep.ts
+// resolves this by scanning at the WIDEST (maximum) configured lead across
+// every live workflow of that trigger type, claims the ONE marker at that
+// moment, and dispatches to every live workflow together. A workflow
+// configured with a NARROWER lead than the winning one is notified earlier
+// than it asked for. This is a deliberate, documented v1 simplification
+// (per-workflow independent SLA warning timing is deferred) rather than a
+// bug: expanding the marker to a per-workflow map is the natural follow-up if
+// multiple SLA-trigger workflows with different leads turns out to matter in
+// practice.
+// ---------------------------------------------------------------------------
+
+/** One (conversation, clock) pair a timer-trigger sweep claimed and needs
+ *  dispatched — workflow-sweep.ts turns each into a dispatchSlaApproachingBreach
+ *  / dispatchSlaBreached call. */
+export interface SlaTimerTriggerCandidate {
+  conversationId: ConversationId
+  conversation: EventConversationRef
+  policyId: SlaPolicyId
+  clock: 'first_response' | 'resolution'
+  dueAt: string
+}
+
+/** Claim `markerField` on `conversationId`'s stamp via the same guarded
+ *  jsonb-merge CAS every stamp writer in this module uses (slaStampGuard),
+ *  narrowed to the exact due date and to the marker still being unset —
+ *  optionally ALSO re-checking any `extraUnsetFields` under that same guard
+ *  (only sweepOverdueSlaBreaches passes any, to re-check `settledField`
+ *  itself; see its own doc for why). Returns whether the claim landed. Shared
+ *  by all three sweep passes above/below (via scanAndClaimSlaClocks) so the
+ *  CAS predicate can't drift between them. */
+async function claimSlaClockMarker(
+  conversationId: ConversationId,
+  applied: SlaApplied,
+  dueField: string,
+  markerField: string,
+  dueAt: string,
+  at: Date,
+  extraUnsetFields: string[] = []
+): Promise<boolean> {
+  const claimed = await db
+    .update(conversations)
+    .set({
+      slaApplied: sql`${conversations.slaApplied} || ${JSON.stringify({
+        [markerField]: at.toISOString(),
+      })}::jsonb`,
+      updatedAt: at,
+    })
+    .where(
+      and(
+        slaStampGuard(conversationId, applied.appliedAt, null),
+        sql`(${conversations.slaApplied} ->> ${dueField}) = ${dueAt}`,
+        sql`(${conversations.slaApplied} ->> ${markerField}) IS NULL`,
+        ...extraUnsetFields.map((field) => sql`(${conversations.slaApplied} ->> ${field}) IS NULL`)
+      )
+    )
+    .returning({ id: conversations.id })
+  return claimed.length > 0
+}
+
+/**
+ * Scan for conversations whose unsettled clock enters the approaching-breach
+ * lead window (`due - leadMinutes <= now < due`) and claim
+ * `*WarningFiredAt` for each — CAS-guarded exactly like sweepOverdueSlaBreaches's
+ * `*BreachedAt` claim, just on a different marker field (see this section's
+ * module doc for why `leadMinutes` is a single value, not per-workflow).
+ * Pause-aware the same way sweepOverdueSlaBreaches is: a currently-paused
+ * clock never approaches (excluded in SQL and re-checked in JS). Already-due
+ * clocks are excluded too — those are sla.breached's job below, not a warning.
+ * Returns the claimed candidates for the caller (workflow-sweep.ts) to
+ * dispatch.
+ */
+export async function sweepApproachingSlaBreaches(
+  leadMinutes: number,
+  at: Date = new Date()
+): Promise<SlaTimerTriggerCandidate[]> {
+  const horizon = new Date(at.getTime() + leadMinutes * 60_000).toISOString()
+  const claimed: SlaTimerTriggerCandidate[] = []
+  await scanAndClaimSlaClocks(
+    at,
+    (nowIso) => sql`(
+          ((${conversations.slaApplied} ->> 'firstResponseDueAt') > ${nowIso}
+            AND (${conversations.slaApplied} ->> 'firstResponseDueAt') <= ${horizon}
+            AND (${conversations.slaApplied} ->> 'firstResponseAt') IS NULL
+            AND (${conversations.slaApplied} ->> 'firstResponseBreachedAt') IS NULL
+            AND (${conversations.slaApplied} ->> 'firstResponseWarningFiredAt') IS NULL)
+          OR ((${conversations.slaApplied} ->> 'timeToCloseDueAt') > ${nowIso}
+            AND (${conversations.slaApplied} ->> 'timeToCloseDueAt') <= ${horizon}
+            AND (${conversations.slaApplied} ->> 'resolvedAt') IS NULL
+            AND (${conversations.slaApplied} ->> 'resolutionBreachedAt') IS NULL
+            AND (${conversations.slaApplied} ->> 'resolutionWarningFiredAt') IS NULL)
+        )`,
+    (clock, applied, dueAt) => {
+      if (applied[clock.settledField] || applied[clock.breachedField]) return false
+      if (applied[clock.warningMarkerField]) return false
+      const dueMs = new Date(dueAt).getTime()
+      return dueMs > at.getTime() && dueMs <= at.getTime() + leadMinutes * 60_000
+    },
+    (clock) => clock.warningMarkerField,
+    () => [],
+    async (row, applied, clock, dueAt) => {
+      claimed.push({
+        conversationId: row.id,
+        conversation: conversationRefFromRow(row),
+        policyId: applied.policyId,
+        clock: clock.clock,
+        dueAt,
+      })
+    }
+  )
+  return claimed
+}
+
+/**
+ * Scan for conversations whose unsettled clock has passed its due date and
+ * claim `*BreachTriggerFiredAt` for each — independent of (and in addition
+ * to) sweepOverdueSlaBreaches's own `*BreachedAt` claim above: different
+ * marker field, so whichever of the per-minute reporting sweep or this
+ * 5-minute trigger sweep runs first never blocks the other. No lead time:
+ * this fires the instant `now >= due`, same as sweepOverdueSlaBreaches's own
+ * breach detection. Returns the claimed candidates for the caller
+ * (workflow-sweep.ts) to dispatch.
+ */
+export async function sweepSlaBreachTriggers(
+  at: Date = new Date()
+): Promise<SlaTimerTriggerCandidate[]> {
+  const claimed: SlaTimerTriggerCandidate[] = []
+  await scanAndClaimSlaClocks(
+    at,
+    (nowIso) => sql`(
+          ((${conversations.slaApplied} ->> 'firstResponseDueAt') < ${nowIso}
+            AND (${conversations.slaApplied} ->> 'firstResponseAt') IS NULL
+            AND (${conversations.slaApplied} ->> 'firstResponseBreachTriggerFiredAt') IS NULL)
+          OR ((${conversations.slaApplied} ->> 'timeToCloseDueAt') < ${nowIso}
+            AND (${conversations.slaApplied} ->> 'resolvedAt') IS NULL
+            AND (${conversations.slaApplied} ->> 'resolutionBreachTriggerFiredAt') IS NULL)
+        )`,
+    (clock, applied, dueAt) => {
+      if (applied[clock.settledField]) return false
+      if (applied[clock.breachMarkerField]) return false
+      return at.getTime() > new Date(dueAt).getTime()
+    },
+    (clock) => clock.breachMarkerField,
+    () => [],
+    async (row, applied, clock, dueAt) => {
+      claimed.push({
+        conversationId: row.id,
+        conversation: conversationRefFromRow(row),
+        policyId: applied.policyId,
+        clock: clock.clock,
+        dueAt,
+      })
+    }
+  )
+  return claimed
 }
 
 /**

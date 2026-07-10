@@ -6,6 +6,7 @@
  * shared WorkflowEntitiesProvider instead of a canvas-local context) differ.
  */
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Select,
   SelectContent,
@@ -15,6 +16,7 @@ import {
 } from '@/components/ui/select'
 import { DateTimePicker } from '@/components/ui/datetime-picker'
 import { AttributeValueInput } from '@/components/admin/conversation/attribute-value-input'
+import { MAX_CONVERSATION_MESSAGE_LENGTH } from '@/lib/shared/conversation/types'
 import { useWorkflowEntities } from '../entities'
 import { Field, EntitySelect, DurationInput } from './shared'
 import {
@@ -249,6 +251,22 @@ export function ActionEditor({
             return null
           })()}
         </>
+      )}
+
+      {action.type === 'add_note' && (
+        <Field label="Note">
+          <Textarea
+            value={action.body}
+            onChange={(e) => onChange({ ...action, body: e.target.value })}
+            maxLength={MAX_CONVERSATION_MESSAGE_LENGTH}
+            placeholder="e.g. Escalated per the customer's VIP tier — routing to the billing team."
+            className="min-h-20 text-sm"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Posted as an internal note, visible to teammates only — never to the customer. Plain
+            text for now.
+          </p>
+        </Field>
       )}
 
       {action.type === 'close' && (

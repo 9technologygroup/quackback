@@ -4,9 +4,27 @@
  * still-waiting per workflow over a date range, the effectiveness view the
  * support dashboard shows. `started` is the total (every run row); the rest are
  * the terminal/pending states.
+ *
+ * listWorkflowRuns / workflowRunTimeline (below) are the per-run drill-down a
+ * failing workflow needs: workflow_run_events is written on every state
+ * transition (workflow.engine.ts's logRunEvent) but had no read side until
+ * now — the manager list only ever showed the trailing-7d started/completed
+ * counts above.
  */
-import { db, and, gte, lt, count, workflowRuns } from '@/lib/server/db'
-import type { WorkflowId } from '@quackback/ids'
+import {
+  db,
+  and,
+  eq,
+  gte,
+  lt,
+  count,
+  desc,
+  asc,
+  workflowRuns,
+  workflowRunEvents,
+  type WorkflowRunState,
+} from '@/lib/server/db'
+import type { WorkflowId, WorkflowRunId, ConversationId } from '@quackback/ids'
 
 export interface WorkflowEffectiveness {
   workflowId: WorkflowId
@@ -44,4 +62,56 @@ export async function workflowEffectiveness(
     byWorkflow.set(id, entry)
   }
   return [...byWorkflow.values()]
+}
+
+/** The run-list drill-down default/ceiling: recent-first, capped so an
+ *  old high-volume workflow's history doesn't try to render thousands of
+ *  rows — a failing workflow's most recent runs are what an admin needs. */
+export const WORKFLOW_RUN_LIST_LIMIT = 50
+
+export interface WorkflowRunSummary {
+  id: WorkflowRunId
+  state: WorkflowRunState
+  startedAt: Date
+  endedAt: Date | null
+  conversationId: ConversationId | null
+}
+
+/** A workflow's most recent runs, newest first, for the manager list's
+ *  per-workflow drill-down. `limit` defaults to WORKFLOW_RUN_LIST_LIMIT. */
+export async function listWorkflowRuns(
+  workflowId: WorkflowId,
+  limit: number = WORKFLOW_RUN_LIST_LIMIT
+): Promise<WorkflowRunSummary[]> {
+  return db
+    .select({
+      id: workflowRuns.id,
+      state: workflowRuns.state,
+      startedAt: workflowRuns.startedAt,
+      endedAt: workflowRuns.endedAt,
+      conversationId: workflowRuns.conversationId,
+    })
+    .from(workflowRuns)
+    .where(eq(workflowRuns.workflowId, workflowId))
+    .orderBy(desc(workflowRuns.startedAt))
+    .limit(limit)
+}
+
+export interface WorkflowRunTimelineEntry {
+  kind: string
+  at: Date
+}
+
+/** One run's ordered event timeline (oldest first) — the raw `kind` strings
+ *  logRunEvent wrote (started/waiting/completed/`action_failed:<type>`/
+ *  swept_stale/swept_rescheduled); humanizing them into display text is a
+ *  presentation concern left to the caller. */
+export async function workflowRunTimeline(
+  runId: WorkflowRunId
+): Promise<WorkflowRunTimelineEntry[]> {
+  return db
+    .select({ kind: workflowRunEvents.kind, at: workflowRunEvents.at })
+    .from(workflowRunEvents)
+    .where(eq(workflowRunEvents.runId, runId))
+    .orderBy(asc(workflowRunEvents.at))
 }

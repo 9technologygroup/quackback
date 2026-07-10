@@ -26,7 +26,15 @@ import {
   type BlockReplyMetadata,
 } from '@/lib/server/db'
 import type { ConversationId, PrincipalId, ConversationMessageId } from '@quackback/ids'
-import type { FrequencyCap } from './workflow.schemas'
+import { logger } from '@/lib/server/logger'
+import {
+  evaluateCondition,
+  type ConditionContext,
+  type WorkflowCondition,
+} from './condition.evaluator'
+import type { FrequencyCap, SendWindow } from './workflow.schemas'
+
+const log = logger.child({ component: 'workflow-dispatcher-guards' })
 
 type Executor = typeof db | Transaction
 
@@ -126,6 +134,65 @@ export function channelAllows(workflow: Workflow, channel: string | null | undef
   if (!Array.isArray(channels) || channels.length === 0) return true
   if (!channel) return true
   return channels.includes(channel)
+}
+
+/** Workflow ids already logged for an unenforceable stored `audience` this
+ *  process's lifetime — keeps a corrupted/malformed audience from spamming
+ *  the log on every dispatch to the same workflow, while still surfacing it
+ *  once. Module-level (not per-call) is fine: this is a diagnostic, not a
+ *  correctness mechanism, and a process restart re-warns harmlessly. */
+const warnedAudienceWorkflowIds = new Set<string>()
+
+/**
+ * Whether `workflow`'s `triggerSettings.audience` (see workflow.schemas.ts's
+ * doc) matches the dispatch-resolved `ctx` — the SAME ConditionContext every
+ * other condition in the run reads, so an audience predicate sees the exact
+ * snapshot the workflow's own graph conditions do. No audience configured
+ * (absent/null) always allows.
+ *
+ * Defensive by the settings-bag philosophy the rest of this module follows
+ * (readFrequencyCap, channelAllows): a stored `audience` too malformed to be
+ * a condition (not a plain object — a stray string/number/array from a raw
+ * API write, say) allows through rather than silently blocking every future
+ * dispatch of the workflow, logging once per workflow id so the bad value is
+ * still discoverable. A well-formed-but-nonsensical condition (an unknown
+ * field, say) isn't this module's concern — evaluateCondition's own
+ * defensive contract (unknown field/type-mismatch -> non-match, never throw)
+ * already handles that without help here.
+ */
+export function audienceAllows(workflow: Workflow, ctx: ConditionContext): boolean {
+  const audience = workflow.triggerSettings.audience
+  if (audience === undefined || audience === null) return true
+  if (typeof audience !== 'object' || Array.isArray(audience)) {
+    if (!warnedAudienceWorkflowIds.has(workflow.id)) {
+      warnedAudienceWorkflowIds.add(workflow.id)
+      log.error(
+        { workflowId: workflow.id },
+        'stored triggerSettings.audience is not a condition; allowing'
+      )
+    }
+    return true
+  }
+  return evaluateCondition(audience as WorkflowCondition, ctx)
+}
+
+/**
+ * Whether `workflow`'s `triggerSettings.sendWindow` (see workflow.schemas.ts's
+ * doc) permits dispatch right now, off `ctx.officeHours` — the same
+ * office-hours snapshot resolveConditionContext already resolved for this
+ * trigger (via getOfficeHoursSchedule + isWithinOfficeHours), reused here
+ * instead of a second schedule read so this guard costs nothing extra. No
+ * window configured ('any', or an absent/unrecognized value) always allows.
+ * `ctx.officeHours` unresolved (null — shouldn't happen in practice, since
+ * resolveConditionContext always sets it, but the field is optional in the
+ * type) allows through, matching this module's fail-open stance on anything
+ * it can't actually evaluate.
+ */
+export function sendWindowAllows(workflow: Workflow, ctx: ConditionContext): boolean {
+  const sendWindow = workflow.triggerSettings.sendWindow as SendWindow | undefined
+  if (sendWindow !== 'inside_office_hours' && sendWindow !== 'outside_office_hours') return true
+  if (ctx.officeHours === null || ctx.officeHours === undefined) return true
+  return sendWindow === 'inside_office_hours' ? ctx.officeHours : !ctx.officeHours
 }
 
 /**

@@ -36,20 +36,24 @@ import {
   countSteps,
   isNeedsSetupRef,
   resolveConditionField,
+  sendWindowSummary,
   stepPaths,
   waitSummary,
   type ActionType,
   type AttributeFieldDef,
+  type PersonCompanyAttributeFieldDef,
   type BlockStepKind,
   type EntityLabels,
   type FrequencyCap,
   type GraphAction,
   type GraphCondition,
   type KeyedPath,
+  type SendWindow,
   type StepLocation,
   type TreeStep,
   type WorkflowTree,
 } from '../workflow-graph'
+import { truncate } from '@/lib/shared/utils/string'
 
 // ---------------------------------------------------------------------------
 // Layout constants (pixel values, matching the design's reference layout)
@@ -61,11 +65,21 @@ export const EDGE_GAP = 44
 const RULE_GAP = 8
 const RULE_H = 96
 // The trigger card is the only node with more than one section (Channels,
-// Frequency cap) — bumped from the single-section height (172) by roughly one
-// more section row (label + chips + the inter-section gap) so the auto-layout
-// doesn't crowd the card below it.
-const NODE_H_SECTIONS = 216
+// Frequency cap always; Audience/Send window only when configured — see
+// triggerSections) — bumped from the single-section height (172) by roughly
+// one more row (label + chips + the inter-section gap) per section beyond
+// the first, so the auto-layout doesn't crowd the card below it regardless
+// of how many of the (up to 4) sections are actually showing.
+const NODE_H_SECTION_BASE = 172
+const NODE_H_SECTION_ROW = 44
 const NODE_H_PLAIN = 88
+
+/** The trigger card's height for auto-layout purposes, given how many
+ *  sections it's actually showing (2 when Audience/Send window are both
+ *  unconfigured, up to 4 when both are set) — see the constants' doc above. */
+function triggerCardHeight(sectionCount: number): number {
+  return NODE_H_SECTION_BASE + Math.max(0, sectionCount - 1) * NODE_H_SECTION_ROW
+}
 
 // ---------------------------------------------------------------------------
 // Node / edge data shapes. Structurally compatible with @xyflow/react's
@@ -182,6 +196,15 @@ export interface FlowLayoutInput {
   /** The trigger's per-person run cap, from the trigger settings draft
    *  (undefined/'unlimited' both render as "No limit"). */
   triggerFrequencyCap?: FrequencyCap
+  /** The trigger's audience condition, from the trigger settings draft — a
+   *  configured audience surfaces its own chip, same "presence shows up"
+   *  treatment as channels/frequencyCap (an unconfigured one shows nothing,
+   *  not an "Everyone" chip, to keep the common case's card uncluttered). */
+  triggerAudience?: GraphCondition
+  /** The trigger's office-hours restriction, from the trigger settings draft
+   *  — 'any'/unset shows no chip, same presence-only treatment as
+   *  triggerAudience. */
+  triggerSendWindow?: SendWindow
   labels: EntityLabels
   stepIssues: ReadonlyMap<string, string>
   selectedId: string | null
@@ -251,6 +274,7 @@ export const ACTION_TONE: Record<ActionType, Tone> = {
   snooze: 'amber',
   close: 'blue',
   reopen: 'blue',
+  add_note: 'green',
 }
 
 /** Ref -> display name, tolerant of an unset or needs-setup-template ref. */
@@ -297,6 +321,8 @@ function actionChips(action: GraphAction, labels: EntityLabels): ChipData[] {
                 : 'Until they reply',
         },
       ]
+    case 'add_note':
+      return [{ label: action.body.trim() ? truncate(action.body.trim(), 40) : 'Write a note…' }]
     case 'close':
     case 'reopen':
       return []
@@ -321,7 +347,13 @@ function buildStepNodeData(
         title: 'Continue if…',
         icon: 'condition',
         tone: 'violet',
-        meta: conditionSummary(step.condition, ctx.labels.attributes, ctx.labels.teams),
+        meta: conditionSummary(
+          step.condition,
+          ctx.labels.attributes,
+          ctx.labels.teams,
+          ctx.labels.personAttributes,
+          ctx.labels.companyAttributes
+        ),
       }
     case 'branch': {
       const n = step.paths.length
@@ -443,32 +475,86 @@ function buildStepNodeData(
 
 const TRIGGER_CHANNEL_LABELS = new Map(TRIGGER_CHANNELS.map((c) => [c.value, c.label]))
 
+/** Whether `condition` is configured at all — `{}` (the unset/"matches
+ *  everything" shape trigger-editor.tsx drops back to a missing key on
+ *  write) never earns an Audience chip, same presence-only treatment
+ *  frequencyCap's 'unlimited' gets by NOT earning a chip... except
+ *  frequencyCap/Channels always show a section (with a "no-op" label);
+ *  Audience/Send window instead omit the section entirely when unconfigured
+ *  — seeded workflows (the overwhelming majority, with neither set) keep the
+ *  original 2-section card unchanged. */
+function isAudienceConfigured(condition: GraphCondition | undefined): condition is GraphCondition {
+  return condition !== undefined && Object.keys(condition).length > 0
+}
+
 function triggerSections(
   channels: string[],
-  frequencyCap: FrequencyCap | undefined
+  frequencyCap: FrequencyCap | undefined,
+  audience: GraphCondition | undefined,
+  sendWindow: SendWindow | undefined,
+  labels: EntityLabels = {}
 ): StepSectionData[] {
   const channelChips: ChipData[] = channels.length
     ? channels.map((c) => ({ label: TRIGGER_CHANNEL_LABELS.get(c) ?? c }))
     : [{ label: 'All channels' }]
-  return [
+  const sections: StepSectionData[] = [
     { label: 'Channels', chips: channelChips },
     { label: 'Frequency cap', chips: [{ label: frequencyCapSummary(frequencyCap) }] },
   ]
+  if (isAudienceConfigured(audience)) {
+    sections.push({
+      label: 'Audience',
+      chips: [
+        {
+          label: conditionSummary(
+            audience,
+            labels.attributes,
+            labels.teams,
+            labels.personAttributes,
+            labels.companyAttributes
+          ),
+        },
+      ],
+    })
+  }
+  if (sendWindow && sendWindow !== 'any') {
+    sections.push({ label: 'Send window', chips: [{ label: sendWindowSummary(sendWindow) }] })
+  }
+  return sections
 }
 
 /** Bold-highlighted rule-pill copy for one branch path's condition. */
 export function describeBranchPath(
   condition: GraphCondition,
   attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
-  teams: ReadonlyMap<string, string> = new Map()
+  teams: ReadonlyMap<string, string> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): RulePart[] {
   const draft = conditionToDraft(condition)
-  if (draft.kind === 'advanced') return [{ text: 'Custom condition' }]
+  if (draft.kind === 'advanced') {
+    // Not flat, but possibly a RuleGroupBuilder OR-of-groups shape (or a
+    // truly opaque one) — conditionSummary already tells those apart instead
+    // of this pill hardcoding "Custom condition" for both.
+    return [
+      { text: conditionSummary(condition, attributes, teams, personAttributes, companyAttributes) },
+    ]
+  }
   if (draft.rules.length === 0) return [{ text: 'No conditions · matches everything' }]
-  if (draft.rules.length > 1) return [{ text: conditionSummary(condition, attributes, teams) }]
+  if (draft.rules.length > 1) {
+    return [
+      { text: conditionSummary(condition, attributes, teams, personAttributes, companyAttributes) },
+    ]
+  }
 
   const rule = draft.rules[0]!
-  const meta = resolveConditionField(rule.field, attributes, teams)
+  const meta = resolveConditionField(
+    rule.field,
+    attributes,
+    teams,
+    personAttributes,
+    companyAttributes
+  )
   const op = OPERATOR_LABELS[rule.op]
   if (VALUELESS_OPERATORS.has(rule.op)) {
     return [{ text: 'If ' }, { text: meta.label, bold: true }, { text: ` ${op}` }]
@@ -502,11 +588,21 @@ function fanPathParts(
   step: TreeStep,
   path: KeyedPath,
   attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
-  teams: ReadonlyMap<string, string> = new Map()
+  teams: ReadonlyMap<string, string> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): RulePart[] {
   if (step.kind === 'branch') {
     const branchPath = step.paths.find((p) => p.key === path.key)
-    return branchPath ? describeBranchPath(branchPath.condition, attributes, teams) : []
+    return branchPath
+      ? describeBranchPath(
+          branchPath.condition,
+          attributes,
+          teams,
+          personAttributes,
+          companyAttributes
+        )
+      : []
   }
   if (step.kind === 'reply_buttons') return [{ text: `“${path.label}”`, bold: true }]
   return [{ text: path.label, bold: true }]
@@ -584,7 +680,14 @@ function emitLane(
           data: {
             badge: PATH_LETTERS[pi] ?? String(pi + 1),
             name: path.label,
-            parts: fanPathParts(step, path, input.labels.attributes, input.labels.teams),
+            parts: fanPathParts(
+              step,
+              path,
+              input.labels.attributes,
+              input.labels.teams,
+              input.labels.personAttributes,
+              input.labels.companyAttributes
+            ),
           },
         }
         acc.nodes.push(ruleNode)
@@ -640,6 +743,13 @@ function computeLayout(input: FlowLayoutInput): LayoutAccumulator {
   const acc: LayoutAccumulator = { nodes: [], edges: [] }
   const rootSpan = laneWidth(input.tree.steps)
   const triggerId = input.tree.triggerId
+  const sections = triggerSections(
+    input.triggerChannels,
+    input.triggerFrequencyCap,
+    input.triggerAudience,
+    input.triggerSendWindow,
+    input.labels
+  )
   acc.nodes.push({
     id: triggerId,
     type: 'step',
@@ -652,7 +762,7 @@ function computeLayout(input: FlowLayoutInput): LayoutAccumulator {
       icon: 'trigger',
       tone: 'amber',
       startTag: true,
-      sections: triggerSections(input.triggerChannels, input.triggerFrequencyCap),
+      sections,
       warn: false,
       deletable: false,
       selected: input.selectedId === triggerId,
@@ -664,7 +774,7 @@ function computeLayout(input: FlowLayoutInput): LayoutAccumulator {
     input.tree.steps,
     0,
     rootSpan,
-    22 + NODE_H_SECTIONS + EDGE_GAP,
+    22 + triggerCardHeight(sections.length) + EDGE_GAP,
     { path: [] },
     triggerId
   )

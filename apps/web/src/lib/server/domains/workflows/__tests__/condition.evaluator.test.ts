@@ -4,34 +4,10 @@
  * non-matches (unknown field, type mismatch, nobody-waiting).
  */
 import { describe, it, expect } from 'vitest'
-import {
-  evaluateCondition,
-  type ConditionContext,
-  type WorkflowCondition,
-} from '../condition.evaluator'
+import { evaluateCondition, type WorkflowCondition } from '../condition.evaluator'
+import { makeConditionContext } from './workflow-test-utils'
 
-const baseCtx = (over: Partial<ConditionContext> = {}): ConditionContext => ({
-  conversation: {
-    status: 'open',
-    channel: 'messenger',
-    priority: 'high',
-    waitingMinutes: 45,
-    tagIds: ['ctag_vip', 'ctag_billing'],
-    assignedTeamId: 'team_support',
-    attributes: {
-      // Envelope-shaped (the write path) and bare legacy values both resolve.
-      plan: { v: 'pro', src: 'teammate', at: '2026-07-05T00:00:00.000Z' },
-      seats: { v: 12, src: 'workflow', at: '2026-07-05T00:00:00.000Z' },
-      areas: { v: ['opt_billing'], src: 'ai', at: '2026-07-05T00:00:00.000Z' },
-      legacy_note: 'bare',
-    },
-    ...over.conversation,
-  },
-  message: over.message === undefined ? { body: 'My card was double charged' } : over.message,
-  person: over.person === undefined ? { segmentIds: ['seg_paid'] } : over.person,
-  officeHours: over.officeHours,
-  csatRating: over.csatRating,
-})
+const baseCtx = makeConditionContext
 
 const ok = (cond: WorkflowCondition, ctx = baseCtx()) =>
   expect(evaluateCondition(cond, ctx)).toBe(true)
@@ -171,6 +147,66 @@ describe('evaluateCondition — leaves', () => {
     no({ field: 'conversation.attr.plan', op: 'not_contains', value: 'pro' }, bare)
     no({ field: 'conversation.attr.areas', op: 'excludes_all', value: ['opt_billing'] }, bare)
     ok({ field: 'conversation.attr.plan', op: 'is_empty' }, bare)
+  })
+})
+
+describe('evaluateCondition — person.attr.<key> / company.attr.<key> (bare values, no envelope)', () => {
+  it('reads person and company attributes directly, unlike conversation.attr envelopes', () => {
+    ok({ field: 'person.attr.plan', op: 'eq', value: 'enterprise' })
+    no({ field: 'person.attr.plan', op: 'eq', value: 'starter' })
+    ok({ field: 'person.attr.seats', op: 'gt', value: 10 })
+    ok({ field: 'person.attr.active', op: 'eq', value: true })
+    ok({ field: 'company.attr.plan', op: 'eq', value: 'enterprise' })
+    ok({ field: 'company.attr.arr', op: 'gte', value: 50000 })
+    no({ field: 'company.attr.arr', op: 'gt', value: 50000 })
+  })
+
+  it('an unset key is unresolved: only is_empty matches', () => {
+    ok({ field: 'person.attr.missing', op: 'is_empty' })
+    no({ field: 'person.attr.missing', op: 'is_set' })
+    no({ field: 'person.attr.missing', op: 'eq', value: 'x' })
+    no({ field: 'person.attr.missing', op: 'neq', value: 'x' })
+    ok({ field: 'company.attr.missing', op: 'is_empty' })
+    no({ field: 'company.attr.missing', op: 'eq', value: 'x' })
+  })
+
+  it('an anonymous visitor (no person) resolves every person.attr as unresolved', () => {
+    const anon = baseCtx({ person: null })
+    no({ field: 'person.attr.plan', op: 'eq', value: 'enterprise' }, anon)
+    no({ field: 'person.attr.plan', op: 'neq', value: 'enterprise' }, anon)
+    ok({ field: 'person.attr.plan', op: 'is_empty' }, anon)
+  })
+
+  it('no linked company resolves every company.attr as unresolved', () => {
+    const noCompany = baseCtx({ company: null })
+    no({ field: 'company.attr.plan', op: 'eq', value: 'enterprise' }, noCompany)
+    no({ field: 'company.attr.plan', op: 'neq', value: 'enterprise' }, noCompany)
+    ok({ field: 'company.attr.plan', op: 'is_empty' }, noCompany)
+  })
+})
+
+describe('evaluateCondition — person.email', () => {
+  it('matches the resolved, realEmail-sanitized address', () => {
+    ok({ field: 'person.email', op: 'eq', value: 'ana@example.com' })
+    no({ field: 'person.email', op: 'eq', value: 'someone-else@example.com' })
+    ok({ field: 'person.email', op: 'contains', value: '@example.com' })
+    ok({ field: 'person.email', op: 'is_set' })
+  })
+
+  it('is unresolved (MISSING) for an anonymous visitor with no email', () => {
+    const anon = baseCtx({ person: { segmentIds: [] } })
+    no({ field: 'person.email', op: 'eq', value: 'ana@example.com' }, anon)
+    no({ field: 'person.email', op: 'is_set' }, anon)
+    ok({ field: 'person.email', op: 'is_empty' }, anon)
+  })
+
+  it('is unresolved for the synthetic anonymous placeholder — the context resolver never surfaces it, but the evaluator treats a null person.email the same either way', () => {
+    const syntheticStripped = baseCtx({
+      person: { segmentIds: [], email: null, attributes: {} },
+    })
+    no({ field: 'person.email', op: 'eq', value: 'ana@example.com' }, syntheticStripped)
+    no({ field: 'person.email', op: 'is_set' }, syntheticStripped)
+    ok({ field: 'person.email', op: 'is_empty' }, syntheticStripped)
   })
 })
 

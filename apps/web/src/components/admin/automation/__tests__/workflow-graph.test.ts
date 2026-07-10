@@ -16,11 +16,16 @@ import {
   actionIssue,
   actionSummary,
   attributeFieldForKey,
+  audienceUnreachableFieldWarning,
   BLOCK_STEP_LABELS,
   collectStepIssues,
   conditionSummary,
   conditionToDraft,
+  conditionToGroupDraft,
+  groupsToCondition,
+  defaultRuleGroup,
   createStep,
+  defaultAction,
   draftIssues,
   draftToCondition,
   draftToGraphJson,
@@ -31,6 +36,11 @@ import {
   insertStep,
   insertVariableToken,
   isConditionField,
+  isPersonAttributeField,
+  isCompanyAttributeField,
+  personAttributeFieldForKey,
+  companyAttributeFieldForKey,
+  toPersonCompanyAttributeFieldDefs,
   LET_ASSISTANT_DEFAULT_KEY,
   LET_ASSISTANT_ESCALATED_KEY,
   newTree,
@@ -41,6 +51,7 @@ import {
   validateGraph,
   type GraphAction,
   type GraphCondition,
+  type RuleGroupDraft,
   type TreeStep,
   type WorkflowGraphJson,
   type WorkflowTree,
@@ -454,6 +465,241 @@ describe('condition drafts', () => {
   })
 })
 
+describe('condition GROUP drafts (RuleGroupBuilder — 2-level OR-of-groups)', () => {
+  it('a flat leaf/simple condition decodes as one implicit group, matching conditionToDraft', () => {
+    const leaf: GraphCondition = { field: 'conversation.status', op: 'eq', value: 'open' }
+    expect(conditionToGroupDraft(leaf)).toEqual({
+      kind: 'groups',
+      groups: [{ mode: 'all', rules: [{ field: 'conversation.status', op: 'eq', value: 'open' }] }],
+    })
+    expect(conditionToGroupDraft({})).toEqual({
+      kind: 'groups',
+      groups: [{ mode: 'all', rules: [] }],
+    })
+  })
+
+  it('round-trips a 2-group OR shape — the exact `any: [{all:[...]}, {any:[...]}]` stored shape', () => {
+    const nested: GraphCondition = {
+      any: [
+        {
+          all: [
+            { field: 'person.attr.plan', op: 'eq', value: 'pro' },
+            { field: 'conversation.priority', op: 'eq', value: 'high' },
+          ],
+        },
+        { any: [{ field: 'company.attr.tier', op: 'eq', value: 'enterprise' }] },
+      ],
+    }
+    const draft = conditionToGroupDraft(nested)
+    expect(draft).toEqual({
+      kind: 'groups',
+      groups: [
+        {
+          mode: 'all',
+          rules: [
+            { field: 'person.attr.plan', op: 'eq', value: 'pro' },
+            { field: 'conversation.priority', op: 'eq', value: 'high' },
+          ],
+        },
+        { mode: 'any', rules: [{ field: 'company.attr.tier', op: 'eq', value: 'enterprise' }] },
+      ],
+    })
+    if (draft.kind !== 'groups') return
+    expect(groupsToCondition(draft.groups)).toEqual(nested)
+  })
+
+  it('a single group ALWAYS collapses to the flat shape on write, even inside an explicit any-wrap on read', () => {
+    // { any: [ {all: [leaf]} ] } is a single group in an explicit wrap — it
+    // still reads back as ONE group (no OR-of-groups UI shown), and writing
+    // that one group back collapses through draftToCondition, same as the
+    // plain flat editor's own single-rule collapse.
+    const stored: GraphCondition = {
+      any: [{ all: [{ field: 'conversation.status', op: 'eq', value: 'open' }] }],
+    }
+    const draft = conditionToGroupDraft(stored)
+    expect(draft.kind).toBe('groups')
+    if (draft.kind !== 'groups') return
+    expect(draft.groups).toHaveLength(1)
+    expect(groupsToCondition(draft.groups)).toEqual({
+      field: 'conversation.status',
+      op: 'eq',
+      value: 'open',
+    })
+  })
+
+  it('a mixed top-level any (bare leaf alongside a group) is advanced — ambiguous, not a clean OR-of-groups', () => {
+    const mixed: GraphCondition = {
+      any: [
+        { field: 'conversation.status', op: 'eq', value: 'open' },
+        { all: [{ field: 'conversation.priority', op: 'eq', value: 'high' }] },
+      ],
+    }
+    expect(conditionToGroupDraft(mixed)).toEqual({ kind: 'advanced', condition: mixed })
+  })
+
+  it('a top-level AND of groups is advanced — only OR-of-groups is representable', () => {
+    const andOfGroups: GraphCondition = {
+      all: [
+        { any: [{ field: 'conversation.status', op: 'eq', value: 'open' }] },
+        { any: [{ field: 'conversation.priority', op: 'eq', value: 'high' }] },
+      ],
+    }
+    expect(conditionToGroupDraft(andOfGroups)).toEqual({ kind: 'advanced', condition: andOfGroups })
+  })
+
+  it('a group nesting a group (3 levels deep) is advanced', () => {
+    const tripleNested: GraphCondition = {
+      any: [{ all: [{ any: [{ field: 'conversation.status', op: 'eq', value: 'open' }] }] }],
+    }
+    expect(conditionToGroupDraft(tripleNested)).toEqual({
+      kind: 'advanced',
+      condition: tripleNested,
+    })
+  })
+
+  it('groupsToCondition of zero groups is the empty (matches-everything) condition', () => {
+    expect(groupsToCondition([])).toEqual({})
+  })
+
+  it('an emptied group inside a multi-group OR is dropped, not encoded as a vacuously-true {all: []}', () => {
+    // Regression: {all: []} / {any: []} both evaluate to true in
+    // evaluateCondition (condition.evaluator.ts), so wrapping an emptied
+    // group verbatim inside the top-level `any` would make the WHOLE OR
+    // match everything the instant one group is emptied out — silently
+    // overriding the other group's real rule.
+    const groups: RuleGroupDraft[] = [
+      { mode: 'all', rules: [] },
+      { mode: 'all', rules: [{ field: 'conversation.priority', op: 'eq', value: 'high' }] },
+    ]
+    expect(groupsToCondition(groups)).toEqual({
+      field: 'conversation.priority',
+      op: 'eq',
+      value: 'high',
+    })
+  })
+
+  it('an emptied group among 3+ groups drops only the empty one and still wraps the survivors', () => {
+    const groups: RuleGroupDraft[] = [
+      { mode: 'all', rules: [] },
+      { mode: 'all', rules: [{ field: 'conversation.priority', op: 'eq', value: 'high' }] },
+      { mode: 'any', rules: [{ field: 'conversation.status', op: 'eq', value: 'open' }] },
+    ]
+    expect(groupsToCondition(groups)).toEqual({
+      any: [
+        { all: [{ field: 'conversation.priority', op: 'eq', value: 'high' }] },
+        { any: [{ field: 'conversation.status', op: 'eq', value: 'open' }] },
+      ],
+    })
+  })
+
+  it('all groups emptied in a multi-group OR collapses to {} — same as zero groups', () => {
+    const groups: RuleGroupDraft[] = [
+      { mode: 'all', rules: [] },
+      { mode: 'any', rules: [] },
+    ]
+    expect(groupsToCondition(groups)).toEqual({})
+  })
+
+  it('decoding a legacy stored condition with an already-emptied group still renders as groups (not advanced)', () => {
+    const legacyEmptyGroup: GraphCondition = {
+      any: [{ all: [] }, { all: [{ field: 'conversation.status', op: 'eq', value: 'open' }] }],
+    }
+    const draft = conditionToGroupDraft(legacyEmptyGroup)
+    expect(draft.kind).toBe('groups')
+    if (draft.kind !== 'groups') return
+    expect(draft.groups).toHaveLength(2)
+    expect(draft.groups[0]!.rules).toEqual([])
+    // Re-encoding (even a no-op save) drops the emptied group instead of
+    // reproducing the vacuously-true {all: []} that let it override the
+    // real group.
+    expect(groupsToCondition(draft.groups)).toEqual({
+      field: 'conversation.status',
+      op: 'eq',
+      value: 'open',
+    })
+  })
+
+  it('defaultRuleGroup seeds one rule in "all" mode, for "Add group"', () => {
+    expect(defaultRuleGroup()).toEqual({
+      mode: 'all',
+      rules: [{ field: 'conversation.status', op: 'eq', value: 'open' }],
+    })
+  })
+
+  it('conditionSummary describes a 2-group OR as "Any of 2 groups matched" instead of bailing', () => {
+    const nested: GraphCondition = {
+      any: [
+        { all: [{ field: 'conversation.priority', op: 'eq', value: 'high' }] },
+        { all: [{ field: 'conversation.status', op: 'eq', value: 'open' }] },
+      ],
+    }
+    expect(conditionSummary(nested)).toBe('Any of 2 groups matched')
+  })
+
+  it('conditionSummary still bails to "Custom condition" for a group nesting a group', () => {
+    const tripleNested: GraphCondition = {
+      any: [{ all: [{ any: [{ field: 'conversation.status', op: 'eq', value: 'open' }] }] }],
+    }
+    expect(conditionSummary(tripleNested)).toBe('Custom condition')
+  })
+
+  it('draft <-> graph losslessness regression: a condition step carrying a 2-group nested shape — previously JSON-only, now visually rendered — still round-trips byte-identically through graphToTree <-> treeToGraph', () => {
+    const nestedAudienceLikeCondition: GraphCondition = {
+      any: [
+        {
+          all: [
+            { field: 'person.attr.plan', op: 'eq', value: 'pro' },
+            { field: 'conversation.priority', op: 'eq', value: 'high' },
+          ],
+        },
+        { any: [{ field: 'company.attr.tier', op: 'eq', value: 'enterprise' }] },
+      ],
+    }
+    const graph: WorkflowGraphJson = {
+      nodes: [
+        { id: 'trigger', type: 'trigger' },
+        { id: 'condition-1', type: 'condition', condition: nestedAudienceLikeCondition },
+      ],
+      edges: [{ from: 'trigger', to: 'condition-1' }],
+    }
+
+    // graphToTree/treeToGraph carry the condition value opaquely (they never
+    // inspect its internals) — this was always true, and stays true: the
+    // ONLY thing that changed is RuleGroupBuilder can now render this shape
+    // instead of degrading it to JSON-only in the inspector.
+    const tree = graphToTree(graph)
+    expect(tree.ok).toBe(true)
+    if (!tree.ok) return
+    const conditionStep = tree.value.steps[0]
+    expect(conditionStep).toMatchObject({
+      kind: 'condition',
+      condition: nestedAudienceLikeCondition,
+    })
+
+    const rebuilt = treeToGraph(tree.value)
+    expect(rebuilt).toEqual(graph)
+
+    // AND the visual editor can now actually render (not just carry) it:
+    // this exact shape decodes to two OR'd groups instead of bailing to
+    // "advanced".
+    const draft = conditionToGroupDraft(nestedAudienceLikeCondition)
+    expect(draft.kind).toBe('groups')
+    if (draft.kind !== 'groups') return
+    expect(draft.groups).toHaveLength(2)
+    // Editing it back (even a no-op re-encode) preserves the OR-of-groups
+    // shape server validation (workflowGraphSchema) already accepts.
+    expect(groupsToCondition(draft.groups)).toEqual(nestedAudienceLikeCondition)
+    expect(
+      workflowGraphSchema.safeParse({
+        ...graph,
+        nodes: graph.nodes.map((n) =>
+          n.id === 'condition-1' ? { ...n, condition: groupsToCondition(draft.groups) } : n
+        ),
+      }).success
+    ).toBe(true)
+  })
+})
+
 describe('tree editing helpers', () => {
   it('inserting a branch mid-path moves the tail into its first path', () => {
     const tree: WorkflowTree = {
@@ -768,6 +1014,211 @@ describe('attribute condition fields', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// person.attr.<key> / company.attr.<key> + person.email: mirrors the
+// "attribute condition fields" suite above, but against the simpler
+// person/company attribute registry (no select/multi_select, so no
+// `options`) and one static field.
+// ---------------------------------------------------------------------------
+
+describe('person/company attribute condition fields', () => {
+  const personAttributeDefs = toPersonCompanyAttributeFieldDefs([
+    { key: 'plan', label: 'Plan', type: 'string' },
+    { key: 'seats', label: 'Seats', type: 'number' },
+    { key: 'is_champion', label: 'Champion', type: 'boolean' },
+    { key: 'renewal', label: 'Renewal date', type: 'date' },
+  ])
+  const companyAttributeDefs = toPersonCompanyAttributeFieldDefs([
+    { key: 'tier', label: 'Tier', type: 'string' },
+    { key: 'arr', label: 'ARR', type: 'currency' },
+  ])
+
+  describe('isConditionField / isPersonAttributeField / isCompanyAttributeField', () => {
+    it('accepts person.attr. and company.attr. prefixes for any non-empty key', () => {
+      expect(isConditionField('person.attr.plan')).toBe(true)
+      expect(isConditionField('company.attr.tier')).toBe(true)
+      expect(isPersonAttributeField('person.attr.plan')).toBe(true)
+      expect(isCompanyAttributeField('company.attr.tier')).toBe(true)
+    })
+
+    it('rejects an empty key and unrelated lookalike prefixes', () => {
+      expect(isConditionField('person.attr.')).toBe(false)
+      expect(isConditionField('company.attr.')).toBe(false)
+      expect(isConditionField('person.attrs.plan')).toBe(false)
+      expect(isPersonAttributeField('company.attr.tier')).toBe(false)
+      expect(isCompanyAttributeField('person.attr.plan')).toBe(false)
+    })
+
+    it('accepts person.email as a static field', () => {
+      expect(isConditionField('person.email')).toBe(true)
+    })
+  })
+
+  describe('operator filtering per person/company attribute type', () => {
+    it.each([
+      ['string', 'plan', ['contains', 'not_contains', 'eq', 'neq', 'is_set', 'is_empty']],
+      ['number', 'seats', ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'is_set', 'is_empty']],
+      ['boolean', 'is_champion', ['eq']],
+      ['date', 'renewal', ['is_set', 'is_empty']],
+    ] as const)('person.attr %s offers exactly %j', (_type, key, expected) => {
+      const resolved = resolveConditionField(
+        personAttributeFieldForKey(key),
+        undefined,
+        undefined,
+        personAttributeDefs
+      )
+      expect([...resolved.operators]).toEqual([...expected])
+    })
+
+    it('company.attr currency compares numerically, like number', () => {
+      const resolved = resolveConditionField(
+        companyAttributeFieldForKey('arr'),
+        undefined,
+        undefined,
+        undefined,
+        companyAttributeDefs
+      )
+      expect([...resolved.operators]).toEqual([
+        'eq',
+        'neq',
+        'gt',
+        'gte',
+        'lt',
+        'lte',
+        'is_set',
+        'is_empty',
+      ])
+      expect(resolved.kind).toBe('number')
+    })
+
+    it('falls back to every operator for an unresolved person/company attribute key', () => {
+      const resolved = resolveConditionField(
+        personAttributeFieldForKey('nope'),
+        undefined,
+        undefined,
+        personAttributeDefs
+      )
+      expect(resolved.unresolved).toBe(true)
+      expect(resolved.operators.length).toBeGreaterThan(6)
+    })
+
+    it('person.email resolves as a static text field', () => {
+      const resolved = resolveConditionField('person.email')
+      expect(resolved.kind).toBe('text')
+      expect(resolved.operators).toEqual([
+        'contains',
+        'not_contains',
+        'eq',
+        'neq',
+        'is_set',
+        'is_empty',
+      ])
+    })
+  })
+
+  describe('draft <-> condition round-trip', () => {
+    it('round-trips a string eq condition', () => {
+      const leaf: GraphCondition = { field: 'person.attr.plan', op: 'eq', value: 'enterprise' }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draft.rules[0]).toEqual({ field: 'person.attr.plan', op: 'eq', value: 'enterprise' })
+      expect(draftToCondition(draft, undefined, personAttributeDefs)).toEqual(leaf)
+    })
+
+    it('round-trips a boolean eq condition as a real boolean, not the string "true"', () => {
+      const leaf: GraphCondition = { field: 'person.attr.is_champion', op: 'eq', value: true }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draft.rules[0]?.value).toBe('true')
+      const rebuilt = draftToCondition(draft, undefined, personAttributeDefs)
+      expect(rebuilt).toEqual(leaf)
+      if ('field' in rebuilt) expect(typeof rebuilt.value).toBe('boolean')
+    })
+
+    it('round-trips a number condition', () => {
+      const leaf: GraphCondition = { field: 'person.attr.seats', op: 'gte', value: 5 }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draftToCondition(draft, undefined, personAttributeDefs)).toEqual(leaf)
+    })
+
+    it('round-trips a company.attr currency condition', () => {
+      const leaf: GraphCondition = { field: 'company.attr.arr', op: 'gte', value: 100000 }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draftToCondition(draft, undefined, undefined, companyAttributeDefs)).toEqual(leaf)
+    })
+
+    it('round-trips person.email', () => {
+      const leaf: GraphCondition = { field: 'person.email', op: 'contains', value: '@acme.com' }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draftToCondition(draft)).toEqual(leaf)
+    })
+
+    it('is_set/is_empty carry no value either direction', () => {
+      const leaf: GraphCondition = { field: 'company.attr.tier', op: 'is_set' }
+      const draft = conditionToDraft(leaf)
+      if (draft.kind !== 'simple') throw new Error('expected simple draft')
+      expect(draft.rules[0]?.value).toBe('')
+      expect(draftToCondition(draft, undefined, undefined, companyAttributeDefs)).toEqual(leaf)
+    })
+  })
+
+  describe('conditionSummary label resolution', () => {
+    it('renders the definition label, not the raw key, for a person.attr condition', () => {
+      const condition: GraphCondition = { field: 'person.attr.plan', op: 'eq', value: 'enterprise' }
+      expect(conditionSummary(condition, undefined, undefined, personAttributeDefs)).toBe(
+        'Plan is enterprise'
+      )
+    })
+
+    it('renders the definition label for a company.attr condition', () => {
+      const condition: GraphCondition = { field: 'company.attr.tier', op: 'eq', value: 'gold' }
+      expect(
+        conditionSummary(condition, undefined, undefined, undefined, companyAttributeDefs)
+      ).toBe('Tier is gold')
+    })
+
+    it('falls back to the raw key when the definition is missing', () => {
+      const condition: GraphCondition = { field: 'person.attr.retired_key', op: 'is_set' }
+      expect(conditionSummary(condition)).toBe('Unknown attribute retired_key is set')
+    })
+
+    it('renders person.email using its static label', () => {
+      const condition: GraphCondition = {
+        field: 'person.email',
+        op: 'contains',
+        value: '@acme.com',
+      }
+      expect(conditionSummary(condition)).toBe('Person email contains @acme.com')
+    })
+  })
+
+  describe('server schema parity via validateGraph', () => {
+    it('accepts a condition node using person.attr / company.attr / person.email', () => {
+      const graph = {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          {
+            id: 'x',
+            type: 'condition',
+            condition: {
+              all: [
+                { field: 'person.attr.plan', op: 'eq', value: 'enterprise' },
+                { field: 'company.attr.tier', op: 'eq', value: 'gold' },
+                { field: 'person.email', op: 'contains', value: '@acme.com' },
+              ],
+            },
+          },
+        ],
+        edges: [{ from: 'trigger', to: 'x' }],
+      }
+      expect(validateGraph(graph).ok).toBe(true)
+    })
+  })
+})
+
 describe('snooze action: relative duration', () => {
   it('round-trips a relative snooze through the tree <-> graph conversion', () => {
     const tree: WorkflowTree = {
@@ -833,6 +1284,36 @@ describe('snooze action: relative duration', () => {
     expect(actionIssue({ type: 'snooze', seconds: 60 })).toBeNull()
     expect(actionIssue({ type: 'snooze', untilIso: null })).toBeNull()
     expect(actionIssue({ type: 'snooze', untilIso: '2026-08-01T09:00:00.000Z' })).toBeNull()
+  })
+
+  it('add_note: defaults to an empty body, summarizes/truncates it, and flags a blank one as an issue', () => {
+    expect(defaultAction('add_note')).toEqual({ type: 'add_note', body: '' })
+    expect(actionSummary({ type: 'add_note', body: '' })).toBe('Add a note…')
+    expect(actionSummary({ type: 'add_note', body: 'Escalated to VIP' })).toBe(
+      'Note: Escalated to VIP'
+    )
+    expect(actionSummary({ type: 'add_note', body: 'x'.repeat(80) })).toBe(
+      `Note: ${'x'.repeat(57)}...`
+    )
+    expect(actionIssue({ type: 'add_note', body: '' })).toBe('Write the note')
+    expect(actionIssue({ type: 'add_note', body: '   ' })).toBe('Write the note')
+    expect(actionIssue({ type: 'add_note', body: 'Escalated to VIP' })).toBeNull()
+  })
+
+  it('add_note: validateGraph accepts a written note, rejects a blank one', () => {
+    const graphOk = {
+      nodes: [{ id: 'a', type: 'action', action: { type: 'add_note', body: 'Escalated to VIP' } }],
+      edges: [],
+    }
+    expect(validateGraph(graphOk).ok).toBe(true)
+
+    const graphBad = {
+      nodes: [{ id: 'a', type: 'action', action: { type: 'add_note', body: '' } }],
+      edges: [],
+    }
+    const result = validateGraph(graphBad)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/write the note/)
   })
 
   it('surfaces the zero-duration issue through collectStepIssues, same as any other action', () => {
@@ -1415,5 +1896,61 @@ describe('conversational block kinds', () => {
         ],
       })
     })
+  })
+})
+
+describe('audienceUnreachableFieldWarning', () => {
+  const messageRule: GraphCondition = { field: 'message.body', op: 'contains', value: 'refund' }
+
+  it('warns when a message.* rule is on a trigger whose event never carries a message', () => {
+    expect(audienceUnreachableFieldWarning('conversation.created', messageRule)).toMatch(
+      /never carries one — it will never match/
+    )
+  })
+
+  it('warns for message.sender the same way as message.body', () => {
+    const rule: GraphCondition = { field: 'message.sender', op: 'eq', value: 'visitor' }
+    expect(audienceUnreachableFieldWarning('conversation.attribute_changed', rule)).not.toBeNull()
+  })
+
+  it('finds a message.* rule nested inside an all/any group, not just a bare leaf', () => {
+    const nested: GraphCondition = {
+      any: [{ all: [{ field: 'conversation.priority', op: 'eq', value: 'high' }, messageRule] }],
+    }
+    expect(audienceUnreachableFieldWarning('sla.breached', nested)).not.toBeNull()
+  })
+
+  it('every timer trigger (all 4) and attribute_changed/created/status_changed/assigned/priority_changed/csat_submitted/handed_off warn — none of them carry a message', () => {
+    const nonMessageTriggers = [
+      'conversation.created',
+      'conversation.status_changed',
+      'conversation.assigned',
+      'conversation.priority_changed',
+      'conversation.attribute_changed',
+      'conversation.csat_submitted',
+      'assistant.handed_off',
+      'conversation.customer_unresponsive',
+      'conversation.teammate_unresponsive',
+      'sla.approaching_breach',
+      'sla.breached',
+    ]
+    for (const triggerType of nonMessageTriggers) {
+      expect(audienceUnreachableFieldWarning(triggerType, messageRule)).not.toBeNull()
+    }
+  })
+
+  it('stays silent for the two triggers that actually carry a message', () => {
+    expect(audienceUnreachableFieldWarning('message.created', messageRule)).toBeNull()
+    expect(audienceUnreachableFieldWarning('message.note_created', messageRule)).toBeNull()
+  })
+
+  it('stays silent when the audience never references a message.* field', () => {
+    const rule: GraphCondition = { field: 'conversation.priority', op: 'eq', value: 'high' }
+    expect(audienceUnreachableFieldWarning('conversation.created', rule)).toBeNull()
+  })
+
+  it('stays silent with no audience configured at all', () => {
+    expect(audienceUnreachableFieldWarning('conversation.created', undefined)).toBeNull()
+    expect(audienceUnreachableFieldWarning('conversation.created', {})).toBeNull()
   })
 })

@@ -30,6 +30,7 @@ import {
 } from '@/lib/server/db'
 import type { ConditionContext } from '../condition.evaluator'
 import type { WorkflowGraph } from '../graph'
+import { makeConditionContext } from './workflow-test-utils'
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
@@ -65,6 +66,20 @@ vi.mock('@/lib/server/domains/settings/settings.office-hours', () => ({
     timezone: 'UTC',
     intervals: [],
   })),
+}))
+// Abandoned-journey auto-close (stamped into an input wait's cursor at park
+// time) is read the same way office-hours is above: the fixture has no
+// settings row, so pin the (disabled) default here and let individual tests
+// override it with mockResolvedValueOnce for the on/off matrix.
+const { getWorkflowAbandonedAutoCloseSettings } = vi.hoisted(() => ({
+  getWorkflowAbandonedAutoCloseSettings: vi.fn(async () => ({
+    enabled: false,
+    waitMinutes: 5,
+    keepIfEmailCaptured: true,
+  })),
+}))
+vi.mock('@/lib/server/domains/settings/settings.workflows', () => ({
+  getWorkflowAbandonedAutoCloseSettings,
 }))
 // Same wrap-not-replace treatment as condition.context above (SF8): applyAction
 // itself is fully mocked in this file, so send_block's OWN internal calls to
@@ -126,20 +141,22 @@ async function seedConversation(): Promise<ConversationId> {
   return row.id
 }
 
-const ctx = (status = 'open'): ConditionContext => ({
-  conversation: {
-    status,
-    channel: 'messenger',
-    priority: 'none',
-    waitingMinutes: null,
-    tagIds: [],
-    assignedTeamId: null,
-  },
-})
+const ctx = (status = 'open'): ConditionContext =>
+  makeConditionContext({
+    conversation: {
+      status,
+      channel: 'messenger',
+      priority: 'none',
+      waitingMinutes: null,
+      tagIds: [],
+      assignedTeamId: null,
+    },
+  })
 
 beforeEach(() => {
   applyAction.mockClear()
   scheduleWorkflowResume.mockClear()
+  getWorkflowAbandonedAutoCloseSettings.mockClear()
 })
 
 describe.skipIf(!fixture.available)('runWorkflow (real DB, rolled back)', () => {
@@ -207,6 +224,11 @@ describe.skipIf(!fixture.available)('runWorkflow (real DB, rolled back)', () => 
     const run = await runWorkflow(wf, ctx(), { conversationId })
     expect(run?.state).toBe('waiting')
     expect(run?.cursor).toMatchObject({ resumeNodeId: 'a2', waitSeconds: 3600 })
+    // A plain timer wait is untouched by abandoned auto-close: no expiresAt
+    // field at all (the setting only ever applies to an 'input' park), and
+    // the setting isn't even read for one.
+    expect(run?.cursor).not.toHaveProperty('expiresAt')
+    expect(getWorkflowAbandonedAutoCloseSettings).not.toHaveBeenCalled()
     // Only the pre-wait action ran; the post-wait one waits for resume.
     expect(applyAction).toHaveBeenCalledTimes(1)
     expect(applyAction.mock.calls[0][0]).toEqual({ type: 'set_priority', priority: 'urgent' })
@@ -1042,6 +1064,54 @@ describe.skipIf(!fixture.available)('runWorkflow (real DB, rolled back)', () => 
       expect(events.map((e) => e.kind).sort()).toEqual(['started', 'waiting'])
     })
 
+    it('leaves expiresAt null on the InputWaitCursor when abandoned auto-close is disabled (default)', async () => {
+      applyAction.mockResolvedValueOnce({
+        label: 'sent buttons block',
+        blockMessageId: 'conversation_message_block_ac_off',
+      })
+      const conversationId = await seedConversation()
+      const wf = await createWorkflow({
+        name: 'Ask yes/no',
+        class: 'customer_facing',
+        triggerType: 'conversation.created',
+        graph: buttonsGraph(),
+      })
+
+      const run = await runWorkflow(wf, ctx(), { conversationId })
+      expect(run?.cursor).toMatchObject({ waitKind: 'input', expiresAt: null })
+    })
+
+    it('stamps expiresAt = park time + waitMinutes on the InputWaitCursor when abandoned auto-close is enabled', async () => {
+      getWorkflowAbandonedAutoCloseSettings.mockResolvedValueOnce({
+        enabled: true,
+        waitMinutes: 15,
+        keepIfEmailCaptured: true,
+      })
+      applyAction.mockResolvedValueOnce({
+        label: 'sent buttons block',
+        blockMessageId: 'conversation_message_block_ac_on',
+      })
+      const conversationId = await seedConversation()
+      const wf = await createWorkflow({
+        name: 'Ask yes/no',
+        class: 'customer_facing',
+        triggerType: 'conversation.created',
+        graph: buttonsGraph(),
+      })
+
+      const before = Date.now()
+      const run = await runWorkflow(wf, ctx(), { conversationId })
+      const after = Date.now()
+
+      const cursor = run?.cursor as { waitKind: string; expiresAt: string | null } | undefined
+      expect(cursor?.waitKind).toBe('input')
+      expect(cursor?.expiresAt).not.toBeNull()
+      const expiresAtMs = new Date(cursor!.expiresAt!).getTime()
+      // 15 minutes after park time, park time bounded by [before, after].
+      expect(expiresAtMs).toBeGreaterThanOrEqual(before + 15 * 60_000)
+      expect(expiresAtMs).toBeLessThanOrEqual(after + 15 * 60_000)
+    })
+
     it('resumes at the interactive node itself with a matching blockAnswer and routes by buttonKey', async () => {
       applyAction.mockResolvedValueOnce({
         label: 'sent buttons block',
@@ -1322,6 +1392,28 @@ describe.skipIf(!fixture.available)('runWorkflow (real DB, rolled back)', () => 
         .from(workflowRunEvents)
         .where(eq(workflowRunEvents.runId, run!.id))
       expect(events.map((e) => e.kind).sort()).toEqual(['started', 'waiting'])
+    })
+
+    it('never stamps expiresAt on an assistant WaitCursor even when abandoned auto-close is enabled: only a customer-silence input wait can be abandoned', async () => {
+      getWorkflowAbandonedAutoCloseSettings.mockResolvedValueOnce({
+        enabled: true,
+        waitMinutes: 15,
+        keepIfEmailCaptured: true,
+      })
+      applyAction.mockResolvedValueOnce({ label: 'handed to assistant' })
+      const conversationId = await seedConversation()
+      const wf = await createWorkflow({
+        name: 'Let Quinn answer',
+        class: 'customer_facing',
+        triggerType: 'conversation.created',
+        graph: assistantGraph(),
+      })
+
+      const run = await runWorkflow(wf, ctx(), { conversationId })
+      expect(run?.cursor).toMatchObject({ waitKind: 'assistant' })
+      expect(run?.cursor).not.toHaveProperty('expiresAt')
+      // The setting isn't even worth reading for a park kind that can never use it.
+      expect(getWorkflowAbandonedAutoCloseSettings).not.toHaveBeenCalled()
     })
 
     it('resumes with outcome "escalated": follows the labeled escalated edge', async () => {
