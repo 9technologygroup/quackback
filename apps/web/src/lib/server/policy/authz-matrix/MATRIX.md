@@ -477,7 +477,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/settings.ts`::updateModerationDefaultFn | settings.moderation |
 | `lib/server/functions/sla.ts`::listSlaPoliciesFn | sla.manage |
 | `lib/server/functions/sla.ts`::listSlaPolicyOptionsFn | conversation.view |
-| `lib/server/functions/sla.ts`::listSlaScheduleOptionsFn | sla.manage |
+| `lib/server/functions/sla.ts`::getSlaOfficeHoursFn | sla.manage |
 | `lib/server/functions/sla.ts`::createSlaPolicyFn | sla.manage |
 | `lib/server/functions/sla.ts`::updateSlaPolicyFn | sla.manage |
 | `lib/server/functions/sla.ts`::archiveSlaPolicyFn | sla.manage |

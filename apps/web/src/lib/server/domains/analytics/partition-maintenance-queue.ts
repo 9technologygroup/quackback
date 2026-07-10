@@ -6,6 +6,7 @@
  */
 import { Queue, Worker } from 'bullmq'
 import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-config'
+import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { logger } from '@/lib/server/logger'
 import { db, ensurePageViewPartitions, dropExpiredPageViewPartitions } from '@/lib/server/db'
 
@@ -21,7 +22,7 @@ interface PartitionMaintenanceJob {
 
 let initPromise: Promise<{
   queue: Queue<PartitionMaintenanceJob>
-  worker: Worker<PartitionMaintenanceJob>
+  worker: Worker<PartitionMaintenanceJob> | null
 }> | null = null
 
 async function runMaintenance(): Promise<void> {
@@ -45,15 +46,19 @@ async function initializeQueue() {
     },
   })
 
-  const worker = new Worker<PartitionMaintenanceJob>(
-    QUEUE_NAME,
-    async (job) => {
-      if (job.data.type === 'maintain-partitions') {
-        await runMaintenance()
-      }
-    },
-    { connection, concurrency: CONCURRENCY }
-  )
+  // Consumer side is role-gated: web-role replicas enqueue and register
+  // schedules but never construct a Worker (see queue/role.ts).
+  const worker = shouldRunWorkers()
+    ? new Worker<PartitionMaintenanceJob>(
+        QUEUE_NAME,
+        async (job) => {
+          if (job.data.type === 'maintain-partitions') {
+            await runMaintenance()
+          }
+        },
+        { connection, concurrency: CONCURRENCY }
+      )
+    : null
 
   // Daily at 02:30. Stable jobId so worker reboots dedupe instead of stacking
   // duplicate cron entries.
@@ -77,11 +82,11 @@ async function initializeQueue() {
     ])
   } catch (error) {
     await queue.close().catch(() => {})
-    await worker.close().catch(() => {})
+    await worker?.close().catch(() => {})
     throw error
   }
 
-  worker.on('failed', (job, error) => {
+  worker?.on('failed', (job, error) => {
     if (!job) return
     const isPermanent =
       job.attemptsMade >= (job.opts.attempts ?? 1) || error.name === 'UnrecoverableError'
@@ -114,6 +119,6 @@ export async function closePageViewPartitionQueue(): Promise<void> {
   if (!initPromise) return
   const { worker, queue } = await initPromise
   initPromise = null
-  await worker.close().catch(() => {})
+  await worker?.close().catch(() => {})
   await queue.close().catch(() => {})
 }
