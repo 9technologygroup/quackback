@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { db, sql, getMigrationStatus } from '@/lib/server/db'
 import { getQueueRedis } from '@/lib/server/queue/redis-config'
 import { getWorkerBootStatus } from '@/lib/server/queue/worker-registry'
+import { getProcessRole } from '@/lib/server/queue/role'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'health' })
@@ -79,6 +80,8 @@ export async function handleReadinessProbe(): Promise<Response> {
     runCheck('redis', checkRedis),
     runCheck('migrations', checkMigrations),
   ])
+  // On web-role replicas no workers boot, so the check passes with zero
+  // counts — the role field says which reading you're looking at.
   const bootStatus = getWorkerBootStatus()
   const workersCheck = { ok: bootStatus.failed === 0, ...bootStatus }
 
@@ -86,6 +89,7 @@ export async function handleReadinessProbe(): Promise<Response> {
   return Response.json(
     {
       status: ready ? 'ok' : 'unavailable',
+      role: getProcessRole(),
       checks: {
         db: dbCheck,
         redis: redisCheck,

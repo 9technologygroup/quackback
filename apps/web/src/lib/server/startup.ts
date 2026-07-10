@@ -4,6 +4,7 @@
  */
 import { logger } from '@/lib/server/logger'
 import { closeAllWorkers, initAllWorkers } from './queue/worker-registry'
+import { getProcessRole, shouldRunWorkers } from './queue/role'
 
 const log = logger.child({ component: 'startup' })
 
@@ -86,6 +87,7 @@ export function logStartupBanner(): void {
       runtime,
       port,
       base_url: baseUrl,
+      role: getProcessRole(),
       built: __BUILD_TIME__,
     },
     'server started'
@@ -101,6 +103,41 @@ export function logStartupBanner(): void {
   // any of them start so a fast Ctrl-C in dev still gets a clean exit.
   wireGracefulShutdown()
 
+  // Ensure quackback feedback source exists (idempotent, creates on first startup)
+  import('./domains/feedback/sources/quackback.source')
+    .then(({ ensureQuackbackFeedbackSource }) => ensureQuackbackFeedbackSource())
+    .catch((err) => log.error({ err }, 'failed to ensure quackback feedback source'))
+
+  // One-time in-place data backfills (idempotent, advisory-locked). Runs the
+  // custom-oidc → identity_provider migration that needs SECRET_KEY to decrypt
+  // its credential and so can't live in the SQL migration bundle.
+  import('@/lib/server/auth/backfill-custom-oidc-provider')
+    .then(({ runStartupBackfills }) => runStartupBackfills())
+    .catch((err) => log.error({ err }, 'failed to run startup backfills'))
+
+  // Quackback config file watcher — reconciles managed fields from
+  // /etc/quackback/config.yaml on every change. No-op when the file
+  // is absent (self-host default).
+  import('@/lib/server/config-file')
+    .then(({ startQuackbackConfigWatcher }) => startQuackbackConfigWatcher())
+    .catch((err) => log.error({ err }, 'failed to start config-file watcher'))
+
+  // Background processing is role-gated: QUACKBACK_ROLE=web replicas serve
+  // HTTP and enqueue only, so scaling them never scales queue consumption.
+  if (shouldRunWorkers()) {
+    startBackgroundProcessing()
+  } else {
+    log.info('QUACKBACK_ROLE=web — skipping queue workers and periodic sweepers')
+  }
+}
+
+/**
+ * Boot queue workers and periodic sweepers. Runs under QUACKBACK_ROLE=worker
+ * and the single-process default ('all') — never on web-role replicas. Every
+ * sweeper additionally holds a cross-instance sweep lock, so multiple worker
+ * replicas stay safe.
+ */
+function startBackgroundProcessing(): void {
   // Boot every eagerly-initialized queue worker from the registry. Each init
   // is isolated: one failure is logged without blocking the rest.
   initAllWorkers()
@@ -284,23 +321,4 @@ export function logStartupBanner(): void {
       setInterval(() => void runReconcile(), 5 * 60 * 1000) // Every 5 minutes
     })
     .catch((err) => log.error({ err }, 'failed to init status maintenance sweep'))
-
-  // Ensure quackback feedback source exists (idempotent, creates on first startup)
-  import('./domains/feedback/sources/quackback.source')
-    .then(({ ensureQuackbackFeedbackSource }) => ensureQuackbackFeedbackSource())
-    .catch((err) => log.error({ err }, 'failed to ensure quackback feedback source'))
-
-  // One-time in-place data backfills (idempotent, advisory-locked). Runs the
-  // custom-oidc → identity_provider migration that needs SECRET_KEY to decrypt
-  // its credential and so can't live in the SQL migration bundle.
-  import('@/lib/server/auth/backfill-custom-oidc-provider')
-    .then(({ runStartupBackfills }) => runStartupBackfills())
-    .catch((err) => log.error({ err }, 'failed to run startup backfills'))
-
-  // Quackback config file watcher — reconciles managed fields from
-  // /etc/quackback/config.yaml on every change. No-op when the file
-  // is absent (self-host default).
-  import('@/lib/server/config-file')
-    .then(({ startQuackbackConfigWatcher }) => startQuackbackConfigWatcher())
-    .catch((err) => log.error({ err }, 'failed to start config-file watcher'))
 }
