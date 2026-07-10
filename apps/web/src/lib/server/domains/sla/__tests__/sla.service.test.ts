@@ -43,6 +43,7 @@ import {
   recordResolution,
   pauseSlaOnSnooze,
   resumeSlaFromSnooze,
+  sweepOverdueSlaBreaches,
 } from '../sla.service'
 
 const fixture = await createDbTestFixture({
@@ -51,6 +52,13 @@ const fixture = await createDbTestFixture({
     await db.select({ id: slaEvents.id }).from(slaEvents).limit(0)
   },
 })
+
+// One close for the whole file — the fixture (and testDb) is a single
+// module-level connection shared by every describe block below
+// (createDbTestFixture enforces one fixture per test file), and closing it
+// from inside a describe would tear the connection down before a later
+// sibling's beforeEach(fixture.begin) runs.
+afterAll(() => fixture.close())
 
 const suffix = () => `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 
@@ -69,11 +77,6 @@ async function seedConversation(): Promise<ConversationId> {
   return row.id
 }
 
-// Note: `fixture` is a single module-level connection shared by every describe
-// block below (createDbTestFixture enforces one fixture per test file). Only
-// the LAST describe block may register `afterAll(fixture.close)`, since closing
-// it from an earlier sibling would tear the connection down before the later
-// blocks' beforeEach(fixture.begin) runs.
 describe.skipIf(!fixture.available)('applySlaToConversation (real DB, rolled back)', () => {
   beforeEach(() => {
     workspaceHours.schedule = { enabled: false, timezone: 'UTC', intervals: [] }
@@ -264,7 +267,6 @@ describe.skipIf(!fixture.available)('pause-on-snooze (real DB, rolled back)', ()
     return fixture.begin()
   })
   afterEach(fixture.rollback)
-  afterAll(fixture.close)
 
   async function loadApplied(conversationId: ConversationId): Promise<{
     firstResponseDueAt: string | null
@@ -417,5 +419,185 @@ describe.skipIf(!fixture.available)('pause-on-snooze (real DB, rolled back)', ()
       .from(conversations)
       .where(eq(conversations.id, conversationId))
     expect(conv.slaApplied).toBeNull()
+  })
+})
+
+describe.skipIf(!fixture.available)('sweepOverdueSlaBreaches (real DB, rolled back)', () => {
+  beforeEach(() => {
+    workspaceHours.schedule = { enabled: false, timezone: 'UTC', intervals: [] }
+    return fixture.begin()
+  })
+  afterEach(fixture.rollback)
+
+  const eventsFor = async (conversationId: ConversationId) =>
+    testDb.select().from(slaEvents).where(eq(slaEvents.conversationId, conversationId))
+
+  it('records an overdue, unanswered first response exactly once (a repeat sweep is a no-op)', async () => {
+    const conversationId = await seedConversation()
+    const policy = await createSlaPolicy({ name: 'FR', firstResponseTargetSecs: 3600 })
+    await applySlaToConversation(conversationId, policy.id, new Date('2026-01-05T10:00:00Z'))
+
+    // Due 11:00, no reply. Sweep at 11:05 -> one breach event.
+    const first = await sweepOverdueSlaBreaches(new Date('2026-01-05T11:05:00Z'))
+    expect(first.recorded).toBe(1)
+    let events = (await eventsFor(conversationId)).filter((e) => e.kind !== 'applied')
+    expect(events).toHaveLength(1)
+    expect(events[0].kind).toBe('first_response_breached')
+    expect(events[0].meta.overdueSecs).toBe(300)
+
+    // Sweeping again (and again later) must not duplicate the event.
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T11:06:00Z'))).recorded).toBe(0)
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T12:00:00Z'))).recorded).toBe(0)
+    events = (await eventsFor(conversationId)).filter((e) => e.kind !== 'applied')
+    expect(events).toHaveLength(1)
+  })
+
+  it('leaves not-yet-due and settled clocks untouched', async () => {
+    const notDue = await seedConversation()
+    const met = await seedConversation()
+    const policy = await createSlaPolicy({ name: 'FR', firstResponseTargetSecs: 3600 })
+    await applySlaToConversation(notDue, policy.id, new Date('2026-01-05T10:00:00Z'))
+    await applySlaToConversation(met, policy.id, new Date('2026-01-05T10:00:00Z'))
+    // The second conversation got its reply in time.
+    await recordFirstResponse(met, new Date('2026-01-05T10:30:00Z'))
+
+    // Sweep before the first deadline -> nothing.
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T10:45:00Z'))).recorded).toBe(0)
+    // Sweep after it -> only the unanswered one breaches.
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T11:30:00Z'))).recorded).toBe(1)
+    const metEvents = (await eventsFor(met)).map((e) => e.kind)
+    expect(metEvents.sort()).toEqual(['applied', 'first_response_met'])
+  })
+
+  it('still breaches a snoozed conversation whose policy opted out of pausing', async () => {
+    // 'snoozed' status alone does not stop a clock — only a stamped pause
+    // (pausedAt) does, and a pauseOnSnooze: false policy never stamps one.
+    const conversationId = await seedConversation()
+    const policy = await createSlaPolicy({
+      name: 'NoPause',
+      firstResponseTargetSecs: 3600,
+      pauseOnSnooze: false,
+    })
+    await applySlaToConversation(conversationId, policy.id, new Date('2026-01-05T10:00:00Z'))
+    await pauseSlaOnSnooze(conversationId, new Date('2026-01-05T10:10:00Z')) // no-op: opted out
+    await testDb
+      .update(conversations)
+      .set({ status: 'snoozed' })
+      .where(eq(conversations.id, conversationId))
+
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T11:05:00Z'))).recorded).toBe(1)
+    const kinds = (await eventsFor(conversationId)).map((e) => e.kind)
+    expect(kinds).toContain('first_response_breached')
+  })
+
+  it('does not breach a clock that is currently paused', async () => {
+    const conversationId = await seedConversation()
+    const policy = await createSlaPolicy({ name: 'Paused', firstResponseTargetSecs: 3600 })
+    await applySlaToConversation(conversationId, policy.id, new Date('2026-01-05T10:00:00Z'))
+    // Snoozed at 10:30 under the default pauseOnSnooze policy: clock stopped.
+    await pauseSlaOnSnooze(conversationId, new Date('2026-01-05T10:30:00Z'))
+
+    // The stamped due date (11:00) has passed, but the clock is paused.
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T11:05:00Z'))).recorded).toBe(0)
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-06T10:00:00Z'))).recorded).toBe(0)
+    const kinds = (await eventsFor(conversationId)).map((e) => e.kind)
+    expect(kinds).toEqual(['applied', 'paused'])
+    // And the stamp gained no breach-noted marker.
+    const [conv] = await testDb
+      .select({ slaApplied: conversations.slaApplied })
+      .from(conversations)
+      .where(eq(conversations.id, conversationId))
+    expect(
+      (conv.slaApplied as { firstResponseBreachedAt?: string }).firstResponseBreachedAt
+    ).toBeUndefined()
+  })
+
+  it('after a resume, breaches against the pause-shifted deadline, not the original one', async () => {
+    const conversationId = await seedConversation()
+    const policy = await createSlaPolicy({ name: 'Shifted', firstResponseTargetSecs: 3600 })
+    await applySlaToConversation(conversationId, policy.id, new Date('2026-01-05T10:00:00Z'))
+    // Paused 10:30 -> 11:30 (1h): due shifts from 11:00 to 12:00 on resume.
+    await pauseSlaOnSnooze(conversationId, new Date('2026-01-05T10:30:00Z'))
+    await resumeSlaFromSnooze(conversationId, new Date('2026-01-05T11:30:00Z'))
+
+    // Past the original 11:00 but inside the shifted 12:00 -> not a breach.
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T11:45:00Z'))).recorded).toBe(0)
+    // Past the shifted deadline -> breaches, judged against 12:00.
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T12:05:00Z'))).recorded).toBe(1)
+    const breach = (await eventsFor(conversationId)).find(
+      (e) => e.kind === 'first_response_breached'
+    )
+    expect(breach?.meta.dueAt).toBe('2026-01-05T12:00:00.000Z')
+    expect(breach?.meta.overdueSecs).toBe(300)
+  })
+
+  it('records both clocks once each when both are overdue', async () => {
+    const conversationId = await seedConversation()
+    const policy = await createSlaPolicy({
+      name: 'Both',
+      firstResponseTargetSecs: 3600,
+      timeToCloseTargetSecs: 2 * 3600,
+    })
+    await applySlaToConversation(conversationId, policy.id, new Date('2026-01-05T10:00:00Z'))
+
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T13:00:00Z'))).recorded).toBe(2)
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T13:01:00Z'))).recorded).toBe(0)
+    const kinds = (await eventsFor(conversationId))
+      .map((e) => e.kind)
+      .filter((k) => k !== 'applied')
+      .sort()
+    expect(kinds).toEqual(['first_response_breached', 'resolution_breached'])
+  })
+
+  it('a late reply after the sweep noted the breach settles the clock without a second event', async () => {
+    const conversationId = await seedConversation()
+    const policy = await createSlaPolicy({ name: 'FR', firstResponseTargetSecs: 3600 })
+    await applySlaToConversation(conversationId, policy.id, new Date('2026-01-05T10:00:00Z'))
+    await sweepOverdueSlaBreaches(new Date('2026-01-05T11:05:00Z'))
+
+    await recordFirstResponse(conversationId, new Date('2026-01-05T11:30:00Z'))
+    const kinds = (await eventsFor(conversationId))
+      .map((e) => e.kind)
+      .filter((k) => k !== 'applied')
+    expect(kinds).toEqual(['first_response_breached'])
+    // The clock is settled, so nextSlaDue-style consumers stop counting.
+    const [conv] = await testDb
+      .select({ slaApplied: conversations.slaApplied })
+      .from(conversations)
+      .where(eq(conversations.id, conversationId))
+    expect((conv.slaApplied as { firstResponseAt: string }).firstResponseAt).toBe(
+      '2026-01-05T11:30:00.000Z'
+    )
+  })
+
+  it('overlapping sweeps of the same overdue clock record exactly one event (atomic claim)', async () => {
+    const conversationId = await seedConversation()
+    const policy = await createSlaPolicy({ name: 'FR', firstResponseTargetSecs: 3600 })
+    await applySlaToConversation(conversationId, policy.id, new Date('2026-01-05T10:00:00Z'))
+
+    // Both runs can scan the row before either writes; the guarded claim must
+    // let only one of them log the breach.
+    const [a, b] = await Promise.all([
+      sweepOverdueSlaBreaches(new Date('2026-01-05T11:05:00Z')),
+      sweepOverdueSlaBreaches(new Date('2026-01-05T11:05:30Z')),
+    ])
+    expect(a.recorded + b.recorded).toBe(1)
+    const kinds = (await eventsFor(conversationId))
+      .map((e) => e.kind)
+      .filter((k) => k !== 'applied')
+    expect(kinds).toEqual(['first_response_breached'])
+  })
+
+  it('a lazily recorded breach (late reply before any sweep) makes the sweep a no-op', async () => {
+    const conversationId = await seedConversation()
+    const policy = await createSlaPolicy({ name: 'FR', firstResponseTargetSecs: 3600 })
+    await applySlaToConversation(conversationId, policy.id, new Date('2026-01-05T10:00:00Z'))
+    await recordFirstResponse(conversationId, new Date('2026-01-05T11:10:00Z'))
+
+    expect((await sweepOverdueSlaBreaches(new Date('2026-01-05T11:15:00Z'))).recorded).toBe(0)
+    const kinds = (await eventsFor(conversationId))
+      .map((e) => e.kind)
+      .filter((k) => k !== 'applied')
+    expect(kinds).toEqual(['first_response_breached'])
   })
 })
