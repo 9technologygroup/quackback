@@ -89,10 +89,19 @@ export async function handleInboundWebhook(
   )
 
   // A single external ID can be linked to a post, to tickets, or both — the
-  // two branches are independent and each swallows its own failures so the
-  // platform never retries a half-applied webhook.
-  await applyPostStatusChange(integration, integrationType, config, result)
-  await applyTicketStatusChange(integration, integrationType, config, result)
+  // two branches are independent, and each failure is swallowed here so one
+  // branch's error can't starve the other or 500 the platform into
+  // redelivering a half-applied webhook.
+  try {
+    await applyPostStatusChange(integration, integrationType, config, result)
+  } catch (error) {
+    log.error({ err: error, integration_type: integrationType }, 'inbound post branch failed')
+  }
+  try {
+    await applyTicketStatusChange(integration, integrationType, config, result)
+  } catch (error) {
+    log.error({ err: error, integration_type: integrationType }, 'inbound ticket branch failed')
+  }
 
   return new Response('OK', { status: 200 })
 }
