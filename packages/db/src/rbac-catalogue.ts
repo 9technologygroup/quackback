@@ -126,6 +126,7 @@ export const PERMISSIONS = {
   TICKET_CREATE: 'ticket.create', // create a ticket without a conversation (peer-aggregate; AI / integration)
   TICKET_MANAGE_TYPES: 'ticket.manage_types', // define ticket types + their statuses / fields
   SLA_MANAGE: 'sla.manage', // manage SLA policies (workspace-admin)
+  OFFICE_HOURS_MANAGE: 'office_hours.manage', // manage business-hours schedules (workspace-admin)
   ROUTING_MANAGE: 'routing.manage', // manage routing rules (workspace-admin)
   TEAM_MANAGE: 'team.manage', // manage teams + membership (workspace-admin)
   WORKFLOW_MANAGE: 'workflow.manage', // create / update / delete / status workflows (workspace-admin)
@@ -547,6 +548,11 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     description: 'Define ticket types and their statuses and fields',
   },
   { key: PERMISSIONS.SLA_MANAGE, category: 'support', description: 'Manage SLA policies' },
+  {
+    key: PERMISSIONS.OFFICE_HOURS_MANAGE,
+    category: 'support',
+    description: 'Manage business-hours schedules',
+  },
   { key: PERMISSIONS.ROUTING_MANAGE, category: 'support', description: 'Manage routing rules' },
   {
     key: PERMISSIONS.TEAM_MANAGE,
@@ -626,8 +632,10 @@ export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.INTEGRATION_MANAGE,
   PERMISSIONS.AUDIT_VIEW,
   PERMISSIONS.CUSTOM_FIELD_MANAGE, // defining custom fields is an admin-class schema action
-  // support infrastructure config: SLA policies, routing rules, teams, inbox channels (admin-only)
+  // support infrastructure config: SLA policies, office hours, routing rules, teams, inbox
+  // channels (admin-only)
   PERMISSIONS.SLA_MANAGE,
+  PERMISSIONS.OFFICE_HOURS_MANAGE,
   PERMISSIONS.ROUTING_MANAGE,
   PERMISSIONS.TEAM_MANAGE,
   PERMISSIONS.WORKFLOW_MANAGE,

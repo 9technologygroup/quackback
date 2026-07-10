@@ -167,6 +167,7 @@ describe('RBAC permission catalogue', () => {
     // Manager operates the inbox but does not configure the support infrastructure.
     for (const key of [
       PERMISSIONS.SLA_MANAGE,
+      PERMISSIONS.OFFICE_HOURS_MANAGE,
       PERMISSIONS.ROUTING_MANAGE,
       PERMISSIONS.TEAM_MANAGE,
       PERMISSIONS.WORKFLOW_MANAGE,

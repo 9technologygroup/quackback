@@ -88,6 +88,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | ticket.create | support | ✓ | ✓ |
 | ticket.manage_types | support | ✓ | ✓ |
 | sla.manage | support | ✓ | · |
+| office_hours.manage | support | ✓ | · |
 | routing.manage | support | ✓ | · |
 | team.manage | support | ✓ | · |
 | workflow.manage | support | ✓ | · |
@@ -467,8 +468,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/settings.ts`::saveWidgetHeroImageKeyFn | settings.manage |
 | `lib/server/functions/settings.ts`::deleteWidgetHeroImageFn | settings.manage |
 | `lib/server/functions/settings.ts`::regenerateWidgetSecretFn | settings.manage |
-| `lib/server/functions/settings.ts`::fetchOfficeHoursFn | settings.manage |
-| `lib/server/functions/settings.ts`::updateOfficeHoursFn | settings.manage |
+| `lib/server/functions/settings.ts`::fetchOfficeHoursFn | office_hours.manage |
+| `lib/server/functions/settings.ts`::updateOfficeHoursFn | office_hours.manage |
 | `lib/server/functions/settings.ts`::fetchChangelogSettingsFn | changelog.manage |
 | `lib/server/functions/settings.ts`::updateChangelogSettingsFn | changelog.manage |
 | `lib/server/functions/settings.ts`::getEmailChannelStatusFn | settings.manage |
