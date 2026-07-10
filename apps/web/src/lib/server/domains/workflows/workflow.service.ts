@@ -139,7 +139,14 @@ export async function listLiveWorkflowsForTrigger(triggerType: string): Promise<
 const HAS_LIVE_WORKFLOW_CACHE_TTL_MS = 30_000
 let hasLiveWorkflowCache: { value: boolean; expiresAt: number } | null = null
 
-function invalidateHasLiveWorkflowCache(): void {
+/**
+ * Drop the cached hasAnyLiveWorkflow answer so the next call re-queries.
+ * Called by every mutation above that can change liveness (create/update/
+ * setStatus/softDelete); exported so tests can start each case cold — the
+ * cache is module-level mutable state that would otherwise leak a value
+ * cached by an earlier case into a later one.
+ */
+export function invalidateHasLiveWorkflowCache(): void {
   hasLiveWorkflowCache = null
 }
 
@@ -174,11 +181,6 @@ export async function hasAnyLiveWorkflow(): Promise<boolean> {
   const value = Boolean(row)
   hasLiveWorkflowCache = { value, expiresAt: now + HAS_LIVE_WORKFLOW_CACHE_TTL_MS }
   return value
-}
-
-/** Test-only: clear the in-process cache between cases. */
-export function __resetHasAnyLiveWorkflowCache(): void {
-  hasLiveWorkflowCache = null
 }
 
 // --- Live-workflow attribute references (AI-ATTRIBUTES-PARITY-SPEC.md Phase 2) ---

@@ -25,7 +25,7 @@ import {
   getLiveWorkflowReferencedAttributeKeys,
   __resetLiveWorkflowReferencedAttributeKeysCache,
   hasAnyLiveWorkflow,
-  __resetHasAnyLiveWorkflowCache,
+  invalidateHasLiveWorkflowCache,
 } from '../workflow.service'
 
 const fixture = await createDbTestFixture({
@@ -85,11 +85,18 @@ describe.skipIf(!fixture.available)('workflow.service (real DB, rolled back)', (
       triggerType: 'x',
       sortOrder: 1,
     })
-    const list = await listWorkflows()
-    expect(list.map((w) => w.id)).toEqual([b.id, a.id]) // sortOrder asc
+    // Filtered to this test's own rows: listWorkflows is workspace-global and
+    // this transaction reads the shared test database under READ COMMITTED, so
+    // a workflow committed by a concurrently-running test file (frequency-cap-
+    // race.test.ts commits one mid-run) would otherwise appear in the list and
+    // flake an exact-equality assertion. The properties under test — drag
+    // order and the soft-delete filter — hold on the filtered view unchanged.
+    const ours = (list: { id: string }[]) =>
+      list.map((w) => w.id).filter((id) => id === a.id || id === b.id)
+    expect(ours(await listWorkflows())).toEqual([b.id, a.id]) // sortOrder asc
 
     await softDeleteWorkflow(a.id)
-    expect((await listWorkflows()).map((w) => w.id)).toEqual([b.id])
+    expect(ours(await listWorkflows())).toEqual([b.id])
     expect(await getWorkflow(a.id)).toBeNull()
   })
 
@@ -187,33 +194,25 @@ describe.skipIf(!fixture.available)('workflow.service (real DB, rolled back)', (
   })
 
   describe('hasAnyLiveWorkflow (events/process.ts enqueue gate)', () => {
-    beforeEach(__resetHasAnyLiveWorkflowCache)
+    // The cache is module-level state, so start each case cold: a value cached
+    // by an earlier test (or by this suite's own CRUD tests above, whose
+    // mutations invalidate but whose reads could populate it) must not leak in.
+    beforeEach(invalidateHasLiveWorkflowCache)
 
-    it('is false with zero workflows, and false with only a draft one', async () => {
-      expect(await hasAnyLiveWorkflow()).toBe(false)
-      __resetHasAnyLiveWorkflowCache() // this test's own read must not cache the miss past its own mutation below
-      await createWorkflow({ name: 'Draft', class: 'background', triggerType: 'x' })
-      __resetHasAnyLiveWorkflowCache()
-      expect(await hasAnyLiveWorkflow()).toBe(false)
-    })
-
-    it('flips to true immediately after setWorkflowStatus makes one live — no TTL wait needed', async () => {
+    // Only the TRUE direction is asserted against the real DB. The query is
+    // workspace-global and this suite's transaction reads the shared test
+    // database under READ COMMITTED, so a live workflow COMMITTED by another
+    // test file running in parallel (frequency-cap-race.test.ts commits one
+    // for its dispatch window, then deletes it in afterAll) is visible here —
+    // a `false` assertion would flake whenever the two files overlap.
+    // "Our own live workflow makes it true" can't be falsified by foreign
+    // rows; the false paths, caching, TTL, and per-mutation invalidation are
+    // pinned deterministically in workflow.service.live-gate.test.ts with a
+    // scripted db and query call-counting instead.
+    it('sees a workflow this transaction just made live (real query path)', async () => {
       const wf = await createWorkflow({ name: 'Route', class: 'background', triggerType: 'x' })
-      expect(await hasAnyLiveWorkflow()).toBe(false) // cached now (draft only)
-
-      // The mutation invalidates the cache itself, so the very next read sees
-      // the fresh state instead of the stale cached `false` for the next 30s.
       await setWorkflowStatus(wf.id, 'live')
       expect(await hasAnyLiveWorkflow()).toBe(true)
-    })
-
-    it('flips back to false after soft-deleting the only live workflow', async () => {
-      const wf = await createWorkflow({ name: 'Route', class: 'background', triggerType: 'x' })
-      await setWorkflowStatus(wf.id, 'live')
-      expect(await hasAnyLiveWorkflow()).toBe(true) // cached now (one live)
-
-      await softDeleteWorkflow(wf.id)
-      expect(await hasAnyLiveWorkflow()).toBe(false)
     })
   })
 })
