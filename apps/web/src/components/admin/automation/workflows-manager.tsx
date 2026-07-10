@@ -15,11 +15,14 @@ import {
   BoltIcon,
   ChatBubbleLeftRightIcon,
   ChevronDownIcon,
+  DocumentTextIcon,
   ExclamationTriangleIcon,
+  FlagIcon,
   MagnifyingGlassIcon,
   PencilSquareIcon,
   PlusIcon,
   SparklesIcon,
+  StarIcon,
   UserGroupIcon,
 } from '@heroicons/react/24/outline'
 import { EllipsisVerticalIcon } from '@heroicons/react/24/solid'
@@ -104,6 +107,24 @@ const TRIGGERS: TriggerMeta[] = [
     label: 'AI agent handed off to a human',
     icon: SparklesIcon,
     colorClass: 'bg-violet-500/10 text-violet-600 dark:text-violet-400',
+  },
+  {
+    value: 'conversation.priority_changed',
+    label: 'Priority changed',
+    icon: FlagIcon,
+    colorClass: 'bg-orange-500/10 text-orange-600 dark:text-orange-400',
+  },
+  {
+    value: 'conversation.csat_submitted',
+    label: 'CSAT rating submitted',
+    icon: StarIcon,
+    colorClass: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400',
+  },
+  {
+    value: 'message.note_created',
+    label: 'Internal note added',
+    icon: DocumentTextIcon,
+    colorClass: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400',
   },
 ]
 

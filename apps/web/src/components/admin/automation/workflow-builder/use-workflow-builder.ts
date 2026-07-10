@@ -23,6 +23,7 @@ import {
   insertStepAt,
   parseWorkflowGraphText,
   removeStepById,
+  sanitizeFrequencyCap,
   treeToGraph,
   triggerLabel,
   updateStepById,
@@ -30,6 +31,7 @@ import {
   type GraphDraft,
   type StepLocation,
   type TreeStep,
+  type TriggerType,
   type WorkflowClassValue,
   type WorkflowStatusValue,
 } from '../workflow-graph'
@@ -41,11 +43,45 @@ export interface TriggerSettingsDraft {
   [key: string]: unknown
 }
 
+/** Builds the editable draft from a stored row's settings, sanitizing a
+ *  `frequencyCap` that doesn't parse against the cap schema (any non-UI
+ *  writer, or a value predating a bounds tightening) down to "No limit"
+ *  instead of carrying a shape the server rejects. See save()'s dirty-gate
+ *  for why a bad stored cap would otherwise brick every future save. */
 function toTriggerSettingsDraft(raw: Record<string, unknown>): TriggerSettingsDraft {
   const channels = Array.isArray(raw.channels)
     ? raw.channels.filter((c): c is string => typeof c === 'string')
     : []
-  return { ...raw, channels }
+  const draft: TriggerSettingsDraft = { ...raw, channels }
+  const frequencyCap = sanitizeFrequencyCap(raw.frequencyCap)
+  if (frequencyCap === undefined) delete draft.frequencyCap
+  else draft.frequencyCap = frequencyCap
+  return draft
+}
+
+/** Order-independent structural equality for JSON-safe values (the shape
+ *  triggerSettings drafts are made of). JSON.stringify would falsely flag two
+ *  equivalent settings objects as "changed" if their keys landed in a
+ *  different order (e.g. after a spread-through round trip), which would
+ *  defeat the dirty-gate in save() below. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((v, i) => jsonEqual(v, b[i]))
+    )
+  }
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const aRecord = a as Record<string, unknown>
+    const bRecord = b as Record<string, unknown>
+    const aKeys = Object.keys(aRecord)
+    const bKeys = Object.keys(bRecord)
+    return aKeys.length === bKeys.length && aKeys.every((k) => jsonEqual(aRecord[k], bRecord[k]))
+  }
+  return false
 }
 
 export function useWorkflowBuilder(workflow: WorkflowDTO) {
@@ -57,10 +93,19 @@ export function useWorkflowBuilder(workflow: WorkflowDTO) {
   const [workflowClass, setWorkflowClass] = useState<WorkflowClassValue>(
     workflow.class as WorkflowClassValue
   )
-  const [triggerType, setTriggerType] = useState(workflow.triggerType)
-  const [triggerSettings, setTriggerSettings] = useState<TriggerSettingsDraft>(() =>
+  // The as-loaded values, kept around only to dirty-gate save()'s payload
+  // (never re-derived after mount, same as every other seeded-from-the-row
+  // state below): a legacy/unknown triggerType (the manager UI's "Other"
+  // bucket) or a frequencyCap that predates a bounds tightening would
+  // otherwise fail the server's closed-enum / discriminated-union validation
+  // on EVERY save, even a plain rename, if sent back unchanged.
+  const [loadedTriggerType] = useState(workflow.triggerType)
+  const [loadedTriggerSettings] = useState<TriggerSettingsDraft>(() =>
     toTriggerSettingsDraft(workflow.triggerSettings)
   )
+  const [triggerType, setTriggerType] = useState(loadedTriggerType)
+  const [triggerSettings, setTriggerSettings] =
+    useState<TriggerSettingsDraft>(loadedTriggerSettings)
   const [graphDraft, setGraphDraft] = useState<GraphDraft>(() => initialGraphDraft(workflow.graph))
   const [status, setLocalStatus] = useState<WorkflowStatusValue>(
     workflow.status as WorkflowStatusValue
@@ -185,8 +230,18 @@ export function useWorkflowBuilder(workflow: WorkflowDTO) {
         id: workflow.id,
         name: name.trim() || workflow.name,
         class: workflowClass,
-        triggerType,
-        triggerSettings,
+        // Sent only when actually edited (see the loadedTriggerType /
+        // loadedTriggerSettings comment above); updateSchema already treats
+        // both fields as optional, so omitting an untouched one leaves the
+        // stored value alone instead of round-tripping it through validation.
+        // The trigger picker only ever sets a TRIGGER_TYPES value, but the
+        // state starts from the stored workflow.triggerType (WorkflowDTO
+        // keeps it a plain string — an old row could in principle carry a
+        // stale one). The server re-validates against triggerTypeSchema and
+        // rejects a genuinely invalid value with a real error, so this cast
+        // is a safe boundary, not a bypass.
+        ...(triggerType !== loadedTriggerType ? { triggerType: triggerType as TriggerType } : {}),
+        ...(!jsonEqual(triggerSettings, loadedTriggerSettings) ? { triggerSettings } : {}),
         graph: graph.value,
       },
       {
@@ -202,7 +257,9 @@ export function useWorkflowBuilder(workflow: WorkflowDTO) {
     name,
     workflowClass,
     triggerType,
+    loadedTriggerType,
     triggerSettings,
+    loadedTriggerSettings,
   ])
 
   const canGoLive = issues.blocking === null && issues.count === 0

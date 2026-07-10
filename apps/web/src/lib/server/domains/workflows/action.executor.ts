@@ -47,10 +47,15 @@ export type WorkflowAction =
   | { type: 'add_tag'; tagId: ConversationTagId }
   | { type: 'remove_tag'; tagId: ConversationTagId }
   | { type: 'set_priority'; priority: ConversationPriority }
-  // untilIso is an ISO timestamp (JSON-safe so it round-trips through the stored
-  // graph) or null = until the customer next replies. A relative wake time is
-  // resolved to an absolute one by the caller before it reaches here.
+  // Two shapes, mirroring workflow.schemas.ts's snoozeActionSchema union: the
+  // legacy absolute form (untilIso, an ISO timestamp that's JSON-safe so it
+  // round-trips through the stored graph, or null = until the customer next
+  // replies) and the relative form (seconds, resolved to `now + seconds`
+  // right here at execution time — see the 'snooze' case below — so a
+  // workflow re-run always snoozes the same *duration* into the future
+  // instead of replaying the same, increasingly stale, absolute instant).
   | { type: 'snooze'; untilIso: string | null }
+  | { type: 'snooze'; seconds: number }
   | { type: 'close' }
   | { type: 'apply_sla'; policyId: SlaPolicyId }
   | { type: 'set_attribute'; key: string; value: unknown }
@@ -81,13 +86,16 @@ export async function applyAction(
     case 'set_priority':
       await conversationService.setConversationPriority(conversationId, action.priority, actor)
       return `priority ${action.priority}`
-    case 'snooze':
-      await conversationService.snoozeConversation(
-        conversationId,
-        action.untilIso ? new Date(action.untilIso) : null,
-        actor
-      )
+    case 'snooze': {
+      const until =
+        'seconds' in action
+          ? new Date(Date.now() + action.seconds * 1000)
+          : action.untilIso
+            ? new Date(action.untilIso)
+            : null
+      await conversationService.snoozeConversation(conversationId, until, actor)
       return 'snoozed'
+    }
     case 'close':
       await conversationService.setConversationStatus(conversationId, 'closed', actor)
       return 'closed'

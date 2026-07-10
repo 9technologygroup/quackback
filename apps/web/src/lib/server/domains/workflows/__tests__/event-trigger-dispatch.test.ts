@@ -94,4 +94,29 @@ describe('dispatchWorkflowsForEvent', () => {
     expect(interruptWaitingRuns).not.toHaveBeenCalled()
     expect(dispatchWorkflowTrigger).not.toHaveBeenCalled()
   })
+
+  it('propagates a dispatch failure instead of swallowing it, so the workflow-dispatch queue job can retry', async () => {
+    dispatchWorkflowTrigger.mockRejectedValueOnce(new Error('transient db error'))
+    await expect(
+      dispatchWorkflowsForEvent({
+        ...base,
+        type: 'conversation.assigned',
+        data: { conversation: { id: 'conversation_6' } },
+      } as unknown as EventData)
+    ).rejects.toThrow('transient db error')
+  })
+
+  it('propagates an interrupt failure the same way', async () => {
+    interruptWaitingRuns.mockRejectedValueOnce(new Error('lock timeout'))
+    await expect(
+      dispatchWorkflowsForEvent({
+        ...base,
+        type: 'message.created',
+        data: {
+          message: { conversationId: 'conversation_7', senderType: 'visitor', content: 'hi' },
+        },
+      } as unknown as EventData)
+    ).rejects.toThrow('lock timeout')
+    expect(dispatchWorkflowTrigger).not.toHaveBeenCalled() // never reached — interrupt threw first
+  })
 })

@@ -4,9 +4,18 @@
  * validation parity with the server schema, and the condition draft mapping.
  */
 import { describe, expect, it } from 'vitest'
-import { workflowGraphSchema } from '@/lib/server/domains/workflows/workflow.schemas'
 import {
+  workflowGraphSchema,
+  MAX_WAIT_SECONDS,
+  duplicateStepIdMessage,
+  missingStepMessage,
+  undeclaredBranchPathMessage,
+} from '@/lib/server/domains/workflows/workflow.schemas'
+import {
+  actionIssue,
+  actionSummary,
   attributeFieldForKey,
+  collectStepIssues,
   conditionSummary,
   conditionToDraft,
   createStep,
@@ -22,6 +31,7 @@ import {
   toAttributeFieldDefs,
   treeToGraph,
   validateGraph,
+  type GraphAction,
   type GraphCondition,
   type TreeStep,
   type WorkflowGraphJson,
@@ -195,10 +205,123 @@ describe('validateGraph', () => {
       { nodes: [{ id: 'trigger', type: 'trigger' }], edges: [{ from: 'trigger' }] },
       /"from" and "to"/,
     ],
+    [
+      'duplicate node id',
+      {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          { id: 'x', type: 'action', action: { type: 'close' } },
+          { id: 'x', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [],
+      },
+      /Duplicate step id "x"/,
+    ],
+    [
+      'edge references a missing "from" step',
+      {
+        nodes: [{ id: 'trigger', type: 'trigger' }],
+        edges: [{ from: 'ghost', to: 'trigger' }],
+      },
+      /missing step "ghost"/,
+    ],
+    [
+      'edge references a missing "to" step',
+      {
+        nodes: [{ id: 'trigger', type: 'trigger' }],
+        edges: [{ from: 'trigger', to: 'ghost' }],
+      },
+      /missing step "ghost"/,
+    ],
+    [
+      'undeclared branch path key',
+      {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          { id: 'branch-1', type: 'branch', branches: [{ key: 'A', condition: {} }] },
+          { id: 'x', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 'trigger', to: 'branch-1' },
+          { from: 'branch-1', to: 'x', branch: 'B' },
+        ],
+      },
+      /undeclared path "B"/,
+    ],
+    [
+      'wait past MAX_WAIT_SECONDS',
+      withNode({ id: 'x', type: 'wait', seconds: MAX_WAIT_SECONDS + 1 }),
+      /at most 90 days/,
+    ],
   ])('rejects %s', (_name, graph, message) => {
     const result = validateGraph(graph)
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toMatch(message)
+  })
+
+  // The four structural rules above are hand-copied at two call sites
+  // (validateGraph here, workflowGraphSchema's superRefine server-side) and
+  // had already drifted (capitalization, prefix) before both were switched to
+  // build their message text from the same exported functions. These pin the
+  // exact composed string (client index prefix + shared builder output) so a
+  // future edit to one side can't silently drift from the other again.
+  describe('structural-validation messages match the server-shared builders', () => {
+    it('duplicate step id', () => {
+      const dup = {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          { id: 'x', type: 'action', action: { type: 'close' } },
+          { id: 'x', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [],
+      }
+      const result = validateGraph(dup)
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error).toBe(duplicateStepIdMessage('x'))
+    })
+
+    it('edge referencing a missing "from"/"to" step, prefixed with its edge index', () => {
+      const missingFrom = {
+        nodes: [{ id: 'trigger', type: 'trigger' }],
+        edges: [{ from: 'ghost', to: 'trigger' }],
+      }
+      const fromResult = validateGraph(missingFrom)
+      expect(fromResult.ok).toBe(false)
+      if (!fromResult.ok) expect(fromResult.error).toBe(`edges[0]: ${missingStepMessage('ghost')}`)
+
+      const missingTo = {
+        nodes: [{ id: 'trigger', type: 'trigger' }],
+        edges: [{ from: 'trigger', to: 'ghost' }],
+      }
+      const toResult = validateGraph(missingTo)
+      expect(toResult.ok).toBe(false)
+      if (!toResult.ok) expect(toResult.error).toBe(`edges[0]: ${missingStepMessage('ghost')}`)
+    })
+
+    it('undeclared branch path key, prefixed with its edge index', () => {
+      const undeclaredKey = {
+        nodes: [
+          { id: 'trigger', type: 'trigger' },
+          { id: 'branch-1', type: 'branch', branches: [{ key: 'A', condition: {} }] },
+          { id: 'x', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 'trigger', to: 'branch-1' },
+          { from: 'branch-1', to: 'x', branch: 'B' },
+        ],
+      }
+      const result = validateGraph(undeclaredKey)
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toBe(`edges[1]: ${undeclaredBranchPathMessage('branch-1', 'B')}`)
+      }
+    })
+  })
+
+  it('accepts a wait exactly at MAX_WAIT_SECONDS', () => {
+    expect(validateGraph(withNode({ id: 'x', type: 'wait', seconds: MAX_WAIT_SECONDS })).ok).toBe(
+      true
+    )
   })
 })
 
@@ -573,5 +696,92 @@ describe('attribute condition fields', () => {
       const condition: GraphCondition = { field: 'conversation.attr.plan', op: 'is_set' }
       expect(conditionSummary(condition)).toBe('Unknown attribute plan is set')
     })
+  })
+})
+
+describe('snooze action: relative duration', () => {
+  it('round-trips a relative snooze through the tree <-> graph conversion', () => {
+    const tree: WorkflowTree = {
+      triggerId: 'trigger',
+      steps: [{ id: 'a1', kind: 'action', action: { type: 'snooze', seconds: 7200 } }],
+    }
+    const graph = treeToGraph(tree)
+    expect(graph.nodes).toContainEqual({
+      id: 'a1',
+      type: 'action',
+      action: { type: 'snooze', seconds: 7200 },
+    })
+    const back = graphToTree(graph)
+    expect(back).toEqual({ ok: true, value: tree })
+    expect(workflowGraphSchema.safeParse(graph).success).toBe(true)
+  })
+
+  it('still round-trips a legacy absolute/until-reply snooze', () => {
+    const tree: WorkflowTree = {
+      triggerId: 'trigger',
+      steps: [
+        { id: 'a1', kind: 'action', action: { type: 'snooze', untilIso: null } },
+        {
+          id: 'a2',
+          kind: 'action',
+          action: { type: 'snooze', untilIso: '2026-08-01T09:00:00.000Z' },
+        },
+      ],
+    }
+    const graph = treeToGraph(tree)
+    const back = graphToTree(graph)
+    expect(back).toEqual({ ok: true, value: tree })
+    expect(workflowGraphSchema.safeParse(graph).success).toBe(true)
+  })
+
+  it('validateAction (client) accepts a relative snooze within bounds, rejects a negative one', () => {
+    const graphOk = {
+      nodes: [{ id: 'a', type: 'action', action: { type: 'snooze', seconds: 60 } }],
+      edges: [],
+    }
+    expect(validateGraph(graphOk).ok).toBe(true)
+
+    const graphBad = {
+      nodes: [{ id: 'a', type: 'action', action: { type: 'snooze', seconds: -1 } }],
+      edges: [],
+    }
+    const result = validateGraph(graphBad)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/whole number of seconds/)
+  })
+
+  it('summarizes a relative snooze, and still summarizes a legacy absolute one', () => {
+    expect(actionSummary({ type: 'snooze', seconds: 3600 })).toBe('Snooze for 1 hour')
+    expect(actionSummary({ type: 'snooze', seconds: 7200 })).toBe('Snooze for 2 hours')
+    expect(actionSummary({ type: 'snooze', untilIso: null })).toBe('Snooze until they reply')
+    expect(actionSummary({ type: 'snooze', untilIso: '2026-08-01T09:00:00.000Z' })).toMatch(
+      /^Snooze until /
+    )
+  })
+
+  it('flags a zero-duration relative snooze as an issue; a legacy value never is', () => {
+    expect(actionIssue({ type: 'snooze', seconds: 0 })).toBe('Choose how long to snooze for')
+    expect(actionIssue({ type: 'snooze', seconds: 60 })).toBeNull()
+    expect(actionIssue({ type: 'snooze', untilIso: null })).toBeNull()
+    expect(actionIssue({ type: 'snooze', untilIso: '2026-08-01T09:00:00.000Z' })).toBeNull()
+  })
+
+  it('surfaces the zero-duration issue through collectStepIssues, same as any other action', () => {
+    const tree: WorkflowTree = {
+      triggerId: 'trigger',
+      steps: [{ id: 'a1', kind: 'action', action: { type: 'snooze', seconds: 0 } }],
+    }
+    const issues = collectStepIssues(tree)
+    expect(issues.get('a1')).toBe('Choose how long to snooze for')
+  })
+
+  it('accepts a relative snooze exactly at MAX_WAIT_SECONDS in the server schema', () => {
+    const action: GraphAction = { type: 'snooze', seconds: MAX_WAIT_SECONDS }
+    expect(
+      workflowGraphSchema.safeParse({
+        nodes: [{ id: 'a', type: 'action', action }],
+        edges: [],
+      }).success
+    ).toBe(true)
   })
 })

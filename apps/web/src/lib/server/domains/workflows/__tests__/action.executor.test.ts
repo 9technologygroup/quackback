@@ -98,13 +98,35 @@ describe('applyAction', () => {
     expect(setConversationStatus).toHaveBeenCalledWith(conversationId, 'closed', actor)
   })
 
-  it('resolves the serializable snooze wake time (or null) to a Date', async () => {
+  it('resolves the legacy serializable snooze wake time (or null) to a Date', async () => {
     const untilIso = '2026-01-06T09:00:00.000Z'
     expect(await applyAction({ type: 'snooze', untilIso }, ctx)).toBe('snoozed')
     expect(snoozeConversation).toHaveBeenCalledWith(conversationId, new Date(untilIso), actor)
 
     await applyAction({ type: 'snooze', untilIso: null }, ctx)
     expect(snoozeConversation).toHaveBeenLastCalledWith(conversationId, null, actor)
+  })
+
+  it('resolves a relative snooze to now + seconds, at execution time', async () => {
+    const before = Date.now()
+    expect(await applyAction({ type: 'snooze', seconds: 3600 }, ctx)).toBe('snoozed')
+    const after = Date.now()
+
+    expect(snoozeConversation).toHaveBeenCalledTimes(1)
+    const wakeAt = snoozeConversation.mock.calls[0]![1] as Date
+    expect(wakeAt).toBeInstanceOf(Date)
+    // The wake time is now + 3600s, computed at the call — not any fixed,
+    // stored instant — so it falls within [before, after] + 3600s.
+    expect(wakeAt.getTime()).toBeGreaterThanOrEqual(before + 3600 * 1000)
+    expect(wakeAt.getTime()).toBeLessThanOrEqual(after + 3600 * 1000)
+    expect(snoozeConversation).toHaveBeenCalledWith(conversationId, wakeAt, actor)
+  })
+
+  it('resolves a zero-second relative snooze to (effectively) now, not null', async () => {
+    await applyAction({ type: 'snooze', seconds: 0 }, ctx)
+    const wakeAt = snoozeConversation.mock.calls[0]![1]
+    expect(wakeAt).not.toBeNull()
+    expect(wakeAt).toBeInstanceOf(Date)
   })
 
   it('applies an SLA policy through the SLA service', async () => {
@@ -132,7 +154,10 @@ describe('applyAction', () => {
       role: 'admin',
       principalType: 'service',
     } as unknown as Actor
-    await applyAction({ type: 'set_attribute', key: 'plan', value: 7 }, { conversationId, actor: engineActor })
+    await applyAction(
+      { type: 'set_attribute', key: 'plan', value: 7 },
+      { conversationId, actor: engineActor }
+    )
     expect(setConversationAttribute).toHaveBeenLastCalledWith(
       { conversationId },
       'plan',

@@ -13,12 +13,19 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import type { TriggerSettingsDraft } from '../use-workflow-builder'
-import { Field } from './shared'
+import { ClampedIntInput, Field } from './shared'
 import {
+  FREQUENCY_CAP_LABELS,
+  FREQUENCY_CAP_TYPES,
+  MAX_FREQUENCY_CAP_COUNT,
+  MAX_FREQUENCY_CAP_DAYS,
   TRIGGER_CHANNELS,
   TRIGGER_LABELS,
   TRIGGER_TYPES,
   WORKFLOW_CLASSES,
+  defaultFrequencyCap,
+  type FrequencyCap,
+  type FrequencyCapType,
   type WorkflowClassValue,
 } from '../../workflow-graph'
 
@@ -43,6 +50,32 @@ export function TriggerEditor({
       : triggerSettings.channels.filter((c) => c !== value)
     onChangeTriggerSettings({ ...triggerSettings, channels })
   }
+
+  // 'unlimited' is never written back: an absent key and a stored
+  // { type: 'unlimited' } read identically to the guard (frequencyCapAllows),
+  // so switching back to "No limit" just drops the key instead of storing a
+  // no-op value.
+  const frequencyCap = (triggerSettings.frequencyCap as FrequencyCap | undefined) ?? {
+    type: 'unlimited',
+  }
+
+  const setFrequencyCapType = (type: FrequencyCapType) => {
+    if (type === 'unlimited') {
+      const { frequencyCap: _drop, ...rest } = triggerSettings
+      onChangeTriggerSettings(rest as TriggerSettingsDraft)
+      return
+    }
+    onChangeTriggerSettings({ ...triggerSettings, frequencyCap: defaultFrequencyCap(type) })
+  }
+
+  const setFrequencyCapDays = (days: number) =>
+    onChangeTriggerSettings({
+      ...triggerSettings,
+      frequencyCap: { type: 'once_per_days', days },
+    })
+
+  const setFrequencyCapCount = (count: number) =>
+    onChangeTriggerSettings({ ...triggerSettings, frequencyCap: { type: 'n_total', count } })
 
   return (
     <div className="space-y-4">
@@ -86,6 +119,53 @@ export function TriggerEditor({
         </div>
         <p className="mt-1 text-[11px] text-muted-foreground">
           No channels selected runs the workflow for every channel.
+        </p>
+      </Field>
+
+      <Field label="Frequency cap">
+        <Select
+          value={frequencyCap.type}
+          onValueChange={(v) => setFrequencyCapType(v as FrequencyCapType)}
+        >
+          <SelectTrigger size="sm" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {FREQUENCY_CAP_TYPES.map((t) => (
+              <SelectItem key={t} value={t}>
+                {FREQUENCY_CAP_LABELS[t]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {frequencyCap.type === 'once_per_days' && (
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">Every</span>
+            <ClampedIntInput
+              value={frequencyCap.days}
+              min={1}
+              max={MAX_FREQUENCY_CAP_DAYS}
+              onCommit={setFrequencyCapDays}
+              className="h-8 w-20 text-sm"
+            />
+            <span className="text-xs text-muted-foreground">days</span>
+          </div>
+        )}
+        {frequencyCap.type === 'n_total' && (
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">At most</span>
+            <ClampedIntInput
+              value={frequencyCap.count}
+              min={1}
+              max={MAX_FREQUENCY_CAP_COUNT}
+              onCommit={setFrequencyCapCount}
+              className="h-8 w-20 text-sm"
+            />
+            <span className="text-xs text-muted-foreground">times</span>
+          </div>
+        )}
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Limits how many times this workflow can run for the same person.
         </p>
       </Field>
 

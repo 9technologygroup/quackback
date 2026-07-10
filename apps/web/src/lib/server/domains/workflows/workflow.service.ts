@@ -43,6 +43,7 @@ export async function createWorkflow(input: WorkflowInput): Promise<Workflow> {
       createdBy: input.createdBy ?? null,
     })
     .returning()
+  invalidateHasLiveWorkflowCache()
   return row
 }
 
@@ -80,6 +81,7 @@ export async function updateWorkflow(
     })
     .where(and(eq(workflows.id, id), isNull(workflows.deletedAt)))
     .returning()
+  invalidateHasLiveWorkflowCache()
   return row
 }
 
@@ -90,6 +92,7 @@ export async function setWorkflowStatus(id: WorkflowId, status: WorkflowStatus):
     .set({ status, updatedAt: new Date() })
     .where(and(eq(workflows.id, id), isNull(workflows.deletedAt)))
     .returning()
+  invalidateHasLiveWorkflowCache()
   return row
 }
 
@@ -100,6 +103,7 @@ export async function softDeleteWorkflow(id: WorkflowId): Promise<void> {
     .update(workflows)
     .set({ deletedAt: now, updatedAt: now })
     .where(and(eq(workflows.id, id), isNull(workflows.deletedAt)))
+  invalidateHasLiveWorkflowCache()
 }
 
 /**
@@ -119,6 +123,62 @@ export async function listLiveWorkflowsForTrigger(triggerType: string): Promise<
       )
     )
     .orderBy(asc(workflows.sortOrder), asc(workflows.createdAt))
+}
+
+// --- Any-live-workflow gate (support platform §4.6 hardening) ---
+//
+// events/process.ts pays a Redis enqueue for the durable workflow-dispatch
+// queue on every message/status event, even in a workspace with zero
+// configured workflows. hasAnyLiveWorkflow() is the cheap "is there anything
+// to enqueue for at all" pre-check that gate uses: cached briefly (like
+// getLiveWorkflowReferencedAttributeKeys above) since it's read on the same
+// hot per-message path, but ALSO invalidated eagerly by every mutation that
+// can change liveness, so a workflow going live is visible immediately
+// instead of waiting out the TTL.
+
+const HAS_LIVE_WORKFLOW_CACHE_TTL_MS = 30_000
+let hasLiveWorkflowCache: { value: boolean; expiresAt: number } | null = null
+
+function invalidateHasLiveWorkflowCache(): void {
+  hasLiveWorkflowCache = null
+}
+
+/**
+ * Whether ANY workflow is currently live, workspace-global (not scoped by
+ * trigger type). It must stay workspace-global: interruptWaitingRuns (§4.6)
+ * has to run for every message/status event regardless of which specific
+ * trigger type a live workflow subscribes to, since a run parked mid-wait on
+ * ANY trigger can be ended by a reply/close on its conversation — scoping
+ * this check to the current event's trigger type would wrongly skip that
+ * interrupt when no live workflow happens to subscribe to it.
+ *
+ * A stale `false` (the cache hasn't yet noticed a workflow just went live) is
+ * safe to gate the enqueue on: nothing can be waiting on a workflow that
+ * hasn't dispatched a single run yet, so there's nothing to interrupt or
+ * resume prematurely. Symmetrically, if the workspace's last live workflow is
+ * paused while runs are still parked waiting on it, resumeWorkflowRun's own
+ * paused-workflow check settles those runs as 'interrupted' when their timer
+ * fires (see workflow.engine.ts) — so even a stale-false cache here can never
+ * strand a waiting run un-resolved.
+ */
+export async function hasAnyLiveWorkflow(): Promise<boolean> {
+  const now = Date.now()
+  if (hasLiveWorkflowCache && hasLiveWorkflowCache.expiresAt > now) {
+    return hasLiveWorkflowCache.value
+  }
+  const [row] = await db
+    .select({ id: workflows.id })
+    .from(workflows)
+    .where(and(eq(workflows.status, 'live'), isNull(workflows.deletedAt)))
+    .limit(1)
+  const value = Boolean(row)
+  hasLiveWorkflowCache = { value, expiresAt: now + HAS_LIVE_WORKFLOW_CACHE_TTL_MS }
+  return value
+}
+
+/** Test-only: clear the in-process cache between cases. */
+export function __resetHasAnyLiveWorkflowCache(): void {
+  hasLiveWorkflowCache = null
 }
 
 // --- Live-workflow attribute references (AI-ATTRIBUTES-PARITY-SPEC.md Phase 2) ---

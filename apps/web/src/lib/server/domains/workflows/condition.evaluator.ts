@@ -11,6 +11,16 @@
  * fields/operators is validated at the authoring (save) layer; the evaluator is
  * deliberately defensive — an unknown field or a type-mismatched compare yields
  * false rather than throwing, so a malformed graph can never crash a run.
+ *
+ * Unresolved-subject contract: when a field resolves to null/undefined (an
+ * absent message, a typo'd `conversation.attr.<key>`, an unset csat rating,
+ * ...) every operator is a non-match EXCEPT `is_empty` — see applyOp's doc.
+ * A negative operator (neq/not_contains/excludes_all) does NOT get a free
+ * pass here: it requires the subject to be present, same as eq/contains/
+ * includes_any do, so a typo'd field can never make a negative condition
+ * fire. `eq`/`neq` are numeric-aware: a number compared against a numeric
+ * string (5 vs "5") matches; any other cross-type compare (e.g. a boolean
+ * against the string "true") stays strict.
  */
 import { readAttributeValue } from '@/lib/shared/conversation/attribute-values'
 
@@ -129,28 +139,74 @@ function resolveField(field: string, ctx: ConditionContext): unknown {
 const isBlank = (v: unknown): boolean =>
   v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)
 
+/** null and undefined both mean "this field has nothing to compare" — an
+ *  absent message, a typo'd/archived attribute key, an unset csat rating.
+ *  Narrower than isBlank: an empty string or empty array is a real, resolved
+ *  value (the field IS there, it's just empty), not an unresolved subject. */
+const isUnresolved = (v: unknown): boolean => v === null || v === undefined
+
 const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : v === undefined ? [] : [v])
 
-/** Apply one operator to a resolved value; defensive on type mismatch (false). */
+/** A numeric string ("5", " 12.5") parsed to a finite number, or null for
+ *  anything else (including "", which Number() would otherwise read as 0). */
+function parseFiniteNumber(v: string): number | null {
+  if (v.trim() === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/** Strict equality, except a number compared against a numeric string
+ *  compares numerically (a `number`-typed attribute vs a condition value
+ *  that arrived as a string — e.g. from the API or a loosely-typed import —
+ *  should still match: 5 and "5" are the same value). Any other type
+ *  mismatch (a boolean vs the string "true", for instance) stays strict:
+ *  that's a genuinely different stored type, not a serialization artifact. */
+function looseEq(actual: unknown, value: unknown): boolean {
+  if (typeof actual === 'number' && typeof value === 'string') {
+    const v = parseFiniteNumber(value)
+    if (v !== null) return actual === v
+  } else if (typeof value === 'number' && typeof actual === 'string') {
+    const a = parseFiniteNumber(actual)
+    if (a !== null) return a === value
+  }
+  return actual === value
+}
+
+/**
+ * Apply one operator to a resolved value; defensive on type mismatch (false).
+ *
+ * Contract for an unresolved subject (null/undefined — see isUnresolved):
+ * every operator treats it as a non-match EXCEPT `is_empty`, which matches.
+ * That includes the "negative" operators (neq/not_contains/excludes_all) —
+ * they require the subject to be present, same as their positive
+ * counterparts, so a typo'd `conversation.attr.<key>` (which resolves
+ * undefined) can never make a negative condition fire. A resolved-but-empty
+ * subject (`''`, `[]`) is NOT unresolved and is compared normally.
+ */
 function applyOp(actual: unknown, op: ConditionOperator, value: unknown): boolean {
+  const unresolved = isUnresolved(actual)
   switch (op) {
     case 'eq':
-      return actual === value
+      // Guarded the same way neq already is: an unresolved subject is a
+      // non-match even when the condition's own value is null (authorable in
+      // JSON mode — conditionSchema's value is unknown/optional), otherwise
+      // `null === null` would match and contradict the documented contract.
+      return !unresolved && looseEq(actual, value)
     case 'neq':
-      return actual !== value
+      return !unresolved && !looseEq(actual, value)
     case 'contains':
     case 'not_contains': {
       const hit =
         typeof actual === 'string' &&
         typeof value === 'string' &&
         actual.toLowerCase().includes(value.toLowerCase())
-      return op === 'contains' ? hit : !hit
+      return op === 'contains' ? hit : !unresolved && !hit
     }
     case 'gt':
     case 'gte':
     case 'lt':
     case 'lte': {
-      if (actual === null || actual === undefined) return false // e.g. nobody waiting
+      if (unresolved) return false // e.g. nobody waiting
       const a = Number(actual)
       const b = Number(value)
       if (Number.isNaN(a) || Number.isNaN(b)) return false
@@ -160,7 +216,7 @@ function applyOp(actual: unknown, op: ConditionOperator, value: unknown): boolea
     case 'excludes_all': {
       const have = asArray(actual)
       const anyIn = asArray(value).some((v) => have.includes(v))
-      return op === 'includes_any' ? anyIn : !anyIn
+      return op === 'includes_any' ? anyIn : !unresolved && !anyIn
     }
     case 'is_set':
       return !isBlank(actual)

@@ -6,6 +6,10 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { EventData } from '@/lib/server/events/types'
+import {
+  DISPATCHABLE_TRIGGER_TYPES,
+  type DispatchableTriggerType,
+} from '@/lib/shared/workflow-trigger-types'
 import { eventToWorkflowTrigger } from '../event-trigger'
 
 const userActor = { type: 'user' as const, principalId: 'principal_agent' }
@@ -133,5 +137,69 @@ describe('eventToWorkflowTrigger', () => {
       const event = { ...base, type, actor: userActor, data: {} } as unknown as EventData
       expect(eventToWorkflowTrigger(event)).toBeNull()
     }
+  })
+})
+
+/**
+ * DISPATCHABLE_TRIGGER_TYPES (lib/shared/workflow-trigger-types.ts) is kept in
+ * sync with eventToWorkflowTrigger's switch by hand comment only. The
+ * dangerous direction is an array entry with no matching switch case: that
+ * lets a workflow save cleanly against a triggerType (authoring validation
+ * uses the same array) which then silently never fires, since the switch's
+ * default falls through to null. A compile-time tie (e.g. a `satisfies
+ * Record<DispatchableTriggerType, ...>` table) isn't a good fit here without
+ * restructuring eventToWorkflowTrigger into a per-type lookup: the payload
+ * shape genuinely differs per case (message body/subject derivation, the
+ * assistant.handed_off opt-out of the automated-actor gate, ...), so a
+ * uniform mapped type would just relocate the same branching into an uglier
+ * shape for no real safety gain. This is the chosen route instead: a runtime
+ * check that every listed type maps to a non-null trigger from a minimal
+ * synthetic event of that type, so a future array entry added without a
+ * switch case fails this test immediately (returns null) rather than
+ * shipping a workflow trigger type that can never fire.
+ */
+describe('DISPATCHABLE_TRIGGER_TYPES stays in sync with the switch', () => {
+  const withData = (type: string, data: unknown): EventData =>
+    ({ ...base, type, actor: userActor, data }) as unknown as EventData
+
+  // The switch here must cover every DispatchableTriggerType (TS enforces
+  // this via the function's return type), so an addition to the array with
+  // no case below fails typecheck, and a case with no array entry fails here
+  // at runtime instead of only living in a hand-maintained comment.
+  function minimalEventFor(type: DispatchableTriggerType): EventData {
+    switch (type) {
+      case 'conversation.created':
+        return withData(type, {
+          conversation: { id: 'conversation_1', visitorPrincipalId: 'principal_visitor' },
+        })
+      case 'conversation.status_changed':
+        return withData(type, {
+          conversation: { id: 'conversation_1' },
+          previousStatus: 'open',
+          newStatus: 'closed',
+        })
+      case 'conversation.assigned':
+      case 'conversation.priority_changed':
+      case 'conversation.csat_submitted':
+        return withData(type, { conversation: { id: 'conversation_1' } })
+      case 'message.created':
+      case 'message.note_created':
+        return withData(type, {
+          message: {
+            id: 'm1',
+            conversationId: 'conversation_1',
+            senderType: 'agent',
+            authorPrincipalId: 'principal_agent',
+            content: 'hi',
+          },
+          conversation: { id: 'conversation_1' },
+        })
+      case 'assistant.handed_off':
+        return withData(type, { conversationId: 'conversation_1', reason: 'low_confidence' })
+    }
+  }
+
+  it.each(DISPATCHABLE_TRIGGER_TYPES)('%s maps to a non-null trigger', (type) => {
+    expect(eventToWorkflowTrigger(minimalEventFor(type))).not.toBeNull()
   })
 })

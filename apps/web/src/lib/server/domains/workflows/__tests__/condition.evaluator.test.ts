@@ -49,10 +49,14 @@ describe('evaluateCondition — leaves', () => {
     ok({ field: 'message.body', op: 'contains', value: 'DOUBLE charged' })
     no({ field: 'message.body', op: 'contains', value: 'refund' })
     ok({ field: 'message.body', op: 'not_contains', value: 'refund' })
-    // Absent message -> body resolves null -> "contains" false, "not_contains" true.
+    // Absent message -> body resolves null -> an unresolved subject, so
+    // neither "contains" nor "not_contains" matches (not_contains is a
+    // negative operator: it now requires the subject to be present, same as
+    // every other operator except is_empty).
     const noMsg = baseCtx({ message: null })
     no({ field: 'message.body', op: 'contains', value: 'anything' }, noMsg)
-    ok({ field: 'message.body', op: 'not_contains', value: 'anything' }, noMsg)
+    no({ field: 'message.body', op: 'not_contains', value: 'anything' }, noMsg)
+    ok({ field: 'message.body', op: 'is_empty' }, noMsg)
   })
 
   it('numeric comparisons on waiting minutes, with nobody-waiting as a non-match', () => {
@@ -137,7 +141,110 @@ describe('evaluateCondition — leaves', () => {
   it('attribute predicates never match when the snapshot has no attributes', () => {
     const bare = baseCtx({ conversation: { ...baseCtx().conversation, attributes: undefined } })
     no({ field: 'conversation.attr.plan', op: 'eq', value: 'pro' }, bare)
+    // Negative operators used to get a free pass on an unresolved subject
+    // (neq/not_contains/excludes_all all matched undefined) — a typo'd key
+    // with a negative operator would always fire. They now require the
+    // subject to be present, same as their positive counterparts.
+    no({ field: 'conversation.attr.plan', op: 'neq', value: 'pro' }, bare)
+    no({ field: 'conversation.attr.plan', op: 'not_contains', value: 'pro' }, bare)
+    no({ field: 'conversation.attr.areas', op: 'excludes_all', value: ['opt_billing'] }, bare)
     ok({ field: 'conversation.attr.plan', op: 'is_empty' }, bare)
+  })
+})
+
+describe('evaluateCondition — unresolved-subject contract', () => {
+  // Every operator exercised against undefined (a typo'd/archived attribute
+  // key), null (an absent message), and an empty string (a genuinely
+  // resolved but blank value) — the three behave differently. undefined and
+  // null are "unresolved": no operator matches except is_empty. An empty
+  // string IS resolved (the field has a value, it's just blank) and is
+  // compared normally.
+  const undefinedSubjectCtx = baseCtx({
+    conversation: { ...baseCtx().conversation, attributes: {} },
+  })
+  const nullSubjectCtx = baseCtx({ message: null })
+  const emptyStringSubjectCtx = baseCtx({ message: { body: '' } })
+
+  it('undefined subject (conversation.attr.<key not present on the snapshot>): only is_empty matches', () => {
+    const f = 'conversation.attr.missing' as const
+    no({ field: f, op: 'eq', value: 'x' }, undefinedSubjectCtx)
+    no({ field: f, op: 'neq', value: 'x' }, undefinedSubjectCtx)
+    no({ field: f, op: 'contains', value: 'x' }, undefinedSubjectCtx)
+    no({ field: f, op: 'not_contains', value: 'x' }, undefinedSubjectCtx)
+    no({ field: f, op: 'gt', value: 1 }, undefinedSubjectCtx)
+    no({ field: f, op: 'gte', value: 1 }, undefinedSubjectCtx)
+    no({ field: f, op: 'lt', value: 1 }, undefinedSubjectCtx)
+    no({ field: f, op: 'lte', value: 1 }, undefinedSubjectCtx)
+    no({ field: f, op: 'includes_any', value: ['x'] }, undefinedSubjectCtx)
+    no({ field: f, op: 'excludes_all', value: ['x'] }, undefinedSubjectCtx)
+    no({ field: f, op: 'is_set' }, undefinedSubjectCtx)
+    ok({ field: f, op: 'is_empty' }, undefinedSubjectCtx)
+  })
+
+  it('null subject (message.body with no triggering message): only is_empty matches', () => {
+    const f = 'message.body' as const
+    no({ field: f, op: 'eq', value: 'x' }, nullSubjectCtx)
+    no({ field: f, op: 'neq', value: 'x' }, nullSubjectCtx)
+    no({ field: f, op: 'contains', value: 'x' }, nullSubjectCtx)
+    no({ field: f, op: 'not_contains', value: 'x' }, nullSubjectCtx)
+    no({ field: f, op: 'includes_any', value: ['x'] }, nullSubjectCtx)
+    no({ field: f, op: 'excludes_all', value: ['x'] }, nullSubjectCtx)
+    no({ field: f, op: 'is_set' }, nullSubjectCtx)
+    ok({ field: f, op: 'is_empty' }, nullSubjectCtx)
+  })
+
+  it('empty-string subject (a real, resolved, blank message body) compares normally — NOT unresolved', () => {
+    const f = 'message.body' as const
+    no({ field: f, op: 'eq', value: 'x' }, emptyStringSubjectCtx)
+    // Unlike null/undefined, a resolved '' really is not 'x' — neq matches.
+    ok({ field: f, op: 'neq', value: 'x' }, emptyStringSubjectCtx)
+    no({ field: f, op: 'contains', value: 'x' }, emptyStringSubjectCtx)
+    // Unlike null/undefined, a resolved '' really doesn't contain 'x'.
+    ok({ field: f, op: 'not_contains', value: 'x' }, emptyStringSubjectCtx)
+    ok({ field: f, op: 'is_empty' }, emptyStringSubjectCtx)
+    no({ field: f, op: 'is_set' }, emptyStringSubjectCtx)
+  })
+
+  it('eq with a null condition value never matches an unresolved subject (null === null would otherwise slip through)', () => {
+    // JSON-mode authoring leaves `value` unknown/optional, so a saved
+    // condition can carry value: null. Against an unresolved (null/undefined)
+    // subject, eq must stay a non-match like every other operator here — a
+    // bare `actual === value` would let null === null match, contradicting
+    // the contract and neq's own symmetry (neq already guards on unresolved).
+    no({ field: 'message.body', op: 'eq', value: null }, nullSubjectCtx)
+    no({ field: 'conversation.attr.missing', op: 'eq', value: null }, undefinedSubjectCtx)
+  })
+})
+
+describe('evaluateCondition — numeric-aware eq/neq', () => {
+  it('a numeric attribute matches a numeric-string condition value (5 vs "5")', () => {
+    ok({ field: 'conversation.attr.seats', op: 'eq', value: '12' })
+    no({ field: 'conversation.attr.seats', op: 'eq', value: '13' })
+    ok({ field: 'conversation.attr.seats', op: 'neq', value: '13' })
+    no({ field: 'conversation.attr.seats', op: 'neq', value: '12' })
+  })
+
+  it('an empty-string condition value never numeric-coerces to 0', () => {
+    // Number('') === 0 — a naive coercion would wrongly treat an empty
+    // (unset placeholder) condition value as matching a seats value of 0.
+    no({ field: 'conversation.attr.seats', op: 'eq', value: '' })
+    ok({ field: 'conversation.attr.seats', op: 'neq', value: '' })
+  })
+
+  it('a non-numeric string never numeric-coerces', () => {
+    no({ field: 'conversation.attr.seats', op: 'eq', value: 'twelve' })
+    ok({ field: 'conversation.attr.seats', op: 'neq', value: 'twelve' })
+  })
+
+  it('booleans stay strict against a string — "true" vs true do NOT match', () => {
+    const withFlag = baseCtx({
+      conversation: {
+        ...baseCtx().conversation,
+        attributes: { active: { v: true, src: 'teammate', at: '2026-07-05T00:00:00.000Z' } },
+      },
+    })
+    no({ field: 'conversation.attr.active', op: 'eq', value: 'true' }, withFlag)
+    ok({ field: 'conversation.attr.active', op: 'eq', value: true }, withFlag)
   })
 })
 

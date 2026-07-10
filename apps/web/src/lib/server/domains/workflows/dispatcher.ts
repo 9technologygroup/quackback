@@ -10,15 +10,19 @@
  *     if a run is already live on the conversation, none start.
  *   - background = PARALLEL: every cap-permitted workflow runs independently.
  *
- * Per-person frequency caps are checked before each run. The event-bus handler
+ * A workflow scoped to specific trigger channels is filtered out before the
+ * (costlier) per-person frequency cap is checked. The event-bus handler
  * (Slice 5d-iii) constructs the trigger from a dispatched event and calls this.
  */
 import type { ConversationId, PrincipalId } from '@quackback/ids'
 import type { PrincipalType } from '@/lib/server/policy/types'
+import { logger } from '@/lib/server/logger'
 import { listLiveWorkflowsForTrigger } from './workflow.service'
 import { resolveConditionContext } from './condition.context'
 import { runWorkflow } from './workflow.engine'
-import { frequencyCapAllows, hasActiveCustomerFacingRun } from './dispatcher.guards'
+import { channelAllows, frequencyCapAllows, hasActiveCustomerFacingRun } from './dispatcher.guards'
+
+const log = logger.child({ component: 'workflow-dispatcher' })
 
 export interface WorkflowTrigger {
   triggerType: string
@@ -64,19 +68,48 @@ export async function dispatchWorkflowTrigger(trigger: WorkflowTrigger): Promise
     runWorkflow(wf, ctx, { conversationId: trigger.conversationId, subjectPrincipalId: subject })
 
   // Customer-facing: exclusive. Skip entirely if one is already locked on this
-  // conversation; otherwise the first that actually runs wins.
+  // conversation; otherwise the first that actually runs wins. A workflow the
+  // channel guard rejects is never matched — the loop just moves on, so it
+  // never consumes the exclusive first-match slot. frequencyCapAllows here is
+  // only a cheap pre-check (skips an obviously-capped-out workflow before
+  // paying for a transaction) — runWorkflow re-checks it authoritatively
+  // under an advisory lock right before inserting the run, which is what
+  // actually decides under concurrency.
   if (customerFacing.length > 0 && !alreadyLocked) {
     for (const wf of customerFacing) {
+      if (!channelAllows(wf, ctx.conversation.channel)) continue
       if (!(await frequencyCapAllows(wf, subject))) continue
       const run = await start(wf)
       if (run) break // locked + ran; the rest are excluded for this conversation
     }
   }
 
-  // Background: parallel, every cap-permitted workflow.
+  // Background: parallel, every cap-permitted workflow. Same pre-check-only
+  // caveat as above — runWorkflow's transaction-scoped re-check is authoritative.
+  //
+  // Each workflow is isolated in its own try/catch: this call runs inside the
+  // workflow-dispatch BullMQ job (see event-trigger.ts), so an uncaught
+  // rejection here would fail the whole job and let BullMQ retry it. With
+  // Promise.all over uncaught per-workflow promises, one workflow throwing
+  // after siblings already committed their runs (e.g. a transient Redis error
+  // scheduling a wait, thrown from deep inside runWorkflow) would reject the
+  // batch and cause the retry to re-run those already-committed siblings —
+  // there's no idempotency guard for that (the exclusive partial index only
+  // covers customer_facing runs; frequency caps only cover capped workflows),
+  // so a retry would duplicate their actions (tags, assignments, ...). Each
+  // background workflow's run is therefore best-effort here, the same way its
+  // individual actions already are inside applyPlanAndSettle: log and move on.
   await Promise.all(
     background.map(async (wf) => {
-      if (await frequencyCapAllows(wf, subject)) await start(wf)
+      try {
+        if (!channelAllows(wf, ctx.conversation.channel)) return
+        if (await frequencyCapAllows(wf, subject)) await start(wf)
+      } catch (err) {
+        log.error(
+          { err, workflowId: wf.id, conversationId: trigger.conversationId },
+          'background workflow run failed; continuing other background workflows'
+        )
+      }
     })
   )
 }

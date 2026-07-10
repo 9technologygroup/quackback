@@ -120,6 +120,23 @@ export const WORKER_REGISTRY: readonly WorkerEntry[] = [
       ),
   },
   {
+    // Durable workflow-trigger dispatch (§4.6). Runs dispatchWorkflowsForEvent
+    // off a BullMQ job instead of fire-and-forget, so a crash/deploy between
+    // the event landing and the dispatch running retries instead of silently
+    // losing the trigger. Eagerly initialized (like workflow-wait/
+    // workflow-sweep below) so the cold-start Redis handshake happens at
+    // boot instead of on the first workflow-triggering event.
+    name: 'workflow-dispatch',
+    init: () =>
+      import('@/lib/server/domains/workflows/workflow-dispatch-queue').then((m) =>
+        m.initWorkflowDispatchWorker()
+      ),
+    close: () =>
+      import('@/lib/server/domains/workflows/workflow-dispatch-queue').then((m) =>
+        m.closeWorkflowDispatchQueue()
+      ),
+  },
+  {
     // Durable workflow waits (§4.6). Resumes parked runs when their timer fires.
     name: 'workflow-wait',
     init: () =>
@@ -132,9 +149,23 @@ export const WORKER_REGISTRY: readonly WorkerEntry[] = [
       ),
   },
   {
+    // Workflow run sweep (§4.6). Reconciles stale 'running' rows and
+    // 'waiting' rows whose durable timer went missing.
+    name: 'workflow-sweep',
+    init: () =>
+      import('@/lib/server/domains/workflows/workflow-sweep-queue').then((m) =>
+        m.initWorkflowSweepWorker()
+      ),
+    close: () =>
+      import('@/lib/server/domains/workflows/workflow-sweep-queue').then((m) =>
+        m.closeWorkflowSweepQueue()
+      ),
+  },
+  {
     // Async import commit (Imports & exports hub §I1). Initializes on first enqueue.
     name: 'import',
-    close: () => import('@/lib/server/domains/import/import-queue').then((m) => m.closeImportQueue()),
+    close: () =>
+      import('@/lib/server/domains/import/import-queue').then((m) => m.closeImportQueue()),
   },
 ]
 

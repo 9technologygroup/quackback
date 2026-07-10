@@ -18,6 +18,8 @@
  */
 import {
   ACTION_LABELS,
+  durationPhrase,
+  frequencyCapSummary,
   OPERATOR_LABELS,
   PATH_LETTERS,
   PRIORITY_LABELS,
@@ -32,6 +34,7 @@ import {
   type ActionType,
   type AttributeFieldDef,
   type EntityLabels,
+  type FrequencyCap,
   type GraphAction,
   type GraphCondition,
   type StepLocation,
@@ -48,7 +51,11 @@ export const GAPX = 70
 export const EDGE_GAP = 44
 const RULE_GAP = 8
 const RULE_H = 96
-const NODE_H_SECTIONS = 172
+// The trigger card is the only node with more than one section (Channels,
+// Frequency cap) — bumped from the single-section height (172) by roughly one
+// more section row (label + chips + the inter-section gap) so the auto-layout
+// doesn't crowd the card below it.
+const NODE_H_SECTIONS = 216
 const NODE_H_PLAIN = 88
 
 // ---------------------------------------------------------------------------
@@ -162,6 +169,9 @@ export interface FlowLayoutInput {
   triggerLabel: string
   /** Raw channel keys from the trigger settings draft. */
   triggerChannels: string[]
+  /** The trigger's per-person run cap, from the trigger settings draft
+   *  (undefined/'unlimited' both render as "No limit"). */
+  triggerFrequencyCap?: FrequencyCap
   labels: EntityLabels
   stepIssues: ReadonlyMap<string, string>
   selectedId: string | null
@@ -262,12 +272,15 @@ function actionChips(action: GraphAction, labels: EntityLabels): ChipData[] {
     case 'snooze':
       return [
         {
-          label: action.untilIso
-            ? new Date(action.untilIso).toLocaleString(undefined, {
-                dateStyle: 'medium',
-                timeStyle: 'short',
-              })
-            : 'Until they reply',
+          label:
+            'seconds' in action
+              ? `For ${durationPhrase(action.seconds)}`
+              : action.untilIso
+                ? new Date(action.untilIso).toLocaleString(undefined, {
+                    dateStyle: 'medium',
+                    timeStyle: 'short',
+                  })
+                : 'Until they reply',
         },
       ]
     case 'close':
@@ -330,11 +343,17 @@ function buildStepNodeData(
 
 const TRIGGER_CHANNEL_LABELS = new Map(TRIGGER_CHANNELS.map((c) => [c.value, c.label]))
 
-function triggerSections(channels: string[]): StepSectionData[] {
-  const chips: ChipData[] = channels.length
+function triggerSections(
+  channels: string[],
+  frequencyCap: FrequencyCap | undefined
+): StepSectionData[] {
+  const channelChips: ChipData[] = channels.length
     ? channels.map((c) => ({ label: TRIGGER_CHANNEL_LABELS.get(c) ?? c }))
     : [{ label: 'All channels' }]
-  return [{ label: 'Channels', chips }]
+  return [
+    { label: 'Channels', chips: channelChips },
+    { label: 'Frequency cap', chips: [{ label: frequencyCapSummary(frequencyCap) }] },
+  ]
 }
 
 /** Bold-highlighted rule-pill copy for one branch path's condition. */
@@ -512,7 +531,7 @@ function computeLayout(input: FlowLayoutInput): LayoutAccumulator {
       icon: 'trigger',
       tone: 'amber',
       startTag: true,
-      sections: triggerSections(input.triggerChannels),
+      sections: triggerSections(input.triggerChannels, input.triggerFrequencyCap),
       warn: false,
       deletable: false,
       selected: input.selectedId === triggerId,

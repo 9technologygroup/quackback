@@ -23,12 +23,22 @@ const {
 vi.mock('../workflow.service', () => ({ listLiveWorkflowsForTrigger }))
 vi.mock('../condition.context', () => ({ resolveConditionContext }))
 vi.mock('../workflow.engine', () => ({ runWorkflow }))
-vi.mock('../dispatcher.guards', () => ({ frequencyCapAllows, hasActiveCustomerFacingRun }))
+// channelAllows is left real (pure, no IO) so these tests exercise the actual
+// channel-scoping logic; only the DB-backed guards are mocked.
+vi.mock('../dispatcher.guards', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../dispatcher.guards')>()),
+  frequencyCapAllows,
+  hasActiveCustomerFacingRun,
+}))
 
 import { dispatchWorkflowTrigger, type WorkflowTrigger } from '../dispatcher'
 
 const conversationId = 'conversation_1' as ConversationId
-const wf = (id: string, cls: 'customer_facing' | 'background') => ({ id, class: cls }) as never
+const wf = (
+  id: string,
+  cls: 'customer_facing' | 'background',
+  triggerSettings: Record<string, unknown> = {}
+) => ({ id, class: cls, triggerSettings }) as never
 const trigger = (over: Partial<WorkflowTrigger> = {}): WorkflowTrigger => ({
   triggerType: 'conversation.created',
   conversationId,
@@ -112,5 +122,52 @@ describe('dispatchWorkflowTrigger', () => {
     frequencyCapAllows.mockImplementation(async (w: { id: string }) => w.id !== 'bg1')
     await dispatchWorkflowTrigger(trigger({ subjectPrincipalId: 'principal_x' as never }))
     expect(ranIds()).toEqual(['bg2'])
+  })
+
+  it('a channel-scoped customer_facing workflow does not run for a non-matching channel, and is never matched (the exclusive slot passes to the next)', async () => {
+    resolveConditionContext.mockResolvedValue({ conversation: { channel: 'email' } })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('cf1', 'customer_facing', { channels: ['messenger'] }),
+      wf('cf2', 'customer_facing'),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(ranIds()).toEqual(['cf2']) // cf1 is channel-excluded, never counts as tried
+  })
+
+  it('a customer_facing workflow with empty channels runs for any channel', async () => {
+    resolveConditionContext.mockResolvedValue({ conversation: { channel: 'email' } })
+    listLiveWorkflowsForTrigger.mockResolvedValue([wf('cf1', 'customer_facing', { channels: [] })])
+    await dispatchWorkflowTrigger(trigger())
+    expect(ranIds()).toEqual(['cf1'])
+  })
+
+  it('a channel-scoped background workflow does not run for a non-matching channel; a matching one does', async () => {
+    resolveConditionContext.mockResolvedValue({ conversation: { channel: 'email' } })
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('bg1', 'background', { channels: ['messenger'] }),
+      wf('bg2', 'background', { channels: ['email'] }),
+    ])
+    await dispatchWorkflowTrigger(trigger())
+    expect(ranIds()).toEqual(['bg2'])
+  })
+
+  it('a background workflow throwing does not reject the batch or lose a sibling run that already committed', async () => {
+    listLiveWorkflowsForTrigger.mockResolvedValue([
+      wf('bg1', 'background'),
+      wf('bg2', 'background'),
+    ])
+    runWorkflow.mockImplementation(async (w: { id: string }) => {
+      if (w.id === 'bg2') throw new Error('transient redis error scheduling wait')
+      return { id: 'run_1' }
+    })
+    await expect(dispatchWorkflowTrigger(trigger())).resolves.toBeUndefined()
+    expect(ranIds()).toEqual(['bg1', 'bg2']) // both were attempted; bg1's run stands
+  })
+
+  it('a failure before any run starts (condition resolution) still propagates for a clean retry', async () => {
+    listLiveWorkflowsForTrigger.mockResolvedValue([wf('bg1', 'background')])
+    resolveConditionContext.mockRejectedValue(new Error('db unavailable'))
+    await expect(dispatchWorkflowTrigger(trigger())).rejects.toThrow('db unavailable')
+    expect(runWorkflow).not.toHaveBeenCalled()
   })
 })

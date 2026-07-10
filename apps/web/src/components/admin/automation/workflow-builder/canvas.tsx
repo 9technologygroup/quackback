@@ -64,7 +64,7 @@ import { cn } from '@/lib/shared/utils'
 import { useWorkflowEntities } from './entities'
 import { ConfirmDeleteDialog, TONE_TILE } from './step-visuals'
 import type { BuilderSelection } from './types'
-import type { StepLocation, WorkflowTree } from '../workflow-graph'
+import type { FrequencyCap, StepLocation, WorkflowTree } from '../workflow-graph'
 import {
   buildFlowEdges,
   buildFlowNodes,
@@ -445,6 +445,7 @@ export function WorkflowBuilderCanvas({
   tree,
   triggerLabel,
   triggerChannels,
+  triggerFrequencyCap,
   selection,
   stepIssues,
   onSelectNode,
@@ -456,6 +457,9 @@ export function WorkflowBuilderCanvas({
   /** Channel keys from the trigger settings draft, for the trigger card's
    *  "Channels" section. */
   triggerChannels: string[]
+  /** The trigger's per-person run cap, for the trigger card's "Frequency
+   *  cap" section. */
+  triggerFrequencyCap?: FrequencyCap
   selection: BuilderSelection
   stepIssues: ReadonlyMap<string, string>
   onSelectNode: (id: string) => void
@@ -470,11 +474,12 @@ export function WorkflowBuilderCanvas({
       tree,
       triggerLabel,
       triggerChannels,
+      triggerFrequencyCap,
       labels,
       stepIssues,
       selectedId: selection?.kind === 'node' ? selection.id : null,
     }),
-    [tree, triggerLabel, triggerChannels, labels, stepIssues, selection]
+    [tree, triggerLabel, triggerChannels, triggerFrequencyCap, labels, stepIssues, selection]
   )
 
   const actions = useMemo<CanvasActions>(

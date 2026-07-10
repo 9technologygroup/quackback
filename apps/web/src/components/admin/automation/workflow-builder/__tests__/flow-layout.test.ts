@@ -142,12 +142,54 @@ describe('buildFlowNodes / buildFlowEdges — no branch', () => {
     const trigger = withChannels.find((n) => n.id === tree.triggerId)
     expect(trigger?.data.sections).toEqual([
       { label: 'Channels', chips: [{ label: 'Email' }, { label: 'Messenger' }] },
+      { label: 'Frequency cap', chips: [{ label: 'No limit' }] },
     ])
 
     const withoutChannels = buildFlowNodes(baseInput(tree))
     expect(withoutChannels.find((n) => n.id === tree.triggerId)?.data.sections).toEqual([
       { label: 'Channels', chips: [{ label: 'All channels' }] },
+      { label: 'Frequency cap', chips: [{ label: 'No limit' }] },
     ])
+  })
+
+  it('renders the trigger frequency cap section, or "No limit" when unset', () => {
+    const tree = newTree()
+    const capped = buildFlowNodes(
+      baseInput(tree, { triggerFrequencyCap: { type: 'n_total', count: 3 } })
+    )
+    expect(capped.find((n) => n.id === tree.triggerId)?.data.sections).toEqual([
+      { label: 'Channels', chips: [{ label: 'All channels' }] },
+      { label: 'Frequency cap', chips: [{ label: 'At most 3 times per person' }] },
+    ])
+
+    const unlimited = buildFlowNodes(
+      baseInput(tree, { triggerFrequencyCap: { type: 'unlimited' } })
+    )
+    expect(unlimited.find((n) => n.id === tree.triggerId)?.data.sections).toEqual([
+      { label: 'Channels', chips: [{ label: 'All channels' }] },
+      { label: 'Frequency cap', chips: [{ label: 'No limit' }] },
+    ])
+  })
+
+  it('renders a relative snooze action chip as "For N units", legacy as before', () => {
+    let tree = newTree()
+    tree = {
+      ...tree,
+      steps: [{ id: 'a1', kind: 'action', action: { type: 'snooze', seconds: 7200 } }],
+    }
+    const nodes = buildFlowNodes(baseInput(tree))
+    const step = nodes.find((n) => n.id === 'a1')
+    expect(step?.data).toMatchObject({ chips: [{ label: 'For 2 hours' }] })
+
+    let legacyTree = newTree()
+    legacyTree = {
+      ...legacyTree,
+      steps: [{ id: 'a1', kind: 'action', action: { type: 'snooze', untilIso: null } }],
+    }
+    const legacyNodes = buildFlowNodes(baseInput(legacyTree))
+    expect(legacyNodes.find((n) => n.id === 'a1')?.data).toMatchObject({
+      chips: [{ label: 'Until they reply' }],
+    })
   })
 })
 

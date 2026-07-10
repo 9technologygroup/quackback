@@ -5,16 +5,13 @@
  */
 import { describe, it, expect } from 'vitest'
 import { workflowGraphSchema } from '@/lib/server/domains/workflows/workflow.schemas'
-import { collectStepIssues, graphToTree, NEEDS_SETUP_PREFIX } from '../workflow-graph'
+import {
+  collectStepIssues,
+  graphToTree,
+  NEEDS_SETUP_PREFIX,
+  TRIGGER_TYPES,
+} from '../workflow-graph'
 import { WORKFLOW_TEMPLATES, workflowTemplatesByCategory } from '../workflow-templates'
-
-const KNOWN_TRIGGERS = [
-  'conversation.created',
-  'message.created',
-  'conversation.status_changed',
-  'conversation.assigned',
-  'assistant.handed_off',
-]
 
 describe('WORKFLOW_TEMPLATES', () => {
   it.each(WORKFLOW_TEMPLATES)('$id has a graph that passes workflowGraphSchema', (template) => {
@@ -25,7 +22,7 @@ describe('WORKFLOW_TEMPLATES', () => {
   })
 
   it.each(WORKFLOW_TEMPLATES)('$id uses a known trigger type', (template) => {
-    expect(KNOWN_TRIGGERS).toContain(template.payload.triggerType)
+    expect(TRIGGER_TYPES).toContain(template.payload.triggerType)
   })
 
   it('has between 4 and 8 templates', () => {

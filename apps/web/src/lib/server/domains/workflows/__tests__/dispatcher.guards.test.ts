@@ -30,7 +30,12 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
   db: (await import('@/lib/server/__tests__/db-test-fixture')).testDb,
 }))
 
-import { frequencyCapAllows, hasActiveCustomerFacingRun } from '../dispatcher.guards'
+import {
+  channelAllows,
+  frequencyCapAllows,
+  claimFrequencyCapSlot,
+  hasActiveCustomerFacingRun,
+} from '../dispatcher.guards'
 
 const fixture = await createDbTestFixture({
   probe: async (db) => {
@@ -89,6 +94,31 @@ async function seedStarts(
   }
 }
 
+function workflowWithChannels(channels: unknown): Workflow {
+  return { triggerSettings: { channels } } as unknown as Workflow
+}
+
+// Pure — no DB, so this runs regardless of fixture availability.
+describe('channelAllows', () => {
+  it('allows when channels is missing, non-array, or empty (all channels)', () => {
+    expect(channelAllows({ triggerSettings: {} } as unknown as Workflow, 'email')).toBe(true)
+    expect(channelAllows(workflowWithChannels('email'), 'email')).toBe(true) // not an array
+    expect(channelAllows(workflowWithChannels([]), 'email')).toBe(true)
+  })
+
+  it('allows when the conversation channel is unresolvable', () => {
+    expect(channelAllows(workflowWithChannels(['email']), null)).toBe(true)
+    expect(channelAllows(workflowWithChannels(['email']), undefined)).toBe(true)
+  })
+
+  it('allows a listed channel and blocks an unlisted one once channels is non-empty', () => {
+    const wf = workflowWithChannels(['messenger', 'email'])
+    expect(channelAllows(wf, 'messenger')).toBe(true)
+    expect(channelAllows(wf, 'email')).toBe(true)
+    expect(channelAllows(wf, 'web_form')).toBe(false)
+  })
+})
+
 describe.skipIf(!fixture.available)('dispatcher guards (real DB, rolled back)', () => {
   beforeEach(fixture.begin)
   afterEach(fixture.rollback)
@@ -131,6 +161,21 @@ describe.skipIf(!fixture.available)('dispatcher guards (real DB, rolled back)', 
     expect(await frequencyCapAllows(wf, p)).toBe(true) // 2 < 3
     await seedStarts(wf.id, p, 1)
     expect(await frequencyCapAllows(wf, p)).toBe(false) // 3 >= 3
+  })
+
+  it('claimFrequencyCapSlot authoritatively re-checks the cap under the advisory lock (extracted from workflow.engine.ts)', async () => {
+    const wf = await seedWorkflow('background', { frequencyCap: { type: 'once' } })
+    const p = await seedPrincipal()
+
+    await testDb.transaction(async (tx) => {
+      expect(await claimFrequencyCapSlot(tx, wf, p)).toBe(true)
+    })
+
+    await seedStarts(wf.id, p, 1)
+
+    await testDb.transaction(async (tx) => {
+      expect(await claimFrequencyCapSlot(tx, wf, p)).toBe(false)
+    })
   })
 
   it('hasActiveCustomerFacingRun sees a live customer_facing run only', async () => {

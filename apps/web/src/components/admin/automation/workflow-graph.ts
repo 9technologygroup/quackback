@@ -10,11 +10,29 @@
  * type-only, so every catalogue here is compile-pinned to the server's: adding
  * a field or action server-side fails the typecheck until the editor knows it.
  */
-import type { ValidatedWorkflowGraph } from '@/lib/server/domains/workflows/workflow.schemas'
+import {
+  MAX_FREQUENCY_CAP_COUNT,
+  MAX_FREQUENCY_CAP_DAYS,
+  MAX_WAIT_SECONDS,
+  duplicateStepIdMessage,
+  missingStepMessage,
+  undeclaredBranchPathMessage,
+} from '@/lib/server/domains/workflows/workflow.schemas'
+import type {
+  FrequencyCap,
+  ValidatedWorkflowGraph,
+} from '@/lib/server/domains/workflows/workflow.schemas'
+// Re-exported so every other cap symbol (and now these two bounds) flows
+// through this module: the one client-side boundary onto workflow.schemas.ts
+// for the feature, instead of individual editors reaching past it.
+export { MAX_FREQUENCY_CAP_COUNT, MAX_FREQUENCY_CAP_DAYS }
 import type {
   ATTRIBUTE_FIELD_PREFIX as ServerAttributeFieldPrefix,
   CONDITION_FIELDS,
 } from '@/lib/server/domains/workflows/condition.evaluator'
+
+export type { FrequencyCap } from '@/lib/server/domains/workflows/workflow.schemas'
+import { DISPATCHABLE_TRIGGER_TYPES } from '@/lib/shared/workflow-trigger-types'
 
 export type { ConditionOperator } from '@/lib/server/domains/workflows/condition.evaluator'
 import type { ConditionOperator } from '@/lib/server/domains/workflows/condition.evaluator'
@@ -296,13 +314,11 @@ export const ACTION_TYPES = Object.keys(ACTION_LABELS) as ActionType[]
 // fullscreen builder's top bar + trigger inspector share these.
 // ---------------------------------------------------------------------------
 
-export const TRIGGER_TYPES = [
-  'conversation.created',
-  'message.created',
-  'conversation.status_changed',
-  'conversation.assigned',
-  'assistant.handed_off',
-] as const
+// The canonical list lives in lib/shared (importable from both client and
+// server, same convention as routing.ts) since it's now also the server's
+// authoring-validation source of truth (workflow.schemas.ts's triggerTypeSchema)
+// — see that module for how it's kept in sync with the event bus.
+export const TRIGGER_TYPES = DISPATCHABLE_TRIGGER_TYPES
 export type TriggerType = (typeof TRIGGER_TYPES)[number]
 
 export const TRIGGER_LABELS: Record<TriggerType, string> = {
@@ -311,6 +327,9 @@ export const TRIGGER_LABELS: Record<TriggerType, string> = {
   'conversation.status_changed': 'Status changed',
   'conversation.assigned': 'Assigned to team or agent',
   'assistant.handed_off': 'AI agent handed off to a human',
+  'conversation.priority_changed': 'Priority changed',
+  'conversation.csat_submitted': 'CSAT rating submitted',
+  'message.note_created': 'Internal note added',
 }
 
 /** Trigger label for a stored triggerType, tolerant of an unknown/legacy value. */
@@ -337,6 +356,81 @@ export type WorkflowStatusValue = (typeof WORKFLOW_STATUSES)[number]
 
 /** The channel checkboxes offered under a trigger (mirrors "conversation.channel"). */
 export const TRIGGER_CHANNELS = CONDITION_FIELD_META['conversation.channel'].options!
+
+// ---------------------------------------------------------------------------
+// Frequency cap: the trigger's per-person run limit (mirrors workflow.schemas.ts's
+// frequencyCapSchema — see dispatcher.guards.ts's frequencyCapAllows for what
+// actually enforces it). "No limit" is the absence of the key, not a stored
+// 'unlimited' value; the two read identically to the guard, but the editor
+// drops the key entirely rather than writing back a no-op value.
+// ---------------------------------------------------------------------------
+
+export type FrequencyCapType = FrequencyCap['type']
+
+export const FREQUENCY_CAP_LABELS: Record<FrequencyCapType, string> = {
+  unlimited: 'No limit',
+  once: 'Once per person',
+  once_per_days: 'Once per person, every N days',
+  n_total: 'At most N times per person',
+}
+export const FREQUENCY_CAP_TYPES = Object.keys(FREQUENCY_CAP_LABELS) as FrequencyCapType[]
+
+/** A fresh cap of the given type with an editable default count/window. */
+export function defaultFrequencyCap(type: FrequencyCapType): FrequencyCap {
+  switch (type) {
+    case 'unlimited':
+    case 'once':
+      return { type }
+    case 'once_per_days':
+      return { type, days: 30 }
+    case 'n_total':
+      return { type, count: 3 }
+  }
+}
+
+/** A stored `frequencyCap` too malformed to parse (any non-UI writer: a raw
+ *  API/import payload, a value predating a bounds tightening) reads as "No
+ *  limit" rather than blocking every future save. See toTriggerSettingsDraft
+ *  in use-workflow-builder.ts, which sanitizes it on load so the very next
+ *  edit to trigger settings writes back a clean shape. */
+export function sanitizeFrequencyCap(raw: unknown): FrequencyCap | undefined {
+  if (raw === undefined) return undefined
+  if (!isRecord(raw) || typeof raw.type !== 'string') return undefined
+  const type = raw.type as FrequencyCapType
+  switch (type) {
+    case 'unlimited':
+    case 'once':
+      return { type }
+    case 'once_per_days':
+      return typeof raw.days === 'number' &&
+        Number.isInteger(raw.days) &&
+        raw.days >= 1 &&
+        raw.days <= MAX_FREQUENCY_CAP_DAYS
+        ? { type, days: raw.days }
+        : undefined
+    case 'n_total':
+      return typeof raw.count === 'number' &&
+        Number.isInteger(raw.count) &&
+        raw.count >= 1 &&
+        raw.count <= MAX_FREQUENCY_CAP_COUNT
+        ? { type, count: raw.count }
+        : undefined
+    default:
+      return undefined
+  }
+}
+
+export function frequencyCapSummary(cap: FrequencyCap | undefined): string {
+  if (!cap || cap.type === 'unlimited') return 'No limit'
+  switch (cap.type) {
+    case 'once':
+      return 'Once per person'
+    case 'once_per_days':
+      return `Once per person, every ${cap.days} day${cap.days === 1 ? '' : 's'}`
+    case 'n_total':
+      return `At most ${cap.count} time${cap.count === 1 ? '' : 's'} per person`
+  }
+}
 
 /** A fresh action of the given type with editable defaults. */
 export function defaultAction(type: ActionType): GraphAction {
@@ -530,6 +624,16 @@ function validateAction(v: unknown, where: string): string | null {
     case 'set_priority':
       return isPriority(v.priority) ? null : `${where}: pick a priority`
     case 'snooze':
+      // Relative (seconds) or legacy absolute (untilIso, a UTC timestamp, or
+      // null for "until they reply") — see workflow.schemas.ts's
+      // snoozeActionSchema union. Only a sanity check here (a whole,
+      // non-negative number of seconds); the server bounds it by
+      // MAX_WAIT_SECONDS on save, same as the wait step's "seconds" below.
+      if ('seconds' in v) {
+        return typeof v.seconds === 'number' && Number.isInteger(v.seconds) && v.seconds >= 0
+          ? null
+          : `${where}: snooze duration must be a whole number of seconds (0 or more)`
+      }
       return v.untilIso === null || isUtcTimestamp(v.untilIso)
         ? null
         : `${where}: snooze needs a UTC timestamp (e.g. 2026-08-01T09:00:00Z) or null`
@@ -542,7 +646,12 @@ function validateAction(v: unknown, where: string): string | null {
   }
 }
 
-/** Structural validation of an unknown value as a workflow graph. */
+/** Structural validation of an unknown value as a workflow graph. Mirrors
+ *  workflowGraphSchema's superRefine cross-node checks too (duplicate node
+ *  ids, an edge referencing a missing node, an edge's branch key the node
+ *  doesn't declare, a wait past MAX_WAIT_SECONDS): the server re-validates on
+ *  save either way, but without these here a JSON-mode graph hitting one of
+ *  them would only fail as a bare server 400 instead of a readable message. */
 export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
   if (!isRecord(input)) return fail('The graph must be an object with "nodes" and "edges"')
   const { nodes, edges } = input
@@ -551,10 +660,15 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
   if (nodes.length > 200) return fail('A workflow can have at most 200 steps')
   if (edges.length > 400) return fail('A workflow can have at most 400 connections')
 
+  const nodeIds = new Set<string>()
+  const branchKeysByNodeId = new Map<string, Set<string>>()
+
   for (let i = 0; i < nodes.length; i++) {
     const node: unknown = nodes[i]
     if (!isRecord(node)) return fail(`nodes[${i}] must be an object`)
     if (!nonEmptyString(node.id)) return fail(`nodes[${i}] needs a non-empty string id`)
+    if (nodeIds.has(node.id)) return fail(duplicateStepIdMessage(node.id))
+    nodeIds.add(node.id)
     const where = `Step "${node.id}"`
     switch (node.type) {
       case 'trigger':
@@ -571,6 +685,7 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
       }
       case 'branch': {
         if (!Array.isArray(node.branches)) return fail(`${where}: "branches" must be an array`)
+        const keys = new Set<string>()
         for (let b = 0; b < node.branches.length; b++) {
           const br: unknown = node.branches[b]
           if (!isRecord(br) || !nonEmptyString(br.key)) {
@@ -578,7 +693,9 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
           }
           const err = validateCondition(br.condition, `${where} path "${br.key}"`)
           if (err) return fail(err)
+          keys.add(br.key)
         }
+        branchKeysByNodeId.set(node.id, keys)
         break
       }
       case 'wait': {
@@ -588,6 +705,9 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
           node.seconds < 0
         ) {
           return fail(`${where}: "seconds" must be a whole number of seconds (0 or more)`)
+        }
+        if (node.seconds > MAX_WAIT_SECONDS) {
+          return fail(`${where}: a wait can be at most ${durationPhrase(MAX_WAIT_SECONDS)}`)
         }
         break
       }
@@ -603,6 +723,20 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
     }
     if (edge.branch !== undefined && typeof edge.branch !== 'string') {
       return fail(`edges[${i}]: "branch" must be a string when present`)
+    }
+    if (!nodeIds.has(edge.from)) {
+      return fail(`edges[${i}]: ${missingStepMessage(edge.from)}`)
+    }
+    if (!nodeIds.has(edge.to)) {
+      return fail(`edges[${i}]: ${missingStepMessage(edge.to)}`)
+    }
+    // A branch key the node doesn't declare can never be taken (the runtime
+    // walker matches branches by key), so it's dead weight at best and a
+    // stale rename at worst — same rule as the server's superRefine. An edge
+    // with no branch key, or one leaving a non-branch node, is left alone.
+    const declaredKeys = branchKeysByNodeId.get(edge.from)
+    if (declaredKeys && edge.branch !== undefined && !declaredKeys.has(edge.branch)) {
+      return fail(`edges[${i}]: ${undeclaredBranchPathMessage(edge.from, edge.branch)}`)
     }
   }
 
@@ -959,6 +1093,7 @@ export function actionSummary(action: GraphAction, labels: EntityLabels = {}): s
     case 'set_priority':
       return `Set priority to ${PRIORITY_LABELS[action.priority]}`
     case 'snooze':
+      if ('seconds' in action) return `Snooze for ${durationPhrase(action.seconds)}`
       return action.untilIso
         ? `Snooze until ${new Date(action.untilIso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`
         : 'Snooze until they reply'
@@ -1028,10 +1163,17 @@ export function secondsToWaitParts(total: number): { amount: number; unit: WaitU
   return { amount: total, unit: 'minutes' }
 }
 
-export function waitSummary(totalSeconds: number): string {
+/** "N units" phrase for a duration in seconds, without a leading verb, so
+ *  callers compose their own ("Wait ", "Snooze for ", "For "). Shared by
+ *  waitSummary below and the snooze action's relative-duration summary. */
+export function durationPhrase(totalSeconds: number): string {
   const { amount, unit } = secondsToWaitParts(totalSeconds)
   const meta = WAIT_UNITS.find((u) => u.value === unit)!
-  return `Wait ${amount} ${amount === 1 ? meta.singular : meta.plural}`
+  return `${amount} ${amount === 1 ? meta.singular : meta.plural}`
+}
+
+export function waitSummary(totalSeconds: number): string {
+  return `Wait ${durationPhrase(totalSeconds)}`
 }
 
 /** set_attribute values keep JSON types: "5" stays a number, "vip" a string. */
@@ -1247,8 +1389,12 @@ export function actionIssue(action: GraphAction): string | null {
       return isSetRef(action.policyId) ? null : 'Choose an SLA policy'
     case 'set_attribute':
       return action.key ? null : 'Choose an attribute'
-    case 'set_priority':
     case 'snooze':
+      // A relative snooze with no (or zero) duration never actually pauses —
+      // the legacy absolute/until-reply form has no equivalent "unset" state
+      // (untilIso is always either a real timestamp or explicitly null).
+      return 'seconds' in action && action.seconds <= 0 ? 'Choose how long to snooze for' : null
+    case 'set_priority':
     case 'close':
       return null
   }

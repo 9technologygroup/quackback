@@ -2,22 +2,46 @@
  * Event bus -> workflow trigger bridge (support platform §4.6, Slice 5d-iii). Maps
  * a dispatched conversation/message event to a WorkflowTrigger and hands it to the
  * dispatcher. Non-conversation events (posts, comments, tickets, ...) map to null;
- * ticket-scoped triggers are a later extension. dispatchWorkflowsForEvent is fully
- * error-isolated so it can be fire-and-forget from the event pipeline without ever
- * affecting the existing hook delivery.
+ * ticket-scoped triggers are a later extension.
+ *
+ * dispatchWorkflowsForEvent is invoked from the workflow-dispatch BullMQ job
+ * (workflow-dispatch-queue.ts) rather than fire-and-forget straight off the
+ * event pipeline, so it now lets errors propagate: a throw fails the job and
+ * BullMQ retries it (3 attempts, exponential backoff) instead of the trigger
+ * being silently dropped. The queue module's worker.on('failed') handler logs
+ * a failure once retries are exhausted.
+ *
+ * This propagation is only safe for failures BEFORE any run starts —
+ * interruptWaitingRuns itself, and inside dispatchWorkflowTrigger the workflow
+ * listing / condition-context resolution that happens before either execution
+ * class begins. Nothing has been written yet at that point, so a clean retry
+ * just redoes the same read-only work. Once dispatchWorkflowTrigger starts
+ * starting runs, retry-safety is two different properties per class:
+ *
+ *   - customer_facing (dispatcher.ts's exclusive for-loop) relies on the
+ *     partial unique index on workflow_runs (one live run per conversation):
+ *     if the winning run's own follow-up work throws (e.g. scheduling its
+ *     wait timer) after the run row already committed as running/waiting, a
+ *     retry's hasActiveCustomerFacingRun pre-check sees that row and skips
+ *     re-starting it; a concurrent insert race is resolved the same way runWorkflow
+ *     already documents (23505 caught, treated as never-matched).
+ *   - background (dispatcher.ts's Promise.all map) has no such lock — caps
+ *     only cover capped workflows — so each workflow's run is wrapped in its
+ *     own try/catch instead: one workflow throwing (mid-run, after siblings
+ *     already committed) is logged and does not fail the batch, so BullMQ
+ *     never retries a background workflow that already ran.
  */
 import type { EventData } from '@/lib/server/events/types'
 import type { ConversationId, PrincipalId } from '@quackback/ids'
 import type { PrincipalType } from '@/lib/server/policy/types'
-import { logger } from '@/lib/server/logger'
 import { dispatchWorkflowTrigger, type WorkflowTrigger } from './dispatcher'
 import { interruptWaitingRuns } from './workflow.engine'
 
-const log = logger.child({ component: 'workflow-event-trigger' })
-
 /** Map an event to a workflow trigger, or null when it isn't conversation-scoped.
  *  The event's trigger_type is its event type verbatim, so a workflow subscribes
- *  by the same name the bus dispatches. */
+ *  by the same name the bus dispatches. The switch below is the source of truth
+ *  DISPATCHABLE_TRIGGER_TYPES (lib/shared/workflow-trigger-types.ts) mirrors for
+ *  authoring validation — keep the two in sync by hand when a case is added. */
 export function eventToWorkflowTrigger(event: EventData): WorkflowTrigger | null {
   // An automated (service) actor is carried through; the dispatcher gates it out.
   const actorType: PrincipalType = event.actor?.type === 'service' ? 'service' : 'user'
@@ -90,23 +114,19 @@ function isInterruptingEvent(event: EventData): boolean {
 }
 
 /**
- * Fire workflow triggers for a dispatched event. Safe to call fire-and-forget:
- * it maps + dispatches and swallows every error, so a workflow fault never
- * touches the event pipeline or the request that produced the event.
+ * Fire workflow triggers for a dispatched event. Called from inside the
+ * workflow-dispatch queue's job processor, so errors are NOT swallowed here —
+ * they propagate to fail the job and let BullMQ retry.
  *
- * A reply or close first interrupts any pending waits on the conversation — done
- * BEFORE the new dispatch (and sequentially, not on the racy fire-and-forget bus)
- * so a wait-bearing run the customer already answered doesn't fire, while the run
- * this same event triggers is created afterwards and never caught by its own
- * event's interrupt.
+ * A reply or close first interrupts any pending waits on the conversation —
+ * done BEFORE the new dispatch, and both inside this same call (and therefore
+ * the same job), so a wait-bearing run the customer already answered doesn't
+ * fire, while the run this same event triggers is created afterwards and
+ * never caught by its own event's interrupt.
  */
 export async function dispatchWorkflowsForEvent(event: EventData): Promise<void> {
-  try {
-    const trigger = eventToWorkflowTrigger(event)
-    if (!trigger) return
-    if (isInterruptingEvent(event)) await interruptWaitingRuns(trigger.conversationId)
-    await dispatchWorkflowTrigger(trigger)
-  } catch (err) {
-    log.error({ err, eventType: event.type }, 'workflow dispatch failed')
-  }
+  const trigger = eventToWorkflowTrigger(event)
+  if (!trigger) return
+  if (isInterruptingEvent(event)) await interruptWaitingRuns(trigger.conversationId)
+  await dispatchWorkflowTrigger(trigger)
 }

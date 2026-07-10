@@ -2,9 +2,24 @@
  * Coverage for the workflow graph validation (§4.6): a well-formed graph (every
  * node kind, nested conditions, the serializable snooze) passes, and the common
  * malformations are rejected at the boundary instead of stored.
+ *
+ * Calibration coverage: the "certainly broken at runtime" rejections (duplicate
+ * ids, dangling edges, an over-long wait, an undeclared branch key) each get a
+ * reject case AND an accept-at-the-boundary case; the deliberately-tolerated
+ * shapes (multiple/zero triggers, cycles, unreachable nodes, needs-setup
+ * placeholders) each get a regression guard proving they are NOT rejected — the
+ * "Edit as JSON" mode and the runtime walker both depend on that staying true.
  */
 import { describe, it, expect } from 'vitest'
-import { workflowGraphSchema } from '../workflow.schemas'
+import {
+  workflowGraphSchema,
+  triggerTypeSchema,
+  triggerSettingsSchema,
+  MAX_WAIT_SECONDS,
+  duplicateStepIdMessage,
+  missingStepMessage,
+  undeclaredBranchPathMessage,
+} from '../workflow.schemas'
 
 describe('workflowGraphSchema', () => {
   it('accepts a full graph across every node kind', () => {
@@ -88,5 +103,338 @@ describe('workflowGraphSchema', () => {
 
     const badEdge = { nodes: [], edges: [{ from: 't' }] }
     expect(workflowGraphSchema.safeParse(badEdge).success).toBe(false)
+  })
+
+  it('rejects two steps sharing an id', () => {
+    const dup = {
+      nodes: [
+        { id: 't', type: 'trigger' },
+        { id: 't', type: 'action', action: { type: 'close' } },
+      ],
+      edges: [],
+    }
+    expect(workflowGraphSchema.safeParse(dup).success).toBe(false)
+  })
+
+  it('rejects an edge whose "from" or "to" references a step id that does not exist', () => {
+    const missingFrom = {
+      nodes: [{ id: 't', type: 'trigger' }],
+      edges: [{ from: 'ghost', to: 't' }],
+    }
+    expect(workflowGraphSchema.safeParse(missingFrom).success).toBe(false)
+
+    const missingTo = {
+      nodes: [{ id: 't', type: 'trigger' }],
+      edges: [{ from: 't', to: 'ghost' }],
+    }
+    expect(workflowGraphSchema.safeParse(missingTo).success).toBe(false)
+  })
+
+  it('accepts a wait exactly at MAX_WAIT_SECONDS and rejects one second over', () => {
+    const atBound = { nodes: [{ id: 'w', type: 'wait', seconds: MAX_WAIT_SECONDS }], edges: [] }
+    expect(workflowGraphSchema.safeParse(atBound).success).toBe(true)
+
+    const overBound = {
+      nodes: [{ id: 'w', type: 'wait', seconds: MAX_WAIT_SECONDS + 1 }],
+      edges: [],
+    }
+    expect(workflowGraphSchema.safeParse(overBound).success).toBe(false)
+  })
+
+  it('rejects a branch edge whose "branch" key is not declared on the branch node', () => {
+    const undeclaredKey = {
+      nodes: [
+        {
+          id: 'b',
+          type: 'branch',
+          branches: [{ key: 'vip', condition: {} }],
+        },
+        { id: 'a', type: 'action', action: { type: 'close' } },
+      ],
+      edges: [{ from: 'b', to: 'a', branch: 'not_a_real_key' }],
+    }
+    expect(workflowGraphSchema.safeParse(undeclaredKey).success).toBe(false)
+  })
+
+  it('accepts a branch edge whose key matches a declared branch path', () => {
+    const declaredKey = {
+      nodes: [
+        { id: 'b', type: 'branch', branches: [{ key: 'vip', condition: {} }] },
+        { id: 'a', type: 'action', action: { type: 'close' } },
+      ],
+      edges: [{ from: 'b', to: 'a', branch: 'vip' }],
+    }
+    expect(workflowGraphSchema.safeParse(declaredKey).success).toBe(true)
+  })
+
+  // The builder's "Edit as JSON" mode is a deliberately lossless escape hatch:
+  // it can store graphs the visual (tree) editor can't render, and the walker
+  // (graph.ts) tolerates every one of these, so none is rejected here.
+  describe('tolerates shapes the visual editor cannot render', () => {
+    it('a graph with zero triggers (a still-draftable, not-yet-wired workflow)', () => {
+      const noTrigger = {
+        nodes: [{ id: 'a', type: 'action', action: { type: 'close' } }],
+        edges: [],
+      }
+      expect(workflowGraphSchema.safeParse(noTrigger).success).toBe(true)
+    })
+
+    it('a graph with more than one trigger', () => {
+      const twoTriggers = {
+        nodes: [
+          { id: 't1', type: 'trigger' },
+          { id: 't2', type: 'trigger' },
+          { id: 'a', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 't1', to: 'a' },
+          { from: 't2', to: 'a' },
+        ],
+      }
+      expect(workflowGraphSchema.safeParse(twoTriggers).success).toBe(true)
+    })
+
+    it('a graph containing a cycle', () => {
+      const cyclic = {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          { id: 'a', type: 'action', action: { type: 'close' } },
+          { id: 'b', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 't', to: 'a' },
+          { from: 'a', to: 'b' },
+          { from: 'b', to: 'a' }, // a <-> b cycle
+        ],
+      }
+      expect(workflowGraphSchema.safeParse(cyclic).success).toBe(true)
+    })
+
+    it('a graph with an unreachable (unconnected) node', () => {
+      const orphan = {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          { id: 'reachable', type: 'action', action: { type: 'close' } },
+          { id: 'stranded', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [{ from: 't', to: 'reachable' }],
+      }
+      expect(workflowGraphSchema.safeParse(orphan).success).toBe(true)
+    })
+
+    it('a needs-setup- placeholder ref on an action', () => {
+      const needsSetup = {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          {
+            id: 'a',
+            type: 'action',
+            action: { type: 'assign_team', teamId: 'needs-setup-team' },
+          },
+        ],
+        edges: [{ from: 't', to: 'a' }],
+      }
+      expect(workflowGraphSchema.safeParse(needsSetup).success).toBe(true)
+    })
+
+    it('an unlabeled edge leaving a branch node, and a branch path with no outgoing edge', () => {
+      const danglingBranch = {
+        nodes: [
+          {
+            id: 'b',
+            type: 'branch',
+            branches: [
+              { key: 'has_edge', condition: {} },
+              { key: 'no_edge', condition: {} },
+            ],
+          },
+          { id: 'a', type: 'action', action: { type: 'close' } },
+        ],
+        // 'has_edge' is wired; 'no_edge' has no outgoing edge at all (fine —
+        // the walker just ends the path there).
+        edges: [{ from: 'b', to: 'a', branch: 'has_edge' }],
+      }
+      expect(workflowGraphSchema.safeParse(danglingBranch).success).toBe(true)
+    })
+  })
+})
+
+// These four structural checks are re-implemented client-side by
+// validateGraph (workflow-graph.ts) so a JSON-mode graph gets a readable
+// error before ever reaching the server. Both sides call the same exported
+// builder so the wording can't drift the way it already had (capitalization,
+// prefix); see the client test file for the matching assertions.
+describe('shared structural-validation messages (kept in sync with validateGraph)', () => {
+  it('duplicateStepIdMessage matches the superRefine issue for a duplicate node id', () => {
+    const dup = {
+      nodes: [
+        { id: 'x', type: 'trigger' },
+        { id: 'x', type: 'action', action: { type: 'close' } },
+      ],
+      edges: [],
+    }
+    const result = workflowGraphSchema.safeParse(dup)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe(duplicateStepIdMessage('x'))
+    }
+  })
+
+  it('missingStepMessage matches the superRefine issue for a dangling "from" and "to"', () => {
+    const missingFrom = {
+      nodes: [{ id: 't', type: 'trigger' }],
+      edges: [{ from: 'ghost', to: 't' }],
+    }
+    const fromResult = workflowGraphSchema.safeParse(missingFrom)
+    expect(fromResult.success).toBe(false)
+    if (!fromResult.success) {
+      expect(fromResult.error.issues[0]?.message).toBe(missingStepMessage('ghost'))
+    }
+
+    const missingTo = {
+      nodes: [{ id: 't', type: 'trigger' }],
+      edges: [{ from: 't', to: 'ghost' }],
+    }
+    const toResult = workflowGraphSchema.safeParse(missingTo)
+    expect(toResult.success).toBe(false)
+    if (!toResult.success) {
+      expect(toResult.error.issues[0]?.message).toBe(missingStepMessage('ghost'))
+    }
+  })
+
+  it('undeclaredBranchPathMessage matches the superRefine issue for an undeclared branch key', () => {
+    const undeclaredKey = {
+      nodes: [
+        { id: 'b', type: 'branch', branches: [{ key: 'vip', condition: {} }] },
+        { id: 'a', type: 'action', action: { type: 'close' } },
+      ],
+      edges: [{ from: 'b', to: 'a', branch: 'not_a_real_key' }],
+    }
+    const result = workflowGraphSchema.safeParse(undeclaredKey)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe(
+        undeclaredBranchPathMessage('b', 'not_a_real_key')
+      )
+    }
+  })
+})
+
+describe('triggerTypeSchema', () => {
+  it('accepts every dispatchable trigger type', () => {
+    for (const t of [
+      'conversation.created',
+      'conversation.status_changed',
+      'conversation.assigned',
+      'conversation.priority_changed',
+      'conversation.csat_submitted',
+      'message.created',
+      'message.note_created',
+      'assistant.handed_off',
+    ]) {
+      expect(triggerTypeSchema.safeParse(t).success).toBe(true)
+    }
+  })
+
+  it("rejects an unknown or typo'd trigger type", () => {
+    expect(triggerTypeSchema.safeParse('conversation.craeted').success).toBe(false)
+    expect(triggerTypeSchema.safeParse('something.else').success).toBe(false)
+    expect(triggerTypeSchema.safeParse('').success).toBe(false)
+  })
+})
+
+describe('snooze action: relative + legacy', () => {
+  const graphWithSnooze = (action: unknown) => ({
+    nodes: [{ id: 'a', type: 'action', action }],
+    edges: [],
+  })
+
+  it('accepts a relative snooze at 0 and at MAX_WAIT_SECONDS', () => {
+    expect(
+      workflowGraphSchema.safeParse(graphWithSnooze({ type: 'snooze', seconds: 0 })).success
+    ).toBe(true)
+    expect(
+      workflowGraphSchema.safeParse(graphWithSnooze({ type: 'snooze', seconds: MAX_WAIT_SECONDS }))
+        .success
+    ).toBe(true)
+  })
+
+  it('rejects a relative snooze one second over MAX_WAIT_SECONDS, and a negative one', () => {
+    expect(
+      workflowGraphSchema.safeParse(
+        graphWithSnooze({ type: 'snooze', seconds: MAX_WAIT_SECONDS + 1 })
+      ).success
+    ).toBe(false)
+    expect(
+      workflowGraphSchema.safeParse(graphWithSnooze({ type: 'snooze', seconds: -1 })).success
+    ).toBe(false)
+  })
+
+  it('still accepts the legacy absolute form (a UTC timestamp, or null for "until reply")', () => {
+    expect(
+      workflowGraphSchema.safeParse(
+        graphWithSnooze({ type: 'snooze', untilIso: '2026-08-01T09:00:00Z' })
+      ).success
+    ).toBe(true)
+    expect(
+      workflowGraphSchema.safeParse(graphWithSnooze({ type: 'snooze', untilIso: null })).success
+    ).toBe(true)
+  })
+
+  it('rejects a snooze carrying both untilIso and seconds — ambiguous, matches neither branch', () => {
+    const result = workflowGraphSchema.safeParse(
+      graphWithSnooze({ type: 'snooze', untilIso: null, seconds: 60 })
+    )
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a snooze with neither untilIso nor seconds', () => {
+    expect(workflowGraphSchema.safeParse(graphWithSnooze({ type: 'snooze' })).success).toBe(false)
+  })
+})
+
+describe('triggerSettingsSchema: frequencyCap', () => {
+  it('stays an open bag when frequencyCap is absent — unrelated keys round-trip untouched', () => {
+    const settings = { channels: ['email'], someFutureKey: 42 }
+    const parsed = triggerSettingsSchema.parse(settings)
+    expect(parsed).toEqual(settings)
+  })
+
+  it('accepts every frequencyCap variant within bounds', () => {
+    for (const frequencyCap of [
+      { type: 'unlimited' },
+      { type: 'once' },
+      { type: 'once_per_days', days: 1 },
+      { type: 'once_per_days', days: 365 },
+      { type: 'n_total', count: 1 },
+      { type: 'n_total', count: 1000 },
+    ]) {
+      expect(triggerSettingsSchema.safeParse({ frequencyCap }).success).toBe(true)
+    }
+  })
+
+  it('rejects a frequencyCap out of bounds (days/count at 0 or one past the ceiling)', () => {
+    expect(
+      triggerSettingsSchema.safeParse({ frequencyCap: { type: 'once_per_days', days: 0 } }).success
+    ).toBe(false)
+    expect(
+      triggerSettingsSchema.safeParse({ frequencyCap: { type: 'once_per_days', days: 366 } })
+        .success
+    ).toBe(false)
+    expect(
+      triggerSettingsSchema.safeParse({ frequencyCap: { type: 'n_total', count: 0 } }).success
+    ).toBe(false)
+    expect(
+      triggerSettingsSchema.safeParse({ frequencyCap: { type: 'n_total', count: 1001 } }).success
+    ).toBe(false)
+  })
+
+  it('rejects an unknown frequencyCap type, but leaves other keys open to typos', () => {
+    expect(triggerSettingsSchema.safeParse({ frequencyCap: { type: 'sometimes' } }).success).toBe(
+      false
+    )
+    // Only the known `frequencyCap` key is shape-validated — every other key
+    // in the bag, however misspelled, is a free-form pass-through.
+    expect(triggerSettingsSchema.safeParse({ chanels: ['email'] }).success).toBe(true)
   })
 })

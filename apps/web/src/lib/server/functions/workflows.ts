@@ -25,6 +25,7 @@ import type { WorkflowGraph } from '@/lib/server/domains/workflows/graph'
 import {
   workflowGraphSchema,
   triggerSettingsSchema,
+  triggerTypeSchema,
   type ValidatedWorkflowGraph,
 } from '@/lib/server/domains/workflows/workflow.schemas'
 
@@ -75,7 +76,7 @@ const workflowClass = z.enum(['customer_facing', 'background'])
 const createSchema = z.object({
   name: z.string().min(1).max(120),
   class: workflowClass,
-  triggerType: z.string().min(1).max(80),
+  triggerType: triggerTypeSchema,
   triggerSettings: triggerSettingsSchema.optional(),
   graph: workflowGraphSchema.optional(),
   sortOrder: z.number().int().optional(),
@@ -84,7 +85,7 @@ const updateSchema = z.object({
   id: z.string(),
   name: z.string().min(1).max(120).optional(),
   class: workflowClass.optional(),
-  triggerType: z.string().min(1).max(80).optional(),
+  triggerType: triggerTypeSchema.optional(),
   triggerSettings: triggerSettingsSchema.optional(),
   graph: workflowGraphSchema.optional(),
   sortOrder: z.number().int().optional(),

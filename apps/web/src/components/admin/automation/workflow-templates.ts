@@ -37,7 +37,7 @@ import {
   TagIcon,
   XCircleIcon,
 } from '@heroicons/react/24/outline'
-import { NEEDS_SETUP_PREFIX, type WorkflowGraphJson } from './workflow-graph'
+import { NEEDS_SETUP_PREFIX, type TriggerType, type WorkflowGraphJson } from './workflow-graph'
 
 export type WorkflowTemplateCategory = 'popular' | 'routing' | 'sla' | 'housekeeping'
 
@@ -54,7 +54,7 @@ export const WORKFLOW_TEMPLATE_CATEGORIES: {
 export interface WorkflowTemplatePayload {
   name: string
   class: 'customer_facing' | 'background'
-  triggerType: string
+  triggerType: TriggerType
   triggerSettings?: Record<string, unknown>
   graph: WorkflowGraphJson
 }

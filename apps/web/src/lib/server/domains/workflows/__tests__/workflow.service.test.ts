@@ -24,6 +24,8 @@ import {
   listLiveWorkflowsForTrigger,
   getLiveWorkflowReferencedAttributeKeys,
   __resetLiveWorkflowReferencedAttributeKeysCache,
+  hasAnyLiveWorkflow,
+  __resetHasAnyLiveWorkflowCache,
 } from '../workflow.service'
 
 const fixture = await createDbTestFixture({
@@ -182,5 +184,36 @@ describe.skipIf(!fixture.available)('workflow.service (real DB, rolled back)', (
 
     const keys = await getLiveWorkflowReferencedAttributeKeys()
     expect([...keys]).toEqual(['issue_type'])
+  })
+
+  describe('hasAnyLiveWorkflow (events/process.ts enqueue gate)', () => {
+    beforeEach(__resetHasAnyLiveWorkflowCache)
+
+    it('is false with zero workflows, and false with only a draft one', async () => {
+      expect(await hasAnyLiveWorkflow()).toBe(false)
+      __resetHasAnyLiveWorkflowCache() // this test's own read must not cache the miss past its own mutation below
+      await createWorkflow({ name: 'Draft', class: 'background', triggerType: 'x' })
+      __resetHasAnyLiveWorkflowCache()
+      expect(await hasAnyLiveWorkflow()).toBe(false)
+    })
+
+    it('flips to true immediately after setWorkflowStatus makes one live — no TTL wait needed', async () => {
+      const wf = await createWorkflow({ name: 'Route', class: 'background', triggerType: 'x' })
+      expect(await hasAnyLiveWorkflow()).toBe(false) // cached now (draft only)
+
+      // The mutation invalidates the cache itself, so the very next read sees
+      // the fresh state instead of the stale cached `false` for the next 30s.
+      await setWorkflowStatus(wf.id, 'live')
+      expect(await hasAnyLiveWorkflow()).toBe(true)
+    })
+
+    it('flips back to false after soft-deleting the only live workflow', async () => {
+      const wf = await createWorkflow({ name: 'Route', class: 'background', triggerType: 'x' })
+      await setWorkflowStatus(wf.id, 'live')
+      expect(await hasAnyLiveWorkflow()).toBe(true) // cached now (one live)
+
+      await softDeleteWorkflow(wf.id)
+      expect(await hasAnyLiveWorkflow()).toBe(false)
+    })
   })
 })
