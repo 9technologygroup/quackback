@@ -17,7 +17,7 @@ export const Route = createFileRoute('/onboarding/_layout/workspace')({
       throw redirect({ to: '/onboarding/account' })
     }
 
-    const state = await checkOnboardingState({ data: session.user.id })
+    const state = await checkOnboardingState()
 
     if (state.needsInvitation) {
       throw redirect(buildSigninRedirect('/admin'))

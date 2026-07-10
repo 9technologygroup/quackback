@@ -12,7 +12,7 @@ export const Route = createFileRoute('/onboarding/_layout/account')({
     const { session } = context
 
     if (session?.user) {
-      const state = await checkOnboardingState({ data: session.user.id })
+      const state = await checkOnboardingState()
       throw redirect({
         to: pickOnboardingStep({
           session: { userId: session.user.id },
