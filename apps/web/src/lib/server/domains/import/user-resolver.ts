@@ -89,13 +89,18 @@ export class ImportUserResolver {
     for (let i = 0; i < toCreate.length; i += chunkSize) {
       const chunk = toCreate.slice(i, i + chunkSize)
 
-      // Create user records
+      // Create user records. Imported users are credential-less shells
+      // (no account rows), so marking the email verified is safe — there
+      // is no attacker-controllable credential to inherit — and it lets
+      // the real person claim the record on first trusted-provider
+      // sign-in instead of being blocked by Better-Auth's
+      // requireLocalEmailVerified linking gate.
       await db.insert(user).values(
         chunk.map((u) => ({
           id: u.userId,
           email: u.email,
           name: u.name,
-          emailVerified: false,
+          emailVerified: true,
           createdAt: new Date(),
           updatedAt: new Date(),
         }))

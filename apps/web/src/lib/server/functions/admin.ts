@@ -990,11 +990,14 @@ export const createPortalUserFn = createServerFn({ method: 'POST' })
       const principalId = generateId('principal')
       const trimmedName = data.name.trim()
 
+      // Admin-attributed shell with no credentials: mark a provided email
+      // verified so the person can later claim the record via SSO/OAuth
+      // sign-in (Better-Auth refuses to link into unverified local users).
       await db.insert(user).values({
         id: userId,
         name: trimmedName,
         email: data.email ? data.email.toLowerCase().trim() : null,
-        emailVerified: false,
+        emailVerified: Boolean(data.email),
         createdAt: new Date(),
         updatedAt: new Date(),
       })

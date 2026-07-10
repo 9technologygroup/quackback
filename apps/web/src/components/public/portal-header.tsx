@@ -7,6 +7,8 @@ import { cn } from '@/lib/shared/utils'
 import { isTeamMember, Role } from '@/lib/shared/roles'
 import { Button } from '@/components/ui/button'
 import { signOut, authClient } from '@/lib/client/auth-client'
+import { stashSsoAttempt } from '@/lib/client/sso-attempt-stash'
+import { signinErrorLanding } from '@/lib/shared/auth-prompt'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -154,10 +156,21 @@ export function PortalHeader({
 
   // Skip the sign-in dialog for a single-IdP workspace: go straight to the
   // OIDC provider (same redirect the dialog's "Continue" path uses), returning
-  // to the current page afterwards.
+  // to the current page afterwards. Stash + errorCallbackURL route callback
+  // failures back into the sign-in dialog (with link-conflict recovery for
+  // account_not_linked) instead of Better-Auth's bare error page.
   const redirectToSoleProvider = () => {
     if (!soleOidcProviderId) return
-    void authClient.signIn.oauth2({ providerId: soleOidcProviderId, callbackURL: pathname })
+    stashSsoAttempt({
+      providerId: soleOidcProviderId,
+      providerType: 'oidc',
+      callbackUrl: pathname,
+    })
+    void authClient.signIn.oauth2({
+      providerId: soleOidcProviderId,
+      callbackURL: pathname,
+      errorCallbackURL: signinErrorLanding(pathname),
+    })
   }
 
   const handleSignOut = async () => {
