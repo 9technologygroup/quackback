@@ -37,6 +37,9 @@ vi.mock('@tanstack/react-query', () => ({
   // Launch-checklist badge query; undefined data = checklist state unknown,
   // which renders the nav item without a count.
   useQuery: () => ({ data: undefined }),
+  // No cached onboarding data in tests, so the enabled-once-complete check
+  // (which reads the cache directly) always falls back to "keep it enabled".
+  useQueryClient: () => ({ getQueryData: () => undefined }),
   queryOptions: (opts: unknown) => opts,
 }))
 

@@ -401,15 +401,17 @@ export const fetchOnboardingStatus = createServerFn({ method: 'GET' }).handler(a
   try {
     await requireAuth({ permission: PERMISSIONS.MEMBER_VIEW })
 
-    const { getWidgetConfig } = await import('@/lib/server/domains/settings/settings.widget')
     const { helpCenterArticles, statusComponents, isNull } = await import('@/lib/server/db')
     const { getSetupState } = await import('@/lib/shared/db-types')
+    // Dynamic import to sidestep the same cycle settings.widget's own imports avoid
+    // (settings sub-modules <-> server function modules).
+    const { parseJsonConfig } = await import('@/lib/server/domains/settings/settings.helpers')
+    const { DEFAULT_WIDGET_CONFIG } = await import('@/lib/server/domains/settings/settings.types')
 
     const [
       orgBoards,
       humanMembers,
       orgSettings,
-      widgetConfig,
       connectedIntegration,
       helpArticle,
       statusComponent,
@@ -423,7 +425,6 @@ export const fetchOnboardingStatus = createServerFn({ method: 'GET' }).handler(a
         .from(principal)
         .where(and(eq(principal.type, 'user'), inArray(principal.role, ['admin', 'member']))),
       getSettings(),
-      getWidgetConfig(),
       db.query.integrations.findFirst({
         columns: { id: true },
         where: eq(integrations.status, 'connected'),
@@ -437,6 +438,10 @@ export const fetchOnboardingStatus = createServerFn({ method: 'GET' }).handler(a
         where: isNull(statusComponents.deletedAt),
       }),
     ])
+
+    // Reuse the settings row already fetched above instead of a second
+    // requireSettings() round-trip via getWidgetConfig().
+    const widgetConfig = parseJsonConfig(orgSettings?.widgetConfig ?? null, DEFAULT_WIDGET_CONFIG)
 
     const setupState = getSetupState(orgSettings?.setupState ?? null)
     const hasBranding = Boolean(orgSettings?.logoKey)

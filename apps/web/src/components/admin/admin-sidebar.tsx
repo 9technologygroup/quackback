@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouter, useRouterState, useRouteContext } from '@tanstack/react-router'
 import {
   ChatBubbleLeftIcon,
@@ -37,7 +37,7 @@ import type { LatestVersionResult } from '@/lib/server/functions/version'
 import type { SettingsBrandingData } from '@/lib/server/domains/settings/settings.types'
 import { setAgentAvailabilityFn } from '@/lib/server/functions/conversation'
 import { adminQueries } from '@/lib/client/queries/admin'
-import { launchChecklistSummary } from '@/lib/shared/launch-checklist'
+import { launchChecklistSummary, type LaunchStatus } from '@/lib/shared/launch-checklist'
 
 /** Availability toggle for the account menu (conversation routing). The label shows the
  *  state you'll switch to; the avatar dot shows the current one. */
@@ -143,10 +143,23 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
   // The settings area is admin-only (every tab gates on requireAuth(['admin'])).
   // Members would only ever land on the access-denied page, so hide the cog.
   const isAdmin = userRole === 'admin'
-  // Launch checklist progress for the shell badge (admins only)
+  // Launch checklist progress for the shell badge (admins only). Once the
+  // checklist is complete there's nothing left to watch for, so the query
+  // stops refetching — read the last-known result straight from the cache
+  // (rather than from `onboardingQuery.data`, which isn't declared yet) to
+  // decide whether to keep it enabled. Skip/complete actions invalidate
+  // ['admin', 'onboarding'] explicitly, so this can't go stale forever.
+  const queryClient = useQueryClient()
+  const onboardingQueryOptions = adminQueries.onboardingStatus()
+  const cachedOnboardingStatus = queryClient.getQueryData<LaunchStatus>(
+    onboardingQueryOptions.queryKey
+  )
+  const cachedAllComplete = cachedOnboardingStatus
+    ? launchChecklistSummary(cachedOnboardingStatus).allComplete
+    : false
   const onboardingQuery = useQuery({
-    ...adminQueries.onboardingStatus(),
-    enabled: isAdmin,
+    ...onboardingQueryOptions,
+    enabled: isAdmin && !cachedAllComplete,
   })
   const launchSummary = onboardingQuery.data ? launchChecklistSummary(onboardingQuery.data) : null
   const showLaunchNav = isAdmin && (!launchSummary || !launchSummary.allComplete)
