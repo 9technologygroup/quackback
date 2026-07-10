@@ -220,7 +220,7 @@ export const Route = createFileRoute('/widget/')({
             }
           : null,
       linkPreviews:
-        (settings?.featureFlags as { linkPreviews?: boolean } | undefined)?.linkPreviews ?? false,
+        (settings?.featureFlags as { supportInbox?: boolean } | undefined)?.supportInbox ?? false,
       defaultBoard: settings?.publicWidgetConfig?.defaultBoard,
       portalAccess: {
         isPrivate: settings?.publicPortalConfig?.portalAccess?.isPrivate ?? false,

@@ -126,34 +126,28 @@ export const kbKnowledgeSource: KnowledgeSource = {
 const STATIC_SOURCES: readonly KnowledgeSource[] = [kbKnowledgeSource]
 
 /**
- * Resolve the active source list: the knowledge-base source plus, per-flag,
- * the feedback-posts source (`assistantPostGrounding`), the admin-curated
- * snippets source (`assistantSnippets`), and the past-conversation-summaries
- * source (`assistantConversationGrounding`). Each optional source's domain is
- * imported dynamically so this module (and everything that statically
- * imports it, including assistant.toolspec.ts) never pulls in that source's
- * schema at load time when its flag is off — mirrors `resolveToolSpecs()`'s
- * lazy import of the connectors domain behind `dataConnectors`.
+ * Resolve the active source list: the knowledge-base source plus, behind the
+ * `assistantKnowledge` flag, the feedback-posts source, the admin-curated
+ * snippets source, and the past-conversation-summaries source. Each optional
+ * source's domain is imported dynamically so this module (and everything
+ * that statically imports it, including assistant.toolspec.ts) never pulls
+ * in that source's schema at load time when the flag is off — mirrors
+ * `resolveToolSpecs()`'s lazy import of the connectors domain behind
+ * `assistantTools`.
  */
 export async function resolveKnowledgeSources(): Promise<KnowledgeSource[]> {
-  const [postGroundingEnabled, snippetsEnabled, conversationGroundingEnabled] = await Promise.all([
-    isFeatureEnabled('assistantPostGrounding'),
-    isFeatureEnabled('assistantSnippets'),
-    isFeatureEnabled('assistantConversationGrounding'),
-  ])
   const sources: KnowledgeSource[] = [...STATIC_SOURCES]
-  if (postGroundingEnabled) {
-    const { postsKnowledgeSource } = await import('./posts-retrieval')
-    sources.push(postsKnowledgeSource)
-  }
-  if (snippetsEnabled) {
-    const { snippetsKnowledgeSource } = await import('./snippets-retrieval')
-    sources.push(snippetsKnowledgeSource)
-  }
-  if (conversationGroundingEnabled) {
-    const { conversationSummariesKnowledgeSource } =
-      await import('./conversation-summary-retrieval')
-    sources.push(conversationSummariesKnowledgeSource)
+  if (await isFeatureEnabled('assistantKnowledge')) {
+    const [{ postsKnowledgeSource }, { snippetsKnowledgeSource }, summaries] = await Promise.all([
+      import('./posts-retrieval'),
+      import('./snippets-retrieval'),
+      import('./conversation-summary-retrieval'),
+    ])
+    sources.push(
+      postsKnowledgeSource,
+      snippetsKnowledgeSource,
+      summaries.conversationSummariesKnowledgeSource
+    )
   }
   return sources
 }

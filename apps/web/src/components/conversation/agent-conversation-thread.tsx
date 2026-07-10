@@ -392,7 +392,7 @@ export function AgentConversationThread({
     if (!capabilities.reply) setNoteMode(true)
   }, [capabilities.reply])
 
-  const linkPreviewsEnabled = capabilities.linkPreviews && (flags?.linkPreviews ?? false)
+  const linkPreviewsEnabled = capabilities.linkPreviews && (flags?.supportInbox ?? false)
   const debouncedComposerText = useDebouncedValue(
     noteMode ? noteDraft.markdown : replyDraft.markdown,
     500
@@ -812,8 +812,7 @@ export function AgentConversationThread({
   // translation display, gated on the flag AND the capability. A no-op hook
   // (everything false/undefined) whenever either is off, so a ticket's
   // behavior is unaffected.
-  const inboxTranslationEnabled =
-    capabilities.inboxTranslation && (flags?.inboxTranslation ?? false)
+  const inboxTranslationEnabled = capabilities.inboxTranslation && (flags?.inboxAi ?? false)
   const inboxTranslation = useInboxTranslation({
     enabledFlag: inboxTranslationEnabled,
     conversationId: conversationId ?? INACTIVE_CONVERSATION_ID,

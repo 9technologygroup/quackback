@@ -373,7 +373,7 @@ function toLegacyServerTool(spec: AssistantToolSpec, ctx: AssistantToolContext) 
  * means every catalogue tool runs exactly as before the pipeline existed,
  * with no settings read beyond the flag — that legacy branch uses the static
  * registry directly and never resolves connector tools, even if
- * dataConnectors is on: every connector's defaultMode is 'disabled' and the
+ * assistantTools is on: every connector's defaultMode is 'disabled' and the
  * legacy branch does not consult control modes at all, so a connector must
  * never reach it unwrapped. Actions on resolves the full catalogue (static +
  * connector, via `resolveToolSpecs`) and each spec's fully resolved mode (see
@@ -402,7 +402,7 @@ export async function assembleAssistantToolset(
   // turn. See `parents`'s own doc on AssistantToolSpec.
   const parentKind = turnParentKind(ctx)
 
-  const actionsEnabled = await isFeatureEnabled('assistantActions')
+  const actionsEnabled = await isFeatureEnabled('assistantTools')
   if (!actionsEnabled) {
     // Flag off exposes ONLY the read tools, unwrapped. Write specs must never
     // register without the pipeline, so a growing catalogue cannot widen the

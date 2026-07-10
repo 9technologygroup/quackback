@@ -7,7 +7,7 @@
  * COPILOT-SIDEBAR-UX.md "20 Summarize").
  *
  * Both fns are gated on `copilot.use` + `assertCopilotAvailable` (the
- * `assistantCopilot` flag + the assistant being configured), mirroring the
+ * `inboxAi` flag + the assistant being configured), mirroring the
  * copilot.ts SSE route's gate order, then the item-scoped viewability check
  * (`assertConversationViewable` / `assertTicketVisible`). Each reuses its
  * matching generator in conversation-summary.service.ts

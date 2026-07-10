@@ -1,23 +1,17 @@
 import { test, expect } from '@playwright/test'
 
-test.describe('Admin Experimental Settings', () => {
+test.describe('Admin Labs Settings', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/admin/settings/labs')
     await page.waitForLoadState('networkidle')
   })
 
-  test('page loads and shows Experimental Features heading', async ({ page }) => {
-    await expect(page.getByText('Experimental Features')).toBeVisible({ timeout: 10000 })
-  })
-
-  test('shows disclaimer about experimental features', async ({ page }) => {
-    await expect(
-      page.getByText('These features are in development and may change or be removed.')
-    ).toBeVisible({ timeout: 10000 })
+  test('page loads and shows the Labs heading', async ({ page }) => {
+    await expect(page.getByRole('heading', { name: 'Labs' })).toBeVisible({ timeout: 10000 })
   })
 
   test('shows Help Center feature flag card', async ({ page }) => {
-    await expect(page.getByText('Help Center')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Help Center', { exact: true })).toBeVisible({ timeout: 10000 })
     await expect(
       page.getByText('Publish a searchable help center so customers can find answers on their own.')
     ).toBeVisible()
@@ -31,7 +25,7 @@ test.describe('Admin Experimental Settings', () => {
   })
 
   test('shows Conversations feature flag card', async ({ page }) => {
-    await expect(page.getByText('Conversations')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Conversations', { exact: true })).toBeVisible({ timeout: 10000 })
   })
 
   test('each feature flag card has a toggle switch', async ({ page }) => {
@@ -87,7 +81,7 @@ test.describe('Admin Experimental Settings', () => {
   })
 
   test('feature flag descriptions are rendered below their labels', async ({ page }) => {
-    // Each Card > CardContent has a label + description paragraph
+    // Each row has a label + description paragraph
     const descriptions = page.locator('.space-y-0\\.5 p.text-xs')
     if ((await descriptions.count()) > 0) {
       await expect(descriptions.first()).toBeVisible({ timeout: 10000 })
@@ -101,10 +95,24 @@ test.describe('Admin Experimental Settings', () => {
     }
   })
 
-  test('page shows three feature flag cards', async ({ page }) => {
-    // The three labs flags: helpCenter, aiFeedbackExtraction, supportInbox.
-    // (Analytics graduated to GA and is no longer a flag.)
+  test('page shows every consolidated flag switch', async ({ page }) => {
+    // 9 top-level cards plus the nested Visitor Identity sub-toggle.
     const switches = page.locator('button[role="switch"]')
-    await expect(switches).toHaveCount(3, { timeout: 10000 })
+    await expect(switches).toHaveCount(10, { timeout: 10000 })
+  })
+
+  test('Visitor Identity sub-toggle is disabled while Visitor Analytics is off', async ({
+    page,
+  }) => {
+    const analyticsSwitch = page.locator('#flag-visitorAnalytics')
+    const deviceSwitch = page.locator('#flag-visitorDeviceTracking')
+    await expect(analyticsSwitch).toBeVisible({ timeout: 10000 })
+    await expect(deviceSwitch).toBeVisible()
+
+    if (!(await analyticsSwitch.isChecked())) {
+      await expect(deviceSwitch).toBeDisabled()
+    } else {
+      await expect(deviceSwitch).toBeEnabled()
+    }
   })
 })

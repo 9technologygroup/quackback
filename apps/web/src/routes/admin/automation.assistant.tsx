@@ -62,7 +62,7 @@ function AssistantPage() {
       <QuinnPerformanceCard />
       <QuinnToolsCard />
 
-      {flags?.assistantActions ? (
+      {flags?.assistantTools ? (
         <>
           <CopilotUsageCard />
           <AssistantBasicsCard />

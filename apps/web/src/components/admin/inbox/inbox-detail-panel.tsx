@@ -184,7 +184,7 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
   }
   const flags = settings?.featureFlags
   const hasCopilotPermission = usePermission(PERMISSIONS.COPILOT_USE)
-  const showCopilotTab = !!flags?.assistantCopilot && hasCopilotPermission
+  const showCopilotTab = !!flags?.inboxAi && hasCopilotPermission
 
   const isTicketItem = item.kind === 'ticket'
   // back_office/tracker tickets have no requester concept at all (§2.7) — the

@@ -12,9 +12,9 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
 }))
 
 // Stands in for the real feedback-posts source: resolveKnowledgeSources
-// dynamically imports './posts-retrieval' only when assistantPostGrounding is
+// dynamically imports './posts-retrieval' only when assistantKnowledge is
 // on, mirroring resolveToolSpecs's lazy import of the connectors domain
-// behind dataConnectors (see assistant.tools.test.ts / assistant.runtime.test.ts).
+// behind assistantTools (see assistant.tools.test.ts / assistant.runtime.test.ts).
 const mockPostsRetrieve = vi.fn()
 vi.mock('../posts-retrieval', () => ({
   postsKnowledgeSource: {
@@ -23,7 +23,7 @@ vi.mock('../posts-retrieval', () => ({
   },
 }))
 
-// Same idea for the snippets source, gated behind assistantSnippets.
+// Same idea for the snippets source, behind the same flag.
 const mockSnippetsRetrieve = vi.fn()
 vi.mock('../snippets-retrieval', () => ({
   snippetsKnowledgeSource: {
@@ -32,8 +32,7 @@ vi.mock('../snippets-retrieval', () => ({
   },
 }))
 
-// Same idea for the past-conversation-summaries source, gated behind
-// assistantConversationGrounding.
+// Same idea for the past-conversation-summaries source, behind the same flag.
 const mockConversationSummariesRetrieve = vi.fn()
 vi.mock('../conversation-summary-retrieval', () => ({
   conversationSummariesKnowledgeSource: {
@@ -42,8 +41,8 @@ vi.mock('../conversation-summary-retrieval', () => ({
   },
 }))
 
-/** Flag-aware stand-in for isFeatureEnabled, so enabling one grounding flag
- *  in a test doesn't accidentally also enable the other. */
+/** Flag-aware stand-in for isFeatureEnabled, so enabling one flag in a test
+ *  doesn't accidentally also enable another. */
 function onlyFlag(enabledFlag: string) {
   return async (flag: string) => flag === enabledFlag
 }
@@ -117,35 +116,15 @@ describe('kbKnowledgeSource', () => {
 })
 
 describe('resolveKnowledgeSources', () => {
-  it('registers only the knowledge-base source when every optional flag is off', async () => {
+  it('registers only the knowledge-base source when assistantKnowledge is off', async () => {
     mockIsFeatureEnabled.mockResolvedValue(false)
     const sources = await resolveKnowledgeSources()
     expect(sources).toEqual([kbKnowledgeSource])
-    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantPostGrounding')
-    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantSnippets')
-    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantConversationGrounding')
+    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantKnowledge')
   })
 
-  it('adds the feedback-posts source when assistantPostGrounding is on', async () => {
-    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantPostGrounding'))
-    const sources = await resolveKnowledgeSources()
-    expect(sources.map((s) => s.sourceType)).toEqual(['article', 'post'])
-  })
-
-  it('adds the snippets source when assistantSnippets is on', async () => {
-    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantSnippets'))
-    const sources = await resolveKnowledgeSources()
-    expect(sources.map((s) => s.sourceType)).toEqual(['article', 'snippet'])
-  })
-
-  it('adds the past-conversation-summaries source when assistantConversationGrounding is on', async () => {
-    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantConversationGrounding'))
-    const sources = await resolveKnowledgeSources()
-    expect(sources.map((s) => s.sourceType)).toEqual(['article', 'summary'])
-  })
-
-  it('adds every optional source when every flag is on', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(true)
+  it('adds the posts, snippets, and past-conversation-summaries sources when assistantKnowledge is on', async () => {
+    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantKnowledge'))
     const sources = await resolveKnowledgeSources()
     expect(sources.map((s) => s.sourceType)).toEqual(['article', 'post', 'snippet', 'summary'])
   })
@@ -164,7 +143,9 @@ describe('retrieveKnowledge', () => {
   })
 
   it('merges sources in parallel, re-ranks by score desc, and trims to topK', async () => {
-    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantPostGrounding'))
+    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantKnowledge'))
+    mockSnippetsRetrieve.mockResolvedValue([])
+    mockConversationSummariesRetrieve.mockResolvedValue([])
     mockRetrieveKbArticles.mockResolvedValue([
       makeKbArticle('kb_low', { score: 0.5 }),
       makeKbArticle('kb_high', { score: 0.9 }),
@@ -260,8 +241,10 @@ describe('retrieveKnowledge', () => {
   })
 
   it('forwards customerPrincipalId and conversationId to every source (only the summaries source reads them)', async () => {
-    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantConversationGrounding'))
+    mockIsFeatureEnabled.mockImplementation(onlyFlag('assistantKnowledge'))
     mockRetrieveKbArticles.mockResolvedValue([])
+    mockPostsRetrieve.mockResolvedValue([])
+    mockSnippetsRetrieve.mockResolvedValue([])
     mockConversationSummariesRetrieve.mockResolvedValue([])
 
     await retrieveKnowledge('q', 'public', {

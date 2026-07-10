@@ -132,7 +132,7 @@ async function executeConnectorTool(
 /** Build a connector's tool spec. GET connectors are read-risk (autonomous
  *  reachable); POST connectors are write-risk (approval-capable too). Every
  *  connector defaults to 'disabled' — a connector is opt-in per plan even once
- *  the dataConnectors flag is on workspace-wide. */
+ *  the assistantTools flag is on workspace-wide. */
 export function connectorToolSpec(connector: DataConnector): AssistantToolSpec {
   const name = `connector_${connector.slug}`
   const risk = connector.method === 'GET' ? 'read' : 'write'

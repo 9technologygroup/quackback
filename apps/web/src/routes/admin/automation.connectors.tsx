@@ -9,11 +9,11 @@ export const Route = createFileRoute('/admin/automation/connectors')({
   component: ConnectorsPageRoute,
 })
 
-/** Gate behind the `dataConnectors` flag, mirroring the workflows page. */
+/** Gate behind the `assistantTools` flag, mirroring the workflows page. */
 function ConnectorsPageRoute() {
   const { settings } = Route.useRouteContext()
   const flags = settings?.featureFlags as FeatureFlags | undefined
-  if (!flags?.dataConnectors) {
+  if (!flags?.assistantTools) {
     return <Navigate to="/admin/automation/assistant" />
   }
   return <ConnectorsPage />

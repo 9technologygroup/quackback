@@ -1,6 +1,6 @@
 /**
  * Server functions for the Data Connector v0 admin UI: CRUD plus the
- * test-call flow. Gated on connector.manage + the dataConnectors flag.
+ * test-call flow. Gated on connector.manage + the assistantTools flag.
  *
  * No tier gate: TierFeatureFlags (settings/tier-limits.types.ts) has no entry
  * for data connectors yet, and the assistant-actions precedent (also
@@ -81,7 +81,7 @@ const testConnectorSchema = z.object({
  *  point — sees each handler as gated. */
 async function assertDataConnectorsEnabled(): Promise<void> {
   const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
-  if (!(await isFeatureEnabled('dataConnectors'))) {
+  if (!(await isFeatureEnabled('assistantTools'))) {
     throw new Error('Data connectors are not enabled')
   }
 }

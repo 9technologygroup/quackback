@@ -2,7 +2,7 @@
  * Shared gate sequence for the two teammate-facing Copilot SSE routes
  * (copilot.ts, transform.ts): `copilot.use` permission -> body parse against
  * the caller's own zod schema -> `assertCopilotAvailable` (the
- * `assistantCopilot` flag, then the assistant being configured) -> the AI
+ * `inboxAi` flag, then the assistant being configured) -> the AI
  * token budget -> item-scoped viewability (`assertConversationViewable` or
  * `assertTicketVisible`, whichever the parsed request carries — unified
  * inbox §2.9), each already mapped onto the route's error envelope
@@ -55,7 +55,7 @@ export class CopilotUnavailableError extends Error {
 }
 
 /**
- * The `assistantCopilot` flag -> assistant-configured half of the Copilot
+ * The `inboxAi` flag -> assistant-configured half of the Copilot
  * gate sequence, order load-bearing (the flag is checked first). Permission
  * and item viewability are call-site specific and stay out of this helper;
  * this covers only the two checks every Copilot entry point repeated
@@ -63,7 +63,7 @@ export class CopilotUnavailableError extends Error {
  * `copilot-summary.ts`.
  */
 export async function assertCopilotAvailable(): Promise<void> {
-  if (!(await isFeatureEnabled('assistantCopilot'))) {
+  if (!(await isFeatureEnabled('inboxAi'))) {
     throw new CopilotUnavailableError('NOT_FOUND', 'Copilot is not available', 404)
   }
   if (!isAssistantConfigured()) {

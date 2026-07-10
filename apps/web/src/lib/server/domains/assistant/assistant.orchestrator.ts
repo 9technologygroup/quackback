@@ -79,7 +79,7 @@ export function __resetAssistantPrincipalMemo(): void {
  */
 async function triggerLiveAttributeRecheck(conversationId: ConversationId): Promise<void> {
   try {
-    if (!(await isFeatureEnabled('aiAttributeDetection'))) return
+    if (!(await isFeatureEnabled('inboxAi'))) return
     const keys = await getLiveWorkflowReferencedAttributeKeys()
     if (keys.size === 0) return
     await classifyConversationAttributes(conversationId, {

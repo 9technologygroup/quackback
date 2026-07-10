@@ -943,7 +943,7 @@ export const getConversationFn = createServerFn({ method: 'GET' })
       // is already stored; a detection that completes during (or after) this
       // request simply lands on the NEXT read of this conversation.
       const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
-      if (await isFeatureEnabled('inboxTranslation')) {
+      if (await isFeatureEnabled('inboxAi')) {
         void import('@/lib/server/domains/conversation/conversation-translation.service')
           .then((m) => m.maybeDetectCustomerLanguage(conversation))
           .catch((err) =>
@@ -999,7 +999,7 @@ export const sendAgentMessageFn = createServerFn({ method: 'POST' })
       // explicit "Send untranslated" fallback a teammate picks after a
       // TRANSLATION_FAILED error — it bypasses this block entirely.
       const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
-      if (!data.skipTranslation && (await isFeatureEnabled('inboxTranslation'))) {
+      if (!data.skipTranslation && (await isFeatureEnabled('inboxAi'))) {
         const { resolveOutgoingReplyTranslation } =
           await import('@/lib/server/domains/conversation/conversation-translation.service')
         // Any failure here (AI unconfigured, unparseable/empty response)
@@ -1540,7 +1540,7 @@ export const translateConversationMessagesFn = createServerFn({ method: 'GET' })
       const ctx = await requireAuth({ permission: PERMISSIONS.CONVERSATION_VIEW })
       const actor = await policyActorFromAuth(ctx)
       const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
-      if (!(await isFeatureEnabled('inboxTranslation'))) return {}
+      if (!(await isFeatureEnabled('inboxAi'))) return {}
 
       const { assertConversationViewable } =
         await import('@/lib/server/domains/conversation/conversation.service')

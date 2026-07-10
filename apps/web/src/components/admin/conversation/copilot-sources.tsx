@@ -46,14 +46,14 @@ export const SOURCE_OPTIONS: SourceOption[] = [
     label: 'Snippets',
     rowLabel: 'Snippet',
     icon: DocumentTextIcon,
-    flagKey: 'assistantSnippets',
+    flagKey: 'assistantKnowledge',
   },
   {
     type: 'post',
     label: 'Roadmap posts',
     rowLabel: 'Roadmap post',
     icon: MapIcon,
-    flagKey: 'assistantPostGrounding',
+    flagKey: 'assistantKnowledge',
   },
   {
     type: 'summary',
@@ -61,7 +61,7 @@ export const SOURCE_OPTIONS: SourceOption[] = [
     rowLabel: 'Past conversation',
     subtitle: "This customer's closed conversations",
     icon: ChatBubbleLeftRightIcon,
-    flagKey: 'assistantConversationGrounding',
+    flagKey: 'assistantKnowledge',
   },
 ]
 

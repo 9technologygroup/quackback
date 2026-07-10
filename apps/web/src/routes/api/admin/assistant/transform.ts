@@ -13,7 +13,7 @@
  * transform itself never reads or writes the item's messages, and (like
  * copilot.ts) never touches assistant_involvements or unread counts.
  *
- * Same gate order as copilot.ts: `copilot.use` -> the `assistantCopilot` flag
+ * Same gate order as copilot.ts: `copilot.use` -> the `inboxAi` flag
  * -> AI configured -> the AI token budget -> the item-viewable check. That
  * shared sequence lives in copilot-gate.ts, alongside copilot.ts.
  */

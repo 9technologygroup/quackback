@@ -952,7 +952,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // blocks appended after it — turn-scoped config fetched once before the
   // attempt loop. Flag off skips the fetch entirely, so both the tool set and
   // the prompt stay byte-identical to the pre-actions baseline.
-  const actionsEnabled = await isFeatureEnabled('assistantActions')
+  const actionsEnabled = await isFeatureEnabled('assistantTools')
   let toolControls: AssistantToolControls | undefined
   let assistantConfig: Awaited<ReturnType<typeof getAssistantConfig>> | undefined
   let guidanceRules: AssistantGuidanceRule[] = []
@@ -979,7 +979,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
 
   // Live attribute catalogue (P0 catalogue injection): fetched only when
   // set_attribute actually made it into this turn's tool set, so a turn with
-  // the tool disabled (or assistantActions off entirely) never pays for the
+  // the tool disabled (or assistantTools off entirely) never pays for the
   // read. IO stays here, not inside buildAssistantSystemPrompt, which is pure.
   const attributeDefinitions = toolNames.has('set_attribute')
     ? await listConversationAttributes()
@@ -990,7 +990,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // element past the base (element 0 always carries the JSON contract).
   const systemPrompts = buildAssistantSystemPrompt('Quinn', activeSpecs, attributeDefinitions)
   // Copilot framing: unconditional on the surface alone (never gated on the
-  // assistantActions flag, unlike basics/surface instructions/guidance below);
+  // assistantTools flag, unlike basics/surface instructions/guidance below);
   // it is structural, not admin-configured content.
   if (surface === 'copilot') {
     systemPrompts.push(buildCopilotFramingPrompt())

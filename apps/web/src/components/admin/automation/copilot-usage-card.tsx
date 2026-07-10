@@ -3,7 +3,7 @@
  * run, on-demand summaries, and the propose-approve-execute actions funnel,
  * over the last 30 days. Read-only reporting; gated server-side on
  * analytics.view like the rest of the Quinn performance surface. Mounted
- * only when assistantActions is on — the pending-actions funnel this card
+ * only when assistantTools is on — the pending-actions funnel this card
  * reports on doesn't exist otherwise (see automation.assistant.tsx).
  */
 import { useQuery } from '@tanstack/react-query'

@@ -176,7 +176,7 @@ beforeEach(() => {
 })
 
 describe('classifyConversationAttributes: gating', () => {
-  it('is a no-op when the aiAttributeDetection flag is off', async () => {
+  it('is a no-op when the inboxAi flag is off', async () => {
     mockIsFeatureEnabled.mockResolvedValue(false)
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(result).toEqual([])

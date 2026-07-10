@@ -1,7 +1,7 @@
 /**
  * `summarizeConversationNowFn` (Quinn Copilot P2-C.3, manual half): the
  * Copilot panel's Summarize chip. Covers the gate order (copilot.use ->
- * assistantCopilot flag -> assistant configured -> conversation viewable)
+ * inboxAi flag -> assistant configured -> conversation viewable)
  * and that it never persists: it only forwards
  * `generateConversationSummaryText`'s result. createServerFn is stubbed to a
  * directly-callable fn (mirrors assistant-snippets.test.ts) so the real zod
@@ -96,12 +96,12 @@ describe('summarizeConversationNowFn', () => {
     expect(hoisted.requireAuth).toHaveBeenCalledWith({ permission: PERMISSIONS.COPILOT_USE })
   })
 
-  it('checks the assistantCopilot flag after auth', async () => {
+  it('checks the inboxAi flag after auth', async () => {
     await summarizeConversationNowFn({ data: { conversationId: CONVERSATION_ID } })
-    expect(hoisted.isFeatureEnabled).toHaveBeenCalledWith('assistantCopilot')
+    expect(hoisted.isFeatureEnabled).toHaveBeenCalledWith('inboxAi')
   })
 
-  it('rejects when the assistantCopilot flag is off, without generating anything', async () => {
+  it('rejects when the inboxAi flag is off, without generating anything', async () => {
     hoisted.isFeatureEnabled.mockResolvedValue(false)
     await expect(
       summarizeConversationNowFn({ data: { conversationId: CONVERSATION_ID } })
@@ -158,10 +158,10 @@ describe('summarizeConversationNowFn', () => {
 })
 
 describe('summarizeTicketNowFn (unified inbox §2.9)', () => {
-  it('gates on copilot.use, the assistantCopilot flag, and assistant configured, same order as the conversation fn', async () => {
+  it('gates on copilot.use, the inboxAi flag, and assistant configured, same order as the conversation fn', async () => {
     await summarizeTicketNowFn({ data: { ticketId: TICKET_ID } })
     expect(hoisted.requireAuth).toHaveBeenCalledWith({ permission: PERMISSIONS.COPILOT_USE })
-    expect(hoisted.isFeatureEnabled).toHaveBeenCalledWith('assistantCopilot')
+    expect(hoisted.isFeatureEnabled).toHaveBeenCalledWith('inboxAi')
   })
 
   it('checks the ticket is viewable by the caller before summarizing, never the conversation gate', async () => {

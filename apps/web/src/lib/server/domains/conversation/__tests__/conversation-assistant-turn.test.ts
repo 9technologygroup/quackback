@@ -436,7 +436,7 @@ describe('runAssistantTurnForConversation activity snapshot (Redis mirror)', () 
 })
 
 describe('runAssistantTurnForConversation Phase 2 live attribute re-check', () => {
-  it('never fires when the aiAttributeDetection flag is off', async () => {
+  it('never fires when the inboxAi flag is off', async () => {
     mockIsFeatureEnabled.mockResolvedValue(false)
     mockGetLiveWorkflowReferencedAttributeKeys.mockResolvedValue(new Set(['issue_type']))
     assistantMock.runAssistantTurn.mockResolvedValue(answered({}))
