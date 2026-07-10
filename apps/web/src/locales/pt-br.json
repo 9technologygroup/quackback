@@ -690,7 +690,6 @@
   "admin.people.new.verifiedMatch": "Já existe uma pessoa com este e-mail.",
   "admin.people.new.viewPerson": "Ver pessoa",
   "admin.people.new.possibleMatches": "Possíveis correspondências existentes",
-  "admin.people.new.matchUnverifiedUser": "Usuário não verificado",
   "admin.people.new.matchLead": "Lead",
   "admin.people.new.view": "Ver"
 }

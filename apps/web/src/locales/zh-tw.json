@@ -690,7 +690,6 @@
   "admin.people.new.verifiedMatch": "已存在使用此電子郵件的聯絡人。",
   "admin.people.new.viewPerson": "檢視聯絡人",
   "admin.people.new.possibleMatches": "可能已存在的相符項目",
-  "admin.people.new.matchUnverifiedUser": "未驗證使用者",
   "admin.people.new.matchLead": "潛在客戶",
   "admin.people.new.view": "檢視"
 }

@@ -690,7 +690,6 @@
   "admin.people.new.verifiedMatch": "يوجد بالفعل شخص بهذا البريد الإلكتروني.",
   "admin.people.new.viewPerson": "عرض الشخص",
   "admin.people.new.possibleMatches": "تطابقات محتملة موجودة",
-  "admin.people.new.matchUnverifiedUser": "مستخدم غير مُتحقق منه",
   "admin.people.new.matchLead": "عميل محتمل",
   "admin.people.new.view": "عرض"
 }

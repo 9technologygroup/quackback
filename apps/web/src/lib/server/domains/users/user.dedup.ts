@@ -5,8 +5,9 @@
  * UI asks whether the email is already known. Two sources can match:
  *
  * - `user.email` — at most ONE row (case-sensitive partial unique index, but
- *   every app writer lowercases before insert). Its `emailVerified` state
- *   decides whether the match is hard (verified) or soft (unverified).
+ *   every app writer lowercases before insert). Any user match blocks
+ *   creation — the unique index means creating over it can only fail. The
+ *   `emailVerified` state is reported for display.
  * - `principal.contactEmail` — captured on anonymous visitors (leads) by the
  *   messenger. NO uniqueness: anonymous identities are localStorage-scoped
  *   per browser, so MULTIPLE leads can legitimately share one email. The

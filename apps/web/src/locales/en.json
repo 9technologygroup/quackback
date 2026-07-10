@@ -690,7 +690,6 @@
   "admin.people.new.verifiedMatch": "A person with this email already exists.",
   "admin.people.new.viewPerson": "View person",
   "admin.people.new.possibleMatches": "Possible existing matches",
-  "admin.people.new.matchUnverifiedUser": "Unverified user",
   "admin.people.new.matchLead": "Lead",
   "admin.people.new.view": "View"
 }

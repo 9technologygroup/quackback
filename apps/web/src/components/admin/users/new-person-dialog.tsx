@@ -6,10 +6,11 @@
  * same portal access as a confirmed email) and is only enabled when an email
  * is entered.
  *
- * Dedup on submit: a VERIFIED user match blocks creation and links to the
- * existing person; unverified-user and lead matches (there can be several
- * leads per email) show as a soft "possible existing matches" list with view
- * links and a "create anyway" path.
+ * Dedup on submit: ANY user match (verified or not) blocks creation and links
+ * to the existing person — user.email is unique, so creating over one can
+ * only fail with EMAIL_TAKEN. Lead matches (there can be several leads per
+ * email; leads have no user row) show as a soft "possible existing matches"
+ * list with view links and a "create anyway" path.
  */
 import { useState } from 'react'
 import { useIntl } from 'react-intl'
@@ -61,10 +62,10 @@ export function NewPersonDialog({
 
   const trimmedEmail = email.trim()
   const dedupIsCurrent = dedup !== null && dedup.email === trimmedEmail.toLowerCase()
-  const verifiedMatch = dedupIsCurrent
-    ? (dedup.matches.find((m) => m.type === 'verified_user') ?? null)
-    : null
-  const softMatches = dedupIsCurrent ? dedup.matches.filter((m) => m.type !== 'verified_user') : []
+  // user.email is unique, so any user match (verified or not) makes creation
+  // impossible — hard-block and point at the existing person instead.
+  const userMatch = dedupIsCurrent ? (dedup.matches.find((m) => m.type !== 'lead') ?? null) : null
+  const leadMatches = dedupIsCurrent ? dedup.matches.filter((m) => m.type === 'lead') : []
 
   const reset = () => {
     setName('')
@@ -110,8 +111,8 @@ export function NewPersonDialog({
       return
     }
 
-    // First submit with this email: run the dedup check. A verified match
-    // blocks; soft matches flip the button to "Create anyway".
+    // First submit with this email: run the dedup check. A user match
+    // blocks; lead matches flip the button to "Create anyway".
     if (!dedupIsCurrent) {
       setIsChecking(true)
       try {
@@ -131,18 +132,10 @@ export function NewPersonDialog({
       return
     }
 
-    // Dedup already ran for this email: verified match keeps blocking,
-    // soft matches proceed as "create anyway".
-    if (!verifiedMatch) create.mutate()
+    // Dedup already ran for this email: a user match keeps blocking,
+    // lead matches proceed as "create anyway".
+    if (!userMatch) create.mutate()
   }
-
-  const matchTypeLabel = (type: ContactEmailMatch['type']) =>
-    type === 'lead'
-      ? intl.formatMessage({ id: 'admin.people.new.matchLead', defaultMessage: 'Lead' })
-      : intl.formatMessage({
-          id: 'admin.people.new.matchUnverifiedUser',
-          defaultMessage: 'Unverified user',
-        })
 
   const viewPerson = (principalId: string) => {
     onOpenChange(false)
@@ -232,7 +225,7 @@ export function NewPersonDialog({
             </div>
           </div>
 
-          {verifiedMatch && (
+          {userMatch && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <ExclamationTriangleIcon className="size-4 text-destructive shrink-0" />
@@ -243,16 +236,14 @@ export function NewPersonDialog({
               </div>
               <div className="flex items-center justify-between gap-2 text-sm">
                 <div className="min-w-0">
-                  <div className="font-medium truncate">{verifiedMatch.name}</div>
-                  <div className="text-xs text-muted-foreground truncate">
-                    {verifiedMatch.email}
-                  </div>
+                  <div className="font-medium truncate">{userMatch.name}</div>
+                  <div className="text-xs text-muted-foreground truncate">{userMatch.email}</div>
                 </div>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => viewPerson(verifiedMatch.principalId)}
+                  onClick={() => viewPerson(userMatch.principalId)}
                 >
                   {intl.formatMessage({
                     id: 'admin.people.new.viewPerson',
@@ -263,7 +254,7 @@ export function NewPersonDialog({
             </div>
           )}
 
-          {!verifiedMatch && softMatches.length > 0 && (
+          {!userMatch && leadMatches.length > 0 && (
             <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-2">
               <div className="text-sm font-medium">
                 {intl.formatMessage({
@@ -272,7 +263,7 @@ export function NewPersonDialog({
                 })}
               </div>
               <ul className="space-y-1.5">
-                {softMatches.map((match) => (
+                {leadMatches.map((match) => (
                   <li
                     key={match.principalId}
                     className="flex items-center justify-between gap-2 text-sm"
@@ -280,7 +271,10 @@ export function NewPersonDialog({
                     <div className="min-w-0 flex items-center gap-1.5">
                       <span className="font-medium truncate">{match.name}</span>
                       <Badge size="sm" shape="pill" variant="secondary">
-                        {matchTypeLabel(match.type)}
+                        {intl.formatMessage({
+                          id: 'admin.people.new.matchLead',
+                          defaultMessage: 'Lead',
+                        })}
                       </Badge>
                     </div>
                     <Button
@@ -309,14 +303,14 @@ export function NewPersonDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!name.trim() || create.isPending || isChecking || !!verifiedMatch}
+              disabled={!name.trim() || create.isPending || isChecking || !!userMatch}
             >
               {create.isPending || isChecking
                 ? intl.formatMessage({
                     id: 'admin.people.new.creating',
                     defaultMessage: 'Creating...',
                   })
-                : softMatches.length > 0
+                : !userMatch && leadMatches.length > 0
                   ? intl.formatMessage({
                       id: 'admin.people.new.createAnyway',
                       defaultMessage: 'Create anyway',

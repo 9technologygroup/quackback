@@ -690,7 +690,6 @@
   "admin.people.new.verifiedMatch": "已存在使用此邮箱的联系人。",
   "admin.people.new.viewPerson": "查看联系人",
   "admin.people.new.possibleMatches": "可能已存在的匹配",
-  "admin.people.new.matchUnverifiedUser": "未验证用户",
   "admin.people.new.matchLead": "潜在客户",
   "admin.people.new.view": "查看"
 }

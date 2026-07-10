@@ -690,7 +690,6 @@
   "admin.people.new.verifiedMatch": "Человек с этим адресом уже существует.",
   "admin.people.new.viewPerson": "Открыть профиль",
   "admin.people.new.possibleMatches": "Возможные совпадения",
-  "admin.people.new.matchUnverifiedUser": "Неподтверждённый пользователь",
   "admin.people.new.matchLead": "Лид",
   "admin.people.new.view": "Открыть"
 }
