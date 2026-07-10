@@ -296,7 +296,10 @@ export function NewPersonDialog({
             <Button
               type="button"
               variant="outline"
-              onClick={() => onOpenChange(false)}
+              onClick={() => {
+                onOpenChange(false)
+                reset()
+              }}
               disabled={create.isPending}
             >
               {intl.formatMessage({ id: 'admin.people.new.cancel', defaultMessage: 'Cancel' })}

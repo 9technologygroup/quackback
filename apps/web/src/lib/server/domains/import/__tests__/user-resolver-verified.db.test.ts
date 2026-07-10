@@ -1,8 +1,8 @@
 /**
  * Real-DB coverage for ImportUserResolver's emailVerified handling: the
- * assertion applies only to users the import CREATES (never flips an
- * existing user), lands on the inserted row, and is tallied for the
- * per-run audit summary.
+ * flag applies only to users the import CREATES (never flips an existing
+ * user) and lands on the inserted row. Default is verified (claimable
+ * shell); an explicit false opts out.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { createId, type PrincipalId, type UserId } from '@quackback/ids'

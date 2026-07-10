@@ -127,8 +127,4 @@ export class ImportUserResolver {
     return this.pendingCreates.length
   }
 
-  /**
-   * How many users this resolver created (or queued) with an asserted
-   * verified email — the count the per-run audit summary reports.
-   */
 }

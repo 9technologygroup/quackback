@@ -10,9 +10,6 @@ const hoisted = vi.hoisted(() => ({
   completeImportRun: vi.fn(),
   failImportRun: vi.fn(),
   processImport: vi.fn(),
-  recordAuditEvent: vi.fn(),
-  principalFindFirst: vi.fn(),
-  userFindFirst: vi.fn(),
 }))
 
 vi.mock('../import-run.service', () => ({
@@ -24,22 +21,6 @@ vi.mock('../import-run.service', () => ({
 
 vi.mock('../import-service', () => ({
   processImport: hoisted.processImport,
-}))
-
-vi.mock('@/lib/server/db', () => ({
-  db: {
-    query: {
-      principal: { findFirst: hoisted.principalFindFirst },
-      user: { findFirst: hoisted.userFindFirst },
-    },
-  },
-  principal: { id: 'principal.id' },
-  user: { id: 'user.id' },
-  eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
-}))
-
-vi.mock('@/lib/server/audit/log', () => ({
-  recordAuditEvent: hoisted.recordAuditEvent,
 }))
 
 import { runImportCommitJob } from '../import-run-processor'
@@ -58,12 +39,6 @@ describe('runImportCommitJob', () => {
     hoisted.markImportRunRunning.mockResolvedValue(undefined)
     hoisted.completeImportRun.mockResolvedValue(undefined)
     hoisted.failImportRun.mockResolvedValue(undefined)
-    hoisted.principalFindFirst.mockResolvedValue({
-      userId: 'user_initiator',
-      role: 'admin',
-      type: 'user',
-    })
-    hoisted.userFindFirst.mockResolvedValue({ email: 'importer@example.com' })
   })
 
   it('creates the batch tag, marks the run running, then completes it with totals', async () => {
