@@ -15,7 +15,7 @@ import { Queue, Worker, type Job } from 'bullmq'
 import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-config'
 import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { logger } from '@/lib/server/logger'
-import type { WorkflowRun, WorkflowBlockKind } from '@/lib/server/db'
+import type { WorkflowRun } from '@/lib/server/db'
 
 const log = logger.child({ component: 'workflow-wait-queue' })
 
@@ -96,18 +96,8 @@ async function ensureQueue() {
 /** The run cursor's shape while parked at a wait: the node to resume from, how
  *  long it waited, a monotonic per-run sequence number that gives each wait in
  *  a run its own durable-timer job id, and when it parked. Owned here alongside
- *  the job-id keying it drives; the engine writes it, the sweeper reads it.
- *
- * `waitKind` distinguishes a plain timed wait ('timer', the default — omitted
- * on a cursor written before this field existed, which reads the same way)
- * from an interactive block park ('input', see InputWaitCursor below); typed
- * as the full union here (rather than just 'timer') purely so
- * `Partial<InputWaitCursor>` stays assignable wherever code still reads
- * through the base `WaitCursor` shape — every cursor-consuming call site
- * keys off this field before touching the fields that differ between the
- * two. */
+ *  the job-id keying it drives; the engine writes it, the sweeper reads it. */
 export interface WaitCursor {
-  waitKind?: 'timer' | 'input'
   resumeNodeId: string | null
   waitSeconds: number
   waitSeq: number
@@ -118,44 +108,11 @@ export interface WaitCursor {
   resumedAt?: string
 }
 
-/**
- * The cursor shape while parked at an interactive conversational block
- * (Phase C, slice C-1) — a customer's structured reply resumes the run, not a
- * timer, so NO BullMQ job is scheduled for one of these (see
- * scheduleWorkflowResume's call sites in workflow.engine.ts and the sweeper's
- * orphan pass, which must exclude waitKind:'input' rows from its due-filter
- * for the same reason: there is no timer to have gone missing).
- * `resumeNodeId` here is the interactive node's OWN id (walkWorkflow resumes
- * AT it, not at a successor — see graph.ts's module doc), unlike a timer
- * wait's resumeNodeId. `waitSeconds`/`waitSeq`/`waitStartedAt` are still
- * written (0 for waitSeconds) so every existing cursor reader that treats
- * WaitCursor as a defensive bag keeps working unchanged. Built via
- * Omit-and-override rather than `extends WaitCursor` — an interface can't
- * narrow an inherited property's type (waitKind 'timer'|'input' -> 'input'),
- * only an intersection type can.
- */
-export type InputWaitCursor = Omit<WaitCursor, 'waitKind' | 'resumeNodeId'> & {
-  waitKind: 'input'
-  resumeNodeId: string
-  /** The block message this cursor is waiting on a reply to — the
-   *  correlation key event-trigger.ts matches a visitor's blockReply against. */
-  blockMessageId: string
-  blockKind: WorkflowBlockKind
-  /** Baked in at park time so the hot resume path never re-reads the graph. */
-  allowTypingInterrupt: boolean
-  /** Reserved for the abandoned-journey auto-close (rides the existing
-   *  sweeper); written but unconsumed until that ships. */
-  expiresAt: string | null
-}
-
 /** Read a run's cursor defensively — the stored jsonb may be the empty default
  *  or an older shape (a run parked before the wait-sequence keying change
- *  carries neither waitSeq nor waitStartedAt; one parked before input waits
- *  existed carries none of InputWaitCursor's extra fields either).
- *  `Partial<InputWaitCursor>` is the superset every caller reads through —
- *  check `waitKind` before trusting the input-only fields. */
-export function readCursor(run: Pick<WorkflowRun, 'cursor'>): Partial<InputWaitCursor> {
-  return (run.cursor ?? {}) as Partial<InputWaitCursor>
+ *  carries neither waitSeq nor waitStartedAt). */
+export function readCursor(run: Pick<WorkflowRun, 'cursor'>): Partial<WaitCursor> {
+  return (run.cursor ?? {}) as Partial<WaitCursor>
 }
 
 /** The BullMQ job id for a given run's Nth wait; exported so the run cursor's
