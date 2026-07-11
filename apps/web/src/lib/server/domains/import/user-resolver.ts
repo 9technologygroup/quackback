@@ -17,6 +17,7 @@ interface PendingUser {
   userId: UserId
   email: string
   name: string
+  emailVerified: boolean
 }
 
 /**
@@ -36,11 +37,17 @@ export class ImportUserResolver {
    * If the email has an existing user+member, returns the principalId.
    * If not, queues a new user+member for creation and returns a pre-generated principalId.
    * If email is null/empty, returns the fallbackPrincipalId.
+   *
+   * `emailVerified` applies only when THIS call queues the creation (default
+   * true: import shells must be claimable via SSO). Existing users (and
+   * already-queued creates) are never flipped — an import row can opt out for
+   * a user it introduces, not one that predates it.
    */
   async resolve(
     email: string | null | undefined,
     name: string | null | undefined,
-    fallbackPrincipalId: PrincipalId
+    fallbackPrincipalId: PrincipalId,
+    emailVerified = true
   ): Promise<PrincipalId> {
     if (!email) return fallbackPrincipalId
 
@@ -70,7 +77,13 @@ export class ImportUserResolver {
     const principalId = createId('principal')
     const displayName = name?.trim() || normalizedEmail.split('@')[0]
 
-    this.pendingCreates.push({ principalId, userId, email: normalizedEmail, name: displayName })
+    this.pendingCreates.push({
+      principalId,
+      userId,
+      email: normalizedEmail,
+      name: displayName,
+      emailVerified,
+    })
     this.cache.set(normalizedEmail, principalId)
     return principalId
   }
@@ -95,7 +108,7 @@ export class ImportUserResolver {
           id: u.userId,
           email: u.email,
           name: u.name,
-          emailVerified: false,
+          emailVerified: u.emailVerified,
           createdAt: new Date(),
           updatedAt: new Date(),
         }))

@@ -74,7 +74,11 @@ describe('runImportCommitJob', () => {
       createdTags: [],
     })
 
-    await runImportCommitJob({ runId: 'import_run_updated' as never, source: 'csv', input: BASE_INPUT })
+    await runImportCommitJob({
+      runId: 'import_run_updated' as never,
+      source: 'csv',
+      input: BASE_INPUT,
+    })
 
     expect(hoisted.completeImportRun).toHaveBeenCalledWith(
       'import_run_updated',
@@ -86,7 +90,11 @@ describe('runImportCommitJob', () => {
   it('fails the run when the pipeline throws', async () => {
     hoisted.processImport.mockRejectedValue(new Error('CSV parsing failed'))
 
-    await runImportCommitJob({ runId: 'import_run_2' as never, source: 'uservoice', input: BASE_INPUT })
+    await runImportCommitJob({
+      runId: 'import_run_2' as never,
+      source: 'uservoice',
+      input: BASE_INPUT,
+    })
 
     expect(hoisted.failImportRun).toHaveBeenCalledWith('import_run_2', 'CSV parsing failed')
     expect(hoisted.completeImportRun).not.toHaveBeenCalled()

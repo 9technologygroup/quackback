@@ -54,25 +54,52 @@ export function ExperimentalSettings() {
       {LAB_SECTIONS.map((section) => (
         <SettingsCard key={section.title} title={section.title} description={section.description}>
           <div className="divide-y divide-border/50">
-            {section.flags.map((key) => {
-              const meta = FEATURE_FLAG_REGISTRY[key]
+            {section.flags.map((row) => {
+              const meta = FEATURE_FLAG_REGISTRY[row.key]
               return (
-                <div
-                  key={key}
-                  className="flex items-center justify-between py-3 first:pt-0 last:pb-0"
-                >
-                  <div className="space-y-0.5 pr-4">
-                    <Label htmlFor={`flag-${key}`} className="text-sm font-medium cursor-pointer">
-                      {meta.label}
-                    </Label>
-                    <p className="text-xs text-muted-foreground">{meta.description}</p>
+                <div key={row.key} className="py-3 first:pt-0 last:pb-0">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5 pr-4">
+                      <Label
+                        htmlFor={`flag-${row.key}`}
+                        className="text-sm font-medium cursor-pointer"
+                      >
+                        {meta.label}
+                      </Label>
+                      <p className="text-xs text-muted-foreground">{meta.description}</p>
+                    </div>
+                    <Switch
+                      id={`flag-${row.key}`}
+                      checked={localFlags[row.key]}
+                      onCheckedChange={(checked) => handleToggle(row.key, checked)}
+                      disabled={mutation.isPending}
+                    />
                   </div>
-                  <Switch
-                    id={`flag-${key}`}
-                    checked={localFlags[key]}
-                    onCheckedChange={(checked) => handleToggle(key, checked)}
-                    disabled={mutation.isPending}
-                  />
+                  {row.subFlags?.map((subKey) => {
+                    const subMeta = FEATURE_FLAG_REGISTRY[subKey]
+                    return (
+                      <div
+                        key={subKey}
+                        className="mt-3 flex items-center justify-between border-s-2 border-border/50 ps-4 ms-1"
+                      >
+                        <div className="space-y-0.5 pr-4">
+                          <Label
+                            htmlFor={`flag-${subKey}`}
+                            className="text-sm font-medium cursor-pointer"
+                          >
+                            {subMeta.label}
+                          </Label>
+                          <p className="text-xs text-muted-foreground">{subMeta.description}</p>
+                        </div>
+                        <Switch
+                          id={`flag-${subKey}`}
+                          checked={localFlags[subKey]}
+                          onCheckedChange={(checked) => handleToggle(subKey, checked)}
+                          disabled={mutation.isPending || !localFlags[row.key]}
+                        />
+                      </div>
+                    )
+                  })}
                 </div>
               )
             })}

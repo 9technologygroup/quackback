@@ -4,7 +4,10 @@
  * order), each row shows lifecycle + class + trailing-7-day run metrics, and
  * "New workflow" opens either the template gallery or a blank draft. Editing
  * happens on the fullscreen builder route; this component only lists,
- * filters, and manages lifecycle (status, delete).
+ * filters, and manages lifecycle (status, delete). The metrics cell doubles
+ * as the entry point into WorkflowRunsSheet, the per-run drill-down (runs
+ * list + event timeline) — otherwise a failing workflow is invisible beyond
+ * these aggregate counts.
  */
 import { useMemo, useState, type ComponentType } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -15,11 +18,17 @@ import {
   BoltIcon,
   ChatBubbleLeftRightIcon,
   ChevronDownIcon,
+  ClockIcon,
+  DocumentTextIcon,
   ExclamationTriangleIcon,
+  FireIcon,
+  FlagIcon,
   MagnifyingGlassIcon,
   PencilSquareIcon,
   PlusIcon,
   SparklesIcon,
+  StarIcon,
+  TagIcon,
   UserGroupIcon,
 } from '@heroicons/react/24/outline'
 import { EllipsisVerticalIcon } from '@heroicons/react/24/solid'
@@ -40,6 +49,7 @@ import {
 } from './workflow-graph'
 import { WorkflowTemplateGallery } from './workflow-template-gallery'
 import type { WorkflowTemplate } from './workflow-templates'
+import { WorkflowRunsSheet } from './workflow-runs-sheet'
 import { cn } from '@/lib/shared/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -105,6 +115,54 @@ const TRIGGERS: TriggerMeta[] = [
     icon: SparklesIcon,
     colorClass: 'bg-violet-500/10 text-violet-600 dark:text-violet-400',
   },
+  {
+    value: 'conversation.priority_changed',
+    label: 'Priority changed',
+    icon: FlagIcon,
+    colorClass: 'bg-orange-500/10 text-orange-600 dark:text-orange-400',
+  },
+  {
+    value: 'conversation.attribute_changed',
+    label: 'Attribute changed',
+    icon: TagIcon,
+    colorClass: 'bg-teal-500/10 text-teal-600 dark:text-teal-400',
+  },
+  {
+    value: 'conversation.csat_submitted',
+    label: 'CSAT rating submitted',
+    icon: StarIcon,
+    colorClass: 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-400',
+  },
+  {
+    value: 'message.note_created',
+    label: 'Internal note added',
+    icon: DocumentTextIcon,
+    colorClass: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400',
+  },
+  {
+    value: 'conversation.customer_unresponsive',
+    label: 'Customer stopped responding',
+    icon: ClockIcon,
+    colorClass: 'bg-slate-500/10 text-slate-600 dark:text-slate-400',
+  },
+  {
+    value: 'conversation.teammate_unresponsive',
+    label: 'Teammate hasn’t responded',
+    icon: ClockIcon,
+    colorClass: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400',
+  },
+  {
+    value: 'sla.approaching_breach',
+    label: 'SLA approaching breach',
+    icon: ExclamationTriangleIcon,
+    colorClass: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  },
+  {
+    value: 'sla.breached',
+    label: 'SLA breached',
+    icon: FireIcon,
+    colorClass: 'bg-red-500/10 text-red-600 dark:text-red-400',
+  },
 ]
 
 const OTHER_TRIGGER_META: TriggerMeta = {
@@ -137,7 +195,14 @@ const STATUS_ACTION_LABEL: Record<StatusValue, string> = {
   draft: 'Mark as draft',
 }
 
-type EffectivenessMap = Map<string, { started: number; completed: number }>
+type EffectivenessMetrics = {
+  started: number
+  completed: number
+  /** Funnel (customer-facing workflows only — see WorkflowRow's render). */
+  sentRuns: number
+  engagedRuns: number
+}
+type EffectivenessMap = Map<string, EffectivenessMetrics>
 
 export function WorkflowsManager() {
   const navigate = useNavigate()
@@ -152,11 +217,17 @@ export function WorkflowsManager() {
   const [typeFilter, setTypeFilter] = useState<'any' | (typeof CLASSES)[number]['value']>('any')
   const [galleryOpen, setGalleryOpen] = useState(false)
   const [deleting, setDeleting] = useState<WorkflowDTO | null>(null)
+  const [runsWorkflow, setRunsWorkflow] = useState<WorkflowDTO | null>(null)
 
   const metricsByWorkflow: EffectivenessMap = useMemo(() => {
     const map: EffectivenessMap = new Map()
     for (const row of effectiveness ?? []) {
-      map.set(row.workflowId, { started: row.started, completed: row.completed })
+      map.set(row.workflowId, {
+        started: row.started,
+        completed: row.completed,
+        sentRuns: row.sentRuns,
+        engagedRuns: row.engagedRuns,
+      })
     }
     return map
   }, [effectiveness])
@@ -314,6 +385,7 @@ export function WorkflowsManager() {
                   onNavigate={goToBuilder}
                   onSetStatus={handleSetStatus}
                   onDelete={setDeleting}
+                  onViewRuns={setRunsWorkflow}
                 />
               ))}
             </div>
@@ -339,6 +411,13 @@ export function WorkflowsManager() {
           onConfirm={handleDelete}
         />
       )}
+
+      <WorkflowRunsSheet
+        workflowId={runsWorkflow?.id ?? null}
+        workflowName={runsWorkflow?.name ?? ''}
+        open={runsWorkflow !== null}
+        onOpenChange={(open) => !open && setRunsWorkflow(null)}
+      />
     </div>
   )
 }
@@ -360,13 +439,15 @@ function GroupHeader({ trigger, count }: { trigger: TriggerMeta; count: number }
 
 /** First problem worth badging on a row: a structural graph error, or the
  *  first step whose config is unresolved (per `actionIssue`, which also treats
- *  template needs-setup placeholders as unset). Null when clean. */
-function rowIssue(graph: unknown): string | null {
+ *  template needs-setup placeholders as unset), including the class-rule
+ *  check (Phase C, slice C-6) against the row's own stored class. Null when
+ *  clean. */
+function rowIssue(graph: unknown, workflowClass: WorkflowDTO['class']): string | null {
   const checked = validateGraph(graph)
   if (!checked.ok) return checked.error
   const tree = graphToTree(checked.value)
   if (!tree.ok) return tree.error
-  const [first] = collectStepIssues(tree.value).values()
+  const [first] = collectStepIssues(tree.value, workflowClass).values()
   return first ?? null
 }
 
@@ -376,19 +457,22 @@ function WorkflowRow({
   onNavigate,
   onSetStatus,
   onDelete,
+  onViewRuns,
 }: {
   workflow: WorkflowDTO
-  metrics: { started: number; completed: number } | undefined
+  metrics: EffectivenessMetrics | undefined
   onNavigate: (id: string) => void
   onSetStatus: (id: string, status: StatusValue) => void
   onDelete: (workflow: WorkflowDTO) => void
+  onViewRuns: (workflow: WorkflowDTO) => void
 }) {
   // Structural problems (bad JSON, cycles) and unresolved step config (a team
   // never picked, a template's needs-setup placeholder) both badge the row.
-  const issue = rowIssue(workflow.graph)
+  const issue = rowIssue(workflow.graph, workflow.class)
   const status = STATUS_META[workflow.status as StatusValue] ?? STATUS_META.draft
   const started = metrics?.started ?? 0
   const completed = metrics?.completed ?? 0
+  const isCustomerFacing = workflow.class === 'customer_facing'
 
   return (
     <div
@@ -398,7 +482,7 @@ function WorkflowRow({
       onKeyDown={(e) => {
         if (e.key === 'Enter') onNavigate(workflow.id)
       }}
-      className="grid cursor-pointer grid-cols-[minmax(0,1fr)_92px_130px_72px_64px_36px] items-center gap-3 px-4 py-3 hover:bg-muted/40"
+      className="grid cursor-pointer grid-cols-[minmax(0,1fr)_92px_130px_110px_36px] items-center gap-3 px-4 py-3 hover:bg-muted/40"
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -432,13 +516,38 @@ function WorkflowRow({
         {workflow.class === 'customer_facing' ? 'Customer-facing' : 'Background'}
       </span>
 
-      <span className="text-right text-xs font-medium tabular-nums">
-        {started > 0 ? started.toLocaleString() : '—'}
-      </span>
-
-      <span className="text-right text-xs font-medium tabular-nums">
-        {started > 0 ? `${Math.round((completed / started) * 100)}%` : '—'}
-      </span>
+      {/* The 7d started/completion metrics double as the run-history
+          drill-down entry point (WorkflowRunsSheet) — stopPropagation so it
+          doesn't also navigate to the builder like the rest of the row. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onViewRuns(workflow)
+        }}
+        title="View run history"
+        className="flex flex-col items-end gap-0.5 rounded px-1 py-0.5 text-right text-xs font-medium tabular-nums hover:bg-muted hover:underline"
+      >
+        <span>
+          {started > 0 ? (
+            <>
+              {started.toLocaleString()} · {Math.round((completed / started) * 100)}%
+            </>
+          ) : (
+            '—'
+          )}
+        </span>
+        {/* Funnel line (customer-facing only — a background workflow never
+            sends a block, so it never has anything to funnel). Numbers only,
+            muted, no new chrome — background workflows keep the display above
+            exactly as it was. */}
+        {isCustomerFacing && (
+          <span className="font-normal text-muted-foreground no-underline">
+            sent {(metrics?.sentRuns ?? 0).toLocaleString()} · engaged{' '}
+            {(metrics?.engagedRuns ?? 0).toLocaleString()} · done {completed.toLocaleString()}
+          </span>
+        )}
+      </button>
 
       <div onClick={(e) => e.stopPropagation()}>
         <DropdownMenu>

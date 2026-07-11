@@ -18,9 +18,11 @@ export const Route = createFileRoute('/api/widget/device')({
     handlers: {
       POST: async ({ request }) => {
         try {
-          const { isFeatureEnabled } =
-            await import('@/lib/server/domains/settings/settings.service')
-          if (!(await isFeatureEnabled('visitorDeviceTracking'))) {
+          const { getFeatureFlags } = await import('@/lib/server/domains/settings/settings.service')
+          // Device ids ride visitor analytics: the sub-toggle has no effect
+          // while the parent flag is off (same AND as the widget config).
+          const flags = await getFeatureFlags()
+          if (!flags.visitorAnalytics || !flags.visitorDeviceTracking) {
             return new Response(null, { status: 204 })
           }
 

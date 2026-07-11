@@ -10,15 +10,138 @@
  *     if a run is already live on the conversation, none start.
  *   - background = PARALLEL: every cap-permitted workflow runs independently.
  *
- * Per-person frequency caps are checked before each run. The event-bus handler
- * (Slice 5d-iii) constructs the trigger from a dispatched event and calls this.
+ * A workflow scoped to specific trigger channels, an audience condition
+ * (triggerSettings.audience — dispatcher.guards.ts's audienceAllows) or a
+ * send window (triggerSettings.sendWindow — sendWindowAllows) is filtered
+ * out before the (costlier) per-person frequency cap is checked. Both read
+ * the SAME resolved `ctx` every graph condition in the run reads, so an
+ * audience predicate never re-queries. The event-bus handler (Slice 5d-iii)
+ * constructs the trigger from a dispatched event and calls this.
+ *
+ * `opts.targetWorkflowId` narrows the whole flow above to exactly one
+ * pre-selected workflow instead of every live workflow for the trigger type —
+ * event-trigger.ts's dispatchWorkflowsForEvent uses this for the two
+ * timer-driven unresponsive triggers (see DispatchWorkflowTriggerOpts' doc);
+ * every guard (channel, audience, send window, frequency cap, the
+ * customer_facing exclusive lock) still applies exactly as it would in the
+ * generic fan-out, since `live` is just a differently-populated array of the
+ * same shape either way.
  */
-import type { ConversationId, PrincipalId } from '@quackback/ids'
+import type { ConversationId, PrincipalId, WorkflowId } from '@quackback/ids'
 import type { PrincipalType } from '@/lib/server/policy/types'
-import { listLiveWorkflowsForTrigger } from './workflow.service'
+import type { Workflow } from '@/lib/server/db'
+import type { TicketStatusCategory } from '@/lib/shared/db-types'
+import { logger } from '@/lib/server/logger'
+import { listLiveWorkflowsForTrigger, getWorkflow } from './workflow.service'
 import { resolveConditionContext } from './condition.context'
 import { runWorkflow } from './workflow.engine'
-import { frequencyCapAllows, hasActiveCustomerFacingRun } from './dispatcher.guards'
+import {
+  channelAllows,
+  audienceAllows,
+  sendWindowAllows,
+  frequencyCapAllows,
+  hasActiveCustomerFacingRun,
+} from './dispatcher.guards'
+import {
+  someConditionField,
+  PERSON_ATTRIBUTE_FIELD_PREFIX,
+  COMPANY_ATTRIBUTE_FIELD_PREFIX,
+  type WorkflowCondition,
+} from './condition.evaluator'
+import type { WorkflowNode } from './graph'
+
+const log = logger.child({ component: 'workflow-dispatcher' })
+
+/** Whether `field` names one of the fields condition.context.ts's NEW
+ *  person/company join (resolvePersonCompanyContext) is the only resolver
+ *  for. Deliberately excludes `person.segments` — that's a pre-existing,
+ *  separate, unconditional resolution (segmentIdsForPrincipal), not part of
+ *  what this gate controls. */
+function needsPersonOrCompanyJoin(field: string): boolean {
+  return (
+    field === 'person.email' ||
+    field.startsWith(PERSON_ATTRIBUTE_FIELD_PREFIX) ||
+    field.startsWith(COMPANY_ATTRIBUTE_FIELD_PREFIX)
+  )
+}
+
+/** Read a stored graph defensively, same "malformed shape contributes
+ *  nothing" convention workflow.service.ts's own readGraphNodes follows —
+ *  duplicated locally (a two-line function) rather than imported, to avoid
+ *  reaching into that module for a helper this is its only other user of. */
+function readGraphNodes(graph: unknown): WorkflowNode[] {
+  const nodes = (graph as { nodes?: unknown } | null)?.nodes
+  return Array.isArray(nodes) ? (nodes as WorkflowNode[]) : []
+}
+
+/** Whether ANY node in `graph` (a standalone `condition` gate, or any branch
+ *  of a `branch` node) references a person/company field the join above
+ *  resolves. */
+function graphReferencesPersonOrCompany(graph: unknown): boolean {
+  for (const node of readGraphNodes(graph)) {
+    if (node.type === 'condition' && someConditionField(node.condition, needsPersonOrCompanyJoin)) {
+      return true
+    }
+    if (
+      node.type === 'branch' &&
+      node.branches.some((b) => someConditionField(b.condition, needsPersonOrCompanyJoin))
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Whether resolving THIS batch of live workflows ever needs
+ * condition.context.ts's person/company join — walked once per dispatch
+ * (not cached: `live` is already a fresh, small, per-trigger read) across
+ * each workflow's audience condition and its graph's condition/branch nodes.
+ * A workflow with neither never reads `person.attr.*` / `company.attr.*` /
+ * `person.email`, so the join is pure waste for it; this lets the dispatcher
+ * skip it entirely when NONE of the live workflows for a trigger do.
+ */
+function anyWorkflowNeedsPersonOrCompanyContext(live: readonly Workflow[]): boolean {
+  return live.some((wf) => {
+    const audience = wf.triggerSettings?.audience
+    if (
+      audience !== undefined &&
+      audience !== null &&
+      typeof audience === 'object' &&
+      !Array.isArray(audience) &&
+      someConditionField(audience as WorkflowCondition, needsPersonOrCompanyJoin)
+    ) {
+      return true
+    }
+    return graphReferencesPersonOrCompany(wf.graph)
+  })
+}
+
+/**
+ * The single live workflow named by `workflowId`, as a length-1 (or empty)
+ * array so the caller can treat a targeted dispatch identically to the
+ * generic multi-workflow fan-out below — looked up fresh (never trusted from
+ * the sweep that decided to target it) and only kept when it's still live
+ * and still subscribed to `triggerType`. A stale/deleted/paused/edited
+ * workflow (the sweep and this dispatch are not atomic — a workflow can be
+ * edited or paused in between) is simply skipped, same as a channel/cap/lock
+ * miss would be.
+ */
+async function loadTargetedWorkflow(
+  workflowId: WorkflowId,
+  triggerType: string,
+  conversationId: ConversationId
+): Promise<Workflow[]> {
+  const workflow = await getWorkflow(workflowId)
+  if (!workflow || workflow.status !== 'live' || workflow.triggerType !== triggerType) {
+    log.debug(
+      { workflowId, conversationId, triggerType },
+      'targeted dispatch workflow no longer live/matching; skipping'
+    )
+    return []
+  }
+  return [workflow]
+}
 
 export interface WorkflowTrigger {
   triggerType: string
@@ -31,18 +154,100 @@ export interface WorkflowTrigger {
    *  assistant's hand-off) — never for an event a workflow action can itself
    *  produce, which would reopen the loop the gate exists to stop. */
   allowServiceActor?: boolean
-  /** The person the run acts on, for per-person frequency caps. */
+  /**
+   * The person the run acts on, for per-person frequency caps. Two distinct
+   * "no value" states, NOT interchangeable:
+   *  - explicit `null` — the mapping knows there is definitively no cap
+   *    subject for this firing (a teammate-authored message, an SLA timer —
+   *    SLA caps aren't per-person) and means it: never derive one.
+   *  - omitted (`undefined`) — the mapping's own event payload doesn't carry
+   *    the answer (the two unresponsive timer triggers: their payload is
+   *    conversationId/workflowId/silenceMinutes/sinceAt, never the visitor's
+   *    principal id), so dispatchWorkflowTrigger derives it itself from the
+   *    resolved ctx.conversation.visitorPrincipalId once context is
+   *    available — the conversation's visitor IS the subject for these ("this
+   *    customer has gone quiet" is inherently per-person).
+   */
   subjectPrincipalId?: PrincipalId | null
   /** The triggering message (body + sender), if the trigger carried one. */
   message?: { body: string; senderType?: 'visitor' | 'agent' } | null
+  /**
+   * `ticket.status_changed` only (ticket triggers extension): the category
+   * the ticket ENTERED on this event — a genuine crossing, resolved once by
+   * event-trigger.ts off the event's own previous/new category fields — or
+   * null when this status_changed event is same-category churn. Undefined
+   * for every other trigger type. `ticketStatusCategoryAllows` below compares
+   * a live workflow's own `triggerSettings.ticketStatusCategory` against
+   * this, never against a raw event payload.
+   */
+  ticketStatusCategory?: TicketStatusCategory | null
 }
 
-export async function dispatchWorkflowTrigger(trigger: WorkflowTrigger): Promise<void> {
+export interface DispatchWorkflowTriggerOpts {
+  /**
+   * The caller (dispatchWorkflowsForEvent) may already know whether a
+   * customer-facing run is active on this conversation — it just resumed one
+   * (still active) or just settled every waiting run via interruptWaitingRuns
+   * (nothing left) earlier in the SAME dispatch cycle. Passing that answer
+   * here skips this function's own hasActiveCustomerFacingRun SELECT, which
+   * would otherwise just re-read what the caller already learned.
+   *
+   * Only ever a hint, never authoritative: the partial unique index on
+   * workflow_runs is still the real exclusive lock (runWorkflow's insert
+   * catches a 23505 the same way regardless of this hint), so a stale value
+   * — a resumed run settling to terminal a moment later, or an interrupt call
+   * that excluded one run — only costs an extra no-op insert attempt at
+   * worst, never lets a second customer-facing run actually land. Omitted
+   * (undefined) falls back to the original query, unchanged.
+   */
+  activeCustomerFacingRunHint?: boolean
+  /**
+   * Target exactly one workflow instead of fanning out to every live workflow
+   * subscribed to `trigger.triggerType` — for the two timer-driven
+   * unresponsive triggers (support platform §4.6), whose per-workflow
+   * `inactivityMinutes` threshold means workflow-sweep.ts has already decided
+   * WHICH ONE workflow this firing is for (scanUnresponsiveForWorkflow scans
+   * each live workflow with ITS OWN threshold; the generic fan-out below has
+   * no concept of that per-workflow setting, so it can't be used directly).
+   * Everything downstream — the guard loop, the exclusive lock, the
+   * frequency cap — runs exactly as it would for a single-element `live`
+   * array from the generic path; only how `live` is populated differs. See
+   * loadTargetedWorkflow for what happens when the named workflow no longer
+   * qualifies.
+   */
+  targetWorkflowId?: WorkflowId
+}
+
+/**
+ * Whether `workflow`'s `triggerSettings.ticketStatusCategory` (ticket
+ * triggers extension — workflow.schemas.ts's ticketStatusCategorySchema)
+ * permits this dispatch. Only ever restricts `ticket.status_changed`; every
+ * other trigger type (including the trigger's own OTHER ticket type,
+ * ticket.created) always allows, same as channelAllows/audienceAllows'
+ * "nothing configured, or not applicable -> allow" stance. Lives here rather
+ * than dispatcher.guards.ts (which owns every other per-workflow filter)
+ * because this one needs no DB/condition-context access — a pure read off
+ * the trigger + the workflow's own stored settings, evaluated inline in both
+ * loops below alongside the other pure pre-checks.
+ */
+function ticketStatusCategoryAllows(workflow: Workflow, trigger: WorkflowTrigger): boolean {
+  if (trigger.triggerType !== 'ticket.status_changed') return true
+  const configured = workflow.triggerSettings.ticketStatusCategory
+  if (typeof configured !== 'string') return true // "Any status change" (unset)
+  return trigger.ticketStatusCategory === configured
+}
+
+export async function dispatchWorkflowTrigger(
+  trigger: WorkflowTrigger,
+  opts?: DispatchWorkflowTriggerOpts
+): Promise<void> {
   // Human-caused only: an automated (service) actor never re-triggers workflows
   // unless the trigger's mapping explicitly vouched for it (allowServiceActor).
   if (trigger.actorType === 'service' && !trigger.allowServiceActor) return
 
-  const live = await listLiveWorkflowsForTrigger(trigger.triggerType)
+  const live = opts?.targetWorkflowId
+    ? await loadTargetedWorkflow(opts.targetWorkflowId, trigger.triggerType, trigger.conversationId)
+    : await listLiveWorkflowsForTrigger(trigger.triggerType)
   if (live.length === 0) return
 
   const customerFacing = live.filter((w) => w.class === 'customer_facing')
@@ -50,33 +255,86 @@ export async function dispatchWorkflowTrigger(trigger: WorkflowTrigger): Promise
 
   // Resolve the snapshot once (every condition reads the same instant) and, only
   // when there are customer_facing workflows, probe the exclusive lock — both are
-  // independent, so run them together.
+  // independent, so run them together. The hint (see DispatchWorkflowTriggerOpts)
+  // skips the probe entirely when the caller already knows the answer. Whether
+  // to pay for the person/company join is decided off THIS batch of live
+  // workflows (see anyWorkflowNeedsPersonOrCompanyContext) — cheap and pure,
+  // so it doesn't need to join the Promise.all below.
+  const resolvePersonCompany = anyWorkflowNeedsPersonOrCompanyContext(live)
   const [ctx, alreadyLocked] = await Promise.all([
-    resolveConditionContext(trigger.conversationId, { message: trigger.message }),
-    customerFacing.length > 0
-      ? hasActiveCustomerFacingRun(trigger.conversationId)
-      : Promise.resolve(false),
+    resolveConditionContext(trigger.conversationId, {
+      message: trigger.message,
+      resolvePersonCompany,
+    }),
+    customerFacing.length === 0
+      ? Promise.resolve(false)
+      : opts?.activeCustomerFacingRunHint !== undefined
+        ? Promise.resolve(opts.activeCustomerFacingRunHint)
+        : hasActiveCustomerFacingRun(trigger.conversationId),
   ])
   if (!ctx) return
 
-  const subject = trigger.subjectPrincipalId ?? null
+  // See WorkflowTrigger.subjectPrincipalId's doc: omitted (undefined) means
+  // "derive it from the conversation's visitor", explicit null means "no cap
+  // subject, definitely" — the two unresponsive timer triggers are the only
+  // mapping that ever omits it (their event payload has no visitor id to
+  // supply upfront), so this fallback is a no-op for every other trigger.
+  const subject =
+    trigger.subjectPrincipalId !== undefined
+      ? trigger.subjectPrincipalId
+      : ((ctx.conversation.visitorPrincipalId ?? null) as PrincipalId | null)
   const start = (wf: (typeof live)[number]) =>
     runWorkflow(wf, ctx, { conversationId: trigger.conversationId, subjectPrincipalId: subject })
 
   // Customer-facing: exclusive. Skip entirely if one is already locked on this
-  // conversation; otherwise the first that actually runs wins.
+  // conversation; otherwise the first that actually runs wins. A workflow the
+  // channel guard rejects is never matched — the loop just moves on, so it
+  // never consumes the exclusive first-match slot. frequencyCapAllows here is
+  // only a cheap pre-check (skips an obviously-capped-out workflow before
+  // paying for a transaction) — runWorkflow re-checks it authoritatively
+  // under an advisory lock right before inserting the run, which is what
+  // actually decides under concurrency.
   if (customerFacing.length > 0 && !alreadyLocked) {
     for (const wf of customerFacing) {
+      if (!channelAllows(wf, ctx.conversation.channel)) continue
+      if (!ticketStatusCategoryAllows(wf, trigger)) continue
+      if (!audienceAllows(wf, ctx)) continue
+      if (!sendWindowAllows(wf, ctx)) continue
       if (!(await frequencyCapAllows(wf, subject))) continue
       const run = await start(wf)
       if (run) break // locked + ran; the rest are excluded for this conversation
     }
   }
 
-  // Background: parallel, every cap-permitted workflow.
+  // Background: parallel, every cap-permitted workflow. Same pre-check-only
+  // caveat as above — runWorkflow's transaction-scoped re-check is authoritative.
+  //
+  // Each workflow is isolated in its own try/catch: this call runs inside the
+  // workflow-dispatch BullMQ job (see event-trigger.ts), so an uncaught
+  // rejection here would fail the whole job and let BullMQ retry it. With
+  // Promise.all over uncaught per-workflow promises, one workflow throwing
+  // after siblings already committed their runs (e.g. a transient Redis error
+  // scheduling a wait, thrown from deep inside runWorkflow) would reject the
+  // batch and cause the retry to re-run those already-committed siblings —
+  // there's no idempotency guard for that (the exclusive partial index only
+  // covers customer_facing runs; frequency caps only cover capped workflows),
+  // so a retry would duplicate their actions (tags, assignments, ...). Each
+  // background workflow's run is therefore best-effort here, the same way its
+  // individual actions already are inside applyPlanAndSettle: log and move on.
   await Promise.all(
     background.map(async (wf) => {
-      if (await frequencyCapAllows(wf, subject)) await start(wf)
+      try {
+        if (!channelAllows(wf, ctx.conversation.channel)) return
+        if (!ticketStatusCategoryAllows(wf, trigger)) return
+        if (!audienceAllows(wf, ctx)) return
+        if (!sendWindowAllows(wf, ctx)) return
+        if (await frequencyCapAllows(wf, subject)) await start(wf)
+      } catch (err) {
+        log.error(
+          { err, workflowId: wf.id, conversationId: trigger.conversationId },
+          'background workflow run failed; continuing other background workflows'
+        )
+      }
     })
   )
 }

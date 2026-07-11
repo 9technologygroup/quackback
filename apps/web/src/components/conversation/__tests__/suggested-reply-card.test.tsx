@@ -41,7 +41,7 @@ afterEach(() => {
 const hoisted = vi.hoisted(() => ({
   recordCopilotEvent: vi.fn(),
   routeContext: {
-    settings: { featureFlags: { assistantCopilot: true, assistantProactiveSuggestions: true } },
+    settings: { featureFlags: { inboxAi: true, assistantProactiveSuggestions: true } },
     principal: { role: 'admin' },
   } as Record<string, unknown>,
 }))
@@ -107,7 +107,7 @@ beforeEach(() => {
   resetSuggestionStoreForTests()
   hoisted.recordCopilotEvent.mockClear()
   hoisted.routeContext = {
-    settings: { featureFlags: { assistantCopilot: true, assistantProactiveSuggestions: true } },
+    settings: { featureFlags: { inboxAi: true, assistantProactiveSuggestions: true } },
     principal: { role: 'admin' },
   }
 })
@@ -115,7 +115,7 @@ beforeEach(() => {
 describe('gating', () => {
   it('renders nothing when assistantProactiveSuggestions is off', () => {
     hoisted.routeContext = {
-      settings: { featureFlags: { assistantCopilot: true, assistantProactiveSuggestions: false } },
+      settings: { featureFlags: { inboxAi: true, assistantProactiveSuggestions: false } },
       principal: { role: 'admin' },
     }
     stubStreamingFetch(doneFrames())
@@ -123,9 +123,9 @@ describe('gating', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('renders nothing when assistantCopilot (the shared gate) is off', () => {
+  it('renders nothing when inboxAi (the shared gate) is off', () => {
     hoisted.routeContext = {
-      settings: { featureFlags: { assistantCopilot: false, assistantProactiveSuggestions: true } },
+      settings: { featureFlags: { inboxAi: false, assistantProactiveSuggestions: true } },
       principal: { role: 'admin' },
     }
     stubStreamingFetch(doneFrames())
@@ -135,7 +135,7 @@ describe('gating', () => {
 
   it('renders nothing without copilot.use permission', () => {
     hoisted.routeContext = {
-      settings: { featureFlags: { assistantCopilot: true, assistantProactiveSuggestions: true } },
+      settings: { featureFlags: { inboxAi: true, assistantProactiveSuggestions: true } },
       principal: { role: 'contributor-without-copilot' },
     }
     stubStreamingFetch(doneFrames())

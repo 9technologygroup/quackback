@@ -17,9 +17,9 @@ const BASE_NAV_ITEMS: NavItem[] = [
 
 /** Data connectors only appears once its flag is on, mirroring the flag-gated
  *  items in settings-nav.tsx's buildNavSections. */
-export function buildAutomationNavItems(flags?: { dataConnectors?: boolean }): NavItem[] {
+export function buildAutomationNavItems(flags?: { assistantTools?: boolean }): NavItem[] {
   const items = [...BASE_NAV_ITEMS]
-  if (flags?.dataConnectors) {
+  if (flags?.assistantTools) {
     items.push({
       label: 'Data connectors',
       to: '/admin/automation/connectors',

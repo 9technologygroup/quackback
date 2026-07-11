@@ -11,8 +11,23 @@ vi.mock('../retrieval', () => ({
   retrieveKbArticles: (...args: unknown[]) => mockRetrieve(...args),
 }))
 
-// Stands in for the real past-conversation-summaries source: resolveKnowledgeSources
-// dynamically imports this only when assistantConversationGrounding is on.
+// Stand-ins for the three optional knowledge sources: resolveKnowledgeSources
+// dynamically imports all of them when assistantKnowledge is on, so each must
+// be stubbed or a grounding test would reach the real (DB-backed) domains.
+const mockPostsRetrieve = vi.fn()
+vi.mock('../posts-retrieval', () => ({
+  postsKnowledgeSource: {
+    sourceType: 'post',
+    retrieve: (...args: unknown[]) => mockPostsRetrieve(...args),
+  },
+}))
+const mockSnippetsRetrieve = vi.fn()
+vi.mock('../snippets-retrieval', () => ({
+  snippetsKnowledgeSource: {
+    sourceType: 'snippet',
+    retrieve: (...args: unknown[]) => mockSnippetsRetrieve(...args),
+  },
+}))
 const mockConversationSummariesRetrieve = vi.fn()
 vi.mock('../conversation-summary-retrieval', () => ({
   conversationSummariesKnowledgeSource: {
@@ -28,15 +43,14 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
 
 /**
  * `isFeatureEnabled` gates two independent flags in this pipeline
- * (assistantActions here, dataConnectors inside the real resolveToolSpecs
- * these tests call by default): a flat `mockResolvedValue(true)` would flip
- * both at once and pull the real connectors domain (and its DB access) into
- * a fully-mocked pipeline test. Discriminate by flag name instead so
- * dataConnectors stays off unless a test opts in.
+ * (assistantTools here and inside the real resolveToolSpecs these tests call
+ * by default, assistantKnowledge inside resolveKnowledgeSources): a flat
+ * `mockResolvedValue(true)` would flip both at once. Discriminate by flag
+ * name instead so assistantKnowledge stays off unless a test opts in.
  */
 function mockActionsFlag(enabled: boolean) {
   mockIsFeatureEnabled.mockImplementation(
-    async (flag: string) => flag === 'assistantActions' && enabled
+    async (flag: string) => flag === 'assistantTools' && enabled
   )
 }
 
@@ -45,10 +59,9 @@ vi.mock('@/lib/server/domains/settings/settings.assistant', () => ({
   getAssistantToolControls: (...args: unknown[]) => mockGetAssistantToolControls(...args),
 }))
 
-// Defensive: with mockActionsFlag in place dataConnectors always resolves
-// false, so resolveToolSpecs never takes the dynamic-import branch in these
-// tests — but stub the module anyway so a future test that flips it on
-// doesn't reach for the real (DB-backed) connectors domain.
+// assistantTools also gates the connectors branch inside resolveToolSpecs,
+// so mockActionsFlag(true) DOES take the dynamic-import branch — stub the
+// module so it never reaches the real (DB-backed) connectors domain.
 vi.mock('@/lib/server/domains/connectors/connector.toolspec', () => ({
   listEnabledConnectorToolSpecs: vi.fn().mockResolvedValue([]),
 }))
@@ -186,6 +199,8 @@ function makeFakeReadSpec(overrides: Partial<AssistantToolSpec> = {}): Assistant
 beforeEach(() => {
   vi.clearAllMocks()
   mockIsFeatureEnabled.mockResolvedValue(false)
+  mockPostsRetrieve.mockResolvedValue([])
+  mockSnippetsRetrieve.mockResolvedValue([])
   mockConversationSummariesRetrieve.mockResolvedValue([])
 })
 
@@ -287,9 +302,7 @@ describe('search_knowledge', () => {
   })
 
   it("threads the context's customerPrincipalId and conversationId into the past-conversation-summaries source", async () => {
-    mockIsFeatureEnabled.mockImplementation(
-      async (flag: string) => flag === 'assistantConversationGrounding'
-    )
+    mockIsFeatureEnabled.mockImplementation(async (flag: string) => flag === 'assistantKnowledge')
     mockRetrieve.mockResolvedValue([])
     const c = ctx({
       customerPrincipalId: 'principal_customer_1' as never,
@@ -310,9 +323,7 @@ describe('search_knowledge', () => {
   })
 
   it('runs the summaries source with an undefined customerPrincipalId when the context has none (sandbox)', async () => {
-    mockIsFeatureEnabled.mockImplementation(
-      async (flag: string) => flag === 'assistantConversationGrounding'
-    )
+    mockIsFeatureEnabled.mockImplementation(async (flag: string) => flag === 'assistantKnowledge')
     mockRetrieve.mockResolvedValue([])
     const c = ctx({ conversationId: null })
     const search = await findTool(c, 'search_knowledge')
@@ -340,12 +351,12 @@ describe('assembleAssistantToolset: assistant actions flag', () => {
     mockActionsFlag(true)
     mockGetAssistantToolControls.mockResolvedValue({})
     await assembleTools(ctx())
-    // Twice, not once: assistantActions here plus dataConnectors inside the
-    // real resolveToolSpecs this call falls through to (no explicit specs) —
-    // each flag is still read exactly once, not re-read redundantly.
+    // Twice, not once: assistantTools is read here for actions plus inside
+    // the real resolveToolSpecs this call falls through to (no explicit
+    // specs) for the connectors branch — each site still reads exactly once,
+    // not redundantly per spec.
     expect(mockIsFeatureEnabled).toHaveBeenCalledTimes(2)
-    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantActions')
-    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('dataConnectors')
+    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantTools')
     expect(mockGetAssistantToolControls).toHaveBeenCalledTimes(1)
   })
 
@@ -417,7 +428,7 @@ describe('assembleAssistantToolset: parent-kind gating (unified inbox §2.9/§3.
     expect(tools.map((t) => t.name)).toEqual(['lookup_thing'])
   })
 
-  it('filters the same way with the assistantActions flag off (legacy read-only branch)', async () => {
+  it('filters the same way with the assistantTools flag off (legacy read-only branch)', async () => {
     mockActionsFlag(false)
 
     const c = ctx({ conversationId: null, ticketId: 'ticket_1' as never })

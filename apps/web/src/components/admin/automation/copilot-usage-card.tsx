@@ -4,8 +4,8 @@
  * suggestion acceptance funnel, and the propose-approve-execute actions
  * funnel, over the last 30 days. Read-only reporting; gated server-side on
  * analytics.view like the rest of the Quinn performance surface. Mounted
- * whenever assistantCopilot is on (see automation.assistant.tsx); only the
- * actions funnel additionally needs assistantActions — the pending-actions
+ * whenever inboxAi is on (see automation.assistant.tsx); only the
+ * actions funnel additionally needs assistantTools — the pending-actions
  * funnel this section reports on doesn't exist otherwise — so the page
  * passes that flag as `showActionsFunnel` rather than gating the whole card
  * on it. The Suggestions group works the same way via `showSuggestions`
@@ -48,7 +48,7 @@ function CountRow({ label, value }: CountRowProps) {
 }
 
 export interface CopilotUsageCardProps {
-  /** True when the assistantActions flag is on; gates only the actions-funnel
+  /** True when the assistantTools flag is on; gates only the actions-funnel
    *  section (approval-rate tile + propose/approve/reject/expire list). */
   showActionsFunnel: boolean
   /** True when the assistantProactiveSuggestions flag is on; gates the

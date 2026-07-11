@@ -8,7 +8,7 @@
  * semantic (pgvector cosine over `assistantSnippets.embedding`) when a query
  * embedding is available; snippets have no tsvector column, so the fallback
  * is a plain keyword ILIKE over title/content rather than a ts_rank blend.
- * Registered only behind the `assistantSnippets` flag (see
+ * Registered only behind the `assistantKnowledge` flag (see
  * `resolveKnowledgeSources`), default off.
  */
 import { db, assistantSnippets, and, desc, eq, ilike, inArray, or, sql } from '@/lib/server/db'
@@ -177,7 +177,7 @@ export async function retrieveSnippets(
 /**
  * The snippets `KnowledgeSource`: wraps `retrieveSnippets`, mapping its
  * audience-scoped rows onto `RetrievedItem`. Dynamically imported by
- * `resolveKnowledgeSources` only when `assistantSnippets` is on. A snippet
+ * `resolveKnowledgeSources` only when `assistantKnowledge` is on. A snippet
  * has no URL of its own — it is a private fact, not a page — so its citation
  * is title-referential only (`url: ''`).
  */

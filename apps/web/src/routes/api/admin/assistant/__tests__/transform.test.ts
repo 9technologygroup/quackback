@@ -154,7 +154,7 @@ describe('POST /api/admin/assistant/transform', () => {
     expect(res.status).toBe(400)
   })
 
-  it('404s when the assistantCopilot flag is off', async () => {
+  it('404s when the inboxAi flag is off', async () => {
     mockIsFeatureEnabled.mockResolvedValue(false)
     const res = await handleTransform({ request: makeRequest(validBody) })
     expect(res.status).toBe(404)

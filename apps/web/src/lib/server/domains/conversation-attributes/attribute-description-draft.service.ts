@@ -50,7 +50,7 @@ export interface DraftAttributeDescriptionsResult {
 export async function draftAttributeDescriptions(
   input: DraftAttributeDescriptionsInput
 ): Promise<DraftAttributeDescriptionsResult> {
-  if (!(await isFeatureEnabled('aiAttributeDetection'))) {
+  if (!(await isFeatureEnabled('inboxAi'))) {
     throw new ValidationError(
       'AI_ATTRIBUTE_DETECTION_DISABLED',
       'AI attribute detection is turned off'

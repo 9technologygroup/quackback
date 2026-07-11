@@ -7,6 +7,7 @@
 
 import { Queue, Worker, UnrecoverableError, type JobsOptions } from 'bullmq'
 import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-config'
+import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { getHook } from './registry'
 import { getHookTargets } from './targets'
 import { isRetryableError } from './hook-utils'
@@ -47,7 +48,7 @@ const DEFAULT_JOB_OPTS = {
 
 let initPromise: Promise<{
   queue: Queue<HookJobData>
-  worker: Worker<HookJobData>
+  worker: Worker<HookJobData> | null
 }> | null = null
 
 /**
@@ -76,63 +77,67 @@ async function initializeQueue() {
     defaultJobOptions: DEFAULT_JOB_OPTS,
   })
 
-  const worker = new Worker<HookJobData>(
-    QUEUE_NAME,
-    async (job) => {
-      const { hookType, event, target, config: hookConfig } = job.data
+  // Consumer side is role-gated: web-role replicas enqueue and register
+  // schedules but never construct a Worker (see queue/role.ts).
+  const worker = shouldRunWorkers()
+    ? new Worker<HookJobData>(
+        QUEUE_NAME,
+        async (job) => {
+          const { hookType, event, target, config: hookConfig } = job.data
 
-      // Handle delayed changelog publish sentinel
-      if (hookType === '__changelog_publish__') {
-        await handleDelayedChangelogPublish(hookConfig)
-        return
-      }
+          // Handle delayed changelog publish sentinel
+          if (hookType === '__changelog_publish__') {
+            await handleDelayedChangelogPublish(hookConfig)
+            return
+          }
 
-      // Handle post-merge recheck sentinel
-      if (hookType === '__post_merge_recheck__') {
-        await handlePostMergeRecheck(hookConfig)
-        return
-      }
+          // Handle post-merge recheck sentinel
+          if (hookType === '__post_merge_recheck__') {
+            await handlePostMergeRecheck(hookConfig)
+            return
+          }
 
-      // Handle scheduled-maintenance window sentinels. Both handlers re-fetch
-      // current DB state and self-guard, so a stale/duplicate fire is a no-op.
-      if (hookType === '__status_maintenance_start__') {
-        await handleStatusMaintenanceJob(hookConfig, 'start')
-        return
-      }
-      if (hookType === '__status_maintenance_complete__') {
-        await handleStatusMaintenanceJob(hookConfig, 'complete')
-        return
-      }
+          // Handle scheduled-maintenance window sentinels. Both handlers re-fetch
+          // current DB state and self-guard, so a stale/duplicate fire is a no-op.
+          if (hookType === '__status_maintenance_start__') {
+            await handleStatusMaintenanceJob(hookConfig, 'start')
+            return
+          }
+          if (hookType === '__status_maintenance_complete__') {
+            await handleStatusMaintenanceJob(hookConfig, 'complete')
+            return
+          }
 
-      const hook = await getHook(hookType)
-      if (!hook) throw new UnrecoverableError(`Unknown hook: ${hookType}`)
+          const hook = await getHook(hookType)
+          if (!hook) throw new UnrecoverableError(`Unknown hook: ${hookType}`)
 
-      let result: HookResult
-      try {
-        // Pass job.id so idempotency-sensitive handlers (webhook, AI)
-        // can dedupe re-runs after worker crashes.
-        result = await hook.run(event, target, hookConfig, { jobId: job.id })
-      } catch (error) {
-        if (isRetryableError(error)) throw error
-        throw new UnrecoverableError(error instanceof Error ? error.message : 'Unknown error')
-      }
+          let result: HookResult
+          try {
+            // Pass job.id so idempotency-sensitive handlers (webhook, AI)
+            // can dedupe re-runs after worker crashes.
+            result = await hook.run(event, target, hookConfig, { jobId: job.id })
+          } catch (error) {
+            if (isRetryableError(error)) throw error
+            throw new UnrecoverableError(error instanceof Error ? error.message : 'Unknown error')
+          }
 
-      if (result.success) {
-        if (result.externalId) {
-          persistExternalLink(job.data, result).catch((err) =>
-            log.error({ err }, 'failed to persist external link')
-          )
-        }
-        return
-      }
+          if (result.success) {
+            if (result.externalId) {
+              persistExternalLink(job.data, result).catch((err) =>
+                log.error({ err }, 'failed to persist external link')
+              )
+            }
+            return
+          }
 
-      if (result.shouldRetry) {
-        throw new Error(result.error ?? 'Hook failed (retryable)')
-      }
-      throw new UnrecoverableError(result.error ?? 'Hook failed (non-retryable)')
-    },
-    { connection, concurrency: CONCURRENCY }
-  )
+          if (result.shouldRetry) {
+            throw new Error(result.error ?? 'Hook failed (retryable)')
+          }
+          throw new UnrecoverableError(result.error ?? 'Hook failed (non-retryable)')
+        },
+        { connection, concurrency: CONCURRENCY }
+      )
+    : null
 
   // Verify Redis is reachable before returning. Without this, a missing
   // Redis hangs every request that dispatches events (post/comment creation).
@@ -145,11 +150,11 @@ async function initializeQueue() {
     ])
   } catch (error) {
     await queue.close().catch(() => {})
-    await worker.close().catch(() => {})
+    await worker?.close().catch(() => {})
     throw error
   }
 
-  worker.on('failed', (job, error) => {
+  worker?.on('failed', (job, error) => {
     if (!job) return
     // UnrecoverableError skips retries entirely (attemptsMade stays at 1),
     // so we must also check the error name to detect permanent failure.
@@ -237,14 +242,40 @@ async function persistExternalLink(data: HookJobData, result: HookResult): Promi
  * Target resolution is awaited (~10-50ms). Hook execution runs in the background.
  */
 export async function processEvent(event: EventData): Promise<void> {
-  // Fire workflow triggers off the same event (§4.6). Fire-and-forget + fully
-  // error-isolated, and BEFORE the no-hook-targets early return so a workflow
-  // still runs when there are no webhook/notification subscribers. Lazily
-  // imported so the event core carries no static dependency on the workflow
-  // engine (a workflow fault stays isolated to this branch).
+  // Fire workflow triggers off the same event (§4.6) via the durable
+  // workflow-dispatch BullMQ queue, BEFORE the no-hook-targets early return so
+  // a workflow still runs when there are no webhook/notification subscribers.
+  // This used to be a fire-and-forget call straight into the workflow engine:
+  // a crash/deploy in the window before that call finished silently dropped
+  // the trigger, and a transient DB error inside it dropped every workflow
+  // for the event with no retry. Enqueuing here instead means the trigger
+  // survives once the queue durably has the job — the queue's worker (3
+  // attempts, exponential backoff) does the actual dispatch. The enqueue call
+  // itself is fire-and-forget (not awaited), same as the SLA/CSAT hooks
+  // below: a failure here is caught and logged, never retried, so awaiting it
+  // would only add a Redis round-trip of latency to every event that carries
+  // a workflow trigger, without buying any extra durability.
+  //
+  // Two gates, cheapest first: eventToWorkflowTrigger (pure, no DB) skips the
+  // large share of events that can never map to a workflow trigger type at
+  // all; hasAnyLiveWorkflow (cached ~30s, see workflow.service.ts) then skips
+  // the Redis round trip entirely for a workspace with zero live workflows,
+  // which otherwise paid an enqueue on every single message/status event for
+  // nothing. That second gate is workspace-global rather than scoped to this
+  // event's trigger type on purpose — see hasAnyLiveWorkflow's doc comment
+  // for why scoping it would wrongly skip interruptWaitingRuns. All three
+  // modules are lazily imported so the event core carries no static
+  // dependency on the workflow engine.
   void import('@/lib/server/domains/workflows/event-trigger')
-    .then((m) => m.dispatchWorkflowsForEvent(event))
-    .catch((err) => log.error({ err, event_type: event.type }, 'workflow dispatch failed to load'))
+    .then(async (eventTriggerModule) => {
+      if (!eventTriggerModule.eventToWorkflowTrigger(event)) return
+      const { hasAnyLiveWorkflow } = await import('@/lib/server/domains/workflows/workflow.service')
+      if (!(await hasAnyLiveWorkflow())) return
+      const { enqueueWorkflowDispatch } =
+        await import('@/lib/server/domains/workflows/workflow-dispatch-queue')
+      await enqueueWorkflowDispatch(event)
+    })
+    .catch((err) => log.error({ err, event_type: event.type }, 'workflow dispatch enqueue failed'))
 
   // Settle SLA breach clocks off the same event (first-response / time-to-close).
   // Same fire-and-forget + lazy-import isolation as the workflow dispatch.
@@ -308,7 +339,7 @@ export async function closeQueue(): Promise<void> {
   initPromise = null
 
   try {
-    await worker.close()
+    await worker?.close()
   } catch (e) {
     log.error({ err: e }, 'worker close error')
   }

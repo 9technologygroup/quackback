@@ -7,6 +7,7 @@
 
 import { Queue, Worker, UnrecoverableError } from 'bullmq'
 import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-config'
+import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { logger } from '@/lib/server/logger'
 import type { FeedbackIngestJob } from '../types'
 
@@ -25,7 +26,7 @@ const DEFAULT_JOB_OPTS = {
 
 let initPromise: Promise<{
   queue: Queue<FeedbackIngestJob>
-  worker: Worker<FeedbackIngestJob>
+  worker: Worker<FeedbackIngestJob> | null
 }> | null = null
 
 function ensureQueue(): Promise<Queue<FeedbackIngestJob>> {
@@ -46,35 +47,39 @@ async function initializeQueue() {
     defaultJobOptions: DEFAULT_JOB_OPTS,
   })
 
-  const worker = new Worker<FeedbackIngestJob>(
-    QUEUE_NAME,
-    async (job) => {
-      const data = job.data
+  // Consumer side is role-gated: web-role replicas enqueue and register
+  // schedules but never construct a Worker (see queue/role.ts).
+  const worker = shouldRunWorkers()
+    ? new Worker<FeedbackIngestJob>(
+        QUEUE_NAME,
+        async (job) => {
+          const data = job.data
 
-      switch (data.type) {
-        case 'enrich-context': {
-          const { enrichAndAdvance } = await import('../ingestion/feedback-ingest.service')
-          await enrichAndAdvance(data.rawItemId)
-          break
-        }
-        case 'poll-source': {
-          // Poll connector — will be wired in Phase 2+ (Slack/Zendesk)
-          log.debug({ source_id: data.sourceId }, 'poll-source not yet implemented')
-          break
-        }
-        case 'parse-batch': {
-          // Batch parsing — will be wired when CSV/import connector ships
-          log.debug({ source_id: data.sourceId }, 'parse-batch not yet implemented')
-          break
-        }
-        default:
-          throw new UnrecoverableError(
-            `Unknown ingest job type: ${(data as { type: string }).type}`
-          )
-      }
-    },
-    { connection, concurrency: CONCURRENCY }
-  )
+          switch (data.type) {
+            case 'enrich-context': {
+              const { enrichAndAdvance } = await import('../ingestion/feedback-ingest.service')
+              await enrichAndAdvance(data.rawItemId)
+              break
+            }
+            case 'poll-source': {
+              // Poll connector — will be wired in Phase 2+ (Slack/Zendesk)
+              log.debug({ source_id: data.sourceId }, 'poll-source not yet implemented')
+              break
+            }
+            case 'parse-batch': {
+              // Batch parsing — will be wired when CSV/import connector ships
+              log.debug({ source_id: data.sourceId }, 'parse-batch not yet implemented')
+              break
+            }
+            default:
+              throw new UnrecoverableError(
+                `Unknown ingest job type: ${(data as { type: string }).type}`
+              )
+          }
+        },
+        { connection, concurrency: CONCURRENCY }
+      )
+    : null
 
   try {
     await Promise.race([
@@ -85,11 +90,11 @@ async function initializeQueue() {
     ])
   } catch (error) {
     await queue.close().catch(() => {})
-    await worker.close().catch(() => {})
+    await worker?.close().catch(() => {})
     throw error
   }
 
-  worker.on('failed', (job, error) => {
+  worker?.on('failed', (job, error) => {
     if (!job) return
     const isPermanent =
       job.attemptsMade >= (job.opts.attempts ?? 1) || error.name === 'UnrecoverableError'
@@ -110,6 +115,6 @@ export async function closeFeedbackIngestQueue(): Promise<void> {
   if (!initPromise) return
   const { worker, queue } = await initPromise
   initPromise = null
-  await worker.close().catch(() => {})
+  await worker?.close().catch(() => {})
   await queue.close().catch(() => {})
 }

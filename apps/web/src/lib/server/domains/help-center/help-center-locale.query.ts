@@ -26,23 +26,26 @@ import {
   helpCenterCategoryTranslations,
 } from '@/lib/server/db'
 import type { KbArticleId, KbCategoryId } from '@quackback/ids'
+import { ANONYMOUS_ACTOR, type Actor } from '@/lib/server/policy/types'
 import { NotFoundError } from '@/lib/shared/errors'
 import { DEFAULT_LOCALE } from '@/lib/shared/i18n'
-import {
-  listPublicCategories,
-  getPublicCategoryBySlug,
-} from './help-center.category.service'
-import {
-  listPublicArticlesForCategory,
-} from './help-center.article.query'
+import { listPublicCategories, getPublicCategoryBySlug } from './help-center.category.service'
+import { listPublicArticlesForCategory } from './help-center.article.query'
 import { getPublicArticleBySlug } from './help-center.article.service'
-import { getPublishedArticleTranslation, getCategoryTranslation } from './help-center-translations.service'
-import type { HelpCenterCategoryWithCount, HelpCenterArticleWithCategory } from './help-center.types'
+import {
+  getPublishedArticleTranslation,
+  getCategoryTranslation,
+} from './help-center-translations.service'
+import type {
+  HelpCenterCategoryWithCount,
+  HelpCenterArticleWithCategory,
+} from './help-center.types'
 
 export async function listPublicCategoriesForLocale(
-  locale: string
+  locale: string,
+  viewer: Actor = ANONYMOUS_ACTOR
 ): Promise<HelpCenterCategoryWithCount[]> {
-  const categories = await listPublicCategories()
+  const categories = await listPublicCategories(viewer)
   if (locale === DEFAULT_LOCALE || categories.length === 0) return categories
 
   const categoryIds = categories.map((c) => c.id)
@@ -75,7 +78,9 @@ export async function listPublicCategoriesForLocale(
   ])
 
   const translationByCategory = new Map(translations.map((t) => [t.categoryId, t]))
-  const countByCategory = new Map(articleCounts.map((c) => [c.categoryId, Number(c.translatedCount)]))
+  const countByCategory = new Map(
+    articleCounts.map((c) => [c.categoryId, Number(c.translatedCount)])
+  )
 
   const visible: HelpCenterCategoryWithCount[] = []
   for (const cat of categories) {
@@ -89,9 +94,10 @@ export async function listPublicCategoriesForLocale(
 
 export async function getPublicCategoryBySlugForLocale(
   slug: string,
-  locale: string
+  locale: string,
+  viewer: Actor = ANONYMOUS_ACTOR
 ): ReturnType<typeof getPublicCategoryBySlug> {
-  const category = await getPublicCategoryBySlug(slug)
+  const category = await getPublicCategoryBySlug(slug, viewer)
   if (locale === DEFAULT_LOCALE) return category
 
   const translation = await getCategoryTranslation(category.id as KbCategoryId, locale)
@@ -104,8 +110,12 @@ export async function getPublicCategoryBySlugForLocale(
   return { ...category, name: translation.name, description: translation.description }
 }
 
-export async function listPublicArticlesForCategoryLocale(categoryId: string, locale: string) {
-  const articles = await listPublicArticlesForCategory(categoryId)
+export async function listPublicArticlesForCategoryLocale(
+  categoryId: string,
+  locale: string,
+  viewer: Actor = ANONYMOUS_ACTOR
+) {
+  const articles = await listPublicArticlesForCategory(categoryId, viewer)
   if (locale === DEFAULT_LOCALE || articles.length === 0) return articles
 
   const translations = await db.query.helpCenterArticleTranslations.findMany({
@@ -130,9 +140,10 @@ export async function listPublicArticlesForCategoryLocale(categoryId: string, lo
 
 export async function getPublicArticleBySlugForLocale(
   slug: string,
-  locale: string
+  locale: string,
+  viewer: Actor = ANONYMOUS_ACTOR
 ): Promise<HelpCenterArticleWithCategory> {
-  const article = await getPublicArticleBySlug(slug)
+  const article = await getPublicArticleBySlug(slug, viewer)
   if (locale === DEFAULT_LOCALE) return article
 
   const translation = await getPublishedArticleTranslation(article.id as KbArticleId, locale)

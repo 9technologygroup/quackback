@@ -54,7 +54,7 @@ const EPHEMERAL_PREVIEW_KEY = 'preview_attribute'
 export async function previewAttributeDetection(
   input: PreviewAttributeDetectionInput
 ): Promise<PreviewAttributeDetectionResult> {
-  if (!(await isFeatureEnabled('aiAttributeDetection'))) {
+  if (!(await isFeatureEnabled('inboxAi'))) {
     throw new ValidationError(
       'AI_ATTRIBUTE_DETECTION_DISABLED',
       'AI attribute detection is turned off'

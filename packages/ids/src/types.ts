@@ -106,6 +106,9 @@ export type EventMappingId = TypeId<'event_mapping'>
 /** Post external link ID - e.g., post_external_link_01h455vb4pex5vsknk084sn02q */
 export type PostExternalLinkId = TypeId<'post_external_link'>
 
+/** Ticket external link ID - e.g., ticket_external_link_01h455vb4pex5vsknk084sn02q */
+export type TicketExternalLinkId = TypeId<'ticket_external_link'>
+
 /** Slack channel monitor ID - e.g., slack_monitor_01h455vb4pex5vsknk084sn02q */
 export type SlackMonitorId = TypeId<'slack_monitor'>
 
@@ -202,6 +205,9 @@ export type TicketId = TypeId<'ticket'>
 /** Ticket status ID - e.g., ticket_status_01h455vb4pex5vsknk084sn02q */
 export type TicketStatusId = TypeId<'ticket_status'>
 
+/** Ticket activity log ID - e.g., ticket_activity_01h455vb4pex5vsknk084sn02q */
+export type TicketActivityId = TypeId<'ticket_activity'>
+
 /** Channel account ID (§4.8) - e.g., channel_account_01h455vb4pex5vsknk084sn02q */
 export type ChannelAccountId = TypeId<'channel_account'>
 
@@ -228,6 +234,9 @@ export type WorkflowRunId = TypeId<'workflow_run'>
 
 /** Workflow run-event ID (§4.6) - e.g., workflow_run_event_01h455vb4pex5vsknk084sn02q */
 export type WorkflowRunEventId = TypeId<'workflow_run_event'>
+
+/** Workflow version (history/rollback) ID (§4.6) - e.g., workflow_version_01h455vb4pex5vsknk084sn02q */
+export type WorkflowVersionId = TypeId<'workflow_version'>
 
 /** Team ID - e.g., team_01h455vb4pex5vsknk084sn02q */
 export type TeamId = TypeId<'team'>
@@ -380,6 +389,7 @@ export interface EntityIdMap {
   data_connector: DataConnectorId
   ticket: TicketId
   ticket_status: TicketStatusId
+  ticket_activity: TicketActivityId
   channel_account: ChannelAccountId
   sending_domain: SendingDomainId
   office_hours: OfficeHoursId
@@ -388,6 +398,7 @@ export interface EntityIdMap {
   workflow: WorkflowId
   workflow_run: WorkflowRunId
   workflow_run_event: WorkflowRunEventId
+  workflow_version: WorkflowVersionId
   team: TeamId
   team_member: TeamMemberId
   macro: MacroId
@@ -421,6 +432,7 @@ export interface EntityIdMap {
   platform_cred: PlatformCredentialId
   event_mapping: EventMappingId
   post_external_link: PostExternalLinkId
+  ticket_external_link: TicketExternalLinkId
   slack_monitor: SlackMonitorId
   import_run: ImportRunId
   post_subscription: PostSubscriptionId

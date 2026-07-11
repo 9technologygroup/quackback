@@ -31,7 +31,7 @@ vi.mock('@/lib/server/domains/assistant', () => ({
   loadAssistantItemState: (...args: unknown[]) => mockLoadAssistantItemState(...args),
 }))
 
-// Two distinct flags gate this route: assistantCopilot (inside
+// Two distinct flags gate this route: inboxAi (inside
 // gateCopilotRequest) and assistantProactiveSuggestions (this route's own
 // extra layer). Both default on; individual tests flip one at a time.
 const mockIsFeatureEnabled = vi.fn()
@@ -148,15 +148,15 @@ describe('POST /api/admin/assistant/suggest', () => {
     expect(res.status).toBe(400)
   })
 
-  it('404s when the assistantCopilot flag is off (the shared gate)', async () => {
+  it('404s when the inboxAi flag is off (the shared gate)', async () => {
     mockIsFeatureEnabled.mockResolvedValue(false)
     const res = await handleSuggest({ request: makeRequest(validBody) })
     expect(res.status).toBe(404)
     expect(mockRunAssistantTurn).not.toHaveBeenCalled()
   })
 
-  it('404s when assistantCopilot is on but assistantProactiveSuggestions is off (the extra gate layer)', async () => {
-    mockIsFeatureEnabled.mockImplementation(async (flag: string) => flag === 'assistantCopilot')
+  it('404s when inboxAi is on but assistantProactiveSuggestions is off (the extra gate layer)', async () => {
+    mockIsFeatureEnabled.mockImplementation(async (flag: string) => flag === 'inboxAi')
     const res = await handleSuggest({ request: makeRequest(validBody) })
     expect(res.status).toBe(404)
     expect(mockLoadAssistantItemState).not.toHaveBeenCalled()

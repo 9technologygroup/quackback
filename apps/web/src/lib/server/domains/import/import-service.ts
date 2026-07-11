@@ -157,7 +157,9 @@ export async function processBatch(
   const toInsert = validRows.filter(
     ({ row }) => !row.sourceId || !existingBySourceId.has(row.sourceId)
   )
-  const toUpdate = validRows.filter(({ row }) => row.sourceId && existingBySourceId.has(row.sourceId))
+  const toUpdate = validRows.filter(
+    ({ row }) => row.sourceId && existingBySourceId.has(row.sourceId)
+  )
 
   // Pre-generate IDs for all new tags (neon-http compatible approach)
   const tagsToCreateArray = Array.from(tagsToCreate)
@@ -350,6 +352,7 @@ export function mergeResults(current: ImportResult, batch: BatchResult): ImportR
     skipped: current.skipped + batch.skipped,
     errors: [...current.errors, ...batch.errors].slice(0, MAX_ERRORS),
     createdTags: [...new Set([...current.createdTags, ...batch.createdTags])],
+    // Tracked on the run-wide resolver, not per batch; processImport sets it once.
   }
 }
 
@@ -363,7 +366,13 @@ export async function processImport(data: ImportInput): Promise<ImportResult> {
   }
 
   const rows = parseCSV(data.csvContent)
-  let result: ImportResult = { imported: 0, updated: 0, skipped: 0, errors: [], createdTags: [] }
+  let result: ImportResult = {
+    imported: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [],
+    createdTags: [],
+  }
 
   // Single UserResolver instance shared across all batches (caches email->principalId lookups)
   const userResolver = new ImportUserResolver()

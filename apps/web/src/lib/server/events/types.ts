@@ -2,6 +2,8 @@
  * Event system types.
  */
 import type { ConversationStatus } from '@/lib/shared/db-types'
+import type { JsonValue } from '@/lib/shared/json'
+import type { ConversationAttributeSource } from '@/lib/shared/conversation/attribute-values'
 
 /**
  * Supported event types — single source of truth.
@@ -30,6 +32,7 @@ export const EVENT_TYPES = [
   'conversation.status_changed',
   'conversation.assigned',
   'conversation.priority_changed',
+  'conversation.attribute_changed',
   'conversation.csat_submitted',
   'conversation.csat_comment_added',
   'message.created',
@@ -41,6 +44,16 @@ export const EVENT_TYPES = [
   'ticket.replied',
   'ticket.note_added',
   'assistant.handed_off',
+  // Timer-driven workflow triggers (support platform §4.6): synthetic events
+  // emitted by workflow-sweep.ts's 5-minute tick (the unresponsive pair) or
+  // the SLA domain's deadline scan (the SLA pair) — never raised by a real
+  // user/system action. See lib/server/domains/workflows/dispatcher.ts's
+  // dispatchWorkflowTrigger `targetWorkflowId` for why the unresponsive pair
+  // dispatches differently from every other event type.
+  'conversation.customer_unresponsive',
+  'conversation.teammate_unresponsive',
+  'sla.approaching_breach',
+  'sla.breached',
 ] as const
 
 export type EventType = (typeof EVENT_TYPES)[number]
@@ -263,6 +276,24 @@ export interface ConversationPriorityChangedPayload {
   previousPriority: string
   newPriority: string
 }
+/**
+ * Payload for conversation.attribute_changed — fired when a conversation
+ * attribute is set or cleared by AI, a teammate, or a customer (never for a
+ * workflow's own `set_attribute` action; see set-attribute.service.ts's
+ * emit-site doc for the loop-prevention rule). `value` is the
+ * envelope-unwrapped primitive (null on unset), never the `{ v, src, at }`
+ * storage wrapper. `conversation` carries the same ref every sibling
+ * conversation event embeds (status/channel/priority/assignedTeamId) —
+ * `conversationId` is kept alongside it for back-compat with existing
+ * consumers that read the bare id.
+ */
+export interface ConversationAttributeChangedPayload {
+  conversationId: string
+  conversation: EventConversationRef
+  key: string
+  value: JsonValue | null
+  source: ConversationAttributeSource
+}
 export interface ConversationCsatSubmittedPayload {
   conversation: EventConversationRef
   rating: number
@@ -373,6 +404,45 @@ export interface AssistantHandedOffPayload {
   reason: string
 }
 
+/**
+ * Payload shared by conversation.customer_unresponsive / teammate_unresponsive
+ * (support platform §4.6, timer-driven triggers). `workflowId` targets the ONE
+ * live workflow workflow-sweep.ts already determined crossed ITS OWN
+ * `inactivityMinutes` threshold — see dispatcher.ts's dispatchWorkflowTrigger
+ * `targetWorkflowId` for why this routes to a single workflow instead of the
+ * generic fan-out every other trigger uses. `sinceAt` is the stable anchor (the conversation's
+ * `waitingSince` for teammate_unresponsive, `lastMessageAt` for
+ * customer_unresponsive) the firing was keyed on — carried through so a
+ * consumer can compute the exact silence window without a second read.
+ * `conversation` carries the same ref every sibling conversation event
+ * embeds — `conversationId` is kept alongside it for back-compat.
+ */
+export interface ConversationUnresponsivePayload {
+  conversationId: string
+  conversation: EventConversationRef
+  workflowId: string
+  silenceMinutes: number
+  sinceAt: string // ISO
+}
+
+/**
+ * Payload shared by sla.approaching_breach / sla.breached (support platform
+ * §4.6, timer-driven triggers). Dispatched via the standard multi-workflow
+ * fan-out (unlike the unresponsive pair above) since the SLA domain's
+ * fire-once dedupe is a CAS-guarded marker scoped per (conversation, clock),
+ * not per workflow — see sla.service.ts's sweepApproachingSlaBreaches /
+ * sweepSlaBreachTriggers doc for the trade-off this implies when more than
+ * one live workflow subscribes with different `breachLeadMinutes`.
+ * `conversation` carries the same ref every sibling conversation event
+ * embeds — `conversationId` is kept alongside it for back-compat.
+ */
+export interface SlaTimerPayload {
+  conversationId: string
+  conversation: EventConversationRef
+  clock: 'first_response' | 'resolution'
+  dueAt: string // ISO
+}
+
 // ============================================================================
 // Event Data (Discriminated Union)
 // ============================================================================
@@ -463,6 +533,9 @@ export interface ConversationAssignedEvent extends EventBase<'conversation.assig
 export interface ConversationPriorityChangedEvent extends EventBase<'conversation.priority_changed'> {
   data: ConversationPriorityChangedPayload
 }
+export interface ConversationAttributeChangedEvent extends EventBase<'conversation.attribute_changed'> {
+  data: ConversationAttributeChangedPayload
+}
 export interface ConversationCsatSubmittedEvent extends EventBase<'conversation.csat_submitted'> {
   data: ConversationCsatSubmittedPayload
 }
@@ -498,6 +571,19 @@ export interface AssistantHandedOffEvent extends EventBase<'assistant.handed_off
   data: AssistantHandedOffPayload
 }
 
+export interface ConversationCustomerUnresponsiveEvent extends EventBase<'conversation.customer_unresponsive'> {
+  data: ConversationUnresponsivePayload
+}
+export interface ConversationTeammateUnresponsiveEvent extends EventBase<'conversation.teammate_unresponsive'> {
+  data: ConversationUnresponsivePayload
+}
+export interface SlaApproachingBreachEvent extends EventBase<'sla.approaching_breach'> {
+  data: SlaTimerPayload
+}
+export interface SlaBreachedEvent extends EventBase<'sla.breached'> {
+  data: SlaTimerPayload
+}
+
 /**
  * Event data - discriminated union of all event types.
  *
@@ -530,6 +616,7 @@ export type EventData =
   | ConversationStatusChangedEvent
   | ConversationAssignedEvent
   | ConversationPriorityChangedEvent
+  | ConversationAttributeChangedEvent
   | ConversationCsatSubmittedEvent
   | ConversationCsatCommentAddedEvent
   | MessageCreatedEvent
@@ -541,3 +628,7 @@ export type EventData =
   | TicketRepliedEvent
   | TicketNoteAddedEvent
   | AssistantHandedOffEvent
+  | ConversationCustomerUnresponsiveEvent
+  | ConversationTeammateUnresponsiveEvent
+  | SlaApproachingBreachEvent
+  | SlaBreachedEvent

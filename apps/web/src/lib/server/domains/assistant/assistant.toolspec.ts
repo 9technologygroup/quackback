@@ -856,7 +856,7 @@ const SPECS: readonly AssistantToolSpec[] = [
  * Static registry of Quinn's built-in tools, keyed by name: the read tools
  * plus the write tools that act on the conversation, a ticket, or a feedback
  * post. Connector-backed tools are NOT in this registry — they are
- * per-workspace, DB-backed, and gated by the dataConnectors flag, so they only
+ * per-workspace, DB-backed, and gated by the assistantTools flag, so they only
  * ever appear via `resolveToolSpecs`. Tests and the settings UI that only
  * care about the fixed catalogue use this directly (sync, no DB read).
  */
@@ -866,7 +866,7 @@ export const ASSISTANT_TOOL_SPECS: Record<string, AssistantToolSpec> = Object.fr
 
 /**
  * Resolve the active tool catalogue: the static registry plus, when the
- * dataConnectors flag is on, one tool per enabled connector. The connectors
+ * assistantTools flag is on, one tool per enabled connector. The connectors
  * domain is imported dynamically so this module (and everything that
  * statically imports it) never pulls in the connectors domain at load time —
  * connector.toolspec.ts imports types and `withGateEnvelope` from here, and a
@@ -874,7 +874,7 @@ export const ASSISTANT_TOOL_SPECS: Record<string, AssistantToolSpec> = Object.fr
  */
 export async function resolveToolSpecs(): Promise<AssistantToolSpec[]> {
   const staticSpecs = Object.values(ASSISTANT_TOOL_SPECS)
-  const connectorsEnabled = await isFeatureEnabled('dataConnectors')
+  const connectorsEnabled = await isFeatureEnabled('assistantTools')
   if (!connectorsEnabled) return staticSpecs
   const { listEnabledConnectorToolSpecs } =
     await import('@/lib/server/domains/connectors/connector.toolspec')

@@ -110,7 +110,7 @@ function SupportThreadPage() {
             conversationTarget={
               conversationId === 'new' ? 'new' : (conversationId as ConversationId)
             }
-            linkPreviews={!!settings?.featureFlags?.linkPreviews}
+            linkPreviews={!!settings?.featureFlags?.supportInbox}
             currentUser={user ? { name: user.name, avatarUrl: user.image } : null}
             uploadImage={upload}
             presence={presenceQuery.data ?? OFFLINE}

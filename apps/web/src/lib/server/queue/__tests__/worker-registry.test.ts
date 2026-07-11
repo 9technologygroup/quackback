@@ -24,6 +24,10 @@ const WORKER_MODULES = [
   'domains/help-center/help-center-translate-queue.ts',
   'domains/import/import-queue.ts',
   'domains/principals/anon-sweep-queue.ts',
+  'domains/sla/sla-breach-sweep-queue.ts',
+  'domains/workflows/workflow-dispatch-queue.ts',
+  'domains/workflows/workflow-retention-queue.ts',
+  'domains/workflows/workflow-sweep-queue.ts',
   'domains/workflows/workflow-wait-queue.ts',
   'events/process.ts',
   'events/segment-scheduler.ts',
@@ -71,6 +75,19 @@ describe('worker registry seal', () => {
       (m) => `${m[1]}.ts`
     )
     expect([...new Set(imported)].sort()).toEqual(WORKER_MODULES)
+  })
+
+  // A worker module that never checks shouldRunWorkers() would spin up its
+  // Worker under QUACKBACK_ROLE=web, defeating the whole point of the role
+  // split. Grepping the source is cheaper than exercising every module's
+  // boot path under each role and catches the same class of regression.
+  it('every worker module gates construction on shouldRunWorkers()', () => {
+    for (const rel of WORKER_MODULES) {
+      const content = fs.readFileSync(path.join(SERVER_ROOT, rel), 'utf8')
+      expect(content, `${rel} must gate new Worker(...) on shouldRunWorkers()`).toContain(
+        'shouldRunWorkers('
+      )
+    }
   })
 })
 

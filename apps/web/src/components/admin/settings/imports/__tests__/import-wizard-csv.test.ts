@@ -88,6 +88,7 @@ describe('buildRemappedCsv', () => {
     tags: null,
     author_name: null,
     author_email: null,
+    email_verified: null,
     vote_count: null,
     created_at: null,
     source_id: null,
@@ -95,9 +96,19 @@ describe('buildRemappedCsv', () => {
 
   it('renames mapped headers onto canonical field names', () => {
     const rows = [
-      { idea_title: 'Dark mode', idea_body: 'Please add it', idea_status: 'Planned', idea_board: 'Features' },
+      {
+        idea_title: 'Dark mode',
+        idea_body: 'Please add it',
+        idea_status: 'Planned',
+        idea_board: 'Features',
+      },
     ]
-    const csv = buildRemappedCsv(rows, fieldMapping, { Planned: 'planned' }, { Features: 'features' })
+    const csv = buildRemappedCsv(
+      rows,
+      fieldMapping,
+      { Planned: 'planned' },
+      { Features: 'features' }
+    )
     const { headers, rows: parsed } = parseCsvFile(csv)
     expect(headers).toContain('title')
     expect(headers).toContain('status')

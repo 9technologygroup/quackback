@@ -6,7 +6,7 @@
  * `retrieveKbArticles` (retrieval.ts) — semantic (pgvector cosine over
  * `posts.embedding`) blended with tsvector (`posts.searchVector`) when a
  * query embedding is available, keyword-only otherwise. Registered only
- * behind the `assistantPostGrounding` flag (see `resolveKnowledgeSources`),
+ * behind the `assistantKnowledge` flag (see `resolveKnowledgeSources`),
  * default off.
  *
  * Changelog entries have no tsvector or embedding today, so they are not a
@@ -240,7 +240,7 @@ export async function retrievePosts(
 /**
  * The feedback-posts `KnowledgeSource`: wraps `retrievePosts`, mapping its
  * audience-scoped rows onto `RetrievedItem`. Dynamically imported by
- * `resolveKnowledgeSources` only when `assistantPostGrounding` is on.
+ * `resolveKnowledgeSources` only when `assistantKnowledge` is on.
  */
 export const postsKnowledgeSource: KnowledgeSource = {
   sourceType: 'post',

@@ -2,7 +2,7 @@
  * Quinn performance headline (mirrors Fin's Analyze summary): involvement,
  * resolution, and escalation rates over the last 30 days, the
  * confirmed-vs-assumed resolution split, and actions taken via tool calls.
- * Read-only reporting — always visible regardless of the assistantActions
+ * Read-only reporting — always visible regardless of the assistantTools
  * flag; gated server-side on analytics.view like the rest of the analytics
  * surface.
  */

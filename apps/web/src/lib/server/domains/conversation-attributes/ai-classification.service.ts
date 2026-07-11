@@ -27,7 +27,7 @@
  * `ensureAssistantPrincipal()` + `quinnActor`'s bounded identity, never a raw
  * service principal.
  *
- * Gated, in order: the `aiAttributeDetection` feature flag; a configured AI
+ * Gated, in order: the `inboxAi` feature flag; a configured AI
  * client + `classification` chat model (the same getOpenAI()/getChatModel()
  * guard the other pipeline classifiers use — sentiment, quality-gate — rather
  * than importing the much larger assistant runtime module just for its
@@ -186,7 +186,7 @@ export async function classifyConversationAttributes(
   opts: ClassifyAttributesOptions
 ): Promise<ClassificationOutcome[]> {
   try {
-    if (!(await isFeatureEnabled('aiAttributeDetection'))) return []
+    if (!(await isFeatureEnabled('inboxAi'))) return []
 
     const openai = getOpenAI()
     const model = getChatModel('classification')

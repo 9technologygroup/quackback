@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /**
  * <InboxDetailPanel> tab host (COPILOT-SIDEBAR-UX.md B.1; unified inbox §2.7):
- * the Copilot tab only renders when BOTH the `assistantCopilot` flag is on
+ * the Copilot tab only renders when BOTH the `inboxAi` flag is on
  * AND the viewer holds `copilot.use`. With the flag off, there is no Tabs
  * wrapper at all — the panel renders the exact same Details content as
  * before Copilot existed.
@@ -146,9 +146,9 @@ function renderPanel(
 }
 
 describe('<InboxDetailPanel> tab host', () => {
-  it('renders no Tabs when the assistantCopilot flag is off — Details content directly, byte-identical', () => {
+  it('renders no Tabs when the inboxAi flag is off — Details content directly, byte-identical', () => {
     routeContextState.settings = {
-      featureFlags: { assistantCopilot: false } as unknown as FeatureFlags,
+      featureFlags: { inboxAi: false } as unknown as FeatureFlags,
     }
     routeContextState.principal = { role: 'admin' }
 
@@ -164,7 +164,7 @@ describe('<InboxDetailPanel> tab host', () => {
 
   it('renders Tabs with a Copilot tab when the flag is on and the viewer holds copilot.use', () => {
     routeContextState.settings = {
-      featureFlags: { assistantCopilot: true } as unknown as FeatureFlags,
+      featureFlags: { inboxAi: true } as unknown as FeatureFlags,
     }
     routeContextState.principal = { role: 'admin' } // admin -> owner preset -> has copilot.use
 
@@ -177,7 +177,7 @@ describe('<InboxDetailPanel> tab host', () => {
 
   it('renders no Copilot tab when the flag is on but the viewer lacks copilot.use', () => {
     routeContextState.settings = {
-      featureFlags: { assistantCopilot: true } as unknown as FeatureFlags,
+      featureFlags: { inboxAi: true } as unknown as FeatureFlags,
     }
     routeContextState.principal = undefined // no principal -> resolvePermission is false
 
@@ -190,7 +190,7 @@ describe('<InboxDetailPanel> tab host', () => {
 
   it('keeps Details mounted (not unmounted) once the Copilot tab is switched to', () => {
     routeContextState.settings = {
-      featureFlags: { assistantCopilot: true } as unknown as FeatureFlags,
+      featureFlags: { inboxAi: true } as unknown as FeatureFlags,
     }
     routeContextState.principal = { role: 'admin' }
 
@@ -207,7 +207,7 @@ describe('<InboxDetailPanel> tab host', () => {
 describe('<InboxDetailPanel> openCopilotToken ping (the Ask Copilot shortcut)', () => {
   function enableCopilot() {
     routeContextState.settings = {
-      featureFlags: { assistantCopilot: true } as unknown as FeatureFlags,
+      featureFlags: { inboxAi: true } as unknown as FeatureFlags,
     }
     routeContextState.principal = { role: 'admin' }
   }
@@ -271,7 +271,7 @@ describe('<InboxDetailPanel> openCopilotToken ping (the Ask Copilot shortcut)', 
 
   it('a token bump is a clean no-op when the Copilot tab is unavailable (flag off)', () => {
     routeContextState.settings = {
-      featureFlags: { assistantCopilot: false } as unknown as FeatureFlags,
+      featureFlags: { inboxAi: false } as unknown as FeatureFlags,
     }
     routeContextState.principal = { role: 'admin' }
     const { rerenderWith } = renderPanel(makeConversation(), { openCopilotToken: 0 })

@@ -182,6 +182,8 @@ export {
   ticketConversationsRelations,
   ticketLinks,
   ticketLinksRelations,
+  ticketActivity,
+  ticketActivityRelations,
   DEFAULT_TICKET_STATUSES,
   // Schema tables - email channel (support platform §4.8)
   channelAccounts,
@@ -194,6 +196,7 @@ export {
   workflows,
   workflowRuns,
   workflowRunEvents,
+  workflowVersions,
   // Schema tables - integrations
   integrationEventMappings,
   integrationEventMappingsRelations,
@@ -206,6 +209,8 @@ export {
   // Schema tables - external links
   postExternalLinks,
   postExternalLinksRelations,
+  ticketExternalLinks,
+  ticketExternalLinksRelations,
   // Schema tables - import runs (imports & exports hub)
   importRuns,
   importRunsRelations,
@@ -465,6 +470,7 @@ export type {
   Workflow,
   WorkflowRun,
   WorkflowRunEvent,
+  WorkflowVersion,
   WorkflowClass,
   WorkflowStatus,
   WorkflowRunState,

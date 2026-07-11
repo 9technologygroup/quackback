@@ -81,6 +81,7 @@ export const ID_PREFIXES = {
   // Tickets (support platform §4.2)
   ticket: 'ticket',
   ticket_status: 'ticket_status',
+  ticket_activity: 'ticket_activity',
 
   // Email channel (support platform §4.8)
   channel_account: 'channel_account',
@@ -93,12 +94,14 @@ export const ID_PREFIXES = {
   workflow: 'workflow',
   workflow_run: 'workflow_run',
   workflow_run_event: 'workflow_run_event',
+  workflow_version: 'workflow_version',
 
   // Integrations
   integration: 'integration',
   platform_cred: 'platform_cred',
   event_mapping: 'event_mapping',
   post_external_link: 'post_external_link',
+  ticket_external_link: 'ticket_external_link',
   slack_monitor: 'slack_monitor',
 
   // Imports & exports hub

@@ -76,7 +76,7 @@ beforeEach(() => {
 })
 
 describe('previewAttributeDetection: gating', () => {
-  it('throws when the aiAttributeDetection flag is off', async () => {
+  it('throws when the inboxAi flag is off', async () => {
     mockIsFeatureEnabled.mockResolvedValue(false)
     await expect(
       previewAttributeDetection({ definition, sampleMessage: 'I was charged twice' })

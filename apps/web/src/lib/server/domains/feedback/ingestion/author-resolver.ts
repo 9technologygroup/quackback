@@ -96,11 +96,15 @@ async function resolveByEmail(
   const principalId = createId('principal')
   const displayName = name?.trim() || email.split('@')[0]
 
+  // Credential-less shell: no account rows exist, so a verified email is
+  // safe (nothing attacker-controlled to inherit) and lets the real person
+  // claim this record on first trusted-provider sign-in instead of hitting
+  // Better-Auth's requireLocalEmailVerified linking gate.
   await db.insert(user).values({
     id: userId,
     email,
     name: displayName,
-    emailVerified: false,
+    emailVerified: true,
     createdAt: new Date(),
     updatedAt: new Date(),
   })

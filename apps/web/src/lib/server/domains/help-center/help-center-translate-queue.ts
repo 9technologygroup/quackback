@@ -11,6 +11,7 @@
  */
 import { Queue, Worker, UnrecoverableError } from 'bullmq'
 import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-config'
+import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { logger } from '@/lib/server/logger'
 import type { KbArticleId } from '@quackback/ids'
 
@@ -34,7 +35,7 @@ const DEFAULT_JOB_OPTS = {
 
 let initPromise: Promise<{
   queue: Queue<HelpCenterTranslateJob>
-  worker: Worker<HelpCenterTranslateJob>
+  worker: Worker<HelpCenterTranslateJob> | null
 }> | null = null
 
 function ensureQueue(): Promise<Queue<HelpCenterTranslateJob>> {
@@ -55,31 +56,36 @@ async function initializeQueue() {
     defaultJobOptions: DEFAULT_JOB_OPTS,
   })
 
-  const worker = new Worker<HelpCenterTranslateJob>(
-    QUEUE_NAME,
-    async (job) => {
-      const data = job.data
-      switch (data.type) {
-        case 'translate-article': {
-          const { translateArticleForLocale } = await import('./help-center-auto-translate.service')
-          await translateArticleForLocale(data.articleId as KbArticleId, data.locale)
-          break
+  // Consumer side is role-gated: web-role replicas enqueue and register
+  // schedules but never construct a Worker (see queue/role.ts).
+  const worker = shouldRunWorkers()
+    ? new Worker<HelpCenterTranslateJob>(
+        QUEUE_NAME,
+        async (job) => {
+          const data = job.data
+          switch (data.type) {
+            case 'translate-article': {
+              const { translateArticleForLocale } =
+                await import('./help-center-auto-translate.service')
+              await translateArticleForLocale(data.articleId as KbArticleId, data.locale)
+              break
+            }
+            default:
+              throw new UnrecoverableError(
+                `Unknown help-center-translate job type: ${(data as { type: string }).type}`
+              )
+          }
+        },
+        {
+          connection,
+          concurrency: CONCURRENCY,
+          // Same rationale as feedback-ai: an OpenAI call can run long enough
+          // that the default 30s lockDuration would let BullMQ mark it stalled
+          // and re-dispatch (double-billing) before it finishes.
+          lockDuration: 120_000,
         }
-        default:
-          throw new UnrecoverableError(
-            `Unknown help-center-translate job type: ${(data as { type: string }).type}`
-          )
-      }
-    },
-    {
-      connection,
-      concurrency: CONCURRENCY,
-      // Same rationale as feedback-ai: an OpenAI call can run long enough
-      // that the default 30s lockDuration would let BullMQ mark it stalled
-      // and re-dispatch (double-billing) before it finishes.
-      lockDuration: 120_000,
-    }
-  )
+      )
+    : null
 
   try {
     await Promise.race([
@@ -90,11 +96,11 @@ async function initializeQueue() {
     ])
   } catch (error) {
     await queue.close().catch(() => {})
-    await worker.close().catch(() => {})
+    await worker?.close().catch(() => {})
     throw error
   }
 
-  worker.on('failed', (job, error) => {
+  worker?.on('failed', (job, error) => {
     if (!job) return
     const isPermanent =
       job.attemptsMade >= (job.opts.attempts ?? 1) || error.name === 'UnrecoverableError'
@@ -120,6 +126,6 @@ export async function closeHelpCenterTranslateQueue(): Promise<void> {
   if (!initPromise) return
   const { worker, queue } = await initPromise
   initPromise = null
-  await worker.close().catch(() => {})
+  await worker?.close().catch(() => {})
   await queue.close().catch(() => {})
 }

@@ -7,7 +7,8 @@
  * COPILOT-SIDEBAR-UX.md "20 Summarize").
  *
  * Both fns are gated through `gateCopilotFn` (copilot-gate.ts, shared with
- * copilot-events.ts): `copilot.use` -> `assertCopilotAvailable` -> the
+ * copilot-events.ts): `copilot.use` -> `assertCopilotAvailable` (the
+ * `inboxAi` flag + the assistant being configured) -> the
  * item-scoped viewability check. Each reuses its
  * matching generator in conversation-summary.service.ts
  * (`generateConversationSummaryText` / `generateTicketSummaryText`), which

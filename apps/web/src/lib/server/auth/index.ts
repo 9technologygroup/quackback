@@ -285,6 +285,18 @@ async function createAuth() {
         await sendPasswordResetEmail({ to: user.email, resetLink: url, logoUrl })
       },
       resetPasswordTokenExpiresIn: 60 * 60 * 24, // 24 hours
+      // Completing a reset proves inbox ownership (the user received and
+      // used the emailed token), so mark the email verified. Password
+      // signup never verifies otherwise, and an unverified local user is
+      // blocked from linking OAuth/OIDC providers into their account.
+      async onPasswordReset({ user }) {
+        if (!user.emailVerified) {
+          await db
+            .update(userTable)
+            .set({ emailVerified: true, updatedAt: new Date() })
+            .where(eq(userTable.id, user.id as UserId))
+        }
+      },
     },
 
     // Account linking - allow users to link multiple OAuth providers to their account
@@ -362,9 +374,8 @@ async function createAuth() {
               // covering password/magic-link/OAuth/OTP signup in one place.
               // Anonymous placeholder accounts are skipped (no real email yet).
               if (!isAnonymous) {
-                const { ensureAutoSubscribed } = await import(
-                  '@/lib/server/domains/changelog/changelog-subscription.service'
-                )
+                const { ensureAutoSubscribed } =
+                  await import('@/lib/server/domains/changelog/changelog-subscription.service')
                 ensureAutoSubscribed(createdPrincipal.id as PrincipalId).catch((err) =>
                   log.error({ err }, 'failed to auto-subscribe to changelog on signup')
                 )

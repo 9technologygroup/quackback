@@ -212,7 +212,11 @@ export const adminQueries = {
     queryOptions({
       queryKey: ['admin', 'onboarding'],
       queryFn: () => fetchOnboardingStatus(),
-      staleTime: 0, // Always fresh during onboarding
+      // Skip/complete actions invalidate ['admin', 'onboarding'] explicitly
+      // (see getting-started.tsx), so this doesn't need to poll on every
+      // mount/focus — the sidebar badge just needs to not be stale for long.
+      staleTime: 30 * 1000,
+      refetchOnWindowFocus: false,
     }),
 
   /**

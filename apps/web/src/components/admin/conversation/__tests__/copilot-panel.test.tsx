@@ -81,10 +81,8 @@ import { CopilotPanel } from '../copilot-panel'
 const CONVERSATION_ID = 'conversation_1' as ConversationId
 
 const ALL_FLAGS_ON: FeatureFlags = {
-  assistantSnippets: true,
-  assistantPostGrounding: true,
-  assistantConversationGrounding: true,
-  assistantCopilot: true,
+  assistantKnowledge: true,
+  inboxAi: true,
 } as unknown as FeatureFlags
 
 function renderPanel(
@@ -743,9 +741,7 @@ describe('<CopilotPanel> Answer-sources popover', () => {
     vi.stubGlobal('fetch', vi.fn())
     renderPanel({
       flags: {
-        assistantSnippets: false,
-        assistantPostGrounding: false,
-        assistantConversationGrounding: false,
+        assistantKnowledge: false,
       } as unknown as FeatureFlags,
     })
 
@@ -787,9 +783,7 @@ describe('<CopilotPanel> Answer-sources popover', () => {
     vi.stubGlobal('fetch', vi.fn())
     renderPanel({
       flags: {
-        assistantSnippets: false,
-        assistantPostGrounding: false,
-        assistantConversationGrounding: false,
+        assistantKnowledge: false,
       } as unknown as FeatureFlags,
     })
 

@@ -1,15 +1,27 @@
 /**
  * The step palette: shown in the inspector when a "+" connector is active
- * instead of a step. A search box filters by label; groups are Logic
- * (condition/branch/wait) and Actions (all 9 action types), each icon tinted
- * by the same tone the canvas card for that step kind uses. Clicking an item
+ * instead of a step. A search box filters by label; groups are SEND and
+ * COLLECT (the 8 conversational block kinds, Phase C slice C-5) above the
+ * pre-existing Logic (condition/branch/wait) and Actions (all 9 action
+ * types) groups, per the design brief's §4/§5.12 — each icon tinted by the
+ * same tone the canvas card for that step kind uses. Clicking an item
  * inserts that step at the active insertion point and selects it.
  */
 import { useState, type ComponentType } from 'react'
 import { ClockIcon, FunnelIcon, MagnifyingGlassIcon, ShareIcon } from '@heroicons/react/24/outline'
-import { ACTION_ICONS, TONE_TILE } from '../step-visuals'
+import { ACTION_ICONS, BLOCK_ICONS, CALL_CONNECTOR_ICON, TONE_TILE } from '../step-visuals'
 import { ACTION_TONE, type Tone } from '../flow-layout'
-import { ACTION_LABELS, ACTION_TYPES, type ActionType, type TreeStep } from '../../workflow-graph'
+import {
+  ACTION_LABELS,
+  ACTION_TYPES,
+  BLOCK_STEP_LABELS,
+  CALL_CONNECTOR_LABEL,
+  COLLECT_BLOCK_KINDS,
+  SEND_BLOCK_KINDS,
+  type ActionType,
+  type BlockStepKind,
+  type TreeStep,
+} from '../../workflow-graph'
 
 interface PaletteItem {
   label: string
@@ -25,6 +37,14 @@ export function StepPalette({
 }) {
   const [query, setQuery] = useState('')
 
+  const blockItem = (kind: BlockStepKind): PaletteItem => ({
+    label: BLOCK_STEP_LABELS[kind],
+    icon: BLOCK_ICONS[kind],
+    tone: 'pink',
+    onSelect: () => onInsert(kind),
+  })
+  const send: PaletteItem[] = SEND_BLOCK_KINDS.map(blockItem)
+  const collect: PaletteItem[] = COLLECT_BLOCK_KINDS.map(blockItem)
   const logic: PaletteItem[] = [
     { label: 'Condition', icon: FunnelIcon, tone: 'violet', onSelect: () => onInsert('condition') },
     {
@@ -35,16 +55,30 @@ export function StepPalette({
     },
     { label: 'Wait', icon: ClockIcon, tone: 'amber', onSelect: () => onInsert('wait') },
   ]
-  const actions: PaletteItem[] = ACTION_TYPES.map((type) => ({
-    label: ACTION_LABELS[type],
-    icon: ACTION_ICONS[type],
-    tone: ACTION_TONE[type],
-    onSelect: () => onInsert('action', type),
-  }))
+  const actions: PaletteItem[] = [
+    ...ACTION_TYPES.map((type) => ({
+      label: ACTION_LABELS[type],
+      icon: ACTION_ICONS[type],
+      tone: ACTION_TONE[type],
+      onSelect: () => onInsert('action', type),
+    })),
+    // Not an ActionType (its own top-level node kind — workflow-graph.ts's
+    // TreeStep doc), so it isn't produced by the ACTION_TYPES map above; a
+    // hand-written entry alongside it, same as the Logic group's own
+    // hand-written items below. 'green' matches most of ACTION_TONE.
+    {
+      label: CALL_CONNECTOR_LABEL,
+      icon: CALL_CONNECTOR_ICON,
+      tone: 'green' as Tone,
+      onSelect: () => onInsert('call_connector'),
+    },
+  ]
 
   const q = query.trim().toLowerCase()
   const matches = (item: PaletteItem) => !q || item.label.toLowerCase().includes(q)
   const groups = [
+    { label: 'Send', items: send.filter(matches) },
+    { label: 'Collect', items: collect.filter(matches) },
     { label: 'Logic', items: logic.filter(matches) },
     { label: 'Actions', items: actions.filter(matches) },
   ].filter((g) => g.items.length > 0)

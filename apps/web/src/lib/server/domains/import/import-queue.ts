@@ -9,6 +9,7 @@
  */
 import { Queue, Worker } from 'bullmq'
 import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-config'
+import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { logger } from '@/lib/server/logger'
 import type { ImportCommitJobData } from './import-run-processor'
 
@@ -25,7 +26,7 @@ const DEFAULT_JOB_OPTS = {
 
 let initPromise: Promise<{
   queue: Queue<ImportCommitJobData>
-  worker: Worker<ImportCommitJobData>
+  worker: Worker<ImportCommitJobData> | null
 }> | null = null
 
 function ensureQueue(): Promise<Queue<ImportCommitJobData>> {
@@ -46,14 +47,18 @@ async function initializeQueue() {
     defaultJobOptions: DEFAULT_JOB_OPTS,
   })
 
-  const worker = new Worker<ImportCommitJobData>(
-    QUEUE_NAME,
-    async (job) => {
-      const { runImportCommitJob } = await import('./import-run-processor')
-      await runImportCommitJob(job.data)
-    },
-    { connection, concurrency: CONCURRENCY }
-  )
+  // Consumer side is role-gated: web-role replicas enqueue and register
+  // schedules but never construct a Worker (see queue/role.ts).
+  const worker = shouldRunWorkers()
+    ? new Worker<ImportCommitJobData>(
+        QUEUE_NAME,
+        async (job) => {
+          const { runImportCommitJob } = await import('./import-run-processor')
+          await runImportCommitJob(job.data)
+        },
+        { connection, concurrency: CONCURRENCY }
+      )
+    : null
 
   try {
     await Promise.race([
@@ -64,11 +69,11 @@ async function initializeQueue() {
     ])
   } catch (error) {
     await queue.close().catch(() => {})
-    await worker.close().catch(() => {})
+    await worker?.close().catch(() => {})
     throw error
   }
 
-  worker.on('failed', (job, error) => {
+  worker?.on('failed', (job, error) => {
     if (!job) return
     log.error({ err: error, run_id: job.data.runId }, 'import commit job failed permanently')
   })
@@ -86,6 +91,6 @@ export async function closeImportQueue(): Promise<void> {
   if (!initPromise) return
   const { worker, queue } = await initPromise
   initPromise = null
-  await worker.close().catch(() => {})
+  await worker?.close().catch(() => {})
   await queue.close().catch(() => {})
 }

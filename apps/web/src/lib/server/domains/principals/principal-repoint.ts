@@ -45,9 +45,11 @@ import {
   helpCenterArticleFeedback,
   channelIdentities,
   tickets,
+  ticketActivity,
   workflowRuns,
   workflowRunEvents,
   changelogSubscriptions,
+  statusSubscriptions,
   principal,
   eq,
   and,
@@ -341,6 +343,12 @@ export const REPOINT_STEPS: RepointStep[] = [
     'requester_principal_id',
     'Ticket requester. A ticket filed while anonymous (portal/Messenger) follows the person on merge. Unlike conversations.visitor_principal_id (ON DELETE RESTRICT), this FK is ON DELETE SET NULL, so this re-point step (not the constraint) is what keeps the ticket attributed when the anonymous principal is torn down.'
   ),
+  simpleRepoint(
+    'ticket_activity',
+    ticketActivity,
+    'principal_id',
+    'Ticket activity-log attribution (mirrors post_activity). Anon actors write entries — a requester reply reopening their own ticket records them as the actor — so without a re-point the teardown nulls the actor.'
+  ),
   fillIfEmpty(
     'contact_email',
     'Attribute consolidation, not a re-point: contact_email fills the target only when the target has none (user wins, lead fills gaps).'
@@ -370,6 +378,13 @@ export const REPOINT_STEPS: RepointStep[] = [
     'principal_id',
     [],
     'Changelog subscriber state; unique on principal_id alone. An anon visitor auto-subscribed via contact capture should not lose that on merge, so it transfers to the target — but only when the target has no row of its own (the identified subscription/unsubscribe state wins).'
+  ),
+  collisionRepoint(
+    'status_subscriptions',
+    statusSubscriptions,
+    'principal_id',
+    [],
+    'Status page subscriber state; unique on principal_id alone, same shape as changelog_subscriptions. Only self-serve subscribe is wired up today (and it rejects anonymous callers directly), but the source enum also carries auto/csv_import for parity with the changelog pipeline, so a future anon-eligible subscribe path is one merge decision away from being silently stranded without this step. Transfers to the target, but only when the target has no row of its own (the identified subscription/unsubscribe state wins).'
   ),
 ]
 
@@ -409,6 +424,10 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
   'conversation_message_flags.principal_id': 'message flags are agent-only',
   'kb_articles.principal_id': 'help-center authors are team members',
   'changelog_entries.principal_id': 'changelog authors are team members',
+  'status_incidents.created_by':
+    'incidents/maintenance windows are authored by team members with status_page.publish; the merge source is always anonymous',
+  'status_incident_updates.created_by':
+    'incident updates are posted by team members with status_page.publish (same reasoning as status_incidents.created_by)',
   'post_merge_suggestions.resolved_by_principal_id': 'suggestion resolution is a team action',
   'feedback_suggestions.resolved_by_principal_id': 'suggestion resolution is a team action',
   'principal_role_assignments.principal_id':

@@ -14,6 +14,7 @@ import { isValidTypeId } from '@quackback/ids'
 import type {
   TicketId,
   TicketStatusId,
+  TicketExternalLinkId,
   PrincipalId,
   TeamId,
   CompanyId,
@@ -124,6 +125,24 @@ export const getTicketFn = createServerFn({ method: 'GET' })
     await requireAuth({ permission: PERMISSIONS.TICKET_VIEW })
     const { getTicket } = await import('@/lib/server/domains/tickets/ticket.service')
     return getTicket(data.ticketId as TicketId)
+  })
+
+/**
+ * The ticket's activity timeline (admin detail panel). Reads on TICKET_VIEW —
+ * the same permission as reading the ticket — with `assertTicketVisible` as
+ * the per-ticket visibility gate (unified inbox §2.5), so an agent who cannot
+ * see the ticket gets NotFound, never its history.
+ */
+export const fetchTicketActivityFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ ticketId: z.string() }))
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_VIEW })
+    const actor = await policyActorFromAuth(ctx)
+    const { assertTicketVisible } = await import('@/lib/server/domains/tickets/ticket.service')
+    await assertTicketVisible(data.ticketId as TicketId, actor)
+    const { listTicketActivity } =
+      await import('@/lib/server/domains/tickets/ticket-activity.service')
+    return listTicketActivity(data.ticketId as TicketId)
   })
 
 const createTicketSchema = z.object({
@@ -334,6 +353,49 @@ export const unlinkTicketFromTrackerFn = createServerFn({ method: 'POST' })
       data.ticketId as TicketId,
       actor
     )
+    return { success: true }
+  })
+
+// ---------------------------------------------------------------------------
+// External issue links (GitHub)
+// ---------------------------------------------------------------------------
+
+/** A ticket's linked GitHub issues, plus whether the integration is connected
+ *  (drives the panel's visibility). Reads on TICKET_VIEW. */
+export const fetchTicketExternalLinksFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ ticketId: z.string() }))
+  .handler(async ({ data }) => {
+    await requireAuth({ permission: PERMISSIONS.TICKET_VIEW })
+    const { listTicketExternalLinks, getActiveGitHubIntegration } =
+      await import('@/lib/server/domains/tickets/ticket-external-links.service')
+    const [links, integration] = await Promise.all([
+      listTicketExternalLinks(data.ticketId as TicketId),
+      getActiveGitHubIntegration(),
+    ])
+    return { links, githubConfigured: integration !== null }
+  })
+
+/** Link a ticket to an existing GitHub issue by URL or owner/repo#number.
+ *  Gated on TICKET_ASSIGN, like the tracker links. */
+export const linkTicketIssueFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ ticketId: z.string(), issue: z.string().trim().min(1).max(500) }))
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_ASSIGN })
+    const actor = await policyActorFromAuth(ctx)
+    const { linkTicketToIssue } =
+      await import('@/lib/server/domains/tickets/ticket-external-links.service')
+    return linkTicketToIssue(data.ticketId as TicketId, data.issue, actor)
+  })
+
+/** Remove a ticket's GitHub issue link. Gated on TICKET_ASSIGN. */
+export const unlinkTicketIssueFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ ticketId: z.string(), linkId: z.string() }))
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_ASSIGN })
+    const actor = await policyActorFromAuth(ctx)
+    const { unlinkTicketIssue } =
+      await import('@/lib/server/domains/tickets/ticket-external-links.service')
+    await unlinkTicketIssue(data.ticketId as TicketId, data.linkId as TicketExternalLinkId, actor)
     return { success: true }
   })
 

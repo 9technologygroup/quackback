@@ -22,6 +22,20 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
   db: (await import('@/lib/server/__tests__/db-test-fixture')).testDb,
 }))
 
+const { dispatchConversationAttributeChanged } = vi.hoisted(() => ({
+  dispatchConversationAttributeChanged: vi.fn(),
+}))
+vi.mock('@/lib/server/events/dispatch', () => ({ dispatchConversationAttributeChanged }))
+
+// attributeChangeActor resolves the AI actor's displayName off the configured
+// assistant name (settings.widget's messenger.assistant.name) — mocked here
+// (same as action.executor.test.ts's sendBlock coverage) so this suite
+// doesn't need a real `settings` row in the fixture. Default has no
+// configured name, so the 'Quinn' fallback is exercised unless a test
+// overrides it.
+const { getMessengerConfig } = vi.hoisted(() => ({ getMessengerConfig: vi.fn() }))
+vi.mock('@/lib/server/domains/settings/settings.widget', () => ({ getMessengerConfig }))
+
 import { setConversationAttribute } from '../set-attribute.service'
 import {
   createConversationAttribute,
@@ -52,6 +66,20 @@ async function seedConversation(initial: Record<string, unknown> = {}): Promise<
   return conversation.id
 }
 
+/** The EventConversationRef a plain seedConversation() row resolves to
+ *  (defaults: status 'open', priority 'none', unassigned) — matches every
+ *  attribute_changed emission below, since none of these tests change those
+ *  columns. */
+function conversationRef(conversationId: ConversationId) {
+  return {
+    id: conversationId,
+    status: 'open',
+    channel: 'messenger',
+    priority: 'none',
+    assignedTeamId: null,
+  }
+}
+
 async function seedTicket(): Promise<TicketId> {
   const [status] = await testDb
     .insert(ticketStatuses)
@@ -73,7 +101,11 @@ async function conversationAttributes(id: ConversationId): Promise<Record<string
 }
 
 describe.skipIf(!fixture.available)('setConversationAttribute (real DB, rolled back)', () => {
-  beforeEach(fixture.begin)
+  beforeEach(() => {
+    dispatchConversationAttributeChanged.mockClear()
+    getMessengerConfig.mockReset().mockResolvedValue({ assistant: undefined })
+    return fixture.begin()
+  })
   afterEach(fixture.rollback)
   afterAll(fixture.close)
 
@@ -190,6 +222,87 @@ describe.skipIf(!fixture.available)('setConversationAttribute (real DB, rolled b
     expect((await conversationAttributes(legacyConversation)).plan).toBe('legacy')
   })
 
+  it('lets a customer fill an empty slot or one only AI has touched, but refuses to overwrite teammate/workflow/legacy values', async () => {
+    await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
+
+    // Empty slot: the customer may fill it.
+    const emptyConversation = await seedConversation()
+    await setConversationAttribute({ conversationId: emptyConversation }, 'plan', 'pro', 'customer')
+    expect(
+      readAttributeValue((await conversationAttributes(emptyConversation)).plan)
+    ).toMatchObject({ v: 'pro', src: 'customer' })
+
+    // AI-only slot: the customer may overwrite AI's own guess.
+    const aiConversation = await seedConversation()
+    await setConversationAttribute({ conversationId: aiConversation }, 'plan', 'starter', 'ai')
+    await setConversationAttribute({ conversationId: aiConversation }, 'plan', 'growth', 'customer')
+    expect(readAttributeValue((await conversationAttributes(aiConversation)).plan)).toMatchObject({
+      v: 'growth',
+      src: 'customer',
+    })
+
+    // Teammate-set slot: the customer is refused, visibly (not a silent no-op).
+    const teammateConversation = await seedConversation()
+    await setConversationAttribute(
+      { conversationId: teammateConversation },
+      'plan',
+      'pro',
+      'teammate'
+    )
+    await expect(
+      setConversationAttribute(
+        { conversationId: teammateConversation },
+        'plan',
+        'other',
+        'customer'
+      )
+    ).rejects.toMatchObject({ code: 'ATTRIBUTE_LOCKED' })
+    expect(
+      readAttributeValue((await conversationAttributes(teammateConversation)).plan)
+    ).toMatchObject({ v: 'pro', src: 'teammate' })
+
+    // Workflow-set slot: same refusal.
+    const workflowConversation = await seedConversation()
+    await setConversationAttribute(
+      { conversationId: workflowConversation },
+      'plan',
+      'wf',
+      'workflow'
+    )
+    await expect(
+      setConversationAttribute(
+        { conversationId: workflowConversation },
+        'plan',
+        'other',
+        'customer'
+      )
+    ).rejects.toMatchObject({ code: 'ATTRIBUTE_LOCKED' })
+
+    // A customer's own prior write also can't be silently re-clobbered by a
+    // second customer submission (write-once, not last-write-wins).
+    const customerConversation = await seedConversation()
+    await setConversationAttribute(
+      { conversationId: customerConversation },
+      'plan',
+      'pro',
+      'customer'
+    )
+    await expect(
+      setConversationAttribute(
+        { conversationId: customerConversation },
+        'plan',
+        'other',
+        'customer'
+      )
+    ).rejects.toMatchObject({ code: 'ATTRIBUTE_LOCKED' })
+
+    // Bare legacy value (unknown provenance): the customer is refused too.
+    const legacyConversation = await seedConversation({ plan: 'legacy' })
+    await expect(
+      setConversationAttribute({ conversationId: legacyConversation }, 'plan', 'other', 'customer')
+    ).rejects.toMatchObject({ code: 'ATTRIBUTE_LOCKED' })
+  })
+
   it('writes to a ticket target through the same path', async () => {
     await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
     const ticketId = await seedTicket()
@@ -203,6 +316,123 @@ describe.skipIf(!fixture.available)('setConversationAttribute (real DB, rolled b
     expect(readAttributeValue(row.customAttributes.plan)).toMatchObject({
       v: 'enterprise',
       src: 'workflow',
+    })
+  })
+
+  // Nested (not a sibling top-level describe): reuses the outer fixture
+  // begin/rollback/close lifecycle above rather than racing it — a sibling
+  // describe with its own fixture.close() in afterAll would tear down the
+  // shared `fixture` singleton before this block's tests ever ran.
+  describe('conversation.attribute_changed emission (workflow trigger source)', () => {
+    it('emits for an AI write, service-actored', async () => {
+      await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
+      const conversationId = await seedConversation()
+
+      await setConversationAttribute({ conversationId }, 'plan', 'starter', 'ai')
+
+      expect(dispatchConversationAttributeChanged).toHaveBeenCalledTimes(1)
+      expect(dispatchConversationAttributeChanged).toHaveBeenCalledWith(
+        { type: 'service', displayName: 'Quinn' },
+        conversationRef(conversationId),
+        'plan',
+        'starter',
+        'ai'
+      )
+    })
+
+    it('emits for an AI write with the CONFIGURED assistant name, not a hardcoded "Quinn"', async () => {
+      await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
+      const conversationId = await seedConversation()
+      getMessengerConfig.mockResolvedValue({ assistant: { name: 'Aria', avatarUrl: null } })
+
+      await setConversationAttribute({ conversationId }, 'plan', 'starter', 'ai')
+
+      expect(dispatchConversationAttributeChanged).toHaveBeenCalledWith(
+        { type: 'service', displayName: 'Aria' },
+        conversationRef(conversationId),
+        'plan',
+        'starter',
+        'ai'
+      )
+    })
+
+    it('emits for a teammate write, as a user actor', async () => {
+      await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
+      const conversationId = await seedConversation()
+
+      await setConversationAttribute({ conversationId }, 'plan', 'pro', 'teammate')
+
+      expect(dispatchConversationAttributeChanged).toHaveBeenCalledTimes(1)
+      expect(dispatchConversationAttributeChanged).toHaveBeenCalledWith(
+        { type: 'user' },
+        conversationRef(conversationId),
+        'plan',
+        'pro',
+        'teammate'
+      )
+    })
+
+    it('emits for a customer write (conversational-block collect resume), as a user actor', async () => {
+      await createConversationAttribute({ key: 'email', label: 'Email', fieldType: 'text' })
+      const conversationId = await seedConversation()
+
+      await setConversationAttribute({ conversationId }, 'email', 'visitor@example.com', 'customer')
+
+      expect(dispatchConversationAttributeChanged).toHaveBeenCalledTimes(1)
+      expect(dispatchConversationAttributeChanged).toHaveBeenCalledWith(
+        { type: 'user' },
+        conversationRef(conversationId),
+        'email',
+        'visitor@example.com',
+        'customer'
+      )
+    })
+
+    it('never emits for a workflow write — the loop regression: a workflow set_attribute action must not dispatch another workflow', async () => {
+      await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
+      const conversationId = await seedConversation()
+
+      await setConversationAttribute({ conversationId }, 'plan', 'wf', 'workflow')
+
+      expect(dispatchConversationAttributeChanged).not.toHaveBeenCalled()
+    })
+
+    it('does not emit when the write is blocked by the AI-precedence no-op (nothing actually changed)', async () => {
+      await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
+      const conversationId = await seedConversation()
+      await setConversationAttribute({ conversationId }, 'plan', 'pro', 'teammate')
+      dispatchConversationAttributeChanged.mockClear()
+
+      // AI onto a teammate-held slot is a silent no-op — see setConversationAttribute's doc.
+      await setConversationAttribute({ conversationId }, 'plan', 'ai-guess', 'ai')
+
+      expect(dispatchConversationAttributeChanged).not.toHaveBeenCalled()
+    })
+
+    it('does not emit for a ticket target (the payload is conversation-scoped only)', async () => {
+      await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
+      const ticketId = await seedTicket()
+
+      await setConversationAttribute({ ticketId }, 'plan', 'enterprise', 'teammate')
+
+      expect(dispatchConversationAttributeChanged).not.toHaveBeenCalled()
+    })
+
+    it('emits null as the value on an unset (clear)', async () => {
+      await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
+      const conversationId = await seedConversation()
+      await setConversationAttribute({ conversationId }, 'plan', 'pro', 'teammate')
+      dispatchConversationAttributeChanged.mockClear()
+
+      await setConversationAttribute({ conversationId }, 'plan', null, 'teammate')
+
+      expect(dispatchConversationAttributeChanged).toHaveBeenCalledWith(
+        { type: 'user' },
+        conversationRef(conversationId),
+        'plan',
+        null,
+        'teammate'
+      )
     })
   })
 })

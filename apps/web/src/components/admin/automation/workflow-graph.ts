@@ -10,14 +10,63 @@
  * type-only, so every catalogue here is compile-pinned to the server's: adding
  * a field or action server-side fails the typecheck until the editor knows it.
  */
-import type { ValidatedWorkflowGraph } from '@/lib/server/domains/workflows/workflow.schemas'
+import {
+  MAX_FREQUENCY_CAP_COUNT,
+  MAX_FREQUENCY_CAP_DAYS,
+  MAX_WAIT_SECONDS,
+  MAX_ASSISTANT_STEP_INSTRUCTIONS,
+  MAX_INACTIVITY_MINUTES,
+  DEFAULT_INACTIVITY_MINUTES,
+  MAX_BREACH_LEAD_MINUTES,
+  DEFAULT_BREACH_LEAD_MINUTES,
+  MIN_CALL_CONNECTOR_TIMEOUT_MS,
+  MAX_CALL_CONNECTOR_TIMEOUT_MS,
+  CALL_CONNECTOR_FAILED_KEY,
+  PARKING_BLOCK_KINDS,
+  classRestrictedNodeIssue,
+  duplicateStepIdMessage,
+  missingStepMessage,
+  undeclaredBranchPathMessage,
+  parseInactivityMinutes,
+  parseBreachLeadMinutes,
+} from '@/lib/server/domains/workflows/workflow.schemas'
+import type {
+  FrequencyCap,
+  ValidatedWorkflowGraph,
+} from '@/lib/server/domains/workflows/workflow.schemas'
+// Re-exported so every other cap symbol (and now these two bounds) flows
+// through this module: the one client-side boundary onto workflow.schemas.ts
+// for the feature, instead of individual editors reaching past it.
+export {
+  MAX_FREQUENCY_CAP_COUNT,
+  MAX_FREQUENCY_CAP_DAYS,
+  MAX_ASSISTANT_STEP_INSTRUCTIONS,
+  MAX_INACTIVITY_MINUTES,
+  DEFAULT_INACTIVITY_MINUTES,
+  MAX_BREACH_LEAD_MINUTES,
+  DEFAULT_BREACH_LEAD_MINUTES,
+  MIN_CALL_CONNECTOR_TIMEOUT_MS,
+  MAX_CALL_CONNECTOR_TIMEOUT_MS,
+  CALL_CONNECTOR_FAILED_KEY,
+}
 import type {
   ATTRIBUTE_FIELD_PREFIX as ServerAttributeFieldPrefix,
+  PERSON_ATTRIBUTE_FIELD_PREFIX as ServerPersonAttributeFieldPrefix,
+  COMPANY_ATTRIBUTE_FIELD_PREFIX as ServerCompanyAttributeFieldPrefix,
   CONDITION_FIELDS,
 } from '@/lib/server/domains/workflows/condition.evaluator'
 
+export type { FrequencyCap } from '@/lib/server/domains/workflows/workflow.schemas'
+export type { SendWindow } from '@/lib/server/domains/workflows/workflow.schemas'
+import type { SendWindow } from '@/lib/server/domains/workflows/workflow.schemas'
+import { DISPATCHABLE_TRIGGER_TYPES } from '@/lib/shared/workflow-trigger-types'
+
 export type { ConditionOperator } from '@/lib/server/domains/workflows/condition.evaluator'
 import type { ConditionOperator } from '@/lib/server/domains/workflows/condition.evaluator'
+import { CSAT_FACES, TICKET_STATUS_CATEGORIES } from '@/lib/shared/db-types'
+import type { TiptapContent, TicketStatusCategory } from '@/lib/shared/db-types'
+import { isEmptyTiptapDoc } from '@/lib/shared/utils/is-empty-tiptap-doc'
+import { truncate } from '@/lib/shared/utils/string'
 
 // ---------------------------------------------------------------------------
 // Graph JSON types (plain-string ids: the exact shape the save mutation takes)
@@ -30,6 +79,181 @@ export type GraphAction = Extract<GraphNode, { type: 'action' }>['action']
 export type ActionType = GraphAction['type']
 export type GraphCondition = Extract<GraphNode, { type: 'condition' }>['condition']
 
+// ---------------------------------------------------------------------------
+// Conversational block kinds (Phase C, slice C-5 — the visual builder side of
+// the 8 node kinds C-1 added to the runtime: workflow.schemas.ts / graph.ts).
+// Body types are derived from GraphNode (the zod-inferred shape) rather than
+// re-declared, the same "derive, don't duplicate" pattern GraphAction /
+// GraphCondition already use above — a server-side field addition/rename
+// fails typecheck here too.
+// ---------------------------------------------------------------------------
+export type BlockBody = Extract<GraphNode, { type: 'message' }>['body']
+export type GraphButtonOption = Extract<GraphNode, { type: 'reply_buttons' }>['options'][number]
+export type GraphAttributeOption = NonNullable<
+  Extract<GraphNode, { type: 'collect_data' }>['options']
+>[number]
+export type CollectFieldType = Extract<GraphNode, { type: 'collect_data' }>['fieldType']
+
+export type BlockStepKind =
+  | 'message'
+  | 'show_reply_time'
+  | 'let_assistant_answer'
+  | 'disable_composer'
+  | 'reply_buttons'
+  | 'collect_data'
+  | 'collect_reply'
+  | 'request_csat'
+
+export const BLOCK_STEP_LABELS: Record<BlockStepKind, string> = {
+  message: 'Message',
+  show_reply_time: 'Show expected reply time',
+  let_assistant_answer: 'Let Quinn answer',
+  disable_composer: 'Disable replies',
+  reply_buttons: 'Reply buttons',
+  collect_data: 'Collect data',
+  collect_reply: 'Collect customer reply',
+  request_csat: 'Ask for a rating',
+}
+
+/** The palette's SEND group: posts a message (or nothing, for the pure
+ *  control-flow kinds) and continues immediately. */
+export const SEND_BLOCK_KINDS: readonly BlockStepKind[] = [
+  'message',
+  'show_reply_time',
+  'let_assistant_answer',
+  'disable_composer',
+]
+/** The palette's COLLECT group: posts a message and parks the run for the
+ *  customer's structured reply. */
+export const COLLECT_BLOCK_KINDS: readonly BlockStepKind[] = [
+  'reply_buttons',
+  'collect_data',
+  'collect_reply',
+  'request_csat',
+]
+
+/** A minimal, schema-valid empty rich-text body — one empty paragraph. */
+export const EMPTY_BLOCK_BODY: BlockBody = { type: 'doc', content: [{ type: 'paragraph' }] }
+
+// blockBodySchema's z.ZodType annotation (workflow.schemas.ts) declares
+// `content?: unknown[]` rather than a self-referencing array — a deliberate
+// simplification there, not something this module should fight — so every
+// recursive walk below casts one level at a time via this helper instead of
+// threading `as BlockBody[]` through each call site.
+function bodyChildren(node: BlockBody): BlockBody[] {
+  return (node.content ?? []) as BlockBody[]
+}
+
+/** True when a block body carries no visible text — gates the builder's
+ *  issues chip (an unwritten prompt can't go live). `BlockBody` and
+ *  `TiptapContent` are the same doc/paragraph/text JSON shape (the
+ *  block-body schema is deliberately less strict about `content`'s element
+ *  type — see bodyChildren's comment — hence the cast), so this defers to
+ *  the one shared empty-doc rule (`lib/shared/utils/is-empty-tiptap-doc.ts`,
+ *  also used by the widget-side welcome card) rather than re-implementing
+ *  the same paragraph/heading/blockquote/text walk here. */
+export function isBlockBodyEmpty(body: BlockBody | undefined): boolean {
+  return isEmptyTiptapDoc(body as unknown as TiptapContent | undefined)
+}
+
+function blockBodyText(body: BlockBody): string {
+  const parts: string[] = []
+  const walk = (node: BlockBody) => {
+    if (node.text) parts.push(node.text)
+    bodyChildren(node).forEach(walk)
+  }
+  walk(body)
+  return parts.join(' ').replace(/\s+/g, ' ').trim()
+}
+
+/** A short plain-text preview of a block's rich body, for canvas cards and
+ *  outline rows — the closest thing the builder has to "what the customer
+ *  will see" without rendering the full rich text. */
+export function blockBodyPreview(body: BlockBody | undefined, maxLen = 80): string {
+  const text = body ? blockBodyText(body) : ''
+  if (!text) return 'Empty message'
+  return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text
+}
+
+/** Append a `{key|}` dynamic-variable token (WORKFLOW_VARIABLE_CATALOGUE,
+ *  lib/shared/workflows/interpolate.ts's token syntax) to a block body's last
+ *  paragraph, or a fresh one if the body is empty. The fallback text after
+ *  `|` starts blank — the admin types it in place as ordinary rich text, the
+ *  "fallback affordance" the design brief calls for, since the token is just
+ *  literal characters once inserted (no special widget needed). Used by the
+ *  message editor's insert-variable menu; a pure function so the caller (the
+ *  React component) stays a thin wrapper. */
+export function insertVariableToken(body: BlockBody, key: string): BlockBody {
+  const token = `{${key}|}`
+  const content = [...bodyChildren(body)]
+  const last = content[content.length - 1]
+  if (last && last.type === 'paragraph') {
+    content[content.length - 1] = {
+      ...last,
+      content: [...bodyChildren(last), { type: 'text', text: token }],
+    }
+  } else {
+    content.push({ type: 'paragraph', content: [{ type: 'text', text: token }] })
+  }
+  return { ...body, content }
+}
+
+/** Ratings the request_csat block can branch on (mirrors the server walker's
+ *  `String(rating)` exact-match branch keys, graph.ts's request_csat resume
+ *  case — a 5-emoji CSAT per the design brief, keyed 1-5 low to high). */
+export const RATING_KEYS = ['1', '2', '3', '4', '5'] as const
+export type RatingKey = (typeof RATING_KEYS)[number]
+/** Derived from the canonical CSAT_FACES (index = rating-1) rather than its
+ *  own hardcoded set, so the canvas summary (flow-layout.ts) shows the exact
+ *  row the customer actually taps in the widget — not a lookalike-but-
+ *  different emoji set authored separately here. */
+export const RATING_EMOJI: Record<RatingKey, string> = Object.fromEntries(
+  RATING_KEYS.map((key, i) => [key, CSAT_FACES[i]])
+) as Record<RatingKey, string>
+const RATING_TEXT: Record<RatingKey, string> = {
+  '1': 'Very unhappy',
+  '2': 'Unhappy',
+  '3': 'Neutral',
+  '4': 'Happy',
+  '5': 'Very happy',
+}
+/** The rating editor's add-path menu labels ("😞 Very unhappy" etc.) — built
+ *  from RATING_EMOJI rather than its own hardcoded glyph set (the bug this
+ *  fixes: the editor previously pinned an old 😡/😍 pair the canvas and the
+ *  customer-facing widget had already moved off of, via CSAT_FACES). */
+export const RATING_LABELS: Record<RatingKey, string> = Object.fromEntries(
+  RATING_KEYS.map((key) => [key, `${RATING_EMOJI[key]} ${RATING_TEXT[key]}`])
+) as Record<RatingKey, string>
+
+/** Fixed path keys for let_assistant_answer's two edges — the default
+ *  (unlabeled) continuation and the labeled "escalated to a human" edge
+ *  (graph.ts: reserved for a later invocation seam, not yet consulted by the
+ *  runtime walker — see this module's round-trip tests for why the builder
+ *  still authors it: the edge is schema-valid and forward-compatible today). */
+export const LET_ASSISTANT_DEFAULT_KEY = 'continue'
+export const LET_ASSISTANT_ESCALATED_KEY = 'escalated'
+
+/** Fixed path keys for call_connector's two edges, mirroring
+ *  LET_ASSISTANT_DEFAULT_KEY/ESCALATED_KEY exactly: the default (unlabeled)
+ *  success path and the labeled 'failed' path. `CALL_CONNECTOR_FAILED_KEY` is
+ *  imported from workflow.schemas.ts (it's a real edge branch value the
+ *  server's R-8 check validates); `CALL_CONNECTOR_SUCCESS_KEY` is a
+ *  client-only bookkeeping key (never serialized as an edge branch — the
+ *  success path is the unlabeled default edge, same as LET_ASSISTANT_DEFAULT_
+ *  KEY's 'continue'), so it's declared here rather than imported. */
+export const CALL_CONNECTOR_SUCCESS_KEY = 'success'
+
+/** The palette/inspector display label for the call_connector node kind —
+ *  not part of BLOCK_STEP_LABELS (call_connector isn't a conversational
+ *  block: it never posts a message, and it's legal in BOTH workflow classes,
+ *  unlike every PARKING_BLOCK_KINDS member). */
+export const CALL_CONNECTOR_LABEL = 'Call connector'
+
+/** Attribute field types collect_data supports (a subset of the full
+ *  registry — mirrors workflow.schemas.ts's collect_data.fieldType enum;
+ *  multi_select/checkbox have no collect_data equivalent in the v1 runtime). */
+export const COLLECT_FIELD_TYPES: readonly CollectFieldType[] = ['text', 'number', 'select', 'date']
+
 /**
  * Mirrors condition.evaluator's ATTRIBUTE_FIELD_PREFIX. The type-only import
  * above pins the literal so a server-side rename fails typecheck here too —
@@ -37,12 +261,25 @@ export type GraphCondition = Extract<GraphNode, { type: 'condition' }>['conditio
  * its types), so the string itself has to be re-declared, not re-exported.
  */
 export const ATTRIBUTE_FIELD_PREFIX: typeof ServerAttributeFieldPrefix = 'conversation.attr.'
+/** Mirrors condition.evaluator's PERSON_ATTRIBUTE_FIELD_PREFIX / COMPANY_ATTRIBUTE_FIELD_PREFIX
+ *  — same re-declaration rationale as ATTRIBUTE_FIELD_PREFIX above. */
+export const PERSON_ATTRIBUTE_FIELD_PREFIX: typeof ServerPersonAttributeFieldPrefix = 'person.attr.'
+export const COMPANY_ATTRIBUTE_FIELD_PREFIX: typeof ServerCompanyAttributeFieldPrefix =
+  'company.attr.'
 
-/** The 10 built-in condition fields (mirrors the server's CONDITION_FIELDS). */
+/** The built-in condition fields (mirrors the server's CONDITION_FIELDS). */
 export type StaticConditionField = (typeof CONDITION_FIELDS)[number]
-/** A dynamic `conversation.attr.<key>` predicate against a live attribute definition. */
+/** A dynamic `conversation.attr.<key>` predicate against a live conversation attribute definition. */
 export type AttributeConditionField = `${typeof ATTRIBUTE_FIELD_PREFIX}${string}`
-export type ConditionField = StaticConditionField | AttributeConditionField
+/** A dynamic `person.attr.<key>` predicate against a live user attribute definition. */
+export type PersonAttributeConditionField = `${typeof PERSON_ATTRIBUTE_FIELD_PREFIX}${string}`
+/** A dynamic `company.attr.<key>` predicate against a live company attribute definition. */
+export type CompanyAttributeConditionField = `${typeof COMPANY_ATTRIBUTE_FIELD_PREFIX}${string}`
+export type ConditionField =
+  | StaticConditionField
+  | AttributeConditionField
+  | PersonAttributeConditionField
+  | CompanyAttributeConditionField
 
 type Priority = Extract<GraphAction, { type: 'set_priority' }>['priority']
 
@@ -105,6 +342,10 @@ export const CONDITION_FIELD_META: Record<ConditionField, ConditionFieldMeta> = 
     kind: 'list',
     placeholder: 'Tag IDs, comma-separated',
   },
+  // No static options: the team list is live (WorkflowEntitiesProvider), so
+  // resolveConditionField fills `options` in from the `teams` map it's
+  // passed — the same lookup EntityLabels.teams already backs for actions.
+  'conversation.team': { label: 'Team', kind: 'choice' },
   'message.body': { label: 'Message body', kind: 'text', placeholder: 'Text to match' },
   'message.sender': {
     label: 'Message sender',
@@ -119,11 +360,63 @@ export const CONDITION_FIELD_META: Record<ConditionField, ConditionFieldMeta> = 
     kind: 'list',
     placeholder: 'Segment IDs, comma-separated',
   },
+  'person.email': {
+    label: 'Person email',
+    kind: 'text',
+    placeholder: 'name@example.com',
+  },
   office_hours: { label: 'Within office hours', kind: 'boolean' },
   'csat.rating': { label: 'CSAT rating', kind: 'number' },
 }
 
 export const CONDITION_FIELD_LIST = Object.keys(CONDITION_FIELD_META) as StaticConditionField[]
+
+/**
+ * The static field picker organized by entity group (RuleGroupBuilder,
+ * consumed by condition-editor.tsx / branch-editor.tsx's paths / the
+ * trigger's Audience section): Conversation / Message / Person / Availability
+ * — the dynamic attribute groups (Conversation attribute / Person attribute /
+ * Company attribute) render as their own SelectGroups alongside these, keyed
+ * off the live registries instead of this static catalogue. A Record (not a
+ * loop over CONDITION_FIELD_LIST) so a newly added static field fails
+ * typecheck here until it's placed in a group, the same "exhaustive by
+ * construction" pattern CONDITION_FIELD_META itself uses.
+ */
+export const STATIC_CONDITION_FIELD_GROUP: Record<StaticConditionField, string> = {
+  'conversation.status': 'Conversation',
+  'conversation.channel': 'Conversation',
+  'conversation.priority': 'Conversation',
+  'conversation.waiting_minutes': 'Conversation',
+  'conversation.tags': 'Conversation',
+  'conversation.team': 'Conversation',
+  'csat.rating': 'Conversation',
+  'message.body': 'Message',
+  'message.sender': 'Message',
+  'person.segments': 'Person',
+  'person.email': 'Person',
+  office_hours: 'Availability',
+}
+
+/** Group display order for the field picker; a group with no fields (never
+ *  the case for the static ones, always possible for a live attribute group
+ *  the workspace hasn't defined any of) is simply skipped by the caller. */
+export const CONDITION_FIELD_GROUP_ORDER = [
+  'Conversation',
+  'Message',
+  'Person',
+  'Availability',
+] as const
+
+/** `STATIC_CONDITION_FIELD_GROUP` inverted into picker-ready groups, in
+ *  `CONDITION_FIELD_GROUP_ORDER`. Computed once at module load — the
+ *  catalogue is static, so there's nothing to recompute per render. */
+export const STATIC_CONDITION_FIELD_GROUPS: readonly {
+  label: string
+  fields: readonly StaticConditionField[]
+}[] = CONDITION_FIELD_GROUP_ORDER.map((label) => ({
+  label,
+  fields: CONDITION_FIELD_LIST.filter((f) => STATIC_CONDITION_FIELD_GROUP[f] === label),
+}))
 
 export const OPERATOR_LABELS: Record<ConditionOperator, string> = {
   eq: 'is',
@@ -231,24 +524,110 @@ export function toAttributeFieldDefs(
   )
 }
 
+// ---------------------------------------------------------------------------
+// person.attr.<key> / company.attr.<key>: the same data-driven pattern as
+// conversation.attr above, backed instead by the live user/company attribute
+// registries (user_attribute_definitions / company_attribute_definitions).
+// Structurally simpler than conversation attributes: no select/multi_select
+// (so never any `options`), and the field type comes from a different
+// registry shape (`type`, not `fieldType`) — hence a distinct
+// PersonCompanyAttributeFieldDef rather than reusing AttributeFieldDef.
+// ---------------------------------------------------------------------------
+
+/** Mirrors user_attribute_definitions.type / company_attribute_definitions.type. */
+export type PersonCompanyAttributeType = 'string' | 'number' | 'boolean' | 'date' | 'currency'
+
+export interface PersonCompanyAttributeFieldDef {
+  key: string
+  label: string
+  type: PersonCompanyAttributeType
+}
+
+/** The operators offered per person/company attribute type (mirrors
+ *  ATTRIBUTE_OPERATORS_BY_TYPE's shape; v1: date stays valueless-only,
+ *  currency compares numerically like number). */
+export const PERSON_COMPANY_ATTRIBUTE_OPERATORS_BY_TYPE: Record<
+  PersonCompanyAttributeType,
+  readonly ConditionOperator[]
+> = {
+  string: ['contains', 'not_contains', 'eq', 'neq', 'is_set', 'is_empty'],
+  number: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'is_set', 'is_empty'],
+  boolean: ['eq'],
+  date: ['is_set', 'is_empty'],
+  currency: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'is_set', 'is_empty'],
+}
+
+const PERSON_COMPANY_ATTRIBUTE_VALUE_KIND: Record<PersonCompanyAttributeType, ConditionValueKind> =
+  {
+    string: 'text',
+    number: 'number',
+    boolean: 'boolean',
+    // Never actually rendered: date only ever offers valueless operators.
+    date: 'text',
+    currency: 'number',
+  }
+
+export function isPersonAttributeField(field: string): field is PersonAttributeConditionField {
+  return (
+    field.startsWith(PERSON_ATTRIBUTE_FIELD_PREFIX) &&
+    field.length > PERSON_ATTRIBUTE_FIELD_PREFIX.length
+  )
+}
+export function personAttributeKeyFromField(field: PersonAttributeConditionField): string {
+  return field.slice(PERSON_ATTRIBUTE_FIELD_PREFIX.length)
+}
+export function personAttributeFieldForKey(key: string): PersonAttributeConditionField {
+  return `${PERSON_ATTRIBUTE_FIELD_PREFIX}${key}` as PersonAttributeConditionField
+}
+
+export function isCompanyAttributeField(field: string): field is CompanyAttributeConditionField {
+  return (
+    field.startsWith(COMPANY_ATTRIBUTE_FIELD_PREFIX) &&
+    field.length > COMPANY_ATTRIBUTE_FIELD_PREFIX.length
+  )
+}
+export function companyAttributeKeyFromField(field: CompanyAttributeConditionField): string {
+  return field.slice(COMPANY_ATTRIBUTE_FIELD_PREFIX.length)
+}
+export function companyAttributeFieldForKey(key: string): CompanyAttributeConditionField {
+  return `${COMPANY_ATTRIBUTE_FIELD_PREFIX}${key}` as CompanyAttributeConditionField
+}
+
+/** Shared by the person/company attribute registry loaders — both
+ *  (UserAttributeItem / CompanyAttributeItem) carry the same key/label/type
+ *  shape, duck-typed so this module stays decoupled from the query layer's
+ *  concrete types. */
+export function toPersonCompanyAttributeFieldDefs(
+  items: readonly { key: string; label: string; type: PersonCompanyAttributeType }[]
+): ReadonlyMap<string, PersonCompanyAttributeFieldDef> {
+  return new Map(items.map((d) => [d.key, { key: d.key, label: d.label, type: d.type }]))
+}
+
 export interface ResolvedConditionField {
   label: string
   kind: ConditionValueKind
   operators: readonly ConditionOperator[]
   options?: readonly { value: string; label: string }[]
   placeholder?: string
-  /** A `conversation.attr.*` field with no matching live definition (archived
-   *  or a key from before/after this workspace's current registry). Still
-   *  editable — just degraded to a raw value input, never blocking. */
+  /** A `conversation.attr.*` / `person.attr.*` / `company.attr.*` field with
+   *  no matching live definition (archived or a key from before/after this
+   *  workspace's current registry). Still editable — just degraded to a raw
+   *  value input, never blocking. */
   unresolved?: boolean
 }
 
-/** Field metadata for both the static catalogue and attribute fields, the
- *  single place the visual editor and the canvas/outline summaries resolve
- *  a field's label / operators / value options from. */
+/** Field metadata for the static catalogue and all three attribute-field
+ *  groups, the single place the visual editor and the canvas/outline
+ *  summaries resolve a field's label / operators / value options from.
+ *  `teams` fills in conversation.team's options (id -> name, from the live
+ *  team list) since it — unlike the rest of the static catalogue — has no
+ *  fixed option set. */
 export function resolveConditionField(
   field: ConditionField,
-  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
+  teams: ReadonlyMap<string, string> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): ResolvedConditionField {
   if (isAttributeField(field)) {
     const key = attributeKeyFromField(field)
@@ -268,12 +647,35 @@ export function resolveConditionField(
       options: def.options?.map((o) => ({ value: o.id, label: o.label })),
     }
   }
+  if (isPersonAttributeField(field) || isCompanyAttributeField(field)) {
+    const key = isPersonAttributeField(field)
+      ? personAttributeKeyFromField(field)
+      : companyAttributeKeyFromField(field)
+    const def = (isPersonAttributeField(field) ? personAttributes : companyAttributes).get(key)
+    if (!def) {
+      return {
+        label: `Unknown attribute ${key}`,
+        kind: 'text',
+        operators: ALL_OPERATORS,
+        unresolved: true,
+      }
+    }
+    return {
+      label: def.label,
+      kind: PERSON_COMPANY_ATTRIBUTE_VALUE_KIND[def.type],
+      operators: PERSON_COMPANY_ATTRIBUTE_OPERATORS_BY_TYPE[def.type],
+    }
+  }
   const meta = CONDITION_FIELD_META[field]
+  const options =
+    field === 'conversation.team'
+      ? Array.from(teams, ([value, label]) => ({ value, label }))
+      : meta.options
   return {
     label: meta.label,
     kind: meta.kind,
     operators: OPERATORS_BY_KIND[meta.kind],
-    options: meta.options,
+    options,
     placeholder: meta.placeholder,
   }
 }
@@ -286,23 +688,44 @@ export const ACTION_LABELS: Record<ActionType, string> = {
   set_priority: 'Set priority',
   snooze: 'Snooze',
   close: 'Close conversation',
+  // Mirrors `close` (no config — just the action kind) so a low-rating/
+  // follow-up path can hand a closed conversation back to an active queue
+  // (support platform's reopen action — see workflow.schemas.ts's action
+  // union and this file's other `close` cases for the pattern this follows).
+  reopen: 'Reopen conversation',
   apply_sla: 'Apply SLA policy',
   set_attribute: 'Set attribute',
+  // Plain-text v1 internal note — see action.executor.ts's `add_note` doc.
+  add_note: 'Add internal note',
+  // Ticket actions (ticket-actions extension) — see action.executor.ts's
+  // module doc for the resolve-the-linked-ticket policy both share.
+  set_ticket_status: 'Set ticket status',
+  convert_to_ticket: 'Convert to ticket',
 }
 export const ACTION_TYPES = Object.keys(ACTION_LABELS) as ActionType[]
+
+/** Labels for the ticket status CATEGORY axis — shared by
+ *  trigger-editor.tsx's ticketStatusCategory picker (a trigger setting, not a
+ *  live status). Mirrors TICKET_STATUS_CATEGORIES (lib/shared/db-types); no
+ *  existing client-side label map covers this axis (the admin ticket-status
+ *  settings UI labels individual live statuses, not the coarser category). */
+export const TICKET_STATUS_CATEGORY_LABELS: Record<TicketStatusCategory, string> = {
+  open: 'Open',
+  pending: 'Pending',
+  closed: 'Closed',
+}
+export const TICKET_STATUS_CATEGORY_TYPES = TICKET_STATUS_CATEGORIES
 
 // ---------------------------------------------------------------------------
 // Trigger / class / status catalogues (workflow-level, not step-level): the
 // fullscreen builder's top bar + trigger inspector share these.
 // ---------------------------------------------------------------------------
 
-export const TRIGGER_TYPES = [
-  'conversation.created',
-  'message.created',
-  'conversation.status_changed',
-  'conversation.assigned',
-  'assistant.handed_off',
-] as const
+// The canonical list lives in lib/shared (importable from both client and
+// server, same convention as routing.ts) since it's now also the server's
+// authoring-validation source of truth (workflow.schemas.ts's triggerTypeSchema)
+// — see that module for how it's kept in sync with the event bus.
+export const TRIGGER_TYPES = DISPATCHABLE_TRIGGER_TYPES
 export type TriggerType = (typeof TRIGGER_TYPES)[number]
 
 export const TRIGGER_LABELS: Record<TriggerType, string> = {
@@ -311,11 +734,101 @@ export const TRIGGER_LABELS: Record<TriggerType, string> = {
   'conversation.status_changed': 'Status changed',
   'conversation.assigned': 'Assigned to team or agent',
   'assistant.handed_off': 'AI agent handed off to a human',
+  'conversation.priority_changed': 'Priority changed',
+  'conversation.attribute_changed': 'Attribute changed',
+  'conversation.csat_submitted': 'CSAT rating submitted',
+  'message.note_created': 'Internal note added',
+  'conversation.customer_unresponsive': 'Customer stopped responding',
+  'conversation.teammate_unresponsive': 'Teammate hasn’t responded',
+  'sla.approaching_breach': 'SLA approaching breach',
+  'sla.breached': 'SLA breached',
+  'ticket.created': 'Ticket created',
+  'ticket.status_changed': 'Ticket status changed',
+}
+
+/** The two timer-driven unresponsive triggers (support platform §4.6) — the
+ *  ONE trigger-editor addition this pair owns: an `inactivityMinutes` control
+ *  (see workflow.schemas.ts's triggerSettingsSchema) shown only for these.
+ *  Exported so trigger-editor.tsx can gate its control without re-deriving
+ *  the pair inline. */
+export const UNRESPONSIVE_TRIGGER_TYPES = [
+  'conversation.customer_unresponsive',
+  'conversation.teammate_unresponsive',
+] as const
+
+/** Extra guidance shown under the trigger picker for a trigger whose firing
+ *  condition isn't self-explanatory from its label alone. Sparse by design —
+ *  most triggers need none. */
+export const TRIGGER_DESCRIPTIONS: Partial<Record<TriggerType, string>> = {
+  'conversation.attribute_changed':
+    'Runs when an attribute is set or changed by AI or a teammate. Pair it with a conversation.attr.<key> condition or branch to react to the value.',
+  'conversation.customer_unresponsive':
+    'Runs once when the customer has been silent for the configured time after the last teammate or AI reply. Never fires on a closed or snoozed conversation.',
+  'conversation.teammate_unresponsive':
+    'Runs once when no teammate has replied for the configured time after the customer’s last message. Never fires on a closed or snoozed conversation.',
+  'sla.approaching_breach':
+    'Runs once when an applied SLA’s first-response or resolution clock enters its lead window. Set the lead time below.',
+  'sla.breached':
+    'Runs once when an applied SLA’s first-response or resolution clock passes its due date with nothing settling it.',
+  'ticket.created':
+    'Only fires for a ticket that has a linked conversation — a standalone ticket with no linked conversation never triggers this.',
+  'ticket.status_changed':
+    'Only fires for a ticket that has a linked conversation. Optionally restrict it to when the ticket enters a specific status category below.',
 }
 
 /** Trigger label for a stored triggerType, tolerant of an unknown/legacy value. */
 export function triggerLabel(triggerType: string): string {
   return (TRIGGER_LABELS as Record<string, string | undefined>)[triggerType] ?? triggerType
+}
+
+/**
+ * Trigger types whose dispatched event actually carries a `message` (mirrors
+ * event-trigger.ts's eventToWorkflowTrigger switch: EVERY case there sets
+ * `message: null` except message.created/message.note_created, which set
+ * `message: { body, senderType }`). Re-declared here rather than imported —
+ * event-trigger.ts is server-only — the same client-safe-literal boundary
+ * ATTRIBUTE_FIELD_PREFIX/PERSON_ATTRIBUTE_FIELD_PREFIX above already use for
+ * a server module's runtime shape. A future trigger case added there without
+ * updating this set only degrades this authoring warning (a message.* rule
+ * that's actually reachable would wrongly still warn, or vice versa) — the
+ * dispatch itself is unaffected either way.
+ */
+export const MESSAGE_CARRYING_TRIGGER_TYPES: readonly TriggerType[] = [
+  'message.created',
+  'message.note_created',
+]
+
+/** True when `condition` (a leaf or an all/any group, recursively) has any
+ *  leaf on a `message.*` field — used by audienceUnreachableFieldWarning
+ *  below. */
+function conditionReferencesMessageField(condition: GraphCondition | undefined): boolean {
+  if (!condition) return false
+  if ('field' in condition) return condition.field.startsWith('message.')
+  const children = [...(condition.all ?? []), ...(condition.any ?? [])]
+  return children.some(conditionReferencesMessageField)
+}
+
+/**
+ * Non-blocking authoring warning (support platform §4.6): a trigger's
+ * Audience references a `message.*` field (message.body / message.sender)
+ * while the selected trigger's event never carries a message — every trigger
+ * except message.created/message.note_created (MESSAGE_CARRYING_TRIGGER_TYPES
+ * above). resolveField (condition.evaluator.ts) reads an absent `message` as
+ * MISSING for any op except is_empty, so the rule silently never matches —
+ * the audience quietly excludes every conversation instead of erroring. This
+ * is a WARNING, not a save-blocking error (mirrors draftIssues' `blocking` vs
+ * `count` split): the trigger might change later, or the rule might be
+ * authored ahead of a trigger switch — so it's surfaced next to the Audience
+ * editor (trigger-editor.tsx) rather than gating Set Live.
+ */
+export function audienceUnreachableFieldWarning(
+  triggerType: string,
+  audience: GraphCondition | undefined
+): string | null {
+  if (!audience) return null
+  if (MESSAGE_CARRYING_TRIGGER_TYPES.includes(triggerType as TriggerType)) return null
+  if (!conditionReferencesMessageField(audience)) return null
+  return `This audience checks the message, but "${triggerLabel(triggerType)}" never carries one — it will never match.`
 }
 
 export const WORKFLOW_CLASSES = [
@@ -338,6 +851,138 @@ export type WorkflowStatusValue = (typeof WORKFLOW_STATUSES)[number]
 /** The channel checkboxes offered under a trigger (mirrors "conversation.channel"). */
 export const TRIGGER_CHANNELS = CONDITION_FIELD_META['conversation.channel'].options!
 
+// ---------------------------------------------------------------------------
+// Frequency cap: the trigger's per-person run limit (mirrors workflow.schemas.ts's
+// frequencyCapSchema — see dispatcher.guards.ts's frequencyCapAllows for what
+// actually enforces it). "No limit" is the absence of the key, not a stored
+// 'unlimited' value; the two read identically to the guard, but the editor
+// drops the key entirely rather than writing back a no-op value.
+// ---------------------------------------------------------------------------
+
+export type FrequencyCapType = FrequencyCap['type']
+
+export const FREQUENCY_CAP_LABELS: Record<FrequencyCapType, string> = {
+  unlimited: 'No limit',
+  once: 'Once per person',
+  once_per_days: 'Once per person, every N days',
+  n_total: 'At most N times per person',
+}
+export const FREQUENCY_CAP_TYPES = Object.keys(FREQUENCY_CAP_LABELS) as FrequencyCapType[]
+
+/** A fresh cap of the given type with an editable default count/window. */
+export function defaultFrequencyCap(type: FrequencyCapType): FrequencyCap {
+  switch (type) {
+    case 'unlimited':
+    case 'once':
+      return { type }
+    case 'once_per_days':
+      return { type, days: 30 }
+    case 'n_total':
+      return { type, count: 3 }
+  }
+}
+
+/** A stored `frequencyCap` too malformed to parse (any non-UI writer: a raw
+ *  API/import payload, a value predating a bounds tightening) reads as "No
+ *  limit" rather than blocking every future save. See toTriggerSettingsDraft
+ *  in use-workflow-builder.ts, which sanitizes it on load so the very next
+ *  edit to trigger settings writes back a clean shape. */
+export function sanitizeFrequencyCap(raw: unknown): FrequencyCap | undefined {
+  if (raw === undefined) return undefined
+  if (!isRecord(raw) || typeof raw.type !== 'string') return undefined
+  const type = raw.type as FrequencyCapType
+  switch (type) {
+    case 'unlimited':
+    case 'once':
+      return { type }
+    case 'once_per_days':
+      return typeof raw.days === 'number' &&
+        Number.isInteger(raw.days) &&
+        raw.days >= 1 &&
+        raw.days <= MAX_FREQUENCY_CAP_DAYS
+        ? { type, days: raw.days }
+        : undefined
+    case 'n_total':
+      return typeof raw.count === 'number' &&
+        Number.isInteger(raw.count) &&
+        raw.count >= 1 &&
+        raw.count <= MAX_FREQUENCY_CAP_COUNT
+        ? { type, count: raw.count }
+        : undefined
+    default:
+      return undefined
+  }
+}
+
+export function frequencyCapSummary(cap: FrequencyCap | undefined): string {
+  if (!cap || cap.type === 'unlimited') return 'No limit'
+  switch (cap.type) {
+    case 'once':
+      return 'Once per person'
+    case 'once_per_days':
+      return `Once per person, every ${cap.days} day${cap.days === 1 ? '' : 's'}`
+    case 'n_total':
+      return `At most ${cap.count} time${cap.count === 1 ? '' : 's'} per person`
+  }
+}
+
+/** A stored `inactivityMinutes` too malformed to parse (out of bounds, not an
+ *  integer, a non-UI writer) reads as `undefined` rather than blocking every
+ *  future save — the same "sanitize down to unconfigured" pattern
+ *  sanitizeFrequencyCap uses. The trigger-editor's own read then falls back
+ *  to DEFAULT_INACTIVITY_MINUTES, matching workflow-sweep.ts's reader. Both
+ *  this and sanitizeBreachLeadMinutes below delegate to workflow.schemas.ts's
+ *  parseInactivityMinutes/parseBreachLeadMinutes — the SAME bounded-int
+ *  predicate (derived from triggerSettingsSchema) the server-side sweep
+ *  reader uses, so client and server can never drift on what counts as a
+ *  valid value. */
+export function sanitizeInactivityMinutes(raw: unknown): number | undefined {
+  return parseInactivityMinutes(raw)
+}
+
+/** Mirrors sanitizeInactivityMinutes for `breachLeadMinutes`. */
+export function sanitizeBreachLeadMinutes(raw: unknown): number | undefined {
+  return parseBreachLeadMinutes(raw)
+}
+
+// ---------------------------------------------------------------------------
+// Send window: the trigger's restriction to inside/outside office hours
+// (mirrors workflow.schemas.ts's sendWindowSchema — see dispatcher.guards.ts's
+// sendWindowAllows for what actually enforces it). 'any' is never written
+// back, same "absence reads identically to the no-op value" convention
+// frequencyCap's 'unlimited' already uses.
+// ---------------------------------------------------------------------------
+
+export const SEND_WINDOW_LABELS: Record<SendWindow, string> = {
+  any: 'Any time',
+  inside_office_hours: 'Only inside office hours',
+  outside_office_hours: 'Only outside office hours',
+}
+export const SEND_WINDOW_TYPES = Object.keys(SEND_WINDOW_LABELS) as SendWindow[]
+
+/** A stored `sendWindow` too malformed to parse reads as "Any time" rather
+ *  than blocking every future save — same fallback rationale as
+ *  sanitizeFrequencyCap below. */
+export function sanitizeSendWindow(raw: unknown): SendWindow | undefined {
+  return raw === 'inside_office_hours' || raw === 'outside_office_hours' ? raw : undefined
+}
+
+export function sendWindowSummary(sendWindow: SendWindow | undefined): string {
+  return SEND_WINDOW_LABELS[sendWindow ?? 'any']
+}
+
+/** A stored `audience` too malformed to be a condition (see
+ *  validateCondition below — the same structural check validateGraph runs
+ *  for every graph condition node) reads as "no audience" rather than
+ *  blocking every future save, mirroring sanitizeFrequencyCap/
+ *  sanitizeSendWindow's fallback rationale. Unlike those two, a well-formed
+ *  audience is returned AS-IS (not re-typed) — RuleGroupBuilder decodes it
+ *  itself via conditionToGroupDraft, same as any other condition. */
+export function sanitizeAudience(raw: unknown): GraphCondition | undefined {
+  if (raw === undefined) return undefined
+  return validateCondition(raw, 'audience') === null ? (raw as GraphCondition) : undefined
+}
+
 /** A fresh action of the given type with editable defaults. */
 export function defaultAction(type: ActionType): GraphAction {
   switch (type) {
@@ -355,19 +1000,34 @@ export function defaultAction(type: ActionType): GraphAction {
       return { type, untilIso: null }
     case 'close':
       return { type }
+    case 'reopen':
+      return { type }
     case 'apply_sla':
       return { type, policyId: '' }
     case 'set_attribute':
       return { type, key: '', value: '' }
+    case 'add_note':
+      return { type, body: '' }
+    case 'set_ticket_status':
+      return { type, statusId: '' }
+    case 'convert_to_ticket':
+      return { type }
   }
 }
 
-/** Accepts both the static catalogue and the `conversation.attr.<key>`
- *  prefix — an unknown/archived key still passes (see resolveConditionField's
+/** Accepts the static catalogue and all three dynamic attribute prefixes
+ *  (`conversation.attr.<key>`, `person.attr.<key>`, `company.attr.<key>`) —
+ *  an unknown/archived key still passes (see resolveConditionField's
  *  "unresolved" fallback); only the shape of the field string is checked
  *  here, same as the server's authoring schema. */
 export function isConditionField(v: unknown): v is ConditionField {
-  return typeof v === 'string' && (v in CONDITION_FIELD_META || isAttributeField(v))
+  return (
+    typeof v === 'string' &&
+    (v in CONDITION_FIELD_META ||
+      isAttributeField(v) ||
+      isPersonAttributeField(v) ||
+      isCompanyAttributeField(v))
+  )
 }
 function isOperator(v: unknown): v is ConditionOperator {
   return typeof v === 'string' && v in OPERATOR_LABELS
@@ -391,15 +1051,125 @@ export interface BranchPath {
   steps: TreeStep[]
 }
 
+/** A labeled outgoing path shared by every conversational-block kind that
+ *  "spawns paths via edges" the way a branch node does (task's framing):
+ *  reply_buttons (one path per button key), request_csat (one path per wired
+ *  rating digit), and let_assistant_answer (its fixed default/escalated
+ *  pair). Unlike BranchPath, a KeyedPath carries no condition — routing is by
+ *  exact key match against the customer's structured reply (button key,
+ *  rating digit) or is fixed (let_assistant_answer), never evaluated. See
+ *  graph.ts's resume-path comment for how the server walker matches each. */
+export interface KeyedPath {
+  key: string
+  label: string
+  steps: TreeStep[]
+}
+
 export type TreeStep =
   | { id: string; kind: 'action'; action: GraphAction }
   | { id: string; kind: 'condition'; condition: GraphCondition }
   | { id: string; kind: 'wait'; seconds: number }
   | { id: string; kind: 'branch'; paths: BranchPath[] }
+  // ── Conversational block kinds (Phase C, slice C-5) ───────────────────────
+  | { id: string; kind: 'message'; body: BlockBody }
+  | { id: string; kind: 'show_reply_time' }
+  | { id: string; kind: 'disable_composer' }
+  | {
+      id: string
+      kind: 'collect_data'
+      body: BlockBody
+      attributeKey: string
+      fieldType: CollectFieldType
+      options?: GraphAttributeOption[]
+      required: boolean
+    }
+  | { id: string; kind: 'collect_reply'; body: BlockBody; attributeKey: string }
+  /** paths: exactly LET_ASSISTANT_DEFAULT_KEY + LET_ASSISTANT_ESCALATED_KEY,
+   *  always both present (not user add/remove/reorderable — see the
+   *  let-assistant editor). instructions/autoCloseOverride (Phase C, slice
+   *  C-6) mirror the server node's own optional fields verbatim. */
+  | {
+      id: string
+      kind: 'let_assistant_answer'
+      instructions?: string
+      autoCloseOverride?: boolean
+      paths: KeyedPath[]
+    }
+  | { id: string; kind: 'reply_buttons'; body: BlockBody; allowTyping: boolean; paths: KeyedPath[] }
+  | {
+      id: string
+      kind: 'request_csat'
+      body: BlockBody
+      allowTypingInterrupt: boolean
+      commentPrompt?: string
+      /** Zero or more wired rating digits ('1'..'5'); a rating with no path
+       *  just records and ends the run there (see graph.ts's request_csat
+       *  resume case — no matching branch edge is a valid, terminal outcome). */
+      paths: KeyedPath[]
+    }
+  /** Calls an existing data connector mid-workflow. `params` maps the
+   *  connector's declared input names to `{key|fallback}` template strings
+   *  (interpolated at execution — see action.executor.ts's
+   *  executeCallConnectorNode); this shape doesn't itself know the
+   *  connector's declared inputs (that's live data, looked up by id via
+   *  connectorsQuery in the inspector editor). paths: exactly
+   *  CALL_CONNECTOR_SUCCESS_KEY (unlabeled default edge) +
+   *  CALL_CONNECTOR_FAILED_KEY ('failed', labeled), always both present —
+   *  mirrors let_assistant_answer's fixed pair exactly (not user add/remove/
+   *  reorderable). */
+  | {
+      id: string
+      kind: 'call_connector'
+      connectorId: string
+      params: Record<string, string>
+      timeoutMs?: number
+      paths: KeyedPath[]
+    }
 
 export interface WorkflowTree {
   triggerId: string
   steps: TreeStep[]
+}
+
+/**
+ * The labeled paths a step "spawns via edges" (branch keys), normalized to
+ * one shape regardless of kind — branch's own BranchPath (label reads as its
+ * key, since a rule pill's name IS the key there), reply_buttons/
+ * request_csat/let_assistant_answer's native KeyedPath. Null for every other
+ * kind (nothing to fan out). Shared by the tree-editing helpers below and the
+ * canvas auto-layout (flow-layout.ts), which both need to walk/measure every
+ * fan-out kind the same way instead of hand-copying a `kind === 'branch'`
+ * special case per call site.
+ */
+export function stepPaths(step: TreeStep): KeyedPath[] | null {
+  switch (step.kind) {
+    case 'branch':
+      return step.paths.map((p) => ({ key: p.key, label: p.key, steps: p.steps }))
+    case 'reply_buttons':
+    case 'request_csat':
+    case 'let_assistant_answer':
+    case 'call_connector':
+      return step.paths
+    default:
+      return null
+  }
+}
+
+/** Write a fan-out step's named path back with new `steps`, preserving every
+ *  other field (a branch path's condition, a button's label, ...). Paired
+ *  with stepPaths for the tree-editing helpers' read/modify/write cycle. */
+function withPathSteps(step: TreeStep, key: string, steps: TreeStep[]): TreeStep {
+  switch (step.kind) {
+    case 'branch':
+      return { ...step, paths: step.paths.map((p) => (p.key === key ? { ...p, steps } : p)) }
+    case 'reply_buttons':
+    case 'request_csat':
+    case 'let_assistant_answer':
+    case 'call_connector':
+      return { ...step, paths: step.paths.map((p) => (p.key === key ? { ...p, steps } : p)) }
+    default:
+      return step
+  }
 }
 
 export function newTree(): WorkflowTree {
@@ -409,7 +1179,8 @@ export function newTree(): WorkflowTree {
 function collectIds(steps: TreeStep[], into: Set<string>): void {
   for (const step of steps) {
     into.add(step.id)
-    if (step.kind === 'branch') for (const p of step.paths) collectIds(p.steps, into)
+    const paths = stepPaths(step)
+    if (paths) for (const p of paths) collectIds(p.steps, into)
   }
 }
 
@@ -448,23 +1219,95 @@ export function createStep(
       }
     case 'wait':
       return { id, kind, seconds: 3600 }
+    // ── Conversational block kinds (Phase C, slice C-5) ───────────────────
+    case 'message':
+      return { id, kind, body: EMPTY_BLOCK_BODY }
+    case 'show_reply_time':
+      return { id, kind }
+    case 'disable_composer':
+      return { id, kind }
+    case 'collect_data':
+      return {
+        id,
+        kind,
+        body: EMPTY_BLOCK_BODY,
+        attributeKey: '',
+        fieldType: 'text',
+        required: false,
+      }
+    case 'collect_reply':
+      return { id, kind, body: EMPTY_BLOCK_BODY, attributeKey: '' }
+    case 'let_assistant_answer':
+      return {
+        id,
+        kind,
+        paths: [
+          { key: LET_ASSISTANT_DEFAULT_KEY, label: 'Continues', steps: [] },
+          { key: LET_ASSISTANT_ESCALATED_KEY, label: 'If escalated to a human', steps: [] },
+        ],
+      }
+    case 'reply_buttons':
+      return {
+        id,
+        kind,
+        body: EMPTY_BLOCK_BODY,
+        allowTyping: false,
+        paths: [
+          { key: 'option_1', label: 'Option 1', steps: [] },
+          { key: 'option_2', label: 'Option 2', steps: [] },
+        ],
+      }
+    case 'request_csat':
+      // Starts with no wired rating paths (not one per digit): request_csat
+      // has no declared-keys field on the node (unlike reply_buttons'
+      // `options` or branch's `branches`), so a wired-but-empty path has no
+      // edge to survive a JSON-mode round-trip on — see this module's
+      // round-trip test for request_csat. Defaulting to zero avoids handing
+      // the admin 5 paths that would silently vanish before they've added a
+      // step to any of them; the CSAT editor's "Add path for rating N" wires
+      // them in one at a time instead.
+      return {
+        id,
+        kind,
+        body: EMPTY_BLOCK_BODY,
+        allowTypingInterrupt: true,
+        paths: [],
+      }
+    case 'call_connector':
+      return {
+        id,
+        kind,
+        connectorId: '',
+        params: {},
+        paths: [
+          { key: CALL_CONNECTOR_SUCCESS_KEY, label: 'On success', steps: [] },
+          { key: CALL_CONNECTOR_FAILED_KEY, label: 'On failure', steps: [] },
+        ],
+      }
   }
 }
 
 /**
- * Insert a step at `index`. Inserting a branch splits the path: the steps
- * after the insertion point move into the branch's first path, so no step
- * ever follows a branch within one path.
+ * Insert a step at `index`. Inserting a branch (or any other fan-out kind —
+ * reply_buttons/request_csat/let_assistant_answer) splits the path: the
+ * steps after the insertion point move into the new step's first declared
+ * path, so no step ever follows a fan-out step within one lane.
  */
 export function insertStep(steps: TreeStep[], index: number, step: TreeStep): TreeStep[] {
   const head = steps.slice(0, index)
   const tail = steps.slice(index)
-  if (step.kind !== 'branch' || tail.length === 0) return [...head, step, ...tail]
-  const [first, ...rest] = step.paths
-  const firstPath: BranchPath = first
-    ? { ...first, steps: [...first.steps, ...tail] }
-    : { key: 'Path 1', condition: {}, steps: tail }
-  return [...head, { ...step, paths: [firstPath, ...rest] }]
+  if (tail.length === 0) return [...head, step, ...tail]
+  if (step.kind === 'branch') {
+    const [first, ...rest] = step.paths
+    const firstPath: BranchPath = first
+      ? { ...first, steps: [...first.steps, ...tail] }
+      : { key: 'Path 1', condition: {}, steps: tail }
+    return [...head, { ...step, paths: [firstPath, ...rest] }]
+  }
+  const paths = stepPaths(step)
+  if (!paths || !paths[0]) return [...head, step, ...tail]
+  const merged = withPathSteps(step, paths[0].key, [...paths[0].steps, ...tail])
+  return [...head, merged]
 }
 
 /** Steps in a subtree, for "this deletes N steps" confirmations. */
@@ -472,7 +1315,8 @@ export function countSteps(steps: TreeStep[]): number {
   let n = 0
   for (const step of steps) {
     n++
-    if (step.kind === 'branch') for (const p of step.paths) n += countSteps(p.steps)
+    const paths = stepPaths(step)
+    if (paths) for (const p of paths) n += countSteps(p.steps)
   }
   return n
 }
@@ -516,6 +1360,14 @@ function validateCondition(v: unknown, where: string): string | null {
   return null
 }
 
+/** Shallow check that a body value is at least shaped like a TipTap doc (has
+ *  a `type`) — mirrors the server's blockBodySchema CALIBRATION: catching a
+ *  shape the interpolator/walker can't make sense of, not a full recursive
+ *  mirror (the server re-validates the whole tree on save either way). */
+function validateBlockBody(v: unknown, where: string): string | null {
+  return isRecord(v) && nonEmptyString(v.type) ? null : `${where}: the message needs content`
+}
+
 function validateAction(v: unknown, where: string): string | null {
   if (!isRecord(v)) return `${where}: the action must be an object`
   if (!isActionType(v.type)) return `${where}: unknown action "${String(v.type)}"`
@@ -530,19 +1382,41 @@ function validateAction(v: unknown, where: string): string | null {
     case 'set_priority':
       return isPriority(v.priority) ? null : `${where}: pick a priority`
     case 'snooze':
+      // Relative (seconds) or legacy absolute (untilIso, a UTC timestamp, or
+      // null for "until they reply") — see workflow.schemas.ts's
+      // snoozeActionSchema union. Only a sanity check here (a whole,
+      // non-negative number of seconds); the server bounds it by
+      // MAX_WAIT_SECONDS on save, same as the wait step's "seconds" below.
+      if ('seconds' in v) {
+        return typeof v.seconds === 'number' && Number.isInteger(v.seconds) && v.seconds >= 0
+          ? null
+          : `${where}: snooze duration must be a whole number of seconds (0 or more)`
+      }
       return v.untilIso === null || isUtcTimestamp(v.untilIso)
         ? null
         : `${where}: snooze needs a UTC timestamp (e.g. 2026-08-01T09:00:00Z) or null`
     case 'close':
+    case 'reopen':
       return null
     case 'apply_sla':
       return nonEmptyString(v.policyId) ? null : `${where}: enter an SLA policy id`
     case 'set_attribute':
       return nonEmptyString(v.key) ? null : `${where}: enter an attribute key`
+    case 'add_note':
+      return nonEmptyString(v.body) ? null : `${where}: write the note`
+    case 'set_ticket_status':
+      return nonEmptyString(v.statusId) ? null : `${where}: choose a ticket status`
+    case 'convert_to_ticket':
+      return null
   }
 }
 
-/** Structural validation of an unknown value as a workflow graph. */
+/** Structural validation of an unknown value as a workflow graph. Mirrors
+ *  workflowGraphSchema's superRefine cross-node checks too (duplicate node
+ *  ids, an edge referencing a missing node, an edge's branch key the node
+ *  doesn't declare, a wait past MAX_WAIT_SECONDS): the server re-validates on
+ *  save either way, but without these here a JSON-mode graph hitting one of
+ *  them would only fail as a bare server 400 instead of a readable message. */
 export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
   if (!isRecord(input)) return fail('The graph must be an object with "nodes" and "edges"')
   const { nodes, edges } = input
@@ -551,10 +1425,15 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
   if (nodes.length > 200) return fail('A workflow can have at most 200 steps')
   if (edges.length > 400) return fail('A workflow can have at most 400 connections')
 
+  const nodeIds = new Set<string>()
+  const branchKeysByNodeId = new Map<string, Set<string>>()
+
   for (let i = 0; i < nodes.length; i++) {
     const node: unknown = nodes[i]
     if (!isRecord(node)) return fail(`nodes[${i}] must be an object`)
     if (!nonEmptyString(node.id)) return fail(`nodes[${i}] needs a non-empty string id`)
+    if (nodeIds.has(node.id)) return fail(duplicateStepIdMessage(node.id))
+    nodeIds.add(node.id)
     const where = `Step "${node.id}"`
     switch (node.type) {
       case 'trigger':
@@ -571,6 +1450,7 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
       }
       case 'branch': {
         if (!Array.isArray(node.branches)) return fail(`${where}: "branches" must be an array`)
+        const keys = new Set<string>()
         for (let b = 0; b < node.branches.length; b++) {
           const br: unknown = node.branches[b]
           if (!isRecord(br) || !nonEmptyString(br.key)) {
@@ -578,7 +1458,9 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
           }
           const err = validateCondition(br.condition, `${where} path "${br.key}"`)
           if (err) return fail(err)
+          keys.add(br.key)
         }
+        branchKeysByNodeId.set(node.id, keys)
         break
       }
       case 'wait': {
@@ -588,6 +1470,113 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
           node.seconds < 0
         ) {
           return fail(`${where}: "seconds" must be a whole number of seconds (0 or more)`)
+        }
+        if (node.seconds > MAX_WAIT_SECONDS) {
+          return fail(`${where}: a wait can be at most ${durationPhrase(MAX_WAIT_SECONDS)}`)
+        }
+        break
+      }
+      // ── Conversational block kinds (Phase C, slice C-5) ──────────────────
+      case 'message': {
+        const err = validateBlockBody(node.body, where)
+        if (err) return fail(err)
+        break
+      }
+      case 'show_reply_time':
+      case 'disable_composer':
+        break
+      case 'let_assistant_answer':
+        // The escalated edge (if present) is validated below like a branch's
+        // labeled edges: only 'escalated' is a declared path off this node.
+        branchKeysByNodeId.set(node.id, new Set([LET_ASSISTANT_ESCALATED_KEY]))
+        if (node.instructions !== undefined) {
+          if (typeof node.instructions !== 'string') {
+            return fail(`${where}: "instructions" must be a string when present`)
+          }
+          if (node.instructions.length > MAX_ASSISTANT_STEP_INSTRUCTIONS) {
+            return fail(
+              `${where}: instructions must be at most ${MAX_ASSISTANT_STEP_INSTRUCTIONS} characters`
+            )
+          }
+        }
+        if (node.autoCloseOverride !== undefined && typeof node.autoCloseOverride !== 'boolean') {
+          return fail(`${where}: "autoCloseOverride" must be true or false when present`)
+        }
+        break
+      case 'reply_buttons': {
+        const err = validateBlockBody(node.body, where)
+        if (err) return fail(err)
+        if (!Array.isArray(node.options) || node.options.length === 0) {
+          return fail(`${where}: add at least one button`)
+        }
+        const keys = new Set<string>()
+        for (const opt of node.options) {
+          if (!isRecord(opt) || !nonEmptyString(opt.key) || !nonEmptyString(opt.label)) {
+            return fail(`${where}: every button needs a key and a label`)
+          }
+          keys.add(opt.key)
+        }
+        // Reuses the same edge-branch-key check the general edge loop below
+        // already runs for a 'branch' node's declared keys — a button's key
+        // IS a branch key from the walker's point of view (graph.ts:
+        // reply_buttons resumes via the same branch-edge matching).
+        branchKeysByNodeId.set(node.id, keys)
+        if (typeof node.allowTyping !== 'boolean') {
+          return fail(`${where}: "allowTyping" must be true or false`)
+        }
+        break
+      }
+      case 'collect_data': {
+        const err = validateBlockBody(node.body, where)
+        if (err) return fail(err)
+        if (!nonEmptyString(node.attributeKey)) return fail(`${where}: choose an attribute`)
+        if (!COLLECT_FIELD_TYPES.includes(node.fieldType as CollectFieldType)) {
+          return fail(`${where}: unknown field type "${String(node.fieldType)}"`)
+        }
+        if (typeof node.required !== 'boolean') {
+          return fail(`${where}: "required" must be true or false`)
+        }
+        break
+      }
+      case 'collect_reply': {
+        const err = validateBlockBody(node.body, where)
+        if (err) return fail(err)
+        if (!nonEmptyString(node.attributeKey)) return fail(`${where}: choose an attribute`)
+        break
+      }
+      case 'request_csat': {
+        const err = validateBlockBody(node.body, where)
+        if (err) return fail(err)
+        if (typeof node.allowTypingInterrupt !== 'boolean') {
+          return fail(`${where}: "allowTypingInterrupt" must be true or false`)
+        }
+        break
+      }
+      case 'call_connector': {
+        // The failed edge (if present) is validated below like a branch's
+        // labeled edges: only CALL_CONNECTOR_FAILED_KEY is a declared path
+        // off this node — mirrors let_assistant_answer's escalated-key
+        // declaration just above.
+        branchKeysByNodeId.set(node.id, new Set([CALL_CONNECTOR_FAILED_KEY]))
+        if (!nonEmptyString(node.connectorId)) return fail(`${where}: choose a connector`)
+        if (
+          !isRecord(node.params) ||
+          Object.values(node.params).some((v) => typeof v !== 'string')
+        ) {
+          return fail(`${where}: "params" must be an object of string values`)
+        }
+        if (node.timeoutMs !== undefined) {
+          if (typeof node.timeoutMs !== 'number' || !Number.isInteger(node.timeoutMs)) {
+            return fail(`${where}: "timeoutMs" must be a whole number when present`)
+          }
+          if (
+            node.timeoutMs < MIN_CALL_CONNECTOR_TIMEOUT_MS ||
+            node.timeoutMs > MAX_CALL_CONNECTOR_TIMEOUT_MS
+          ) {
+            return fail(
+              `${where}: "timeoutMs" must be between ${MIN_CALL_CONNECTOR_TIMEOUT_MS} and ${MAX_CALL_CONNECTOR_TIMEOUT_MS}`
+            )
+          }
         }
         break
       }
@@ -603,6 +1592,20 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
     }
     if (edge.branch !== undefined && typeof edge.branch !== 'string') {
       return fail(`edges[${i}]: "branch" must be a string when present`)
+    }
+    if (!nodeIds.has(edge.from)) {
+      return fail(`edges[${i}]: ${missingStepMessage(edge.from)}`)
+    }
+    if (!nodeIds.has(edge.to)) {
+      return fail(`edges[${i}]: ${missingStepMessage(edge.to)}`)
+    }
+    // A branch key the node doesn't declare can never be taken (the runtime
+    // walker matches branches by key), so it's dead weight at best and a
+    // stale rename at worst — same rule as the server's superRefine. An edge
+    // with no branch key, or one leaving a non-branch node, is left alone.
+    const declaredKeys = branchKeysByNodeId.get(edge.from)
+    if (declaredKeys && edge.branch !== undefined && !declaredKeys.has(edge.branch)) {
+      return fail(`edges[${i}]: ${undeclaredBranchPathMessage(edge.from, edge.branch)}`)
     }
   }
 
@@ -706,15 +1709,200 @@ export function graphToTree(graph: WorkflowGraphJson): Result<WorkflowTree> {
         steps.push({ id: node.id, kind: 'branch', paths })
         return { ok: true, value: steps }
       }
+
+      // ── reply_buttons: one path per declared button key (Phase C, C-5) ───
+      if (node.type === 'reply_buttons') {
+        const keys = new Set(node.options.map((o) => o.key))
+        if (keys.size !== node.options.length) {
+          return fail(`reply buttons "${node.id}" has duplicate button keys`)
+        }
+        const edgeByKey = new Map<string, GraphEdge>()
+        for (const edge of outgoing.get(node.id) ?? []) {
+          if (edge.branch === undefined) {
+            return fail(`reply buttons "${node.id}" has an unlabeled outgoing connection`)
+          }
+          if (!keys.has(edge.branch)) {
+            return fail(
+              `reply buttons "${node.id}" has a connection for an unknown button "${edge.branch}"`
+            )
+          }
+          if (edgeByKey.has(edge.branch)) {
+            return fail(
+              `reply buttons "${node.id}" has two connections for button "${edge.branch}"`
+            )
+          }
+          edgeByKey.set(edge.branch, edge)
+        }
+        const paths: KeyedPath[] = []
+        for (const opt of node.options) {
+          const sub = walkFrom(edgeByKey.get(opt.key)?.to)
+          if (!sub.ok) return sub
+          paths.push({ key: opt.key, label: opt.label, steps: sub.value })
+        }
+        steps.push({
+          id: node.id,
+          kind: 'reply_buttons',
+          body: node.body,
+          allowTyping: node.allowTyping,
+          paths,
+        })
+        return { ok: true, value: steps }
+      }
+
+      // ── request_csat: one path per WIRED rating digit, if any (C-5) ──────
+      if (node.type === 'request_csat') {
+        const edgeByKey = new Map<string, GraphEdge>()
+        for (const edge of outgoing.get(node.id) ?? []) {
+          if (
+            edge.branch === undefined ||
+            !(RATING_KEYS as readonly string[]).includes(edge.branch)
+          ) {
+            return fail(
+              `ask-for-rating "${node.id}" has a connection with an unexpected label ("${edge.branch ?? 'none'}")`
+            )
+          }
+          if (edgeByKey.has(edge.branch)) {
+            return fail(`ask-for-rating "${node.id}" has two connections for rating ${edge.branch}`)
+          }
+          edgeByKey.set(edge.branch, edge)
+        }
+        const paths: KeyedPath[] = []
+        for (const key of RATING_KEYS) {
+          const edge = edgeByKey.get(key)
+          if (!edge) continue // that rating isn't wired: no path to show
+          const sub = walkFrom(edge.to)
+          if (!sub.ok) return sub
+          paths.push({ key, label: RATING_LABELS[key], steps: sub.value })
+        }
+        steps.push({
+          id: node.id,
+          kind: 'request_csat',
+          body: node.body,
+          allowTypingInterrupt: node.allowTypingInterrupt,
+          commentPrompt: node.commentPrompt,
+          paths,
+        })
+        return { ok: true, value: steps }
+      }
+
+      // ── let_assistant_answer: default (unlabeled) + optional 'escalated' ─
+      if (node.type === 'let_assistant_answer') {
+        const outs = outgoing.get(node.id) ?? []
+        const continueEdges = outs.filter((e) => e.branch === undefined)
+        const escalatedEdges = outs.filter((e) => e.branch === LET_ASSISTANT_ESCALATED_KEY)
+        const other = outs.filter(
+          (e) => e.branch !== undefined && e.branch !== LET_ASSISTANT_ESCALATED_KEY
+        )
+        if (other.length > 0) {
+          return fail(
+            `"Let Quinn answer" step "${node.id}" has a connection for an unknown path "${other[0]!.branch}"`
+          )
+        }
+        if (continueEdges.length > 1) {
+          return fail(`"Let Quinn answer" step "${node.id}" has more than one default connection`)
+        }
+        if (escalatedEdges.length > 1) {
+          return fail(`"Let Quinn answer" step "${node.id}" has more than one escalated connection`)
+        }
+        const continueSub = walkFrom(continueEdges[0]?.to)
+        if (!continueSub.ok) return continueSub
+        const escalatedSub = walkFrom(escalatedEdges[0]?.to)
+        if (!escalatedSub.ok) return escalatedSub
+        steps.push({
+          id: node.id,
+          kind: 'let_assistant_answer',
+          instructions: node.instructions,
+          autoCloseOverride: node.autoCloseOverride,
+          paths: [
+            { key: LET_ASSISTANT_DEFAULT_KEY, label: 'Continues', steps: continueSub.value },
+            {
+              key: LET_ASSISTANT_ESCALATED_KEY,
+              label: 'If escalated to a human',
+              steps: escalatedSub.value,
+            },
+          ],
+        })
+        return { ok: true, value: steps }
+      }
+
+      // ── call_connector: default (unlabeled) success + labeled 'failed' ───
+      if (node.type === 'call_connector') {
+        const outs = outgoing.get(node.id) ?? []
+        const successEdges = outs.filter((e) => e.branch === undefined)
+        const failedEdges = outs.filter((e) => e.branch === CALL_CONNECTOR_FAILED_KEY)
+        const other = outs.filter(
+          (e) => e.branch !== undefined && e.branch !== CALL_CONNECTOR_FAILED_KEY
+        )
+        if (other.length > 0) {
+          return fail(
+            `"Call connector" step "${node.id}" has a connection for an unknown path "${other[0]!.branch}"`
+          )
+        }
+        if (successEdges.length > 1) {
+          return fail(`"Call connector" step "${node.id}" has more than one default connection`)
+        }
+        if (failedEdges.length > 1) {
+          return fail(`"Call connector" step "${node.id}" has more than one failed connection`)
+        }
+        const successSub = walkFrom(successEdges[0]?.to)
+        if (!successSub.ok) return successSub
+        const failedSub = walkFrom(failedEdges[0]?.to)
+        if (!failedSub.ok) return failedSub
+        steps.push({
+          id: node.id,
+          kind: 'call_connector',
+          connectorId: node.connectorId,
+          params: node.params,
+          timeoutMs: node.timeoutMs,
+          paths: [
+            { key: CALL_CONNECTOR_SUCCESS_KEY, label: 'On success', steps: successSub.value },
+            { key: CALL_CONNECTOR_FAILED_KEY, label: 'On failure', steps: failedSub.value },
+          ],
+        })
+        return { ok: true, value: steps }
+      }
+
       const next = singleSuccessor(node)
       if (!next.ok) return next
-      steps.push(
-        node.type === 'action'
-          ? { id: node.id, kind: 'action', action: node.action }
-          : node.type === 'condition'
-            ? { id: node.id, kind: 'condition', condition: node.condition }
-            : { id: node.id, kind: 'wait', seconds: node.seconds }
-      )
+      switch (node.type) {
+        case 'action':
+          steps.push({ id: node.id, kind: 'action', action: node.action })
+          break
+        case 'condition':
+          steps.push({ id: node.id, kind: 'condition', condition: node.condition })
+          break
+        case 'wait':
+          steps.push({ id: node.id, kind: 'wait', seconds: node.seconds })
+          break
+        case 'message':
+          steps.push({ id: node.id, kind: 'message', body: node.body })
+          break
+        case 'show_reply_time':
+          steps.push({ id: node.id, kind: 'show_reply_time' })
+          break
+        case 'disable_composer':
+          steps.push({ id: node.id, kind: 'disable_composer' })
+          break
+        case 'collect_data':
+          steps.push({
+            id: node.id,
+            kind: 'collect_data',
+            body: node.body,
+            attributeKey: node.attributeKey,
+            fieldType: node.fieldType,
+            options: node.options,
+            required: node.required,
+          })
+          break
+        case 'collect_reply':
+          steps.push({
+            id: node.id,
+            kind: 'collect_reply',
+            body: node.body,
+            attributeKey: node.attributeKey,
+          })
+          break
+      }
       currentId = next.value
     }
     return { ok: true, value: steps }
@@ -764,6 +1952,82 @@ export function treeToGraph(tree: WorkflowTree): WorkflowGraphJson {
           })
           for (const p of step.paths) emit(p.steps, step.id, p.key)
           break
+        // ── Conversational block kinds (Phase C, slice C-5) ───────────────
+        case 'message':
+          nodes.push({ id: step.id, type: 'message', body: step.body })
+          break
+        case 'show_reply_time':
+          nodes.push({ id: step.id, type: 'show_reply_time' })
+          break
+        case 'disable_composer':
+          nodes.push({ id: step.id, type: 'disable_composer' })
+          break
+        case 'collect_data':
+          nodes.push({
+            id: step.id,
+            type: 'collect_data',
+            body: step.body,
+            attributeKey: step.attributeKey,
+            fieldType: step.fieldType,
+            options: step.options,
+            required: step.required,
+          })
+          break
+        case 'collect_reply':
+          nodes.push({
+            id: step.id,
+            type: 'collect_reply',
+            body: step.body,
+            attributeKey: step.attributeKey,
+          })
+          break
+        case 'reply_buttons':
+          nodes.push({
+            id: step.id,
+            type: 'reply_buttons',
+            body: step.body,
+            options: step.paths.map((p) => ({ key: p.key, label: p.label })),
+            allowTyping: step.allowTyping,
+          })
+          for (const p of step.paths) emit(p.steps, step.id, p.key)
+          break
+        case 'request_csat':
+          nodes.push({
+            id: step.id,
+            type: 'request_csat',
+            body: step.body,
+            allowTypingInterrupt: step.allowTypingInterrupt,
+            commentPrompt: step.commentPrompt,
+          })
+          for (const p of step.paths) emit(p.steps, step.id, p.key)
+          break
+        case 'let_assistant_answer': {
+          nodes.push({
+            id: step.id,
+            type: 'let_assistant_answer',
+            instructions: step.instructions,
+            autoCloseOverride: step.autoCloseOverride,
+          })
+          const continuePath = step.paths.find((p) => p.key === LET_ASSISTANT_DEFAULT_KEY)
+          const escalatedPath = step.paths.find((p) => p.key === LET_ASSISTANT_ESCALATED_KEY)
+          if (continuePath) emit(continuePath.steps, step.id)
+          if (escalatedPath) emit(escalatedPath.steps, step.id, LET_ASSISTANT_ESCALATED_KEY)
+          break
+        }
+        case 'call_connector': {
+          nodes.push({
+            id: step.id,
+            type: 'call_connector',
+            connectorId: step.connectorId,
+            params: step.params,
+            timeoutMs: step.timeoutMs,
+          })
+          const successPath = step.paths.find((p) => p.key === CALL_CONNECTOR_SUCCESS_KEY)
+          const failedPath = step.paths.find((p) => p.key === CALL_CONNECTOR_FAILED_KEY)
+          if (successPath) emit(successPath.steps, step.id)
+          if (failedPath) emit(failedPath.steps, step.id, CALL_CONNECTOR_FAILED_KEY)
+          break
+        }
       }
       prev = step.id
     }
@@ -800,11 +2064,14 @@ function leafToRule(leaf: ConditionLeaf): ConditionRuleDraft | null {
   const { field, op } = leaf
   if (VALUELESS_OPERATORS.has(op)) return { field, op, value: '' }
   const v = leaf.value
-  // Attribute fields don't need their live definition to read a leaf back
-  // into draft form: the stored JSON value's own runtime type says whether
-  // it's a checkbox boolean, a number, a multi_select array, or a plain
-  // string (select ids and text share the same string representation).
-  if (isAttributeField(field)) {
+  // Attribute fields (all three prefixes) don't need their live definition to
+  // read a leaf back into draft form: the stored JSON value's own runtime
+  // type says whether it's a checkbox/boolean, a number, a multi_select
+  // array, or a plain string (select ids and text share the same string
+  // representation). person.attr/company.attr never carry an array value in
+  // practice (no multi-value type in that registry), but the same decode
+  // stays harmless if one ever shows up via JSON-mode authoring.
+  if (isAttributeField(field) || isPersonAttributeField(field) || isCompanyAttributeField(field)) {
     if (typeof v === 'boolean') return { field, op, value: v ? 'true' : 'false' }
     if (typeof v === 'number' && Number.isFinite(v)) return { field, op, value: String(v) }
     if (Array.isArray(v) && v.every((x) => typeof x === 'string'))
@@ -846,15 +2113,16 @@ export function conditionToDraft(condition: GraphCondition): ConditionDraft {
   return { kind: 'simple', mode: hasAll ? 'all' : 'any', rules }
 }
 
-/** Encode an attribute rule's string-form value back to typed JSON. The
- *  operator alone disambiguates the array (includes_any/excludes_all) and
- *  numeric (gt/gte/lt/lte) cases; only eq/neq/contains/not_contains need the
- *  live definition to tell a checkbox boolean apart from select/text text —
- *  an unresolved (archived/unknown) key falls back to the raw string, same
- *  as the set_attribute action editor's raw-JSON fallback for unknown keys. */
-function encodeAttributeConditionValue(
+/** Shared by encodeAttributeConditionValue and its person/company-attribute
+ *  counterpart: the operator alone disambiguates the array
+ *  (includes_any/excludes_all) and numeric (gt/gte/lt/lte) cases; only
+ *  eq/neq/contains/not_contains need the caller's boolean/number hint (from
+ *  the live definition) to tell a checkbox/boolean or numeric value apart
+ *  from plain text. */
+function encodeDynamicAttributeConditionValue(
   rule: ConditionRuleDraft,
-  attributes: ReadonlyMap<string, AttributeFieldDef>
+  isBooleanValue: boolean,
+  isNumberValue: boolean
 ): unknown {
   if (rule.op === 'includes_any' || rule.op === 'excludes_all') {
     return rule.value
@@ -866,20 +2134,56 @@ function encodeAttributeConditionValue(
     const n = Number(rule.value)
     return Number.isFinite(n) ? n : 0
   }
-  const def = isAttributeField(rule.field)
-    ? attributes.get(attributeKeyFromField(rule.field))
-    : undefined
-  if (def?.fieldType === 'checkbox') return rule.value === 'true'
-  if (def?.fieldType === 'number') {
+  if (isBooleanValue) return rule.value === 'true'
+  if (isNumberValue) {
     const n = Number(rule.value)
     return Number.isFinite(n) ? n : 0
   }
   return rule.value
 }
 
+/** Encode a conversation.attr rule's string-form value back to typed JSON —
+ *  an unresolved (archived/unknown) key falls back to the raw string, same
+ *  as the set_attribute action editor's raw-JSON fallback for unknown keys. */
+function encodeAttributeConditionValue(
+  rule: ConditionRuleDraft,
+  attributes: ReadonlyMap<string, AttributeFieldDef>
+): unknown {
+  const def = isAttributeField(rule.field)
+    ? attributes.get(attributeKeyFromField(rule.field))
+    : undefined
+  return encodeDynamicAttributeConditionValue(
+    rule,
+    def?.fieldType === 'checkbox',
+    def?.fieldType === 'number'
+  )
+}
+
+/** Encode a person.attr/company.attr rule's string-form value back to typed
+ *  JSON — mirrors encodeAttributeConditionValue, keyed off the
+ *  PersonCompanyAttributeFieldDef registry instead. */
+function encodePersonCompanyAttributeConditionValue(
+  rule: ConditionRuleDraft,
+  defs: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
+): unknown {
+  const key = isPersonAttributeField(rule.field)
+    ? personAttributeKeyFromField(rule.field)
+    : isCompanyAttributeField(rule.field)
+      ? companyAttributeKeyFromField(rule.field)
+      : undefined
+  const def = key !== undefined ? defs.get(key) : undefined
+  return encodeDynamicAttributeConditionValue(
+    rule,
+    def?.type === 'boolean',
+    def?.type === 'number' || def?.type === 'currency'
+  )
+}
+
 function ruleToLeaf(
   rule: ConditionRuleDraft,
-  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): GraphCondition {
   if (VALUELESS_OPERATORS.has(rule.op)) return { field: rule.field, op: rule.op }
   if (isAttributeField(rule.field)) {
@@ -887,6 +2191,20 @@ function ruleToLeaf(
       field: rule.field,
       op: rule.op,
       value: encodeAttributeConditionValue(rule, attributes),
+    }
+  }
+  if (isPersonAttributeField(rule.field)) {
+    return {
+      field: rule.field,
+      op: rule.op,
+      value: encodePersonCompanyAttributeConditionValue(rule, personAttributes),
+    }
+  }
+  if (isCompanyAttributeField(rule.field)) {
+    return {
+      field: rule.field,
+      op: rule.op,
+      value: encodePersonCompanyAttributeConditionValue(rule, companyAttributes),
     }
   }
   let value: unknown
@@ -913,16 +2231,158 @@ function ruleToLeaf(
 
 export function draftToCondition(
   draft: SimpleConditionDraft,
-  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): GraphCondition {
   if (draft.rules.length === 0) return {}
-  const leaves = draft.rules.map((rule) => ruleToLeaf(rule, attributes))
+  const leaves = draft.rules.map((rule) =>
+    ruleToLeaf(rule, attributes, personAttributes, companyAttributes)
+  )
   if (leaves.length === 1) return leaves[0]!
   return draft.mode === 'all' ? { all: leaves } : { any: leaves }
 }
 
 export function defaultRule(): ConditionRuleDraft {
   return { field: 'conversation.status', op: 'eq', value: 'open' }
+}
+
+// ---------------------------------------------------------------------------
+// Rule GROUP drafts (RuleGroupBuilder): one level up from the flat
+// SimpleConditionDraft above. The stored shape a 2-level condition needs is
+// an OR of groups — `{ any: [ {all: [...leaves]}, {any: [...leaves]}, ... ] }`
+// — each group itself an all/any of LEAVES ONLY (no further nesting). A
+// single group collapses to (and round-trips through) the exact flat shape
+// SimpleConditionDraft already produces, so every condition the old
+// one-level editor could show renders identically here — RuleGroupBuilder
+// only ADDS the ability to combine multiple such groups with OR, and to
+// render (read-only degrade aside) a condition already stored that way.
+// Anything deeper (a group containing a group, an AND of groups, a top level
+// mixing bare leaves with groups) stays 'advanced' — exactly like
+// SimpleConditionDraft's own 'advanced' bail, just one level further out.
+// ---------------------------------------------------------------------------
+
+export interface RuleGroupDraft {
+  mode: 'all' | 'any'
+  rules: ConditionRuleDraft[]
+}
+
+export type ConditionGroupsDraft =
+  | { kind: 'groups'; groups: RuleGroupDraft[] }
+  | { kind: 'advanced'; condition: GraphCondition }
+
+const isLeafCondition = (c: GraphCondition): c is ConditionLeaf => 'field' in c
+
+/** A group's own all/any of leaves, decoded the same way leafToRule already
+ *  decodes a flat draft's rules — null when any child isn't a plain leaf
+ *  (nested further) or doesn't decode (an unrecognized field/shape). */
+function groupFromLeafChildren(
+  children: GraphCondition[],
+  mode: 'all' | 'any'
+): RuleGroupDraft | null {
+  const rules: ConditionRuleDraft[] = []
+  for (const child of children) {
+    if (!isLeafCondition(child)) return null
+    const rule = leafToRule(child)
+    if (!rule) return null
+    rules.push(rule)
+  }
+  return { mode, rules }
+}
+
+/** One `{all:[...]}` / `{any:[...]}` / `{}` group-shaped child of a top-level
+ *  OR-of-groups condition, decoded to a RuleGroupDraft — null when the child
+ *  isn't a clean single-mode group of leaves (e.g. it carries both `all` and
+ *  `any`, or nests a group inside). */
+function decodeGroupChild(child: GraphCondition): RuleGroupDraft | null {
+  if (isLeafCondition(child)) return null // handled by the caller (mixed leaf+group)
+  const hasAll = child.all !== undefined && child.all.length > 0
+  const hasAny = child.any !== undefined && child.any.length > 0
+  if (hasAll && hasAny) return null
+  return groupFromLeafChildren(
+    hasAll ? child.all! : hasAny ? child.any! : [],
+    hasAll ? 'all' : 'any'
+  )
+}
+
+/**
+ * Decode a stored condition into the groups draft. Tries the flat one-level
+ * shape first (conditionToDraft) so every condition today's editor already
+ * renders keeps rendering as a single implicit group, unchanged; only a
+ * shape conditionToDraft itself calls 'advanced' is inspected for the
+ * one-level-deeper OR-of-groups shape before this, too, gives up.
+ */
+export function conditionToGroupDraft(condition: GraphCondition): ConditionGroupsDraft {
+  const advanced: ConditionGroupsDraft = { kind: 'advanced', condition }
+  const flat = conditionToDraft(condition)
+  if (flat.kind === 'simple') {
+    return { kind: 'groups', groups: [{ mode: flat.mode, rules: flat.rules }] }
+  }
+  // Only representable deeper shape: a top-level `any` (never `all`, per the
+  // module doc) of clean single-mode groups — no bare leaf mixed in among
+  // them (that's just a flat draft, already handled above) and no group
+  // nesting a group.
+  if (isLeafCondition(condition)) return advanced
+  const anyChildren = condition.all === undefined ? condition.any : undefined
+  if (!anyChildren || anyChildren.length === 0) return advanced
+  const groups: RuleGroupDraft[] = []
+  for (const child of anyChildren) {
+    const group = decodeGroupChild(child)
+    if (!group) return advanced
+    groups.push(group)
+  }
+  return { kind: 'groups', groups }
+}
+
+/** Encode groups back to a stored condition. A single group collapses through
+ *  draftToCondition exactly like today's flat editor (a lone rule becomes a
+ *  bare leaf, not a wrapped `{all:[...]}`) — the round-trip a plain
+ *  ConditionEditor / branch path relies on. Two or more groups always wrap
+ *  EACH group explicitly (`{all:[...]}` / `{any:[...]}`, even a
+ *  single-rule one) inside a top-level `any`, so the group boundary survives
+ *  the round trip regardless of how many rules a given group holds.
+ *
+ *  An emptied group (`rules: []`) is dropped BEFORE wrapping whenever it's one
+ *  of several — encoding it as `{all:[]}` / `{any:[]}` would be vacuously true
+ *  in evaluateCondition (condition.evaluator.ts: an empty `all` has nothing to
+ *  fail, an empty `any` is "no constraint"), which inside a top-level `any`
+ *  makes the WHOLE OR match every input, silently overriding every other
+ *  group's real rules the moment one group in the OR is emptied out (e.g.
+ *  deleting a group's last rule instead of removing the group). "No rules
+ *  yet, so everything matches" (RuleGroup's empty-state copy) stays true only
+ *  for a single group — the branch below — never as a side effect of one
+ *  group among several being emptied. All-groups-emptied collapses to `{}`,
+ *  same as zero groups; exactly one survivor re-collapses through the
+ *  single-group branch too, so it never stays wrapped in a pointless `any`. */
+export function groupsToCondition(
+  groups: RuleGroupDraft[],
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
+): GraphCondition {
+  const relevant = groups.length > 1 ? groups.filter((g) => g.rules.length > 0) : groups
+  if (relevant.length === 0) return {}
+  if (relevant.length === 1) {
+    const only = relevant[0]!
+    return draftToCondition(
+      { kind: 'simple', mode: only.mode, rules: only.rules },
+      attributes,
+      personAttributes,
+      companyAttributes
+    )
+  }
+  const wrapped = relevant.map((g): GraphCondition => {
+    const leaves = g.rules.map((r) =>
+      ruleToLeaf(r, attributes, personAttributes, companyAttributes)
+    )
+    return g.mode === 'all' ? { all: leaves } : { any: leaves }
+  })
+  return { any: wrapped }
+}
+
+/** A fresh single-rule group, for "Add group". */
+export function defaultRuleGroup(): RuleGroupDraft {
+  return { mode: 'all', rules: [defaultRule()] }
 }
 
 // ---------------------------------------------------------------------------
@@ -938,6 +2398,18 @@ export interface EntityLabels {
   /** Attribute key -> live definition, for conversation.attr.* condition
    *  summaries (canvas rule pills, outline rows, branch path rows). */
   attributes?: ReadonlyMap<string, AttributeFieldDef>
+  /** Attribute key -> live definition, for person.attr.* / company.attr.*
+   *  condition summaries — same role as `attributes` above, one map per
+   *  registry since the three attribute stores are keyed independently. */
+  personAttributes?: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
+  companyAttributes?: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
+  /** Connector id -> display name, for call_connector step summaries — same
+   *  "id -> live name, tolerant of unset/needs-setup" role as members/teams/
+   *  tags/slaPolicies above. */
+  connectors?: ReadonlyMap<string, string>
+  /** Ticket status id -> display name, for set_ticket_status step summaries —
+   *  same role as `tags`/`slaPolicies` above. */
+  ticketStatuses?: ReadonlyMap<string, string>
 }
 
 const shortId = (id: string): string => (id.length > 14 ? `${id.slice(0, 14)}…` : id)
@@ -959,23 +2431,41 @@ export function actionSummary(action: GraphAction, labels: EntityLabels = {}): s
     case 'set_priority':
       return `Set priority to ${PRIORITY_LABELS[action.priority]}`
     case 'snooze':
+      if ('seconds' in action) return `Snooze for ${durationPhrase(action.seconds)}`
       return action.untilIso
         ? `Snooze until ${new Date(action.untilIso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`
         : 'Snooze until they reply'
     case 'close':
       return 'Close the conversation'
+    case 'reopen':
+      return 'Reopen the conversation'
     case 'apply_sla':
       return `Apply SLA ${named(action.policyId, labels.slaPolicies, '…')}`
     case 'set_attribute':
       return action.key ? `Set ${action.key}` : 'Set an attribute…'
+    case 'add_note':
+      return action.body.trim() ? `Note: ${truncate(action.body.trim(), 60)}` : 'Add a note…'
+    case 'set_ticket_status':
+      return `Set ticket status to ${named(action.statusId, labels.ticketStatuses, 'a status…')}`
+    case 'convert_to_ticket':
+      return 'Convert to a ticket'
   }
 }
 
 function ruleSummary(
   rule: ConditionRuleDraft,
-  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
+  teams: ReadonlyMap<string, string> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): string {
-  const meta = resolveConditionField(rule.field, attributes)
+  const meta = resolveConditionField(
+    rule.field,
+    attributes,
+    teams,
+    personAttributes,
+    companyAttributes
+  )
   const op = OPERATOR_LABELS[rule.op]
   if (VALUELESS_OPERATORS.has(rule.op)) return `${meta.label} ${op}`
   let value = rule.value
@@ -996,16 +2486,43 @@ function ruleSummary(
   return `${meta.label} ${op} ${value || '…'}`
 }
 
+/** One group's own summary text, reusing the same "first rule, +N more" shape
+ *  the flat (single-group) case has always used. */
+function ruleGroupSummary(
+  group: RuleGroupDraft,
+  attributes: ReadonlyMap<string, AttributeFieldDef>,
+  teams: ReadonlyMap<string, string>,
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef>,
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
+): string {
+  if (group.rules.length === 0) return 'matches everything'
+  const first = ruleSummary(group.rules[0]!, attributes, teams, personAttributes, companyAttributes)
+  if (group.rules.length === 1) return first
+  return `${first} +${group.rules.length - 1} more`
+}
+
+/** A single-line summary of a condition, for canvas rule pills, outline rows,
+ *  and branch path rows. Handles the flat single-group shape (unchanged
+ *  wording) and the RuleGroupBuilder's OR-of-groups shape ("any of N
+ *  groups matched") instead of bailing to "Custom condition" the way it used
+ *  to for every nested shape — only a condition genuinely too deep for
+ *  RuleGroupBuilder to render (see conditionToGroupDraft's doc) still falls
+ *  back to that. */
 export function conditionSummary(
   condition: GraphCondition,
-  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map(),
+  teams: ReadonlyMap<string, string> = new Map(),
+  personAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map(),
+  companyAttributes: ReadonlyMap<string, PersonCompanyAttributeFieldDef> = new Map()
 ): string {
-  const draft = conditionToDraft(condition)
+  const draft = conditionToGroupDraft(condition)
   if (draft.kind === 'advanced') return 'Custom condition'
-  if (draft.rules.length === 0) return 'Matches everything'
-  const first = ruleSummary(draft.rules[0]!, attributes)
-  if (draft.rules.length === 1) return first
-  return `${first} +${draft.rules.length - 1} more`
+  if (draft.groups.length > 1) {
+    return `Any of ${draft.groups.length} groups matched`
+  }
+  const only = draft.groups[0]
+  if (!only || only.rules.length === 0) return 'Matches everything'
+  return ruleGroupSummary(only, attributes, teams, personAttributes, companyAttributes)
 }
 
 export const WAIT_UNITS = [
@@ -1028,10 +2545,17 @@ export function secondsToWaitParts(total: number): { amount: number; unit: WaitU
   return { amount: total, unit: 'minutes' }
 }
 
-export function waitSummary(totalSeconds: number): string {
+/** "N units" phrase for a duration in seconds, without a leading verb, so
+ *  callers compose their own ("Wait ", "Snooze for ", "For "). Shared by
+ *  waitSummary below and the snooze action's relative-duration summary. */
+export function durationPhrase(totalSeconds: number): string {
   const { amount, unit } = secondsToWaitParts(totalSeconds)
   const meta = WAIT_UNITS.find((u) => u.value === unit)!
-  return `Wait ${amount} ${amount === 1 ? meta.singular : meta.plural}`
+  return `${amount} ${amount === 1 ? meta.singular : meta.plural}`
+}
+
+export function waitSummary(totalSeconds: number): string {
+  return `Wait ${durationPhrase(totalSeconds)}`
 }
 
 /** set_attribute values keep JSON types: "5" stays a number, "vip" a string. */
@@ -1112,8 +2636,9 @@ export function stepsAtLocation(tree: WorkflowTree, location: StepLocation): Tre
   let steps = tree.steps
   for (const hop of location.path) {
     const branch = steps.find((s) => s.id === hop.branchId)
-    if (!branch || branch.kind !== 'branch') return []
-    const path = branch.paths.find((p) => p.key === hop.pathKey)
+    const paths = branch ? stepPaths(branch) : null
+    if (!paths) return []
+    const path = paths.find((p) => p.key === hop.pathKey)
     steps = path ? path.steps : []
   }
   return steps
@@ -1128,15 +2653,12 @@ function replaceStepsAtLocation(
   const replaceIn = (current: TreeStep[], hops: StepLocation['path']): TreeStep[] => {
     const [hop, ...rest] = hops
     return current.map((s) => {
-      if (!hop || s.id !== hop.branchId || s.kind !== 'branch') return s
-      return {
-        ...s,
-        paths: s.paths.map((p) =>
-          p.key !== hop.pathKey
-            ? p
-            : { ...p, steps: rest.length === 0 ? steps : replaceIn(p.steps, rest) }
-        ),
-      }
+      if (!hop || s.id !== hop.branchId) return s
+      const paths = stepPaths(s)
+      if (!paths) return s
+      const path = paths.find((p) => p.key === hop.pathKey)
+      const nextSteps = rest.length === 0 ? steps : replaceIn(path?.steps ?? [], rest)
+      return withPathSteps(s, hop.pathKey, nextSteps)
     })
   }
   return { ...tree, steps: replaceIn(tree.steps, location.path) }
@@ -1153,8 +2675,9 @@ export function findStepById(
   ): { step: TreeStep; location: StepLocation } | null => {
     for (const step of steps) {
       if (step.id === id) return { step, location }
-      if (step.kind === 'branch') {
-        for (const p of step.paths) {
+      const paths = stepPaths(step)
+      if (paths) {
+        for (const p of paths) {
           const found = search(p.steps, {
             path: [...location.path, { branchId: step.id, pathKey: p.key }],
           })
@@ -1233,6 +2756,117 @@ export function isNeedsSetupRef(v: string | undefined): boolean {
 
 const isSetRef = (v: string | undefined): boolean => Boolean(v) && !isNeedsSetupRef(v)
 
+// ---------------------------------------------------------------------------
+// Conversational block summaries + issues (Phase C, slice C-5): the outline
+// row / canvas card text for each of the 8 new kinds, and the collectStepIssues
+// rules the "Set live" gate enforces for them.
+// ---------------------------------------------------------------------------
+
+function attributeLabel(key: string, attributes: ReadonlyMap<string, AttributeFieldDef>): string {
+  if (!key) return 'Choose an attribute…'
+  return attributes.get(key)?.label ?? key
+}
+
+export function collectDataSummary(
+  step: Extract<TreeStep, { kind: 'collect_data' }>,
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+): string {
+  return `Collect ${attributeLabel(step.attributeKey, attributes)}`
+}
+
+export function collectReplySummary(
+  step: Extract<TreeStep, { kind: 'collect_reply' }>,
+  attributes: ReadonlyMap<string, AttributeFieldDef> = new Map()
+): string {
+  return `Save reply to ${attributeLabel(step.attributeKey, attributes)}`
+}
+
+export function replyButtonsSummary(step: Extract<TreeStep, { kind: 'reply_buttons' }>): string {
+  const labels = step.paths.map((p) => p.label).filter(Boolean)
+  return labels.length === 0 ? 'No buttons yet' : labels.join(' · ')
+}
+
+export function csatSummary(step: Extract<TreeStep, { kind: 'request_csat' }>): string {
+  const n = step.paths.length
+  return n === 0
+    ? 'Ask for a rating'
+    : `Ask for a rating · branches on ${n} rating${n === 1 ? '' : 's'}`
+}
+
+/** "Call <connector name>", or "Call … not chosen yet" when unset/needs-setup
+ *  — same `named()` id -> display-name treatment every other workspace ref
+ *  (team/tag/SLA policy) already gets in actionSummary. */
+export function callConnectorSummary(
+  step: Extract<TreeStep, { kind: 'call_connector' }>,
+  connectors: ReadonlyMap<string, string> = new Map()
+): string {
+  return `Call ${named(step.connectorId, connectors, '… not chosen yet')}`
+}
+
+/** Kinds SEND_BLOCK_KINDS/COLLECT_BLOCK_KINDS both cover — every
+ *  conversational block, for the standalone-disable_composer adjacency
+ *  check below (only the two interactive/interrupt-relevant kinds count as
+ *  "adjacent", per the contract's interrupt matrix). */
+const INTERRUPT_RELEVANT_KINDS = new Set<TreeStep['kind']>(['reply_buttons', 'request_csat'])
+
+/** Per-block-kind "Set live" issue, mirroring actionIssue's shape for the
+ *  pre-existing action steps. Covers the brief's amendment-3-adjacent gate
+ *  rules: an empty message body, zero buttons, a missing attribute pick. */
+function blockStepIssue(step: TreeStep): string | null {
+  switch (step.kind) {
+    case 'message':
+      return isBlockBodyEmpty(step.body) ? 'Write the message' : null
+    case 'reply_buttons':
+      if (step.paths.length === 0) return 'Add at least one button'
+      if (step.paths.some((p) => !p.label.trim())) return 'Every button needs a label'
+      return isBlockBodyEmpty(step.body) ? 'Write the prompt' : null
+    case 'collect_data':
+      // isSetRef (not a bare truthiness check) so a template's needs-setup-
+      // attribute sentinel also reads as unresolved, same as every other
+      // workspace ref (team/policy/tag) actionIssue already gates on.
+      if (!isSetRef(step.attributeKey)) return 'Choose an attribute'
+      return isBlockBodyEmpty(step.body) ? 'Write the prompt' : null
+    case 'collect_reply':
+      if (!isSetRef(step.attributeKey)) return 'Choose an attribute'
+      return isBlockBodyEmpty(step.body) ? 'Write the prompt' : null
+    case 'request_csat':
+      return isBlockBodyEmpty(step.body) ? 'Write the prompt' : null
+    default:
+      return null
+  }
+}
+
+/** Live connector metadata the call_connector "Set live" check needs —
+ *  deliberately its OWN narrow map rather than folded into EntityLabels
+ *  (which exists for DISPLAY names used across many functions; this is
+ *  validation-only and only collectStepIssues/callConnectorIssue read it).
+ *  Optional everywhere it's threaded, defaulting to an empty map, so every
+ *  pre-existing caller of collectStepIssues/draftIssues keeps working
+ *  unchanged — a caller that never supplies connector data simply never
+ *  sees the "Map the required inputs" issue, degrading gracefully rather
+ *  than forcing every call site to learn about connectors on this change. */
+export interface ConnectorMeta {
+  /** Declared input names this connector requires a param mapping for. */
+  requiredInputNames: string[]
+}
+
+/** Per-call_connector-step "Set live" issue, mirroring actionIssue's shape:
+ *  an unset/needs-setup connectorId blocks first ("Choose a connector"); once
+ *  chosen, a declared required input with no (non-blank) param mapping blocks
+ *  next ("Map the required inputs"). A connector id absent from `connectors`
+ *  (deleted, or metadata simply not supplied by the caller) has nothing more
+ *  to check — same defensive-read stance as `named()`'s unknown-id fallback. */
+function callConnectorIssue(
+  step: Extract<TreeStep, { kind: 'call_connector' }>,
+  connectors: ReadonlyMap<string, ConnectorMeta>
+): string | null {
+  if (!isSetRef(step.connectorId)) return 'Choose a connector'
+  const meta = connectors.get(step.connectorId)
+  if (!meta) return null
+  const unmapped = meta.requiredInputNames.some((name) => !step.params[name]?.trim())
+  return unmapped ? 'Map the required inputs' : null
+}
+
 export function actionIssue(action: GraphAction): string | null {
   switch (action.type) {
     case 'assign_agent':
@@ -1247,24 +2881,75 @@ export function actionIssue(action: GraphAction): string | null {
       return isSetRef(action.policyId) ? null : 'Choose an SLA policy'
     case 'set_attribute':
       return action.key ? null : 'Choose an attribute'
-    case 'set_priority':
     case 'snooze':
+      // A relative snooze with no (or zero) duration never actually pauses —
+      // the legacy absolute/until-reply form has no equivalent "unset" state
+      // (untilIso is always either a real timestamp or explicitly null).
+      return 'seconds' in action && action.seconds <= 0 ? 'Choose how long to snooze for' : null
+    case 'add_note':
+      return action.body.trim() ? null : 'Write the note'
+    case 'set_ticket_status':
+      return isSetRef(action.statusId) ? null : 'Choose a ticket status'
+    case 'set_priority':
     case 'close':
+    case 'reopen':
+    case 'convert_to_ticket':
       return null
   }
 }
 
-/** Every step id in the tree with an unresolved issue, mapped to its message. */
-export function collectStepIssues(tree: WorkflowTree): Map<string, string> {
+/** The class-rule gate's chip message (Phase C, slice C-6) — short enough for
+ *  the inspector's issue banner, unlike classRestrictedNodeIssue's longer
+ *  server-side wording naming the mechanism (this step is already selected,
+ *  so it doesn't need to be named again). */
+const CLASS_RESTRICTED_STEP_MESSAGE =
+  'Only allowed in a customer-facing workflow — a background run parked here could never resume'
+
+/** Every step id in the tree with an unresolved issue, mapped to its message.
+ *  Amendment 3 (PHASE-C-BLOCK-CONTRACT.md): a standalone disable_composer (no
+ *  adjacent reply_buttons/request_csat sibling in the same lane) is a runtime
+ *  no-op, not a save-blocking error, but the gate still warns on it — the
+ *  same soft-issue treatment every other entry in this map already gets
+ *  (present in the count, but never a `blocking` structural failure).
+ *
+ *  `workflowClass` (Phase C, slice C-6): a parking-kind step (PARKING_BLOCK_
+ *  KINDS — reply_buttons/collect_data/collect_reply/request_csat/
+ *  let_assistant_answer/disable_composer) is flagged when the workflow isn't
+ *  customer_facing, mirroring workflow.schemas.ts's classRestrictedNodeIssue
+ *  (the server's save-time refusal) so the builder catches this before Set
+ *  Live rather than only on a rejected save. This check wins over every other
+ *  per-kind issue below for the same step — "wrong workflow entirely" is the
+ *  more fundamental problem to fix first. Defaults to 'customer_facing' (the
+ *  permissive case) so every existing call site/fixture that predates this
+ *  parameter keeps behaving exactly as before. */
+export function collectStepIssues(
+  tree: WorkflowTree,
+  workflowClass: WorkflowClassValue = 'customer_facing',
+  connectors: ReadonlyMap<string, ConnectorMeta> = new Map()
+): Map<string, string> {
   const issues = new Map<string, string>()
   const walk = (steps: TreeStep[]) => {
-    for (const step of steps) {
-      if (step.kind === 'action') {
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i]!
+      if (workflowClass !== 'customer_facing' && PARKING_BLOCK_KINDS.has(step.kind)) {
+        issues.set(step.id, CLASS_RESTRICTED_STEP_MESSAGE)
+      } else if (step.kind === 'action') {
         const message = actionIssue(step.action)
         if (message) issues.set(step.id, message)
-      } else if (step.kind === 'branch') {
-        for (const p of step.paths) walk(p.steps)
+      } else if (step.kind === 'call_connector') {
+        const message = callConnectorIssue(step, connectors)
+        if (message) issues.set(step.id, message)
+      } else if (step.kind === 'disable_composer') {
+        const adjacent = (s: TreeStep | undefined) => !!s && INTERRUPT_RELEVANT_KINDS.has(s.kind)
+        if (!adjacent(steps[i - 1]) && !adjacent(steps[i + 1])) {
+          issues.set(step.id, 'Place this next to a reply-buttons or rating step, or remove it')
+        }
+      } else {
+        const message = blockStepIssue(step)
+        if (message) issues.set(step.id, message)
       }
+      const paths = stepPaths(step)
+      if (paths) for (const p of paths) walk(p.steps)
     }
   }
   walk(tree.steps)
@@ -1279,14 +2964,25 @@ export interface DraftIssues {
   blocking: string | null
 }
 
-/** Validation summary for the top bar's issues chip and the Set-live gate. */
-export function draftIssues(draft: GraphDraft): DraftIssues {
+/** Validation summary for the top bar's issues chip and the Set-live gate.
+ *  `workflowClass` (Phase C, slice C-6, default 'customer_facing' — see
+ *  collectStepIssues' doc) also gates JSON mode: a JSON edit is the same
+ *  "already-stored-shape" write path create/updateWorkflowFn validates
+ *  server-side, so a parking-kind node saved into a non-customer_facing
+ *  workflow via JSON mode is surfaced here as a blocking error too, instead
+ *  of only failing as a server 400 after Save is clicked. */
+export function draftIssues(
+  draft: GraphDraft,
+  workflowClass: WorkflowClassValue = 'customer_facing'
+): DraftIssues {
   if (draft.mode === 'json') {
     const parsed = parseWorkflowGraphText(draft.text)
     if (!parsed.ok) return { count: 1, ids: new Set(), firstId: null, blocking: parsed.error }
+    const classIssue = classRestrictedNodeIssue(parsed.value, workflowClass)
+    if (classIssue) return { count: 1, ids: new Set(), firstId: null, blocking: classIssue }
     return { count: 0, ids: new Set(), firstId: null, blocking: null }
   }
-  const stepIssues = collectStepIssues(draft.tree)
+  const stepIssues = collectStepIssues(draft.tree, workflowClass)
   const ids = new Set(stepIssues.keys())
   const [firstId = null] = ids
   return { count: ids.size, ids, firstId, blocking: null }
@@ -1311,11 +3007,35 @@ function stepLabel(step: TreeStep, labels: EntityLabels): string {
     case 'action':
       return actionSummary(step.action, labels)
     case 'condition':
-      return conditionSummary(step.condition, labels.attributes)
+      return conditionSummary(
+        step.condition,
+        labels.attributes,
+        labels.teams,
+        labels.personAttributes,
+        labels.companyAttributes
+      )
     case 'wait':
       return waitSummary(step.seconds)
     case 'branch':
       return `Branch · ${step.paths.length} path${step.paths.length === 1 ? '' : 's'}`
+    case 'message':
+      return blockBodyPreview(step.body)
+    case 'show_reply_time':
+      return BLOCK_STEP_LABELS.show_reply_time
+    case 'disable_composer':
+      return BLOCK_STEP_LABELS.disable_composer
+    case 'let_assistant_answer':
+      return BLOCK_STEP_LABELS.let_assistant_answer
+    case 'reply_buttons':
+      return replyButtonsSummary(step)
+    case 'collect_data':
+      return collectDataSummary(step, labels.attributes)
+    case 'collect_reply':
+      return collectReplySummary(step, labels.attributes)
+    case 'request_csat':
+      return csatSummary(step)
+    case 'call_connector':
+      return callConnectorSummary(step, labels.connectors)
   }
 }
 
@@ -1337,12 +3057,13 @@ export function deriveOutline(
         depth,
         hasIssue: issues.has(step.id),
       })
-      if (step.kind === 'branch') {
-        step.paths.forEach((p, i) => {
+      const paths = stepPaths(step)
+      if (paths) {
+        paths.forEach((p, i) => {
           const letter = PATH_LETTERS[i] ?? String(i + 1)
           entries.push({
             kind: 'path-header',
-            label: `Path ${letter} · ${p.key}`,
+            label: `Path ${letter} · ${p.label}`,
             depth: depth + 1,
           })
           walk(p.steps, depth + 1)
@@ -1376,9 +3097,9 @@ export function describeInsertionContext(
 
   const lastHop = location.path[location.path.length - 1]!
   const branch = findStepById(tree, lastHop.branchId)?.step
-  const paths = branch?.kind === 'branch' ? branch.paths : []
+  const paths = branch ? (stepPaths(branch) ?? []) : []
   const pathIndex = paths.findIndex((p) => p.key === lastHop.pathKey)
   const letter = PATH_LETTERS[pathIndex] ?? String(pathIndex + 1)
-  const label = `path ${letter} · ${lastHop.pathKey}`
+  const label = `path ${letter} · ${paths[pathIndex]?.label ?? lastHop.pathKey}`
   return appending ? `Appends to ${label}` : `Inserts in ${label}`
 }

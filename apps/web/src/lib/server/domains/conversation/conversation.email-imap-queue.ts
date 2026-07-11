@@ -10,6 +10,7 @@
  */
 import { Queue, Worker } from 'bullmq'
 import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-config'
+import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { logger } from '@/lib/server/logger'
 import { readImapConfig, createImapClient, pollOnce } from './conversation.email-imap'
 
@@ -25,7 +26,7 @@ interface EmailImapJob {
 
 let initPromise: Promise<{
   queue: Queue<EmailImapJob>
-  worker: Worker<EmailImapJob>
+  worker: Worker<EmailImapJob> | null
 }> | null = null
 
 async function runPoll(): Promise<void> {
@@ -61,13 +62,17 @@ async function initializeQueue() {
     },
   })
 
-  const worker = new Worker<EmailImapJob>(
-    QUEUE_NAME,
-    async (job) => {
-      if (job.data.type === 'poll') await runPoll()
-    },
-    { connection, concurrency: CONCURRENCY }
-  )
+  // Consumer side is role-gated: web-role replicas enqueue and register
+  // schedules but never construct a Worker (see queue/role.ts).
+  const worker = shouldRunWorkers()
+    ? new Worker<EmailImapJob>(
+        QUEUE_NAME,
+        async (job) => {
+          if (job.data.type === 'poll') await runPoll()
+        },
+        { connection, concurrency: CONCURRENCY }
+      )
+    : null
 
   // Stable jobId so worker reboots dedupe instead of stacking cron entries.
   await queue.add(
@@ -90,11 +95,11 @@ async function initializeQueue() {
     ])
   } catch (error) {
     await queue.close().catch(() => {})
-    await worker.close().catch(() => {})
+    await worker?.close().catch(() => {})
     throw error
   }
 
-  worker.on('failed', (job, error) => {
+  worker?.on('failed', (job, error) => {
     if (!job) return
     log.error({ err: error }, 'imap poll job failed')
   })
@@ -125,6 +130,6 @@ export async function closeEmailImapQueue(): Promise<void> {
   if (!initPromise) return
   const { worker, queue } = await initPromise
   initPromise = null
-  await worker.close().catch(() => {})
+  await worker?.close().catch(() => {})
   await queue.close().catch(() => {})
 }

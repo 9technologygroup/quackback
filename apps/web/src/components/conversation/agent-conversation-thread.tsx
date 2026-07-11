@@ -87,6 +87,7 @@ import type { InboxItemRef } from '@/lib/shared/inbox/items'
 import type { TicketDTO } from '@/lib/server/domains/tickets'
 import { resolveDefaultClosedStatusId } from '@/lib/shared/tickets'
 import { AgentMessageBubble, UnreadDivider } from '@/components/conversation/message-bubble'
+import { computeBlockStates } from '@/components/shared/conversation/conversation-rows'
 import {
   ThreadViewport,
   useMarkReadOnIncoming,
@@ -114,6 +115,7 @@ import {
 } from '@/components/conversation/thread-capabilities'
 import { conversationKeys } from '@/components/conversation/query-keys'
 import { MacroPicker } from '@/components/conversation/macro-picker'
+import { WorkflowRunPicker } from '@/components/conversation/workflow-run-picker'
 import { PriorityControl } from '@/components/admin/conversation/priority-control'
 import { AssigneeControl } from '@/components/admin/conversation/assignee-control'
 import { ChannelBadge } from '@/components/admin/conversation/channel-badge'
@@ -435,7 +437,7 @@ export function AgentConversationThread({
     if (!capabilities.reply) setNoteMode(true)
   }, [capabilities.reply])
 
-  const linkPreviewsEnabled = capabilities.linkPreviews && (flags?.linkPreviews ?? false)
+  const linkPreviewsEnabled = capabilities.linkPreviews && (flags?.supportInbox ?? false)
   const debouncedComposerText = useDebouncedValue(
     noteMode ? noteDraft.markdown : replyDraft.markdown,
     500
@@ -562,6 +564,18 @@ export function AgentConversationThread({
       ? lastMeaningfulMessage.id
       : null
 
+  // Phase C conversational block layer, agent side (CF3): the same pure
+  // derivation the customer-facing widget renders from (conversation-rows.ts),
+  // computed ONCE per [messages, conversation.status] and threaded into rows
+  // so AgentMessageBubble's read-only block summary can tell an answered
+  // block from a still-pending one instead of always rendering the "live"
+  // look. A ticket carries no block messages, so this is a harmless no-op map
+  // for that path.
+  const blockStates = useMemo(
+    () => computeBlockStates(messages, conversation?.status === 'closed'),
+    [messages, conversation?.status]
+  )
+
   // Flatten the thread into virtualized rows (load-older → messages w/ unread
   // divider → empty → seen → typing). anchorTo:'end' + followOnAppend keep the
   // view pinned to the newest message and stick to the bottom as messages stream
@@ -576,8 +590,17 @@ export function AgentConversationThread({
         firstUnreadId,
         showSeen: lastAgentSeen && !isVisitorTyping,
         showTyping: capabilities.typing && isVisitorTyping,
+        blockStates,
       }),
-    [messages, hasMoreOlder, firstUnreadId, lastAgentSeen, isVisitorTyping, capabilities.typing]
+    [
+      messages,
+      hasMoreOlder,
+      firstUnreadId,
+      lastAgentSeen,
+      isVisitorTyping,
+      capabilities.typing,
+      blockStates,
+    ]
   )
 
   // A pending `?m=` jump owns the initial scroll, so consume the one-shot
@@ -873,8 +896,7 @@ export function AgentConversationThread({
   // translation display, gated on the flag AND the capability. A no-op hook
   // (everything false/undefined) whenever either is off, so a ticket's
   // behavior is unaffected.
-  const inboxTranslationEnabled =
-    capabilities.inboxTranslation && (flags?.inboxTranslation ?? false)
+  const inboxTranslationEnabled = capabilities.inboxTranslation && (flags?.inboxAi ?? false)
   const inboxTranslation = useInboxTranslation({
     enabledFlag: inboxTranslationEnabled,
     conversationId: conversationId ?? INACTIVE_CONVERSATION_ID,
@@ -1314,6 +1336,7 @@ export function AgentConversationThread({
             onTrackSuggestion={capabilities.convertToPost ? handleTrackSuggestion : undefined}
             linkPreviews={linkPreviewsEnabled}
             translation={inboxTranslation.translationFor(m)}
+            blockState={row.blockState}
           />
         )
       }
@@ -1845,6 +1868,16 @@ export function AgentConversationThread({
                   onInsert={insertMacroBody}
                   onApplied={refreshThread}
                 />
+              )}
+              {/* Manual workflow runs (§4.6): no dedicated capability flag
+                  exists for this — it reuses `capabilities.macros` since both
+                  are the same "conversation-only inbox action, not available
+                  on a back_office/tracker ticket" shape (see
+                  thread-capabilities.ts's doc for what that flag already
+                  covers) rather than adding a capability that would always
+                  equal `macros` today. */}
+              {capabilities.macros && !noteMode && conversationId && (
+                <WorkflowRunPicker conversationId={conversationId} onApplied={refreshThread} />
               )}
               <div className="flex-1" />
               <button

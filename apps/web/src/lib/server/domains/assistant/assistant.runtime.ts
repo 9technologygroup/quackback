@@ -229,6 +229,15 @@ export interface AssistantTurnInput {
    */
   sourceTypes?: RetrievedItem['sourceType'][]
   /**
+   * Phase C conversational block layer (slice C-6): a one-time instruction
+   * from the `let_assistant_answer` workflow step that invoked this turn,
+   * folded into the system prompt for just this turn (see
+   * buildStepInstructionsPrompt) — not persisted config, so it has nothing to
+   * do with assistantConfig below. Undefined/null for every non-workflow
+   * caller.
+   */
+  stepInstructions?: string | null
+  /**
    * Force write tools to report what they would do instead of running, even
    * with a real `conversationId` (which otherwise implies a live run; see
    * `makeAssistantToolContext`). Undefined preserves the existing
@@ -661,6 +670,26 @@ export function buildSurfaceInstructionsPrompt(
   if (!trimmed) return null
   return [
     yieldToBaseFraming('additional instructions a workspace admin set for this surface'),
+    trimmed,
+  ].join('\n')
+}
+
+/**
+ * Build a one-time per-step instruction block (Phase C conversational block
+ * layer, slice C-6): a `let_assistant_answer` workflow step can carry free
+ * text scoped to just that hand-off. Same injection-guard framing as every
+ * other admin-authored block above — a workflow step is authored by the same
+ * admins, at the same trust level. Returns null when the step carried none.
+ */
+export function buildStepInstructionsPrompt(
+  instructions: string | null | undefined
+): string | null {
+  const trimmed = instructions?.trim()
+  if (!trimmed) return null
+  return [
+    yieldToBaseFraming(
+      'a one-time instruction for this step, set by the workflow that handed you this turn'
+    ),
     trimmed,
   ].join('\n')
 }
@@ -1153,16 +1182,32 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // blocks appended after it — turn-scoped config fetched once before the
   // attempt loop. Flag off skips the fetch entirely, so both the tool set and
   // the prompt stay byte-identical to the pre-actions baseline.
-  const actionsEnabled = await isFeatureEnabled('assistantActions')
+  const actionsEnabled = await isFeatureEnabled('assistantTools')
   let toolControls: AssistantToolControls | undefined
   let assistantConfig: Awaited<ReturnType<typeof getAssistantConfig>> | undefined
   let guidanceRules: AssistantGuidanceRule[] = []
+  // Distinct from `actionsEnabled` being off (the ordinary, expected reason
+  // assistantConfig stays undefined): true only when the flag was ON but the
+  // read itself threw (a broken settings row). Mirrors the same
+  // try/log/continue resilience loadTicketGroundingContext and
+  // loadConversationGroundingContext already use below for their own reads —
+  // a corrupt config row degrades this turn's prompt instead of crashing the
+  // whole turn before it can even reach the fallback-reply path.
+  let assistantConfigLoadFailed = false
   if (actionsEnabled) {
-    ;[assistantConfig, guidanceRules] = await Promise.all([
-      getAssistantConfig(),
-      listGuidanceRules({ enabledOnly: true, surface }),
-    ])
-    toolControls = assistantConfig.toolControls
+    try {
+      ;[assistantConfig, guidanceRules] = await Promise.all([
+        getAssistantConfig(),
+        listGuidanceRules({ enabledOnly: true, surface }),
+      ])
+      toolControls = assistantConfig.toolControls
+    } catch (err) {
+      assistantConfigLoadFailed = true
+      log.warn(
+        { err },
+        'assistant config read failed; continuing without basics/surface/guidance/step instructions'
+      )
+    }
   }
 
   // Tool wiring (flag + control modes) is turn-scoped config, not per-attempt
@@ -1180,7 +1225,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
 
   // Live attribute catalogue (P0 catalogue injection): fetched only when
   // set_attribute actually made it into this turn's tool set, so a turn with
-  // the tool disabled (or assistantActions off entirely) never pays for the
+  // the tool disabled (or assistantTools off entirely) never pays for the
   // read. IO stays here, not inside buildAssistantSystemPrompt, which is pure.
   const attributeDefinitions = toolNames.has('set_attribute')
     ? await listConversationAttributes()
@@ -1191,7 +1236,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // element past the base (element 0 always carries the JSON contract).
   const systemPrompts = buildAssistantSystemPrompt('Quinn', activeSpecs, attributeDefinitions)
   // Copilot framing: unconditional on the surface alone (never gated on the
-  // assistantActions flag, unlike basics/surface instructions/guidance below);
+  // assistantTools flag, unlike basics/surface instructions/guidance below);
   // it is structural, not admin-configured content. The intent profile picks
   // which block (Q&A vs suggestion drafting — see COPILOT_INTENT_PROFILES);
   // everything else on the copilot surface (retrieval ceiling, grounding,
@@ -1227,6 +1272,23 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     if (guidance.block) systemPrompts.push(guidance.block)
     guidanceRuleIds = guidance.ruleIds
   }
+  // Per-step instruction (Phase C, slice C-6): deliberately OUTSIDE the
+  // `if (assistantConfig)` gate above — it has nothing to do with the
+  // persisted AI & Automation settings that gate basics/surface/guidance, it
+  // is transient input from the caller (a workflow's let_assistant_answer
+  // step), so it still applies when the actions flag is simply off
+  // (assistantConfig never fetched — the ordinary case). It is gated on
+  // `assistantConfigLoadFailed` instead: a genuine config-row read failure
+  // already suppresses basics/surface/guidance above, and letting the step
+  // instruction alone survive that failure would render a confusing partial
+  // prompt for the one case that's an actual error, not an intentional
+  // setting. TODO: fold this into the same char-budget accounting as
+  // guidance (buildGuidancePrompt's cap) instead of an unbounded append —
+  // deferred, not part of this fix.
+  const stepBlock = assistantConfigLoadFailed
+    ? null
+    : buildStepInstructionsPrompt(input.stepInstructions)
+  if (stepBlock) systemPrompts.push(stepBlock)
 
   // The ONE place total-failure semantics are decided, profile-owned (see
   // COPILOT_INTENT_PROFILES.failureMode): both fallback return sites below

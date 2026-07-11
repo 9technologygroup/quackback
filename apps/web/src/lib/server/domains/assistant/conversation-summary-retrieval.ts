@@ -26,7 +26,7 @@
  * (the admin sandbox, or a context nobody threaded a conversation into) gets
  * `[]`, never an unscoped query. Never relax this into "no filter" as a
  * fallback — a missing scope must read as "nothing", not "everything".
- * Registered only behind the `assistantConversationGrounding` flag (see
+ * Registered only behind the `assistantKnowledge` flag (see
  * `resolveKnowledgeSources`), default off.
  */
 import { db, conversationSummaries, and, desc, eq, ilike, ne, sql } from '@/lib/server/db'
@@ -204,7 +204,7 @@ export async function retrieveConversationSummaries(
  * The conversation-summaries `KnowledgeSource`: wraps
  * `retrieveConversationSummaries`, mapping its customer-scoped rows onto
  * `RetrievedItem`. Dynamically imported by `resolveKnowledgeSources` only
- * when `assistantConversationGrounding` is on. The item id (and the
+ * when `assistantKnowledge` is on. The item id (and the
  * citation's `id`) is the PAST CONVERSATION's id, not the summary row's own
  * id — that is what "links to the past conversation" means, and it is what
  * the model cites back.

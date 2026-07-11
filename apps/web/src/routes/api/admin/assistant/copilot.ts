@@ -14,7 +14,7 @@
  * exactly as the admin sandbox does.
  *
  * ACTION tools are forced to `writeToolPolicy: 'propose'` (see
- * `resolveEffectiveToolMode`) regardless of the assistantActions setting and
+ * `resolveEffectiveToolMode`) regardless of the assistantTools setting and
  * each tool's configured mode: a copilot turn is a teammate asking Quinn a
  * question about the conversation, never Quinn acting in it directly, so a
  * write-tool call turns into a pending-approval proposal instead of running
@@ -36,7 +36,7 @@
  * mirrors what got proposed, straight off the tool context's ledger.
  *
  * Gated on `copilot.use` (the authz matrix picks this up automatically) and
- * the `assistantCopilot` flag, mirroring sandbox.ts's SSE shape otherwise.
+ * the `inboxAi` flag, mirroring sandbox.ts's SSE shape otherwise.
  * The shared gate sequence (permission -> body parse -> flag -> configured ->
  * token budget -> conversation-viewable) lives in copilot-gate.ts, alongside
  * transform.ts.

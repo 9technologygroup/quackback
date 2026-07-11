@@ -6,6 +6,7 @@
 
 import { Queue, Worker, UnrecoverableError } from 'bullmq'
 import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-config'
+import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { logger } from '@/lib/server/logger'
 import type { FeedbackAiJob } from '../types'
 import type { RawFeedbackItemId, FeedbackSignalId } from '@quackback/ids'
@@ -25,7 +26,7 @@ const DEFAULT_JOB_OPTS = {
 
 let initPromise: Promise<{
   queue: Queue<FeedbackAiJob>
-  worker: Worker<FeedbackAiJob>
+  worker: Worker<FeedbackAiJob> | null
 }> | null = null
 
 function ensureQueue(): Promise<Queue<FeedbackAiJob>> {
@@ -46,54 +47,60 @@ async function initializeQueue() {
     defaultJobOptions: DEFAULT_JOB_OPTS,
   })
 
-  const worker = new Worker<FeedbackAiJob>(
-    QUEUE_NAME,
-    async (job) => {
-      const data = job.data
+  // Consumer side is role-gated: web-role replicas enqueue and register
+  // schedules but never construct a Worker (see queue/role.ts).
+  const worker = shouldRunWorkers()
+    ? new Worker<FeedbackAiJob>(
+        QUEUE_NAME,
+        async (job) => {
+          const data = job.data
 
-      switch (data.type) {
-        case 'extract-signals': {
-          const { extractSignals } = await import('../pipeline/extraction.service')
-          await extractSignals(data.rawItemId as RawFeedbackItemId)
-          break
+          switch (data.type) {
+            case 'extract-signals': {
+              const { extractSignals } = await import('../pipeline/extraction.service')
+              await extractSignals(data.rawItemId as RawFeedbackItemId)
+              break
+            }
+            case 'interpret-signal': {
+              const { interpretSignal } = await import('../pipeline/interpretation.service')
+              await interpretSignal(data.signalId as FeedbackSignalId, {
+                currentAttempt: job.attemptsMade + 1,
+                maxAttempts: job.opts.attempts ?? 1,
+              })
+              break
+            }
+            case 'retention-cleanup': {
+              const { cleanupExpiredLogs } = await import('../../ai/usage-log')
+              const { cleanupExpiredToolCalls, cleanupExpiredAssistantEvents } =
+                await import('../../assistant/tool-audit')
+              const { cleanupExpiredMessageTranslations } =
+                await import('../../conversation/conversation-translation.service')
+              await Promise.all([
+                cleanupExpiredLogs(),
+                cleanupExpiredToolCalls(),
+                cleanupExpiredAssistantEvents(),
+                cleanupExpiredMessageTranslations(),
+              ])
+              break
+            }
+            default:
+              throw new UnrecoverableError(
+                `Unknown AI job type: ${(data as { type: string }).type}`
+              )
+          }
+        },
+        {
+          connection,
+          concurrency: CONCURRENCY,
+          // OpenAI calls can run for up to ~60s on a slow extraction.
+          // Default lockDuration of 30s would let BullMQ mark the job as
+          // stalled and re-dispatch it to another worker — causing the
+          // double-billing this whole P1 batch is fixing. 120s gives 2x
+          // headroom on the worst-case latency.
+          lockDuration: 120_000,
         }
-        case 'interpret-signal': {
-          const { interpretSignal } = await import('../pipeline/interpretation.service')
-          await interpretSignal(data.signalId as FeedbackSignalId, {
-            currentAttempt: job.attemptsMade + 1,
-            maxAttempts: job.opts.attempts ?? 1,
-          })
-          break
-        }
-        case 'retention-cleanup': {
-          const { cleanupExpiredLogs } = await import('../../ai/usage-log')
-          const { cleanupExpiredToolCalls, cleanupExpiredAssistantEvents } =
-            await import('../../assistant/tool-audit')
-          const { cleanupExpiredMessageTranslations } =
-            await import('../../conversation/conversation-translation.service')
-          await Promise.all([
-            cleanupExpiredLogs(),
-            cleanupExpiredToolCalls(),
-            cleanupExpiredAssistantEvents(),
-            cleanupExpiredMessageTranslations(),
-          ])
-          break
-        }
-        default:
-          throw new UnrecoverableError(`Unknown AI job type: ${(data as { type: string }).type}`)
-      }
-    },
-    {
-      connection,
-      concurrency: CONCURRENCY,
-      // OpenAI calls can run for up to ~60s on a slow extraction.
-      // Default lockDuration of 30s would let BullMQ mark the job as
-      // stalled and re-dispatch it to another worker — causing the
-      // double-billing this whole P1 batch is fixing. 120s gives 2x
-      // headroom on the worst-case latency.
-      lockDuration: 120_000,
-    }
-  )
+      )
+    : null
 
   // Register daily retention cleanup as a repeatable job. Stable jobId
   // ensures multiple worker boots / process restarts don't accidentally
@@ -118,11 +125,11 @@ async function initializeQueue() {
     ])
   } catch (error) {
     await queue.close().catch(() => {})
-    await worker.close().catch(() => {})
+    await worker?.close().catch(() => {})
     throw error
   }
 
-  worker.on('failed', (job, error) => {
+  worker?.on('failed', (job, error) => {
     if (!job) return
     const isPermanent =
       job.attemptsMade >= (job.opts.attempts ?? 1) || error.name === 'UnrecoverableError'
@@ -149,6 +156,6 @@ export async function closeFeedbackAiQueue(): Promise<void> {
   if (!initPromise) return
   const { worker, queue } = await initPromise
   initPromise = null
-  await worker.close().catch(() => {})
+  await worker?.close().catch(() => {})
   await queue.close().catch(() => {})
 }

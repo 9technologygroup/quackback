@@ -39,6 +39,7 @@ import {
   DEFAULT_MESSENGER_CONFIG,
   DEFAULT_FEATURE_FLAGS,
   DEFAULT_HELP_CENTER_CONFIG,
+  resolveFeatureFlags,
 } from './settings.types'
 import { publicHomeConfig, publicMessengerConfig } from './settings.widget'
 import { resolveChangelogSettings } from './settings.changelog'
@@ -856,10 +857,7 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
     const changelogConfig = resolveChangelogSettings(org.metadata)
     const statusConfig = resolveStatusSettings(org.metadata)
 
-    const featureFlags: FeatureFlags = {
-      ...DEFAULT_FEATURE_FLAGS,
-      ...(org.featureFlags ? JSON.parse(org.featureFlags) : {}),
-    }
+    const featureFlags = resolveFeatureFlags(org.featureFlags)
 
     const [configuredTypes, passthroughKeys, verifiedDomains] = await Promise.all([
       getConfiguredAuthTypes(),
@@ -978,10 +976,9 @@ export async function updateFeatureFlags(input: Partial<FeatureFlags>): Promise<
     await assertTierFeature('aiFeedbackExtraction', 'AI feedback extraction')
   }
   const org = await requireSettings()
-  const current: FeatureFlags = {
-    ...DEFAULT_FEATURE_FLAGS,
-    ...(org.featureFlags ? JSON.parse(org.featureFlags) : {}),
-  }
+  // resolveFeatureFlags drops legacy pre-consolidation keys (after coalescing
+  // them into their umbrella flag), so this write persists a clean shape.
+  const current = resolveFeatureFlags(org.featureFlags)
   const updated = { ...current, ...input }
   await db
     .update(settings)

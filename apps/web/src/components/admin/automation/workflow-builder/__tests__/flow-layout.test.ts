@@ -142,12 +142,116 @@ describe('buildFlowNodes / buildFlowEdges — no branch', () => {
     const trigger = withChannels.find((n) => n.id === tree.triggerId)
     expect(trigger?.data.sections).toEqual([
       { label: 'Channels', chips: [{ label: 'Email' }, { label: 'Messenger' }] },
+      { label: 'Frequency cap', chips: [{ label: 'No limit' }] },
     ])
 
     const withoutChannels = buildFlowNodes(baseInput(tree))
     expect(withoutChannels.find((n) => n.id === tree.triggerId)?.data.sections).toEqual([
       { label: 'Channels', chips: [{ label: 'All channels' }] },
+      { label: 'Frequency cap', chips: [{ label: 'No limit' }] },
     ])
+  })
+
+  it('renders the trigger frequency cap section, or "No limit" when unset', () => {
+    const tree = newTree()
+    const capped = buildFlowNodes(
+      baseInput(tree, { triggerFrequencyCap: { type: 'n_total', count: 3 } })
+    )
+    expect(capped.find((n) => n.id === tree.triggerId)?.data.sections).toEqual([
+      { label: 'Channels', chips: [{ label: 'All channels' }] },
+      { label: 'Frequency cap', chips: [{ label: 'At most 3 times per person' }] },
+    ])
+
+    const unlimited = buildFlowNodes(
+      baseInput(tree, { triggerFrequencyCap: { type: 'unlimited' } })
+    )
+    expect(unlimited.find((n) => n.id === tree.triggerId)?.data.sections).toEqual([
+      { label: 'Channels', chips: [{ label: 'All channels' }] },
+      { label: 'Frequency cap', chips: [{ label: 'No limit' }] },
+    ])
+  })
+
+  it('omits the Audience/Send window sections entirely when unconfigured (the common case stays a 2-section card)', () => {
+    const tree = newTree()
+    const nodes = buildFlowNodes(baseInput(tree))
+    expect(nodes.find((n) => n.id === tree.triggerId)?.data.sections).toEqual([
+      { label: 'Channels', chips: [{ label: 'All channels' }] },
+      { label: 'Frequency cap', chips: [{ label: 'No limit' }] },
+    ])
+
+    // An explicitly-empty audience ({}) is the same as unconfigured (the
+    // trigger editor drops the key on write) — no chip either.
+    const emptyAudience = buildFlowNodes(baseInput(tree, { triggerAudience: {} }))
+    expect(emptyAudience.find((n) => n.id === tree.triggerId)?.data.sections).toHaveLength(2)
+
+    // 'any' is the unconfigured sendWindow value too — no chip.
+    const anyWindow = buildFlowNodes(baseInput(tree, { triggerSendWindow: 'any' }))
+    expect(anyWindow.find((n) => n.id === tree.triggerId)?.data.sections).toHaveLength(2)
+  })
+
+  it('surfaces an Audience section, with a nested-group-aware summary, once configured', () => {
+    const tree = newTree()
+    const nodes = buildFlowNodes(
+      baseInput(tree, {
+        triggerAudience: { field: 'conversation.priority', op: 'eq', value: 'high' },
+      })
+    )
+    expect(nodes.find((n) => n.id === tree.triggerId)?.data.sections).toEqual([
+      { label: 'Channels', chips: [{ label: 'All channels' }] },
+      { label: 'Frequency cap', chips: [{ label: 'No limit' }] },
+      { label: 'Audience', chips: [{ label: 'Priority is High' }] },
+    ])
+
+    const grouped = buildFlowNodes(
+      baseInput(tree, {
+        triggerAudience: {
+          any: [
+            { all: [{ field: 'conversation.priority', op: 'eq', value: 'high' }] },
+            { all: [{ field: 'conversation.status', op: 'eq', value: 'open' }] },
+          ],
+        },
+      })
+    )
+    expect(grouped.find((n) => n.id === tree.triggerId)?.data.sections).toContainEqual({
+      label: 'Audience',
+      chips: [{ label: 'Any of 2 groups matched' }],
+    })
+  })
+
+  it('surfaces a Send window section once configured, but not for "any"', () => {
+    const tree = newTree()
+    const inside = buildFlowNodes(baseInput(tree, { triggerSendWindow: 'inside_office_hours' }))
+    expect(inside.find((n) => n.id === tree.triggerId)?.data.sections).toContainEqual({
+      label: 'Send window',
+      chips: [{ label: 'Only inside office hours' }],
+    })
+
+    const outside = buildFlowNodes(baseInput(tree, { triggerSendWindow: 'outside_office_hours' }))
+    expect(outside.find((n) => n.id === tree.triggerId)?.data.sections).toContainEqual({
+      label: 'Send window',
+      chips: [{ label: 'Only outside office hours' }],
+    })
+  })
+
+  it('renders a relative snooze action chip as "For N units", legacy as before', () => {
+    let tree = newTree()
+    tree = {
+      ...tree,
+      steps: [{ id: 'a1', kind: 'action', action: { type: 'snooze', seconds: 7200 } }],
+    }
+    const nodes = buildFlowNodes(baseInput(tree))
+    const step = nodes.find((n) => n.id === 'a1')
+    expect(step?.data).toMatchObject({ chips: [{ label: 'For 2 hours' }] })
+
+    let legacyTree = newTree()
+    legacyTree = {
+      ...legacyTree,
+      steps: [{ id: 'a1', kind: 'action', action: { type: 'snooze', untilIso: null } }],
+    }
+    const legacyNodes = buildFlowNodes(baseInput(legacyTree))
+    expect(legacyNodes.find((n) => n.id === 'a1')?.data).toMatchObject({
+      chips: [{ label: 'Until they reply' }],
+    })
   })
 })
 
@@ -241,5 +345,22 @@ describe('describeBranchPath', () => {
       ],
     })
     expect(parts).toEqual([{ text: 'Message body contains billing +1 more' }])
+  })
+
+  it('describes an OR-of-groups condition via conditionSummary, not "Custom condition"', () => {
+    const parts = describeBranchPath({
+      any: [
+        { all: [{ field: 'conversation.priority', op: 'eq', value: 'high' }] },
+        { all: [{ field: 'conversation.status', op: 'eq', value: 'open' }] },
+      ],
+    })
+    expect(parts).toEqual([{ text: 'Any of 2 groups matched' }])
+  })
+
+  it('still falls back to "Custom condition" for a shape RuleGroupBuilder cannot represent either', () => {
+    const parts = describeBranchPath({
+      all: [{ any: [{ field: 'conversation.status', op: 'eq', value: 'open' }] }],
+    })
+    expect(parts).toEqual([{ text: 'Custom condition' }])
   })
 })

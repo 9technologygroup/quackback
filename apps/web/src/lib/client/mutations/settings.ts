@@ -21,6 +21,7 @@ import {
   regenerateWidgetSecretFn,
   updateThemeFn,
   updateCustomCssFn,
+  updateWorkflowAbandonedAutoCloseFn,
 } from '@/lib/server/functions/settings'
 import {
   updateHelpCenterConfigFn,
@@ -393,6 +394,17 @@ export function useDeleteHelpCenterRedirectRule() {
       queryClient.invalidateQueries({
         queryKey: settingsQueries.helpCenterRedirectRules().queryKey,
       }),
+  })
+}
+
+export function useUpdateWorkflowAbandonedAutoClose() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (data: Parameters<typeof updateWorkflowAbandonedAutoCloseFn>[0]['data']) =>
+      updateWorkflowAbandonedAutoCloseFn({ data }),
+    onSuccess: (saved) =>
+      queryClient.setQueryData(settingsQueries.workflowAbandonedAutoClose().queryKey, saved),
   })
 }
 

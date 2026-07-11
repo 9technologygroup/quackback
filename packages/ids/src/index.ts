@@ -97,6 +97,7 @@ export type {
   PlatformCredentialId,
   EventMappingId,
   PostExternalLinkId,
+  TicketExternalLinkId,
   ImportRunId,
   PostSubscriptionId,
   NotifPrefId,
@@ -124,6 +125,7 @@ export type {
   DataConnectorId,
   TicketId,
   TicketStatusId,
+  TicketActivityId,
   ChannelAccountId,
   SendingDomainId,
   OfficeHoursId,
@@ -132,6 +134,7 @@ export type {
   WorkflowId,
   WorkflowRunId,
   WorkflowRunEventId,
+  WorkflowVersionId,
   // Feedback aggregation entities
   FeedbackSourceId,
   RawFeedbackItemId,

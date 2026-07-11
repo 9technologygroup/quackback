@@ -11,6 +11,16 @@
  * fields/operators is validated at the authoring (save) layer; the evaluator is
  * deliberately defensive — an unknown field or a type-mismatched compare yields
  * false rather than throwing, so a malformed graph can never crash a run.
+ *
+ * Unresolved-subject contract: when a field resolves to null/undefined (an
+ * absent message, a typo'd `conversation.attr.<key>`, an unset csat rating,
+ * ...) every operator is a non-match EXCEPT `is_empty` — see applyOp's doc.
+ * A negative operator (neq/not_contains/excludes_all) does NOT get a free
+ * pass here: it requires the subject to be present, same as eq/contains/
+ * includes_any do, so a typo'd field can never make a negative condition
+ * fire. `eq`/`neq` are numeric-aware: a number compared against a numeric
+ * string (5 vs "5") matches; any other cross-type compare (e.g. a boolean
+ * against the string "true") stays strict.
  */
 import { readAttributeValue } from '@/lib/shared/conversation/attribute-values'
 
@@ -25,17 +35,69 @@ export interface ConditionContext {
     /** Minutes the customer has been waiting on a reply; null = nobody waiting. */
     waitingMinutes: number | null
     tagIds: string[]
+    /** The team the conversation is assigned to, or null when unassigned. */
+    assignedTeamId: string | null
     /** Raw custom_attributes ({ v, src, at } envelopes or bare legacy values);
      *  `conversation.attr.<key>` predicates read through readAttributeValue. */
     attributes?: Record<string, unknown>
+    /** The conversation's visitor principal — the actor a block CSAT resume
+     *  records the rating as (recordCsat requires the caller to BE the
+     *  visitor). Not a condition field; carried here purely so the engine
+     *  doesn't need a second query to learn it. */
+    visitorPrincipalId?: string | null
   }
   message?: { body: string; senderType?: 'visitor' | 'agent' } | null
-  person?: { segmentIds: string[] } | null
+  person?: {
+    segmentIds: string[]
+    /** realEmail()-sanitized — the synthetic anonymous placeholder
+     *  (temp-<id>@anon.quackback.io) never surfaces here, so `person.email`
+     *  reads as unresolved (MISSING) for an anonymous visitor, same as one
+     *  with no email captured at all. */
+    email?: string | null
+    /** The identified visitor's own attributes (user.metadata), bare values
+     *  (no envelope — unlike conversation.attributes, this store was never
+     *  enveloped). Absent/undefined for an anonymous visitor. */
+    attributes?: Record<string, unknown>
+  } | null
+  /** The visitor's company (principal.company_id -> companies), when linked.
+   *  Absent when the visitor has no company (including every anonymous
+   *  visitor, who can never be linked). */
+  company?: {
+    /** Bare values in companies.custom_attributes — no envelope, same as
+     *  person.attributes. */
+    attributes?: Record<string, unknown>
+  } | null
   /** Whether the workspace is within office hours at evaluation time. */
   officeHours?: boolean | null
   /** The conversation's last CSAT rating (1-5), or null. */
   csatRating?: number | null
+  /** The customer's structured reply, threaded in ONLY when resuming a run
+   *  parked at an input wait (resumeWorkflowRun's blockAnswer option). The
+   *  walker reads this to tell "reached this interactive node fresh" (park)
+   *  from "resuming this exact node" (route/write and continue) apart — see
+   *  graph.ts's per-kind handling. Absent on every ordinary trigger walk. */
+  blockAnswer?: BlockAnswer | null
+  /** How Quinn's turn ended, threaded in ONLY when resuming a run parked at
+   *  a `let_assistant_answer` wait (resumeWorkflowRun's assistantOutcome
+   *  option) — the walker's equivalent of blockAnswer for that node kind
+   *  (Phase C, slice C-6). 'escalated' = assistant.handed_off fired for this
+   *  conversation (a human is needed); 'resolved' = the conversation closed
+   *  while parked there (read as "Quinn resolved it" — the classic
+   *  resolved-then-follow-up pattern). Absent on every ordinary trigger walk. */
+  assistantOutcome?: AssistantOutcome | null
 }
+
+/** See ConditionContext.assistantOutcome's doc. */
+export type AssistantOutcome = 'escalated' | 'resolved'
+
+/** The customer's structured reply to a parked interactive block, resolved
+ *  from its stored BlockReplyMetadata (event-trigger.ts) and threaded into a
+ *  resume's ConditionContext. One variant per interactive node kind. */
+export type BlockAnswer =
+  | { kind: 'buttons'; buttonKey: string }
+  | { kind: 'collect'; value: string | number | boolean }
+  | { kind: 'collectReply'; value: string }
+  | { kind: 'csat'; rating: number; comment?: string }
 
 export type ConditionOperator =
   | 'eq'
@@ -65,6 +127,26 @@ export interface ConditionGroup {
 export type WorkflowCondition = ConditionLeaf | ConditionGroup
 
 /**
+ * Recursively test whether ANY leaf field in a condition tree (leaf or
+ * all/any group, arbitrarily nested) satisfies `predicate` — shared by
+ * anything that needs to know IF a condition tree references a certain KIND
+ * of field without caring which specific one (e.g. dispatcher.ts's
+ * person/company join gate). Kept here rather than duplicated per caller so
+ * a future group shape (this module's own recursion) can't drift from
+ * evaluateCondition's own walk.
+ */
+export function someConditionField(
+  condition: WorkflowCondition,
+  predicate: (field: string) => boolean
+): boolean {
+  if ('field' in condition) return predicate(condition.field)
+  return (
+    (condition.all ?? []).some((c) => someConditionField(c, predicate)) ||
+    (condition.any ?? []).some((c) => someConditionField(c, predicate))
+  )
+}
+
+/**
  * The condition fields the evaluator knows — the single catalogue the authoring
  * validation (workflow.schemas) derives its allowed set from, so a typo'd field
  * (conversation.stattus) is rejected on save instead of silently never matching.
@@ -76,9 +158,11 @@ export const CONDITION_FIELDS = [
   'conversation.priority',
   'conversation.waiting_minutes',
   'conversation.tags',
+  'conversation.team',
   'message.body',
   'message.sender',
   'person.segments',
+  'person.email',
   'office_hours',
   'csat.rating',
 ] as const
@@ -91,12 +175,33 @@ export const CONDITION_FIELDS = [
  */
 export const ATTRIBUTE_FIELD_PREFIX = 'conversation.attr.'
 
+/**
+ * Dynamic person/company attribute predicates: `person.attr.<key>` /
+ * `company.attr.<key>` resolve the value stored under `<key>` in, respectively,
+ * the visitor's user.metadata and their company's custom_attributes. Unlike
+ * ATTRIBUTE_FIELD_PREFIX's conversation attributes, neither store uses the
+ * `{ v, src, at }` envelope (verified against user.attributes.ts's
+ * parseUserAttributes and the segment evaluator's raw company_attr JSON
+ * reads) — values here are read bare, no readAttributeValue unwrap.
+ */
+export const PERSON_ATTRIBUTE_FIELD_PREFIX = 'person.attr.'
+export const COMPANY_ATTRIBUTE_FIELD_PREFIX = 'company.attr.'
+
 /** Pull the value a `field` names out of the resolved context (undefined = the
  *  field isn't known, which every operator treats as a non-match). */
 function resolveField(field: string, ctx: ConditionContext): unknown {
   if (field.startsWith(ATTRIBUTE_FIELD_PREFIX)) {
     const key = field.slice(ATTRIBUTE_FIELD_PREFIX.length)
     return readAttributeValue(ctx.conversation.attributes?.[key])?.v
+  }
+  if (field.startsWith(PERSON_ATTRIBUTE_FIELD_PREFIX)) {
+    // Bare values, not envelopes — see PERSON_ATTRIBUTE_FIELD_PREFIX's doc.
+    const key = field.slice(PERSON_ATTRIBUTE_FIELD_PREFIX.length)
+    return ctx.person?.attributes?.[key]
+  }
+  if (field.startsWith(COMPANY_ATTRIBUTE_FIELD_PREFIX)) {
+    const key = field.slice(COMPANY_ATTRIBUTE_FIELD_PREFIX.length)
+    return ctx.company?.attributes?.[key]
   }
   switch (field) {
     case 'conversation.status':
@@ -109,6 +214,11 @@ function resolveField(field: string, ctx: ConditionContext): unknown {
       return ctx.conversation.waitingMinutes
     case 'conversation.tags':
       return ctx.conversation.tagIds
+    // Unassigned resolves to null, same as e.g. csat.rating: per applyOp's
+    // null contract every operator is a non-match, and `is_empty` is the
+    // deliberate way to test for "no team".
+    case 'conversation.team':
+      return ctx.conversation.assignedTeamId
     case 'message.body':
       return ctx.message?.body ?? null
     case 'message.sender':
@@ -117,6 +227,11 @@ function resolveField(field: string, ctx: ConditionContext): unknown {
       return ctx.message?.senderType ?? null
     case 'person.segments':
       return ctx.person?.segmentIds ?? []
+    // null (an anonymous visitor, or an identified one with no captured
+    // email) and undefined (no person at all) are both unresolved per
+    // isUnresolved — either way `person.email` is a non-match except is_empty.
+    case 'person.email':
+      return ctx.person?.email
     case 'office_hours':
       return ctx.officeHours ?? null
     case 'csat.rating':
@@ -129,28 +244,74 @@ function resolveField(field: string, ctx: ConditionContext): unknown {
 const isBlank = (v: unknown): boolean =>
   v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)
 
+/** null and undefined both mean "this field has nothing to compare" — an
+ *  absent message, a typo'd/archived attribute key, an unset csat rating.
+ *  Narrower than isBlank: an empty string or empty array is a real, resolved
+ *  value (the field IS there, it's just empty), not an unresolved subject. */
+const isUnresolved = (v: unknown): boolean => v === null || v === undefined
+
 const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : v === undefined ? [] : [v])
 
-/** Apply one operator to a resolved value; defensive on type mismatch (false). */
+/** A numeric string ("5", " 12.5") parsed to a finite number, or null for
+ *  anything else (including "", which Number() would otherwise read as 0). */
+function parseFiniteNumber(v: string): number | null {
+  if (v.trim() === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/** Strict equality, except a number compared against a numeric string
+ *  compares numerically (a `number`-typed attribute vs a condition value
+ *  that arrived as a string — e.g. from the API or a loosely-typed import —
+ *  should still match: 5 and "5" are the same value). Any other type
+ *  mismatch (a boolean vs the string "true", for instance) stays strict:
+ *  that's a genuinely different stored type, not a serialization artifact. */
+function looseEq(actual: unknown, value: unknown): boolean {
+  if (typeof actual === 'number' && typeof value === 'string') {
+    const v = parseFiniteNumber(value)
+    if (v !== null) return actual === v
+  } else if (typeof value === 'number' && typeof actual === 'string') {
+    const a = parseFiniteNumber(actual)
+    if (a !== null) return a === value
+  }
+  return actual === value
+}
+
+/**
+ * Apply one operator to a resolved value; defensive on type mismatch (false).
+ *
+ * Contract for an unresolved subject (null/undefined — see isUnresolved):
+ * every operator treats it as a non-match EXCEPT `is_empty`, which matches.
+ * That includes the "negative" operators (neq/not_contains/excludes_all) —
+ * they require the subject to be present, same as their positive
+ * counterparts, so a typo'd `conversation.attr.<key>` (which resolves
+ * undefined) can never make a negative condition fire. A resolved-but-empty
+ * subject (`''`, `[]`) is NOT unresolved and is compared normally.
+ */
 function applyOp(actual: unknown, op: ConditionOperator, value: unknown): boolean {
+  const unresolved = isUnresolved(actual)
   switch (op) {
     case 'eq':
-      return actual === value
+      // Guarded the same way neq already is: an unresolved subject is a
+      // non-match even when the condition's own value is null (authorable in
+      // JSON mode — conditionSchema's value is unknown/optional), otherwise
+      // `null === null` would match and contradict the documented contract.
+      return !unresolved && looseEq(actual, value)
     case 'neq':
-      return actual !== value
+      return !unresolved && !looseEq(actual, value)
     case 'contains':
     case 'not_contains': {
       const hit =
         typeof actual === 'string' &&
         typeof value === 'string' &&
         actual.toLowerCase().includes(value.toLowerCase())
-      return op === 'contains' ? hit : !hit
+      return op === 'contains' ? hit : !unresolved && !hit
     }
     case 'gt':
     case 'gte':
     case 'lt':
     case 'lte': {
-      if (actual === null || actual === undefined) return false // e.g. nobody waiting
+      if (unresolved) return false // e.g. nobody waiting
       const a = Number(actual)
       const b = Number(value)
       if (Number.isNaN(a) || Number.isNaN(b)) return false
@@ -160,7 +321,7 @@ function applyOp(actual: unknown, op: ConditionOperator, value: unknown): boolea
     case 'excludes_all': {
       const have = asArray(actual)
       const anyIn = asArray(value).some((v) => have.includes(v))
-      return op === 'includes_any' ? anyIn : !anyIn
+      return op === 'includes_any' ? anyIn : !unresolved && !anyIn
     }
     case 'is_set':
       return !isBlank(actual)

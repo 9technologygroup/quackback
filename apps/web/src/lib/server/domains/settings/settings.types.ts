@@ -938,45 +938,81 @@ export interface FeatureFlags {
   helpCenterAiAnswers: boolean
   /** AI-powered feedback extraction from external sources */
   aiFeedbackExtraction: boolean
-  /** Support inbox: messenger widget channel + unified admin inbox */
+  /** Support inbox: messenger widget channel + unified admin inbox. Also
+   *  covers conversation niceties like external link preview cards. */
   supportInbox: boolean
   /** Support tickets: durable, trackable requests portal alongside conversations */
   supportTickets: boolean
-  /** External link preview cards in conversations (OG unfurling) */
-  linkPreviews: boolean
   /** Cookieless visitor + pageview analytics (portal and widget) */
   visitorAnalytics: boolean
-  /** Durable first-party device id: connects visitors to leads and users across visits */
+  /** Durable first-party device id: connects visitors to leads and users
+   *  across visits. Subordinate to `visitorAnalytics` — rendered as a nested
+   *  sub-toggle in Labs and only effective when analytics is on. */
   visitorDeviceTracking: boolean
-  /** AI assistant actions: closing conversations, creating tickets, etc. with per-action controls */
-  assistantActions: boolean
-  /** External API integrations for the AI assistant to look up or update data in other systems */
-  dataConnectors: boolean
-  /** Ground AI assistant answers in published feedback posts, alongside the knowledge base */
-  assistantPostGrounding: boolean
-  /** Ground AI assistant answers in admin-curated private snippets, alongside the knowledge base */
-  assistantSnippets: boolean
-  /** Ground AI assistant answers in the SAME customer's own past-conversation summaries */
-  assistantConversationGrounding: boolean
-  /** Quinn Copilot: a private, teammate-facing Q&A sidebar in the inbox conversation panel */
-  assistantCopilot: boolean
+  /** Teammate-facing AI in the inbox: Quinn Copilot's private Q&A tab,
+   *  two-way conversation translation, and AI classification of
+   *  ai_detect-enabled conversation attributes. Each capability keeps its
+   *  own finer-grained controls (copilot.use permission, per-conversation
+   *  translation, per-attribute opt-in). */
+  inboxAi: boolean
   /** Proactive suggested replies (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md): a
    *  read-only draft-reply card generated when a teammate views a
    *  conversation/ticket whose latest message is from the customer with no
-   *  teammate reply after it. Layers on top of `assistantCopilot` (same
+   *  teammate reply after it. Only takes effect alongside `inboxAi` (same
    *  `copilot.use` permission and item-viewability gate; see
    *  routes/api/admin/assistant/suggest.ts). */
   assistantProactiveSuggestions: boolean
-  /** Two-way inbox translation: customer messages display in the teammate's
-   *  language and replies send in the customer's language, per conversation. */
-  inboxTranslation: boolean
-  /** Deterministic AI classification of ai_detect-enabled conversation
-   *  attributes at handoff, assistant close, inactivity close, and (per
-   *  attribute) teammate close. */
-  aiAttributeDetection: boolean
+  /** Extra knowledge sources the AI assistant may ground answers in beyond
+   *  the help center: published feedback posts, admin-curated private
+   *  snippets, and the SAME customer's own past-conversation summaries. */
+  assistantKnowledge: boolean
+  /** What the AI assistant may DO: built-in actions (closing conversations,
+   *  creating tickets, ...) and admin-defined external data connectors.
+   *  Umbrella only — every action has per-action controls/approvals and
+   *  every connector defaults to disabled. */
+  assistantTools: boolean
   /** Status page: public/private/segment-scoped service status with incidents,
    *  maintenance windows, uptime history, and subscriber notifications. */
   statusPage: boolean
+}
+
+/**
+ * Pre-consolidation flag keys that may still appear in stored
+ * `settings.feature_flags` JSON. Each maps to the umbrella flag that
+ * absorbed it; `resolveFeatureFlags` ORs them in at read time so tenants
+ * who enabled a feature before the consolidation keep it without a
+ * migration. `linkPreviews` is absent deliberately: it folded into
+ * `supportInbox` (default on), and a stored `linkPreviews: true` must not
+ * force a disabled inbox back on.
+ */
+export const LEGACY_FLAG_MAP: Record<string, keyof FeatureFlags> = {
+  assistantCopilot: 'inboxAi',
+  inboxTranslation: 'inboxAi',
+  aiAttributeDetection: 'inboxAi',
+  assistantPostGrounding: 'assistantKnowledge',
+  assistantSnippets: 'assistantKnowledge',
+  assistantConversationGrounding: 'assistantKnowledge',
+  assistantActions: 'assistantTools',
+  dataConnectors: 'assistantTools',
+}
+
+/**
+ * Resolve stored feature-flags JSON to the current FeatureFlags shape:
+ * defaults for missing keys, stored values for known keys, and legacy
+ * (pre-consolidation) keys coalesced into their umbrella flag — an explicit
+ * stored value for the umbrella key wins over any legacy keys. Unknown keys
+ * are dropped, so the first write after an upgrade persists a clean shape.
+ */
+export function resolveFeatureFlags(storedJson: string | null | undefined): FeatureFlags {
+  const stored: Record<string, unknown> = storedJson ? JSON.parse(storedJson) : {}
+  const flags: FeatureFlags = { ...DEFAULT_FEATURE_FLAGS }
+  for (const key of Object.keys(DEFAULT_FEATURE_FLAGS) as Array<keyof FeatureFlags>) {
+    if (typeof stored[key] === 'boolean') flags[key] = stored[key]
+  }
+  for (const [legacyKey, umbrella] of Object.entries(LEGACY_FLAG_MAP)) {
+    if (stored[umbrella] === undefined && stored[legacyKey] === true) flags[umbrella] = true
+  }
+  return flags
 }
 
 /**
@@ -999,21 +1035,15 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   supportInbox: true,
   supportTickets: true,
   statusPage: true,
-  linkPreviews: true,
   // AI / privacy-sensitive — opt-in
   helpCenterAiAnswers: false,
   aiFeedbackExtraction: false,
   visitorAnalytics: false,
   visitorDeviceTracking: false,
-  assistantActions: false,
-  dataConnectors: false,
-  assistantPostGrounding: false,
-  assistantSnippets: false,
-  assistantConversationGrounding: false,
-  assistantCopilot: false,
+  inboxAi: false,
   assistantProactiveSuggestions: false,
-  inboxTranslation: false,
-  aiAttributeDetection: false,
+  assistantKnowledge: false,
+  assistantTools: false,
 }
 
 /**
@@ -1039,16 +1069,12 @@ export const FEATURE_FLAG_REGISTRY: Record<
   supportInbox: {
     label: 'Conversations',
     description:
-      'Let visitors start a conversation with Messenger from the widget; messages land in a shared inbox your team works from.',
+      'Let visitors start a conversation with Messenger from the widget; messages land in a shared inbox your team works from. Includes link preview cards for external links shared in conversations.',
   },
   supportTickets: {
     label: 'Support Tickets',
     description:
       'Give customers a Tickets portal for durable, trackable support requests alongside conversations.',
-  },
-  linkPreviews: {
-    label: 'Link Previews',
-    description: 'Show Open Graph preview cards below external links shared in conversations.',
   },
   visitorAnalytics: {
     label: 'Visitor Analytics',
@@ -1060,50 +1086,25 @@ export const FEATURE_FLAG_REGISTRY: Record<
     description:
       'Remember returning visitors with a first-party device id so their activity connects to leads and users. Stores an identifier in the browser; check your privacy requirements before enabling.',
   },
-  assistantActions: {
-    label: 'Assistant actions',
+  inboxAi: {
+    label: 'Inbox AI',
     description:
-      'Let the AI assistant take actions such as closing conversations or creating tickets, with per-action controls and approvals.',
+      'AI for your team inside the inbox: a private Quinn Copilot tab for asking questions about a conversation, two-way message translation, and automatic classification of conversation attributes you opt in. Requires an AI model to be configured; each capability has its own controls.',
   },
-  dataConnectors: {
-    label: 'Data connectors',
+  assistantKnowledge: {
+    label: 'Assistant knowledge sources',
     description:
-      'Define external API calls the AI assistant can use to look up or update data in other systems.',
+      "Let the AI assistant ground answers in more than the help center: published feedback posts, private snippets your team curates, and the same customer's own past conversation summaries.",
   },
-  assistantPostGrounding: {
-    label: 'Assistant post grounding',
+  assistantTools: {
+    label: 'Assistant actions & connectors',
     description:
-      'Let the AI assistant search published feedback posts, alongside the knowledge base, when answering questions.',
-  },
-  assistantSnippets: {
-    label: 'Assistant snippets',
-    description:
-      'Let the AI assistant ground answers in short private facts your team curates, alongside the knowledge base.',
-  },
-  assistantConversationGrounding: {
-    label: 'Assistant conversation grounding',
-    description:
-      "Let the AI assistant ground answers in the same customer's own past conversation summaries, so it remembers earlier context.",
-  },
-  assistantCopilot: {
-    label: 'Quinn Copilot',
-    description:
-      'Add a private Copilot tab to the inbox conversation panel where a teammate can ask Quinn questions about the conversation. Answers are visible only to the asking teammate.',
+      'Let the AI assistant take actions such as closing conversations or creating tickets, and call external APIs you define via data connectors. Nothing runs by default: actions have per-action controls and approvals, and every connector starts disabled.',
   },
   assistantProactiveSuggestions: {
     label: 'Proactive suggested replies',
     description:
-      'Show a suggested-reply draft above the composer when a teammate opens a conversation or ticket the customer is waiting on. Requires Quinn Copilot.',
-  },
-  inboxTranslation: {
-    label: 'Inbox translation',
-    description:
-      "Translate customer messages into a teammate's language and replies into the customer's language, per conversation. Requires an AI model to be configured.",
-  },
-  aiAttributeDetection: {
-    label: 'AI attribute detection',
-    description:
-      'Let AI automatically classify conversation attributes you opt in (issue type, sentiment, urgency, and more) at handoff, close, and inactivity, with its reasoning recorded on the conversation. Requires an AI model to be configured.',
+      'Show a suggested-reply draft above the composer when a teammate opens a conversation or ticket the customer is waiting on. Requires Inbox AI.',
   },
   statusPage: {
     label: 'Status page',
@@ -1115,42 +1116,48 @@ export const FEATURE_FLAG_REGISTRY: Record<
 /**
  * Labs page layout: experimental flags grouped into sections, each rendered as
  * a card with a heading + high-level description. Every flag in FeatureFlags
- * must belong to exactly one section (pinned by a test) so a new flag can never
- * silently go unsurfaced.
+ * must appear exactly once across sections — as a row or as a sub-flag of one
+ * (pinned by a test) so a new flag can never silently go unsurfaced. A
+ * sub-flag renders indented beneath its parent row and is only toggleable
+ * while the parent is on.
  */
+export interface LabSectionRow {
+  key: keyof FeatureFlags
+  subFlags?: Array<keyof FeatureFlags>
+}
+
 export const LAB_SECTIONS: Array<{
   title: string
   description: string
-  flags: Array<keyof FeatureFlags>
+  flags: LabSectionRow[]
 }> = [
   {
     title: 'Products',
     description:
       'Core modules of the platform. On by default for new workspaces; turn off any you do not need.',
-    flags: ['supportInbox', 'supportTickets', 'helpCenter', 'statusPage', 'linkPreviews'],
+    flags: [
+      { key: 'supportInbox' },
+      { key: 'supportTickets' },
+      { key: 'helpCenter' },
+      { key: 'statusPage' },
+    ],
   },
   {
     title: 'AI',
     description:
       'Optional AI capabilities. Require a configured model; off by default until you opt in.',
     flags: [
-      'helpCenterAiAnswers',
-      'aiFeedbackExtraction',
-      'assistantActions',
-      'dataConnectors',
-      'assistantPostGrounding',
-      'assistantSnippets',
-      'assistantConversationGrounding',
-      'assistantCopilot',
-      'assistantProactiveSuggestions',
-      'inboxTranslation',
-      'aiAttributeDetection',
+      { key: 'helpCenterAiAnswers' },
+      { key: 'aiFeedbackExtraction' },
+      { key: 'inboxAi', subFlags: ['assistantProactiveSuggestions'] },
+      { key: 'assistantKnowledge' },
+      { key: 'assistantTools' },
     ],
   },
   {
     title: 'Privacy-sensitive',
     description:
       'Analytics about who visits your portal and widget. Review your privacy policy before enabling.',
-    flags: ['visitorAnalytics', 'visitorDeviceTracking'],
+    flags: [{ key: 'visitorAnalytics', subFlags: ['visitorDeviceTracking'] }],
   },
 ]

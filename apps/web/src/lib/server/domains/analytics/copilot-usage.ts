@@ -71,7 +71,7 @@
  * `assistant_pending_actions_proposed_at_idx` (migration 0174) for the
  * actions-funnel scan, added because that table previously had no plain
  * `proposed_at` index at all; and `assistant_events_event_type_created_at_idx`
- * (migration 0180) for the sixth scan, the outcomes bucket — its WHERE names
+ * (migration 0189) for the sixth scan, the outcomes bucket — its WHERE names
  * the exact event types alongside the created_at range so the composite
  * index's leading column is usable (the metadata->>'rating'/'reason' feedback
  * splits are FILTER clauses over those rows, unindexed like the other

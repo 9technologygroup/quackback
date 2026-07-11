@@ -5,10 +5,10 @@
  * teammate reply after it (pull-on-view — the server never speculates on an
  * item nobody has open; there is no server-push per inbound message, see the
  * spec's non-goals). Sibling of copilot.ts, sharing its whole gate sequence
- * (`gateCopilotRequest`: copilot.use -> body parse -> assistantCopilot flag +
+ * (`gateCopilotRequest`: copilot.use -> body parse -> inboxAi flag +
  * configured -> AI token budget -> item-scoped viewability) PLUS one more
  * layer: the `assistantProactiveSuggestions` flag, checked the same way
- * `assertCopilotAvailable` checks `assistantCopilot` (404 NOT_FOUND when off)
+ * `assertCopilotAvailable` checks `inboxAi` (404 NOT_FOUND when off)
  * — a workspace can run Copilot Q&A without ever turning suggestions on.
  *
  * Unlike copilot.ts, this turn answers no question: it drafts a ready-to-send
@@ -110,7 +110,7 @@ export async function handleSuggest({ request }: { request: Request }): Promise<
   if (!gate.ok) return gate.response
   const { auth, actor, parsed, conversationId, ticketId } = gate
 
-  // Additional gate past assertCopilotAvailable's assistantCopilot check: the
+  // Additional gate past assertCopilotAvailable's inboxAi check: the
   // same 404 NOT_FOUND shape, one flag layer up. A workspace can run Copilot
   // Q&A without proactive suggestions ever turning on.
   if (!(await isFeatureEnabled('assistantProactiveSuggestions'))) {

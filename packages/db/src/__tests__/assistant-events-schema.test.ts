@@ -6,14 +6,14 @@ import { getTableConfig } from 'drizzle-orm/pg-core'
 import { assistantEvents } from '../schema/assistant-events'
 
 /**
- * Pins the assistant_events usage-event log (migration 0180, the Quinn
+ * Pins the assistant_events usage-event log (migration 0189, the Quinn
  * Copilot outcome loop) to the shape its writers and readers assume:
  * append-only rows keyed by an open-text event_type, both item FKs nullable
  * (an event is telemetry, not a child of the item), and the
  * (event_type, created_at) index the Copilot usage report's bounded
  * date-range scan rides.
  */
-describe('assistant events schema (migration 0180)', () => {
+describe('assistant events schema (migration 0189)', () => {
   it('has the correct table name', () => {
     expect(getTableName(assistantEvents)).toBe('assistant_events')
   })
@@ -61,8 +61,8 @@ describe('assistant events schema (migration 0180)', () => {
     expect(cols).toEqual(['event_type', 'created_at'])
   })
 
-  it('0180 migration pins the load-bearing constraints', () => {
-    const sql = readFileSync(join(__dirname, '../../drizzle/0180_assistant_events.sql'), 'utf8')
+  it('0189 migration pins the load-bearing constraints', () => {
+    const sql = readFileSync(join(__dirname, '../../drizzle/0189_assistant_events.sql'), 'utf8')
     // Teammate attribution survives teammate deletion; the count still tallies.
     expect(sql).toMatch(
       /FOREIGN KEY \("principal_id"\) REFERENCES "public"\."principal"\("id"\) ON DELETE set null/
