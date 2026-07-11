@@ -108,7 +108,8 @@ describe('updateWorkflowFn class-only patch validation (SF5)', () => {
     ).resolves.toBeDefined()
     expect(hoisted.updateWorkflow).toHaveBeenCalledWith(
       'workflow_1',
-      expect.objectContaining({ class: 'background' })
+      expect.objectContaining({ class: 'background' }),
+      'principal_1'
     )
   })
 

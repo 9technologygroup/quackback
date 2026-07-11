@@ -17,9 +17,11 @@ import {
 } from '@/lib/client/queries/conversation-attributes'
 import { useUserAttributes } from '@/lib/client/hooks/use-user-attributes-queries'
 import { useCompanyAttributes } from '@/lib/client/hooks/use-company-attributes-queries'
+import { connectorsQuery } from '@/lib/client/queries/connectors'
 import {
   toAttributeFieldDefs,
   toPersonCompanyAttributeFieldDefs,
+  type ConnectorMeta,
   type EntityLabels,
   type PersonCompanyAttributeFieldDef,
 } from '../workflow-graph'
@@ -43,6 +45,10 @@ export interface WorkflowEntities {
    *  above, one array per registry (they're independently keyed stores). */
   personAttributes: PersonCompanyAttributeFieldDef[]
   companyAttributes: PersonCompanyAttributeFieldDef[]
+  /** Connector id -> its required-input names, for the call_connector
+   *  "Set live" check (collectStepIssues' third param). Display names live in
+   *  `labels.connectors` like every other workspace ref. */
+  connectorMeta: ReadonlyMap<string, ConnectorMeta>
   labels: EntityLabels
 }
 
@@ -78,6 +84,7 @@ export function WorkflowEntitiesProvider({ children }: { children: ReactNode }) 
   // attribute access simply sees that group stay empty rather than erroring.
   const { data: personAttributeDefs } = useUserAttributes()
   const { data: companyAttributeDefs } = useCompanyAttributes()
+  const { data: connectors } = useQuery(connectorsQuery())
 
   const value = useMemo<WorkflowEntities>(() => {
     const memberOptions = (members ?? []).map((m) => ({ id: m.id, name: m.name ?? 'Unnamed' }))
@@ -92,17 +99,33 @@ export function WorkflowEntitiesProvider({ children }: { children: ReactNode }) 
       attributes: attributes ?? [],
       personAttributes: personAttributeDefs ?? [],
       companyAttributes: companyAttributeDefs ?? [],
+      connectorMeta: new Map(
+        (connectors ?? []).map((c) => [
+          c.id,
+          { requiredInputNames: c.inputs.filter((i) => i.required).map((i) => i.name) },
+        ])
+      ),
       labels: {
         members: toMap(memberOptions),
         teams: toMap(teamOptions),
         tags: toMap(tagOptions),
         slaPolicies: toMap(slaOptions),
+        connectors: new Map((connectors ?? []).map((c) => [c.id, c.name])),
         attributes: toAttributeFieldDefs(attributes ?? []),
         personAttributes: toPersonCompanyAttributeFieldDefs(personAttributeDefs ?? []),
         companyAttributes: toPersonCompanyAttributeFieldDefs(companyAttributeDefs ?? []),
       },
     }
-  }, [members, teams, tags, slaPolicies, attributes, personAttributeDefs, companyAttributeDefs])
+  }, [
+    members,
+    teams,
+    tags,
+    slaPolicies,
+    attributes,
+    personAttributeDefs,
+    companyAttributeDefs,
+    connectors,
+  ])
 
   return (
     <WorkflowEntitiesContext.Provider value={value}>{children}</WorkflowEntitiesContext.Provider>

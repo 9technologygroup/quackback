@@ -11,6 +11,13 @@
  * admin-configured automation acting on the workspace's behalf, mirroring the
  * full-API-key service principal. Each action is best-effort (a failure is logged
  * to the timeline and the run continues) so one bad action never strands a run.
+ *
+ * `call_connector` nodes (see graph.ts's module doc) are a fourth park kind
+ * the walker returns, but unlike a wait/interactive/assistant park they never
+ * leave the run in state 'waiting' — applyPlanAndSettle's loop executes the
+ * connector call inline, logs its outcome, and re-walks from the resolved
+ * success/failed successor, bounded by MAX_CONNECTOR_HOPS, all within this
+ * same engine invocation.
  */
 import {
   db,
@@ -32,8 +39,8 @@ import { boundedServiceActor } from '@/lib/server/policy/service-actor'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 import { isUniqueViolation } from '@/lib/server/utils'
-import { applyAction, type ResolvedBlockDeps } from './action.executor'
-import { walkWorkflow, type WorkflowGraph, type WalkResult } from './graph'
+import { applyAction, executeCallConnectorNode, type ResolvedBlockDeps } from './action.executor'
+import { walkWorkflow, successorId, type WorkflowGraph, type WalkResult } from './graph'
 import type { ConditionContext, BlockAnswer, AssistantOutcome } from './condition.evaluator'
 import { getWorkflow } from './workflow.service'
 import { resolveConditionContext } from './condition.context'
@@ -52,6 +59,16 @@ import { getWorkflowAbandonedAutoCloseSettings } from '@/lib/server/domains/sett
 const log = logger.child({ component: 'workflow-engine' })
 
 type Executor = typeof db | Transaction
+
+/** Bounds the park-and-continue connector loop (applyPlanAndSettle) within a
+ *  SINGLE engine invocation — a `call_connector` graph is storable with a
+ *  cycle back through itself or another connector node (the authoring
+ *  schema tolerates cycles, same as every other node kind), and unlike a
+ *  timer/input wait a connector hop never leaves 'running', so nothing else
+ *  would ever stop a genuine cycle from spinning forever inline. Exceeding
+ *  this settles the run 'done' with a `connector_hop_limit` run event rather
+ *  than looping unboundedly. */
+const MAX_CONNECTOR_HOPS = 20
 
 /**
  * The bounded authority a workflow acts with: exactly the support actions the v1
@@ -197,8 +214,14 @@ export async function runWorkflow(
   ctx: ConditionContext,
   opts: RunWorkflowOptions
 ): Promise<WorkflowRun | null> {
-  const plan = walkWorkflow(readGraph(workflow.graph), ctx)
-  if (plan.actions.length === 0 && plan.status !== 'waiting') return null
+  const graph = readGraph(workflow.graph)
+  const plan = walkWorkflow(graph, ctx)
+  // A fresh entry that immediately parks at a call_connector node (no prior
+  // actions) still needs a run to exist — same "waiting counts, empty
+  // completed doesn't" rule the pre-existing waiting check already encodes.
+  if (plan.actions.length === 0 && plan.status !== 'waiting' && plan.status !== 'connector') {
+    return null
+  }
 
   const subjectPrincipalId = opts.subjectPrincipalId ?? null
   const gateOnFrequencyCap = subjectPrincipalId !== null && hasFrequencyCap(workflow)
@@ -243,7 +266,15 @@ export async function runWorkflow(
   }
   if (!run) return null // frequency cap denied on the authoritative re-check
 
-  return applyPlanAndSettle(run, workflow, plan, opts.conversationId, subjectPrincipalId, ctx)
+  return applyPlanAndSettle(
+    run,
+    workflow,
+    graph,
+    plan,
+    opts.conversationId,
+    subjectPrincipalId,
+    ctx
+  )
 }
 
 /**
@@ -264,63 +295,135 @@ export async function runWorkflow(
  * the conversation's VISITOR (ctx.conversation.visitorPrincipalId) rather than
  * the run's own service actor (see visitorActor's doc); every other action is
  * unaffected.
+ *
+ * `graph` is the SAME graph `plan` was walked against (workflow.graph for a
+ * fresh run, the run's own pinned snapshot for a resume — see runWorkflow /
+ * resumeWorkflowRun) — needed here (not just by the initial walk) because a
+ * `call_connector` park requires re-walking from its resolved successor
+ * in-process: the loop below runs a plan's actions, and whenever the walk
+ * parked at a connector node instead of stopping for a real reason, executes
+ * that connector inline (action.executor.ts's executeCallConnectorNode, which
+ * never throws) and re-walks from `successorId(graph, nodeId, ok ? undefined
+ * : 'failed')` — bounded by MAX_CONNECTOR_HOPS — until the walk returns a
+ * non-connector status. The run stays 'running' throughout every hop: there
+ * is no durable wait for this park kind (see graph.ts's module doc), so a
+ * crash mid-loop is recovered the same way any other stuck 'running' row is,
+ * by the existing stale-running sweeper — not by a special connector-aware
+ * resume path.
  */
 async function applyPlanAndSettle(
   run: WorkflowRun,
   workflow: Workflow,
+  graph: WorkflowGraph,
   plan: WalkResult,
   conversationId: ConversationId,
   subjectPrincipalId: PrincipalId | null,
   ctx: ConditionContext
 ): Promise<WorkflowRun | null> {
   const actor = workflowActor()
-  // Per-plan resolution (SF8 perf fix), mirroring the resolve-once
-  // ConditionContext pattern the walk itself already uses: a plan with N
-  // chained send_block actions (message, then buttons, ...) previously paid
-  // ~3N queries (ensureAssistantPrincipal + resolveWorkflowVariables's own
-  // two reads, ALL re-run per action inside sendBlock). Resolved once here,
-  // before the loop, only when the plan actually has a send_block to feed —
-  // a plan with none (the common case) pays nothing extra. A failure here
-  // propagates uncaught, same policy as resolveConditionContext's own reads:
-  // by the time a plan exists, this conversation is known to exist (the walk
-  // itself already required it), so a failure resolving these is a genuine
-  // error, not a normal "nothing to send".
-  const resolvedBlockDeps: ResolvedBlockDeps | undefined = plan.actions.some(
-    (a) => a.type === 'send_block'
-  )
-    ? await (async () => {
-        const [variables, assistant] = await Promise.all([
-          resolveWorkflowVariables(conversationId),
-          ensureAssistantPrincipal(),
-        ])
-        return { variables, assistant }
-      })()
-    : undefined
+  let currentPlan = plan
   // Set only when a send_block action posts a message — the one block kind
   // that also parks (status 'waiting', waitKind 'input') stamps it onto the
   // InputWaitCursor below as the correlation key a customer's reply matches
-  // against.
-  let blockMessageId: string | null = null
-  for (const action of plan.actions) {
-    try {
-      const actionActor =
-        action.type === 'record_csat'
-          ? visitorActor((ctx.conversation.visitorPrincipalId ?? null) as PrincipalId | null)
-          : actor
-      const result = await applyAction(action, {
-        conversationId,
-        actor: actionActor,
-        runId: run.id,
-        resolvedBlockDeps,
-      })
-      if (result.blockMessageId) blockMessageId = result.blockMessageId
-    } catch (err) {
-      log.error({ err, action: action.type, workflowId: workflow.id }, 'workflow action failed')
-      await logRunEvent(run.id, workflow.id, subjectPrincipalId, `action_failed:${action.type}`)
+  // against. Reset at the top of every loop iteration (see below) before any
+  // read, so a stale id from an earlier connector hop's own send_block never
+  // leaks into a LATER hop's input-wait cursor.
+  let blockMessageId: string | null
+  let connectorHops = 0
+
+  // Bounded by MAX_CONNECTOR_HOPS below; every non-connector status returns or breaks.
+  while (true) {
+    // Per-plan resolution (SF8 perf fix), mirroring the resolve-once
+    // ConditionContext pattern the walk itself already uses: a plan with N
+    // chained send_block actions (message, then buttons, ...) previously paid
+    // ~3N queries (ensureAssistantPrincipal + resolveWorkflowVariables's own
+    // two reads, ALL re-run per action inside sendBlock). Resolved once per
+    // hop, only when THIS hop's plan actually has a send_block to feed — a
+    // hop with none (the common case, and every plan before this feature
+    // existed) pays nothing extra. A failure here propagates uncaught, same
+    // policy as resolveConditionContext's own reads: by the time a plan
+    // exists, this conversation is known to exist (the walk itself already
+    // required it), so a failure resolving these is a genuine error, not a
+    // normal "nothing to send".
+    const resolvedBlockDeps: ResolvedBlockDeps | undefined = currentPlan.actions.some(
+      (a) => a.type === 'send_block'
+    )
+      ? await (async () => {
+          const [variables, assistant] = await Promise.all([
+            resolveWorkflowVariables(conversationId),
+            ensureAssistantPrincipal(),
+          ])
+          return { variables, assistant }
+        })()
+      : undefined
+    blockMessageId = null
+    for (const action of currentPlan.actions) {
+      try {
+        const actionActor =
+          action.type === 'record_csat'
+            ? visitorActor((ctx.conversation.visitorPrincipalId ?? null) as PrincipalId | null)
+            : actor
+        const result = await applyAction(action, {
+          conversationId,
+          actor: actionActor,
+          runId: run.id,
+          resolvedBlockDeps,
+        })
+        if (result.blockMessageId) blockMessageId = result.blockMessageId
+      } catch (err) {
+        log.error({ err, action: action.type, workflowId: workflow.id }, 'workflow action failed')
+        await logRunEvent(run.id, workflow.id, subjectPrincipalId, `action_failed:${action.type}`)
+      }
     }
+
+    if (currentPlan.status !== 'connector') break
+
+    connectorHops++
+    if (connectorHops > MAX_CONNECTOR_HOPS) {
+      await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'connector_hop_limit')
+      const stopped = await settleRunning(run.id, { state: 'done', endedAt: new Date() })
+      return stopped ?? (await currentRun(run.id))
+    }
+
+    const nodeId = currentPlan.nodeId!
+    const node = graph.nodes.find((n) => n.id === nodeId)
+    // A missing node (a stale snapshot, a malformed edit) is treated the same
+    // as a disabled/deleted connector: 'unavailable', not a thrown error —
+    // executeCallConnectorNode's own contract never throws, so this branch
+    // shouldn't either.
+    const outcome =
+      node && node.type === 'call_connector'
+        ? await executeCallConnectorNode(conversationId, {
+            connectorId: node.connectorId,
+            params: node.params,
+            timeoutMs: node.timeoutMs,
+          })
+        : ({ ok: false, reason: 'unavailable' } as const)
+
+    await logRunEvent(
+      run.id,
+      workflow.id,
+      subjectPrincipalId,
+      outcome.ok ? 'connector_result:success' : `connector_failed:${outcome.reason}`
+    )
+
+    const nextId = successorId(graph, nodeId, outcome.ok ? undefined : 'failed')
+    if (!nextId) {
+      // No default edge on success, or no 'failed' edge on failure — same
+      // "missing successor ends the run" contract as every other node kind
+      // (graph.ts's walk loop falls off the end the same way).
+      const finished = await settleRunning(run.id, { state: 'done', endedAt: new Date() })
+      if (!finished) return currentRun(run.id)
+      await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'completed')
+      return finished
+    }
+    currentPlan = walkWorkflow(graph, ctx, nextId)
   }
 
-  if (plan.status === 'waiting' && (plan.waitKind === 'input' || plan.waitKind === 'assistant')) {
+  if (
+    currentPlan.status === 'waiting' &&
+    (currentPlan.waitKind === 'input' || currentPlan.waitKind === 'assistant')
+  ) {
     // Interactive block / let_assistant_answer park: no BullMQ timer for
     // either — resumed by event-trigger.ts on a matching structured reply
     // ('input') or Quinn's own hand-off/close signal ('assistant'), never a
@@ -337,7 +440,7 @@ async function applyPlanAndSettle(
     // park, so an 'assistant' park never pays for a settings lookup it
     // can't use.
     const expiresAt =
-      plan.waitKind === 'input'
+      currentPlan.waitKind === 'input'
         ? await (async () => {
             const autoClose = await getWorkflowAbandonedAutoCloseSettings()
             if (!autoClose.enabled) return null
@@ -345,13 +448,13 @@ async function applyPlanAndSettle(
           })()
         : null
     const cursor: WaitCursor | InputWaitCursor =
-      plan.waitKind === 'input'
+      currentPlan.waitKind === 'input'
         ? {
             waitKind: 'input',
-            resumeNodeId: plan.resumeNodeId!,
+            resumeNodeId: currentPlan.resumeNodeId!,
             blockMessageId: blockMessageId ?? '',
-            blockKind: plan.blockKind!,
-            allowTypingInterrupt: plan.allowTypingInterrupt ?? false,
+            blockKind: currentPlan.blockKind!,
+            allowTypingInterrupt: currentPlan.allowTypingInterrupt ?? false,
             expiresAt,
             waitSeconds: 0,
             waitSeq,
@@ -359,7 +462,7 @@ async function applyPlanAndSettle(
           }
         : {
             waitKind: 'assistant',
-            resumeNodeId: plan.resumeNodeId!,
+            resumeNodeId: currentPlan.resumeNodeId!,
             waitSeconds: 0,
             waitSeq,
             waitStartedAt: new Date().toISOString(),
@@ -373,14 +476,14 @@ async function applyPlanAndSettle(
     return waiting
   }
 
-  if (plan.status === 'waiting') {
-    const waitSeconds = plan.waitSeconds ?? 0
+  if (currentPlan.status === 'waiting') {
+    const waitSeconds = currentPlan.waitSeconds ?? 0
     // Increments on every park in this run (starting from 0) so each wait gets
     // its own durable-timer job id instead of colliding with an earlier one.
     const waitSeq = (readCursor(run).waitSeq ?? 0) + 1
     const cursor: WaitCursor = {
       waitKind: 'timer',
-      resumeNodeId: plan.resumeNodeId ?? null,
+      resumeNodeId: currentPlan.resumeNodeId ?? null,
       waitSeconds,
       waitSeq,
       waitStartedAt: new Date().toISOString(),
@@ -496,10 +599,12 @@ export async function resumeWorkflowRun(
     // consulted for its status (live/paused/gone), never re-walked. Editing
     // the workflow, or deleting the resume node, while this run sat parked
     // must not change what it does on resume.
-    const plan = walkWorkflow(readGraph(claimed.graph), ctx, resumeNodeId)
+    const graph = readGraph(claimed.graph)
+    const plan = walkWorkflow(graph, ctx, resumeNodeId)
     return await applyPlanAndSettle(
       claimed,
       workflow,
+      graph,
       plan,
       claimed.conversationId,
       claimed.subjectPrincipalId,

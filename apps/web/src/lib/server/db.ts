@@ -196,6 +196,7 @@ export {
   workflows,
   workflowRuns,
   workflowRunEvents,
+  workflowVersions,
   // Schema tables - integrations
   integrationEventMappings,
   integrationEventMappingsRelations,
@@ -467,6 +468,7 @@ export type {
   Workflow,
   WorkflowRun,
   WorkflowRunEvent,
+  WorkflowVersion,
   WorkflowClass,
   WorkflowStatus,
   WorkflowRunState,

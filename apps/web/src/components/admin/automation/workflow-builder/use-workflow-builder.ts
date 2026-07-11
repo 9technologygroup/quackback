@@ -102,7 +102,7 @@ function jsonEqual(a: unknown, b: unknown): boolean {
 }
 
 export function useWorkflowBuilder(workflow: WorkflowDTO) {
-  const { labels } = useWorkflowEntities()
+  const { labels, connectorMeta } = useWorkflowEntities()
   const updateMutation = useUpdateWorkflow()
   const statusMutation = useSetWorkflowStatus()
 
@@ -131,6 +131,12 @@ export function useWorkflowBuilder(workflow: WorkflowDTO) {
   const [selection, setSelection] = useState<BuilderSelection>(null)
   const [outlineCollapsed, setOutlineCollapsed] = useState(false)
   const [toggleError, setToggleError] = useState<string | null>(null)
+  // Version history + dry-run preview sheets (support platform §4.6 version
+  // history + rollback / dry-run preview) — top-bar buttons open these; both
+  // sheets read `dirty` themselves to disable their action while the draft
+  // has unsaved changes (see version-history-sheet.tsx / preview-panel.tsx).
+  const [historySheetOpen, setHistorySheetOpen] = useState(false)
+  const [previewSheetOpen, setPreviewSheetOpen] = useState(false)
 
   const changeName = useCallback((next: string) => {
     setName(next)
@@ -224,9 +230,9 @@ export function useWorkflowBuilder(workflow: WorkflowDTO) {
   const stepIssues = useMemo(
     () =>
       graphDraft.mode === 'visual'
-        ? collectStepIssues(graphDraft.tree, workflowClass)
+        ? collectStepIssues(graphDraft.tree, workflowClass, connectorMeta)
         : new Map<string, string>(),
-    [graphDraft, workflowClass]
+    [graphDraft, workflowClass, connectorMeta]
   )
   const issues = useMemo(() => draftIssues(graphDraft, workflowClass), [graphDraft, workflowClass])
   const outline = useMemo(
@@ -350,6 +356,12 @@ export function useWorkflowBuilder(workflow: WorkflowDTO) {
     outline,
     outlineCollapsed,
     toggleOutline: () => setOutlineCollapsed((c) => !c),
+    historySheetOpen,
+    openHistorySheet: () => setHistorySheetOpen(true),
+    closeHistorySheet: () => setHistorySheetOpen(false),
+    previewSheetOpen,
+    openPreviewSheet: () => setPreviewSheetOpen(true),
+    closePreviewSheet: () => setPreviewSheetOpen(false),
   }
 }
 

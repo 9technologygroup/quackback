@@ -9,12 +9,13 @@
  */
 import { useState, type ComponentType } from 'react'
 import { ClockIcon, FunnelIcon, MagnifyingGlassIcon, ShareIcon } from '@heroicons/react/24/outline'
-import { ACTION_ICONS, BLOCK_ICONS, TONE_TILE } from '../step-visuals'
+import { ACTION_ICONS, BLOCK_ICONS, CALL_CONNECTOR_ICON, TONE_TILE } from '../step-visuals'
 import { ACTION_TONE, type Tone } from '../flow-layout'
 import {
   ACTION_LABELS,
   ACTION_TYPES,
   BLOCK_STEP_LABELS,
+  CALL_CONNECTOR_LABEL,
   COLLECT_BLOCK_KINDS,
   SEND_BLOCK_KINDS,
   type ActionType,
@@ -54,12 +55,24 @@ export function StepPalette({
     },
     { label: 'Wait', icon: ClockIcon, tone: 'amber', onSelect: () => onInsert('wait') },
   ]
-  const actions: PaletteItem[] = ACTION_TYPES.map((type) => ({
-    label: ACTION_LABELS[type],
-    icon: ACTION_ICONS[type],
-    tone: ACTION_TONE[type],
-    onSelect: () => onInsert('action', type),
-  }))
+  const actions: PaletteItem[] = [
+    ...ACTION_TYPES.map((type) => ({
+      label: ACTION_LABELS[type],
+      icon: ACTION_ICONS[type],
+      tone: ACTION_TONE[type],
+      onSelect: () => onInsert('action', type),
+    })),
+    // Not an ActionType (its own top-level node kind — workflow-graph.ts's
+    // TreeStep doc), so it isn't produced by the ACTION_TYPES map above; a
+    // hand-written entry alongside it, same as the Logic group's own
+    // hand-written items below. 'green' matches most of ACTION_TONE.
+    {
+      label: CALL_CONNECTOR_LABEL,
+      icon: CALL_CONNECTOR_ICON,
+      tone: 'green' as Tone,
+      onSelect: () => onInsert('call_connector'),
+    },
+  ]
 
   const q = query.trim().toLowerCase()
   const matches = (item: PaletteItem) => !q || item.label.toLowerCase().includes(q)

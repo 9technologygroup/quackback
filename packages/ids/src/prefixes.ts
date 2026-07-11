@@ -93,6 +93,7 @@ export const ID_PREFIXES = {
   workflow: 'workflow',
   workflow_run: 'workflow_run',
   workflow_run_event: 'workflow_run_event',
+  workflow_version: 'workflow_version',
 
   // Integrations
   integration: 'integration',

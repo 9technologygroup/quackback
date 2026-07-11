@@ -18,6 +18,11 @@ import {
   attributeFieldForKey,
   audienceUnreachableFieldWarning,
   BLOCK_STEP_LABELS,
+  callConnectorSummary,
+  CALL_CONNECTOR_FAILED_KEY,
+  CALL_CONNECTOR_SUCCESS_KEY,
+  MIN_CALL_CONNECTOR_TIMEOUT_MS,
+  MAX_CALL_CONNECTOR_TIMEOUT_MS,
   collectStepIssues,
   conditionSummary,
   conditionToDraft,
@@ -26,6 +31,7 @@ import {
   defaultRuleGroup,
   createStep,
   defaultAction,
+  deriveOutline,
   draftIssues,
   draftToCondition,
   draftToGraphJson,
@@ -38,6 +44,8 @@ import {
   isConditionField,
   isPersonAttributeField,
   isCompanyAttributeField,
+  isNeedsSetupRef,
+  NEEDS_SETUP_PREFIX,
   personAttributeFieldForKey,
   companyAttributeFieldForKey,
   toPersonCompanyAttributeFieldDefs,
@@ -49,6 +57,7 @@ import {
   toAttributeFieldDefs,
   treeToGraph,
   validateGraph,
+  type ConnectorMeta,
   type GraphAction,
   type GraphCondition,
   type RuleGroupDraft,
@@ -1895,6 +1904,326 @@ describe('conversational block kinds', () => {
           { type: 'paragraph', content: [{ type: 'text', text: '{email|}' }] },
         ],
       })
+    })
+  })
+})
+
+describe('call_connector node', () => {
+  it('round-trips: default (unlabeled) success edge + labeled "failed" edge', () => {
+    const tree: WorkflowTree = {
+      triggerId: 'trigger',
+      steps: [
+        {
+          id: 'cc-1',
+          kind: 'call_connector',
+          connectorId: 'data_connector_1',
+          params: { ticket_id: '{first_name|there}' },
+          paths: [
+            {
+              key: CALL_CONNECTOR_SUCCESS_KEY,
+              label: 'On success',
+              steps: [{ id: 'a1', kind: 'action', action: { type: 'close' } }],
+            },
+            {
+              key: CALL_CONNECTOR_FAILED_KEY,
+              label: 'On failure',
+              steps: [{ id: 'a2', kind: 'action', action: { type: 'assign_team', teamId: 't_1' } }],
+            },
+          ],
+        },
+      ],
+    }
+    const graph = treeToGraph(tree)
+    expect(workflowGraphSchema.safeParse(graph).success).toBe(true)
+    expect(graph.edges).toContainEqual({ from: 'cc-1', to: 'a1' })
+    expect(graph.edges).toContainEqual({
+      from: 'cc-1',
+      to: 'a2',
+      branch: CALL_CONNECTOR_FAILED_KEY,
+    })
+    expect(graph.nodes).toContainEqual({
+      id: 'cc-1',
+      type: 'call_connector',
+      connectorId: 'data_connector_1',
+      params: { ticket_id: '{first_name|there}' },
+      timeoutMs: undefined,
+    })
+    expect(graphToTree(graph)).toEqual({ ok: true, value: tree })
+  })
+
+  it('round-trips an optional timeoutMs', () => {
+    const tree: WorkflowTree = {
+      triggerId: 'trigger',
+      steps: [
+        {
+          id: 'cc-1',
+          kind: 'call_connector',
+          connectorId: 'data_connector_1',
+          params: {},
+          timeoutMs: 5000,
+          paths: [
+            { key: CALL_CONNECTOR_SUCCESS_KEY, label: 'On success', steps: [] },
+            { key: CALL_CONNECTOR_FAILED_KEY, label: 'On failure', steps: [] },
+          ],
+        },
+      ],
+    }
+    const graph = treeToGraph(tree)
+    expect(workflowGraphSchema.safeParse(graph).success).toBe(true)
+    const node = graph.nodes.find((n) => n.id === 'cc-1')
+    expect(node).toMatchObject({ timeoutMs: 5000 })
+    expect(graphToTree(graph)).toEqual({ ok: true, value: tree })
+  })
+
+  it('a server-authored graph with no failed edge still round-trips (the failed path is optional)', () => {
+    const graph: WorkflowGraphJson = {
+      nodes: [
+        { id: 'trigger', type: 'trigger' },
+        { id: 'cc-1', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+        { id: 'a1', type: 'action', action: { type: 'close' } },
+      ],
+      edges: [
+        { from: 'trigger', to: 'cc-1' },
+        { from: 'cc-1', to: 'a1' },
+      ],
+    }
+    const tree = graphToTree(graph)
+    expect(tree.ok).toBe(true)
+    if (!tree.ok) return
+    const step = tree.value.steps[0]
+    if (step?.kind !== 'call_connector') throw new Error('expected call_connector')
+    expect(step.paths.find((p) => p.key === CALL_CONNECTOR_FAILED_KEY)?.steps).toEqual([])
+  })
+
+  it('createStep seeds both paths, an empty connectorId/params, and no timeoutMs; round-trips; flagged by collectStepIssues (needs a connector)', () => {
+    const tree = newTree()
+    const step = createStep(tree, 'call_connector')
+    expect(step).toMatchObject({ kind: 'call_connector', connectorId: '', params: {} })
+    expect(step).not.toHaveProperty('timeoutMs')
+    const oneStepTree: WorkflowTree = { triggerId: 'trigger', steps: [step] }
+    expect(graphToTree(treeToGraph(oneStepTree))).toEqual({ ok: true, value: oneStepTree })
+    expect(collectStepIssues(oneStepTree).get(step.id)).toMatch(/Choose a connector/)
+  })
+
+  describe('validateGraph mirrors the server schema', () => {
+    const trigger = { id: 'trigger', type: 'trigger' } as const
+
+    it('rejects an empty connectorId', () => {
+      const graph = {
+        nodes: [trigger, { id: 'x', type: 'call_connector', connectorId: '', params: {} }],
+        edges: [{ from: 'trigger', to: 'x' }],
+      }
+      expect(workflowGraphSchema.safeParse(graph).success).toBe(false)
+      const result = validateGraph(graph)
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error).toMatch(/choose a connector/)
+    })
+
+    it('rejects a non-string params value', () => {
+      const graph = {
+        nodes: [
+          trigger,
+          {
+            id: 'x',
+            type: 'call_connector',
+            connectorId: 'data_connector_1',
+            params: { count: 5 },
+          },
+        ],
+        edges: [{ from: 'trigger', to: 'x' }],
+      }
+      expect(workflowGraphSchema.safeParse(graph).success).toBe(false)
+      expect(validateGraph(graph).ok).toBe(false)
+    })
+
+    it('rejects a timeoutMs out of bounds, accepts one at the bounds', () => {
+      const withTimeout = (timeoutMs: number) => ({
+        nodes: [
+          trigger,
+          {
+            id: 'x',
+            type: 'call_connector',
+            connectorId: 'data_connector_1',
+            params: {},
+            timeoutMs,
+          },
+        ],
+        edges: [{ from: 'trigger', to: 'x' }],
+      })
+      expect(
+        workflowGraphSchema.safeParse(withTimeout(MIN_CALL_CONNECTOR_TIMEOUT_MS)).success
+      ).toBe(true)
+      expect(validateGraph(withTimeout(MIN_CALL_CONNECTOR_TIMEOUT_MS)).ok).toBe(true)
+      expect(
+        workflowGraphSchema.safeParse(withTimeout(MAX_CALL_CONNECTOR_TIMEOUT_MS + 1)).success
+      ).toBe(false)
+      expect(validateGraph(withTimeout(MAX_CALL_CONNECTOR_TIMEOUT_MS + 1)).ok).toBe(false)
+    })
+
+    it('rejects an edge off a call_connector node for an undeclared branch key (only "failed" is declared)', () => {
+      const graph = {
+        nodes: [
+          trigger,
+          { id: 'x', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+          { id: 'y', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 'trigger', to: 'x' },
+          { from: 'x', to: 'y', branch: 'oops' },
+        ],
+      }
+      expect(workflowGraphSchema.safeParse(graph).success).toBe(false)
+      const result = validateGraph(graph)
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error).toMatch(/undeclared path/)
+    })
+
+    it('accepts the declared "failed" branch key and an unlabeled default edge', () => {
+      const graph = {
+        nodes: [
+          trigger,
+          { id: 'x', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+          { id: 'y', type: 'action', action: { type: 'close' } },
+          { id: 'z', type: 'action', action: { type: 'reopen' } },
+        ],
+        edges: [
+          { from: 'trigger', to: 'x' },
+          { from: 'x', to: 'y' },
+          { from: 'x', to: 'z', branch: CALL_CONNECTOR_FAILED_KEY },
+        ],
+      }
+      expect(workflowGraphSchema.safeParse(graph).success).toBe(true)
+      expect(validateGraph(graph).ok).toBe(true)
+    })
+  })
+
+  describe('collectStepIssues (Choose a connector / Map the required inputs)', () => {
+    it('flags an unset connectorId', () => {
+      const tree: WorkflowTree = {
+        triggerId: 'trigger',
+        steps: [{ id: 'cc', kind: 'call_connector', connectorId: '', params: {}, paths: [] }],
+      }
+      expect(collectStepIssues(tree).get('cc')).toMatch(/Choose a connector/)
+    })
+
+    it('a needs-setup-template connectorId also reads as unset', () => {
+      const tree: WorkflowTree = {
+        triggerId: 'trigger',
+        steps: [
+          {
+            id: 'cc',
+            kind: 'call_connector',
+            connectorId: `${NEEDS_SETUP_PREFIX}connector`,
+            params: {},
+            paths: [],
+          },
+        ],
+      }
+      expect(isNeedsSetupRef(`${NEEDS_SETUP_PREFIX}connector`)).toBe(true)
+      expect(collectStepIssues(tree).get('cc')).toMatch(/Choose a connector/)
+    })
+
+    it('flags a chosen connector with an unmapped required input', () => {
+      const tree: WorkflowTree = {
+        triggerId: 'trigger',
+        steps: [
+          {
+            id: 'cc',
+            kind: 'call_connector',
+            connectorId: 'data_connector_1',
+            params: {},
+            paths: [],
+          },
+        ],
+      }
+      const connectors = new Map<string, ConnectorMeta>([
+        ['data_connector_1', { requiredInputNames: ['ticket_id'] }],
+      ])
+      expect(collectStepIssues(tree, 'customer_facing', connectors).get('cc')).toMatch(
+        /Map the required inputs/
+      )
+    })
+
+    it('no issue once every required input has a non-blank mapping', () => {
+      const tree: WorkflowTree = {
+        triggerId: 'trigger',
+        steps: [
+          {
+            id: 'cc',
+            kind: 'call_connector',
+            connectorId: 'data_connector_1',
+            params: { ticket_id: '{conversation.id}' },
+            paths: [],
+          },
+        ],
+      }
+      const connectors = new Map<string, ConnectorMeta>([
+        ['data_connector_1', { requiredInputNames: ['ticket_id'] }],
+      ])
+      expect(collectStepIssues(tree, 'customer_facing', connectors).get('cc')).toBeUndefined()
+    })
+
+    it('no issue for a connector id absent from the supplied metadata map (nothing more to check)', () => {
+      const tree: WorkflowTree = {
+        triggerId: 'trigger',
+        steps: [
+          {
+            id: 'cc',
+            kind: 'call_connector',
+            connectorId: 'data_connector_unknown',
+            params: {},
+            paths: [],
+          },
+        ],
+      }
+      expect(collectStepIssues(tree, 'customer_facing', new Map()).get('cc')).toBeUndefined()
+    })
+
+    it('legal in a background workflow — NOT restricted like the PARKING_BLOCK_KINDS (its park is engine-internal, never externally resumed)', () => {
+      const tree: WorkflowTree = {
+        triggerId: 'trigger',
+        steps: [
+          {
+            id: 'cc',
+            kind: 'call_connector',
+            connectorId: 'data_connector_1',
+            params: {},
+            paths: [],
+          },
+        ],
+      }
+      expect(collectStepIssues(tree, 'background').get('cc')).toBeUndefined()
+    })
+  })
+
+  describe('callConnectorSummary / stepLabel', () => {
+    it('shows "not chosen yet" when unset, the connector name when set + known, and the outline reflects it', () => {
+      const unset: Extract<TreeStep, { kind: 'call_connector' }> = {
+        id: 'cc',
+        kind: 'call_connector',
+        connectorId: '',
+        params: {},
+        paths: [
+          { key: CALL_CONNECTOR_SUCCESS_KEY, label: 'On success', steps: [] },
+          { key: CALL_CONNECTOR_FAILED_KEY, label: 'On failure', steps: [] },
+        ],
+      }
+      expect(callConnectorSummary(unset)).toBe('Call … not chosen yet')
+
+      const set: Extract<TreeStep, { kind: 'call_connector' }> = {
+        ...unset,
+        connectorId: 'data_connector_1',
+      }
+      expect(callConnectorSummary(set, new Map([['data_connector_1', 'Zendesk lookup']]))).toBe(
+        'Call Zendesk lookup'
+      )
+
+      const tree: WorkflowTree = { triggerId: 'trigger', steps: [set] }
+      const outline = deriveOutline(tree, 'New conversation', new Map(), {
+        connectors: new Map([['data_connector_1', 'Zendesk lookup']]),
+      })
+      const row = outline.find((e) => 'id' in e && e.id === 'cc')
+      expect(row).toMatchObject({ label: 'Call Zendesk lookup' })
     })
   })
 })

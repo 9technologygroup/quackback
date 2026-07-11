@@ -161,6 +161,46 @@ export const workflowRunEvents = pgTable(
   ]
 )
 
+/**
+ * A saved snapshot of a workflow (support platform §4.6 version history +
+ * rollback). One row per meaningful save: written on create and on every
+ * update that actually changes name/triggerType/triggerSettings/graph — a
+ * no-op save (e.g. touching only sortOrder) writes nothing. This is
+ * intentionally NOT a full audit log: workflow.service.ts prunes each
+ * workflow down to its newest 50 versions after every insert, so it is a
+ * bounded "recent states this workflow has been saved in" list, not a
+ * permanent ledger. `created_by` is who made the save that produced this
+ * snapshot (null for a system-authored save or once the author is deleted).
+ */
+export const workflowVersions = pgTable(
+  'workflow_versions',
+  {
+    id: typeIdWithDefault('workflow_version')('id').primaryKey(),
+    workflowId: typeIdColumn('workflow')('workflow_id').notNull(),
+    name: text('name').notNull(),
+    triggerType: text('trigger_type').notNull(),
+    triggerSettings: jsonb('trigger_settings').$type<Record<string, unknown>>().notNull(),
+    graph: jsonb('graph').$type<Record<string, unknown>>().notNull(),
+    createdBy: typeIdColumnNullable('principal')('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: 'workflow_versions_workflow_id_fkey',
+      columns: [table.workflowId],
+      foreignColumns: [workflows.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'workflow_versions_created_by_fkey',
+      columns: [table.createdBy],
+      foreignColumns: [principal.id],
+    }).onDelete('set null'),
+    // The history sheet's hot read: a workflow's versions, newest first.
+    index('workflow_versions_workflow_created_idx').on(table.workflowId, table.createdAt.desc()),
+  ]
+)
+
 export type Workflow = typeof workflows.$inferSelect
 export type WorkflowRun = typeof workflowRuns.$inferSelect
 export type WorkflowRunEvent = typeof workflowRunEvents.$inferSelect
+export type WorkflowVersion = typeof workflowVersions.$inferSelect

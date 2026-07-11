@@ -34,6 +34,13 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
     Object.assign(Promise.resolve([{ id: 'workflow_1' }]), {
       returning: () => Promise.resolve([{ id: 'workflow_1' }]),
     })
+  // The version-history write path (workflow-versions.ts) this suite's
+  // updateWorkflow/createWorkflow now trigger also reads via select(...) —
+  // shares this mock's single liveRowQueue/counter (harmless: the "before"
+  // read this drains is reassigned wholesale before the next real
+  // hasAnyLiveWorkflow() read in every case below) and additionally chains
+  // .orderBy() (pruneWorkflowVersions' subquery) before .limit().
+  const limitResult = () => Promise.resolve(liveRowQueue.shift() ?? [])
   return {
     ...actual,
     db: {
@@ -42,7 +49,8 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
         return {
           from: vi.fn(() => ({
             where: vi.fn(() => ({
-              limit: vi.fn(() => Promise.resolve(liveRowQueue.shift() ?? [])),
+              limit: vi.fn(limitResult),
+              orderBy: vi.fn(() => ({ limit: vi.fn(limitResult) })),
             })),
           })),
         }
@@ -53,6 +61,9 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
         })),
       })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: whereResult })) })),
+      // pruneWorkflowVersions' cap-enforcement delete — argument unused, same
+      // as every other operation this scripted mock stubs rather than models.
+      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
     },
   }
 })
@@ -134,9 +145,14 @@ describe('hasAnyLiveWorkflow invalidation by liveness-changing mutations', () =>
     expect(gateQueryCount.n).toBe(1)
 
     await mutate()
+    // createWorkflow/updateWorkflow may issue their own incidental select(s)
+    // (the version-history write path's "before" read / retention-cap
+    // subquery) — irrelevant to what this test pins, so it snapshots the
+    // count AFTER the mutation rather than asserting an absolute value.
+    const afterMutate = gateQueryCount.n
 
     liveRowQueue = [[{ id: workflowId }]]
     expect(await hasAnyLiveWorkflow()).toBe(true)
-    expect(gateQueryCount.n).toBe(2) // the mutation cleared the cache
+    expect(gateQueryCount.n).toBe(afterMutate + 1) // the mutation cleared the cache
   })
 })

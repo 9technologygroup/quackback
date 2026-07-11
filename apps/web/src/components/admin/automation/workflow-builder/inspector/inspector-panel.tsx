@@ -7,11 +7,18 @@
  */
 import type { ComponentType } from 'react'
 import { BoltIcon, ClockIcon, FunnelIcon, PlusIcon, ShareIcon } from '@heroicons/react/24/outline'
-import { ACTION_ICONS, BLOCK_ICONS, GATE_TINT, STEP_TINT } from '../step-visuals'
+import {
+  ACTION_ICONS,
+  BLOCK_ICONS,
+  CALL_CONNECTOR_ICON,
+  GATE_TINT,
+  STEP_TINT,
+} from '../step-visuals'
 import type { BuilderSelection } from '../types'
 import type { TriggerSettingsDraft } from '../use-workflow-builder'
 import { ActionEditor } from './action-editor'
 import { BranchEditor } from './branch-editor'
+import { CallConnectorEditor } from './call-connector-editor'
 import { CollectDataEditor } from './collect-data-editor'
 import { CollectReplyEditor } from './collect-reply-editor'
 import { ConditionEditor } from './condition-editor'
@@ -26,6 +33,7 @@ import { WaitEditor } from './wait-editor'
 import {
   ACTION_LABELS,
   BLOCK_STEP_LABELS,
+  CALL_CONNECTOR_LABEL,
   describeInsertionContext,
   findStepById,
   type ActionType,
@@ -159,6 +167,27 @@ export function InspectorPanel({
             seconds={step.seconds}
             onChange={(seconds) => onUpdateStep((s) => (s.kind === 'wait' ? { ...s, seconds } : s))}
           />
+        </div>
+      </div>
+    )
+  }
+
+  if (step.kind === 'call_connector') {
+    return (
+      <div className="flex flex-1 flex-col overflow-y-auto">
+        <InspectorHeader
+          icon={CALL_CONNECTOR_ICON}
+          tint={STEP_TINT}
+          title={CALL_CONNECTOR_LABEL}
+          subtitle="Action"
+        />
+        <div className="space-y-2.5 p-3">
+          {issue && (
+            <p className="rounded-md bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-500">
+              {issue}
+            </p>
+          )}
+          <CallConnectorEditor step={step} onChange={(next) => onUpdateStep(() => next)} />
         </div>
       </div>
     )

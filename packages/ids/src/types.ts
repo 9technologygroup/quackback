@@ -232,6 +232,9 @@ export type WorkflowRunId = TypeId<'workflow_run'>
 /** Workflow run-event ID (§4.6) - e.g., workflow_run_event_01h455vb4pex5vsknk084sn02q */
 export type WorkflowRunEventId = TypeId<'workflow_run_event'>
 
+/** Workflow version (history/rollback) ID (§4.6) - e.g., workflow_version_01h455vb4pex5vsknk084sn02q */
+export type WorkflowVersionId = TypeId<'workflow_version'>
+
 /** Team ID - e.g., team_01h455vb4pex5vsknk084sn02q */
 export type TeamId = TypeId<'team'>
 
@@ -391,6 +394,7 @@ export interface EntityIdMap {
   workflow: WorkflowId
   workflow_run: WorkflowRunId
   workflow_run_event: WorkflowRunEventId
+  workflow_version: WorkflowVersionId
   team: TeamId
   team_member: TeamMemberId
   macro: MacroId

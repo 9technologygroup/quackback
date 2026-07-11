@@ -19,6 +19,8 @@ import { WorkflowBuilderCanvas } from './canvas'
 import { JsonPanel } from './json-panel'
 import { InspectorPanel } from './inspector/inspector-panel'
 import { useWorkflowBuilder } from './use-workflow-builder'
+import { VersionHistorySheet } from './version-history-sheet'
+import { PreviewPanel } from './preview-panel'
 import type { FrequencyCap, GraphCondition, SendWindow } from '../workflow-graph'
 
 export function WorkflowBuilder({ workflowId }: { workflowId: string }) {
@@ -76,6 +78,20 @@ function WorkflowBuilderShell({ workflow }: { workflow: WorkflowDTO }) {
         statusPending={b.statusPending}
         outlineCollapsed={b.outlineCollapsed}
         onToggleOutline={b.toggleOutline}
+        onOpenHistory={b.openHistorySheet}
+        onOpenPreview={b.openPreviewSheet}
+      />
+      <VersionHistorySheet
+        workflowId={workflow.id}
+        open={b.historySheetOpen}
+        onOpenChange={(open) => (open ? b.openHistorySheet() : b.closeHistorySheet())}
+        dirty={b.dirty}
+      />
+      <PreviewPanel
+        workflowId={workflow.id}
+        open={b.previewSheetOpen}
+        onOpenChange={(open) => (open ? b.openPreviewSheet() : b.closePreviewSheet())}
+        dirty={b.dirty}
       />
       <div className="flex min-h-0 flex-1">
         <OutlineRail

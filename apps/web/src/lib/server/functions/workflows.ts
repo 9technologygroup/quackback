@@ -9,7 +9,7 @@
  */
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
-import type { WorkflowId } from '@quackback/ids'
+import type { WorkflowId, WorkflowVersionId, ConversationId } from '@quackback/ids'
 import { requireAuth } from './auth-helpers'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { Workflow, WorkflowClass, WorkflowStatus } from '@/lib/server/db'
@@ -21,6 +21,18 @@ import {
   setWorkflowStatus,
   softDeleteWorkflow,
 } from '@/lib/server/domains/workflows/workflow.service'
+import {
+  listWorkflowVersions,
+  getWorkflowVersion,
+  type WorkflowVersionRow,
+} from '@/lib/server/domains/workflows/workflow-versions'
+import {
+  previewWorkflow,
+  type WorkflowPreviewResult,
+  type WorkflowPreviewTraceEntry,
+} from '@/lib/server/domains/workflows/workflow-preview'
+
+export type { WorkflowPreviewResult, WorkflowPreviewTraceEntry }
 import type { WorkflowGraph } from '@/lib/server/domains/workflows/graph'
 import {
   workflowGraphSchema,
@@ -135,7 +147,7 @@ export const createWorkflowFn = createServerFn({ method: 'POST' })
 export const updateWorkflowFn = createServerFn({ method: 'POST' })
   .validator(updateSchema)
   .handler(async ({ data }): Promise<WorkflowDTO> => {
-    await requireAuth({ permission: PERMISSIONS.WORKFLOW_MANAGE })
+    const ctx = await requireAuth({ permission: PERMISSIONS.WORKFLOW_MANAGE })
     // Class rule for parking blocks (Phase C, slice C-6): `class` is optional
     // on an update (a graph-only save doesn't necessarily touch it), so the
     // EFFECTIVE class a graph edit must be checked against is the incoming
@@ -164,14 +176,18 @@ export const updateWorkflowFn = createServerFn({ method: 'POST' })
       }
     }
     return serializeWorkflow(
-      await updateWorkflow(data.id as WorkflowId, {
-        name: data.name,
-        class: data.class,
-        triggerType: data.triggerType,
-        triggerSettings: data.triggerSettings,
-        graph: toGraph(data.graph),
-        sortOrder: data.sortOrder,
-      })
+      await updateWorkflow(
+        data.id as WorkflowId,
+        {
+          name: data.name,
+          class: data.class,
+          triggerType: data.triggerType,
+          triggerSettings: data.triggerSettings,
+          graph: toGraph(data.graph),
+          sortOrder: data.sortOrder,
+        },
+        ctx.principal.id
+      )
     )
   })
 
@@ -188,4 +204,135 @@ export const deleteWorkflowFn = createServerFn({ method: 'POST' })
     await requireAuth({ permission: PERMISSIONS.WORKFLOW_MANAGE })
     await softDeleteWorkflow(data.id as WorkflowId)
     return { id: data.id }
+  })
+
+// --- Version history + rollback (support platform §4.6 version history +
+// rollback) ---
+
+export interface WorkflowVersionDTO {
+  id: string
+  workflowId: string
+  name: string
+  triggerType: string
+  /** Node/edge counts derived from the snapshot's graph — cheap summary
+   *  fields for the history list, not the graph itself (the sheet only ever
+   *  shows a summary; restoring re-reads the full row server-side). */
+  nodeCount: number
+  edgeCount: number
+  createdBy: string | null
+  createdByName: string | null
+  createdAt: string
+}
+
+/** Node/edge counts off a stored (already-valid) graph shape, read
+ *  defensively like every other graph reader in this domain — a malformed
+ *  shape just counts as empty rather than throwing. */
+function graphCounts(graph: unknown): { nodeCount: number; edgeCount: number } {
+  const g = graph as { nodes?: unknown[]; edges?: unknown[] } | null
+  return {
+    nodeCount: Array.isArray(g?.nodes) ? g.nodes.length : 0,
+    edgeCount: Array.isArray(g?.edges) ? g.edges.length : 0,
+  }
+}
+
+function serializeWorkflowVersion(v: WorkflowVersionRow): WorkflowVersionDTO {
+  const { nodeCount, edgeCount } = graphCounts(v.graph)
+  return {
+    id: v.id,
+    workflowId: v.workflowId,
+    name: v.name,
+    triggerType: v.triggerType,
+    nodeCount,
+    edgeCount,
+    createdBy: v.createdBy,
+    createdByName: v.createdByName,
+    createdAt: v.createdAt.toISOString(),
+  }
+}
+
+const workflowIdOnlySchema = z.object({ workflowId: z.string() })
+
+/** A workflow's version history, newest first — the History sheet's list. */
+export const listWorkflowVersionsFn = createServerFn({ method: 'GET' })
+  .validator(workflowIdOnlySchema)
+  .handler(async ({ data }): Promise<WorkflowVersionDTO[]> => {
+    await requireAuth({ permission: PERMISSIONS.ROUTING_MANAGE })
+    const rows = await listWorkflowVersions(data.workflowId as WorkflowId)
+    return rows.map(serializeWorkflowVersion)
+  })
+
+const restoreWorkflowVersionSchema = z.object({
+  workflowId: z.string(),
+  versionId: z.string(),
+})
+
+/**
+ * Roll a workflow back to an older saved version: loads the snapshot and
+ * applies it via the SAME updateWorkflow path (and the same updateSchema +
+ * classRestrictedNodeIssue validation) an ordinary save runs, so a version
+ * whose shape predates a since-tightened schema is still caught rather than
+ * silently corrupting the live workflow. Only name/triggerType/
+ * triggerSettings/graph are restored — class, sortOrder, and (crucially)
+ * status are left exactly as they are today, so a restore never flips a
+ * live/paused/draft workflow's lifecycle state. The restore itself produces
+ * a fresh version row (an ordinary consequence of updateWorkflow), which is
+ * correct: it's a new state the workflow has now been saved in.
+ */
+export const restoreWorkflowVersionFn = createServerFn({ method: 'POST' })
+  .validator(restoreWorkflowVersionSchema)
+  .handler(async ({ data }): Promise<WorkflowDTO> => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.WORKFLOW_MANAGE })
+    const version = await getWorkflowVersion(data.versionId as WorkflowVersionId)
+    if (!version || (version.workflowId as string) !== data.workflowId) {
+      throw new Error('Workflow version not found')
+    }
+    const parsed = updateSchema.parse({
+      id: data.workflowId,
+      name: version.name,
+      triggerType: version.triggerType,
+      triggerSettings: version.triggerSettings,
+      graph: version.graph,
+    })
+    // Same class-restricted-node check updateWorkflowFn runs for a graph
+    // write — a restore never changes class, so the effective class is
+    // whatever the workflow is stored as today.
+    if (parsed.graph) {
+      const effectiveClass = (await getWorkflow(parsed.id as WorkflowId))?.class
+      if (effectiveClass) {
+        const issue = classRestrictedNodeIssue(parsed.graph, effectiveClass)
+        if (issue) throw new Error(issue)
+      }
+    }
+    return serializeWorkflow(
+      await updateWorkflow(
+        parsed.id as WorkflowId,
+        {
+          name: parsed.name,
+          triggerType: parsed.triggerType,
+          triggerSettings: parsed.triggerSettings,
+          graph: toGraph(parsed.graph),
+        },
+        ctx.principal.id
+      )
+    )
+  })
+
+// --- Dry-run preview (support platform §4.6 dry-run preview) ---
+
+const previewSchema = z.object({ workflowId: z.string(), conversationId: z.string() })
+
+/**
+ * Dry-run a workflow against a real conversation: read-only (routing.manage,
+ * same as every other read in this file), writes nothing. See
+ * workflow-preview.ts's previewWorkflow for the read-only guarantee and the
+ * trace it returns.
+ */
+export const previewWorkflowFn = createServerFn({ method: 'POST' })
+  .validator(previewSchema)
+  .handler(async ({ data }): Promise<WorkflowPreviewResult> => {
+    await requireAuth({ permission: PERMISSIONS.ROUTING_MANAGE })
+    return previewWorkflow({
+      workflowId: data.workflowId as WorkflowId,
+      conversationId: data.conversationId as ConversationId,
+    })
   })

@@ -8,6 +8,8 @@ import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
   ArrowLeftIcon,
+  BeakerIcon,
+  ClockIcon,
   CodeBracketIcon,
   ExclamationTriangleIcon,
   RectangleGroupIcon,
@@ -75,6 +77,8 @@ export function WorkflowBuilderTopBar({
   statusPending,
   outlineCollapsed,
   onToggleOutline,
+  onOpenHistory,
+  onOpenPreview,
 }: {
   name: string
   onChangeName: (v: string) => void
@@ -93,6 +97,10 @@ export function WorkflowBuilderTopBar({
   statusPending: boolean
   outlineCollapsed: boolean
   onToggleOutline: () => void
+  /** Opens the version history + rollback sheet (support platform §4.6). */
+  onOpenHistory: () => void
+  /** Opens the dry-run preview panel (support platform §4.6). */
+  onOpenPreview: () => void
 }) {
   const classMeta = WORKFLOW_CLASSES.find((c) => c.value === workflowClass)
 
@@ -172,6 +180,15 @@ export function WorkflowBuilderTopBar({
           <CodeBracketIcon className="size-3.5" /> JSON
         </button>
       </div>
+
+      <Button size="sm" variant="outline" onClick={onOpenHistory}>
+        <ClockIcon className="size-3.5" />
+        History
+      </Button>
+      <Button size="sm" variant="outline" onClick={onOpenPreview}>
+        <BeakerIcon className="size-3.5" />
+        Test
+      </Button>
 
       <span className="hidden text-xs text-muted-foreground sm:inline">
         {dirty ? 'Unsaved changes' : 'Saved'}

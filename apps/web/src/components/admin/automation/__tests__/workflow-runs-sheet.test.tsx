@@ -101,6 +101,35 @@ describe('humanizeRunEventKind', () => {
   it('round-trips an unrecognized kind verbatim rather than rendering blank', () => {
     expect(humanizeRunEventKind('some_future_kind')).toBe('some_future_kind')
   })
+
+  it('humanizes the call_connector park-and-continue loop event kinds', () => {
+    expect(humanizeRunEventKind('connector_result:success')).toBe('Connector call succeeded')
+    expect(humanizeRunEventKind('connector_hop_limit')).toBe('Stopped (connector hop limit)')
+  })
+
+  it('humanizes connector_failed:<reason> using a human reason, falling back to the raw reason', () => {
+    expect(humanizeRunEventKind('connector_failed:rate_limited')).toBe(
+      'Connector call failed (rate limited)'
+    )
+    expect(humanizeRunEventKind('connector_failed:host_not_allowed')).toBe(
+      'Connector call failed (blocked host)'
+    )
+    expect(humanizeRunEventKind('connector_failed:http_error')).toBe(
+      'Connector call failed (HTTP error)'
+    )
+    expect(humanizeRunEventKind('connector_failed:network_error')).toBe(
+      'Connector call failed (network error)'
+    )
+    expect(humanizeRunEventKind('connector_failed:unavailable')).toBe(
+      'Connector call failed (connector unavailable)'
+    )
+    expect(humanizeRunEventKind('connector_failed:invalid_params')).toBe(
+      'Connector call failed (invalid inputs)'
+    )
+    expect(humanizeRunEventKind('connector_failed:some_future_reason')).toBe(
+      'Connector call failed (some_future_reason)'
+    )
+  })
 })
 
 describe('WorkflowRunsSheet', () => {

@@ -18,6 +18,9 @@ import {
   MAX_WAIT_SECONDS,
   MAX_INACTIVITY_MINUTES,
   MAX_BREACH_LEAD_MINUTES,
+  MIN_CALL_CONNECTOR_TIMEOUT_MS,
+  MAX_CALL_CONNECTOR_TIMEOUT_MS,
+  CALL_CONNECTOR_FAILED_KEY,
   duplicateStepIdMessage,
   missingStepMessage,
   undeclaredBranchPathMessage,
@@ -762,6 +765,127 @@ describe('triggerSettingsSchema: breachLeadMinutes (sla.approaching_breach)', ()
     expect(
       triggerSettingsSchema.safeParse({ breachLeadMinutes: MAX_BREACH_LEAD_MINUTES + 1 }).success
     ).toBe(false)
+  })
+})
+
+describe('call_connector node', () => {
+  const graphWithConnector = (node: Record<string, unknown>) => ({
+    nodes: [
+      { id: 't', type: 'trigger' },
+      { id: 'cc', ...node },
+    ],
+    edges: [{ from: 't', to: 'cc' }],
+  })
+
+  it('accepts a minimal node (connectorId + empty params, no timeoutMs)', () => {
+    expect(
+      workflowGraphSchema.safeParse(
+        graphWithConnector({ type: 'call_connector', connectorId: 'data_connector_1', params: {} })
+      ).success
+    ).toBe(true)
+  })
+
+  it('accepts params mapping input names to template strings, and an in-bounds timeoutMs', () => {
+    expect(
+      workflowGraphSchema.safeParse(
+        graphWithConnector({
+          type: 'call_connector',
+          connectorId: 'data_connector_1',
+          params: { ticket_id: '{conversation.id}', note: '{first_name|there}' },
+          timeoutMs: 5000,
+        })
+      ).success
+    ).toBe(true)
+  })
+
+  it('rejects a missing/empty connectorId', () => {
+    expect(
+      workflowGraphSchema.safeParse(graphWithConnector({ type: 'call_connector', params: {} }))
+        .success
+    ).toBe(false)
+    expect(
+      workflowGraphSchema.safeParse(
+        graphWithConnector({ type: 'call_connector', connectorId: '', params: {} })
+      ).success
+    ).toBe(false)
+  })
+
+  it('rejects a params value that is not a string', () => {
+    expect(
+      workflowGraphSchema.safeParse(
+        graphWithConnector({
+          type: 'call_connector',
+          connectorId: 'data_connector_1',
+          params: { count: 5 },
+        })
+      ).success
+    ).toBe(false)
+  })
+
+  it('accepts timeoutMs exactly at the bounds, rejects one past either bound and a non-integer', () => {
+    const withTimeout = (timeoutMs: unknown) =>
+      graphWithConnector({
+        type: 'call_connector',
+        connectorId: 'data_connector_1',
+        params: {},
+        timeoutMs,
+      })
+    expect(workflowGraphSchema.safeParse(withTimeout(MIN_CALL_CONNECTOR_TIMEOUT_MS)).success).toBe(
+      true
+    )
+    expect(workflowGraphSchema.safeParse(withTimeout(MAX_CALL_CONNECTOR_TIMEOUT_MS)).success).toBe(
+      true
+    )
+    expect(
+      workflowGraphSchema.safeParse(withTimeout(MIN_CALL_CONNECTOR_TIMEOUT_MS - 1)).success
+    ).toBe(false)
+    expect(
+      workflowGraphSchema.safeParse(withTimeout(MAX_CALL_CONNECTOR_TIMEOUT_MS + 1)).success
+    ).toBe(false)
+    expect(workflowGraphSchema.safeParse(withTimeout(100.5)).success).toBe(false)
+  })
+
+  it('accepts a labeled edge with branch "failed", rejects any other branch key', () => {
+    const graph = {
+      nodes: [
+        { id: 't', type: 'trigger' },
+        { id: 'cc', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+        { id: 'a', type: 'action', action: { type: 'close' } },
+      ],
+      edges: [
+        { from: 't', to: 'cc' },
+        { from: 'cc', to: 'a', branch: CALL_CONNECTOR_FAILED_KEY },
+      ],
+    }
+    expect(workflowGraphSchema.safeParse(graph).success).toBe(true)
+
+    const badBranch = {
+      ...graph,
+      edges: [
+        { from: 't', to: 'cc' },
+        { from: 'cc', to: 'a', branch: 'oops' },
+      ],
+    }
+    const result = workflowGraphSchema.safeParse(badBranch)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe(undeclaredBranchPathMessage('cc', 'oops'))
+    }
+  })
+
+  it('accepts an unlabeled (default/success) edge off a call_connector node', () => {
+    const graph = {
+      nodes: [
+        { id: 't', type: 'trigger' },
+        { id: 'cc', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+        { id: 'a', type: 'action', action: { type: 'close' } },
+      ],
+      edges: [
+        { from: 't', to: 'cc' },
+        { from: 'cc', to: 'a' },
+      ],
+    }
+    expect(workflowGraphSchema.safeParse(graph).success).toBe(true)
   })
 })
 

@@ -182,6 +182,24 @@ export const MAX_ASSISTANT_STEP_INSTRUCTIONS = 2000
 const buttonOptionSchema = z.object({ key: z.string().min(1), label: z.string().min(1).max(80) })
 const attributeOptionSchema = z.object({ id: z.string().min(1), label: z.string().min(1) })
 
+/** Per-node timeout override bounds for `call_connector` — mirrors the
+ *  `data_connectors.timeout_ms` column's own CHECK (<= 30000); the floor of 1
+ *  just rules out a nonsensical/zero timeout, same rationale as every other
+ *  bounded-int field in this module (a typo reads as "broken", not
+ *  "unlimited"). See connector.execute.ts's executeConnector for how the
+ *  override is applied (wins over the connector's own configured timeout). */
+export const MIN_CALL_CONNECTOR_TIMEOUT_MS = 1
+export const MAX_CALL_CONNECTOR_TIMEOUT_MS = 30000
+
+/** The single labeled path a `call_connector` node may declare — mirrors
+ *  LET_ASSISTANT_ESCALATED_BRANCH's role in graph.ts: the R-8 branch-key
+ *  check below only ever declares this ONE key for a call_connector node, so
+ *  a labeled edge leaving one with any other key is rejected the same way an
+ *  undeclared branch-node key is. The success path is the unlabeled default
+ *  edge (not a declared key at all — same as let_assistant_answer's
+ *  "continue" path), never validated against this set. */
+export const CALL_CONNECTOR_FAILED_KEY = 'failed'
+
 const nodeSchema = z.discriminatedUnion('type', [
   z.object({ id: z.string().min(1), type: z.literal('trigger') }),
   z.object({ id: z.string().min(1), type: z.literal('action'), action: actionSchema }),
@@ -243,6 +261,24 @@ const nodeSchema = z.discriminatedUnion('type', [
     body: blockBodySchema,
     allowTypingInterrupt: z.boolean(),
     commentPrompt: z.string().max(200).optional(),
+  }),
+  // Calls an existing data connector mid-workflow — see graph.ts's module doc
+  // for why this is its own fourth park kind rather than a catalogue action.
+  // `params` values are plain `{key|fallback}` template strings (interpolated
+  // at execution, action.executor.ts's executeCallConnectorNode); the shape
+  // here doesn't know or care about the referenced connector's declared
+  // inputs (that's a live-data concern, checked at execution, not authoring).
+  z.object({
+    id: z.string().min(1),
+    type: z.literal('call_connector'),
+    connectorId: z.string().min(1),
+    params: z.record(z.string(), z.string()),
+    timeoutMs: z
+      .number()
+      .int()
+      .min(MIN_CALL_CONNECTOR_TIMEOUT_MS)
+      .max(MAX_CALL_CONNECTOR_TIMEOUT_MS)
+      .optional(),
   }),
 ])
 
@@ -314,6 +350,16 @@ export const workflowGraphSchema = z
     for (const node of graph.nodes) {
       if (node.type === 'branch') {
         branchKeysByNodeId.set(node.id, new Set(node.branches.map((b) => b.key)))
+      } else if (node.type === 'call_connector') {
+        // A call_connector node declares exactly ONE labeled path (the
+        // failed edge) — the success path is the unlabeled default edge, not
+        // a declared key. Mirrors let_assistant_answer's escalated-key
+        // declaration in the client's validateGraph (workflow-graph.ts),
+        // which this schema doesn't otherwise replicate for that kind (see
+        // CALIBRATION note above) — call_connector gets it here because an
+        // undeclared branch key on this node is unambiguously a mistake, not
+        // a shape the walker tolerates.
+        branchKeysByNodeId.set(node.id, new Set([CALL_CONNECTOR_FAILED_KEY]))
       }
     }
 

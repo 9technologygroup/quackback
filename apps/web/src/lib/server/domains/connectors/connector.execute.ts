@@ -15,7 +15,12 @@ import { incrementBucket } from '@/lib/server/utils/redis-rate-bucket'
 import { renderTemplate } from './connector.render'
 import { decryptConnectorSecret } from './connector.encryption'
 import { getConnectorRowForExecution, type ConnectorRow } from './connector.service'
-import type { ConnectorValues, ConnectorRuntimeContext, ConnectorExecutionResult, ConnectorAuthConfig } from './connector.types'
+import type {
+  ConnectorValues,
+  ConnectorRuntimeContext,
+  ConnectorExecutionResult,
+  ConnectorAuthConfig,
+} from './connector.types'
 
 export { getConnectorRowForExecution }
 
@@ -128,11 +133,19 @@ async function recordSuccess(id: DataConnectorId): Promise<void> {
  * short-circuit or a network failure, is a discriminated `ConnectorExecutionResult`.
  * Persists the circuit-breaker state (failure_count/status) on every non-rate-limited
  * outcome; callers needing a persisted response sample (testConnector) do that on top.
+ *
+ * `timeoutMsOverride` (optional): a per-call timeout that wins over the
+ * connector's own configured `timeoutMs` — the workflow `call_connector` node
+ * uses this for its own per-node override (workflow.schemas.ts bounds it
+ * 1..30000, same ceiling as the connector's own column). Omitted by every
+ * pre-existing caller (the assistant tool, testConnector), which keep using
+ * the connector's configured timeout unchanged.
  */
 export async function executeConnector(
   connector: ConnectorRow,
   values: ConnectorValues,
-  runtimeCtx: ConnectorRuntimeContext = {}
+  runtimeCtx: ConnectorRuntimeContext = {},
+  timeoutMsOverride?: number
 ): Promise<ConnectorExecutionResult> {
   const allValues: ConnectorValues = { ...values, ...builtinValues(runtimeCtx) }
 
@@ -181,7 +194,7 @@ export async function executeConnector(
       method: connector.method,
       headers,
       body,
-      timeoutMs: connector.timeoutMs,
+      timeoutMs: timeoutMsOverride ?? connector.timeoutMs,
     })
     const text = await res.text()
     if (!res.ok) {
@@ -191,7 +204,9 @@ export async function executeConnector(
     }
     await recordSuccess(connector.id)
     const parsed = parseBody(text)
-    const projected = connector.responsePaths?.length ? pickPaths(parsed, connector.responsePaths) : parsed
+    const projected = connector.responsePaths?.length
+      ? pickPaths(parsed, connector.responsePaths)
+      : parsed
     return { ok: true, status: res.status, data: truncateResponse(projected) as JsonValue }
   } catch (error) {
     const message =

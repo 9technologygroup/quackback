@@ -6,7 +6,7 @@
  * kinds' park-then-resume-at-self semantics.
  */
 import { describe, it, expect } from 'vitest'
-import { walkWorkflow, type WorkflowGraph } from '../graph'
+import { walkWorkflow, successorId, type WorkflowGraph } from '../graph'
 import type { ConditionContext, BlockAnswer, AssistantOutcome } from '../condition.evaluator'
 import { makeConditionContext } from './workflow-test-utils'
 
@@ -503,6 +503,86 @@ describe('walkWorkflow — conversational block kinds (Phase C, slice C-1)', () 
         status: 'completed',
         actions: [{ type: 'record_csat', rating: 3 }],
       })
+    })
+  })
+
+  describe('call_connector: parks with status "connector" (no ctx-based resume)', () => {
+    const graph: WorkflowGraph = {
+      nodes: [
+        { id: 't', type: 'trigger' },
+        { id: 'a1', type: 'action', action: { type: 'set_priority', priority: 'urgent' } },
+        {
+          id: 'cc',
+          type: 'call_connector',
+          connectorId: 'data_connector_1',
+          params: { ticket_id: '{first_name|there}' },
+        },
+        { id: 'a_ok', type: 'action', action: { type: 'close' } },
+        {
+          id: 'a_fail',
+          type: 'action',
+          action: { type: 'assign_team', teamId: 'team_x' as never },
+        },
+      ],
+      edges: [
+        { from: 't', to: 'a1' },
+        { from: 'a1', to: 'cc' },
+        { from: 'cc', to: 'a_ok' },
+        { from: 'cc', to: 'a_fail', branch: 'failed' },
+      ],
+    }
+
+    it('reached fresh: parks at status "connector" with nodeId, carrying every action collected BEFORE it', () => {
+      expect(walkWorkflow(graph, ctx())).toMatchObject({
+        status: 'connector',
+        nodeId: 'cc',
+        actions: [{ type: 'set_priority', priority: 'urgent' }],
+      })
+    })
+
+    it('never parks at itself again on a later walk — the engine re-walks from the RESOLVED SUCCESSOR, not from "cc"', () => {
+      // Success: walking from the default (unlabeled) successor picks up a_ok.
+      expect(walkWorkflow(graph, ctx(), 'a_ok')).toMatchObject({
+        status: 'completed',
+        actions: [{ type: 'close' }],
+      })
+      // Failure: walking from the 'failed' successor picks up a_fail.
+      expect(walkWorkflow(graph, ctx(), 'a_fail')).toMatchObject({
+        status: 'completed',
+        actions: [{ type: 'assign_team', teamId: 'team_x' }],
+      })
+    })
+
+    it('a fresh walk landing directly on a call_connector node (no prior actions) still parks, with an empty actions array', () => {
+      const bare: WorkflowGraph = {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          { id: 'cc', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+        ],
+        edges: [{ from: 't', to: 'cc' }],
+      }
+      expect(walkWorkflow(bare, ctx())).toMatchObject({
+        status: 'connector',
+        nodeId: 'cc',
+        actions: [],
+      })
+    })
+
+    it('no failed edge wired: successorId(graph, nodeId, "failed") resolves to undefined, same "missing successor" contract every other kind has', () => {
+      const noFailedEdge: WorkflowGraph = {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          { id: 'cc', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+          { id: 'a', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 't', to: 'cc' },
+          { from: 'cc', to: 'a' }, // only the success (unlabeled) edge is wired
+        ],
+      }
+      expect(walkWorkflow(noFailedEdge, ctx())).toMatchObject({ status: 'connector', nodeId: 'cc' })
+      expect(successorId(noFailedEdge, 'cc', 'failed')).toBeUndefined()
+      expect(successorId(noFailedEdge, 'cc', undefined)).toBe('a')
     })
   })
 })

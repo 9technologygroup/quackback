@@ -60,6 +60,7 @@ import type {
   ConversationTagId,
   SlaPolicyId,
   ConversationMessageId,
+  DataConnectorId,
 } from '@quackback/ids'
 import type {
   ConversationPriority,
@@ -68,7 +69,15 @@ import type {
   WorkflowBlockAttributeOption,
   Principal,
 } from '@/lib/server/db'
-import { INTERACTIVE_BLOCK_KINDS, CSAT_FACES } from '@/lib/server/db'
+import {
+  db,
+  eq,
+  conversations,
+  principal,
+  user,
+  INTERACTIVE_BLOCK_KINDS,
+  CSAT_FACES,
+} from '@/lib/server/db'
 import type { TiptapContent } from '@/lib/shared/db-types'
 import type { Actor } from '@/lib/server/policy/types'
 import type { ConversationAttributeSource } from '@/lib/shared/conversation/attribute-values'
@@ -79,9 +88,19 @@ import { applySlaToConversation } from '@/lib/server/domains/sla/sla.service'
 import { setConversationAttribute } from '@/lib/server/domains/conversation-attributes/set-attribute.service'
 import { ensureAssistantPrincipal } from '@/lib/server/domains/assistant/assistant.principal'
 import { resolveWorkflowVariables, type WorkflowVariables } from './workflow-variables'
-import { interpolateTiptapContent } from '@/lib/shared/workflows/interpolate'
+import { interpolate, interpolateTiptapContent } from '@/lib/shared/workflows/interpolate'
 import { tiptapJsonToText } from '@/lib/server/markdown-tiptap'
 import { logger } from '@/lib/server/logger'
+import { realEmail } from '@/lib/shared/anonymous-email'
+import {
+  executeConnector,
+  getConnectorRowForExecution,
+} from '@/lib/server/domains/connectors/connector.execute'
+import type {
+  ConnectorValues,
+  ConnectorRuntimeContext,
+} from '@/lib/server/domains/connectors/connector.types'
+import { NotFoundError } from '@/lib/shared/errors'
 
 const log = logger.child({ component: 'workflow-action-executor' })
 
@@ -430,4 +449,147 @@ export async function applyAction(
       return label('note added')
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// call_connector — NOT a WorkflowAction (see graph.ts's module doc: the
+// walker PARKS at this node rather than pushing an action for it), so this
+// isn't dispatched through applyAction above. workflow.engine.ts's
+// park-and-continue loop calls this directly once it has the node in hand.
+// ---------------------------------------------------------------------------
+
+/** Discriminates a `call_connector` outcome for the engine's routing
+ *  (success = the default edge, everything else = the labeled 'failed'
+ *  edge) and its run-event logging (`connector_result:success` /
+ *  `connector_failed:<reason>`). `unavailable` and `invalid_params` are
+ *  local additions on top of ConnectorExecutionResult's own reasons — this
+ *  function never lets a missing/disabled connector or a bad template
+ *  reach `executeConnector` at all. */
+export type CallConnectorReason =
+  | 'rate_limited'
+  | 'host_not_allowed'
+  | 'http_error'
+  | 'network_error'
+  | 'unavailable'
+  | 'invalid_params'
+
+export interface CallConnectorResult {
+  ok: boolean
+  reason?: CallConnectorReason
+}
+
+/** The subset of a `call_connector` graph node this function needs — kept as
+ *  a narrow structural type (rather than importing graph.ts's WorkflowNode)
+ *  so this module doesn't take on a dependency on the graph shape beyond
+ *  what it actually reads. */
+export interface CallConnectorSpec {
+  connectorId: string
+  params: Record<string, string>
+  timeoutMs?: number
+}
+
+const CALL_CONNECTOR_TIMEOUT_MS_MIN = 1
+const CALL_CONNECTOR_TIMEOUT_MS_MAX = 30000
+
+function clampTimeoutMs(ms: number | undefined): number | undefined {
+  if (ms === undefined) return undefined
+  return Math.min(CALL_CONNECTOR_TIMEOUT_MS_MAX, Math.max(CALL_CONNECTOR_TIMEOUT_MS_MIN, ms))
+}
+
+/**
+ * Resolve the connector call's OWN builtins ({customer.email} etc.) from the
+ * conversation's visitor — the same principal/user join
+ * connector.toolspec.ts's resolveRuntimeContext uses for the assistant-tool
+ * call path, replicated here (not imported) since that function isn't
+ * exported and a `call_connector` node always has a conversation (unlike the
+ * tool path's optional ticket-scoped turn, resolveRuntimeContext's `ctx.
+ * conversationId` can be absent there) — a simpler, workflow-only version. A
+ * lookup failure just means the two builtins render empty (never a reason to
+ * fail the call), same policy as the toolspec version.
+ */
+async function resolveConnectorRuntimeContextForConversation(
+  conversationId: ConversationId
+): Promise<ConnectorRuntimeContext> {
+  try {
+    const [row] = await db
+      .select({
+        displayName: principal.displayName,
+        contactEmail: principal.contactEmail,
+        userName: user.name,
+        userEmail: user.email,
+      })
+      .from(conversations)
+      .innerJoin(principal, eq(principal.id, conversations.visitorPrincipalId))
+      .leftJoin(user, eq(user.id, principal.userId))
+      .where(eq(conversations.id, conversationId))
+      .limit(1)
+    if (!row) return { conversationId }
+    return {
+      customerEmail: realEmail(row.userEmail ?? row.contactEmail),
+      customerName: row.userName ?? row.displayName ?? null,
+      conversationId,
+    }
+  } catch {
+    return { conversationId }
+  }
+}
+
+/**
+ * Execute a `call_connector` node: interpolate its authored `params`
+ * (workflow-variable `{key|fallback}` templates) against the conversation,
+ * coerce each to the connector's declared input type, then call the shared
+ * connector executor. Never throws — a missing/disabled connector or an
+ * unresolvable required input is reported as a normal `CallConnectorResult`,
+ * exactly like `executeConnector` itself never throws for a network/HTTP
+ * failure, so the engine's park-and-continue loop never needs a try/catch
+ * around this call.
+ */
+export async function executeCallConnectorNode(
+  conversationId: ConversationId,
+  spec: CallConnectorSpec
+): Promise<CallConnectorResult> {
+  let row: Awaited<ReturnType<typeof getConnectorRowForExecution>>
+  try {
+    row = await getConnectorRowForExecution(spec.connectorId as DataConnectorId)
+  } catch (err) {
+    if (!(err instanceof NotFoundError)) throw err
+    return { ok: false, reason: 'unavailable' }
+  }
+  // getConnectorRowForExecution doesn't gate on enabled/status (it's shared
+  // with the admin "test this connector" path, which must reach a disabled
+  // connector) — a workflow call must not fire a disabled/opted-out one.
+  if (!row.enabled || row.status !== 'active') {
+    return { ok: false, reason: 'unavailable' }
+  }
+
+  const variables = await resolveWorkflowVariables(conversationId)
+  const values: ConnectorValues = {}
+  for (const input of row.inputs) {
+    const template = spec.params[input.name] ?? ''
+    const resolved = interpolate(template, variables).trim()
+    if (!resolved) {
+      if (input.required) return { ok: false, reason: 'invalid_params' }
+      continue // an unresolved optional input is simply omitted (renders as '')
+    }
+    if (input.type === 'number') {
+      const n = Number(resolved)
+      if (Number.isNaN(n)) {
+        if (input.required) return { ok: false, reason: 'invalid_params' }
+        continue
+      }
+      values[input.name] = n
+    } else if (input.type === 'boolean') {
+      const lower = resolved.toLowerCase()
+      if (lower === 'true') values[input.name] = true
+      else if (lower === 'false') values[input.name] = false
+      else if (input.required) return { ok: false, reason: 'invalid_params' }
+    } else {
+      values[input.name] = resolved
+    }
+  }
+
+  const runtimeCtx = await resolveConnectorRuntimeContextForConversation(conversationId)
+  const result = await executeConnector(row, values, runtimeCtx, clampTimeoutMs(spec.timeoutMs))
+  if (result.ok) return { ok: true }
+  return { ok: false, reason: result.reason }
 }

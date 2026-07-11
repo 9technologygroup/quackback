@@ -14,6 +14,7 @@ import type { WorkflowClass, WorkflowStatus } from '@/lib/server/db'
 import type { WorkflowId, PrincipalId } from '@quackback/ids'
 import type { WorkflowGraph, WorkflowNode } from './graph'
 import { ATTRIBUTE_FIELD_PREFIX, type WorkflowCondition } from './condition.evaluator'
+import { writeWorkflowVersion, workflowVersionFieldsChanged } from './workflow-versions'
 
 export interface WorkflowInput {
   name: string
@@ -44,6 +45,9 @@ export async function createWorkflow(input: WorkflowInput): Promise<Workflow> {
     })
     .returning()
   invalidateHasLiveWorkflowCache()
+  // Version history (support platform §4.6 version history + rollback): the
+  // initial snapshot, authored by whoever created the workflow.
+  await writeWorkflowVersion(row, input.createdBy ?? null)
   return row
 }
 
@@ -64,10 +68,22 @@ export async function getWorkflow(id: WorkflowId): Promise<Workflow | null> {
   return row ?? null
 }
 
+/**
+ * Update a workflow. `versionAuthor` attributes the version snapshot this
+ * write may produce (support platform §4.6 version history + rollback) — the
+ * principal making the save, or null for a system-authored write (e.g. a
+ * migration/backfill). A version is only written when the patch actually
+ * changes name/triggerType/triggerSettings/graph (see
+ * workflowVersionFieldsChanged); a sortOrder-only drag-reorder or a
+ * class-only flip writes nothing, since neither is a new "state" worth
+ * restoring back to.
+ */
 export async function updateWorkflow(
   id: WorkflowId,
-  patch: Partial<Omit<WorkflowInput, 'createdBy'>>
+  patch: Partial<Omit<WorkflowInput, 'createdBy'>>,
+  versionAuthor?: PrincipalId | null
 ): Promise<Workflow> {
+  const before = await getWorkflow(id)
   const [row] = await db
     .update(workflows)
     .set({
@@ -82,6 +98,9 @@ export async function updateWorkflow(
     .where(and(eq(workflows.id, id), isNull(workflows.deletedAt)))
     .returning()
   invalidateHasLiveWorkflowCache()
+  if (row && before && workflowVersionFieldsChanged(before, row)) {
+    await writeWorkflowVersion(row, versionAuthor ?? null)
+  }
   return row
 }
 

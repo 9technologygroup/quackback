@@ -134,6 +134,7 @@ export type {
   WorkflowId,
   WorkflowRunId,
   WorkflowRunEventId,
+  WorkflowVersionId,
   // Feedback aggregation entities
   FeedbackSourceId,
   RawFeedbackItemId,
