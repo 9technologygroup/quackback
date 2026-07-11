@@ -41,30 +41,37 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
   // hasAnyLiveWorkflow() read in every case below) and additionally chains
   // .orderBy() (pruneWorkflowVersions' subquery) before .limit().
   const limitResult = () => Promise.resolve(liveRowQueue.shift() ?? [])
+  const dbMock: Record<string, unknown> = {
+    select: vi.fn(() => {
+      gateQueryCount.n++
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(limitResult),
+            orderBy: vi.fn(() => ({ limit: vi.fn(limitResult) })),
+          })),
+        })),
+      }
+    }),
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{ id: 'workflow_1' }])),
+      })),
+    })),
+    update: vi.fn(() => ({ set: vi.fn(() => ({ where: whereResult })) })),
+    // pruneWorkflowVersions' cap-enforcement delete — argument unused, same
+    // as every other operation this scripted mock stubs rather than models.
+    delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+  }
+  // updateWorkflow now wraps its update + version insert in one
+  // db.transaction (see workflow.service.ts) — the callback gets this same
+  // scripted object as `tx`, since every operation it calls is stubbed
+  // identically either way.
+  dbMock.transaction = vi.fn((cb: (tx: typeof dbMock) => unknown) => cb(dbMock))
+
   return {
     ...actual,
-    db: {
-      select: vi.fn(() => {
-        gateQueryCount.n++
-        return {
-          from: vi.fn(() => ({
-            where: vi.fn(() => ({
-              limit: vi.fn(limitResult),
-              orderBy: vi.fn(() => ({ limit: vi.fn(limitResult) })),
-            })),
-          })),
-        }
-      }),
-      insert: vi.fn(() => ({
-        values: vi.fn(() => ({
-          returning: vi.fn(() => Promise.resolve([{ id: 'workflow_1' }])),
-        })),
-      })),
-      update: vi.fn(() => ({ set: vi.fn(() => ({ where: whereResult })) })),
-      // pruneWorkflowVersions' cap-enforcement delete — argument unused, same
-      // as every other operation this scripted mock stubs rather than models.
-      delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
-    },
+    db: dbMock,
   }
 })
 

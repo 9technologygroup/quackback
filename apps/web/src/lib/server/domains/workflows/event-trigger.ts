@@ -9,13 +9,16 @@
  * conversation-keyed (WorkflowTrigger.conversationId is required), so these two
  * event types need an extra async step: dispatchWorkflowsForEvent's own ticket
  * branch below resolves the ticket's linked CUSTOMER conversation (one indexed
- * lookup — ticket_conversations' real primary key leads with ticket_id) BEFORE
- * calling eventToWorkflowTrigger, and passes the answer as `resolvedConversationId`.
- * No linked conversation -> the event maps to null (no dispatch). Since
- * eventToWorkflowTrigger itself stays synchronous (events/process.ts's own cheap
- * pre-filter calls it with no resolution info, purely to ask "could this event
- * type ever become a trigger" before enqueuing onto the durable dispatch queue —
- * see the ticket cases below for how that caller is kept working).
+ * lookup — ticket_conversations' real primary key leads with ticket_id, wrapped
+ * as resolveTicketConversationIdForDispatch — see its own doc for why
+ * ticket.created ALSO bounded-retries this lookup a few times before giving up)
+ * BEFORE calling eventToWorkflowTrigger, and passes the answer as
+ * `resolvedConversationId`. No linked conversation -> the event maps to null (no
+ * dispatch). Since eventToWorkflowTrigger itself stays synchronous
+ * (events/process.ts's own cheap pre-filter calls it with no resolution info,
+ * purely to ask "could this event type ever become a trigger" before enqueuing
+ * onto the durable dispatch queue — see the ticket cases below for how that
+ * caller is kept working).
  *
  * dispatchWorkflowsForEvent is invoked from the workflow-dispatch BullMQ job
  * (workflow-dispatch-queue.ts) rather than fire-and-forget straight off the
@@ -59,7 +62,8 @@ import { db, eq, and, ticketConversations } from '@/lib/server/db'
 import type { TicketStatusCategory } from '@/lib/shared/db-types'
 import type { BlockAnswer, AssistantOutcome } from './condition.evaluator'
 import { dispatchWorkflowTrigger, type WorkflowTrigger } from './dispatcher'
-import { interruptWaitingRuns, resumeWorkflowRun, logRunEvent } from './workflow.engine'
+import { interruptWaitingRuns, resumeWorkflowRun } from './workflow.engine'
+import { logRunEvent } from './workflow-run-events'
 import { findWaitingCustomerFacingRun, readMessageBlockReply } from './dispatcher.guards'
 import { readCursor } from './workflow-wait-queue'
 
@@ -94,6 +98,56 @@ async function resolveTicketConversationId(ticketId: string): Promise<Conversati
     )
     .limit(1)
   return (row?.conversationId as ConversationId | undefined) ?? null
+}
+
+/** ticket.created-only bounded re-poll (see dispatchWorkflowsForEvent's
+ *  ticket branch doc for why): up to 3 extra lookups, ~1.5s apart. */
+const TICKET_CREATED_LINK_POLL_ATTEMPTS = 3
+const TICKET_CREATED_LINK_POLL_MS = 1500
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * `resolveTicketConversationId`, plus — for `ticket.created` ONLY — a bounded
+ * inline re-poll when the first lookup comes back empty. `ticket.created` is
+ * emitted inside createTicketCore BEFORE its caller links the conversation
+ * (both the convert_to_ticket action and the inbox create-ticket dialog link
+ * the conversation AFTER the ticket row + its event already exist), so a
+ * dispatch landing on that first lookup routinely races the link and misses
+ * it for exactly the tickets a ticket.created workflow trigger exists to
+ * catch — a silent no-op with nothing in the timeline to explain it.
+ *
+ * Bounded inline polling (not a BullMQ throw-and-retry) was a deliberate
+ * choice: workflow-dispatch-queue.ts runs this queue at CONCURRENCY 1, so a
+ * short stall here only delays the NEXT dispatch job by the same ~4.5s a
+ * retry's backoff would cost anyway, at ticket-creation frequency that's
+ * cheap — while a thrown/retried job would mark genuinely-unlinked tickets
+ * (a back-office ticket with no customer conversation, e.g.) as FAILED jobs
+ * once retries exhaust, which is simply wrong for those. Reordering the
+ * event emit to fire after the link is not an option either: the portal's
+ * create-ticket dialog creates the ticket and links the conversation via two
+ * SEPARATE server functions, so there is no single call site to move the
+ * emit past.
+ *
+ * `ticket.status_changed` is unaffected — it fires well after a ticket
+ * already exists and is normally linked long before any status changes, so
+ * it keeps the original single, immediate lookup.
+ */
+async function resolveTicketConversationIdForDispatch(
+  eventType: 'ticket.created' | 'ticket.status_changed',
+  ticketId: string
+): Promise<ConversationId | null> {
+  const first = await resolveTicketConversationId(ticketId)
+  if (first || eventType !== 'ticket.created') return first
+
+  let conversationId: ConversationId | null = null
+  for (let attempt = 0; attempt < TICKET_CREATED_LINK_POLL_ATTEMPTS && !conversationId; attempt++) {
+    await delay(TICKET_CREATED_LINK_POLL_MS)
+    conversationId = await resolveTicketConversationId(ticketId)
+  }
+  return conversationId
 }
 
 /** Map an event to a workflow trigger, or null when it isn't conversation-scoped.
@@ -500,13 +554,18 @@ export async function dispatchWorkflowsForEvent(event: EventData): Promise<void>
   // ticket's linked customer conversation FIRST (the async step
   // eventToWorkflowTrigger itself can't do — see its doc), then hand the
   // resolved id to eventToWorkflowTrigger to build the real trigger. No
-  // linked conversation -> no dispatch. Ticket events never interrupt/resume
-  // anything (that machinery is keyed off message/close activity on the
-  // conversation side, not a ticket lifecycle event), so — like the
-  // unresponsive pair above — this dispatches straight through rather than
-  // falling into the interrupt-then-dispatch machinery below.
+  // linked conversation -> no dispatch (ticket.created bounded-retries this
+  // lookup first — see resolveTicketConversationIdForDispatch's doc for why).
+  // Ticket events never interrupt/resume anything (that machinery is keyed
+  // off message/close activity on the conversation side, not a ticket
+  // lifecycle event), so — like the unresponsive pair above — this
+  // dispatches straight through rather than falling into the
+  // interrupt-then-dispatch machinery below.
   if (event.type === 'ticket.created' || event.type === 'ticket.status_changed') {
-    const conversationId = await resolveTicketConversationId(event.data.ticket.id)
+    const conversationId = await resolveTicketConversationIdForDispatch(
+      event.type,
+      event.data.ticket.id
+    )
     if (!conversationId) return
     const trigger = eventToWorkflowTrigger(event, conversationId)
     if (!trigger) return // unreachable: a resolved conversationId always builds a trigger

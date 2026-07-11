@@ -41,6 +41,7 @@ import {
   sendWindowAllows,
   frequencyCapAllows,
   hasActiveCustomerFacingRun,
+  ticketStatusCategoryAllows,
 } from './dispatcher.guards'
 import {
   someConditionField,
@@ -216,25 +217,6 @@ export interface DispatchWorkflowTriggerOpts {
    * qualifies.
    */
   targetWorkflowId?: WorkflowId
-}
-
-/**
- * Whether `workflow`'s `triggerSettings.ticketStatusCategory` (ticket
- * triggers extension — workflow.schemas.ts's ticketStatusCategorySchema)
- * permits this dispatch. Only ever restricts `ticket.status_changed`; every
- * other trigger type (including the trigger's own OTHER ticket type,
- * ticket.created) always allows, same as channelAllows/audienceAllows'
- * "nothing configured, or not applicable -> allow" stance. Lives here rather
- * than dispatcher.guards.ts (which owns every other per-workflow filter)
- * because this one needs no DB/condition-context access — a pure read off
- * the trigger + the workflow's own stored settings, evaluated inline in both
- * loops below alongside the other pure pre-checks.
- */
-function ticketStatusCategoryAllows(workflow: Workflow, trigger: WorkflowTrigger): boolean {
-  if (trigger.triggerType !== 'ticket.status_changed') return true
-  const configured = workflow.triggerSettings.ticketStatusCategory
-  if (typeof configured !== 'string') return true // "Any status change" (unset)
-  return trigger.ticketStatusCategory === configured
 }
 
 export async function dispatchWorkflowTrigger(

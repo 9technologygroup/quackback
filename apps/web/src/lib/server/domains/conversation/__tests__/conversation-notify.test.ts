@@ -13,6 +13,13 @@ import type { Conversation } from '@/lib/server/db'
 // to a single-row visitor array.
 let teamRows: Array<Record<string, unknown>> = []
 let visitorRows: Array<Record<string, unknown>> = []
+// notifyCsatRequestEmail issues TWO sequential `.limit(1)` selects (the
+// conversation's channel/visitorPrincipalId, then the visitor row) — queued
+// FIFO so each gets its own result. Empty (the common case for every other
+// describe block below) falls back to `visitorRows`, so this is additive and
+// changes nothing for the pre-existing notifyAgentReply/notifyVisitorMessage
+// tests below.
+let limitQueue: Array<Record<string, unknown>[]> = []
 
 const isAnyAgentOnline = vi.fn<() => Promise<boolean>>()
 const isPrincipalOnline = vi.fn<(p: PrincipalId) => Promise<boolean>>()
@@ -22,6 +29,9 @@ const buildHookContext =
     () => Promise<{ workspaceName: string; portalBaseUrl: string; logoUrl: string | null } | null>
   >()
 const sendConversationMessageEmail = vi.fn<(opts: Record<string, unknown>) => Promise<unknown>>()
+const sendCsatRequestEmail = vi.fn<(opts: Record<string, unknown>) => Promise<unknown>>()
+const mintCsatEmailToken =
+  vi.fn<(conversationId: ConversationId, visitorPrincipalId: PrincipalId) => string>()
 
 vi.mock('@/lib/server/config', () => ({
   config: { s3PublicUrl: undefined, baseUrl: 'http://localhost:3000' },
@@ -45,6 +55,13 @@ vi.mock('@/lib/server/events/hook-context', () => ({
 vi.mock('@quackback/email', () => ({
   sendConversationMessageEmail: (...a: [Record<string, unknown>]) =>
     sendConversationMessageEmail(...a),
+  sendCsatRequestEmail: (...a: [Record<string, unknown>]) => sendCsatRequestEmail(...a),
+}))
+
+// notifyCsatRequestEmail's mint import (moved here from action.executor.ts —
+// see the module doc's CSAT-over-email paragraph).
+vi.mock('../csat-email-token', () => ({
+  mintCsatEmailToken: (...a: [ConversationId, PrincipalId]) => mintCsatEmailToken(...a),
 }))
 
 // Outbound-email persistence (threading map + channel identities). No-op here;
@@ -78,7 +95,7 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
     c.from = () => c
     c.leftJoin = () => c
     c.where = () => c
-    c.limit = async () => visitorRows
+    c.limit = async () => (limitQueue.length ? limitQueue.shift()! : visitorRows)
     c.then = (resolve: (v: unknown) => unknown) => resolve(teamRows)
     return c
   }
@@ -88,7 +105,11 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
   }
 })
 
-import { notifyVisitorMessage, notifyAgentReply } from '../conversation.notify'
+import {
+  notifyVisitorMessage,
+  notifyAgentReply,
+  notifyCsatRequestEmail,
+} from '../conversation.notify'
 import { generateContentHTML } from '@/lib/shared/content-html'
 
 const conversationId = 'conversation_1' as ConversationId
@@ -102,6 +123,7 @@ const ctx = {
 beforeEach(() => {
   teamRows = []
   visitorRows = []
+  limitQueue = []
   vi.clearAllMocks()
   // Silence the fire-and-forget warning logs.
   vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -344,6 +366,78 @@ describe('notifyAgentReply', () => {
 
       expect(sendConversationMessageEmail.mock.calls[0][0].replyTo).toBeUndefined()
     })
+  })
+})
+
+// CSAT-over-email (support platform's CSAT-over-email extension, moved here
+// from action.executor.ts — see this module's own doc on notifyCsatRequestEmail):
+// a request_csat block on an email-channel conversation also gets a dedicated
+// rating-request email, since the in-app emoji row is inert in an email client.
+describe('notifyCsatRequestEmail', () => {
+  const visitorPrincipalId = 'principal_visitor' as PrincipalId
+
+  it('does not send an email when the conversation channel is not email', async () => {
+    limitQueue = [[{ channel: 'messenger', visitorPrincipalId }]]
+
+    await notifyCsatRequestEmail(conversationId, 'How did we do?')
+
+    expect(sendCsatRequestEmail).not.toHaveBeenCalled()
+  })
+
+  it('does not send an email when the conversation has no visitor principal', async () => {
+    limitQueue = [[{ channel: 'email', visitorPrincipalId: null }]]
+
+    await notifyCsatRequestEmail(conversationId, 'How did we do?')
+
+    expect(sendCsatRequestEmail).not.toHaveBeenCalled()
+  })
+
+  it('does not send an email when the visitor has no deliverable recipient', async () => {
+    limitQueue = [
+      [{ channel: 'email', visitorPrincipalId }],
+      [{ type: 'anonymous', email: null, contactEmail: null }],
+    ]
+
+    await notifyCsatRequestEmail(conversationId, 'How did we do?')
+
+    expect(sendCsatRequestEmail).not.toHaveBeenCalled()
+  })
+
+  it('sends the CSAT-over-email request when the channel is email and the visitor is reachable', async () => {
+    limitQueue = [
+      [{ channel: 'email', visitorPrincipalId }],
+      [{ type: 'user', email: 'visitor@example.com', contactEmail: null }],
+    ]
+    mintCsatEmailToken.mockReturnValue('signed-token')
+    sendCsatRequestEmail.mockResolvedValue({ sent: true })
+
+    await notifyCsatRequestEmail(conversationId, 'How did we do?')
+
+    expect(mintCsatEmailToken).toHaveBeenCalledWith(conversationId, visitorPrincipalId)
+    expect(sendCsatRequestEmail).toHaveBeenCalledWith({
+      to: 'visitor@example.com',
+      promptText: 'How did we do?',
+      ratingUrls: [
+        'https://acme.example.com/csat?token=signed-token&rating=1',
+        'https://acme.example.com/csat?token=signed-token&rating=2',
+        'https://acme.example.com/csat?token=signed-token&rating=3',
+        'https://acme.example.com/csat?token=signed-token&rating=4',
+        'https://acme.example.com/csat?token=signed-token&rating=5',
+      ],
+      workspaceName: 'Acme',
+      logoUrl: undefined,
+    })
+  })
+
+  it('swallows a thrown dependency (does not reject) — best-effort, same as every other notify* function', async () => {
+    limitQueue = [
+      [{ channel: 'email', visitorPrincipalId }],
+      [{ type: 'user', email: 'visitor@example.com', contactEmail: null }],
+    ]
+    mintCsatEmailToken.mockReturnValue('signed-token')
+    sendCsatRequestEmail.mockRejectedValue(new Error('provider down'))
+
+    await expect(notifyCsatRequestEmail(conversationId, 'How did we do?')).resolves.toBeUndefined()
   })
 })
 

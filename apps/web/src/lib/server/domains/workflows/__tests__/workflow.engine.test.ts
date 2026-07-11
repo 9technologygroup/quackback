@@ -1346,6 +1346,70 @@ describe.skipIf(!fixture.available)('runWorkflow (real DB, rolled back)', () => 
       const [, callCtx] = applyAction.mock.calls[0]!
       expect(callCtx.resolvedBlockDeps).toBeUndefined()
     })
+
+    it('SF8: a TWO-HOP connector plan with a send_block on each hop still resolves the block deps exactly ONCE for the whole run', async () => {
+      vi.mocked(resolveWorkflowVariables).mockClear()
+      vi.mocked(ensureAssistantPrincipal).mockClear()
+      const conversationId = await seedConversation()
+      // Two connector hops, each preceded by its own message (send_block)
+      // node: m1 -> cc1 -success-> m2 -> cc2 -success-> close. Before this
+      // fix, each hop re-resolved variables/assistant from scratch even
+      // though neither ever changes mid-run.
+      const wf = await createWorkflow({
+        name: 'Two connector hops, message before each',
+        class: 'background',
+        triggerType: 'conversation.created',
+        graph: {
+          nodes: [
+            { id: 't', type: 'trigger' },
+            {
+              id: 'm1',
+              type: 'message',
+              body: { type: 'doc', content: [{ type: 'text', text: 'First' }] },
+            },
+            { id: 'cc1', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+            {
+              id: 'm2',
+              type: 'message',
+              body: { type: 'doc', content: [{ type: 'text', text: 'Second' }] },
+            },
+            { id: 'cc2', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+            { id: 'a', type: 'action', action: { type: 'close' } },
+          ],
+          edges: [
+            { from: 't', to: 'm1' },
+            { from: 'm1', to: 'cc1' },
+            { from: 'cc1', to: 'm2' },
+            { from: 'm2', to: 'cc2' },
+            { from: 'cc2', to: 'a' },
+          ],
+        } as WorkflowGraph,
+      })
+      await setWorkflowStatus(wf.id, 'live')
+
+      const run = await runWorkflow(wf, ctx(), { conversationId })
+      expect(run?.state).toBe('done')
+
+      expect(executeCallConnectorNode).toHaveBeenCalledTimes(2)
+      expect(resolveWorkflowVariables).toHaveBeenCalledTimes(1)
+      expect(ensureAssistantPrincipal).toHaveBeenCalledTimes(1)
+
+      // Both send_block actions (one per hop) received the same deps object.
+      const sendBlockCalls = applyAction.mock.calls.filter(
+        (c: unknown[]) => (c[0] as { type: string }).type === 'send_block'
+      )
+      expect(sendBlockCalls).toHaveLength(2)
+      expect(sendBlockCalls[0][1].resolvedBlockDeps).toBeDefined()
+      expect(sendBlockCalls[0][1].resolvedBlockDeps).toBe(sendBlockCalls[1][1].resolvedBlockDeps)
+
+      // Both connector calls reused the SAME already-resolved variables
+      // object as their third argument, rather than each resolving (or
+      // force-resolving) their own.
+      const variablesArgs = executeCallConnectorNode.mock.calls.map((c: unknown[]) => c[2])
+      expect(variablesArgs[0]).toBeDefined()
+      expect(variablesArgs[0]).toBe(variablesArgs[1])
+      expect(variablesArgs[0]).toBe(sendBlockCalls[0][1].resolvedBlockDeps.variables)
+    })
   })
 
   describe('let_assistant_answer parking (Phase C, slice C-6)', () => {
@@ -1780,11 +1844,18 @@ describe.skipIf(!fixture.available)('runWorkflow (real DB, rolled back)', () => 
       expect(applyAction.mock.calls[1][0]).toEqual({ type: 'close' })
 
       expect(executeCallConnectorNode).toHaveBeenCalledTimes(1)
-      expect(executeCallConnectorNode).toHaveBeenCalledWith(conversationId, {
-        connectorId: 'data_connector_1',
-        params: { ticket_id: '{first_name}' },
-        timeoutMs: undefined,
-      })
+      // Third arg (deps?.variables) is undefined here: this run's plan never
+      // has a send_block, so nothing ever resolved variables to reuse (see
+      // the memoized-deps engine test in the SF8 describe block below).
+      expect(executeCallConnectorNode).toHaveBeenCalledWith(
+        conversationId,
+        {
+          connectorId: 'data_connector_1',
+          params: { ticket_id: '{first_name}' },
+          timeoutMs: undefined,
+        },
+        undefined
+      )
 
       const events = await testDb
         .select()
@@ -1988,6 +2059,107 @@ describe.skipIf(!fixture.available)('runWorkflow (real DB, rolled back)', () => 
       // test above). Only the FINAL settle (-> 'completed') is guarded on
       // state = 'running' and is skipped: the run is already 'interrupted'
       // by the time that guarded update runs, so it affects zero rows.
+      expect(events.map((e) => e.kind).sort()).toEqual(['connector_result:success', 'started'])
+    })
+
+    it('a throw AFTER a connector call already committed a side effect settles "interrupted" with resume_failed_after_side_effects — never replays the committed call, never reverts to waiting', async () => {
+      executeCallConnectorNode.mockResolvedValue({ ok: true })
+      const conversationId = await seedConversation()
+      const wf = await createWorkflow({
+        name: 'wait, connector, message, connector',
+        class: 'background',
+        triggerType: 'conversation.created',
+        graph: {
+          nodes: [
+            { id: 't', type: 'trigger' },
+            { id: 'w', type: 'wait', seconds: 60 },
+            { id: 'cc1', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+            { id: 'msg', type: 'message', body: { type: 'doc', content: [] } },
+            { id: 'cc2', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+            { id: 'a_end', type: 'action', action: { type: 'close' } },
+          ],
+          edges: [
+            { from: 't', to: 'w' },
+            { from: 'w', to: 'cc1' },
+            { from: 'cc1', to: 'msg' },
+            { from: 'msg', to: 'cc2' },
+            { from: 'cc2', to: 'a_end' },
+          ],
+        } as WorkflowGraph,
+      })
+      await setWorkflowStatus(wf.id, 'live')
+      const waiting = await runWorkflow(wf, ctx(), { conversationId })
+      expect(waiting?.state).toBe('waiting')
+
+      // Hop 1 (cc1) succeeds and commits its external call. Routing then hits
+      // `msg`, a send_block action, which forces ensureDeps() to resolve
+      // before hop 2 (cc2) ever runs — a transient failure there (e.g. a DB
+      // blip) must not replay cc1's already-committed call on a BullMQ retry.
+      vi.mocked(resolveWorkflowVariables).mockRejectedValueOnce(new Error('transient hop2 blip'))
+
+      const resumed = await resumeWorkflowRun(waiting!.id)
+      expect(resumed?.state).toBe('interrupted')
+      // Exactly once: cc1 ran, cc2 never did.
+      expect(executeCallConnectorNode).toHaveBeenCalledTimes(1)
+
+      // Re-reading the row directly proves the run did NOT revert to
+      // 'waiting' at its original (pre-hop) cursor — the old catch-all
+      // behavior that would let a retry re-invoke cc1.
+      const [row] = await testDb.select().from(workflowRuns).where(eq(workflowRuns.id, waiting!.id))
+      expect(row.state).toBe('interrupted')
+
+      const events = await testDb
+        .select()
+        .from(workflowRunEvents)
+        .where(eq(workflowRunEvents.runId, waiting!.id))
+      expect(events.map((e) => e.kind).sort()).toEqual(
+        [
+          'started',
+          'waiting',
+          'connector_result:success',
+          'resume_failed_after_side_effects',
+        ].sort()
+      )
+    })
+
+    it('observes a mid-loop interrupt before firing hop 2: hop 2 never executes its connector call', async () => {
+      const conversationId = await seedConversation()
+      executeCallConnectorNode.mockImplementationOnce(async () => {
+        // Simulates a teammate close/reply landing between hop 1 and hop 2.
+        await interruptWaitingRuns(conversationId)
+        return { ok: true }
+      })
+      const wf = await createWorkflow({
+        name: 'two-hop connector chain',
+        class: 'background',
+        triggerType: 'conversation.created',
+        graph: {
+          nodes: [
+            { id: 't', type: 'trigger' },
+            { id: 'cc1', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+            { id: 'cc2', type: 'call_connector', connectorId: 'data_connector_1', params: {} },
+            { id: 'a_end', type: 'action', action: { type: 'close' } },
+          ],
+          edges: [
+            { from: 't', to: 'cc1' },
+            { from: 'cc1', to: 'cc2' },
+            { from: 'cc2', to: 'a_end' },
+          ],
+        } as WorkflowGraph,
+      })
+
+      const run = await runWorkflow(wf, ctx(), { conversationId })
+      expect(run?.state).toBe('interrupted')
+      // Only hop 1's call happened; hop 2's own call was never reached.
+      expect(executeCallConnectorNode).toHaveBeenCalledTimes(1)
+      expect(applyAction).not.toHaveBeenCalled() // a_end never ran either
+
+      const events = await testDb
+        .select()
+        .from(workflowRunEvents)
+        .where(eq(workflowRunEvents.runId, run!.id))
+      // Hop 1's own result is still logged (unconditional, same as any other
+      // per-hop event); nothing further — no hop 2 result, no completion.
       expect(events.map((e) => e.kind).sort()).toEqual(['connector_result:success', 'started'])
     })
   })

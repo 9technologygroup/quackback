@@ -12,16 +12,10 @@
 import type { JSONContent } from '@tiptap/react'
 import { PlusIcon } from '@heroicons/react/24/outline'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
-import { WORKFLOW_VARIABLE_CATALOGUE } from '@/lib/shared/workflows/message-variables'
 import { insertVariableToken, type BlockBody } from '../../workflow-graph'
 import { Field } from './shared'
+import { VariableInsertMenu } from './variable-insert-menu'
 
 export function BlockBodyField({
   label = 'Message',
@@ -49,26 +43,15 @@ export function BlockBodyField({
           />
         </div>
         <div className="flex items-center justify-between gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          <VariableInsertMenu
+            align="start"
+            onInsert={(key) => onChange(insertVariableToken(body, key))}
+            trigger={
               <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs">
                 <PlusIcon className="size-3.5" /> Insert variable
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              {WORKFLOW_VARIABLE_CATALOGUE.map((v) => (
-                <DropdownMenuItem
-                  key={v.key}
-                  onSelect={() => onChange(insertVariableToken(body, v.key))}
-                >
-                  {v.label}
-                  <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                    {`{${v.key}}`}
-                  </span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+            }
+          />
         </div>
         <p className="text-[11px] text-muted-foreground">
           Variables insert as <code className="font-mono">{'{token|fallback}'}</code> — edit the

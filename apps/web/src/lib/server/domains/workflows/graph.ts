@@ -32,6 +32,17 @@
  * reaches the node has no blockAnswer in scope), so the two cases can never
  * be confused.
  *
+ * Consume-once resume answers: `ctx.blockAnswer`/`ctx.assistantOutcome` are
+ * captured into a LOCAL at the top of `walkWorkflow` and cleared the instant
+ * the one node they target consumes them. A resume walk that routes past its
+ * target node can still reach a SECOND node of the same kind later in the
+ * same walk (e.g. two sequential `reply_buttons` steps) — without consume-
+ * once, that second node would see the same still-populated `ctx.blockAnswer`
+ * and wrongly treat itself as already answered, routing straight past it
+ * instead of parking to ask its own question. Once consumed, the local is
+ * nulled, so that second same-kind node always takes the fresh-visit park
+ * path, same as if this were a brand new walk.
+ *
  * `let_assistant_answer` (slice C-6) is its own third PARKING kind, alongside
  * the interactive ones above rather than a SEND kind as slice C-1 first had
  * it: reached fresh, it pushes the `let_assistant_answer` action (invokes
@@ -228,6 +239,12 @@ export function walkWorkflow(
   const actions: WorkflowAction[] = []
   const visited = new Set<string>()
   let node = startNode(graph, startNodeId)
+  // Consume-once locals — see the module doc's "Consume-once resume answers"
+  // paragraph. Read from `ctx` exactly once, here, then cleared by whichever
+  // case below actually consumes one, so a second node of the same kind
+  // later in this same walk never mistakes itself for already answered.
+  let blockAnswer = ctx.blockAnswer
+  let assistantOutcome = ctx.assistantOutcome
 
   for (let step = 0; step < MAX_STEPS && node; step++) {
     // A cycle (or a re-entered node) ends the path rather than looping forever.
@@ -281,15 +298,18 @@ export function walkWorkflow(
         break
 
       case 'let_assistant_answer': {
-        if (ctx.assistantOutcome) {
+        if (assistantOutcome) {
           // Resume: the outcome selects the edge — no message of its own, so
           // no send_block, just routing. No matching edge (an unwired
           // escalated path, or a stale graph edit) ends the path rather than
           // guessing, same contract as every other kind's resume above.
           nextId =
-            ctx.assistantOutcome === 'escalated'
+            assistantOutcome === 'escalated'
               ? successorId(graph, node.id, LET_ASSISTANT_ESCALATED_BRANCH)
               : successorId(graph, node.id)
+          // Consume-once: a second let_assistant_answer node reached later in
+          // this same walk must park fresh, not read this same outcome again.
+          assistantOutcome = undefined
           break
         }
         // Fresh: invoke Quinn's turn (out-of-band, same as before) and PARK —
@@ -314,12 +334,15 @@ export function walkWorkflow(
         break
 
       case 'reply_buttons': {
-        if (ctx.blockAnswer?.kind === 'buttons') {
+        if (blockAnswer?.kind === 'buttons') {
           // Resume: pick the outgoing edge whose branch equals the answered
           // buttonKey — the same branch-edge matching a `branch` node uses.
           // No matching edge (e.g. a stale graph edit) ends the path rather
           // than guessing.
-          nextId = successorId(graph, node.id, ctx.blockAnswer.buttonKey)
+          nextId = successorId(graph, node.id, blockAnswer.buttonKey)
+          // Consume-once: a second reply_buttons node later in this same walk
+          // must park fresh, not reroute on this same answer again.
+          blockAnswer = undefined
           break
         }
         actions.push({
@@ -343,16 +366,19 @@ export function walkWorkflow(
       }
 
       case 'collect_data': {
-        if (ctx.blockAnswer?.kind === 'collect') {
+        if (blockAnswer?.kind === 'collect') {
           // Resume: write the customer-sourced value then follow the single
           // successor (no branch-by-answer for a free-form collect).
           actions.push({
             type: 'set_attribute',
             key: node.attributeKey,
-            value: ctx.blockAnswer.value,
+            value: blockAnswer.value,
             src: 'customer',
           })
           nextId = successorId(graph, node.id)
+          // Consume-once: a second collect_data node later in this same walk
+          // must park fresh, not write this same answer again.
+          blockAnswer = undefined
           break
         }
         actions.push({
@@ -380,14 +406,17 @@ export function walkWorkflow(
       }
 
       case 'collect_reply': {
-        if (ctx.blockAnswer?.kind === 'collectReply') {
+        if (blockAnswer?.kind === 'collectReply') {
           actions.push({
             type: 'set_attribute',
             key: node.attributeKey,
-            value: ctx.blockAnswer.value,
+            value: blockAnswer.value,
             src: 'customer',
           })
           nextId = successorId(graph, node.id)
+          // Consume-once: a second collect_reply node later in this same walk
+          // must park fresh, not write this same answer again.
+          blockAnswer = undefined
           break
         }
         actions.push({
@@ -406,17 +435,20 @@ export function walkWorkflow(
       }
 
       case 'request_csat': {
-        if (ctx.blockAnswer?.kind === 'csat') {
+        if (blockAnswer?.kind === 'csat') {
           // Resume: record the rating (+ optional comment) then branch on
           // String(rating) — the same branch-edge matching a `branch` node
           // uses, keyed by the rating digit ("1".."5"). No matching edge ends
           // the path (the rating is still recorded either way).
           actions.push({
             type: 'record_csat',
-            rating: ctx.blockAnswer.rating,
-            comment: ctx.blockAnswer.comment,
+            rating: blockAnswer.rating,
+            comment: blockAnswer.comment,
           })
-          nextId = successorId(graph, node.id, String(ctx.blockAnswer.rating))
+          nextId = successorId(graph, node.id, String(blockAnswer.rating))
+          // Consume-once: a second request_csat node later in this same walk
+          // must park fresh, not record this same rating again.
+          blockAnswer = undefined
           break
         }
         actions.push({

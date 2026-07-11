@@ -1924,6 +1924,39 @@ describe('conversational block kinds', () => {
     })
   })
 
+  describe('draftIssues connector metadata threading', () => {
+    it('surfaces a call_connector step with an unmapped required input only when the connectors map is supplied', () => {
+      const tree: WorkflowTree = {
+        triggerId: 'trigger',
+        steps: [
+          {
+            id: 'cc',
+            kind: 'call_connector',
+            connectorId: 'data_connector_1',
+            params: {},
+            paths: [],
+          },
+        ],
+      }
+      const connectors = new Map<string, ConnectorMeta>([
+        ['data_connector_1', { requiredInputNames: ['ticket_id'] }],
+      ])
+
+      // Without connector metadata (the default empty map, same as every
+      // pre-existing draftIssues caller): nothing more to check, so this
+      // degrades gracefully to "no issue" — same as collectStepIssues' own
+      // default-empty-map contract.
+      const withoutMeta = draftIssues({ mode: 'visual', tree }, 'customer_facing')
+      expect(withoutMeta.count).toBe(0)
+
+      // With it (as use-workflow-builder.ts now threads through): the
+      // unmapped required input is a real "Set live" blocker.
+      const withMeta = draftIssues({ mode: 'visual', tree }, 'customer_facing', connectors)
+      expect(withMeta.count).toBeGreaterThan(0)
+      expect(withMeta.ids.has('cc')).toBe(true)
+    })
+  })
+
   describe('insertVariableToken', () => {
     it('appends a {key|} token to the last paragraph of a non-empty body', () => {
       const body = withBody('Hi')
@@ -2270,16 +2303,16 @@ describe('call_connector node', () => {
         ...unset,
         connectorId: 'data_connector_1',
       }
-      expect(callConnectorSummary(set, new Map([['data_connector_1', 'Zendesk lookup']]))).toBe(
-        'Call Zendesk lookup'
+      expect(callConnectorSummary(set, new Map([['data_connector_1', 'Acme CRM lookup']]))).toBe(
+        'Call Acme CRM lookup'
       )
 
       const tree: WorkflowTree = { triggerId: 'trigger', steps: [set] }
       const outline = deriveOutline(tree, 'New conversation', new Map(), {
-        connectors: new Map([['data_connector_1', 'Zendesk lookup']]),
+        connectors: new Map([['data_connector_1', 'Acme CRM lookup']]),
       })
       const row = outline.find((e) => 'id' in e && e.id === 'cc')
-      expect(row).toMatchObject({ label: 'Call Zendesk lookup' })
+      expect(row).toMatchObject({ label: 'Call Acme CRM lookup' })
     })
   })
 })

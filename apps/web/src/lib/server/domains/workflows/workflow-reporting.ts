@@ -13,9 +13,9 @@
  *
  * listWorkflowRuns / workflowRunTimeline (below) are the per-run drill-down a
  * failing workflow needs: workflow_run_events is written on every state
- * transition (workflow.engine.ts's logRunEvent) but had no read side until
- * now — the manager list only ever showed the trailing-7d started/completed
- * counts above.
+ * transition (workflow-run-events.ts's logRunEvent) but had no read side
+ * until now — the manager list only ever showed the trailing-7d
+ * started/completed counts above.
  */
 import {
   db,

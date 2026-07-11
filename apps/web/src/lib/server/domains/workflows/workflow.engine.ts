@@ -27,16 +27,13 @@ import {
   inArray,
   sql,
   workflowRuns,
-  workflowRunEvents,
   type Workflow,
   type WorkflowRun,
   type WorkflowRunState,
-  type Transaction,
 } from '@/lib/server/db'
 import type { ConversationId, PrincipalId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
 import { boundedServiceActor } from '@/lib/server/policy/service-actor'
-import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 import { isUniqueViolation } from '@/lib/server/utils'
 import { applyAction, executeCallConnectorNode, type ResolvedBlockDeps } from './action.executor'
@@ -45,6 +42,8 @@ import type { ConditionContext, BlockAnswer, AssistantOutcome } from './conditio
 import { getWorkflow } from './workflow.service'
 import { resolveConditionContext } from './condition.context'
 import { resolveWorkflowVariables } from './workflow-variables'
+import { logRunEvent } from './workflow-run-events'
+import { AUTOMATION_PERMISSIONS } from './workflow-actor-permissions'
 import { ensureAssistantPrincipal } from '@/lib/server/domains/assistant/assistant.principal'
 import {
   scheduleWorkflowResume,
@@ -58,8 +57,6 @@ import { getWorkflowAbandonedAutoCloseSettings } from '@/lib/server/domains/sett
 
 const log = logger.child({ component: 'workflow-engine' })
 
-type Executor = typeof db | Transaction
-
 /** Bounds the park-and-continue connector loop (applyPlanAndSettle) within a
  *  SINGLE engine invocation — a `call_connector` graph is storable with a
  *  cycle back through itself or another connector node (the authoring
@@ -69,23 +66,6 @@ type Executor = typeof db | Transaction
  *  this settles the run 'done' with a `connector_hop_limit` run event rather
  *  than looping unboundedly. */
 const MAX_CONNECTOR_HOPS = 20
-
-/**
- * The bounded authority a workflow acts with: exactly the support actions the v1
- * catalogue applies, named explicitly rather than inheriting the whole admin role
- * — so the ceiling stays intentional and can't silently widen as admin grows. A
- * workflow can act on conversations but nothing outside support.
- */
-const AUTOMATION_PERMISSIONS: ReadonlySet<PermissionKey> = new Set([
-  PERMISSIONS.CONVERSATION_VIEW,
-  PERMISSIONS.CONVERSATION_VIEW_ALL,
-  PERMISSIONS.CONVERSATION_REPLY, // the canActAsAgent gate every action passes
-  PERMISSIONS.CONVERSATION_ASSIGN,
-  PERMISSIONS.CONVERSATION_SET_STATUS,
-  PERMISSIONS.CONVERSATION_SET_TAGS,
-  PERMISSIONS.CONVERSATION_SET_ATTRIBUTES,
-  PERMISSIONS.SLA_MANAGE,
-])
 
 function workflowActor(): Actor {
   return boundedServiceActor(AUTOMATION_PERMISSIONS)
@@ -148,25 +128,6 @@ export async function settleRunning(
     .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.state, 'running')))
     .returning()
   return settled ?? null
-}
-
-/** Append to a run's timeline. Exported for the sweeper, which records its
- *  reconciliations (swept_stale, swept_rescheduled) the same way. `executor`
- *  defaults to `db`; runWorkflow passes its transaction so the 'started'
- *  event lands atomically with the run insert (see runWorkflow). */
-export async function logRunEvent(
-  runId: string,
-  workflowId: string,
-  subjectPrincipalId: PrincipalId | null,
-  kind: string,
-  executor: Executor = db
-): Promise<void> {
-  await executor.insert(workflowRunEvents).values({
-    runId: runId as WorkflowRun['id'],
-    workflowId: workflowId as Workflow['id'],
-    subjectPrincipalId,
-    kind,
-  })
 }
 
 export interface RunWorkflowOptions {
@@ -310,6 +271,32 @@ export async function runWorkflow(
  * crash mid-loop is recovered the same way any other stuck 'running' row is,
  * by the existing stale-running sweeper — not by a special connector-aware
  * resume path.
+ *
+ * Two more hop-loop safeguards, both scoped to hops AFTER the first
+ * connector call actually executes (a `connectorExecutedOnce` local, set
+ * right before that first invocation):
+ *
+ *  - No replay of a committed side effect: once a connector call has fired,
+ *    a throw anywhere later in the loop (e.g. a later hop's ensureDeps, a
+ *    logRunEvent write) is caught HERE rather than left to propagate to
+ *    resumeWorkflowRun's catch-all, which reverts the run to 'waiting' at
+ *    its ORIGINAL cursor — a BullMQ retry from there would re-walk from the
+ *    start and re-invoke that same non-idempotent external call. Instead the
+ *    run settles 'interrupted' (guarded settleRunning) with a
+ *    `resume_failed_after_side_effects` run event: partial execution + stop
+ *    beats replaying an external call. A throw BEFORE any connector call has
+ *    executed still rethrows — nothing side-effecting has happened yet, so
+ *    the existing revert-and-retry contract is safe.
+ *  - Mid-loop interrupt observation: at the top of every hop iteration after
+ *    the first, the run row's state is re-read (a cheap PK select). A
+ *    teammate close/reply can flip a 'running' row to 'interrupted' while
+ *    this loop is still firing HTTP calls (interruptWaitingRuns only touches
+ *    'running'/'waiting' rows, and this run IS 'running' for the loop's
+ *    entire duration) — without this check, every remaining hop's connector
+ *    call and actions would still fire even though the run is already done.
+ *    No longer 'running' here means the interrupt already settled the row;
+ *    the loop stops immediately, executing nothing further and settling
+ *    nothing again.
  */
 async function applyPlanAndSettle(
   run: WorkflowRun,
@@ -330,94 +317,150 @@ async function applyPlanAndSettle(
   // leaks into a LATER hop's input-wait cursor.
   let blockMessageId: string | null
   let connectorHops = 0
+  // See the doc comment above: set true right before the first connector
+  // call this invocation actually makes, and never reset. Gates whether a
+  // later throw in the loop rethrows (nothing side-effecting yet — safe to
+  // let resumeWorkflowRun revert-and-retry) or is caught here instead.
+  let connectorExecutedOnce = false
 
-  // Bounded by MAX_CONNECTOR_HOPS below; every non-connector status returns or breaks.
+  // Per-RUN resolution (SF8 perf fix), mirroring the resolve-once
+  // ConditionContext pattern the walk itself already uses: a plan with N
+  // chained send_block actions (message, then buttons, ...) previously paid
+  // ~3N queries (ensureAssistantPrincipal + resolveWorkflowVariables's own
+  // two reads, ALL re-run per action inside sendBlock) — and, before this
+  // memoization, once more per hop of a multi-hop connector plan even though
+  // the conversation's variables/assistant principal never change mid-run.
+  // Resolved at most ONCE across every hop, the first time a hop's plan
+  // actually has a send_block to feed (ensureDeps below); a run with no
+  // send_block anywhere pays nothing extra, same as before. A failure here
+  // propagates uncaught, same policy as resolveConditionContext's own reads:
+  // by the time a plan exists, this conversation is known to exist (the walk
+  // itself already required it), so a failure resolving these is a genuine
+  // error, not a normal "nothing to send".
+  let deps: ResolvedBlockDeps | undefined
+  async function ensureDeps(): Promise<ResolvedBlockDeps> {
+    if (!deps) {
+      const [variables, assistant] = await Promise.all([
+        resolveWorkflowVariables(conversationId),
+        ensureAssistantPrincipal(),
+      ])
+      deps = { variables, assistant }
+    }
+    return deps
+  }
+
+  // Bounded by MAX_CONNECTOR_HOPS below; every non-connector status returns or
+  // breaks. The whole iteration is wrapped in a try/catch (see the doc
+  // comment above): once connectorExecutedOnce flips true, a throw anywhere
+  // in here is caught and settles the run 'interrupted' instead of
+  // propagating to resumeWorkflowRun's revert-to-waiting catch-all.
   while (true) {
-    // Per-plan resolution (SF8 perf fix), mirroring the resolve-once
-    // ConditionContext pattern the walk itself already uses: a plan with N
-    // chained send_block actions (message, then buttons, ...) previously paid
-    // ~3N queries (ensureAssistantPrincipal + resolveWorkflowVariables's own
-    // two reads, ALL re-run per action inside sendBlock). Resolved once per
-    // hop, only when THIS hop's plan actually has a send_block to feed — a
-    // hop with none (the common case, and every plan before this feature
-    // existed) pays nothing extra. A failure here propagates uncaught, same
-    // policy as resolveConditionContext's own reads: by the time a plan
-    // exists, this conversation is known to exist (the walk itself already
-    // required it), so a failure resolving these is a genuine error, not a
-    // normal "nothing to send".
-    const resolvedBlockDeps: ResolvedBlockDeps | undefined = currentPlan.actions.some(
-      (a) => a.type === 'send_block'
-    )
-      ? await (async () => {
-          const [variables, assistant] = await Promise.all([
-            resolveWorkflowVariables(conversationId),
-            ensureAssistantPrincipal(),
-          ])
-          return { variables, assistant }
-        })()
-      : undefined
-    blockMessageId = null
-    for (const action of currentPlan.actions) {
-      try {
-        const actionActor =
-          action.type === 'record_csat'
-            ? visitorActor((ctx.conversation.visitorPrincipalId ?? null) as PrincipalId | null)
-            : actor
-        const result = await applyAction(action, {
-          conversationId,
-          actor: actionActor,
-          runId: run.id,
-          resolvedBlockDeps,
-        })
-        if (result.blockMessageId) blockMessageId = result.blockMessageId
-      } catch (err) {
-        log.error({ err, action: action.type, workflowId: workflow.id }, 'workflow action failed')
-        await logRunEvent(run.id, workflow.id, subjectPrincipalId, `action_failed:${action.type}`)
-      }
-    }
-
-    if (currentPlan.status !== 'connector') break
-
-    connectorHops++
-    if (connectorHops > MAX_CONNECTOR_HOPS) {
-      await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'connector_hop_limit')
-      const stopped = await settleRunning(run.id, { state: 'done', endedAt: new Date() })
-      return stopped ?? (await currentRun(run.id))
-    }
-
-    const nodeId = currentPlan.nodeId!
-    const node = graph.nodes.find((n) => n.id === nodeId)
-    // A missing node (a stale snapshot, a malformed edit) is treated the same
-    // as a disabled/deleted connector: 'unavailable', not a thrown error —
-    // executeCallConnectorNode's own contract never throws, so this branch
-    // shouldn't either.
-    const outcome =
-      node && node.type === 'call_connector'
-        ? await executeCallConnectorNode(conversationId, {
-            connectorId: node.connectorId,
-            params: node.params,
-            timeoutMs: node.timeoutMs,
+    try {
+      const resolvedBlockDeps: ResolvedBlockDeps | undefined = currentPlan.actions.some(
+        (a) => a.type === 'send_block'
+      )
+        ? await ensureDeps()
+        : undefined
+      blockMessageId = null
+      for (const action of currentPlan.actions) {
+        try {
+          const actionActor =
+            action.type === 'record_csat'
+              ? visitorActor((ctx.conversation.visitorPrincipalId ?? null) as PrincipalId | null)
+              : actor
+          const result = await applyAction(action, {
+            conversationId,
+            actor: actionActor,
+            runId: run.id,
+            workflowId: workflow.id,
+            subjectPrincipalId,
+            resolvedBlockDeps,
           })
-        : ({ ok: false, reason: 'unavailable' } as const)
+          if (result.blockMessageId) blockMessageId = result.blockMessageId
+        } catch (err) {
+          log.error({ err, action: action.type, workflowId: workflow.id }, 'workflow action failed')
+          await logRunEvent(run.id, workflow.id, subjectPrincipalId, `action_failed:${action.type}`)
+        }
+      }
 
-    await logRunEvent(
-      run.id,
-      workflow.id,
-      subjectPrincipalId,
-      outcome.ok ? 'connector_result:success' : `connector_failed:${outcome.reason}`
-    )
+      if (currentPlan.status !== 'connector') break
 
-    const nextId = successorId(graph, nodeId, outcome.ok ? undefined : 'failed')
-    if (!nextId) {
-      // No default edge on success, or no 'failed' edge on failure — same
-      // "missing successor ends the run" contract as every other node kind
-      // (graph.ts's walk loop falls off the end the same way).
-      const finished = await settleRunning(run.id, { state: 'done', endedAt: new Date() })
-      if (!finished) return currentRun(run.id)
-      await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'completed')
-      return finished
+      connectorHops++
+      if (connectorHops > MAX_CONNECTOR_HOPS) {
+        await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'connector_hop_limit')
+        const stopped = await settleRunning(run.id, { state: 'done', endedAt: new Date() })
+        return stopped ?? (await currentRun(run.id))
+      }
+
+      // Mid-loop interrupt observation (see the doc comment above): only from
+      // the SECOND connector hop onward — the first hop of this invocation
+      // has had no opportunity yet to race a fresh interrupt beyond what the
+      // caller (runWorkflow's insert / resumeWorkflowRun's claim) already
+      // guards.
+      if (connectorHops > 1) {
+        const fresh = await currentRun(run.id)
+        if (!fresh || fresh.state !== 'running') return fresh
+      }
+
+      const nodeId = currentPlan.nodeId!
+      const node = graph.nodes.find((n) => n.id === nodeId)
+      // Set right before the call this hop is about to make — see this
+      // function's connectorExecutedOnce doc comment above.
+      connectorExecutedOnce = true
+      // A missing node (a stale snapshot, a malformed edit) is treated the same
+      // as a disabled/deleted connector: 'unavailable', not a thrown error —
+      // executeCallConnectorNode's own contract never throws, so this branch
+      // shouldn't either. `deps?.variables` reuses an earlier hop's send_block
+      // resolution when one already paid for it in THIS run (see ensureDeps
+      // above) — deliberately not `await ensureDeps()` here, since a connector-
+      // only run (no send_block anywhere) should never force-resolve variables
+      // just to feed a hop that can resolve them itself.
+      const outcome =
+        node && node.type === 'call_connector'
+          ? await executeCallConnectorNode(
+              conversationId,
+              {
+                connectorId: node.connectorId,
+                params: node.params,
+                timeoutMs: node.timeoutMs,
+              },
+              deps?.variables
+            )
+          : ({ ok: false, reason: 'unavailable' } as const)
+
+      await logRunEvent(
+        run.id,
+        workflow.id,
+        subjectPrincipalId,
+        outcome.ok ? 'connector_result:success' : `connector_failed:${outcome.reason}`
+      )
+
+      const nextId = successorId(graph, nodeId, outcome.ok ? undefined : 'failed')
+      if (!nextId) {
+        // No default edge on success, or no 'failed' edge on failure — same
+        // "missing successor ends the run" contract as every other node kind
+        // (graph.ts's walk loop falls off the end the same way).
+        const finished = await settleRunning(run.id, { state: 'done', endedAt: new Date() })
+        if (!finished) return currentRun(run.id)
+        await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'completed')
+        return finished
+      }
+      currentPlan = walkWorkflow(graph, ctx, nextId)
+    } catch (err) {
+      if (!connectorExecutedOnce) throw err
+      // A connector call already committed an external side effect this
+      // invocation — see the doc comment above for why this must stop the
+      // run rather than let resumeWorkflowRun's catch-all revert it to
+      // 'waiting' at its original (pre-hop) cursor and risk a retry
+      // replaying that same non-idempotent call.
+      log.error(
+        { err, workflowId: workflow.id, runId: run.id },
+        'workflow resume failed after a connector call already committed a side effect; stopping the run instead of risking a replay'
+      )
+      await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'resume_failed_after_side_effects')
+      const interrupted = await settleRunning(run.id, { state: 'interrupted', endedAt: new Date() })
+      return interrupted ?? (await currentRun(run.id))
     }
-    currentPlan = walkWorkflow(graph, ctx, nextId)
   }
 
   if (

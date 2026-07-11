@@ -24,6 +24,25 @@ function workflowRow(page: Page, name: string) {
   return page.locator('.divide-y > div').filter({ hasText: name }).first()
 }
 
+/** Opens the "Create from template" gallery through the New-workflow split
+ *  button. The list is server-rendered before React hydrates, and hydration
+ *  can take double-digit seconds under a cold dev server, so the trigger
+ *  click is retried until the MENU is actually visible (a click on inert
+ *  pre-hydration HTML does nothing; a click on an already-open menu toggles
+ *  it closed and the next retry reopens it). Only then does it click the
+ *  menu item — expecting menu + item + dialog inside one short retry window,
+ *  as this originally did, deadlocks against slow hydration. */
+async function openTemplateGallery(page: Page) {
+  const galleryDialog = page.getByRole('dialog', { name: 'Create a new workflow' })
+  await expect(async () => {
+    await page.getByRole('button', { name: 'New workflow' }).click()
+    await expect(page.getByRole('menu')).toBeVisible({ timeout: 1500 })
+  }).toPass({ timeout: 30000 })
+  await page.getByRole('menuitem', { name: 'Create from template' }).click()
+  await expect(galleryDialog).toBeVisible({ timeout: 5000 })
+  return galleryDialog
+}
+
 /** Deletes every list row with this exact name via the row's own dropdown +
  *  confirm dialog. Used both as in-test cleanup and as the final assertion
  *  that deletion works end to end. Loops (rather than asserting a single
@@ -66,14 +85,7 @@ test.describe('Admin Workflows', { tag: '@smoke' }, () => {
   }) => {
     await page.goto('/admin/automation/workflows')
 
-    // The list is server-rendered before React hydrates, so the very first
-    // click on the split "New workflow" button can land on inert HTML.
-    const galleryDialog = page.getByRole('dialog', { name: 'Create a new workflow' })
-    await expect(async () => {
-      await page.getByRole('button', { name: 'New workflow' }).click()
-      await page.getByRole('menuitem', { name: 'Create from template' }).click({ timeout: 2000 })
-      await expect(galleryDialog).toBeVisible({ timeout: 2000 })
-    }).toPass({ timeout: 15000 })
+    const galleryDialog = await openTemplateGallery(page)
 
     // Category rail + template cards.
     await expect(galleryDialog.getByRole('button', { name: 'Popular' })).toBeVisible()
@@ -139,13 +151,7 @@ test.describe('Admin Workflows', { tag: '@smoke' }, () => {
   }) => {
     await page.goto('/admin/automation/workflows')
 
-    // Same hydration guard as the sibling test above.
-    const galleryDialog = page.getByRole('dialog', { name: 'Create a new workflow' })
-    await expect(async () => {
-      await page.getByRole('button', { name: 'New workflow' }).click()
-      await page.getByRole('menuitem', { name: 'Create from template' }).click({ timeout: 2000 })
-      await expect(galleryDialog).toBeVisible({ timeout: 2000 })
-    }).toPass({ timeout: 15000 })
+    const galleryDialog = await openTemplateGallery(page)
 
     // The hero template lives in the new "Customer facing" category (Phase C,
     // slice C-5) rather than "Popular", so switch the category rail first.

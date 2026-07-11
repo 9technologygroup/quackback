@@ -32,12 +32,15 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
 
 import {
   channelAllows,
+  ticketStatusCategoryAllows,
   audienceAllows,
   sendWindowAllows,
   frequencyCapAllows,
   claimFrequencyCapSlot,
   hasActiveCustomerFacingRun,
 } from '../dispatcher.guards'
+import type { WorkflowTrigger } from '../dispatcher'
+import type { TicketStatusCategory } from '@/lib/shared/db-types'
 import { makeConditionContext } from './workflow-test-utils'
 
 const fixture = await createDbTestFixture({
@@ -125,6 +128,47 @@ describe('channelAllows', () => {
 function workflowWithSettings(triggerSettings: Record<string, unknown>): Workflow {
   return { id: 'workflow_test', triggerSettings } as unknown as Workflow
 }
+
+function triggerWith(
+  triggerType: string,
+  ticketStatusCategory?: TicketStatusCategory | null
+): WorkflowTrigger {
+  return {
+    triggerType,
+    conversationId: 'conversation_test',
+    actorType: 'user',
+    ticketStatusCategory,
+  } as unknown as WorkflowTrigger
+}
+
+// Pure — no DB.
+describe('ticketStatusCategoryAllows', () => {
+  it('always allows a non-ticket.status_changed trigger, regardless of any configured category', () => {
+    const wf = workflowWithSettings({ ticketStatusCategory: 'closed' })
+    expect(ticketStatusCategoryAllows(wf, triggerWith('ticket.created'))).toBe(true)
+    expect(ticketStatusCategoryAllows(wf, triggerWith('conversation.created'))).toBe(true)
+  })
+
+  it('allows ticket.status_changed when no category is configured ("Any status change")', () => {
+    const wf = workflowWithSettings({})
+    expect(ticketStatusCategoryAllows(wf, triggerWith('ticket.status_changed', 'closed'))).toBe(
+      true
+    )
+  })
+
+  it("matches the configured category against the trigger's ENTERED category", () => {
+    const wf = workflowWithSettings({ ticketStatusCategory: 'closed' })
+    expect(ticketStatusCategoryAllows(wf, triggerWith('ticket.status_changed', 'closed'))).toBe(
+      true
+    )
+    expect(ticketStatusCategoryAllows(wf, triggerWith('ticket.status_changed', 'open'))).toBe(false)
+  })
+
+  it('blocks same-category churn (the trigger carries no entered category, i.e. null)', () => {
+    const wf = workflowWithSettings({ ticketStatusCategory: 'closed' })
+    expect(ticketStatusCategoryAllows(wf, triggerWith('ticket.status_changed', null))).toBe(false)
+  })
+})
 
 const baseCtx = makeConditionContext({
   conversation: {

@@ -347,7 +347,12 @@ export function WorkflowsManager() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => setGalleryOpen(true)}>
+              {/* Deferred one tick: opening a dialog synchronously from a
+                  dropdown's onSelect races the menu's own teardown — the
+                  dialog captures the menu's body pointer-events lock as its
+                  restore baseline, and closing it (or navigating away from
+                  it) then leaves the whole page unclickable. */}
+              <DropdownMenuItem onSelect={() => setTimeout(() => setGalleryOpen(true), 0)}>
                 <SparklesIcon className="mr-2 size-4 text-primary" />
                 Create from template
               </DropdownMenuItem>
@@ -570,7 +575,12 @@ function WorkflowRow({
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => onDelete(workflow)}>
+            {/* Same one-tick deferral as the gallery item above: the confirm
+                dialog must open after the menu's teardown, not during it. */}
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => setTimeout(() => onDelete(workflow), 0)}
+            >
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>

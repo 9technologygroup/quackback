@@ -1,12 +1,14 @@
 /**
  * Dispatcher guards (support platform §4.6, Slice 5d-ii): the checks the
- * dispatcher consults before starting a run — the trigger channel scope (pure,
- * no DB), the per-person frequency cap, and the customer_facing exclusive lock
- * (both DB reads) — plus the transaction-scoped frequency-cap claim
- * (claimFrequencyCapSlot) runWorkflow uses to make that cap race-proof under
- * concurrency. Kept out of the dispatcher/engine so the dispatcher's flow
- * (human gate, class split, first-match) unit-tests without a DB, and so the
- * advisory-lock key format has one owner instead of drifting between callers.
+ * dispatcher consults before starting a run — the trigger channel scope, the
+ * ticket-status-category scope, an audience condition, and a send window (all
+ * pure, no DB), the per-person frequency cap, and the customer_facing
+ * exclusive lock (both DB reads) — plus the transaction-scoped frequency-cap
+ * claim (claimFrequencyCapSlot) runWorkflow uses to make that cap race-proof
+ * under concurrency. Kept out of the dispatcher/engine so the dispatcher's
+ * flow (human gate, class split, first-match) unit-tests without a DB, and so
+ * the advisory-lock key format has one owner instead of drifting between
+ * callers.
  */
 import {
   db,
@@ -33,6 +35,10 @@ import {
   type WorkflowCondition,
 } from './condition.evaluator'
 import type { FrequencyCap, SendWindow } from './workflow.schemas'
+// Type-only: dispatcher.ts imports several guards from this module at
+// runtime, so a value-level import back the other way would cycle — a
+// `import type` is erased at compile time and creates no such cycle.
+import type { WorkflowTrigger } from './dispatcher'
 
 const log = logger.child({ component: 'workflow-dispatcher-guards' })
 
@@ -134,6 +140,24 @@ export function channelAllows(workflow: Workflow, channel: string | null | undef
   if (!Array.isArray(channels) || channels.length === 0) return true
   if (!channel) return true
   return channels.includes(channel)
+}
+
+/**
+ * Whether `workflow`'s `triggerSettings.ticketStatusCategory` (ticket
+ * triggers extension — workflow.schemas.ts's ticketStatusCategorySchema)
+ * permits this dispatch. Only ever restricts `ticket.status_changed`; every
+ * other trigger type (including the trigger's own OTHER ticket type,
+ * ticket.created) always allows, same as channelAllows/audienceAllows'
+ * "nothing configured, or not applicable -> allow" stance. Pure — no DB/
+ * condition-context access, just the trigger + the workflow's own stored
+ * settings — same as channelAllows above, so it lives alongside it rather
+ * than in the dispatcher itself.
+ */
+export function ticketStatusCategoryAllows(workflow: Workflow, trigger: WorkflowTrigger): boolean {
+  if (trigger.triggerType !== 'ticket.status_changed') return true
+  const configured = workflow.triggerSettings.ticketStatusCategory
+  if (typeof configured !== 'string') return true // "Any status change" (unset)
+  return trigger.ticketStatusCategory === configured
 }
 
 /** Workflow ids already logged for an unenforceable stored `audience` this

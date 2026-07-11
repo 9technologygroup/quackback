@@ -4,9 +4,11 @@
  * createWorkflow (the initial version) and updateWorkflow (only when the
  * patch actually changes name/triggerType/triggerSettings/graph, via
  * `workflowVersionFieldsChanged` below) are the only writers. Deliberately
- * bounded, not a permanent audit log: every insert prunes the workflow back
- * to its newest `MAX_WORKFLOW_VERSIONS` rows, so this reads as "recent states
- * this workflow has been saved in", not a full history.
+ * bounded, not a permanent audit log: every write is followed by a prune
+ * back to the workflow's newest `MAX_WORKFLOW_VERSIONS` rows (each call
+ * site's own best-effort call, made after its write commits — see
+ * writeWorkflowVersion's doc), so this reads as "recent states this workflow
+ * has been saved in", not a full history.
  *
  * A version snapshots the workflow's state AS SAVED (the row just written),
  * not the state before the edit — restoring an older version is then just
@@ -25,12 +27,18 @@ import {
   user,
   type Workflow,
   type WorkflowVersion,
+  type Transaction,
 } from '@/lib/server/db'
 import type { WorkflowId, PrincipalId, WorkflowVersionId } from '@quackback/ids'
 
 /** Retention cap: after every insert, a workflow is pruned back to its
  *  newest N versions (see pruneWorkflowVersions). */
 export const MAX_WORKFLOW_VERSIONS = 50
+
+/** Same Executor pattern as workflow-run-events.ts's logRunEvent: defaults to
+ *  `db`, but a caller already inside a transaction can pass its `tx` so the
+ *  version INSERT lands atomically with whatever else it's writing. */
+type Executor = typeof db | Transaction
 
 /** Recursively sort object keys so two jsonb values that are structurally
  *  equal but differ only in key order (e.g. after a round trip through
@@ -70,16 +78,25 @@ export function workflowVersionFieldsChanged(before: Workflow, after: Workflow):
 }
 
 /**
- * Snapshot `workflow`'s CURRENT persisted state as a new version row, then
- * prune back to the newest `MAX_WORKFLOW_VERSIONS` for that workflow.
+ * Snapshot `workflow`'s CURRENT persisted state as a new version row.
  * `createdBy` is who made the save that produced this state (null for a
- * system-authored write).
+ * system-authored write). `executor` (optional) lets a caller that just
+ * wrote the workflow row itself inside its own transaction pass that same
+ * `tx` here, so the version insert commits atomically with it rather than in
+ * a second round trip a crash could land between (see updateWorkflow) —
+ * defaults to `db` for a standalone caller (createWorkflow).
+ *
+ * Deliberately does NOT prune here anymore: pruning is a bounded best-effort
+ * cleanup, not something that needs (or should try to hold) the same
+ * transaction — see updateWorkflow's own prune call, made after its
+ * transaction commits.
  */
 export async function writeWorkflowVersion(
   workflow: Workflow,
-  createdBy: PrincipalId | null
+  createdBy: PrincipalId | null,
+  executor: Executor = db
 ): Promise<void> {
-  await db.insert(workflowVersions).values({
+  await executor.insert(workflowVersions).values({
     workflowId: workflow.id,
     name: workflow.name,
     triggerType: workflow.triggerType,
@@ -87,7 +104,6 @@ export async function writeWorkflowVersion(
     graph: workflow.graph,
     createdBy,
   })
-  await pruneWorkflowVersions(workflow.id)
 }
 
 /**

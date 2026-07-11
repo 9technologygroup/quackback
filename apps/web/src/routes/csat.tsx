@@ -1,8 +1,21 @@
+/**
+ * Public CSAT-over-email landing page. The emailed links carry
+ * `?token=...&rating=N`; the loader only VALIDATES the token (read-only) and
+ * the page renders the five faces with the linked rating preselected — the
+ * rating is recorded exclusively on an in-page face click. Recording on page
+ * load would let corporate mail scanners (which prefetch every link in an
+ * email) silently submit and latest-wins-overwrite ratings, so the human
+ * click is the write signal, exactly like the widget's own CSAT block.
+ */
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { z } from 'zod'
 import { CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/solid'
-import { recordCsatViaTokenFn, type CsatEmailResult } from '@/lib/server/functions/csat-email'
+import { recordCsatViaTokenFn, validateCsatEmailTokenFn } from '@/lib/server/functions/csat-email'
+import { CSAT_FACES } from '@/lib/shared/db-types'
+import { cn } from '@/lib/shared/utils'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
 
 const searchSchema = z.object({
   token: z.string().optional(),
@@ -13,18 +26,15 @@ const searchSchema = z.object({
   rating: z.string().optional(),
 })
 
-type CsatLoaderResult = CsatEmailResult | { success: false; error: 'missing' | 'invalid' }
+type CsatLoaderResult = { ok: true } | { ok: false; error: 'missing' | 'invalid' }
 
 export const Route = createFileRoute('/csat')({
   validateSearch: searchSchema,
-  loaderDeps: ({ search }) => ({ token: search.token, rating: search.rating }),
+  loaderDeps: ({ search }) => ({ token: search.token }),
   loader: async ({ deps }): Promise<CsatLoaderResult> => {
-    if (!deps.token || !deps.rating) return { success: false, error: 'missing' }
-    const rating = Number(deps.rating)
-    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-      return { success: false, error: 'invalid' }
-    }
-    return recordCsatViaTokenFn({ data: { token: deps.token, rating } })
+    if (!deps.token) return { ok: false, error: 'missing' }
+    const { valid } = await validateCsatEmailTokenFn({ data: { token: deps.token } })
+    return valid ? { ok: true } : { ok: false, error: 'invalid' }
   },
   component: CsatPage,
 })
@@ -33,39 +43,54 @@ function CsatPage() {
   const result = Route.useLoaderData()
   const { token, rating } = Route.useSearch()
 
-  if (result.success) {
-    return <ThanksView token={token} rating={rating ? Number(rating) : undefined} />
-  }
-  return <ErrorView error={result.error} />
+  if (!result.ok) return <ErrorView error={result.error} />
+  return <RateView token={token!} linkedRating={rating ? Number(rating) : undefined} />
 }
 
-/** The thanks state, with an optional follow-up comment box — submits through
- *  the SAME token-validated fn (recordCsat's latest-wins path already covers
- *  a rating-then-comment follow-up, same as the widget's own two-POST CSAT
- *  flow). */
-function ThanksView({ token, rating }: { token?: string; rating?: number }) {
+/** The rate-then-thank flow: faces first (linked rating preselected but NOT
+ *  recorded), a face click records, then the thanks state offers an optional
+ *  comment through the same token-validated fn (recordCsat's latest-wins path
+ *  covers the rating-then-comment follow-up, same as the widget's own
+ *  two-POST CSAT flow). */
+function RateView({ token, linkedRating }: { token: string; linkedRating?: number }) {
+  const preselected =
+    linkedRating && Number.isInteger(linkedRating) && linkedRating >= 1 && linkedRating <= 5
+      ? linkedRating
+      : undefined
+  const [recorded, setRecorded] = useState<number | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [rateError, setRateError] = useState(false)
   const [comment, setComment] = useState('')
   const [commentSaved, setCommentSaved] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(false)
+  const [commentError, setCommentError] = useState(false)
 
-  const canComment = Boolean(token && rating)
+  const rate = async (rating: number) => {
+    if (submitting) return
+    setSubmitting(true)
+    setRateError(false)
+    try {
+      const result = await recordCsatViaTokenFn({ data: { token, rating } })
+      if (result.success) setRecorded(rating)
+      else setRateError(true)
+    } catch {
+      setRateError(true)
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   const submitComment = async () => {
-    if (!token || !rating || !comment.trim() || submitting) return
+    if (!recorded || !comment.trim() || submitting) return
     setSubmitting(true)
-    setError(false)
+    setCommentError(false)
     try {
       const result = await recordCsatViaTokenFn({
-        data: { token, rating, comment: comment.trim() },
+        data: { token, rating: recorded, comment: comment.trim() },
       })
-      if (result.success) {
-        setCommentSaved(true)
-      } else {
-        setError(true)
-      }
+      if (result.success) setCommentSaved(true)
+      else setCommentError(true)
     } catch {
-      setError(true)
+      setCommentError(true)
     } finally {
       setSubmitting(false)
     }
@@ -74,47 +99,82 @@ function ThanksView({ token, rating }: { token?: string; rating?: number }) {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center p-4 bg-background">
       <div className="w-full max-w-md space-y-6">
-        <div className="flex justify-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
-            <CheckCircleIcon className="h-8 w-8 text-green-600 dark:text-green-400" />
+        {recorded && (
+          <div className="flex justify-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
+              <CheckCircleIcon className="h-8 w-8 text-green-600 dark:text-green-400" />
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="text-center space-y-2">
-          <h1 className="text-xl font-semibold text-foreground">Thanks for the feedback</h1>
-          <p className="text-sm text-muted-foreground">Your rating has been recorded.</p>
+          <h1 className="text-xl font-semibold text-foreground">
+            {recorded ? 'Thanks for the feedback' : 'How did we do?'}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {recorded ? 'Your rating has been recorded.' : 'Tap a face to confirm your rating.'}
+          </p>
         </div>
 
-        {canComment && !commentSaved && (
+        {!recorded && (
           <div className="space-y-2">
-            <textarea
+            <div className="flex justify-center gap-3">
+              {CSAT_FACES.map((face, i) => {
+                const rating = i + 1
+                return (
+                  <button
+                    key={rating}
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => rate(rating)}
+                    aria-label={`Rate ${rating} of 5`}
+                    className={cn(
+                      'flex h-12 w-12 items-center justify-center rounded-full text-2xl transition-transform hover:scale-110 disabled:opacity-40',
+                      preselected === rating ? 'bg-primary/10 ring-2 ring-ring' : 'hover:bg-muted'
+                    )}
+                  >
+                    {face}
+                  </button>
+                )
+              })}
+            </div>
+            {rateError && (
+              <p className="text-center text-sm text-red-600 dark:text-red-400">
+                Something went wrong. Please try again.
+              </p>
+            )}
+          </div>
+        )}
+
+        {recorded && !commentSaved && (
+          <div className="space-y-2">
+            <Textarea
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               maxLength={2000}
               placeholder="Anything you'd like to add? (optional)"
-              className="min-h-24 w-full rounded-lg border border-input bg-background p-3 text-sm text-foreground placeholder:text-muted-foreground"
+              className="min-h-24"
             />
-            {error && (
+            {commentError && (
               <p className="text-center text-sm text-red-600 dark:text-red-400">
-                Something went wrong — please try again.
+                Something went wrong. Please try again.
               </p>
             )}
             <div className="flex justify-center">
-              <button
+              <Button
                 type="button"
                 onClick={submitComment}
                 disabled={!comment.trim() || submitting}
-                className="inline-flex items-center justify-center rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
               >
                 {submitting ? 'Sending…' : 'Send comment'}
-              </button>
+              </Button>
             </div>
           </div>
         )}
 
         {commentSaved && (
           <p className="text-center text-sm text-muted-foreground">
-            Thanks — your comment has been added.
+            Thanks, your comment has been added.
           </p>
         )}
       </div>

@@ -7,9 +7,12 @@ import { typography, colors } from './shared-styles'
  * (packages/db/src/types.ts) and the widget's block-affordance.tsx rendering
  * of a request_csat block. Duplicated as a plain literal rather than
  * imported: this package has no dependency on @quackback/db, and 5 emoji
- * aren't worth introducing one for.
+ * aren't worth introducing one for. Exported (not just module-local) so
+ * apps/web can assert deep equality against packages/db's own CSAT_FACES in
+ * a parity test — a literal this easy to hand-edit in only one place is
+ * exactly the kind of drift that needs a CI trip-wire, not just a comment.
  */
-const CSAT_FACES = ['😞', '🙁', '😐', '🙂', '😄'] as const
+export const CSAT_FACES = ['😞', '🙁', '😐', '🙂', '😄'] as const
 
 interface CsatRequestEmailProps {
   /** The workflow block's own prompt text (plain text — the block body

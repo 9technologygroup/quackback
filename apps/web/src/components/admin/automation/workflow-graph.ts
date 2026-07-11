@@ -1630,6 +1630,59 @@ export function parseWorkflowGraphText(text: string): Result<WorkflowGraphJson> 
 // stay editable as JSON; nothing is silently dropped.
 // ---------------------------------------------------------------------------
 
+/** Shared fixed-two-path edge resolution for let_assistant_answer and
+ *  call_connector (graphToTree side): both have exactly one unlabeled
+ *  "default" successor plus an optional single successor labeled with the
+ *  kind's own fixed key, and no other labeled edges are legal. The three
+ *  validation failures below (an unknown labeled path, more than one default
+ *  connection, more than one labeled connection) are identical in shape
+ *  across both kinds — only the display name and the labeled key/word
+ *  differ, so callers pass those in rather than duplicating this walk. */
+function resolveFixedTwoPathEdges(
+  node: GraphNode,
+  outs: GraphEdge[],
+  labeledKey: string,
+  labeledWord: string,
+  displayName: string,
+  walkFrom: (startId: string | undefined) => Result<TreeStep[]>
+): Result<{ defaultSteps: TreeStep[]; labeledSteps: TreeStep[] }> {
+  const defaultEdges = outs.filter((e) => e.branch === undefined)
+  const labeledEdges = outs.filter((e) => e.branch === labeledKey)
+  const other = outs.filter((e) => e.branch !== undefined && e.branch !== labeledKey)
+  if (other.length > 0) {
+    return fail(
+      `"${displayName}" step "${node.id}" has a connection for an unknown path "${other[0]!.branch}"`
+    )
+  }
+  if (defaultEdges.length > 1) {
+    return fail(`"${displayName}" step "${node.id}" has more than one default connection`)
+  }
+  if (labeledEdges.length > 1) {
+    return fail(`"${displayName}" step "${node.id}" has more than one ${labeledWord} connection`)
+  }
+  const defaultSub = walkFrom(defaultEdges[0]?.to)
+  if (!defaultSub.ok) return defaultSub
+  const labeledSub = walkFrom(labeledEdges[0]?.to)
+  if (!labeledSub.ok) return labeledSub
+  return { ok: true, value: { defaultSteps: defaultSub.value, labeledSteps: labeledSub.value } }
+}
+
+/** Shared emit for the same fixed-two-path pair, treeToGraph side: emits the
+ *  default (unlabeled) edge for the default-keyed path and the labeled edge
+ *  for the labeled-keyed path, when each is present — the reverse of
+ *  resolveFixedTwoPathEdges above, kept next to it for the same reason. */
+function emitFixedTwoPathEdges(
+  step: { id: string; paths: KeyedPath[] },
+  defaultKey: string,
+  labeledKey: string,
+  emit: (steps: TreeStep[], from: string, branchKey?: string) => void
+): void {
+  const defaultPath = step.paths.find((p) => p.key === defaultKey)
+  const labeledPath = step.paths.find((p) => p.key === labeledKey)
+  if (defaultPath) emit(defaultPath.steps, step.id)
+  if (labeledPath) emit(labeledPath.steps, step.id, labeledKey)
+}
+
 export function graphToTree(graph: WorkflowGraphJson): Result<WorkflowTree> {
   if (graph.nodes.length === 0) return { ok: true, value: newTree() }
 
@@ -1788,37 +1841,30 @@ export function graphToTree(graph: WorkflowGraphJson): Result<WorkflowTree> {
       // ── let_assistant_answer: default (unlabeled) + optional 'escalated' ─
       if (node.type === 'let_assistant_answer') {
         const outs = outgoing.get(node.id) ?? []
-        const continueEdges = outs.filter((e) => e.branch === undefined)
-        const escalatedEdges = outs.filter((e) => e.branch === LET_ASSISTANT_ESCALATED_KEY)
-        const other = outs.filter(
-          (e) => e.branch !== undefined && e.branch !== LET_ASSISTANT_ESCALATED_KEY
+        const resolved = resolveFixedTwoPathEdges(
+          node,
+          outs,
+          LET_ASSISTANT_ESCALATED_KEY,
+          'escalated',
+          'Let Quinn answer',
+          walkFrom
         )
-        if (other.length > 0) {
-          return fail(
-            `"Let Quinn answer" step "${node.id}" has a connection for an unknown path "${other[0]!.branch}"`
-          )
-        }
-        if (continueEdges.length > 1) {
-          return fail(`"Let Quinn answer" step "${node.id}" has more than one default connection`)
-        }
-        if (escalatedEdges.length > 1) {
-          return fail(`"Let Quinn answer" step "${node.id}" has more than one escalated connection`)
-        }
-        const continueSub = walkFrom(continueEdges[0]?.to)
-        if (!continueSub.ok) return continueSub
-        const escalatedSub = walkFrom(escalatedEdges[0]?.to)
-        if (!escalatedSub.ok) return escalatedSub
+        if (!resolved.ok) return resolved
         steps.push({
           id: node.id,
           kind: 'let_assistant_answer',
           instructions: node.instructions,
           autoCloseOverride: node.autoCloseOverride,
           paths: [
-            { key: LET_ASSISTANT_DEFAULT_KEY, label: 'Continues', steps: continueSub.value },
+            {
+              key: LET_ASSISTANT_DEFAULT_KEY,
+              label: 'Continues',
+              steps: resolved.value.defaultSteps,
+            },
             {
               key: LET_ASSISTANT_ESCALATED_KEY,
               label: 'If escalated to a human',
-              steps: escalatedSub.value,
+              steps: resolved.value.labeledSteps,
             },
           ],
         })
@@ -1828,26 +1874,15 @@ export function graphToTree(graph: WorkflowGraphJson): Result<WorkflowTree> {
       // ── call_connector: default (unlabeled) success + labeled 'failed' ───
       if (node.type === 'call_connector') {
         const outs = outgoing.get(node.id) ?? []
-        const successEdges = outs.filter((e) => e.branch === undefined)
-        const failedEdges = outs.filter((e) => e.branch === CALL_CONNECTOR_FAILED_KEY)
-        const other = outs.filter(
-          (e) => e.branch !== undefined && e.branch !== CALL_CONNECTOR_FAILED_KEY
+        const resolved = resolveFixedTwoPathEdges(
+          node,
+          outs,
+          CALL_CONNECTOR_FAILED_KEY,
+          'failed',
+          'Call connector',
+          walkFrom
         )
-        if (other.length > 0) {
-          return fail(
-            `"Call connector" step "${node.id}" has a connection for an unknown path "${other[0]!.branch}"`
-          )
-        }
-        if (successEdges.length > 1) {
-          return fail(`"Call connector" step "${node.id}" has more than one default connection`)
-        }
-        if (failedEdges.length > 1) {
-          return fail(`"Call connector" step "${node.id}" has more than one failed connection`)
-        }
-        const successSub = walkFrom(successEdges[0]?.to)
-        if (!successSub.ok) return successSub
-        const failedSub = walkFrom(failedEdges[0]?.to)
-        if (!failedSub.ok) return failedSub
+        if (!resolved.ok) return resolved
         steps.push({
           id: node.id,
           kind: 'call_connector',
@@ -1855,8 +1890,16 @@ export function graphToTree(graph: WorkflowGraphJson): Result<WorkflowTree> {
           params: node.params,
           timeoutMs: node.timeoutMs,
           paths: [
-            { key: CALL_CONNECTOR_SUCCESS_KEY, label: 'On success', steps: successSub.value },
-            { key: CALL_CONNECTOR_FAILED_KEY, label: 'On failure', steps: failedSub.value },
+            {
+              key: CALL_CONNECTOR_SUCCESS_KEY,
+              label: 'On success',
+              steps: resolved.value.defaultSteps,
+            },
+            {
+              key: CALL_CONNECTOR_FAILED_KEY,
+              label: 'On failure',
+              steps: resolved.value.labeledSteps,
+            },
           ],
         })
         return { ok: true, value: steps }
@@ -2008,10 +2051,7 @@ export function treeToGraph(tree: WorkflowTree): WorkflowGraphJson {
             instructions: step.instructions,
             autoCloseOverride: step.autoCloseOverride,
           })
-          const continuePath = step.paths.find((p) => p.key === LET_ASSISTANT_DEFAULT_KEY)
-          const escalatedPath = step.paths.find((p) => p.key === LET_ASSISTANT_ESCALATED_KEY)
-          if (continuePath) emit(continuePath.steps, step.id)
-          if (escalatedPath) emit(escalatedPath.steps, step.id, LET_ASSISTANT_ESCALATED_KEY)
+          emitFixedTwoPathEdges(step, LET_ASSISTANT_DEFAULT_KEY, LET_ASSISTANT_ESCALATED_KEY, emit)
           break
         }
         case 'call_connector': {
@@ -2022,10 +2062,7 @@ export function treeToGraph(tree: WorkflowTree): WorkflowGraphJson {
             params: step.params,
             timeoutMs: step.timeoutMs,
           })
-          const successPath = step.paths.find((p) => p.key === CALL_CONNECTOR_SUCCESS_KEY)
-          const failedPath = step.paths.find((p) => p.key === CALL_CONNECTOR_FAILED_KEY)
-          if (successPath) emit(successPath.steps, step.id)
-          if (failedPath) emit(failedPath.steps, step.id, CALL_CONNECTOR_FAILED_KEY)
+          emitFixedTwoPathEdges(step, CALL_CONNECTOR_SUCCESS_KEY, CALL_CONNECTOR_FAILED_KEY, emit)
           break
         }
       }
@@ -2970,10 +3007,20 @@ export interface DraftIssues {
  *  "already-stored-shape" write path create/updateWorkflowFn validates
  *  server-side, so a parking-kind node saved into a non-customer_facing
  *  workflow via JSON mode is surfaced here as a blocking error too, instead
- *  of only failing as a server 400 after Save is clicked. */
+ *  of only failing as a server 400 after Save is clicked.
+ *
+ *  `connectors` (default empty map, same graceful-degradation contract as
+ *  collectStepIssues' own param) threads live connector metadata through to
+ *  the call_connector check: without it, the Set-live gate (canGoLive)
+ *  would pass a call_connector step with an unmapped required input even
+ *  though the inline inspector chip already flags it — see the caller in
+ *  use-workflow-builder.ts, which supplies the real map; workflows-
+ *  manager.tsx's 2-arg calls stay as they are (no connector meta available
+ *  there, so this degrades to showing only the badge, same as before). */
 export function draftIssues(
   draft: GraphDraft,
-  workflowClass: WorkflowClassValue = 'customer_facing'
+  workflowClass: WorkflowClassValue = 'customer_facing',
+  connectors: ReadonlyMap<string, ConnectorMeta> = new Map()
 ): DraftIssues {
   if (draft.mode === 'json') {
     const parsed = parseWorkflowGraphText(draft.text)
@@ -2982,7 +3029,7 @@ export function draftIssues(
     if (classIssue) return { count: 1, ids: new Set(), firstId: null, blocking: classIssue }
     return { count: 0, ids: new Set(), firstId: null, blocking: null }
   }
-  const stepIssues = collectStepIssues(draft.tree, workflowClass)
+  const stepIssues = collectStepIssues(draft.tree, workflowClass, connectors)
   const ids = new Set(stepIssues.keys())
   const [firstId = null] = ids
   return { count: ids.size, ids, firstId, blocking: null }

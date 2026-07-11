@@ -16,12 +16,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { PlusIcon } from '@heroicons/react/24/outline'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -33,8 +27,8 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { connectorsQuery } from '@/lib/client/queries/connectors'
-import { WORKFLOW_VARIABLE_CATALOGUE } from '@/lib/shared/workflows/message-variables'
 import { ClampedIntInput, Field } from './shared'
+import { VariableInsertMenu } from './variable-insert-menu'
 import {
   MAX_CALL_CONNECTOR_TIMEOUT_MS,
   MIN_CALL_CONNECTOR_TIMEOUT_MS,
@@ -109,8 +103,12 @@ export function CallConnectorEditor({
                   placeholder="e.g. {first_name|there}"
                   className="h-8 text-sm"
                 />
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+                <VariableInsertMenu
+                  align="end"
+                  onInsert={(key) =>
+                    setParam(input.name, `${step.params[input.name] ?? ''}{${key}|}`)
+                  }
+                  trigger={
                     <Button
                       type="button"
                       variant="ghost"
@@ -119,23 +117,8 @@ export function CallConnectorEditor({
                     >
                       <PlusIcon className="size-3.5" />
                     </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {WORKFLOW_VARIABLE_CATALOGUE.map((v) => (
-                      <DropdownMenuItem
-                        key={v.key}
-                        onSelect={() =>
-                          setParam(input.name, `${step.params[input.name] ?? ''}{${v.key}|}`)
-                        }
-                      >
-                        {v.label}
-                        <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                          {`{${v.key}}`}
-                        </span>
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                  }
+                />
               </div>
               {input.description && (
                 <p className="mt-1 text-[11px] text-muted-foreground">{input.description}</p>

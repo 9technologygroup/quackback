@@ -414,3 +414,79 @@ export async function notifyConversationStarted(opts: {
     log.warn({ err }, 'notify conversation started failed')
   }
 }
+
+/**
+ * Email a dedicated CSAT rating-request when a workflow's `request_csat`
+ * block posts on a conversation whose active channel is EMAIL
+ * (`conversations.channel === 'email'` — set only for a cold-inbound email
+ * conversation, conversation.email-cold-inbound.ts; the widget/messenger
+ * channels never set it). The in-app emoji row is inert in an email client,
+ * so this sends a parallel email with real, one-click emoji links
+ * (packages/email's csat-request template) — action.executor.ts's send_block
+ * csat case calls this (via a dynamic import, to keep the rarely-hit path out
+ * of that module's static graph) right after posting the block in-app.
+ *
+ * Reuses this module's own "email the visitor offline" recipient resolution
+ * (the same principal/user join + resolveReplyRecipient every notify*
+ * function above uses) rather than a separate lookup living in the workflows
+ * domain. `promptText` is the block's already-interpolated body, pre-rendered
+ * to plain text by the caller (action.executor.ts owns the TipTap ->
+ * text conversion for every block kind already; this module has no other
+ * reason to depend on that).
+ *
+ * Best-effort by design, same contract as every other notify* function here:
+ * a failure (no deliverable recipient, an email provider outage, ...) must
+ * never fail the block send that already posted in-app, so every failure is
+ * caught and logged rather than propagated.
+ */
+export async function notifyCsatRequestEmail(
+  conversationId: ConversationId,
+  promptText: string
+): Promise<void> {
+  try {
+    const [conv] = await db
+      .select({
+        channel: conversations.channel,
+        visitorPrincipalId: conversations.visitorPrincipalId,
+      })
+      .from(conversations)
+      .where(eq(conversations.id, conversationId))
+      .limit(1)
+    if (!conv || conv.channel !== 'email' || !conv.visitorPrincipalId) return
+    const visitorPrincipalId = conv.visitorPrincipalId
+
+    const [visitor] = await db
+      .select({ type: principal.type, email: user.email, contactEmail: principal.contactEmail })
+      .from(principal)
+      .leftJoin(user, eq(principal.userId, user.id))
+      .where(eq(principal.id, visitorPrincipalId))
+      .limit(1)
+    const recipient = resolveReplyRecipient(visitor, visitor?.contactEmail, null)
+    if (!recipient) return
+
+    const ctx = await buildHookContext()
+    if (!ctx) return
+
+    const { mintCsatEmailToken } = await import('./csat-email-token')
+    const token = mintCsatEmailToken(conversationId, visitorPrincipalId)
+    const base = `${ctx.portalBaseUrl.replace(/\/$/, '')}/csat?token=${encodeURIComponent(token)}`
+    const ratingUrls = [1, 2, 3, 4, 5].map((r) => `${base}&rating=${r}`) as [
+      string,
+      string,
+      string,
+      string,
+      string,
+    ]
+
+    const { sendCsatRequestEmail } = await import('@quackback/email')
+    await sendCsatRequestEmail({
+      to: recipient,
+      promptText,
+      ratingUrls,
+      workspaceName: ctx.workspaceName,
+      logoUrl: ctx.logoUrl ?? undefined,
+    })
+  } catch (err) {
+    log.warn({ err, conversationId }, 'csat request email failed')
+  }
+}

@@ -13,7 +13,6 @@ import type { WorkflowId, WorkflowVersionId, ConversationId } from '@quackback/i
 import { requireAuth } from './auth-helpers'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { Workflow, WorkflowClass, WorkflowStatus, WorkflowRunState } from '@/lib/server/db'
-import { isUniqueViolation } from '@/lib/server/utils'
 import {
   listWorkflows,
   getWorkflow,
@@ -445,24 +444,16 @@ export const runWorkflowManuallyFn = createServerFn({ method: 'POST' })
       return { ok: false, reason: 'nothing_to_do' }
     }
 
-    try {
-      const run = await runWorkflow(workflow, ctx, { conversationId, subjectPrincipalId: null })
-      if (!run) {
-        // Either the walk produced no actions and wasn't waiting (a genuine
-        // no-op), or the exclusive lock was lost on the authoritative
-        // re-check despite the pre-check above (see this fn's doc) — both
-        // report the same friendly reason to the UI.
-        return { ok: false, reason: 'nothing_to_do' }
-      }
-      return { ok: true, runId: run.id, state: run.state }
-    } catch (err) {
-      // Defense in depth: runWorkflow already catches its own unique
-      // violation and returns null (see workflow.engine.ts), so this branch
-      // should be unreachable in practice — kept as a structured fallback
-      // rather than letting a lock race surface as an unhandled 500.
-      if (isUniqueViolation(err)) {
-        return { ok: false, reason: 'locked' }
-      }
-      throw err
+    const run = await runWorkflow(workflow, ctx, { conversationId, subjectPrincipalId: null })
+    if (!run) {
+      // Either the walk produced no actions and wasn't waiting (a genuine
+      // no-op), or the exclusive lock was lost on the authoritative re-check
+      // despite the pre-check above (see this fn's doc) — both report the
+      // same friendly reason to the UI. runWorkflow already catches its own
+      // unique violation internally and returns null rather than throwing
+      // (see workflow.engine.ts), so there is no lock-race error to catch
+      // here.
+      return { ok: false, reason: 'nothing_to_do' }
     }
+    return { ok: true, runId: run.id, state: run.state }
   })

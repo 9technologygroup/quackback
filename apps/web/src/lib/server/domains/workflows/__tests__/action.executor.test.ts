@@ -87,27 +87,16 @@ vi.mock('@/lib/server/domains/assistant/assistant.orchestrator', () => ({
   runAssistantTurnForConversation,
 }))
 
-// Ticket actions (set_ticket_status / convert_to_ticket) + CSAT-over-email's
-// own dependencies — each mocked at its own seam so this stays a unit test of
-// action.executor.ts's dispatch/resolution logic, not an integration test of
-// the tickets domain or the email package.
-const {
-  setTicketStatus,
-  createTicketCore,
-  linkTicketToConversation,
-  getLinkedCustomerTicket,
-  buildHookContext,
-  mintCsatEmailToken,
-  sendCsatRequestEmail,
-} = vi.hoisted(() => ({
-  setTicketStatus: vi.fn(),
-  createTicketCore: vi.fn(),
-  linkTicketToConversation: vi.fn(),
-  getLinkedCustomerTicket: vi.fn(),
-  buildHookContext: vi.fn(),
-  mintCsatEmailToken: vi.fn(),
-  sendCsatRequestEmail: vi.fn(),
-}))
+// Ticket actions (set_ticket_status / convert_to_ticket) — each mocked at its
+// own seam so this stays a unit test of action.executor.ts's dispatch/
+// resolution logic, not an integration test of the tickets domain.
+const { setTicketStatus, createTicketCore, linkTicketToConversation, getLinkedCustomerTicket } =
+  vi.hoisted(() => ({
+    setTicketStatus: vi.fn(),
+    createTicketCore: vi.fn(),
+    linkTicketToConversation: vi.fn(),
+    getLinkedCustomerTicket: vi.fn(),
+  }))
 vi.mock('@/lib/server/domains/tickets/ticket.service', () => ({
   setTicketStatus,
   createTicketCore,
@@ -116,9 +105,15 @@ vi.mock('@/lib/server/domains/tickets/ticket-conversation-link.service', () => (
   linkTicketToConversation,
 }))
 vi.mock('@/lib/server/domains/inbox/inbox.query', () => ({ getLinkedCustomerTicket }))
-vi.mock('@/lib/server/events/hook-context', () => ({ buildHookContext }))
-vi.mock('@/lib/server/functions/csat-email', () => ({ mintCsatEmailToken }))
-vi.mock('@quackback/email', () => ({ sendCsatRequestEmail }))
+
+// CSAT-over-email itself now lives in conversation.notify.ts's
+// notifyCsatRequestEmail (action.executor.ts's send_block csat case only
+// dynamic-imports and calls it, best-effort) — the channel-gating/recipient-
+// resolution/email-template behavior is covered by that module's own suite
+// (conversation-notify.test.ts); this file only pins the dispatch + the
+// best-effort catch.
+const { notifyCsatRequestEmail } = vi.hoisted(() => ({ notifyCsatRequestEmail: vi.fn() }))
+vi.mock('@/lib/server/domains/conversation/conversation.notify', () => ({ notifyCsatRequestEmail }))
 
 // executeCallConnectorNode's own dependencies: the connector row lookup +
 // the shared HTTP executor (both mocked so this stays a unit test of the
@@ -144,20 +139,23 @@ const mockConnectorRuntimeRow = vi.hoisted(() => ({
   error: null as Error | null,
 }))
 const mockDbSelect = vi.hoisted(() => vi.fn())
-// The funnel's `block_sent` ledger write (action.executor.ts's
-// logBlockSentEvent) is the only insert this module does — mocked
-// separately from select so a test can spy on the exact row it inserts.
-const mockDbInsert = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/server/db', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/lib/server/db')>()
   return {
     ...original,
     db: {
       select: (...args: unknown[]) => mockDbSelect(...args),
-      insert: (...args: unknown[]) => mockDbInsert(...args),
     },
   }
 })
+
+// The funnel's `block_sent` ledger write now goes through the shared
+// workflow-run-events.ts module (moved there so both this executor and the
+// engine can write to the timeline without an import cycle — see
+// WorkflowContext's doc) rather than a hand-rolled run-row lookup + insert
+// in this module, so it's mocked at that seam instead of at the db chain.
+const { logRunEvent } = vi.hoisted(() => ({ logRunEvent: vi.fn() }))
+vi.mock('../workflow-run-events', () => ({ logRunEvent }))
 
 import { applyAction, executeCallConnectorNode, type WorkflowContext } from '../action.executor'
 
@@ -167,7 +165,13 @@ const actor = {
   role: 'admin',
   principalType: 'user',
 } as unknown as Actor
-const ctx: WorkflowContext = { conversationId, actor, runId: 'workflow_run_1' }
+const ctx: WorkflowContext = {
+  conversationId,
+  actor,
+  runId: 'workflow_run_1',
+  workflowId: 'workflow_abc',
+  subjectPrincipalId: 'principal_x' as PrincipalId,
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -208,8 +212,8 @@ beforeEach(() => {
 })
 
 /** A one-shot db.select chain resolving `rows` at `.limit()` — for the
- *  ticket-actions/CSAT-over-email tests below, queued via
- *  mockDbSelect.mockImplementationOnce in call order. */
+ *  ticket-actions tests below, queued via mockDbSelect.mockImplementationOnce
+ *  in call order. */
 function selectChainOnce(rows: unknown[]) {
   const chain = {
     from: () => chain,
@@ -417,35 +421,26 @@ describe('applyAction', () => {
       ).rejects.toThrow(/workflow run/)
       // Never even attempts the funnel's block_sent ledger write when there's
       // no run to log it against.
-      expect(mockDbInsert).not.toHaveBeenCalled()
+      expect(logRunEvent).not.toHaveBeenCalled()
     })
 
     describe('funnel: block_sent event', () => {
-      it('logs a block_sent event, keyed on the run row looked up by ctx.runId', async () => {
-        mockDbSelect.mockImplementationOnce(() =>
-          selectChainOnce([{ workflowId: 'workflow_abc', subjectPrincipalId: 'principal_x' }])
-        )
-        const valuesSpy = vi.fn().mockResolvedValue(undefined)
-        mockDbInsert.mockReturnValue({ values: valuesSpy })
-
+      it('logs a block_sent event via logRunEvent, keyed on ctx.workflowId/subjectPrincipalId', async () => {
         await applyAction(
           { type: 'send_block', nodeId: 'n1', block: { kind: 'message', body } },
           ctx
         )
 
-        expect(valuesSpy).toHaveBeenCalledWith({
-          runId: 'workflow_run_1',
-          workflowId: 'workflow_abc',
-          subjectPrincipalId: 'principal_x',
-          kind: 'block_sent',
-        })
+        expect(logRunEvent).toHaveBeenCalledWith(
+          'workflow_run_1',
+          'workflow_abc',
+          'principal_x',
+          'block_sent'
+        )
       })
 
       it('is best-effort: a ledger write failure never fails the block send', async () => {
-        mockDbSelect.mockImplementationOnce(() =>
-          selectChainOnce([{ workflowId: 'workflow_abc', subjectPrincipalId: 'principal_x' }])
-        )
-        mockDbInsert.mockReturnValue({ values: vi.fn().mockRejectedValue(new Error('db down')) })
+        logRunEvent.mockRejectedValueOnce(new Error('db down'))
 
         const result = await applyAction(
           { type: 'send_block', nodeId: 'n1', block: { kind: 'message', body } },
@@ -454,13 +449,12 @@ describe('applyAction', () => {
         expect(result).toMatchObject({ label: 'sent message block' })
       })
 
-      it('is a no-op (not an insert) when the run row itself has vanished', async () => {
-        mockDbSelect.mockImplementationOnce(() => selectChainOnce([]))
+      it('is guarded: skips the funnel write when ctx carries no workflowId', async () => {
         await applyAction(
           { type: 'send_block', nodeId: 'n1', block: { kind: 'message', body } },
-          ctx
+          { conversationId, actor, runId: 'workflow_run_1' }
         )
-        expect(mockDbInsert).not.toHaveBeenCalled()
+        expect(logRunEvent).not.toHaveBeenCalled()
       })
     })
 
@@ -576,7 +570,12 @@ describe('applyAction', () => {
     })
   })
 
-  describe('send_block csat -> CSAT-over-email', () => {
+  // The channel-gating/recipient-resolution/email-template behavior itself
+  // now lives in conversation.notify.ts's notifyCsatRequestEmail (see its own
+  // suite, conversation-notify.test.ts) — this only pins that the csat
+  // send_block path calls it (via dynamic import) with the right args, and
+  // that a throw there is swallowed (best-effort), same as it always was.
+  describe('send_block csat -> CSAT-over-email (delegates to conversation.notify.ts)', () => {
     const csatBody = { type: 'doc', content: [{ type: 'text', text: 'How did we do?' }] }
     const csatAction = {
       type: 'send_block' as const,
@@ -584,75 +583,31 @@ describe('applyAction', () => {
       block: { kind: 'csat' as const, body: csatBody, allowTypingInterrupt: true },
     }
 
-    it('does not send an email when the conversation channel is not email', async () => {
-      mockDbSelect.mockImplementationOnce(() =>
-        selectChainOnce([{ channel: 'messenger', visitorPrincipalId: 'principal_visitor' }])
-      )
-      await applyAction(csatAction, ctx)
-      expect(sendCsatRequestEmail).not.toHaveBeenCalled()
-    })
-
-    it('does not send an email when the conversation has no visitor principal', async () => {
-      mockDbSelect.mockImplementationOnce(() =>
-        selectChainOnce([{ channel: 'email', visitorPrincipalId: null }])
-      )
-      await applyAction(csatAction, ctx)
-      expect(sendCsatRequestEmail).not.toHaveBeenCalled()
-    })
-
-    it('sends the CSAT-over-email request when the channel is email and the visitor is reachable', async () => {
-      mockDbSelect
-        .mockImplementationOnce(() =>
-          selectChainOnce([{ channel: 'email', visitorPrincipalId: 'principal_visitor' }])
-        )
-        .mockImplementationOnce(() =>
-          selectChainOnce([{ type: 'user', email: 'visitor@example.com', contactEmail: null }])
-        )
-      buildHookContext.mockResolvedValue({
-        workspaceName: 'Acme',
-        portalBaseUrl: 'https://acme.example.com',
-        logoUrl: null,
-      })
-      mintCsatEmailToken.mockReturnValue('signed-token')
-      sendCsatRequestEmail.mockResolvedValue({ sent: true })
+    it('calls notifyCsatRequestEmail with the conversation id and the resolved plain-text prompt', async () => {
+      notifyCsatRequestEmail.mockResolvedValue(undefined)
 
       const result = await applyAction(csatAction, ctx)
       expect(result).toMatchObject({ label: 'sent csat block' })
-
-      expect(mintCsatEmailToken).toHaveBeenCalledWith(conversationId, 'principal_visitor')
-      expect(sendCsatRequestEmail).toHaveBeenCalledWith({
-        to: 'visitor@example.com',
-        promptText: 'How did we do?',
-        ratingUrls: [
-          'https://acme.example.com/csat?token=signed-token&rating=1',
-          'https://acme.example.com/csat?token=signed-token&rating=2',
-          'https://acme.example.com/csat?token=signed-token&rating=3',
-          'https://acme.example.com/csat?token=signed-token&rating=4',
-          'https://acme.example.com/csat?token=signed-token&rating=5',
-        ],
-        workspaceName: 'Acme',
-        logoUrl: undefined,
-      })
+      expect(notifyCsatRequestEmail).toHaveBeenCalledWith(conversationId, 'How did we do?')
     })
 
-    it('never fails the block send when the email send itself throws (best-effort)', async () => {
-      mockDbSelect
-        .mockImplementationOnce(() =>
-          selectChainOnce([{ channel: 'email', visitorPrincipalId: 'principal_visitor' }])
-        )
-        .mockImplementationOnce(() =>
-          selectChainOnce([{ type: 'user', email: 'visitor@example.com', contactEmail: null }])
-        )
-      buildHookContext.mockResolvedValue({
-        workspaceName: 'Acme',
-        portalBaseUrl: 'https://acme.example.com',
-        logoUrl: null,
-      })
-      mintCsatEmailToken.mockReturnValue('signed-token')
-      sendCsatRequestEmail.mockRejectedValue(new Error('provider down'))
+    it('never fails the block send when notifyCsatRequestEmail itself throws (best-effort)', async () => {
+      notifyCsatRequestEmail.mockRejectedValue(new Error('provider down'))
 
       const result = await applyAction(csatAction, ctx)
       expect(result).toMatchObject({ label: 'sent csat block' })
+    })
+
+    it('is not called for a non-csat block kind', async () => {
+      await applyAction(
+        {
+          type: 'send_block' as const,
+          nodeId: 'n_msg',
+          block: { kind: 'message' as const, body: csatBody },
+        },
+        ctx
+      )
+      expect(notifyCsatRequestEmail).not.toHaveBeenCalled()
     })
   })
 

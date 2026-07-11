@@ -27,12 +27,17 @@ vi.mock('../condition.context', () => ({ resolveConditionContext }))
 
 const {
   channelAllows,
+  ticketStatusCategoryAllows,
   audienceAllows,
   sendWindowAllows,
   frequencyCapAllows,
   hasActiveCustomerFacingRun,
 } = vi.hoisted(() => ({
   channelAllows: vi.fn(),
+  // Not exercised by this file (the unresponsive pair are never ticket
+  // triggers) — always-allow, same stance as every other guard's default
+  // here (see beforeEach below).
+  ticketStatusCategoryAllows: vi.fn(),
   audienceAllows: vi.fn(),
   sendWindowAllows: vi.fn(),
   frequencyCapAllows: vi.fn(),
@@ -40,6 +45,7 @@ const {
 }))
 vi.mock('../dispatcher.guards', () => ({
   channelAllows,
+  ticketStatusCategoryAllows,
   audienceAllows,
   sendWindowAllows,
   frequencyCapAllows,
@@ -97,6 +103,7 @@ beforeEach(() => {
   getWorkflow.mockResolvedValue(liveWorkflow)
   resolveConditionContext.mockResolvedValue(baseCtx)
   channelAllows.mockReturnValue(true)
+  ticketStatusCategoryAllows.mockReturnValue(true)
   audienceAllows.mockReturnValue(true)
   sendWindowAllows.mockReturnValue(true)
   frequencyCapAllows.mockResolvedValue(true)

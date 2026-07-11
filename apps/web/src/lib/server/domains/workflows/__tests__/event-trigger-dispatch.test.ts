@@ -23,7 +23,8 @@ const {
   readMessageBlockReply: vi.fn(),
 }))
 vi.mock('../dispatcher', () => ({ dispatchWorkflowTrigger }))
-vi.mock('../workflow.engine', () => ({ interruptWaitingRuns, resumeWorkflowRun, logRunEvent }))
+vi.mock('../workflow.engine', () => ({ interruptWaitingRuns, resumeWorkflowRun }))
+vi.mock('../workflow-run-events', () => ({ logRunEvent }))
 // No waiting run by default: every pre-existing test in this file exercises a
 // message with no parked customer-facing run to match against, so the
 // resume-vs-interrupt check falls through to the interrupt path exactly as
@@ -693,11 +694,49 @@ describe('dispatchWorkflowsForEvent', () => {
       )
     })
 
-    it('does not dispatch at all when the ticket has no linked conversation', async () => {
-      mockTicketConversationRow.current = null
-      await dispatchWorkflowsForEvent(ticketEvent('ticket.created'))
-      expect(dispatchWorkflowTrigger).not.toHaveBeenCalled()
-      expect(interruptWaitingRuns).not.toHaveBeenCalled()
+    it('ticket.created: never finds the link even after the bounded re-poll -> returns without dispatching', async () => {
+      vi.useFakeTimers()
+      try {
+        mockTicketConversationRow.current = null
+        const dispatched = dispatchWorkflowsForEvent(ticketEvent('ticket.created'))
+        // 3 extra polls, ~1.5s apart (see resolveTicketConversationIdForDispatch) —
+        // advance past all of them so the pending promise actually settles.
+        await vi.advanceTimersByTimeAsync(1500 * 3)
+        await dispatched
+        expect(dispatchWorkflowTrigger).not.toHaveBeenCalled()
+        expect(interruptWaitingRuns).not.toHaveBeenCalled()
+        // The initial lookup + exactly 3 bounded retries, never more.
+        expect(mockDbSelect).toHaveBeenCalledTimes(4)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('ticket.created race: the link is missing on the first lookup but present by the second poll -> dispatches', async () => {
+      vi.useFakeTimers()
+      try {
+        // Simulates createTicketCore's event firing before its caller links the
+        // conversation (§4.6 "ticket.created race" — see the module doc): the
+        // very first lookup misses.
+        mockTicketConversationRow.current = null
+        const dispatched = dispatchWorkflowsForEvent(ticketEvent('ticket.created'))
+        // Let the initial (missing) lookup run, then land the link before the
+        // first retry's delay elapses.
+        await vi.advanceTimersByTimeAsync(0)
+        mockTicketConversationRow.current = { conversationId: 'conversation_linked' }
+        await vi.advanceTimersByTimeAsync(1500)
+        await dispatched
+        expect(dispatchWorkflowTrigger).toHaveBeenCalledWith(
+          expect.objectContaining({
+            triggerType: 'ticket.created',
+            conversationId: 'conversation_linked',
+          })
+        )
+        // The initial miss + exactly one retry that found it — no third lookup.
+        expect(mockDbSelect).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('resolves ticket.status_changed the same way, carrying the entered category', async () => {
@@ -712,10 +751,13 @@ describe('dispatchWorkflowsForEvent', () => {
       )
     })
 
-    it('ticket.status_changed with no linked conversation does not dispatch', async () => {
+    it('ticket.status_changed with no linked conversation does not dispatch, with no bounded re-poll (immediate single lookup only)', async () => {
       mockTicketConversationRow.current = null
       await dispatchWorkflowsForEvent(ticketEvent('ticket.status_changed'))
       expect(dispatchWorkflowTrigger).not.toHaveBeenCalled()
+      // Exactly one lookup — the ticket.created-only bounded re-poll never
+      // applies here.
+      expect(mockDbSelect).toHaveBeenCalledTimes(1)
     })
   })
 })

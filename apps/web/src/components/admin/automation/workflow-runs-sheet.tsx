@@ -1,11 +1,12 @@
 /**
  * Per-run drill-down for a workflow (support platform §4.6/§7 follow-up).
- * workflow_run_events is written on every state transition (workflow.engine.ts's
- * logRunEvent) but had no UI: a failing workflow was invisible beyond the
- * manager list's aggregate trailing-7d started/completed counts
- * (workflows-manager.tsx). Opened from a row's metrics cell, this Sheet lists
- * the workflow's recent runs (state, relative start/end time, a link to the
- * conversation) and, for the selected run, its ordered event timeline.
+ * workflow_run_events is written on every state transition
+ * (workflow-run-events.ts's logRunEvent) but had no UI: a failing workflow
+ * was invisible beyond the manager list's aggregate trailing-7d
+ * started/completed counts (workflows-manager.tsx). Opened from a row's
+ * metrics cell, this Sheet lists the workflow's recent runs (state, relative
+ * start/end time, a link to the conversation) and, for the selected run, its
+ * ordered event timeline.
  *
  * Read-only, gated the same as the rest of the manager (routing.manage, via
  * workflowRunsFn/workflowRunTimelineFn — see functions/workflow-reporting.ts).
@@ -68,6 +69,12 @@ const EVENT_KIND_LABELS: Record<string, string> = {
   // MAX_CONNECTOR_HOPS safety bound is hit.
   'connector_result:success': 'Connector call succeeded',
   connector_hop_limit: 'Stopped (connector hop limit)',
+  // Logged instead of reverting to 'waiting' when a hop AFTER the first
+  // connector call already committed an external side effect throws
+  // (workflow.engine.ts's applyPlanAndSettle) — replaying that call on a
+  // BullMQ retry would risk a duplicate non-idempotent request, so the run
+  // stops here instead.
+  resume_failed_after_side_effects: 'Stopped (error after external call)',
 }
 
 /** Human-readable text for a `connector_failed:<reason>` event's reason —
@@ -84,8 +91,9 @@ const CONNECTOR_FAILURE_REASON_LABELS: Record<string, string> = {
 }
 
 /**
- * Humanize a stored run-event kind (workflow.engine.ts's logRunEvent /
- * workflow-sweep.ts): the static labels above, or `action_failed:<type>` ->
+ * Humanize a stored run-event kind (workflow-run-events.ts's logRunEvent,
+ * written by both the engine and workflow-sweep.ts): the static labels
+ * above, or `action_failed:<type>` ->
  * "Action failed: <the action's display label>", or `connector_failed:
  * <reason>` -> "Connector call failed (<human reason>)" — falling back to
  * the raw type/reason string for an unknown/removed one (the same

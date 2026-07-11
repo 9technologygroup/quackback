@@ -234,7 +234,10 @@ export function useWorkflowBuilder(workflow: WorkflowDTO) {
         : new Map<string, string>(),
     [graphDraft, workflowClass, connectorMeta]
   )
-  const issues = useMemo(() => draftIssues(graphDraft, workflowClass), [graphDraft, workflowClass])
+  const issues = useMemo(
+    () => draftIssues(graphDraft, workflowClass, connectorMeta),
+    [graphDraft, workflowClass, connectorMeta]
+  )
   const outline = useMemo(
     () =>
       graphDraft.mode === 'visual'

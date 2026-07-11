@@ -14,7 +14,11 @@ import type { WorkflowClass, WorkflowStatus } from '@/lib/server/db'
 import type { WorkflowId, PrincipalId } from '@quackback/ids'
 import type { WorkflowGraph, WorkflowNode } from './graph'
 import { ATTRIBUTE_FIELD_PREFIX, type WorkflowCondition } from './condition.evaluator'
-import { writeWorkflowVersion, workflowVersionFieldsChanged } from './workflow-versions'
+import {
+  writeWorkflowVersion,
+  workflowVersionFieldsChanged,
+  pruneWorkflowVersions,
+} from './workflow-versions'
 
 export interface WorkflowInput {
   name: string
@@ -46,8 +50,17 @@ export async function createWorkflow(input: WorkflowInput): Promise<Workflow> {
     .returning()
   invalidateHasLiveWorkflowCache()
   // Version history (support platform §4.6 version history + rollback): the
-  // initial snapshot, authored by whoever created the workflow.
+  // initial snapshot, authored by whoever created the workflow. Left as two
+  // round trips (not wrapped in a transaction with the insert above) — unlike
+  // updateWorkflow, there's no pre-existing row a crash here could leave
+  // silently un-versioned; a crash before this line has nothing to lose
+  // (the workflow simply doesn't exist yet), and a crash after the insert
+  // but before the version write would leave a brand-new workflow with zero
+  // version history, a materially smaller blast radius than updateWorkflow's
+  // silently-lost EDIT this fix targets. Same writeWorkflowVersion/
+  // pruneWorkflowVersions pattern either way, just not transactional here.
   await writeWorkflowVersion(row, input.createdBy ?? null)
+  await pruneWorkflowVersions(row.id)
   return row
 }
 
@@ -77,30 +90,63 @@ export async function getWorkflow(id: WorkflowId): Promise<Workflow | null> {
  * workflowVersionFieldsChanged); a sortOrder-only drag-reorder or a
  * class-only flip writes nothing, since neither is a new "state" worth
  * restoring back to.
+ *
+ * The UPDATE and the version INSERT run inside ONE transaction: previously
+ * these were two separate round trips, so a crash between them (the process
+ * dying, the connection dropping) silently lost the version for a real,
+ * already-committed edit — the workflow's live graph would be the new one,
+ * but its version history would still show the old one as "current", making
+ * a later rollback restore the WRONG state. The pre-read (`before`, needed to
+ * even know whether this patch is version-worthy) and the retention prune
+ * both stay outside: `before` only informs a comparison, never needs to be
+ * transactionally consistent with the write it's compared against, and the
+ * prune is a bounded best-effort cleanup that must not risk holding this
+ * transaction open any longer than the two writes that actually matter.
  */
 export async function updateWorkflow(
   id: WorkflowId,
   patch: Partial<Omit<WorkflowInput, 'createdBy'>>,
   versionAuthor?: PrincipalId | null
 ): Promise<Workflow> {
-  const before = await getWorkflow(id)
-  const [row] = await db
-    .update(workflows)
-    .set({
-      ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
-      ...(patch.class !== undefined ? { class: patch.class } : {}),
-      ...(patch.triggerType !== undefined ? { triggerType: patch.triggerType } : {}),
-      ...(patch.triggerSettings !== undefined ? { triggerSettings: patch.triggerSettings } : {}),
-      ...(patch.graph !== undefined ? { graph: asJson(patch.graph) } : {}),
-      ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
-      updatedAt: new Date(),
-    })
-    .where(and(eq(workflows.id, id), isNull(workflows.deletedAt)))
-    .returning()
+  // Whether this patch COULD touch a version-worthy field is knowable from
+  // its own keys alone, before any read (see workflowVersionFieldsChanged's
+  // field list) — a sortOrder-only drag-reorder or a class-only flip can
+  // never produce a version, so skip both the `before` read and the write
+  // below entirely rather than paying for a read this update will never use.
+  const mayAffectVersion =
+    patch.name !== undefined ||
+    patch.triggerType !== undefined ||
+    patch.triggerSettings !== undefined ||
+    patch.graph !== undefined
+
+  const before = mayAffectVersion ? await getWorkflow(id) : null
+
+  const { row, versionWritten } = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(workflows)
+      .set({
+        ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
+        ...(patch.class !== undefined ? { class: patch.class } : {}),
+        ...(patch.triggerType !== undefined ? { triggerType: patch.triggerType } : {}),
+        ...(patch.triggerSettings !== undefined ? { triggerSettings: patch.triggerSettings } : {}),
+        ...(patch.graph !== undefined ? { graph: asJson(patch.graph) } : {}),
+        ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(workflows.id, id), isNull(workflows.deletedAt)))
+      .returning()
+
+    let versionWritten = false
+    if (mayAffectVersion && row && before && workflowVersionFieldsChanged(before, row)) {
+      await writeWorkflowVersion(row, versionAuthor ?? null, tx)
+      versionWritten = true
+    }
+    return { row, versionWritten }
+  })
+
   invalidateHasLiveWorkflowCache()
-  if (row && before && workflowVersionFieldsChanged(before, row)) {
-    await writeWorkflowVersion(row, versionAuthor ?? null)
-  }
+  // Best-effort, after commit — see the doc comment above.
+  if (versionWritten) await pruneWorkflowVersions(row.id)
   return row
 }
 

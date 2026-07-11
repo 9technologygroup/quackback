@@ -79,7 +79,6 @@ import type {
   ConversationMessageId,
   DataConnectorId,
   TicketStatusId,
-  WorkflowRunId,
 } from '@quackback/ids'
 import type {
   ConversationPriority,
@@ -98,17 +97,14 @@ import {
   conversationMessages,
   principal,
   user,
-  workflowRuns,
-  workflowRunEvents,
   INTERACTIVE_BLOCK_KINDS,
   CSAT_FACES,
 } from '@/lib/server/db'
 import type { TiptapContent } from '@/lib/shared/db-types'
 import type { Actor } from '@/lib/server/policy/types'
 import type { ConversationAttributeSource } from '@/lib/shared/conversation/attribute-values'
-import type { PermissionKey } from '@/lib/shared/permissions'
-import { PERMISSIONS } from '@/lib/shared/permissions'
 import { boundedServiceActor } from '@/lib/server/policy/service-actor'
+import { TICKET_ACTION_PERMISSIONS } from './workflow-actor-permissions'
 
 import * as conversationService from '@/lib/server/domains/conversation/conversation.service'
 import * as tagService from '@/lib/server/domains/conversation/conversation-tag.service'
@@ -116,6 +112,8 @@ import { applySlaToConversation } from '@/lib/server/domains/sla/sla.service'
 import { setConversationAttribute } from '@/lib/server/domains/conversation-attributes/set-attribute.service'
 import { ensureAssistantPrincipal } from '@/lib/server/domains/assistant/assistant.principal'
 import { resolveWorkflowVariables, type WorkflowVariables } from './workflow-variables'
+import { MIN_CALL_CONNECTOR_TIMEOUT_MS, MAX_CALL_CONNECTOR_TIMEOUT_MS } from './workflow.schemas'
+import { logRunEvent } from './workflow-run-events'
 import { interpolate, interpolateTiptapContent } from '@/lib/shared/workflows/interpolate'
 import { tiptapJsonToText } from '@/lib/server/markdown-tiptap'
 import { logger } from '@/lib/server/logger'
@@ -132,27 +130,8 @@ import { NotFoundError } from '@/lib/shared/errors'
 import * as ticketService from '@/lib/server/domains/tickets/ticket.service'
 import { linkTicketToConversation } from '@/lib/server/domains/tickets/ticket-conversation-link.service'
 import { getLinkedCustomerTicket } from '@/lib/server/domains/inbox/inbox.query'
-import { resolveReplyRecipient } from '@/lib/server/domains/conversation/conversation.recipient'
 
 const log = logger.child({ component: 'workflow-action-executor' })
-
-/**
- * Ticket action permissions (set_ticket_status / convert_to_ticket): the
- * engine's own bounded service actor (workflow.engine.ts's workflowActor,
- * AUTOMATION_PERMISSIONS) predates ticket actions and carries no `ticket.*`
- * keys — rather than widen that shared ceiling for every other workflow
- * action too, these two actions widen ONLY their own actor, locally, to add
- * exactly the two ticket permissions they need. A human actor (a macro
- * calling applyAction directly) already carries its real permission set via
- * role and passes through unchanged — neither action is in the macro
- * catalogue today (workflow.schemas.ts's actionSchema is workflows-only, like
- * `reopen` before it), so in practice this only ever widens the engine's own
- * service actor.
- */
-const TICKET_ACTION_PERMISSIONS: ReadonlySet<PermissionKey> = new Set([
-  PERMISSIONS.TICKET_SET_STATUS,
-  PERMISSIONS.TICKET_CREATE,
-])
 
 function ticketActionActor(actor: Actor): Actor {
   if (actor.principalType !== 'service') return actor
@@ -189,6 +168,14 @@ export interface WorkflowContext {
   /** The workflow run applying this action, when there is one (never set for
    *  a macro). Block-sending actions stamp it into metadata.block.runId. */
   runId?: string
+  /** The run's own workflowId/subjectPrincipalId, threaded through by the
+   *  engine (workflow.engine.ts's applyPlanAndSettle passes workflow.id and
+   *  the run's subjectPrincipalId alongside runId) so a ledger write
+   *  (send_block's block_sent funnel event) needs no run-row read to
+   *  recover them — both already live on the run the engine is holding.
+   *  Absent for a macro-applied action, same as runId. */
+  workflowId?: string
+  subjectPrincipalId?: PrincipalId | null
   /** Set only by workflow.engine.ts's applyPlanAndSettle, and only for a plan
    *  with a send_block action — see ResolvedBlockDeps. A macro (which calls
    *  applyAction directly, one action at a time, with no plan to hoist
@@ -395,121 +382,27 @@ async function sendBlock(
   )
 
   // CSAT-over-email (support platform's CSAT-over-email extension): best-effort,
-  // must never fail the block send itself — maybeSendCsatRequestEmail swallows
-  // and logs every failure internally.
+  // must never fail the block send itself — notifyCsatRequestEmail swallows
+  // and logs every failure internally (see its own doc in
+  // conversation.notify.ts, which owns every other "email the visitor
+  // offline" case too). Dynamic import, same as every other CSAT-over-email
+  // piece this branch already pulls in lazily (mintCsatEmailToken,
+  // sendCsatRequestEmail) — this is a rarely-hit path (email-channel CSAT
+  // only), so it stays out of this module's static import graph.
   if (block.kind === 'csat') {
-    await maybeSendCsatRequestEmail(conversationId, resolvedBody)
+    try {
+      const { notifyCsatRequestEmail } =
+        await import('@/lib/server/domains/conversation/conversation.notify')
+      await notifyCsatRequestEmail(
+        conversationId,
+        resolvedBody ? tiptapJsonToText(resolvedBody) : ''
+      )
+    } catch (err) {
+      log.warn({ err, conversationId }, 'csat request email failed')
+    }
   }
 
   return messageDTO.id
-}
-
-/**
- * Log the funnel's `block_sent` event (the per-workflow sent -> engaged ->
- * completed rollup, workflow-reporting.ts) for a successful send_block
- * action. Replicated here rather than imported from workflow.engine.ts's
- * logRunEvent — this module is imported BY workflow.engine.ts (applyAction),
- * so an import back the other way would cycle; the insert itself is a
- * couple of lines, cheap to duplicate rather than restructure the module
- * graph for.
- *
- * WorkflowContext only carries the run's own id (see its doc), not its
- * workflowId/subjectPrincipalId — those live on the run row, and
- * workflow_run_events.workflow_id is NOT NULL, so this reads them first, by
- * the run's primary key (one indexed read, paid once per block send, not a
- * new hot path). Best-effort, like maybeSendCsatRequestEmail below: a
- * reporting-ledger write must never fail the block send that already
- * succeeded, so every failure (including the run row having vanished) is
- * caught and logged rather than propagated.
- */
-async function logBlockSentEvent(runId: string): Promise<void> {
-  try {
-    const [run] = await db
-      .select({
-        workflowId: workflowRuns.workflowId,
-        subjectPrincipalId: workflowRuns.subjectPrincipalId,
-      })
-      .from(workflowRuns)
-      .where(eq(workflowRuns.id, runId as WorkflowRunId))
-      .limit(1)
-    if (!run) return // the run row vanished (a conversation cascade-delete) mid-send
-    await db.insert(workflowRunEvents).values({
-      runId: runId as WorkflowRunId,
-      workflowId: run.workflowId,
-      subjectPrincipalId: run.subjectPrincipalId,
-      kind: 'block_sent',
-    })
-  } catch (err) {
-    log.warn({ err, runId }, 'block_sent funnel event logging failed')
-  }
-}
-
-/**
- * When a `request_csat` block posts on a conversation whose active channel is
- * EMAIL (`conversations.channel === 'email'` — set only for a cold-inbound
- * email conversation, conversation.email-cold-inbound.ts; the widget/messenger
- * channels never set it), the customer's only view of this block is their
- * inbox, where the in-app emoji row is inert — so this ALSO sends a dedicated
- * rating-request email with real, one-click emoji links (packages/email's
- * csat-request template). Reuses the exact same offline-reachability signal
- * conversation.notify.ts's notifyAgentReply uses (resolveReplyRecipient over
- * the visitor's account email / captured contact email), not a new one.
- *
- * Best-effort by design: an email provider outage must never fail the block
- * send (the block already posted in-app above), so every failure is caught
- * and logged here rather than propagated.
- */
-async function maybeSendCsatRequestEmail(
-  conversationId: ConversationId,
-  resolvedBody: TiptapContent | null
-): Promise<void> {
-  try {
-    const [conv] = await db
-      .select({
-        channel: conversations.channel,
-        visitorPrincipalId: conversations.visitorPrincipalId,
-      })
-      .from(conversations)
-      .where(eq(conversations.id, conversationId))
-      .limit(1)
-    if (!conv || conv.channel !== 'email' || !conv.visitorPrincipalId) return
-    const visitorPrincipalId = conv.visitorPrincipalId
-
-    const [visitor] = await db
-      .select({ type: principal.type, email: user.email, contactEmail: principal.contactEmail })
-      .from(principal)
-      .leftJoin(user, eq(principal.userId, user.id))
-      .where(eq(principal.id, visitorPrincipalId))
-      .limit(1)
-    const recipient = resolveReplyRecipient(visitor, visitor?.contactEmail, null)
-    if (!recipient) return
-
-    const { buildHookContext } = await import('@/lib/server/events/hook-context')
-    const ctx = await buildHookContext()
-    if (!ctx) return
-
-    const { mintCsatEmailToken } = await import('@/lib/server/functions/csat-email')
-    const token = mintCsatEmailToken(conversationId, visitorPrincipalId)
-    const base = `${ctx.portalBaseUrl.replace(/\/$/, '')}/csat?token=${encodeURIComponent(token)}`
-    const ratingUrls = [1, 2, 3, 4, 5].map((r) => `${base}&rating=${r}`) as [
-      string,
-      string,
-      string,
-      string,
-      string,
-    ]
-
-    const { sendCsatRequestEmail } = await import('@quackback/email')
-    await sendCsatRequestEmail({
-      to: recipient,
-      promptText: resolvedBody ? tiptapJsonToText(resolvedBody) : '',
-      ratingUrls,
-      workspaceName: ctx.workspaceName,
-      logoUrl: ctx.logoUrl ?? undefined,
-    })
-  } catch (err) {
-    log.warn({ err, conversationId }, 'csat request email failed')
-  }
 }
 
 /**
@@ -590,8 +483,18 @@ export async function applyAction(
       // with the block kind (keeps cardinality low; the funnel counts
       // distinct runs, not kinds). Macros never reach this branch (ctx.runId
       // is required above), so this is engine-only, exactly like send_block
-      // itself.
-      await logBlockSentEvent(ctx.runId)
+      // itself. workflowId is threaded onto ctx by the engine alongside
+      // runId (see WorkflowContext's doc), so this needs no run-row read to
+      // recover it; guarded on both being present, and best-effort like
+      // every other reporting-ledger write in this module — a failure here
+      // must never fail the block send that already succeeded.
+      if (ctx.runId && ctx.workflowId) {
+        try {
+          await logRunEvent(ctx.runId, ctx.workflowId, ctx.subjectPrincipalId ?? null, 'block_sent')
+        } catch (err) {
+          log.warn({ err, runId: ctx.runId }, 'block_sent funnel event logging failed')
+        }
+      }
       return { label: `sent ${action.block.kind} block`, blockMessageId: messageId }
     }
     case 'let_assistant_answer':
@@ -740,12 +643,9 @@ export interface CallConnectorSpec {
   timeoutMs?: number
 }
 
-const CALL_CONNECTOR_TIMEOUT_MS_MIN = 1
-const CALL_CONNECTOR_TIMEOUT_MS_MAX = 30000
-
 function clampTimeoutMs(ms: number | undefined): number | undefined {
   if (ms === undefined) return undefined
-  return Math.min(CALL_CONNECTOR_TIMEOUT_MS_MAX, Math.max(CALL_CONNECTOR_TIMEOUT_MS_MIN, ms))
+  return Math.min(MAX_CALL_CONNECTOR_TIMEOUT_MS, Math.max(MIN_CALL_CONNECTOR_TIMEOUT_MS, ms))
 }
 
 /**
@@ -795,10 +695,19 @@ async function resolveConnectorRuntimeContextForConversation(
  * exactly like `executeConnector` itself never throws for a network/HTTP
  * failure, so the engine's park-and-continue loop never needs a try/catch
  * around this call.
+ *
+ * `variables`, when given, is used as-is instead of re-resolving them here —
+ * the engine passes its own already-resolved set (applyPlanAndSettle's
+ * memoized send_block deps) when a send_block earlier in the SAME run already
+ * paid for the read, so a connector hop never pays for it twice. Absent
+ * (macro callers, or a run with no send_block yet), this resolves them
+ * itself exactly as before — the engine deliberately never force-resolves
+ * variables just to feed a connector hop that wouldn't otherwise need them.
  */
 export async function executeCallConnectorNode(
   conversationId: ConversationId,
-  spec: CallConnectorSpec
+  spec: CallConnectorSpec,
+  variables?: WorkflowVariables
 ): Promise<CallConnectorResult> {
   let row: Awaited<ReturnType<typeof getConnectorRowForExecution>>
   try {
@@ -814,11 +723,11 @@ export async function executeCallConnectorNode(
     return { ok: false, reason: 'unavailable' }
   }
 
-  const variables = await resolveWorkflowVariables(conversationId)
+  const resolvedVariables = variables ?? (await resolveWorkflowVariables(conversationId))
   const values: ConnectorValues = {}
   for (const input of row.inputs) {
     const template = spec.params[input.name] ?? ''
-    const resolved = interpolate(template, variables).trim()
+    const resolved = interpolate(template, resolvedVariables).trim()
     if (!resolved) {
       if (input.required) return { ok: false, reason: 'invalid_params' }
       continue // an unresolved optional input is simply omitted (renders as '')

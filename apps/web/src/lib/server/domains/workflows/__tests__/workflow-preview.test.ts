@@ -186,6 +186,31 @@ describe.skipIf(!fixture.available)('previewWorkflow (real DB, rolled back)', ()
     expect(result.trace.at(-1)).toMatchObject({ nodeId: 'rb', outcome: 'parked' })
   })
 
+  it('parks at a call_connector node with a clear not-simulated summary', async () => {
+    const conversationId = await seedConversation('medium')
+    const wf = await createWorkflow({
+      name: 'Call a connector',
+      class: 'background',
+      triggerType: 'conversation.created',
+      graph: {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          { id: 'cc', type: 'call_connector', connectorId: 'connector_1', params: {} },
+        ],
+        edges: [{ from: 't', to: 'cc' }],
+      },
+    })
+
+    const result = await previewWorkflow({ workflowId: wf.id, conversationId })
+
+    expect(result.finalStatus).toBe('waiting')
+    expect(result.trace.at(-1)).toMatchObject({
+      nodeId: 'cc',
+      outcome: 'parked',
+      summary: 'Call connector (result not simulated)',
+    })
+  })
+
   it('reports the audience verdict, both matched and unmatched, against the real context', async () => {
     const highConversation = await seedConversation('high')
     const lowConversation = await seedConversation('low')

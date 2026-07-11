@@ -11,10 +11,24 @@ import { eq } from 'drizzle-orm'
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
 import { workflowVersions } from '@/lib/server/db'
 
-vi.mock('@/lib/server/db', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/server/db')>()),
-  db: (await import('@/lib/server/__tests__/db-test-fixture')).testDb,
-}))
+// Counts `db.select` property reads (one per call site, this codebase's
+// only usage pattern) so a test can prove updateWorkflow skipped the
+// version-check `before` read entirely for a patch that can't touch a
+// version-worthy field — wraps testDb's own Proxy (see db-test-fixture.ts)
+// rather than replacing it, so every other test's real-DB behavior is
+// unaffected.
+const dbCallCounts = vi.hoisted(() => ({ select: 0 }))
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/lib/server/db')>()
+  const { testDb: fixtureDb } = await import('@/lib/server/__tests__/db-test-fixture')
+  const countingDb = new Proxy(fixtureDb, {
+    get(target, prop, receiver) {
+      if (prop === 'select') dbCallCounts.select++
+      return Reflect.get(target, prop, receiver)
+    },
+  })
+  return { ...original, db: countingDb }
+})
 
 import { createWorkflow, updateWorkflow, getWorkflow, setWorkflowStatus } from '../workflow.service'
 import {
@@ -96,7 +110,11 @@ describe.skipIf(!fixture.available)('workflow-versions (real DB, rolled back)', 
     expect(await listWorkflowVersions(wf.id)).toHaveLength(1)
 
     // A sortOrder-only patch (drag reorder) never touches the tracked fields.
+    // Knowable from the patch's own keys alone, so updateWorkflow should skip
+    // its `before` read entirely — not just skip the version write.
+    const selectsBefore = dbCallCounts.select
     await updateWorkflow(wf.id, { sortOrder: 7 })
+    expect(dbCallCounts.select).toBe(selectsBefore)
     expect(await listWorkflowVersions(wf.id)).toHaveLength(1)
 
     const stored = await getWorkflow(wf.id)

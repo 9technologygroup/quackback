@@ -585,4 +585,81 @@ describe('walkWorkflow — conversational block kinds (Phase C, slice C-1)', () 
       expect(successorId(noFailedEdge, 'cc', undefined)).toBe('a')
     })
   })
+
+  describe('consume-once semantics: a resume answer only routes the ONE node it targets', () => {
+    it('two sequential reply_buttons: resume routes the first, then parks fresh at the second with its own send_block', () => {
+      const graph: WorkflowGraph = {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          {
+            id: 'b1',
+            type: 'reply_buttons',
+            body: doc,
+            options: [
+              { key: 'yes', label: 'Yes' },
+              { key: 'no', label: 'No' },
+            ],
+            allowTyping: false,
+          },
+          {
+            id: 'b2',
+            type: 'reply_buttons',
+            body: doc,
+            options: [
+              { key: 'yes', label: 'Yes' },
+              { key: 'no', label: 'No' },
+            ],
+            allowTyping: false,
+          },
+          { id: 'a_done', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 't', to: 'b1' },
+          { from: 'b1', to: 'b2', branch: 'yes' },
+          { from: 'b2', to: 'a_done', branch: 'yes' },
+        ],
+      }
+
+      // Resuming at b1 with a 'yes' answer must route past b1 to b2 — and NOT
+      // let that same answer also satisfy b2, which has never been asked yet.
+      const resumed = walkWorkflow(
+        graph,
+        ctxWithAnswer({ kind: 'buttons', buttonKey: 'yes' }),
+        'b1'
+      )
+      expect(resumed).toMatchObject({
+        status: 'waiting',
+        waitKind: 'input',
+        resumeNodeId: 'b2',
+        blockKind: 'buttons',
+        actions: [{ type: 'send_block', nodeId: 'b2', block: { kind: 'buttons' } }],
+      })
+    })
+
+    it('two sequential let_assistant_answer: resume routes the first, then parks fresh at the second awaiting its own outcome', () => {
+      const graph: WorkflowGraph = {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          { id: 'la1', type: 'let_assistant_answer' },
+          { id: 'la2', type: 'let_assistant_answer', instructions: 'second turn' },
+          { id: 'a_done', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 't', to: 'la1' },
+          { from: 'la1', to: 'la2' },
+          { from: 'la2', to: 'a_done' },
+        ],
+      }
+
+      // Resuming at la1 with 'resolved' must follow la1's default edge to la2
+      // — and NOT also let that outcome satisfy la2, which hasn't parked yet.
+      const resumed = walkWorkflow(graph, ctxWithAssistantOutcome('resolved'), 'la1')
+      expect(resumed).toMatchObject({
+        status: 'waiting',
+        waitKind: 'assistant',
+        resumeNodeId: 'la2',
+        actions: [{ type: 'let_assistant_answer', instructions: 'second turn' }],
+      })
+    })
+  })
 })

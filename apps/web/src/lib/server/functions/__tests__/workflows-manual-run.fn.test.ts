@@ -227,21 +227,7 @@ describe('runWorkflowManuallyFn', () => {
     expect(result).toEqual({ ok: true, runId: 'workflow_run_1', state: 'waiting' })
   })
 
-  it('maps a unique-violation thrown by runWorkflow to locked (defense in depth)', async () => {
-    hoisted.getWorkflow.mockResolvedValue(makeWorkflow({ class: 'customer_facing' }))
-    hoisted.hasActiveCustomerFacingRun.mockResolvedValue(false)
-    hoisted.resolveConditionContext.mockResolvedValue(ctx)
-    const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
-    hoisted.runWorkflow.mockRejectedValue(pgError)
-
-    const result = await runWorkflowManuallyFn({
-      data: { workflowId: 'workflow_1', conversationId: 'conversation_1' },
-    })
-
-    expect(result).toEqual({ ok: false, reason: 'locked' })
-  })
-
-  it('rethrows a non-unique-violation error', async () => {
+  it('rethrows an error thrown by runWorkflow', async () => {
     hoisted.getWorkflow.mockResolvedValue(makeWorkflow())
     hoisted.resolveConditionContext.mockResolvedValue(ctx)
     hoisted.runWorkflow.mockRejectedValue(new Error('boom'))
