@@ -1,15 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
+import { streamOf } from '@/test/sse'
 import { parseAskAiSseBlock, readAskAiStream } from '../ask-ai'
-
-function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder()
-  return new ReadableStream({
-    start(controller) {
-      for (const c of chunks) controller.enqueue(encoder.encode(c))
-      controller.close()
-    },
-  })
-}
 
 describe('parseAskAiSseBlock', () => {
   it('parses event and JSON data lines', () => {

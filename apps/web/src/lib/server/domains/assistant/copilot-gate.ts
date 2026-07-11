@@ -2,22 +2,26 @@
  * Shared gate sequences for every teammate-facing Copilot entry point, in two
  * shapes for two error contracts:
  *
- * - `gateCopilotRequest`, for the two SSE routes (copilot.ts, transform.ts):
- *   `copilot.use` permission -> body parse against the caller's own zod
- *   schema -> `assertCopilotAvailable` (the `assistantCopilot` flag, then the
- *   assistant being configured) -> the AI token budget -> item-scoped
- *   viewability (`assertConversationViewable` or `assertTicketVisible`,
- *   whichever the parsed request carries — unified inbox §2.9), each already
- *   mapped onto the route's error envelope (forbiddenResponse /
- *   errorResponse). Both routes ran this exact sequence verbatim before this;
- *   only the request schema and the invalid-request message differ between
- *   them, so this is generic over both.
+ * - `gateCopilotRequest`, for the SSE routes (copilot.ts, transform.ts,
+ *   suggest.ts): `copilot.use` permission -> body parse against the caller's
+ *   own zod schema -> `assertCopilotAvailable` (the `assistantCopilot` flag,
+ *   then the assistant being configured) -> the AI token budget ->
+ *   item-scoped viewability (`assertConversationViewable` or
+ *   `assertTicketVisible`, whichever the parsed request carries — unified
+ *   inbox §2.9), each already mapped onto the route's error envelope
+ *   (forbiddenResponse / errorResponse). The routes ran this exact sequence
+ *   verbatim before this; only the request schema and the invalid-request
+ *   message differ between them, so this is generic over all of them.
  * - `gateCopilotFn`, for the copilot server fns (copilot-events.ts,
  *   copilot-summary.ts): the same order minus parse and budget, every failure
  *   left as its original throw (see its doc). The Response shape can't just
  *   wrap the throw shape: its parse and budget steps interleave the shared
  *   steps, so the two share `assertCopilotAvailable` and
  *   `resolveViewableItem` instead of one wrapping the other.
+ *
+ * `streamAssistantSse` (bottom) is the other half of what those SSE routes
+ * share: the response shell that follows a passed gate (detached run,
+ * abort-aware error frame, guaranteed close).
  *
  * sandbox.ts is deliberately NOT a caller: it has no conversation to assert
  * viewability against and gates on a different permission (`settings.manage`,
@@ -51,6 +55,7 @@ import { NotFoundError } from '@/lib/shared/errors'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import { errorResponse, forbiddenResponse } from '@/lib/server/domains/api/responses'
+import { createSseStream, SSE_RESPONSE_HEADERS, type SseStream } from '@/lib/server/utils/sse'
 
 /**
  * Thrown by `assertCopilotAvailable` when either check fails; carries enough
@@ -226,4 +231,43 @@ export async function gateCopilotRequest<
     }
     throw err
   }
+}
+
+/**
+ * The SSE response shell shared by the streaming Copilot routes (copilot.ts,
+ * transform.ts, suggest.ts), following a passed `gateCopilotRequest`: open the
+ * stream, kick `run` off DETACHED (the Response must return while the turn is
+ * still streaming), and on a throw send the route's error frame — unless the
+ * client already hung up (`request.signal.aborted`), where an abort is the
+ * expected teardown, not a failure worth a frame or a log line. The stream
+ * always closes, and the Response carries `SSE_RESPONSE_HEADERS`. Each route
+ * keeps what genuinely differs: gating, turn-input construction, delta/final
+ * payload mapping (sent by `run` itself), and its own component-tagged
+ * failure log via `logError`.
+ */
+export function streamAssistantSse(options: {
+  request: Request
+  /** The error frame sent when `run` throws on a live (non-aborted) request. */
+  error: { event: string; payload: { code: string; message: string } }
+  /** Route-owned failure logging (its own logger child + message). */
+  logError: (err: unknown) => void
+  /** The route's turn: stream deltas/activity and send the final frame via `sse`. */
+  run: (sse: SseStream) => Promise<void>
+}): Response {
+  const sse = createSseStream()
+
+  void (async () => {
+    try {
+      await options.run(sse)
+    } catch (error) {
+      if (!options.request.signal.aborted) {
+        options.logError(error)
+        sse.send(options.error.event, options.error.payload)
+      }
+    } finally {
+      sse.close()
+    }
+  })()
+
+  return new Response(sse.stream, { headers: SSE_RESPONSE_HEADERS })
 }

@@ -15,6 +15,7 @@ import type { ConversationId } from '@quackback/ids'
 import { COPILOT_EVENTS } from '@/lib/shared/assistant/copilot-contract'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { installInMemoryLocalStorage } from '@/test/local-storage'
+import { sseFrame, mockStreamingResponse } from '@/test/sse'
 
 // Radix Popover/DropdownMenu rely on pointer/layout APIs happy-dom lacks.
 beforeAll(() => {
@@ -53,8 +54,9 @@ vi.mock('@/lib/client/queries/settings', () => ({
   },
 }))
 
-vi.mock('@/lib/client/copilot-events', () => ({
+vi.mock('@/lib/client/copilot-events', async () => ({
   recordCopilotEvent: hoisted.recordCopilotEvent,
+  itemRefBody: (await import('@/test/copilot')).mockItemRefBody,
 }))
 
 vi.mock('@/lib/server/functions/macros', () => ({
@@ -77,27 +79,6 @@ vi.mock('sonner', () => ({
 import { CopilotPanel } from '../copilot-panel'
 
 const CONVERSATION_ID = 'conversation_1' as ConversationId
-
-function sseFrame(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
-}
-
-function streamOf(text: string): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder()
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(encoder.encode(text))
-      controller.close()
-    },
-  })
-}
-
-function mockStreamingResponse(frames: string) {
-  return {
-    ok: true,
-    body: streamOf(frames),
-  } as Response
-}
 
 const ALL_FLAGS_ON: FeatureFlags = {
   assistantSnippets: true,

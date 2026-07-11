@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
 /**
  * Smoke coverage for the Copilot usage card: the MetricTile headline row,
- * the Outcomes section (insert rate, inserted breakdown, feedback split),
- * the per-teammate leaderboard, the per-kind transform breakdown, and the
- * actions funnel from getCopilotUsageMetricsFn (mocked) — funnel and
- * approval-rate tile shown only with showActionsFunnel — including the
+ * the Outcomes section (insert rate, inserted breakdown, feedback split,
+ * the proactive-suggestion funnel), the per-teammate leaderboard, the
+ * per-kind transform breakdown, and the actions funnel from
+ * getCopilotUsageMetricsFn (mocked) — funnel and approval-rate tile shown
+ * only with showActionsFunnel, the suggestion group shown only with
+ * showSuggestions OR suggestion activity in the fetched data — including the
  * zero-state before any data loads.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
@@ -28,6 +30,13 @@ const METRICS = {
   answersInserted: 21,
   transformsInserted: 2,
   summariesInserted: 1,
+  // Deliberately NOT the sum of the kind counts above: pins that the
+  // sub-line renders the server-derived numerator, not a hand-sum.
+  totalInserted: 25,
+  suggestionsShown: 0,
+  suggestionsInserted: 0,
+  suggestionsDismissed: 0,
+  suggestionAcceptanceRate: null,
   insertedReplies: 16,
   insertedNotes: 8,
   insertRate: 50,
@@ -60,12 +69,14 @@ function renderWithClient(ui: ReactElement) {
 describe('CopilotUsageCard', () => {
   it('mounts', () => {
     hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
-    expect(() => renderWithClient(<CopilotUsageCard showActionsFunnel />)).not.toThrow()
+    expect(() =>
+      renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
+    ).not.toThrow()
   })
 
   it('renders the headline metric tiles', async () => {
     hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
-    renderWithClient(<CopilotUsageCard showActionsFunnel />)
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
 
     expect(await screen.findByText('42')).toBeInTheDocument()
     expect(screen.getByText('7')).toBeInTheDocument()
@@ -76,11 +87,11 @@ describe('CopilotUsageCard', () => {
 
   it('renders the Outcomes section: insert rate, inserted breakdown, feedback signal', async () => {
     hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
-    renderWithClient(<CopilotUsageCard showActionsFunnel />)
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
 
-    // The insert-rate sub-line sums every inserted kind (21 + 2 + 1),
-    // mirroring insertRate's own numerator.
-    expect(await screen.findByText('24 inserted from 42 questions')).toBeInTheDocument()
+    // The insert-rate sub-line renders totalInserted — insertRate's own
+    // server-derived numerator — never a client-side hand-sum of the kinds.
+    expect(await screen.findByText('25 inserted from 42 questions')).toBeInTheDocument()
     expect(screen.getByText('Outcomes')).toBeInTheDocument()
     expect(screen.getByText('Insert rate')).toBeInTheDocument()
     // The gesture-kind split...
@@ -103,9 +114,53 @@ describe('CopilotUsageCard', () => {
     expect(screen.queryByText('Thumbs down')).not.toBeInTheDocument()
   })
 
+  it('renders the Suggestions group with showSuggestions, headlined by acceptance rate', async () => {
+    hoisted.getCopilotUsageMetricsFn.mockResolvedValue({
+      ...METRICS,
+      suggestionsShown: 10,
+      suggestionsInserted: 6,
+      suggestionsDismissed: 4,
+      suggestionAcceptanceRate: 60,
+    })
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions />)
+
+    expect(screen.getByText('Suggestion acceptance rate')).toBeInTheDocument()
+    expect(await screen.findByText('60%')).toBeInTheDocument()
+    expect(screen.getByText('6 inserted from 10 shown')).toBeInTheDocument()
+    expect(screen.getByText('Suggestions shown')).toBeInTheDocument()
+    expect(screen.getByText('10')).toBeInTheDocument()
+    expect(screen.getByText('Suggestions inserted')).toBeInTheDocument()
+    expect(screen.getByText('Suggestions dismissed')).toBeInTheDocument()
+    expect(screen.getAllByText('4').length).toBeGreaterThan(0)
+  })
+
+  it('hides the Suggestions group when showSuggestions is off and there is no suggestion activity', async () => {
+    hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
+
+    await screen.findByText('Outcomes')
+    expect(screen.queryByText('Suggestion acceptance rate')).not.toBeInTheDocument()
+    expect(screen.queryByText('Suggestions shown')).not.toBeInTheDocument()
+  })
+
+  it('keeps the Suggestions group when showSuggestions is off but the range has suggestion activity', async () => {
+    // The flag can be turned off after the fact; historical activity in the
+    // reported range should not vanish from the report.
+    hoisted.getCopilotUsageMetricsFn.mockResolvedValue({
+      ...METRICS,
+      suggestionsShown: 5,
+      suggestionsInserted: 2,
+      suggestionsDismissed: 1,
+      suggestionAcceptanceRate: 40,
+    })
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
+
+    expect(await screen.findByText('Suggestion acceptance rate')).toBeInTheDocument()
+  })
+
   it('hides the actions funnel and approval-rate tile without showActionsFunnel, keeping Outcomes', async () => {
     hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
-    renderWithClient(<CopilotUsageCard showActionsFunnel={false} />)
+    renderWithClient(<CopilotUsageCard showActionsFunnel={false} showSuggestions={false} />)
 
     expect(await screen.findByText('Outcomes')).toBeInTheDocument()
     expect(screen.queryByText('Actions funnel')).not.toBeInTheDocument()
@@ -115,7 +170,7 @@ describe('CopilotUsageCard', () => {
 
   it('renders the per-teammate leaderboard, falling back for a missing display name', async () => {
     hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
-    renderWithClient(<CopilotUsageCard showActionsFunnel />)
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
 
     expect(await screen.findByText('Alice')).toBeInTheDocument()
     expect(screen.getByText('30')).toBeInTheDocument()
@@ -125,7 +180,7 @@ describe('CopilotUsageCard', () => {
 
   it('renders the per-kind transform breakdown with a friendly label', async () => {
     hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
-    renderWithClient(<CopilotUsageCard showActionsFunnel />)
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
 
     expect(await screen.findByText('My tone')).toBeInTheDocument()
     expect(screen.getByText('More friendly')).toBeInTheDocument()
@@ -133,7 +188,7 @@ describe('CopilotUsageCard', () => {
 
   it('renders the actions funnel', async () => {
     hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
-    renderWithClient(<CopilotUsageCard showActionsFunnel />)
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
 
     expect(await screen.findByText('Proposed')).toBeInTheDocument()
     expect(screen.getByText('Approved')).toBeInTheDocument()
@@ -143,7 +198,7 @@ describe('CopilotUsageCard', () => {
 
   it('shows a zero-state before data loads', () => {
     hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
-    renderWithClient(<CopilotUsageCard showActionsFunnel />)
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
 
     // Headline tiles render the placeholder dash while the query is pending.
     expect(screen.getAllByText('—').length).toBeGreaterThan(0)
@@ -156,14 +211,14 @@ describe('CopilotUsageCard', () => {
       perTeammate: [],
       transformsByKind: [],
     })
-    renderWithClient(<CopilotUsageCard showActionsFunnel />)
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
 
     expect(await screen.findByText(/no copilot questions/i)).toBeInTheDocument()
   })
 
   it('fetches the last-30-days range', async () => {
     hoisted.getCopilotUsageMetricsFn.mockResolvedValue(METRICS)
-    renderWithClient(<CopilotUsageCard showActionsFunnel />)
+    renderWithClient(<CopilotUsageCard showActionsFunnel showSuggestions={false} />)
 
     await screen.findByText('42')
     expect(hoisted.getCopilotUsageMetricsFn).toHaveBeenCalledWith(

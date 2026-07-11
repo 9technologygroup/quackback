@@ -42,7 +42,7 @@ import {
   StopIcon,
 } from '@heroicons/react/24/solid'
 import { Avatar } from '@/components/ui/avatar'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -56,17 +56,10 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import {
   AssistantAnswer,
   AssistantWorkingTrace,
 } from '@/components/shared/conversation/assistant-turn'
+import { InternalSourcesConfirm } from '@/components/conversation/internal-sources-confirm'
 import { CopilotProposedActionCard } from './copilot-proposed-action-card'
 import { SaveAsMacroDialog } from './copilot-save-as-macro-dialog'
 import {
@@ -76,6 +69,7 @@ import {
   type SourceType,
 } from './copilot-sources'
 import { useSseTurn } from '@/lib/client/hooks/use-sse-turn'
+import { extractHttpErrorMessage, GENERIC_ERROR } from '@/lib/client/utils/http-error'
 import { settingsQueries } from '@/lib/client/queries/settings'
 import { cn } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
@@ -96,7 +90,11 @@ import {
   type TransformErrorPayload,
 } from '@/lib/shared/assistant/copilot-contract'
 import { formatConversationSummaryNote } from '@/lib/shared/assistant/copilot-format'
-import { recordCopilotEvent, type CopilotEventInput } from '@/lib/client/copilot-events'
+import {
+  itemRefBody,
+  recordCopilotEvent,
+  type CopilotEventInput,
+} from '@/lib/client/copilot-events'
 import type { AssistantActivityStatus } from '@/lib/shared/conversation/types'
 import type { InboxItemRef } from '@/lib/shared/inbox/items'
 import {
@@ -104,16 +102,8 @@ import {
   summarizeTicketNowFn,
 } from '@/lib/server/functions/copilot-summary'
 
-/** The item-ref body fragment every Copilot SSE request carries (unified
- *  inbox §2.9's `withAssistantItemRef` union) — `{ conversationId }` or
- *  `{ ticketId }`, exactly one, spread alongside the route's own fields. */
-function itemRefBody(item: InboxItemRef): { conversationId: string } | { ticketId: string } {
-  return item.kind === 'conversation' ? { conversationId: item.id } : { ticketId: item.id }
-}
-
 const MAX_QUESTION_CHARS = 4000
 const MAX_HISTORY_ENTRIES = 20
-const GENERIC_ERROR = 'Something went wrong. Try again.'
 
 /**
  * Panel-scoped bindings, surfaced in the inbox shortcut help panel. These are
@@ -124,20 +114,6 @@ const GENERIC_ERROR = 'Something went wrong. Try again.'
 export const COPILOT_PANEL_SHORTCUTS: ReadonlyArray<{ keys: string; label: string }> = [
   { keys: '⌘↵', label: 'Insert last Copilot answer (with the ask box empty)' },
 ]
-
-/** Pull the server's `{error:{message}}` body off a failed SSE turn's HTTP
- *  response, falling back to GENERIC_ERROR for a non-JSON (or empty) body.
- *  Shared by both `onHttpError` handlers below (the ask/answer turn and the
- *  transform turn) so the same fallback logic doesn't drift between them. */
-async function extractHttpErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json()
-    if (body?.error?.message) return body.error.message as string
-  } catch {
-    // Non-JSON error body: keep the generic message.
-  }
-  return GENERIC_ERROR
-}
 
 type InsertMode = 'reply' | 'note'
 
@@ -716,42 +692,20 @@ export function CopilotPanel({
         onOpenChange={(open) => !open && setSaveMacroTurnId(null)}
       />
 
-      <AlertDialog open={!!pendingInsert} onOpenChange={(open) => !open && setPendingInsert(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>This answer uses internal sources</AlertDialogTitle>
-            <AlertDialogDescription>
-              It cites content your customers are not meant to see. Review before sending, or add it
-              as an internal note instead.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <Button type="button" variant="outline" onClick={() => setPendingInsert(null)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => {
-                if (pendingInsert) performInsert(pendingInsert.text, 'note', pendingInsert.event)
-                setPendingInsert(null)
-              }}
-            >
-              Add as note
-            </Button>
-            <Button
-              type="button"
-              className={buttonVariants({ variant: 'destructive' })}
-              onClick={() => {
-                if (pendingInsert) performInsert(pendingInsert.text, 'reply', pendingInsert.event)
-                setPendingInsert(null)
-              }}
-            >
-              Add to composer anyway
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <InternalSourcesConfirm
+        open={!!pendingInsert}
+        noun="answer"
+        confirmLabel="Add to composer anyway"
+        onConfirm={() => {
+          if (pendingInsert) performInsert(pendingInsert.text, 'reply', pendingInsert.event)
+          setPendingInsert(null)
+        }}
+        onCancel={() => setPendingInsert(null)}
+        onAddAsNote={() => {
+          if (pendingInsert) performInsert(pendingInsert.text, 'note', pendingInsert.event)
+          setPendingInsert(null)
+        }}
+      />
     </div>
   )
 }

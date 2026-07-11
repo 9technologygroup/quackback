@@ -65,9 +65,16 @@ function AssistantPage() {
       {/* Copilot usage reports on the Copilot surface itself, so it follows the
           assistantCopilot flag; only its actions-funnel section needs
           assistantActions (the pending-actions funnel doesn't exist otherwise),
-          which the card gates internally via showActionsFunnel. */}
+          which the card gates internally via showActionsFunnel. Same pattern
+          for the Suggestions group and assistantProactiveSuggestions via
+          showSuggestions — the card additionally keeps that group visible
+          when the range has suggestion activity even after the flag is
+          turned back off (see copilot-usage-card.tsx's doc comment). */}
       {flags?.assistantCopilot && (
-        <CopilotUsageCard showActionsFunnel={Boolean(flags?.assistantActions)} />
+        <CopilotUsageCard
+          showActionsFunnel={Boolean(flags?.assistantActions)}
+          showSuggestions={Boolean(flags?.assistantProactiveSuggestions)}
+        />
       )}
 
       {flags?.assistantActions ? (

@@ -84,6 +84,13 @@ export type EffectiveToolMode = ToolControlMode | 'simulate'
  *    `AssistantToolContext`). Read-risk tools are never affected by
  *    `ctx.simulate` or `ctx.writeToolPolicy`: reads only observe, so there is
  *    nothing to preview or propose.
+ * 5. Write-risk disabled override. `ctx.writeToolPolicy: 'disabled'`
+ *    (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md, the proactive-suggestions surface)
+ *    wins over every other write-risk fold above, metadataWrite exemption
+ *    included: a suggestion turn drafts a reply and must never even preview
+ *    or propose a write, so the tool is disabled outright rather than routed
+ *    through simulate/approval. Checked first in the write-risk block, before
+ *    the propose override, so it can't be shadowed by it.
  */
 export function resolveEffectiveToolMode(
   spec: AssistantToolSpec,
@@ -100,6 +107,10 @@ export function resolveEffectiveToolMode(
   }
   if (mode === 'disabled') return 'disabled'
   if (spec.risk === 'write') {
+    // Fold 5: a suggestion turn never even considers proposing or simulating
+    // a write — read-only by contract, so this short-circuits before the
+    // propose/simulate folds below.
+    if (ctx.writeToolPolicy === 'disabled') return 'disabled'
     // The copilot surface proposes every genuine ACTION for teammate approval
     // (P2-C.4), but a metadata write (recording a classification attribute) is
     // not an action: it is guarded by the write path's AI-precedence rule and

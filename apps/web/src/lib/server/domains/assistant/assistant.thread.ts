@@ -13,7 +13,18 @@
  * notes and soft-deleted rows are filtered in SQL, so they never reach the
  * mapper (and no longer consume window slots).
  */
-import type { PrincipalId, ConversationId } from '@quackback/ids'
+import type { PrincipalId, ConversationId, TicketId } from '@quackback/ids'
+import {
+  db,
+  conversations,
+  conversationMessages,
+  tickets,
+  ticketStatuses,
+  eq,
+  and,
+  isNull,
+  desc,
+} from '@/lib/server/db'
 import {
   listMessages,
   listConversationMessagesForGrounding,
@@ -80,4 +91,78 @@ export async function loadConversationThread(
     limit: opts.limit ?? ASSISTANT_THREAD_WINDOW,
   })
   return messages
+}
+
+/**
+ * What a pre-turn gate needs to know about a conversation/ticket without
+ * loading its thread (see `loadAssistantItemState`).
+ */
+export interface AssistantItemState {
+  /**
+   * Whether the item is closed: `conversations.status === 'closed'`, or the
+   * ticket's status rolls up to the `'closed'` category (the coarse axis of
+   * the two-axis ticket status model — see `ticketStatuses.category`).
+   */
+  closed: boolean
+  /**
+   * The item's latest customer-authored message id, or null when the item has
+   * none: the newest `senderType: 'visitor'` row that is neither an internal
+   * note nor soft-deleted, by (createdAt, id). These filter semantics are
+   * deliberately identical to the orchestrator's in-memory equivalent over
+   * its already-loaded thread rows (assistant.orchestrator.ts, the
+   * `latestCustomerMessageId` fold: `loadConversationThread` excludes
+   * internal/deleted rows in SQL, then it takes the last 'visitor' row) —
+   * change one and you must change the other.
+   */
+  latestCustomerMessageId: string | null
+}
+
+/**
+ * Targeted pre-turn read for the suggest route's gates (staleness + closed
+ * state), replacing a full thread load (messages + authors + attachments)
+ * that was consumed for a single id — `runAssistantTurn` re-loads the thread
+ * itself as grounding, so anything read here beyond these two facts is paid
+ * for twice. Exactly one of `conversationId`/`ticketId` must be set (the
+ * route's item ref guarantees it). Returns null when the item row does not
+ * exist — defensive only; callers run behind an item-viewability gate.
+ */
+export async function loadAssistantItemState(
+  conversationId: ConversationId | null,
+  ticketId: TicketId | null
+): Promise<AssistantItemState | null> {
+  const latestCustomerMessageQuery = db
+    .select({ id: conversationMessages.id })
+    .from(conversationMessages)
+    .where(
+      and(
+        conversationId
+          ? eq(conversationMessages.conversationId, conversationId)
+          : eq(conversationMessages.ticketId, ticketId as TicketId),
+        eq(conversationMessages.senderType, 'visitor'),
+        eq(conversationMessages.isInternal, false),
+        isNull(conversationMessages.deletedAt)
+      )
+    )
+    .orderBy(desc(conversationMessages.createdAt), desc(conversationMessages.id))
+    .limit(1)
+
+  // Both branches project the one closed-determining value onto the same
+  // `state` key: the conversation's own status, or the ticket status row's
+  // coarse category.
+  const closedQuery = conversationId
+    ? db
+        .select({ state: conversations.status })
+        .from(conversations)
+        .where(eq(conversations.id, conversationId))
+        .limit(1)
+    : db
+        .select({ state: ticketStatuses.category })
+        .from(tickets)
+        .innerJoin(ticketStatuses, eq(ticketStatuses.id, tickets.statusId))
+        .where(and(eq(tickets.id, ticketId as TicketId), isNull(tickets.deletedAt)))
+        .limit(1)
+
+  const [[itemRow], [messageRow]] = await Promise.all([closedQuery, latestCustomerMessageQuery])
+  if (!itemRow) return null
+  return { closed: itemRow.state === 'closed', latestCustomerMessageId: messageRow?.id ?? null }
 }

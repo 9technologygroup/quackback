@@ -960,6 +960,13 @@ export interface FeatureFlags {
   assistantConversationGrounding: boolean
   /** Quinn Copilot: a private, teammate-facing Q&A sidebar in the inbox conversation panel */
   assistantCopilot: boolean
+  /** Proactive suggested replies (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md): a
+   *  read-only draft-reply card generated when a teammate views a
+   *  conversation/ticket whose latest message is from the customer with no
+   *  teammate reply after it. Layers on top of `assistantCopilot` (same
+   *  `copilot.use` permission and item-viewability gate; see
+   *  routes/api/admin/assistant/suggest.ts). */
+  assistantProactiveSuggestions: boolean
   /** Two-way inbox translation: customer messages display in the teammate's
    *  language and replies send in the customer's language, per conversation. */
   inboxTranslation: boolean
@@ -1004,6 +1011,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   assistantSnippets: false,
   assistantConversationGrounding: false,
   assistantCopilot: false,
+  assistantProactiveSuggestions: false,
   inboxTranslation: false,
   aiAttributeDetection: false,
 }
@@ -1082,6 +1090,11 @@ export const FEATURE_FLAG_REGISTRY: Record<
     description:
       'Add a private Copilot tab to the inbox conversation panel where a teammate can ask Quinn questions about the conversation. Answers are visible only to the asking teammate.',
   },
+  assistantProactiveSuggestions: {
+    label: 'Proactive suggested replies',
+    description:
+      'Show a suggested-reply draft above the composer when a teammate opens a conversation or ticket the customer is waiting on. Requires Quinn Copilot.',
+  },
   inboxTranslation: {
     label: 'Inbox translation',
     description:
@@ -1129,6 +1142,7 @@ export const LAB_SECTIONS: Array<{
       'assistantSnippets',
       'assistantConversationGrounding',
       'assistantCopilot',
+      'assistantProactiveSuggestions',
       'inboxTranslation',
       'aiAttributeDetection',
     ],

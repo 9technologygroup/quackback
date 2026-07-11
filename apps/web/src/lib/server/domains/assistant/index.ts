@@ -72,7 +72,9 @@ export {
 export {
   mapRowsToThreadMessages,
   loadConversationThread,
+  loadAssistantItemState,
   ASSISTANT_THREAD_WINDOW,
+  type AssistantItemState,
 } from './assistant.thread'
 export { buildAssistantHandoverMessage } from './assistant.handover'
 

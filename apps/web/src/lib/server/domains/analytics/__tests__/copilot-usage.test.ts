@@ -110,9 +110,13 @@ async function seedAssistantEvent(
 describe('summarizeCopilotUsage (pure)', () => {
   const emptyBucket = { total: 0, approved: 0, rejected: 0, expired: 0 }
   const emptyEvents = {
+    totalInserted: 0,
     answersInserted: 0,
     transformsInserted: 0,
     summariesInserted: 0,
+    suggestionsShown: 0,
+    suggestionsInserted: 0,
+    suggestionsDismissed: 0,
     insertedReplies: 0,
     insertedNotes: 0,
     feedbackUp: 0,
@@ -193,16 +197,26 @@ describe('summarizeCopilotUsage (pure)', () => {
     expect(summary.insertedNotes).toBe(2)
   })
 
-  it('computes insertRate as all inserted events / totalQuestions, 0-100', () => {
+  it('computes insertRate as the bucket totalInserted / totalQuestions, 0-100', () => {
+    // The numerator is the SQL-counted `totalInserted` (derived from
+    // INSERT_EVENT_TYPES in the scan), NOT a re-sum of the per-kind fields —
+    // deliberately inconsistent per-kind counts here pin that the fold never
+    // second-guesses the bucket. Which kinds count (suggestions included) is
+    // owned by the suffix-derived INSERT_EVENT_TYPES list and pinned by the
+    // real-DB test below.
     const summary = summarizeCopilotUsage(
       8,
       [],
       0,
       emptyBucket,
-      { ...emptyEvents, answersInserted: 1, transformsInserted: 1 },
+      { ...emptyEvents, totalInserted: 2, answersInserted: 99 },
       []
     )
     expect(summary.insertRate).toBe(25)
+    // totalInserted is exposed alongside the rate (the same SQL-counted
+    // numerator, never a re-sum of the per-kind fields), so the usage card
+    // can render the total without hand-summing four kinds.
+    expect(summary.totalInserted).toBe(2)
   })
 
   it('is null (never NaN) insertRate when nothing was asked', () => {
@@ -211,10 +225,30 @@ describe('summarizeCopilotUsage (pure)', () => {
       [],
       0,
       emptyBucket,
-      { ...emptyEvents, answersInserted: 2 },
+      { ...emptyEvents, totalInserted: 2, answersInserted: 2 },
       []
     )
     expect(summary.insertRate).toBeNull()
+  })
+
+  it('passes the suggestion funnel counts through and computes suggestionAcceptanceRate', () => {
+    const summary = summarizeCopilotUsage(
+      0,
+      [],
+      0,
+      emptyBucket,
+      { ...emptyEvents, suggestionsShown: 4, suggestionsInserted: 3, suggestionsDismissed: 1 },
+      []
+    )
+    expect(summary.suggestionsShown).toBe(4)
+    expect(summary.suggestionsInserted).toBe(3)
+    expect(summary.suggestionsDismissed).toBe(1)
+    expect(summary.suggestionAcceptanceRate).toBe(75)
+  })
+
+  it('is null (never NaN) suggestionAcceptanceRate when nothing was shown', () => {
+    const summary = summarizeCopilotUsage(0, [], 0, emptyBucket, emptyEvents, [])
+    expect(summary.suggestionAcceptanceRate).toBeNull()
   })
 
   it('passes the feedback split through untouched', () => {
@@ -371,6 +405,42 @@ describe.skipIf(!fixture.available)('getCopilotUsageMetrics (real DB)', () => {
       expect(metrics.feedbackUp).toBe(1)
       expect(metrics.feedbackDown).toBe(2)
       expect(metrics.feedbackDownWithReason).toBe(1)
+    })
+
+    it('counts the suggestion_* funnel and computes suggestionAcceptanceRate as inserted/shown', async () => {
+      await seedAssistantEvent('suggestion_shown')
+      await seedAssistantEvent('suggestion_shown')
+      await seedAssistantEvent('suggestion_shown')
+      await seedAssistantEvent('suggestion_shown')
+      await seedAssistantEvent('suggestion_inserted', { destination: 'reply' })
+      await seedAssistantEvent('suggestion_inserted', { destination: 'note' })
+      await seedAssistantEvent('suggestion_inserted', { destination: 'reply' })
+      await seedAssistantEvent('suggestion_dismissed')
+
+      const metrics = await getCopilotUsageMetrics(FROM, TO)
+      expect(metrics.suggestionsShown).toBe(4)
+      expect(metrics.suggestionsInserted).toBe(3)
+      expect(metrics.suggestionsDismissed).toBe(1)
+      expect(metrics.suggestionAcceptanceRate).toBe(75)
+    })
+
+    it('folds suggestion_inserted into insertRate and the destination split, alongside the other *_inserted kinds', async () => {
+      await seedUsageLog('assistant', { surface: 'copilot' })
+      await seedUsageLog('assistant', { surface: 'copilot' })
+      await seedAssistantEvent('answer_inserted', { destination: 'reply' })
+      await seedAssistantEvent('suggestion_inserted', { destination: 'reply' })
+      await seedAssistantEvent('suggestion_inserted', { destination: 'note' })
+
+      const metrics = await getCopilotUsageMetrics(FROM, TO)
+      // 1 answer + 2 suggestions inserted, over 2 questions asked = 150%
+      // (trend-level, can exceed 100 — same shape as the existing insertRate note).
+      expect(metrics.totalInserted).toBe(3)
+      expect(metrics.insertRate).toBe(150)
+      // The destination split is a FILTER over COPILOT_EVENT_TYPES minus
+      // 'feedback', derived from the shared contract, so suggestion_inserted
+      // rows land in it automatically without any code change here.
+      expect(metrics.insertedReplies).toBe(2)
+      expect(metrics.insertedNotes).toBe(1)
     })
 
     it('ignores unknown event types and rows outside the date range', async () => {

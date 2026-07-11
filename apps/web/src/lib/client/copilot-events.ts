@@ -6,8 +6,21 @@
  * (the server fn module), never retyped here.
  */
 import { recordCopilotEventFn, type CopilotEventInput } from '@/lib/server/functions/copilot-events'
+import type { InboxItemRef } from '@/lib/shared/inbox/items'
 
 export type { CopilotEventInput }
+
+/** The item-ref body fragment every Copilot request and usage event carries
+ *  (unified inbox §2.9's `withAssistantItemRef` union) — `{ conversationId }`
+ *  or `{ ticketId }`, exactly one. Shared by the Copilot panel and the
+ *  suggested-reply card, both of which pair it with `recordCopilotEvent`. */
+export function itemRefBody(item: InboxItemRef): { conversationId: string } | { ticketId: string } {
+  return item.kind === 'conversation' ? { conversationId: item.id } : { ticketId: item.id }
+}
+
+/** The item-ref body's shape, named once here so consumers (e.g. the
+ *  suggested-reply store) don't re-declare the union by hand. */
+export type AssistantItemRef = ReturnType<typeof itemRefBody>
 
 export function recordCopilotEvent(input: CopilotEventInput): void {
   void recordCopilotEventFn({ data: input }).catch(() => {})

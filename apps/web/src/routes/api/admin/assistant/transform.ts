@@ -20,9 +20,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { runCopilotTransform } from '@/lib/server/domains/assistant'
-import { gateCopilotRequest } from '@/lib/server/domains/assistant/copilot-gate'
+import { gateCopilotRequest, streamAssistantSse } from '@/lib/server/domains/assistant/copilot-gate'
 import { withAssistantItemRef } from '@/lib/server/domains/assistant/item-ref.schema'
-import { createSseStream, SSE_RESPONSE_HEADERS } from '@/lib/server/utils/sse'
 import { logger } from '@/lib/server/logger'
 import {
   TRANSFORM_EVENTS,
@@ -53,10 +52,17 @@ export async function handleTransform({ request }: { request: Request }): Promis
   if (!gate.ok) return gate.response
   const { auth, parsed } = gate
 
-  const sse = createSseStream()
-
-  void (async () => {
-    try {
+  return streamAssistantSse({
+    request,
+    error: {
+      event: TRANSFORM_EVENTS.error,
+      payload: {
+        code: 'TRANSFORM_FAILED',
+        message: 'Transform failed',
+      } satisfies TransformErrorPayload,
+    },
+    logError: (err) => log.error({ err }, 'copilot transform failed'),
+    run: async (sse) => {
       const result = await runCopilotTransform({
         transform: parsed.transform,
         text: parsed.text,
@@ -66,20 +72,8 @@ export async function handleTransform({ request }: { request: Request }): Promis
           sse.send(TRANSFORM_EVENTS.delta, { text } satisfies TransformDeltaPayload),
       })
       sse.send(TRANSFORM_EVENTS.final, { text: result.text } satisfies TransformFinalPayload)
-    } catch (error) {
-      if (!request.signal.aborted) {
-        log.error({ err: error }, 'copilot transform failed')
-        sse.send(TRANSFORM_EVENTS.error, {
-          code: 'TRANSFORM_FAILED',
-          message: 'Transform failed',
-        } satisfies TransformErrorPayload)
-      }
-    } finally {
-      sse.close()
-    }
-  })()
-
-  return new Response(sse.stream, { headers: SSE_RESPONSE_HEADERS })
+    },
+  })
 }
 
 export const Route = createFileRoute('/api/admin/assistant/transform')({

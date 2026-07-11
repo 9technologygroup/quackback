@@ -148,7 +148,12 @@ export async function runAssistantTurnForConversation(
   const active = revived ?? (await getActiveInvolvement(conversationId))
 
   // The customer message this turn answers, for the write-tool idempotency
-  // key: a retried turn over the same message must key the same way.
+  // key: a retried turn over the same message must key the same way. In-memory
+  // over the thread rows already loaded above; the filter semantics (latest
+  // 'visitor' row among non-internal, non-deleted messages — the SQL half is
+  // loadConversationThread's) are deliberately identical to the targeted
+  // `loadAssistantItemState` read (assistant.thread.ts) the suggest route
+  // uses where no thread is in hand — change one and you must change the other.
   const latestCustomerMessageId =
     threadRows.filter((m) => m.senderType === 'visitor').at(-1)?.id ?? null
 

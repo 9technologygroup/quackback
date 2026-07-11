@@ -115,6 +115,26 @@ export type AssistantTurnResult =
        * caller that never resolves a write tool to 'approval').
        */
       proposedActions: AssistantProposedAction[]
+      /**
+       * The proactive-suggestions honest-miss outcome
+       * (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md): `true` when the model set the
+       * structured "skip" field (see `buildSuggestionFramingPrompt`), meaning
+       * nothing grounded was worth suggesting — `text`/`citations` are then
+       * forced empty and `internalSourced` false at the return site below,
+       * even if the model wrote something anyway (defense in depth, the same
+       * posture `suppressed` already takes). Also `true` when a suggest-intent
+       * turn's synthesis fails outright: the intent's `failureMode: 'skip'`
+       * (see `COPILOT_INTENT_PROFILES`) degrades a total failure to the same
+       * skip shape, so the apology fallback text can never surface as an
+       * insertable suggestion. Always `false` on every other turn: the return
+       * site only honors the model's flag when this turn's intent profile
+       * sets `honorsSkip`, so a spurious `skip: true` from a widget/Q&A model
+       * is IGNORED rather than blanking the reply — including the fallback
+       * and non-conformant branches, mirroring `answerType`'s
+       * always-present-with-a-safe-default shape rather than `escalation`'s
+       * optional-when-absent one.
+       */
+      skip: boolean
       escalation?: EscalationOutcome
     }
   | { status: 'suppressed'; reason: 'silence' }
@@ -146,8 +166,15 @@ export function activityToStatus(activity: AssistantActivity): AssistantActivity
 }
 
 export interface AssistantTurnInput {
-  /** Prior turns oldest-first, including the message being responded to. */
-  messages: AssistantThreadMessage[]
+  /**
+   * Prior turns oldest-first, including the message being responded to.
+   * Optional ONLY because an intent profile may own the turn message outright
+   * (`copilotIntent: 'suggest'` — see `COPILOT_INTENT_PROFILES.suggest.turnMessages`,
+   * which overrides whatever a caller passes); every other caller must pass
+   * the thread, and omitting it there is a caller bug (the model would see no
+   * user message at all).
+   */
+  messages?: AssistantThreadMessage[]
   /** Quinn's service principal (authors replies next wave). */
   assistantPrincipalId: PrincipalId
   /** The linked conversation, or null (sandbox, which also implies simulate mode for write tools). */
@@ -179,6 +206,23 @@ export interface AssistantTurnInput {
    */
   surface?: AssistantSurface
   /**
+   * Copilot-only: what a `surface: 'copilot'` turn is FOR, resolving the
+   * whole per-intent fan-out through `COPILOT_INTENT_PROFILES` (framing
+   * prompt, usage-log `pipelineStep`, skip/failure semantics, and — for
+   * 'suggest' — the forced read-only tool policy plus the profile-owned
+   * turn message) in one place. 'qa' (default when the surface is
+   * 'copilot' and this is omitted) answers the asking teammate's own
+   * question about the item — the byte-identical behavior every existing
+   * copilot.ts/transform.ts caller already gets. 'suggest'
+   * (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md, routes/api/admin/assistant/suggest.ts)
+   * drafts a ready-to-send reply to the item's latest customer message
+   * instead. Every other field this turn shares with a Q&A turn (retrieval
+   * ceiling, item grounding, guidance rules, surface instructions) stays
+   * keyed off `surface: 'copilot'` unchanged — the profile record is the ONE
+   * place the two differ. Ignored on every non-copilot surface.
+   */
+  copilotIntent?: 'qa' | 'suggest'
+  /**
    * Per-request NARROWING filter over search_knowledge's grounding sources
    * (the copilot Answer-sources picker); undefined consults every source the
    * workspace's flags already registered. See `retrieveKnowledge`.
@@ -195,12 +239,17 @@ export interface AssistantTurnInput {
    */
   simulate?: boolean
   /**
-   * Threaded straight onto the tool context's `writeToolPolicy` (see its doc
-   * on `AssistantToolContext`). The copilot surface sets 'propose': a write
-   * tool call always resolves to approval there, so Quinn only ever proposes
-   * an action for a teammate to approve, never runs one from a Q&A turn, even
-   * one configured autonomous. Undefined preserves the existing
-   * simulate-derived default for every other caller.
+   * Threaded onto the tool context's `writeToolPolicy` (see its doc on
+   * `AssistantToolContext`) UNLESS this turn's intent forces its own (see
+   * `COPILOT_INTENT_PROFILES`: intent 'suggest' is read-only by definition,
+   * so it forces 'disabled' at the tool-context seam regardless of what the
+   * caller passed — which is why 'disabled' is not in this union; it is an
+   * intent-owned invariant, not a caller choice, and stays a legal value only
+   * on `AssistantToolContext` itself). The copilot Q&A surface sets
+   * 'propose': a write tool call always resolves to approval there, so Quinn
+   * only ever proposes an action for a teammate to approve, never runs one
+   * from a Q&A turn, even one configured autonomous. Undefined preserves the
+   * existing simulate-derived default for every other caller.
    */
   writeToolPolicy?: 'simulate' | 'controls' | 'propose'
   /**
@@ -282,6 +331,14 @@ const assistantOutputSchema = z.object({
   // salvage paths only recover `text` — so every omission falls back to
   // `draft_reply` at the return sites rather than failing validation.
   answerType: z.enum(['draft_reply', 'analysis']).optional(),
+  // Proactive-suggestions-only honest-miss flag (see
+  // buildSuggestionFramingPrompt): only ever requested by that framing block,
+  // and only ever HONORED when the turn's resolved intent is 'suggest' (see
+  // the return site) — a spurious skip:true from any other surface's model
+  // parses fine here but never blanks the reply. Same additive-optional
+  // treatment as answerType above so every other caller's output stays valid
+  // whether or not the model bothers to omit it.
+  skip: z.boolean().optional(),
 })
 
 type AssistantOutput = z.infer<typeof assistantOutputSchema>
@@ -628,6 +685,120 @@ export function buildCopilotFramingPrompt(): string {
   ].join('\n')
 }
 
+/**
+ * Frame the proactive-suggestions turn (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md,
+ * routes/api/admin/assistant/suggest.ts): unlike `buildCopilotFramingPrompt`
+ * above, this turn answers no question at all — it drafts a ready-to-send
+ * reply to the CUSTOMER's latest message, for a teammate to review and
+ * insert. Reuses `surface: 'copilot'` for its retrieval ceiling and item
+ * grounding (the conversation/ticket transcript, including the message being
+ * answered, is injected separately by `buildConversationContextPrompt` /
+ * `buildTicketContextPrompt`, exactly as for a Q&A turn), so this is the only
+ * prompt block that differs between the two (see `AssistantTurnInput.copilotIntent`).
+ *
+ * Explicit skip contract: the honest-miss mechanism mirrors Ask AI's
+ * grounded/no_answer split (synthesis.ts) rather than inventing a parallel
+ * one, adapted to this turn's JSON contract as an additive optional field the
+ * same way `answerType` extends it above (see `skip` on
+ * `assistantOutputSchema`). A model that finds nothing worth suggesting sets
+ * "skip": true and leaves "text" empty; the return site in `runAssistantTurn`
+ * enforces this even if the model wrote something anyway, so a skip can never
+ * leak a half-drafted guess into the composer.
+ */
+export function buildSuggestionFramingPrompt(): string {
+  return [
+    'You are drafting a suggested reply for a TEAMMATE to review and send to the customer. Nobody has asked you a question; do not address the teammate at all.',
+    'Write the reply itself, ready to send exactly as written: speak to the customer directly, in the second person, as the support team. No meta-commentary, no preamble like "Here is a suggested reply", no explaining what you are doing.',
+    "The conversation may already contain a greeting; do not add another one. Pick up the thread naturally, addressing only the customer's latest message.",
+    'Team and internal sources are allowed for your OWN grounding, but a source flagged internal must never be pasted into the draft as-is: paraphrase it in customer-safe language, or leave the point out entirely if it cannot be said safely.',
+    'In addition to the required fields, add a "skip" field: set it to true when nothing in your tools or the conversation grounds a reply worth suggesting, and leave "text" empty in that case. Set it to false (or omit it) once you have written a real draft. Skipping is always safer than guessing — never invent a plausible-sounding answer just to have something to suggest.',
+  ].join('\n')
+}
+
+/**
+ * Not a real customer utterance: the fixed drafting instruction a suggestion
+ * turn feeds the model as its sole "message". The actual message being
+ * answered (and the rest of the item's thread) is loaded separately as
+ * grounding (see `buildConversationContextPrompt`/`buildTicketContextPrompt`),
+ * exactly as for a Q&A turn. `sender: 'customer'` mirrors the copilot route's
+ * repurposing of the vocabulary — it means "the one posing this turn to
+ * Quinn", not literally the item's customer. Living on the intent profile
+ * (not in the suggest route) keeps every suggestion invariant in one record;
+ * it also means `respondEligible` only ever sees this single non-human_agent
+ * turn, so the customer-facing silence rule can never mute a suggestion —
+ * exactly the spec's intent (agent-facing assist, not an autonomous reply).
+ */
+const SUGGEST_TURN_MESSAGES: AssistantThreadMessage[] = [
+  {
+    sender: 'customer',
+    content: "Draft a ready-to-send reply to the customer's latest message in this conversation.",
+  },
+]
+
+/**
+ * The copilot intent fan-out, in ONE record: everything that differs between
+ * a Q&A turn and a proactive-suggestion turn on the copilot surface, so a new
+ * intent must decide every axis at once rather than wiring its framing in
+ * one branch and forgetting its usage-log step or tool policy in another.
+ * Only ever consulted when the resolved surface is 'copilot' (see
+ * `runAssistantTurn` — `copilotIntent` is documented as ignored everywhere
+ * else, so a stray value on a widget turn buys nothing, pipelineStep
+ * included).
+ *
+ * - `buildFraming`: the framing block pushed right after the base prompt.
+ * - `pipelineStep`: the usage-log marker; 'copilot_suggest' keeps a
+ *   suggestion turn out of analytics/copilot-usage.ts's Q&A question count
+ *   (which scans `pipelineStep: 'assistant'` rows), mirroring the existing
+ *   'copilot_transform'/'copilot_summary' one-step-per-feature pattern.
+ * - `writeToolPolicy`: when set, OVERRIDES the caller's own
+ *   `input.writeToolPolicy` at the tool-context seam. 'suggest' forces
+ *   'disabled' (a suggestion drafts, it never acts and never proposes — see
+ *   `resolveEffectiveToolMode`'s fold 5, assistant.tools.ts): the invariant
+ *   belongs to the intent itself, not to every caller remembering to pass it.
+ * - `honorsSkip`: whether the return site honors the model's structured
+ *   "skip" honest-miss flag. True only for 'suggest' (the one intent whose
+ *   framing asks for the field); a spurious `skip: true` from any other
+ *   intent's model parses fine but never blanks the reply.
+ * - `failureMode`: what a total synthesis failure (both attempts hard-fail,
+ *   or a non-conformant final) returns. 'apology' is the customer-facing
+ *   posture: the `ASSISTANT_FALLBACK_MESSAGE` retry prompt, because a reply
+ *   surface must never answer with silence. 'skip' is the suggestion
+ *   posture: a skip-shaped result (`skip: true`, empty text), because
+ *   fallback text streamed as an insertable suggestion would put an apology
+ *   in the composer as if it were a draft — for a proactive card, silence IS
+ *   the graceful degradation.
+ * - `turnMessages`: when set, the intent owns the turn's messages outright,
+ *   overriding `input.messages` (same override posture as `writeToolPolicy`).
+ *   'suggest' supplies the fixed drafting instruction above, so its route
+ *   passes no messages at all.
+ */
+const COPILOT_INTENT_PROFILES: Record<
+  NonNullable<AssistantTurnInput['copilotIntent']>,
+  {
+    buildFraming: () => string
+    pipelineStep: 'assistant' | 'copilot_suggest'
+    writeToolPolicy?: 'disabled'
+    honorsSkip: boolean
+    failureMode: 'apology' | 'skip'
+    turnMessages?: AssistantThreadMessage[]
+  }
+> = {
+  qa: {
+    buildFraming: buildCopilotFramingPrompt,
+    pipelineStep: 'assistant',
+    honorsSkip: false,
+    failureMode: 'apology',
+  },
+  suggest: {
+    buildFraming: buildSuggestionFramingPrompt,
+    pipelineStep: 'copilot_suggest',
+    writeToolPolicy: 'disabled',
+    honorsSkip: true,
+    failureMode: 'skip',
+    turnMessages: SUGGEST_TURN_MESSAGES,
+  },
+}
+
 /** The ticket facts `buildTicketContextPrompt` composes into its structural line. */
 export interface TicketGroundingFacts {
   title: string
@@ -856,7 +1027,26 @@ function deriveAnswerKind(
  * prompt so the customer is never left in silence.
  */
 export async function runAssistantTurn(input: AssistantTurnInput): Promise<AssistantTurnResult> {
-  if (!respondEligible(input.messages)) {
+  // Surface is the only signal that distinguishes a customer-facing turn from
+  // a teammate-facing one (quinnActor is always a 'service' principal), so the
+  // retrieval ceiling derives from it via the one allowed mint point rather
+  // than being a caller-suppliable field: a caller can pick the wrong surface,
+  // but it can no longer pick the wrong audience for a given surface.
+  const surface = input.surface ?? 'widget'
+  // The copilot intent resolves once, here, and only on the copilot surface
+  // (null everywhere else, so a stray `copilotIntent` on a widget turn buys
+  // nothing — no framing, no pipelineStep retag, no skip honoring). Every
+  // per-intent difference below reads off this one profile. Resolved before
+  // the silence rule because the intent may own the turn messages themselves.
+  const copilotIntent = surface === 'copilot' ? (input.copilotIntent ?? 'qa') : null
+  const intentProfile = copilotIntent ? COPILOT_INTENT_PROFILES[copilotIntent] : null
+  // The intent's own turn messages win over the caller's (see
+  // COPILOT_INTENT_PROFILES.turnMessages); every other caller must pass the
+  // thread (see AssistantTurnInput.messages — `[]` is a caller bug, kept
+  // non-throwing to preserve the "never throws on non-abort failure" posture).
+  const messages = intentProfile?.turnMessages ?? input.messages ?? []
+
+  if (!respondEligible(messages)) {
     return { status: 'suppressed', reason: 'silence' }
   }
 
@@ -866,12 +1056,6 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // isAssistantConfigured() guarantees an effective chat model above.
   const model = getChatModel('assistant')!
 
-  // Surface is the only signal that distinguishes a customer-facing turn from
-  // a teammate-facing one (quinnActor is always a 'service' principal), so the
-  // retrieval ceiling derives from it via the one allowed mint point rather
-  // than being a caller-suppliable field: a caller can pick the wrong surface,
-  // but it can no longer pick the wrong audience for a given surface.
-  const surface = input.surface ?? 'widget'
   const audience = resolveContentAudience(surface)
   const conversationId = input.conversationId ?? null
   const ticketId = input.ticketId ?? null
@@ -957,7 +1141,10 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     involvementId: input.involvementId,
     latestCustomerMessageId: input.latestCustomerMessageId,
     simulate: input.simulate,
-    writeToolPolicy: input.writeToolPolicy,
+    // The intent's own policy wins over the caller's (see
+    // COPILOT_INTENT_PROFILES: 'suggest' forces 'disabled' here, so a
+    // suggestion turn is read-only whatever the route passed).
+    writeToolPolicy: intentProfile?.writeToolPolicy ?? input.writeToolPolicy,
     askerActor: input.askerActor,
   })
   // Config read: basics, surfaces, and tool controls all live in the same
@@ -1005,9 +1192,12 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   const systemPrompts = buildAssistantSystemPrompt('Quinn', activeSpecs, attributeDefinitions)
   // Copilot framing: unconditional on the surface alone (never gated on the
   // assistantActions flag, unlike basics/surface instructions/guidance below);
-  // it is structural, not admin-configured content.
-  if (surface === 'copilot') {
-    systemPrompts.push(buildCopilotFramingPrompt())
+  // it is structural, not admin-configured content. The intent profile picks
+  // which block (Q&A vs suggestion drafting — see COPILOT_INTENT_PROFILES);
+  // everything else on the copilot surface (retrieval ceiling, grounding,
+  // guidance, surface instructions below) stays shared.
+  if (intentProfile) {
+    systemPrompts.push(intentProfile.buildFraming())
   }
   // Ticket grounding (unified inbox §2.9): right after the copilot framing,
   // before basics/surface instructions/guidance. Its conversation sibling
@@ -1038,9 +1228,16 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     guidanceRuleIds = guidance.ruleIds
   }
 
+  // The ONE place total-failure semantics are decided, profile-owned (see
+  // COPILOT_INTENT_PROFILES.failureMode): both fallback return sites below
+  // (hard-failed synthesis, non-conformant final) spread this value, so an
+  // intent whose failure mode is 'skip' (suggest) can never surface the
+  // apology text as an insertable suggestion — it degrades to the same
+  // skip-shaped result an honest miss produces, and the card renders nothing.
+  const failureAsSkip = (intentProfile?.failureMode ?? 'apology') === 'skip'
   const fallback: AssistantAnsweredResult = {
     status: 'answered',
-    text: ASSISTANT_FALLBACK_MESSAGE,
+    text: failureAsSkip ? '' : ASSISTANT_FALLBACK_MESSAGE,
     // A generic "try again" retry prompt is a customer-safe reply, not
     // analysis, so it takes the neutral default like any un-classified answer.
     answerType: 'draft_reply',
@@ -1051,12 +1248,17 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     // than reading this field, so a stale reference captured here (before
     // the attempt loop even runs) can never leak out.
     proposedActions: [],
+    // On the apology posture a total provider failure is a real error, never
+    // a graceful skip (the widget/Q&A surfaces stay degraded-but-never-
+    // silent); on the skip posture it IS a skip, so the suggest route's
+    // existing skip mapping renders nothing.
+    skip: failureAsSkip,
   }
 
   const outcome = await runSynthesis<AssistantAnsweredResult, AssistantToolContext>({
     model,
     systemPrompts,
-    messages: toModelMessages(input.messages),
+    messages: toModelMessages(messages),
     outputSchema: assistantOutputSchema,
     tools: {
       specs: tools,
@@ -1073,7 +1275,10 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     onTextDelta: input.onTextDelta,
     onActivity: input.onActivity,
     usageLogParams: {
-      pipelineStep: 'assistant',
+      // The intent-profiled step (see COPILOT_INTENT_PROFILES: 'suggest' logs
+      // 'copilot_suggest' to stay out of the Q&A question count); every
+      // non-copilot surface logs plain 'assistant'.
+      pipelineStep: intentProfile?.pipelineStep ?? 'assistant',
       callType: 'chat_completion',
       model,
       metadata: {
@@ -1132,21 +1337,31 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     return { ...fallback, proposedActions: [...toolContext.proposedActions] }
   }
   const parsed = parsedResult.data
-  const citations = assembleCitations(parsed.citations, toolContext.sources)
+  // The proactive-suggestions honest miss: honored ONLY when this turn's
+  // intent profile owns the skip axis (`honorsSkip`, true only for 'suggest'
+  // — the one intent whose framing asks for the field), so a spurious
+  // "skip": true from a widget/Q&A model must never blank its reply. When
+  // honored, force text/citations/internalSourced empty regardless of what
+  // the model wrote alongside it, the same defense-in-depth posture the
+  // `suppressed` branch already takes above — a skip can never leak a
+  // half-drafted guess into the composer.
+  const skip = (intentProfile?.honorsSkip ?? false) && parsed.skip === true
+  const citations = skip ? [] : assembleCitations(parsed.citations, toolContext.sources)
   const escalation = decideEscalation(
     parsed.escalation?.reason,
     input.escalationAlreadyOffered ?? false
   )
   return {
     status: 'answered',
-    text: relinkCitations(parsed.text, parsed.citations, citations),
+    text: skip ? '' : relinkCitations(parsed.text, parsed.citations, citations),
     // Quinn's self-classification (copilot surface only); every other surface
     // omits it, and so does a model that didn't bother — both land on the
     // customer-safe default, so this never demotes a widget reply.
     answerType: parsed.answerType ?? 'draft_reply',
     citations,
-    internalSourced: citations.some((c) => c.internal === true),
+    internalSourced: skip ? false : citations.some((c) => c.internal === true),
     proposedActions: [...toolContext.proposedActions],
+    skip,
     ...(escalation && { escalation }),
   }
 }

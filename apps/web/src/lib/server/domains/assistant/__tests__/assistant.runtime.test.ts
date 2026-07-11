@@ -185,6 +185,7 @@ import {
   buildBasicsPrompt,
   buildGuidancePrompt,
   buildCopilotFramingPrompt,
+  buildSuggestionFramingPrompt,
   buildTicketContextPrompt,
   isAssistantConfigured,
   AssistantNotConfiguredError,
@@ -790,6 +791,7 @@ describe('runAssistantTurn', () => {
       ],
       internalSourced: false,
       proposedActions: [],
+      skip: false,
     })
     expect(deltas.join('')).toBe('Use the reset link.')
     // Retrieval was called through the tool, audience-scoped.
@@ -1021,6 +1023,190 @@ describe('runAssistantTurn', () => {
     expect(result.status === 'answered' && result.answerType).toBe('draft_reply')
   })
 
+  it("pushes the suggestion framing block instead of the Q&A one when copilotIntent is 'suggest'", async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('draft it'),
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+    })
+
+    const opts = mockChat.mock.calls.at(-1)?.[0] as { systemPrompts: string[] }
+    expect(opts.systemPrompts).toContain(buildSuggestionFramingPrompt())
+    expect(opts.systemPrompts).not.toContain(buildCopilotFramingPrompt())
+  })
+
+  it("keeps the Q&A framing block when copilotIntent is omitted on the copilot surface (default 'qa')", async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('a question'),
+      surface: 'copilot',
+    })
+
+    const opts = mockChat.mock.calls.at(-1)?.[0] as { systemPrompts: string[] }
+    expect(opts.systemPrompts).toContain(buildCopilotFramingPrompt())
+    expect(opts.systemPrompts).not.toContain(buildSuggestionFramingPrompt())
+  })
+
+  it('honors the model\'s "skip" honest-miss flag: forces text/citations/internalSourced empty even if the model wrote them anyway', async () => {
+    const object = {
+      text: 'A guess dressed up as a draft.',
+      citations: [{ type: 'article', id: 'kb_article_1' }],
+      skip: true,
+    }
+    mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
+    mockChat.mockImplementation(() => chunkStream(completeRun(object)))
+
+    const result = await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('draft it'),
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+    })
+
+    expect(result).toMatchObject({
+      status: 'answered',
+      skip: true,
+      text: '',
+      citations: [],
+      internalSourced: false,
+    })
+  })
+
+  it('defaults skip to false when the model omits it (a real draft, not a miss)', async () => {
+    mockChat.mockImplementation(() =>
+      chunkStream(completeRun({ text: 'Here is a draft.', citations: [] }))
+    )
+
+    const result = await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('draft it'),
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+    })
+
+    expect(result.status === 'answered' && result.skip).toBe(false)
+    expect(result.status === 'answered' && result.text).toBe('Here is a draft.')
+  })
+
+  it('ignores a spurious "skip": true outside the suggest intent: a widget or Q&A reply is never blanked', async () => {
+    // Only the suggestion framing ever asks for "skip"; a widget/Q&A model
+    // hallucinating the field must not trip the honest-miss wipe (the return
+    // site honors it conditionally, not on prompt discipline alone).
+    const object = { text: 'A real answer, not a miss.', citations: [], skip: true }
+    mockChat.mockImplementation(() => chunkStream(completeRun(object)))
+
+    const widget = await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('how do I reset?'),
+    })
+    expect(widget).toMatchObject({
+      status: 'answered',
+      skip: false,
+      text: 'A real answer, not a miss.',
+    })
+
+    const copilotQa = await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('what is the status here?'),
+      surface: 'copilot',
+    })
+    expect(copilotQa).toMatchObject({
+      status: 'answered',
+      skip: false,
+      text: 'A real answer, not a miss.',
+    })
+  })
+
+  it('feeds the profile-owned drafting instruction as the sole turn message on the suggest intent (the route passes no messages at all)', async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'draft', citations: [] })))
+
+    await runAssistantTurn({ ...baseInput, surface: 'copilot', copilotIntent: 'suggest' })
+
+    const opts = mockChat.mock.calls.at(-1)?.[0] as {
+      messages: Array<{ role: string; content: string }>
+    }
+    expect(opts.messages).toEqual([
+      {
+        role: 'user',
+        content:
+          "Draft a ready-to-send reply to the customer's latest message in this conversation.",
+      },
+    ])
+  })
+
+  it("overrides caller-passed messages with the profile's own turn message on the suggest intent (the intent owns the invariant, like writeToolPolicy)", async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'draft', citations: [] })))
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('a caller-supplied thread that must not reach the model'),
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+    })
+
+    const opts = mockChat.mock.calls.at(-1)?.[0] as {
+      messages: Array<{ role: string; content: string }>
+    }
+    expect(opts.messages).toEqual([
+      {
+        role: 'user',
+        content:
+          "Draft a ready-to-send reply to the customer's latest message in this conversation.",
+      },
+    ])
+  })
+
+  it('never suppresses a suggest-intent turn under the silence rule, even when the caller passes a human_agent-terminated thread (the profile-owned message is all respondEligible sees)', async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'draft', citations: [] })))
+
+    const result = await runAssistantTurn({
+      ...baseInput,
+      messages: [
+        { sender: 'customer', content: 'hi' },
+        { sender: 'human_agent', content: 'I got this' },
+      ],
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+    })
+
+    expect(result.status).toBe('answered')
+    expect(mockChat).toHaveBeenCalled()
+  })
+
+  it("records pipelineStep 'copilot_suggest' for a proactive-suggestions turn, keeping it out of the Q&A question count (analytics/copilot-usage.ts scans pipelineStep: 'assistant')", async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('draft it'),
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+    })
+
+    expect(mockWithUsageLogging.mock.calls.at(-1)?.[0]).toMatchObject({
+      pipelineStep: 'copilot_suggest',
+    })
+  })
+
+  it("defaults pipelineStep to 'assistant' for a Q&A copilot turn (copilotIntent omitted)", async () => {
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('a question'),
+      surface: 'copilot',
+    })
+
+    expect(mockWithUsageLogging.mock.calls.at(-1)?.[0]).toMatchObject({
+      pipelineStep: 'assistant',
+    })
+  })
+
   it('retries once when the first stream yields no structured object', async () => {
     const object = { text: 'Second try.', citations: [] }
     mockChat
@@ -1047,8 +1233,50 @@ describe('runAssistantTurn', () => {
       citations: [],
       internalSourced: false,
       proposedActions: [],
+      skip: false,
     })
     expect(mockChat).toHaveBeenCalledTimes(2)
+  })
+
+  it("degrades a total synthesis failure to a skip on the suggest intent (failureMode 'skip'): the apology text never becomes an insertable suggestion", async () => {
+    mockChat.mockImplementation(() =>
+      chunkStream([{ type: 'RUN_ERROR', message: 'provider exploded' }])
+    )
+
+    const result = await runAssistantTurn({
+      ...baseInput,
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+    })
+
+    expect(result).toEqual({
+      status: 'answered',
+      answerType: 'draft_reply',
+      text: '',
+      citations: [],
+      internalSourced: false,
+      proposedActions: [],
+      skip: true,
+    })
+    expect(mockChat).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps the apology fallback on the copilot Q&A intent (failureMode 'apology'): only the suggest intent degrades to skip", async () => {
+    mockChat.mockImplementation(() =>
+      chunkStream([{ type: 'RUN_ERROR', message: 'provider exploded' }])
+    )
+
+    const result = await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('what is going on here?'),
+      surface: 'copilot',
+    })
+
+    expect(result).toMatchObject({
+      status: 'answered',
+      text: ASSISTANT_FALLBACK_MESSAGE,
+      skip: false,
+    })
   })
 
   it('reports a proposal a write tool created during the failing final attempt, even though the answer itself falls back (S6)', async () => {
@@ -1126,6 +1354,24 @@ describe('runAssistantTurn', () => {
       citations: [],
       internalSourced: false,
       proposedActions: [],
+      skip: false,
+    })
+  })
+
+  it('degrades a non-conformant final to a skip on the suggest intent too (both fallback return sites share the profile-owned failure mode)', async () => {
+    const nonConformant = { text: 123, citations: [] }
+    mockChat.mockImplementation(() => chunkStream(completeRun(nonConformant)))
+
+    const result = await runAssistantTurn({
+      ...baseInput,
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+    })
+
+    expect(result).toMatchObject({
+      status: 'answered',
+      text: '',
+      skip: true,
     })
   })
 
@@ -1307,6 +1553,7 @@ describe('runAssistantTurn', () => {
       citations: [],
       internalSourced: false,
       proposedActions: [],
+      skip: false,
     })
     // Salvaged on the first attempt; no retry needed.
     expect(mockChat).toHaveBeenCalledTimes(1)
@@ -1484,6 +1731,41 @@ describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
     })
 
     expect(capturedCtx?.writeToolPolicy).toBeUndefined()
+  })
+
+  it("forces writeToolPolicy 'disabled' onto the tool context for copilotIntent 'suggest', even against a caller-passed 'propose' (the intent owns the read-only invariant)", async () => {
+    mockRetrieve.mockResolvedValue([])
+    let capturedCtx: { writeToolPolicy?: unknown } | undefined
+    driveSearch((ctx) => {
+      capturedCtx = ctx as typeof capturedCtx
+    })
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('draft it'),
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+      writeToolPolicy: 'propose',
+    })
+
+    expect(capturedCtx?.writeToolPolicy).toBe('disabled')
+  })
+
+  it("forces writeToolPolicy 'disabled' for copilotIntent 'suggest' when the caller passes nothing (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md: a suggestion turn is read-only)", async () => {
+    mockRetrieve.mockResolvedValue([])
+    let capturedCtx: { writeToolPolicy?: unknown } | undefined
+    driveSearch((ctx) => {
+      capturedCtx = ctx as typeof capturedCtx
+    })
+
+    await runAssistantTurn({
+      ...baseInput,
+      messages: customerAsks('draft it'),
+      surface: 'copilot',
+      copilotIntent: 'suggest',
+    })
+
+    expect(capturedCtx?.writeToolPolicy).toBe('disabled')
   })
 
   it('surfaces ctx.proposedActions on the result (P2-C.4), mirroring ctx.sources for citations', async () => {

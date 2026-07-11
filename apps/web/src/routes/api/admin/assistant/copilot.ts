@@ -49,9 +49,8 @@ import {
   activityToStatus,
   type AssistantThreadMessage,
 } from '@/lib/server/domains/assistant'
-import { gateCopilotRequest } from '@/lib/server/domains/assistant/copilot-gate'
+import { gateCopilotRequest, streamAssistantSse } from '@/lib/server/domains/assistant/copilot-gate'
 import { withAssistantItemRef } from '@/lib/server/domains/assistant/item-ref.schema'
-import { createSseStream, SSE_RESPONSE_HEADERS } from '@/lib/server/utils/sse'
 import { logger } from '@/lib/server/logger'
 import {
   COPILOT_EVENTS,
@@ -115,10 +114,14 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
   const assistant = await ensureAssistantPrincipal()
   const messages = toTurnMessages(parsed.history, parsed.question)
 
-  const sse = createSseStream()
-
-  void (async () => {
-    try {
+  return streamAssistantSse({
+    request,
+    error: {
+      event: COPILOT_EVENTS.error,
+      payload: { code: 'TURN_FAILED', message: 'Copilot run failed' } satisfies CopilotErrorPayload,
+    },
+    logError: (err) => log.error({ err }, 'copilot turn failed'),
+    run: async (sse) => {
       const result = await runAssistantTurn({
         messages,
         assistantPrincipalId: assistant.id,
@@ -172,20 +175,8 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
           answerType: result.answerType,
         } satisfies CopilotFinalPayload)
       }
-    } catch (error) {
-      if (!request.signal.aborted) {
-        log.error({ err: error }, 'copilot turn failed')
-        sse.send(COPILOT_EVENTS.error, {
-          code: 'TURN_FAILED',
-          message: 'Copilot run failed',
-        } satisfies CopilotErrorPayload)
-      }
-    } finally {
-      sse.close()
-    }
-  })()
-
-  return new Response(sse.stream, { headers: SSE_RESPONSE_HEADERS })
+    },
+  })
 }
 
 export const Route = createFileRoute('/api/admin/assistant/copilot')({

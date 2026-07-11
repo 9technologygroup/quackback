@@ -909,6 +909,34 @@ describe('resolveEffectiveToolMode', () => {
     )
   })
 
+  it("QUINN-PROACTIVE-SUGGESTIONS-SPEC.md: writeToolPolicy: 'disabled' drops a write tool no matter its configured mode", () => {
+    const spec = makeFakeWriteSpec()
+    const c = ctx({ simulate: false, writeToolPolicy: 'disabled' })
+    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('disabled')
+    expect(resolveEffectiveToolMode(spec, 'approval', c)).toBe('disabled')
+  })
+
+  it("writeToolPolicy: 'disabled' wins over simulate too", () => {
+    const spec = makeFakeWriteSpec()
+    expect(
+      resolveEffectiveToolMode(
+        spec,
+        'autonomous',
+        ctx({ simulate: true, writeToolPolicy: 'disabled' })
+      )
+    ).toBe('disabled')
+  })
+
+  it("writeToolPolicy: 'disabled' overrides even the metadataWrite exemption (a suggestion turn has zero side effects, not even a proposal)", () => {
+    const spec = makeFakeWriteSpec({ metadataWrite: true })
+    const c = ctx({
+      simulate: false,
+      writeToolPolicy: 'disabled',
+      askerActor: asker(PERMISSIONS.CONVERSATION_SET_STATUS),
+    })
+    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('disabled')
+  })
+
   it('real catalogue: set_attribute is the metadata write; the action tools are not', () => {
     // Pinned against the real specs: under the copilot surface's propose
     // policy, recording an attribute runs autonomously for a teammate who

@@ -31,15 +31,25 @@
  *  - `assistant_events` rows are the outcome events the panel fires when a
  *    teammate actually USES an answer (recordCopilotEventFn,
  *    functions/copilot-events.ts): the `*_inserted` kinds (`answer_inserted`
- *    / `transform_inserted` / `summary_inserted` — derived here from
- *    COPILOT_EVENT_TYPES, never hand-listed) mark text landing in the
- *    composer, with `metadata.destination` ('reply' | 'note') saying WHERE it
- *    landed — the kind and the destination are orthogonal axes, split
- *    independently below. `feedback` rows carry a `metadata.rating` of
- *    'up'/'down' (an optional `metadata.reason` on a down-vote). These are
- *    fire-and-forget client events with no idempotency, so a double-click
- *    double-counts — the same trend-level precision the retry note below
- *    already accepts.
+ *    / `transform_inserted` / `summary_inserted` / `suggestion_inserted` —
+ *    derived here from COPILOT_EVENT_TYPES, never hand-listed) mark text
+ *    landing in the composer, with `metadata.destination` ('reply' | 'note')
+ *    saying WHERE it landed — the kind and the destination are orthogonal
+ *    axes, split independently below. Because `suggestion_inserted` is one of
+ *    the derived `*_inserted` kinds, it counts toward `insertRate`'s numerator
+ *    and toward `insertedReplies`/`insertedNotes` automatically, alongside
+ *    answer/transform/summary inserts — a deliberate decision (one insert
+ *    vocabulary, one rate) rather than carving suggestions out into their own
+ *    ledger; `suggestionAcceptanceRate` (below) is the suggestion-specific
+ *    lens on the same events, not a replacement for it. The `suggestion_*`
+ *    triple is otherwise its own funnel: `suggestion_shown` (a card actually
+ *    rendered — the acceptance-rate denominator, never logged for a
+ *    `skip: true` turn) and `suggestion_dismissed` (an explicit wave-off)
+ *    carry neither destination nor rating. `feedback` rows carry a
+ *    `metadata.rating` of 'up'/'down' (an optional `metadata.reason` on a
+ *    down-vote). These are fire-and-forget client events with no idempotency,
+ *    so a double-click double-counts — the same trend-level precision the
+ *    retry note below already accepts.
  *  - `assistant_pending_actions` rows are the act-on-approval funnel
  *    (pending-actions.service.ts): every proposal in range counts toward
  *    `actionsProposed`; `actionsApproved` counts a proposal as approved for
@@ -89,8 +99,12 @@ const TOP_TEAMMATES_LIMIT = 10
 
 /** The `*_inserted` event kinds, derived from the shared vocabulary (never
  *  hand-listed) so a new insert kind is counted here the day the contract
- *  grows it. `feedback` is the only non-insert kind. */
-const INSERT_EVENT_TYPES = COPILOT_EVENT_TYPES.filter((t) => t !== 'feedback')
+ *  grows it. Derived by the same suffix rule the server fn's zod uses to
+ *  require a destination, so the write path and this report can never
+ *  disagree about what counts as an insert — excluding only `feedback`
+ *  stopped being equivalent when the vocabulary gained the non-insert
+ *  suggestion kinds (`suggestion_shown`/`suggestion_dismissed`). */
+const INSERT_EVENT_TYPES = COPILOT_EVENT_TYPES.filter((t) => t.endsWith('_inserted'))
 
 export interface CopilotTransformKindCount {
   /** Raw `metadata.transform` value (a `TransformKind`, kept as a string here
@@ -130,16 +144,42 @@ export interface CopilotUsageMetrics {
   transformsInserted: number
   /** On-demand summaries inserted (`summary_inserted` events), either destination. */
   summariesInserted: number
+  /** Proactive suggestion cards rendered (`suggestion_shown` events) — the
+   *  acceptance-rate denominator. Never counted for a `skip: true` turn (the
+   *  client only logs `shown` when a card actually renders). */
+  suggestionsShown: number
+  /** Proactive suggestions inserted into the composer/note
+   *  (`suggestion_inserted` events), either destination. Also one of the
+   *  `*_inserted` kinds folded into `insertedReplies`/`insertedNotes` and
+   *  `insertRate` below (derived from `INSERT_EVENT_TYPES`, not hand-listed). */
+  suggestionsInserted: number
+  /** Proactive suggestions explicitly waved off (`suggestion_dismissed` events). */
+  suggestionsDismissed: number
+  /** suggestionsInserted / suggestionsShown, 0-100; null (never NaN) when no
+   *  suggestion card rendered in range. The metric competitive copilot
+   *  reporting anchors on. */
+  suggestionAcceptanceRate: number | null
+  /** All inserted events in range — every `*_inserted` kind, counted in SQL
+   *  off the same derived `INSERT_EVENT_TYPES` list, and `insertRate`'s
+   *  numerator below. Exposed so the usage card can render the total without
+   *  re-summing the per-kind fields (the drift this module's SQL already
+   *  refuses to risk). */
+  totalInserted: number
   /** Inserted events of ANY kind whose destination was the customer-facing
    *  reply composer (metadata.destination = 'reply'). */
   insertedReplies: number
   /** Inserted events of ANY kind whose destination was an internal note
    *  (metadata.destination = 'note'). */
   insertedNotes: number
-  /** All inserted events (every `*_inserted` kind) / totalQuestions, 0-100;
-   *  null when nothing was asked. Trend-level: the numerator includes
-   *  transform and summary inserts (whose runs aren't questions), so a heavy
-   *  transform week can push this over 100. */
+  /** All inserted events (every `*_inserted` kind, INCLUDING
+   *  `suggestion_inserted`) / totalQuestions, 0-100; null when nothing was
+   *  asked. Trend-level: the numerator includes transform, summary, and
+   *  suggestion inserts (none of which are themselves a question asked), so a
+   *  heavy transform/suggestion week can push this over 100. Suggestion
+   *  inserts count here for the same reason they count in
+   *  `insertedReplies`/`insertedNotes`: one insert vocabulary, one rate, no
+   *  second bookkeeping path — `suggestionAcceptanceRate` above is the
+   *  suggestion-specific lens on the same events. */
   insertRate: number | null
   /** Thumbs-up feedback events on Copilot answers in the range. */
   feedbackUp: number
@@ -159,9 +199,16 @@ interface PendingActionBucketRow {
 }
 
 interface AssistantEventBucketRow {
+  /** All `INSERT_EVENT_TYPES` rows in range — `insertRate`'s numerator,
+   *  counted by the derived list in SQL so it can't drift from the per-kind
+   *  breakdowns when the vocabulary grows. */
+  totalInserted: number
   answersInserted: number
   transformsInserted: number
   summariesInserted: number
+  suggestionsShown: number
+  suggestionsInserted: number
+  suggestionsDismissed: number
   insertedReplies: number
   insertedNotes: number
   feedbackUp: number
@@ -183,8 +230,6 @@ export function summarizeCopilotUsage(
   perTeammate: CopilotTeammateQuestionCount[]
 ): CopilotUsageMetrics {
   const totalTransforms = transformsByKind.reduce((sum, row) => sum + row.count, 0)
-  const totalInserted =
-    eventBucket.answersInserted + eventBucket.transformsInserted + eventBucket.summariesInserted
   return {
     totalQuestions,
     totalTransforms,
@@ -198,9 +243,17 @@ export function summarizeCopilotUsage(
     answersInserted: eventBucket.answersInserted,
     transformsInserted: eventBucket.transformsInserted,
     summariesInserted: eventBucket.summariesInserted,
+    suggestionsShown: eventBucket.suggestionsShown,
+    suggestionsInserted: eventBucket.suggestionsInserted,
+    suggestionsDismissed: eventBucket.suggestionsDismissed,
+    suggestionAcceptanceRate: ratePctOrNull(
+      eventBucket.suggestionsInserted,
+      eventBucket.suggestionsShown
+    ),
+    totalInserted: eventBucket.totalInserted,
     insertedReplies: eventBucket.insertedReplies,
     insertedNotes: eventBucket.insertedNotes,
-    insertRate: ratePctOrNull(totalInserted, totalQuestions),
+    insertRate: ratePctOrNull(eventBucket.totalInserted, totalQuestions),
     feedbackUp: eventBucket.feedbackUp,
     feedbackDown: eventBucket.feedbackDown,
     feedbackDownWithReason: eventBucket.feedbackDownWithReason,
@@ -277,6 +330,10 @@ export async function getCopilotUsageMetrics(from: Date, to: Date): Promise<Copi
           answersInserted: sql<number>`count(*) filter (where ${assistantEvents.eventType} = 'answer_inserted')::int`,
           transformsInserted: sql<number>`count(*) filter (where ${assistantEvents.eventType} = 'transform_inserted')::int`,
           summariesInserted: sql<number>`count(*) filter (where ${assistantEvents.eventType} = 'summary_inserted')::int`,
+          suggestionsShown: sql<number>`count(*) filter (where ${assistantEvents.eventType} = 'suggestion_shown')::int`,
+          suggestionsInserted: sql<number>`count(*) filter (where ${assistantEvents.eventType} = 'suggestion_inserted')::int`,
+          suggestionsDismissed: sql<number>`count(*) filter (where ${assistantEvents.eventType} = 'suggestion_dismissed')::int`,
+          totalInserted: sql<number>`count(*) filter (where ${inArray(assistantEvents.eventType, [...INSERT_EVENT_TYPES])})::int`,
           insertedReplies: sql<number>`count(*) filter (where ${inArray(assistantEvents.eventType, [...INSERT_EVENT_TYPES])} and metadata->>'destination' = 'reply')::int`,
           insertedNotes: sql<number>`count(*) filter (where ${inArray(assistantEvents.eventType, [...INSERT_EVENT_TYPES])} and metadata->>'destination' = 'note')::int`,
           feedbackUp: sql<number>`count(*) filter (where ${assistantEvents.eventType} = 'feedback' and metadata->>'rating' = 'up')::int`,
@@ -329,9 +386,13 @@ export async function getCopilotUsageMetrics(from: Date, to: Date): Promise<Copi
   }
 
   const eventBucket: AssistantEventBucketRow = eventRows[0] ?? {
+    totalInserted: 0,
     answersInserted: 0,
     transformsInserted: 0,
     summariesInserted: 0,
+    suggestionsShown: 0,
+    suggestionsInserted: 0,
+    suggestionsDismissed: 0,
     insertedReplies: 0,
     insertedNotes: 0,
     feedbackUp: 0,

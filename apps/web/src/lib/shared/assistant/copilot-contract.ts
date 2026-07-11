@@ -67,17 +67,25 @@ export type CopilotAnswerType = 'draft_reply' | 'analysis'
  * the panel's fire-and-forget client seam, so the two can never drift.
  *
  * An event type names WHAT was inserted (an answer, a transform result, a
- * summary); WHERE it landed is the separate destination axis
- * (`COPILOT_INSERT_DESTINATIONS`, required on every `*_inserted` event and
- * carried in metadata), so the same answer inserted as a reply draft vs an
- * internal note is one kind with two destinations, not two kinds. `feedback`
- * is the only type that carries a rating, and the only one with no
- * destination.
+ * summary, a proactive suggestion); WHERE it landed is the separate
+ * destination axis (`COPILOT_INSERT_DESTINATIONS`, required on every
+ * `*_inserted` event and carried in metadata), so the same answer inserted as
+ * a reply draft vs an internal note is one kind with two destinations, not
+ * two kinds. `feedback` is the only type that carries a rating.
+ *
+ * The `suggestion_*` triple is the proactive-suggestion funnel: `shown` when
+ * a generated suggestion card renders (the acceptance-rate denominator),
+ * `inserted` when its text lands in the composer/note (destination required,
+ * like every `*_inserted`), `dismissed` when the teammate explicitly waves it
+ * off. Shown/dismissed carry no destination and no rating.
  */
 export const COPILOT_EVENT_TYPES = [
   'answer_inserted',
   'transform_inserted',
   'summary_inserted',
+  'suggestion_shown',
+  'suggestion_inserted',
+  'suggestion_dismissed',
   'feedback',
 ] as const
 
@@ -191,6 +199,54 @@ export interface TransformFinalPayload {
 
 /** transform.v1.error: a terminal failure after the stream opened. */
 export interface TransformErrorPayload {
+  code: string
+  message: string
+}
+
+/**
+ * suggest.v1 SSE contract: a proactive reply suggestion for the conversation's
+ * latest unanswered customer message, generated when a teammate views the
+ * conversation (pull-on-view, not push-per-message — the server never
+ * speculates on conversations nobody is looking at). Same delta/final/error
+ * vocabulary as copilot.v1; no activity events (the card shows a single
+ * loading state) and no proposed actions (a suggestion turn runs its tools
+ * read-only — it drafts, it never acts).
+ *
+ * The server currently sends FINAL-ONLY: no delta frames. A suggestion turn's
+ * honest-miss (`skip: true`) is only knowable at the end of the run, so
+ * streaming the text as it generates would show the teammate a draft that a
+ * trailing skip then evaporates — a guess dressed up as a draft, on screen
+ * the whole time. `delta` stays in the vocabulary (clients must keep
+ * handling it) so streaming can return once a skip-aware transport exists.
+ */
+export const SUGGEST_EVENTS = {
+  delta: 'suggest.v1.delta',
+  final: 'suggest.v1.final',
+  error: 'suggest.v1.error',
+} as const
+
+/** suggest.v1.delta: one fragment of the streamed suggestion text. */
+export interface SuggestDeltaPayload {
+  text: string
+}
+
+/**
+ * suggest.v1.final: the completed suggestion. `skip: true` is the honest-miss
+ * outcome — Quinn judged there is nothing grounded worth suggesting (text is
+ * then empty, `internalSourced` false, and the client renders no card rather
+ * than an empty one). `internalSourced` gates the same blocking confirm the
+ * Copilot panel uses before internal-derived text reaches the customer
+ * composer.
+ */
+export interface SuggestFinalPayload {
+  text: string
+  citations: CopilotCitation[]
+  internalSourced: boolean
+  skip?: boolean
+}
+
+/** suggest.v1.error: a terminal failure after the stream opened. */
+export interface SuggestErrorPayload {
   code: string
   message: string
 }

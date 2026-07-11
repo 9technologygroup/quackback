@@ -820,6 +820,14 @@ function InboxPage() {
     copilotTokenItemRef.current = selectedId
     if (openCopilotToken !== 0) setOpenCopilotToken(0)
   }
+  // The thread-side opener (the suggested-reply card's "Ask Copilot" link):
+  // this route owns the token, so in-thread openers request a bump here
+  // rather than merging their own counter with the forwarded one. Only handed
+  // down while Copilot is actually openable (`copilotAvailable` — below xl
+  // the detail panel is display:none, so a bump would be a dead click); the
+  // card hides its Ask Copilot link when the callback is absent.
+  const requestOpenCopilot = useCallback(() => setOpenCopilotToken((t) => t + 1), [])
+  const requestOpenCopilotIfAvailable = copilotAvailable ? requestOpenCopilot : undefined
   // Anchor for shift-click range selection.
   const selectAnchor = useRef<string | null>(null)
   // The thread wrapper, so the reply action can focus the open composer.
@@ -1359,6 +1367,7 @@ function InboxPage() {
             isVisitorTyping={false}
             isOtherAgentTyping={false}
             openCopilotToken={openCopilotToken}
+            requestOpenCopilot={requestOpenCopilotIfAvailable}
           />
         ) : selectedRef?.kind === 'conversation' ? (
           <AgentConversationThread
@@ -1373,6 +1382,7 @@ function InboxPage() {
             isOtherAgentTyping={otherAgentTyping}
             createTicketToken={createTicketToken}
             openCopilotToken={openCopilotToken}
+            requestOpenCopilot={requestOpenCopilotIfAvailable}
           />
         ) : (
           <div className="hidden h-full items-center justify-center md:flex">

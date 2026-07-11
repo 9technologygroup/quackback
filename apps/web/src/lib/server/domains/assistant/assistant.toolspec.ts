@@ -160,10 +160,18 @@ export interface AssistantToolContext {
    * of `simulate`. From a Copilot chat the proposal card itself is the
    * confirmation UX, so an autonomous-configured tool proposes rather than
    * fires. Quinn must never act in the conversation from a teammate's Q&A
-   * about it, only ever suggest an action for a human to approve. See
-   * `resolveEffectiveToolMode` in assistant.tools.ts.
+   * about it, only ever suggest an action for a human to approve.
+   * 'disabled' (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md, the proactive-suggestions
+   * turn) is stronger still: a write-risk tool is dropped from the turn's
+   * tool set entirely — no simulate preview, no proposal, not even the
+   * metadataWrite exemption — because a suggestion drafts a reply and must
+   * have zero side effects, not even a pending-approval row. Only ever set
+   * by the runtime's own suggest-intent profile (`COPILOT_INTENT_PROFILES`,
+   * assistant.runtime.ts), never passed in by a route: the invariant is the
+   * intent's, and `AssistantTurnInput.writeToolPolicy` deliberately excludes
+   * it. See `resolveEffectiveToolMode` in assistant.tools.ts.
    */
-  writeToolPolicy?: 'simulate' | 'controls' | 'propose'
+  writeToolPolicy?: 'simulate' | 'controls' | 'propose' | 'disabled'
   /** The involvement this turn belongs to, for audit rows and pending actions. Null before the first involvement opens. */
   involvementId: AssistantInvolvementId | null
   /** The customer message this turn answers, keying the write-tool idempotency key. Null in the sandbox. */
@@ -207,7 +215,7 @@ export function makeAssistantToolContext(init: {
   involvementId?: AssistantInvolvementId | null
   latestCustomerMessageId?: string | null
   simulate?: boolean
-  writeToolPolicy?: 'simulate' | 'controls' | 'propose'
+  writeToolPolicy?: 'simulate' | 'controls' | 'propose' | 'disabled'
   actor?: Actor
   askerActor?: Actor
 }): AssistantToolContext {

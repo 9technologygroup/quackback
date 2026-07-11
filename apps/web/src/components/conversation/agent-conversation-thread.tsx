@@ -157,6 +157,7 @@ import { useConversationComposerAttachments } from '@/lib/client/hooks/use-conve
 import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
 import { useCopilotInsert } from '@/lib/client/hooks/use-copilot-insert'
 import { answerToInsertContent } from './copilot-insert-content'
+import { SuggestedReplyCard } from './suggested-reply-card'
 import { TypingDots } from '@/components/shared/typing-dots'
 import { EmojiPicker } from '@/components/shared/emoji-picker'
 import { Avatar } from '@/components/ui/avatar'
@@ -268,6 +269,7 @@ export function AgentConversationThread({
   isOtherAgentTyping,
   createTicketToken,
   openCopilotToken,
+  requestOpenCopilot,
 }: {
   /** The open item, discriminated by kind — drives both the data adapter and
    *  the derived `ThreadCapabilities`. */
@@ -293,9 +295,18 @@ export function AgentConversationThread({
    *  data only this component has loaded). Ignored for a ticket item. */
   createTicketToken?: number
   /** Bumped by the route's Ask Copilot action (keyboard/command bar) —
-   *  forwarded to the detail panel, which switches to its Copilot tab and
-   *  focuses the ask input. Both item kinds. */
+   *  forwarded UNTOUCHED to the detail panel, which switches to its Copilot
+   *  tab and focuses the ask input (and reads 0 as "no pending bump", the
+   *  route's own reset sentinel). Both item kinds. */
   openCopilotToken?: number
+  /** Ask the route to bump `openCopilotToken` — the route owns that signal,
+   *  so every opener (the suggested-reply card's quiet "Ask Copilot" link
+   *  here, the route's own keyboard/command-bar action) funnels through one
+   *  counter instead of this component merging parallel ones. The route only
+   *  passes it while Copilot is actually openable (`copilotAvailable`: tab
+   *  gate + the ≥xl viewport that renders the detail panel); absent, the
+   *  card hides its Ask Copilot link rather than rendering a dead one. */
+  requestOpenCopilot?: () => void
 }) {
   const queryClient = useQueryClient()
   const isTicket = item.kind === 'ticket'
@@ -532,6 +543,24 @@ export function AgentConversationThread({
     !!lastAgentMessage &&
     new Date(conversation.visitorLastReadAt).getTime() >=
       new Date(lastAgentMessage.createdAt).getTime()
+
+  // Quinn's proactive suggested-reply card (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md)
+  // triggers when the latest customer-facing message is the customer's with no
+  // teammate reply after it — i.e. the very last meaningful message is
+  // `visitor` (senderType is overloaded across both kinds; see types.ts). The
+  // scan skips system events AND internal notes: a teammate jotting a note is
+  // not a reply, and must not suppress the card while the customer still
+  // waits. Null (no card) when a teammate/Quinn already replied last, this
+  // item can't even take a reply (a back_office/tracker ticket is note-only —
+  // nowhere for a suggestion to land), OR the item is already closed (a
+  // closed conversation / closed-category ticket owes the customer nothing;
+  // the suggest route mirrors this guard server-side).
+  const isClosedItem = isTicket ? ticket?.status.category === 'closed' : isClosedConversation
+  const lastMeaningfulMessage = messages.findLast((m) => m.senderType !== 'system' && !m.isInternal)
+  const suggestedReplyMessageId =
+    capabilities.reply && !isClosedItem && lastMeaningfulMessage?.senderType === 'visitor'
+      ? lastMeaningfulMessage.id
+      : null
 
   // Flatten the thread into virtualized rows (load-older → messages w/ unread
   // divider → empty → seen → typing). anchorTo:'end' + followOnAppend keep the
@@ -1170,6 +1199,11 @@ export function AgentConversationThread({
   // pre-format draft — the RichTextEditor has no undo handle, so we snapshot
   // and restore instead.
   const getComposerText = useCallback(() => replyDraftRef.current.markdown, [])
+  // The suggested-reply card's composer gate: a teammate already mid-draft
+  // when the card's dwell elapses doesn't need (or pay for) a suggestion.
+  // Same pull-based ref read as getComposerText, so the getter stays stable
+  // across keystrokes.
+  const composerHasText = useCallback(() => replyDraftRef.current.markdown.trim().length > 0, [])
   const replaceComposerText = useCallback((text: string) => {
     const prev = replyDraftRef.current
     setReplyDraft(answerToDraft(text))
@@ -1674,6 +1708,20 @@ export function AgentConversationThread({
             padding matches the message rows' `px-5` so the composer and the
             thread above it share the same width. */}
         <div className="px-5 py-3">
+          {/* Quinn's proactive suggested-reply card — same horizontal rhythm
+              as the composer below it. Renders nothing on its own terms (flag
+              off, no eligible customer message, honest-miss skip, dismissed) —
+              the conditional here is only the eligibility precondition. */}
+          {suggestedReplyMessageId && (
+            <SuggestedReplyCard
+              key={suggestedReplyMessageId}
+              item={item}
+              lastCustomerMessageId={suggestedReplyMessageId}
+              onInsert={(text) => insertFromCopilot(text, 'reply')}
+              onAskCopilot={requestOpenCopilot}
+              shouldDeferSuggestion={composerHasText}
+            />
+          )}
           {/* Composer: the Reply/Note switcher gets its own row on top, then the
               editor, the pending attachment tray, then the actions (attach,
               emoji, saved replies) and send — one bordered box, one unified
