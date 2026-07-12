@@ -20,6 +20,7 @@ import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { logger } from '@/lib/server/logger'
 import { enqueueHookJobsWithIds } from './process'
 import { resolveTargets } from './resolvers/registry'
+import { registerAllResolvers } from './resolvers'
 import { tryAcquireRelayLeadership, type RelayLeadership } from './relay-lock'
 import { isEventingV2Enabled } from './eventing-v2-flag'
 import type { DomainEvent, EventActorType } from './envelope'
@@ -204,6 +205,8 @@ export async function startOutboxRelay(): Promise<void> {
     log.info('EVENTING-V2 not enabled — outbox relay dormant')
     return
   }
+  // Ensure every sink resolver is registered before we drain anything.
+  registerAllResolvers()
   running = true
   await attemptLeadership()
 }
