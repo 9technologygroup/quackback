@@ -283,6 +283,8 @@ export {
   hookDeliveries,
   // Schema tables - durable event outbox (EVENTING-V2 spine)
   events,
+  // Schema tables - third-party app platform
+  apps,
   // Schema tables - audit log
   auditLog,
   // Schema tables - sso recovery codes

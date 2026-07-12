@@ -350,6 +350,9 @@ export type WebhookId = TypeId<'webhook'>
 /** Domain event ID (events outbox row) - e.g., evt_01h455vb4pex5vsknk084sn02q */
 export type EvtId = TypeId<'evt'>
 
+/** Third-party app ID (OAuth app platform) - e.g., app_01h455vb4pex5vsknk084sn02q */
+export type AppId = TypeId<'app'>
+
 // ============================================
 // Type Utilities
 // ============================================
@@ -463,6 +466,7 @@ export interface EntityIdMap {
   api_key: ApiKeyId
   webhook: WebhookId
   event: EvtId
+  app: AppId
   kb_category: KbCategoryId
   kb_article: KbArticleId
   kb_article_feedback: KbArticleFeedbackId

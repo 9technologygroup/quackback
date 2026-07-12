@@ -166,6 +166,8 @@ export type {
   WebhookId,
   // Eventing
   EvtId,
+  // App platform
+  AppId,
   // Utilities
   ExtractPrefix,
   EntityIdMap,

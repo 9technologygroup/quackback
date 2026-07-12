@@ -1233,6 +1233,13 @@
       "when": 1784772300000,
       "tag": "0192_events_outbox",
       "breakpoints": true
+    },
+    {
+      "idx": 193,
+      "version": "7",
+      "when": 1784772360000,
+      "tag": "0193_apps",
+      "breakpoints": true
     }
   ]
 }
