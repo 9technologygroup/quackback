@@ -315,7 +315,7 @@ export async function processEvent(event: EventData): Promise<void> {
   // outbox and let the leader relay resolve targets + enqueue. This closes the
   // commit-vs-enqueue loss window and makes the relay the sole enqueuer. Default
   // OFF, so the legacy path below is unchanged until Phase 5 flips the flag.
-  if (isEventingV2Enabled()) {
+  if (await isEventingV2Enabled()) {
     const { writeEventToOutbox } = await import('./outbox-dispatch')
     await writeEventToOutbox(event)
     return

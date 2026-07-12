@@ -200,7 +200,7 @@ export async function startOutboxRelay(): Promise<void> {
     log.info('QUACKBACK_ROLE=web — outbox relay not started')
     return
   }
-  if (!isEventingV2Enabled()) {
+  if (!(await isEventingV2Enabled())) {
     log.info('EVENTING-V2 not enabled — outbox relay dormant')
     return
   }
