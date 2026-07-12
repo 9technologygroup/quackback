@@ -81,8 +81,14 @@ set_env COMPOSE_PROJECT_NAME quackback
 slug="$(basename "$WORKTREE_ROOT" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+|_+$//g')"
 slug="${slug:0:40}"
 
+# Reuse the worktree's own PORT on a re-run, but not one it merely inherited
+# by copying the main checkout's .env — that would collide with the main dev
+# server. A value equal to main's counts as unassigned, so fall through to
+# allocation (mirrors the DATABASE_URL != "quackback" guard below).
+main_port=""
+[ -f "$MAIN_ROOT/.env" ] && main_port="$(sed -n -E 's/^PORT=([0-9]+).*/\1/p' "$MAIN_ROOT/.env" | head -1)"
 existing_port="$(read_env PORT)"
-if [ -n "$existing_port" ]; then
+if [ -n "$existing_port" ] && [ "$existing_port" != "$main_port" ]; then
   port="$existing_port"
 else
   claimed_ports=()
@@ -115,8 +121,13 @@ else
   db_name="quackback_${slug}"
 fi
 
+# Same guard as PORT: a Redis DB index inherited from the main checkout's
+# .env would share its namespace, so only reuse an index that differs from
+# main's.
+main_redis_idx=""
+[ -f "$MAIN_ROOT/.env" ] && main_redis_idx="$(sed -n -E 's#^REDIS_URL=redis://[^/]+/([0-9]+).*#\1#p' "$MAIN_ROOT/.env" | head -1)"
 existing_redis_url="$(read_env REDIS_URL)"
-if [[ "$existing_redis_url" =~ ^redis://[^/]+/([0-9]+)$ ]]; then
+if [[ "$existing_redis_url" =~ ^redis://[^/]+/([0-9]+)$ ]] && [ "${BASH_REMATCH[1]}" != "$main_redis_idx" ]; then
   redis_idx="${BASH_REMATCH[1]}"
 else
   claimed_redis_idx=()
