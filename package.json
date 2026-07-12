@@ -42,6 +42,7 @@
   },
   "scripts": {
     "setup": "./scripts/setup.sh",
+    "worktree:bootstrap": "./scripts/worktree-bootstrap.sh",
     "dev": "bun run --filter @quackback/web dev",
     "build": "bun run --filter @quackback/web build",
     "lint": "eslint . --ext .ts,.tsx",

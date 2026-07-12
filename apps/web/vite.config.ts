@@ -66,6 +66,10 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: Number(process.env.PORT || 3000),
+      // Without this, a taken port silently bumps to the next free one while
+      // BASE_URL/TRUSTED_ORIGINS (and every cookie/CORS check derived from
+      // them) still point at the original port — fail loudly instead.
+      strictPort: true,
       cors: mode === 'development',
       allowedHosts: true,
       hmr: {
