@@ -234,6 +234,10 @@ export const P = {
     clock: z.string(),
     dueAt: z.string(),
   }),
+  // --- WO-6a: identity/admin plane (new, catalogue-only) ---
+  'apikey.created': z.looseObject({ apiKeyId: id, name: z.string(), scopes: z.array(z.string()) }),
+  'apikey.deleted': z.looseObject({ apiKeyId: id }),
+  'settings.updated': z.looseObject({ changedKeys: z.array(z.string()) }),
 } as const
 
 export type PayloadFor<T extends keyof typeof P> = z.infer<(typeof P)[T]>

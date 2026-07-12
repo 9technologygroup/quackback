@@ -6,6 +6,8 @@
  */
 
 import { db, apiKeys, principal, eq, and, isNull } from '@/lib/server/db'
+import { emit } from '@/lib/server/events/emit'
+import { apiKeyCreated, apiKeyDeleted } from '@/lib/server/events/catalogue'
 import type { PrincipalId } from '@quackback/ids'
 import { NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { isAdmin } from '@/lib/shared/roles'
@@ -153,6 +155,22 @@ export async function createApiKey(
     { serviceMetadata: { kind: 'api_key', apiKeyId: apiKey.id } }
   )
 
+  // EVENTING-V2 WO-6a: emit the audit-relevant creation event. A short tx since
+  // this service has no surrounding one; exposure.audit writes the audit_log row
+  // in the same tx (best-effort — a failure must not fail key creation).
+  try {
+    await db.transaction((tx) =>
+      emit(tx, apiKeyCreated, {
+        payload: { apiKeyId: apiKey.id, name: apiKey.name, scopes: storedScopes },
+        actor: { type: 'user', id: createdById },
+        entityId: apiKey.id,
+        context: { source: 'admin' },
+      })
+    )
+  } catch {
+    /* best-effort emission; never blocks key creation */
+  }
+
   return { apiKey: toApiKey(apiKey), plainTextKey }
 }
 
@@ -259,6 +277,22 @@ export async function revokeApiKey(id: ApiKeyId): Promise<void> {
     // The factory resolves the row's userId and busts PRINCIPAL_BY_USER if set.
     // A service principal has no userId, so this stays a no-op cache-wise, as before.
     await setPrincipalRole({ principalId: revokedKey.principalId }, 'user')
+  }
+
+  // EVENTING-V2 WO-6a: audit-relevant deletion event. The actor isn't threaded
+  // into this signature yet (WO-6 refinement), so it is attributed to the
+  // service plane for now. Best-effort, same as create.
+  try {
+    await db.transaction((tx) =>
+      emit(tx, apiKeyDeleted, {
+        payload: { apiKeyId: id },
+        actor: { type: 'service' },
+        entityId: id,
+        context: { source: 'admin' },
+      })
+    )
+  } catch {
+    /* best-effort emission; never blocks revocation */
   }
 }
 

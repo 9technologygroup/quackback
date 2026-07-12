@@ -21,10 +21,15 @@ describe('event catalogue coverage', () => {
     expect(missing).toEqual([])
   })
 
-  it('declares nothing that is not an EVENT_TYPES member (no orphan catalogue entry)', () => {
+  it('any catalogue-only event (beyond legacy EVENT_TYPES) follows <entity>.<verb> naming', () => {
+    // WO-6 evolves this from a strict EVENT_TYPES bijection: new events emit
+    // directly via emit() and never join the legacy union, so the catalogue is
+    // allowed to be a SUPERSET of EVENT_TYPES. We still guard against typos by
+    // requiring the dotted-lowercase naming convention.
     const legacy = new Set<string>(EVENT_TYPES)
-    const orphan = catalogueTypes.filter((t) => !legacy.has(t))
-    expect(orphan).toEqual([])
+    const catalogueOnly = catalogueTypes.filter((t) => !legacy.has(t))
+    const malformed = catalogueOnly.filter((t) => !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(t))
+    expect(malformed).toEqual([])
   })
 
   it('every declaration carries a complete exposure + scope + emits contract', () => {
