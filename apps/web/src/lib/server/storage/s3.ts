@@ -180,13 +180,48 @@ async function getS3Client(): Promise<S3ClientInstance> {
  * so it works with both public and private buckets (e.g., Railway Buckets).
  * Users who want direct endpoint URLs can set S3_PUBLIC_URL to their endpoint.
  */
+const PUBLIC_STORAGE_PREFIXES = new Set([
+  'avatars',
+  'changelog-images',
+  'favicons',
+  'header-logos',
+  'help-center',
+  'link-previews',
+  'logos',
+  'post-images',
+  'widget-hero',
+])
+
+/** Unknown prefixes are private by default. */
+export function isPublicStorageKey(key: string): boolean {
+  return PUBLIC_STORAGE_PREFIXES.has(key.split('/', 1)[0] ?? '')
+}
+
+function storageReadSig(secret: string, key: string): string {
+  return createHmac('sha256', secret).update(`read|${key}`).digest('hex').slice(0, 32)
+}
+
+/** Verify the capability attached to a private storage URL. */
+export function verifyStorageReadToken(secret: string, key: string, sig: string | null): boolean {
+  if (!sig) return false
+  const expected = storageReadSig(secret, key)
+  try {
+    return timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
+  } catch {
+    return false
+  }
+}
+
 function buildPublicUrl(s3Config: S3Config, key: string): string {
-  if (s3Config.publicUrl) {
+  if (s3Config.publicUrl && isPublicStorageKey(key)) {
     return `${s3Config.publicUrl.replace(/\/$/, '')}/${key}`
   }
 
-  // Default to the presigned URL redirect route — works with any bucket
-  return `${config.baseUrl.replace(/\/$/, '')}/api/storage/${key}`
+  // Private objects always pass through the application with an unforgeable
+  // read capability, even when a public CDN endpoint is configured.
+  const base = `${config.baseUrl.replace(/\/$/, '')}/api/storage/${key}`
+  if (isPublicStorageKey(key)) return base
+  return `${base}?read=${storageReadSig(s3Config.secretAccessKey, key)}`
 }
 
 // ============================================================================
@@ -462,12 +497,13 @@ export function getEmailSafeUrl(key: string | null | undefined): string | null {
   if (!isS3Configured()) return null
 
   const s3Config = getS3Config()
-  if (s3Config.publicUrl) {
-    return buildPublicUrl(s3Config, key)
-  }
+  const storageUrl = buildPublicUrl(s3Config, key)
+  if (s3Config.publicUrl && isPublicStorageKey(key)) return storageUrl
 
   // Force proxy mode so email clients get bytes directly (no 302 redirect)
-  return `${config.baseUrl.replace(/\/$/, '')}/api/storage/${key}?email=1`
+  const url = new URL(storageUrl)
+  url.searchParams.set('email', '1')
+  return url.toString()
 }
 
 /**

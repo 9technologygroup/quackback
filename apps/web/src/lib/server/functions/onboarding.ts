@@ -12,7 +12,17 @@ import {
   setPrincipalRole,
 } from '@/lib/server/domains/principals/principal.factory'
 import { listBoards } from '@/lib/server/domains/boards/board.service'
-import { db, settings, principal, user, postStatuses, eq, DEFAULT_STATUSES } from '@/lib/server/db'
+import {
+  db,
+  settings,
+  principal,
+  user,
+  postStatuses,
+  eq,
+  and,
+  sql,
+  DEFAULT_STATUSES,
+} from '@/lib/server/db'
 import { invalidateSettingsCache } from '@/lib/server/domains/settings/settings.helpers'
 import { DEFAULT_AUTH_CONFIG, DEFAULT_PORTAL_CONFIG } from '@/lib/server/domains/settings'
 import { assertNotManaged } from '@/lib/server/config-file/managed-guard'
@@ -26,13 +36,31 @@ const log = logger.child({ component: 'onboarding' })
 /** Onboarding promotes the acting user to admin in two server fns
  *  (saveUseCaseFn, setupWorkspaceFn). Same DB shape, same intent —
  *  insert when missing, upgrade when present-but-not-admin. */
-async function ensureAdminPrincipal(userId: UserId): Promise<void> {
-  // Race-safe create (defaults aside); promote an existing non-admin principal.
-  const { created, principal: p } = await ensurePrincipalForUser({ userId, role: 'admin' })
-  if (!created && !isAdmin(p.role)) {
-    log.debug({ user_id: userId }, 'upgrading user to admin')
-    await setPrincipalRole({ userId }, 'admin')
-  }
+async function ensureBootstrapAdmin(userId: UserId): Promise<void> {
+  await db.transaction(async (tx) => {
+    // Serialize the one-time bootstrap decision so two first users cannot both
+    // observe an empty admin set and promote themselves concurrently.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('onboarding-admin', 0))`)
+
+    const caller = await tx.query.principal.findFirst({
+      where: eq(principal.userId, userId),
+    })
+    if (caller && isAdmin(caller.role)) return
+
+    // Bootstrap promotion is only valid until the first human admin exists.
+    const existingAdmin = await tx.query.principal.findFirst({
+      where: and(eq(principal.role, 'admin'), eq(principal.type, 'user')),
+    })
+    if (existingAdmin) {
+      throw new Error('Workspace setup is already claimed by an admin')
+    }
+
+    const { created, principal: p } = await ensurePrincipalForUser({ userId, role: 'admin' }, tx)
+    if (!created && !isAdmin(p.role)) {
+      log.debug({ user_id: userId }, 'upgrading user to admin')
+      await setPrincipalRole({ userId }, 'admin', { executor: tx, knownUserId: userId })
+    }
+  })
 }
 
 /**
@@ -119,7 +147,7 @@ export const setupWorkspaceFn = createServerFn({ method: 'POST' })
       // Settings exist + workspace step done: require existing admin.
       // Settings exist + workspace step not done: ensure user becomes admin.
       if (!existingSettings) {
-        await ensureAdminPrincipal(session.user.id as UserId)
+        await ensureBootstrapAdmin(session.user.id as UserId)
       } else if (setupState?.steps?.workspace) {
         const principalRecord = await db.query.principal.findFirst({
           where: eq(principal.userId, session.user.id as UserId),
@@ -128,7 +156,7 @@ export const setupWorkspaceFn = createServerFn({ method: 'POST' })
           throw new Error('Only admin can complete setup')
         }
       } else {
-        await ensureAdminPrincipal(session.user.id as UserId)
+        await ensureBootstrapAdmin(session.user.id as UserId)
       }
 
       // Check if onboarding is already complete
@@ -341,16 +369,16 @@ export const saveUseCaseFn = createServerFn({ method: 'POST' })
           steps: { core: true, workspace: false, boards: false },
         }
 
+        if (!setupState.steps.workspace) {
+          await ensureBootstrapAdmin(session.user.id as UserId)
+        }
+
         const updatedState: SetupState = { ...setupState, useCase: data.useCase }
 
         await db
           .update(settings)
           .set({ setupState: JSON.stringify(updatedState) })
           .where(eq(settings.id, existingSettings.id))
-
-        if (!setupState.steps.workspace) {
-          await ensureAdminPrincipal(session.user.id as UserId)
-        }
 
         await invalidateSettingsCache()
         log.info({ use_case: data.useCase }, 'save use case: saved')
@@ -362,6 +390,8 @@ export const saveUseCaseFn = createServerFn({ method: 'POST' })
         // (same rationale as setupWorkspaceFn): no settings row yet to
         // read managedFieldPaths from. The reconciler will overwrite on
         // its next tick if the file owns these fields.
+        await ensureBootstrapAdmin(session.user.id as UserId)
+
         const setupState: SetupState = {
           version: 1,
           steps: { core: true, workspace: false, boards: false },
@@ -375,8 +405,6 @@ export const saveUseCaseFn = createServerFn({ method: 'POST' })
           createdAt: new Date(),
           setupState: JSON.stringify(setupState),
         })
-
-        await ensureAdminPrincipal(session.user.id as UserId)
 
         await invalidateSettingsCache()
         log.info({ use_case: data.useCase }, 'save use case: created initial settings')

@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 
 const { Route } = await import('../settings.security.sso')
 
- 
 type BeforeLoadFn = (ctx: unknown) => void
 
 describe('settings.security.sso route', () => {

@@ -138,8 +138,14 @@ export async function handleProxyUpload({ request }: { request: Request }): Prom
  * directly from S3 — no bytes are proxied through the server.
  */
 export async function handleStorageGet({ request }: { request: Request }): Promise<Response> {
-  const { isS3Configured, generatePresignedGetUrl, getS3Object } =
-    await import('@/lib/server/storage/s3')
+  const {
+    isS3Configured,
+    generatePresignedGetUrl,
+    getS3Object,
+    getS3Config,
+    isPublicStorageKey,
+    verifyStorageReadToken,
+  } = await import('@/lib/server/storage/s3')
   const { config } = await import('@/lib/server/config')
 
   if (!isS3Configured()) {
@@ -153,6 +159,13 @@ export async function handleStorageGet({ request }: { request: Request }): Promi
     return Response.json({ error: 'Invalid storage key' }, { status: 400 })
   }
 
+  if (
+    !isPublicStorageKey(key) &&
+    !verifyStorageReadToken(getS3Config().secretAccessKey, key, url.searchParams.get('read'))
+  ) {
+    return Response.json({ error: 'Invalid storage read token' }, { status: 403 })
+  }
+
   // Force proxy for email embeds (?email=1) since email clients don't follow redirects
   const forceProxy = url.searchParams.has('email')
 
@@ -164,7 +177,9 @@ export async function handleStorageGet({ request }: { request: Request }): Promi
           status: 200,
           headers: {
             'Content-Type': cached.contentType,
-            'Cache-Control': 'public, max-age=31536000, immutable',
+            'Cache-Control': isPublicStorageKey(key)
+              ? 'public, max-age=31536000, immutable'
+              : 'private, max-age=3600, immutable',
             // Stored Content-Types originate from upload requests — never
             // let a browser second-guess them on a same-origin response.
             'X-Content-Type-Options': 'nosniff',
@@ -181,7 +196,9 @@ export async function handleStorageGet({ request }: { request: Request }): Promi
         status: 200,
         headers: {
           'Content-Type': contentType,
-          'Cache-Control': 'public, max-age=31536000, immutable',
+          'Cache-Control': isPublicStorageKey(key)
+            ? 'public, max-age=31536000, immutable'
+            : 'private, max-age=3600, immutable',
           'X-Content-Type-Options': 'nosniff',
         },
       })
@@ -193,7 +210,7 @@ export async function handleStorageGet({ request }: { request: Request }): Promi
       status: 302,
       headers: {
         Location: presignedUrl,
-        'Cache-Control': 'public, max-age=86400',
+        'Cache-Control': isPublicStorageKey(key) ? 'public, max-age=86400' : 'private, no-store',
       },
     })
   } catch (error) {

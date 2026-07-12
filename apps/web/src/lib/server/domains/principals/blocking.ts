@@ -3,9 +3,8 @@
  *
  * A blocked principal's inbound messages are rejected and it cannot
  * re-register: the messenger visitor-send gate and the widget identify handler
- * both consult {@link isBlocked}. The email-inbound transport has its own
- * boundary and must call {@link isBlocked} there too (integrator TODO —
- * conversation.email-inbound.service.ts is outside this module).
+ * both consult {@link isBlocked}. The email-inbound transport enforces the
+ * same check at its separate ingestion boundary.
  *
  * Only end users (portal users, leads, anonymous visitors) can be blocked.
  * Guards refuse to block team members (they manage the workspace) and service
