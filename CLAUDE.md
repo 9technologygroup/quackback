@@ -20,7 +20,7 @@ bun run test && bun run test:e2e && bun run lint && bun run typecheck
 
 ## UI sizing
 
-Menus, filters, and list chrome follow one standard (see `MENU-FILTER-SIZING-STANDARD.md`). Two density tiers: **Compact (13px)** for menus, dropdowns, selects, filters, nav rails, toolbars, and chips; **Comfortable (14px)** for dialogs, settings form fields, and reading content. Apply sizes via the primitives and tokens, never hand-roll them:
+Menus, filters, and list chrome follow one standard. Two density tiers: **Compact (13px)** for menus, dropdowns, selects, filters, nav rails, toolbars, and chips; **Comfortable (14px)** for dialogs, settings form fields, and reading content. Apply sizes via the primitives and tokens, never hand-roll them:
 
 - Menu / filter / nav row: use `MENU_ROW` + `MENU_ICON` from `@/components/ui/menu`, or the shadcn `DropdownMenuItem` / `SelectItem` / `CommandItem` (already 13px). Never override a menu item back to `text-xs` (lint enforces this).
 - Chips / badges: `<Badge size="sm">` (11px meta) or default (12px), with `shape="pill"` for rounded pills. The floor is 11px: no `text-[10px]` on chips or labels.

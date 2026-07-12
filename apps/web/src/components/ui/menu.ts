@@ -1,8 +1,8 @@
 /**
  * Density tokens for menus, filters, and list chrome — the Compact tier of the
- * app-wide sizing standard (13px body text, 16px icons, 11px labels). See
- * MENU-FILTER-SIZING-STANDARD.md. Import these instead of hand-writing class
- * strings so the scale stays consistent and can be tuned in one place.
+ * app-wide sizing standard (13px body text, 16px icons, 11px labels). Import
+ * these instead of hand-writing class strings so the scale stays consistent and
+ * can be tuned in one place.
  *
  * Weight convention: rows sit at normal weight; the active/selected row appends
  * `font-medium` so weight (not just color) signals state.
