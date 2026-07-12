@@ -17,6 +17,7 @@
     "./drizzle/*": "./drizzle/*"
   },
   "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run src/migrate.ts",
     "db:migrate:cli": "drizzle-kit migrate",

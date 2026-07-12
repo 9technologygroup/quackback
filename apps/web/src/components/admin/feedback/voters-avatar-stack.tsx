@@ -158,7 +158,7 @@ export function VotersAvatarStack({
               key={voter.principalId}
               src={voter.avatarUrl}
               name={voter.displayName}
-              className="h-6 w-6 text-[9px] ring-2 ring-background"
+              className="h-6 w-6 text-xs ring-2 ring-background"
               style={{ zIndex: i + 1 }}
             />
           ))}
@@ -240,7 +240,7 @@ export function VotersAvatarStack({
                         <Avatar
                           src={member.image}
                           name={member.name}
-                          className="h-5 w-5 text-[9px] shrink-0"
+                          className="h-5 w-5 text-xs shrink-0"
                         />
                         <div className="min-w-0 flex-1">
                           <div className="font-medium truncate">{member.name || 'Unnamed'}</div>

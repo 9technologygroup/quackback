@@ -173,6 +173,12 @@ vi.mock('@/lib/server/db', () => {
     lte: vi.fn(),
     desc: vi.fn(),
     inArray: vi.fn(),
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join('').includes('assistant_escalation_reason')) {
+        return { assistant_escalation_reason: values.at(-1) }
+      }
+      return { strings, values }
+    },
   }
 })
 

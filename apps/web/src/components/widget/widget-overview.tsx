@@ -198,7 +198,7 @@ export function WidgetOverview({
                     key={`${f.name}-${i}`}
                     src={f.avatarUrl}
                     name={f.name}
-                    className="size-7 text-[9px] ring-2 ring-card"
+                    className="size-7 text-xs ring-2 ring-card"
                   />
                 ))}
               </span>

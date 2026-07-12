@@ -58,7 +58,10 @@ async function initializeQueue() {
           switch (data.type) {
             case 'extract-signals': {
               const { extractSignals } = await import('../pipeline/extraction.service')
-              await extractSignals(data.rawItemId as RawFeedbackItemId)
+              await extractSignals(data.rawItemId as RawFeedbackItemId, {
+                currentAttempt: job.attemptsMade + 1,
+                maxAttempts: job.opts.attempts ?? 1,
+              })
               break
             }
             case 'interpret-signal': {

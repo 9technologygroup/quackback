@@ -30,7 +30,7 @@ import { NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { logger } from '@/lib/server/logger'
 import { buildEventActor, type EventActor } from '@/lib/server/events/dispatch'
 import { deriveImpact } from './status.calc'
-import { setComponentStatus, dispatchStatusEvent } from './status.components'
+import { reconcileComponentStatus, dispatchStatusEvent } from './status.components'
 import { enqueueMaintenanceJobs, cancelMaintenanceJobs } from './status.maintenance'
 import type {
   CreateStatusIncidentInput,
@@ -140,7 +140,7 @@ export async function createIncident(
   if (appliesComponentStatusNow({ kind: incident.kind, status: incident.status, backfilled })) {
     const source = incident.kind === 'incident' ? 'incident' : 'maintenance'
     for (const c of input.affectedComponents) {
-      await setComponentStatus(c.componentId, c.componentStatus, source, incident.id)
+      await reconcileComponentStatus(c.componentId, source, incident.id)
     }
   }
 
@@ -205,10 +205,6 @@ export async function updateIncident(
     const previousLinks = await db.query.statusIncidentComponents.findMany({
       where: eq(statusIncidentComponents.incidentId, id),
     })
-    const previousByComponent = new Map(
-      previousLinks.map((l) => [l.componentId, l.componentStatus])
-    )
-
     await db.delete(statusIncidentComponents).where(eq(statusIncidentComponents.incidentId, id))
     await db.insert(statusIncidentComponents).values(
       input.affectedComponents.map((c) => ({
@@ -227,10 +223,12 @@ export async function updateIncident(
     })
     if (nowLive) {
       const source = existing.kind === 'incident' ? 'incident' : 'maintenance'
-      for (const c of input.affectedComponents) {
-        if (previousByComponent.get(c.componentId) !== c.componentStatus) {
-          await setComponentStatus(c.componentId, c.componentStatus, source, id)
-        }
+      const affected = new Set([
+        ...previousLinks.map((link) => link.componentId),
+        ...input.affectedComponents.map((component) => component.componentId),
+      ])
+      for (const componentId of affected) {
+        await reconcileComponentStatus(componentId, source, id)
       }
     }
   }
@@ -242,6 +240,9 @@ export async function updateIncident(
       input.autoStart !== undefined ||
       input.autoComplete !== undefined)
   ) {
+    await cancelMaintenanceJobs(existing).catch((err) =>
+      log.error({ err, incident_id: id }, 'failed to cancel previous maintenance schedule')
+    )
     const refreshed = await requireIncident(id)
     await enqueueMaintenanceJobs(refreshed).catch((err) =>
       log.error({ err, incident_id: id }, 'failed to reschedule maintenance jobs')
@@ -288,7 +289,7 @@ export async function postIncidentUpdate(
     })
     const source = existing.kind === 'incident' ? 'incident' : 'maintenance'
     for (const link of links) {
-      await setComponentStatus(link.componentId, 'operational', source, id)
+      await reconcileComponentStatus(link.componentId, source, id)
     }
   }
 

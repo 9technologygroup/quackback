@@ -40,7 +40,7 @@ function AuthorAvatar({ author, index }: { author: Author; index: number }) {
 
   return (
     <span
-      className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold text-white overflow-hidden border-2 border-background ${bg}`}
+      className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold text-white overflow-hidden border-2 border-background ${bg}`}
       style={{ marginLeft: index === 0 ? 0 : -8 }}
       title={author.name}
     >

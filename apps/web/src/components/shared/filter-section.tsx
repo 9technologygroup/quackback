@@ -56,7 +56,7 @@ export function FilterSection({
       {open && (
         <div className="mt-2">
           {children}
-          {hint && <p className="mt-2 text-[10px] text-muted-foreground/60">{hint}</p>}
+          {hint && <p className="mt-2 text-xs text-muted-foreground/60">{hint}</p>}
         </div>
       )}
     </div>

@@ -82,9 +82,7 @@ export function SuggestionList({
             >
               {s === 'pending' ? 'Active' : 'Dismissed'}
               {s === 'dismissed' && dismissedCount != null && dismissedCount > 0 && (
-                <span className="ml-1 text-[10px] text-muted-foreground/50">
-                  ({dismissedCount})
-                </span>
+                <span className="ml-1 text-xs text-muted-foreground/50">({dismissedCount})</span>
               )}
             </button>
           ))}

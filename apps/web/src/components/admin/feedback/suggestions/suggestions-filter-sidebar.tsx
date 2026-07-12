@@ -74,7 +74,7 @@ export function SuggestionsFiltersSidebar({
                   <SourceTypeIcon sourceType={typed.sourceType} size="xs" />
                   <span className="truncate">{item.name}</span>
                   {count > 0 && (
-                    <span className="ml-auto text-[10px] text-muted-foreground">{count}</span>
+                    <span className="ml-auto text-xs text-muted-foreground">{count}</span>
                   )}
                 </span>
               )

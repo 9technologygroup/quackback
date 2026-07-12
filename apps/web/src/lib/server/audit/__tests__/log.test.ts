@@ -10,6 +10,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { UserId } from '@quackback/ids'
 
+vi.mock('@/lib/server/config', () => ({ config: { trustedProxyHops: 2 } }))
+
 const mockInsertValues = vi.fn()
 const mockInsert = vi.fn()
 

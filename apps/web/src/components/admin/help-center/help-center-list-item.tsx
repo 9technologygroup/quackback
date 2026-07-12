@@ -56,7 +56,7 @@ export function HelpCenterListItem({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
           <StatusBadge name={statusConfig.label} color={statusConfig.color} />
-          <span className="text-[10px] text-muted-foreground/50 font-medium">{category.name}</span>
+          <span className="text-xs text-muted-foreground/50 font-medium">{category.name}</span>
         </div>
 
         <h3 className="font-semibold text-base text-foreground line-clamp-1">{title}</h3>

@@ -5,7 +5,7 @@
  * updatePortalUser (update existing user by principal ID).
  */
 
-import { db, eq, and, principal, user } from '@/lib/server/db'
+import { db, eq, and, principal, user, sql } from '@/lib/server/db'
 import type { PrincipalId, UserId } from '@quackback/ids'
 import { generateId } from '@quackback/ids'
 import {
@@ -26,7 +26,6 @@ import {
   EXTERNAL_ID_KEY,
   parseUserAttributes,
   extractExternalId,
-  mergeMetadata,
   validateInputAttributes,
 } from './user.attributes'
 
@@ -79,7 +78,7 @@ export async function identifyPortalUser(
       }
     }
     if (Object.keys(metadataUpdates).length > 0 || metadataRemovals.length > 0) {
-      userUpdates.metadata = mergeMetadata(record.metadata, metadataUpdates, metadataRemovals)
+      userUpdates.metadata = sql`((coalesce(nullif(${user.metadata}, ''), '{}')::jsonb - ${metadataRemovals}::text[]) || ${JSON.stringify(metadataUpdates)}::jsonb)::text`
     }
 
     if (Object.keys(userUpdates).length > 0) {
@@ -122,27 +121,32 @@ export async function identifyPortalUser(
     const metadata = Object.keys(initialMeta).length > 0 ? JSON.stringify(initialMeta) : null
 
     try {
-      const [newUser] = await db
-        .insert(user)
-        .values({
-          id: generateId('user'),
-          name: defaultName,
-          email: normalizedEmail,
-          emailVerified: input.emailVerified ?? false,
-          image: input.image ?? null,
-          metadata,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .returning()
-      userRecord = newUser
-
-      await createPrincipal({
-        userId: newUser.id,
-        role: 'user',
-        displayName: defaultName,
-        avatarUrl: input.image ?? null,
+      const newUser = await db.transaction(async (tx) => {
+        const [createdUser] = await tx
+          .insert(user)
+          .values({
+            id: generateId('user'),
+            name: defaultName,
+            email: normalizedEmail,
+            emailVerified: input.emailVerified ?? false,
+            image: input.image ?? null,
+            metadata,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .returning()
+        await createPrincipal(
+          {
+            userId: createdUser.id,
+            role: 'user',
+            displayName: defaultName,
+            avatarUrl: input.image ?? null,
+          },
+          tx
+        )
+        return createdUser
       })
+      userRecord = newUser
 
       created = true
       if (input.emailVerified === true) emailVerifiedAsserted = true
@@ -238,11 +242,7 @@ export async function updatePortalUser(
     }
   }
   if (Object.keys(metadataUpdates).length > 0 || metadataRemovals.length > 0) {
-    userUpdates.metadata = mergeMetadata(
-      userRecord.metadata ?? null,
-      metadataUpdates,
-      metadataRemovals
-    )
+    userUpdates.metadata = sql`((coalesce(nullif(${user.metadata}, ''), '{}')::jsonb - ${metadataRemovals}::text[]) || ${JSON.stringify(metadataUpdates)}::jsonb)::text`
   }
 
   if (Object.keys(userUpdates).length > 0) {

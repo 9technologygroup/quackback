@@ -235,7 +235,7 @@ export const fetchPortalData = createServerFn({ method: 'GET' })
         board: post.board,
       })),
       hasMore: postsResult.hasMore,
-      total: -1,
+      total: undefined,
     }
 
     return {

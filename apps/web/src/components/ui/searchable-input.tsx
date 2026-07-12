@@ -184,7 +184,7 @@ export function SearchableInput({
                 >
                   <span className="truncate">{opt.label ?? opt.value}</span>
                   {opt.meta && (
-                    <span className="text-[10px] text-muted-foreground shrink-0">{opt.meta}</span>
+                    <span className="text-xs text-muted-foreground shrink-0">{opt.meta}</span>
                   )}
                 </CommandItem>
               ))

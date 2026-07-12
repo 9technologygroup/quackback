@@ -58,6 +58,16 @@ function createChainMock() {
 
 function createTx() {
   return {
+    execute: vi.fn(async () => [
+      {
+        count:
+          returnedComment.deletedAt === null &&
+          !returnedComment.isPrivate &&
+          returnedComment.moderationState !== 'pending'
+            ? 1
+            : 0,
+      },
+    ]),
     insert: vi.fn(() => createChainMock()),
     update: vi.fn(() => createChainMock()),
     delete: vi.fn(() => {

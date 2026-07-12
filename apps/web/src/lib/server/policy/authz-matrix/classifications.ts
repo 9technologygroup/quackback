@@ -318,7 +318,7 @@ export const INLINE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/admin.ts::checkOnboardingState::isAdmin': NOT_A_GATE(
     'race-safe first-user promotion — not an access check'
   ),
-  'lib/server/functions/onboarding.ts::ensureAdminPrincipal::isAdmin': NOT_A_GATE(
+  'lib/server/functions/onboarding.ts::ensureBootstrapAdmin::isAdmin': NOT_A_GATE(
     'promotes an existing non-admin principal during bootstrap — not an access check'
   ),
   'lib/server/functions/conversation.ts::assertVisitorConversationAccess::isTeamMember': NOT_A_GATE(

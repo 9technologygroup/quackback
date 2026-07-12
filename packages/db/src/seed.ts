@@ -349,7 +349,7 @@ async function seed() {
     })
     // Create credential account for password login
     await db.insert(account).values({
-      id: crypto.randomUUID(),
+      id: generateId('account'),
       accountId: demoUserId,
       providerId: 'credential',
       userId: demoUserId,

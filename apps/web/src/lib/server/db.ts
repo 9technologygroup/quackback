@@ -82,7 +82,10 @@ declare global {
  */
 function getDatabase(): Database {
   if (!globalThis.__db) {
-    globalThis.__db = createDb(config.databaseUrl, { max: 50 })
+    globalThis.__db = createDb(config.databaseUrl, {
+      max: config.dbPoolMax,
+      idleTimeout: config.dbIdleTimeout,
+    })
   }
   return globalThis.__db
 }

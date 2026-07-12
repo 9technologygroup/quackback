@@ -189,7 +189,7 @@ export function CompactSegmentBadges({ segments, maxVisible = 2 }: CompactSegmen
           {seg.name}
         </span>
       ))}
-      {overflow > 0 && <span className="text-[10px] text-muted-foreground">+{overflow}</span>}
+      {overflow > 0 && <span className="text-xs text-muted-foreground">+{overflow}</span>}
     </div>
   )
 }

@@ -143,7 +143,7 @@ export function WidgetPreview({
                     {['A', 'J', 'M'].map((n) => (
                       <span
                         key={n}
-                        className="flex size-6 items-center justify-center rounded-full bg-primary/20 text-[8px] font-semibold text-primary ring-2 ring-background"
+                        className="flex size-6 items-center justify-center rounded-full bg-primary/20 text-xs font-semibold text-primary ring-2 ring-background"
                       >
                         {n}
                       </span>
@@ -209,14 +209,14 @@ export function WidgetPreview({
                         )}
                       >
                         <Icon className="w-4 h-4" />
-                        <span className="text-[9px] font-medium">{label}</span>
+                        <span className="text-xs font-medium">{label}</span>
                       </button>
                     )
                   })}
                 </div>
               )}
               <div className={cn('text-center', showTabBar ? 'pb-1' : 'py-1.5')}>
-                <span className="inline-flex items-center gap-0.5 text-[9px] text-muted-foreground/60">
+                <span className="inline-flex items-center gap-0.5 text-xs text-muted-foreground/60">
                   <img src="/logo.png" alt="" width={10} height={10} className="opacity-60" />
                   Powered by Quackback
                 </span>
@@ -303,13 +303,13 @@ function MockHome({
         if (!tabs.changelog) return null
         return (
           <div key={card.id} className="rounded-lg border border-border/60 bg-card px-2.5 py-2">
-            <p className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground/60">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground/60">
               What&apos;s new
             </p>
             <p className="mt-0.5 text-[11px] font-medium text-foreground line-clamp-1">
               Interactive setup guides
             </p>
-            <p className="text-[9px] text-muted-foreground/70 line-clamp-1">
+            <p className="text-xs text-muted-foreground/70 line-clamp-1">
               Redesigned developer settings with live examples...
             </p>
           </div>
@@ -325,7 +325,7 @@ function MockHome({
                 {card.title || card.url || 'Link'}
               </span>
               {card.subtitle && (
-                <span className="block text-[9px] text-muted-foreground truncate">
+                <span className="block text-xs text-muted-foreground truncate">
                   {card.subtitle}
                 </span>
               )}
@@ -393,7 +393,7 @@ function MockActionCard({
       <span className="min-w-0 flex-1">
         <span className="block text-[11px] font-medium text-foreground truncate">{title}</span>
         {subtitle && (
-          <span className="block text-[9px] text-muted-foreground truncate">{subtitle}</span>
+          <span className="block text-xs text-muted-foreground truncate">{subtitle}</span>
         )}
       </span>
       <ChevronRightIcon className="w-3 h-3 text-muted-foreground/50 shrink-0" />
@@ -420,17 +420,15 @@ function MockMessages({
         {rows.map((r, i) => (
           <li key={i} className="border-b border-border/40 last:border-b-0">
             <div className="flex items-center gap-2 px-1 py-2">
-              <Avatar src={senderAvatar} name={senderName} className="size-7 shrink-0 text-[9px]" />
+              <Avatar src={senderAvatar} name={senderName} className="size-7 shrink-0 text-xs" />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center justify-between gap-2">
                   <span className="truncate text-[11px] font-medium text-foreground">
                     {senderName}
                   </span>
-                  <span className="shrink-0 text-[9px] text-muted-foreground/60">{r.time}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground/60">{r.time}</span>
                 </span>
-                <span className="block truncate text-[10px] text-muted-foreground">
-                  {r.preview}
-                </span>
+                <span className="block truncate text-xs text-muted-foreground">{r.preview}</span>
               </span>
             </div>
           </li>
@@ -451,11 +449,11 @@ function MockFeedback() {
     <div className="px-3 pt-1">
       <div className="relative mb-1.5">
         <MagnifyingGlassIcon className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/50" />
-        <div className="w-full pl-6 pr-2 py-1.5 text-[10px] rounded-lg border border-border bg-muted/30 text-muted-foreground/60">
+        <div className="w-full pl-6 pr-2 py-1.5 text-xs rounded-lg border border-border bg-muted/30 text-muted-foreground/60">
           Search ideas...
         </div>
       </div>
-      <p className="text-[8px] font-medium text-muted-foreground/60 uppercase tracking-wide px-0.5 py-1">
+      <p className="text-xs font-medium text-muted-foreground/60 uppercase tracking-wide px-0.5 py-1">
         Popular ideas
       </p>
       <div className="space-y-0.5">
@@ -481,7 +479,7 @@ function MockHelp() {
     <div className="px-3 pt-1">
       <div className="relative mb-1.5">
         <MagnifyingGlassIcon className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/50" />
-        <div className="w-full pl-6 pr-2 py-1.5 text-[10px] rounded-lg border border-border bg-muted/30 text-muted-foreground/60">
+        <div className="w-full pl-6 pr-2 py-1.5 text-xs rounded-lg border border-border bg-muted/30 text-muted-foreground/60">
           Search help articles...
         </div>
       </div>
@@ -494,10 +492,10 @@ function MockHelp() {
             <div className="flex items-center gap-2 px-1 py-2">
               <span className="min-w-0 flex-1">
                 <span className="block text-[11px] font-semibold text-foreground">{c.title}</span>
-                <span className="block text-[9px] text-muted-foreground/70 line-clamp-1">
+                <span className="block text-xs text-muted-foreground/70 line-clamp-1">
                   {c.desc}
                 </span>
-                <span className="block text-[8px] text-muted-foreground/50 mt-0.5">
+                <span className="block text-xs text-muted-foreground/50 mt-0.5">
                   {c.count} articles
                 </span>
               </span>
@@ -514,7 +512,7 @@ function MockChangelog({ teamName }: { teamName?: string | null }) {
   return (
     <div className="px-3 pt-1">
       <p className="px-0.5 text-[12px] font-semibold text-foreground">Latest</p>
-      {teamName && <p className="px-0.5 text-[9px] text-muted-foreground">From {teamName}</p>}
+      {teamName && <p className="px-0.5 text-xs text-muted-foreground">From {teamName}</p>}
       <div className="mt-1.5 space-y-1.5">
         <MockChangelogEntry
           title="Interactive setup guides"
@@ -558,7 +556,7 @@ function MockPost({
         <ChevronUpIcon className={cn('h-2.5 w-2.5', voted && 'text-primary')} />
         <span
           className={cn(
-            'text-[8px] font-semibold leading-none',
+            'text-xs font-semibold leading-none',
             voted ? 'text-primary' : 'text-foreground'
           )}
         >
@@ -566,7 +564,7 @@ function MockPost({
         </span>
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] font-medium text-foreground line-clamp-1">{title}</p>
+        <p className="text-xs font-medium text-foreground line-clamp-1">{title}</p>
         <div className="flex items-center gap-1 mt-0.5">
           <span className="size-1 rounded-full bg-chart-4 shrink-0" />
           <span className="text-[7px] text-muted-foreground">In Progress</span>
@@ -590,8 +588,8 @@ function MockChangelogEntry({
       <p className="text-[7px] font-medium text-muted-foreground/60 uppercase tracking-wide">
         {date}
       </p>
-      <p className="text-[10px] font-semibold text-foreground line-clamp-1 mt-0.5">{title}</p>
-      <p className="text-[8px] text-muted-foreground/70 line-clamp-2 mt-0.5 leading-relaxed">
+      <p className="text-xs font-semibold text-foreground line-clamp-1 mt-0.5">{title}</p>
+      <p className="text-xs text-muted-foreground/70 line-clamp-2 mt-0.5 leading-relaxed">
         {excerpt}
       </p>
     </div>

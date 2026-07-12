@@ -1,7 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { listPublicPosts } from '@/lib/server/domains/posts/post.public'
 import { resolveWidgetViewer } from '@/lib/server/widget/widget-viewer'
-import { widgetCorsHeaders, widgetJsonError } from '@/lib/server/widget/public-endpoint'
+import {
+  widgetCorsHeaders,
+  widgetJsonError,
+  enforceWidgetQuota,
+} from '@/lib/server/widget/public-endpoint'
+import { getSettings } from '@/lib/server/functions/workspace'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'widget-search' })
@@ -10,6 +15,16 @@ export const Route = createFileRoute('/api/widget/search')({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        const settings = await getSettings()
+        if (!settings) return widgetJsonError(503, 'WORKSPACE_UNAVAILABLE', 'Workspace unavailable')
+        const limited = await enforceWidgetQuota(request, {
+          keyPrefix: 'widget-search',
+          tenantId: settings.id,
+          limit: 60,
+          windowSeconds: 60,
+          message: 'Too many searches, slow down',
+        })
+        if (limited) return limited
         const url = new URL(request.url)
         const q = url.searchParams.get('q')?.trim()
         const board = url.searchParams.get('board') || undefined

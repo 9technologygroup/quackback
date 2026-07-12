@@ -80,7 +80,7 @@ docker build -t quackback -f apps/web/Dockerfile .
 docker run -p 3000:3000 --env-file .env quackback
 ```
 
-Requires PostgreSQL and a Redis-compatible store. Set `DATABASE_URL` and `REDIS_URL` in `.env`. Migrations run automatically on startup.
+Requires PostgreSQL and a Redis-compatible store. Set all variables in the canonical [runtime configuration table](docs/configuration.md). Migrations run automatically on startup.
 
 ## Contributing
 

@@ -96,9 +96,9 @@ interface SourceTypeIconProps {
 }
 
 const SIZE_CLASSES = {
-  xs: { box: 'h-5 w-5', icon: 'h-2.5 w-2.5', logo: 'h-3 w-3', fallback: 'text-[8px]' },
-  sm: { box: 'h-6 w-6', icon: 'h-3 w-3', logo: 'h-4 w-4', fallback: 'text-[9px]' },
-  md: { box: 'h-8 w-8', icon: 'h-4 w-4', logo: 'h-5 w-5', fallback: 'text-[10px]' },
+  xs: { box: 'h-5 w-5', icon: 'h-2.5 w-2.5', logo: 'h-3 w-3', fallback: 'text-xs' },
+  sm: { box: 'h-6 w-6', icon: 'h-3 w-3', logo: 'h-4 w-4', fallback: 'text-xs' },
+  md: { box: 'h-8 w-8', icon: 'h-4 w-4', logo: 'h-5 w-5', fallback: 'text-xs' },
 } as const
 
 /** Renders a source type as a colored icon badge */
@@ -151,7 +151,7 @@ export function SourceTypeStack({ sourceTypes, maxVisible = 4, className }: Sour
       <div
         className={cn('flex items-center justify-center h-6 w-6 rounded-md bg-muted', className)}
       >
-        <span className="text-[9px] text-muted-foreground">&mdash;</span>
+        <span className="text-xs text-muted-foreground">&mdash;</span>
       </div>
     )
   }

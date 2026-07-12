@@ -1025,7 +1025,7 @@ export function VisitorConversationThread({
         )
       case 'seen':
         return (
-          <p className="text-end text-[10px] text-muted-foreground/50 pe-1">
+          <p className="text-end text-xs text-muted-foreground/50 pe-1">
             <FormattedMessage id="widget.messenger.seen" defaultMessage="Seen" />
           </p>
         )
@@ -1130,7 +1130,7 @@ export function VisitorConversationThread({
           assistant, the classic live presence strip shows. */}
       {showHeader && assistant ? (
         <div className="flex items-center gap-2.5 px-4 py-2 border-b border-border/40 shrink-0">
-          <Avatar src={assistant.avatarUrl} name={assistant.name} className="size-7 text-[10px]" />
+          <Avatar src={assistant.avatarUrl} name={assistant.name} className="size-7 text-xs" />
           <div className="min-w-0">
             <p className="text-sm font-semibold leading-tight text-foreground">{assistant.name}</p>
             <p className="text-[11px] leading-tight text-muted-foreground">
@@ -1178,7 +1178,7 @@ export function VisitorConversationThread({
       {/* Help-center deflection: suggested articles as the visitor types. */}
       {helpResults.length > 0 && (
         <div className="px-3 pb-1">
-          <p className="px-1 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+          <p className="px-1 pb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground/60">
             <FormattedMessage
               id="widget.messenger.suggestedArticles"
               defaultMessage="Suggested articles"

@@ -15,6 +15,8 @@ import {
   statusComponentGroups,
   statusComponents,
   statusComponentEvents,
+  statusIncidentComponents,
+  statusIncidents,
 } from '@/lib/server/db'
 import type { StatusComponentId, StatusComponentGroupId, StatusIncidentId } from '@quackback/ids'
 import { NotFoundError, ValidationError } from '@/lib/shared/errors'
@@ -293,6 +295,42 @@ export async function setComponentStatus(
       log.error({ err, component_id: componentId }, 'failed to dispatch status.component_changed')
     )
   }
+}
+
+const STATUS_WEIGHT: Record<StatusComponentStatus, number> = {
+  operational: 0,
+  under_maintenance: 1,
+  degraded_performance: 2,
+  partial_outage: 3,
+  major_outage: 4,
+}
+
+/** Recompute a component from every currently active incident/window. */
+export async function reconcileComponentStatus(
+  componentId: StatusComponentId,
+  source: StatusComponentEventSource,
+  incidentId?: StatusIncidentId | null
+): Promise<void> {
+  const active = await db
+    .select({ status: statusIncidentComponents.componentStatus })
+    .from(statusIncidentComponents)
+    .innerJoin(statusIncidents, eq(statusIncidents.id, statusIncidentComponents.incidentId))
+    .where(
+      and(
+        eq(statusIncidentComponents.componentId, componentId),
+        isNull(statusIncidents.deletedAt),
+        sql`(
+          (${statusIncidents.kind} = 'incident' and ${statusIncidents.status} <> 'resolved')
+          or
+          (${statusIncidents.kind} = 'maintenance' and ${statusIncidents.status} in ('in_progress', 'verifying'))
+        )`
+      )
+    )
+  const effective = active.reduce<StatusComponentStatus>(
+    (worst, row) => (STATUS_WEIGHT[row.status] > STATUS_WEIGHT[worst] ? row.status : worst),
+    'operational'
+  )
+  await setComponentStatus(componentId, effective, source, incidentId)
 }
 
 // ============================================================================

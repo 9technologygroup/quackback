@@ -20,6 +20,7 @@ import {
 } from '@/lib/server/functions/portal-access'
 import { redactSettingsForClient } from '@/lib/shared/redact-portal-config'
 import { parseAuthPromptSearch } from '@/lib/shared/auth-prompt'
+import { escapeInlineStyle } from '@/lib/shared/safe-inline-content'
 import { isSafeCallbackUrl } from '@/lib/shared/routing'
 import { useAutoOpenAuthDialog } from '@/components/auth/use-auto-open-auth'
 import { resolveInstantSsoRedirectFn } from '@/lib/server/functions/instant-sso'
@@ -296,9 +297,13 @@ function PortalLayout() {
             isAuthenticated={isAuthenticated}
           />
           <div className="min-h-screen bg-background flex flex-col">
-            {themeStyles && <style dangerouslySetInnerHTML={{ __html: themeStyles }} />}
+            {themeStyles && (
+              <style dangerouslySetInnerHTML={{ __html: escapeInlineStyle(themeStyles) }} />
+            )}
             {/* Custom CSS is injected after theme styles so it can override */}
-            {customCss && <style dangerouslySetInnerHTML={{ __html: customCss }} />}
+            {customCss && (
+              <style dangerouslySetInnerHTML={{ __html: escapeInlineStyle(customCss) }} />
+            )}
             <PortalHeader
               orgName={org.name}
               orgLogo={brandingData?.logoUrl ?? null}

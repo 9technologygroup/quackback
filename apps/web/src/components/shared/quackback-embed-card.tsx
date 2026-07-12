@@ -240,9 +240,7 @@ export function QuackbackEmbedCard({
                 </span>
               ))}
               {data.tags.length > 3 && (
-                <span className="text-[10px] text-muted-foreground/60">
-                  +{data.tags.length - 3}
-                </span>
+                <span className="text-xs text-muted-foreground/60">+{data.tags.length - 3}</span>
               )}
             </div>
           )}
@@ -252,7 +250,7 @@ export function QuackbackEmbedCard({
               {data.authorAvatarUrl && (
                 <AvatarImage src={data.authorAvatarUrl} alt={data.authorName ?? 'Anonymous'} />
               )}
-              <AvatarFallback className="bg-muted text-[8px]">
+              <AvatarFallback className="bg-muted text-xs">
                 {getInitials(data.authorName)}
               </AvatarFallback>
             </Avatar>
@@ -284,7 +282,7 @@ export function QuackbackEmbedCard({
   if (data.kind === 'article') {
     const articleInner = (
       <div className="p-3">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
           Help article
         </p>
         <h3 className="mt-0.5 line-clamp-1 text-sm font-semibold text-foreground">{data.title}</h3>
@@ -309,7 +307,7 @@ export function QuackbackEmbedCard({
   // Changelog: a compact card (no vote tally — changelog entries aren't voted on).
   const changelogInner = (
     <div className="p-3">
-      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
         Changelog
       </p>
       <h3 className="mt-0.5 line-clamp-1 text-sm font-semibold text-foreground">{data.title}</h3>

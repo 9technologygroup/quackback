@@ -220,7 +220,7 @@ function RuleConditionRow({
               <React.Fragment key={group}>
                 {i > 0 && <SelectSeparator />}
                 <SelectGroup>
-                  <SelectLabel className="text-[10px] uppercase tracking-wider px-2 py-1.5">
+                  <SelectLabel className="text-xs uppercase tracking-wider px-2 py-1.5">
                     {label}
                   </SelectLabel>
                   {fields.map((field) => (
@@ -239,7 +239,7 @@ function RuleConditionRow({
             <>
               <SelectSeparator />
               <SelectGroup>
-                <SelectLabel className="text-[10px] uppercase tracking-wider px-2 py-1.5">
+                <SelectLabel className="text-xs uppercase tracking-wider px-2 py-1.5">
                   Custom attributes
                 </SelectLabel>
                 {customAttributes.map((attr) => (
@@ -257,7 +257,7 @@ function RuleConditionRow({
             <>
               <SelectSeparator />
               <SelectGroup>
-                <SelectLabel className="text-[10px] uppercase tracking-wider px-2 py-1.5">
+                <SelectLabel className="text-xs uppercase tracking-wider px-2 py-1.5">
                   Company attributes
                 </SelectLabel>
                 {companyAttributes.map((attr) => (

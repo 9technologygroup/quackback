@@ -143,7 +143,7 @@ function TicketAssigneeGlyph({
       <Avatar
         src={undefined}
         name={assignee.displayName ?? 'Agent'}
-        className="size-5 shrink-0 text-[9px]"
+        className="size-5 shrink-0 text-xs"
       />
     )
   }
@@ -151,7 +151,7 @@ function TicketAssigneeGlyph({
     return (
       <span
         title={assignee.teamName ?? 'Team'}
-        className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[9px] font-semibold text-muted-foreground"
+        className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground"
       >
         {(assignee.teamName ?? 'T').charAt(0).toUpperCase()}
       </span>
@@ -537,7 +537,7 @@ const ConversationRow = memo(function ConversationRow({
                 {c.visitor.displayName ?? 'Visitor'}
               </span>
             </span>
-            <span className="shrink-0 text-[10px] text-muted-foreground">
+            <span className="shrink-0 text-xs text-muted-foreground">
               {relativeTime(c.lastMessageAt)}
             </span>
           </div>
@@ -612,12 +612,12 @@ const TicketRow = memo(function TicketRow({
               <PriorityDot priority={t.priority} />
               <span className="truncate text-sm font-medium">{t.title}</span>
             </span>
-            <span className="shrink-0 text-[10px] text-muted-foreground">
+            <span className="shrink-0 text-xs text-muted-foreground">
               {relativeTime(t.updatedAt)}
             </span>
           </div>
           <div className="mt-1 flex items-center gap-1.5">
-            <span className="font-mono text-[10px] text-muted-foreground">#{t.number}</span>
+            <span className="font-mono text-xs text-muted-foreground">#{t.number}</span>
             <TicketStatusChip status={t.status} />
           </div>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">

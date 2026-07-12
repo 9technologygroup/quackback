@@ -20,7 +20,7 @@ function ShortcutRow({ keys, label }: { keys: string; label: string }) {
   return (
     <div className="flex items-center justify-between gap-4 py-1 text-sm">
       <span className="text-foreground">{label}</span>
-      <kbd className="bg-muted text-muted-foreground rounded border px-1.5 py-0.5 text-[10px]">
+      <kbd className="bg-muted text-muted-foreground rounded border px-1.5 py-0.5 text-xs">
         {keys}
       </kbd>
     </div>

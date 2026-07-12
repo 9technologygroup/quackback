@@ -242,7 +242,7 @@ export function AuthorSelector({
             {selectedMember?.image && (
               <AvatarImage src={selectedMember.image} alt={displayName || ''} />
             )}
-            <AvatarFallback className="text-[9px]">{getInitials(displayName)}</AvatarFallback>
+            <AvatarFallback className="text-xs">{getInitials(displayName)}</AvatarFallback>
           </Avatar>
           <span className="truncate font-medium text-foreground">{displayName}</span>
           {isNew && (
@@ -305,7 +305,7 @@ export function AuthorSelector({
                           {member.image && (
                             <AvatarImage src={member.image} alt={member.name || ''} />
                           )}
-                          <AvatarFallback className="text-[9px]">
+                          <AvatarFallback className="text-xs">
                             {getInitials(member.name)}
                           </AvatarFallback>
                         </Avatar>
@@ -315,7 +315,7 @@ export function AuthorSelector({
                             {memberIsNew && (
                               <Badge
                                 variant="outline"
-                                className="text-[9px] px-1 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
+                                className="text-xs px-1 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
                               >
                                 New
                               </Badge>

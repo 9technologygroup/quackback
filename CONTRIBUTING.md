@@ -57,15 +57,15 @@ quackback/
 │   ├── db/                # Database (Drizzle schema, migrations)
 │   ├── ids/               # TypeID system (branded UUIDs)
 │   └── email/             # Email service (Resend + React Email)
-├── ee/                    # Enterprise Edition features (SSO, SCIM, etc.)
-└── docker-compose.yml     # Local PostgreSQL 18
+├── packages/widget/       # Embeddable widget package
+└── docker-compose.yml     # Local PostgreSQL, Dragonfly, MinIO, and Mailpit
 ```
 
 ## Architecture
 
 Quackback uses **TanStack Start** with **TanStack Router** for file-based routing and server functions.
 
-### Server Functions (`apps/web/src/lib/server-functions/`)
+### Server Functions (`apps/web/src/lib/server/functions/`)
 
 Type-safe RPC endpoints using `createServerFn`:
 
@@ -81,7 +81,7 @@ export const createPostFn = createServerFn({ method: 'POST' })
   })
 ```
 
-### Service Layer (`apps/web/src/lib/{feature}/`)
+### Service Layer (`apps/web/src/lib/server/domains/{feature}/`)
 
 Business logic with typed error handling:
 
@@ -98,10 +98,10 @@ export async function createPost(input: CreatePostInput, author: Author) {
 
 ### Database Access
 
-Always import from `@/lib/db`, not `@quackback/db`:
+Server code imports from `@/lib/server/db`; client-safe types import from `@/lib/shared/db-types`. Do not import `@quackback/db` directly from application code.
 
 ```typescript
-import { db, posts, eq } from '@/lib/db'
+import { db, posts, eq } from '@/lib/server/db'
 
 const post = await db.query.posts.findFirst({
   where: eq(posts.id, postId),

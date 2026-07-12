@@ -75,7 +75,7 @@ export function IntegrationList({ catalog, integrations }: IntegrationListProps)
             )}
           >
             All
-            <span className="text-[10px] text-muted-foreground">{catalog.length}</span>
+            <span className="text-xs text-muted-foreground">{catalog.length}</span>
           </button>
           {populatedCategories.map((cat) => (
             <button
@@ -90,7 +90,7 @@ export function IntegrationList({ catalog, integrations }: IntegrationListProps)
               )}
             >
               {INTEGRATION_CATEGORIES[cat].label}
-              <span className="text-[10px] text-muted-foreground">{categoryCounts.get(cat)}</span>
+              <span className="text-xs text-muted-foreground">{categoryCounts.get(cat)}</span>
             </button>
           ))}
         </nav>

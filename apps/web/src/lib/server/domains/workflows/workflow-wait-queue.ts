@@ -24,6 +24,7 @@ const CONCURRENCY = 4
 
 interface WorkflowWaitJob {
   runId: string
+  waitSeq: number
 }
 
 let initPromise: Promise<{
@@ -51,7 +52,9 @@ async function initializeQueue() {
         QUEUE_NAME,
         async (job) => {
           const { resumeWorkflowRun } = await import('./workflow.engine')
-          await resumeWorkflowRun(job.data.runId as Parameters<typeof resumeWorkflowRun>[0])
+          await resumeWorkflowRun(job.data.runId as Parameters<typeof resumeWorkflowRun>[0], {
+            expectedWaitSeq: job.data.waitSeq,
+          })
         },
         { connection, concurrency: CONCURRENCY }
       )
@@ -199,7 +202,7 @@ export async function scheduleWorkflowResume(
   const { queue } = await ensureQueue()
   await queue.add(
     'workflow-wait:resume',
-    { runId },
+    { runId, waitSeq },
     { jobId: workflowWaitJobId(runId, waitSeq), delay: Math.max(0, waitSeconds) * 1000 }
   )
 }

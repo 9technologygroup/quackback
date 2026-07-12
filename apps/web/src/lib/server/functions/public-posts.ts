@@ -928,7 +928,7 @@ export const findSimilarPostsFn = createServerFn({ method: 'GET' })
         return []
       }
 
-      const { db, posts, boards, postStatuses, eq, and, isNull, desc, sql, inArray } =
+      const { db, posts, boards, postStatuses, eq, and, isNull, desc, asc, sql, inArray } =
         await import('@/lib/server/db')
       const { generateEmbedding } =
         await import('@/lib/server/domains/embeddings/embedding.service')
@@ -1006,7 +1006,7 @@ export const findSimilarPostsFn = createServerFn({ method: 'GET' })
                 sql`1 - (${posts.embedding} <=> ${vectorStr}::vector) >= 0.35`
               )
             )
-            .orderBy(desc(sql`1 - (${posts.embedding} <=> ${vectorStr}::vector)`))
+            .orderBy(asc(sql`${posts.embedding} <=> ${vectorStr}::vector`))
             .limit(fetchLimit)
 
           log.debug({ count: matches.length }, 'vector search results')

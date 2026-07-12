@@ -5,6 +5,7 @@
 import { logger } from '@/lib/server/logger'
 import { closeAllWorkers, initAllWorkers } from './queue/worker-registry'
 import { getProcessRole, shouldRunWorkers } from './queue/role'
+import { validateRuntimeConfig } from './config'
 
 const log = logger.child({ component: 'startup' })
 
@@ -68,11 +69,12 @@ function wireGracefulShutdown(): void {
 }
 
 export function logStartupBanner(): void {
-  // During Nitro's initial build evaluation, SECRET_KEY isn't available yet.
-  // Return without setting _logged so the runtime call can still execute.
-  if (!process.env.SECRET_KEY && process.env.NODE_ENV !== 'test') return
+  // Build evaluation is explicitly selected by the build script. A missing
+  // runtime secret must never be mistaken for build mode.
+  if (process.env.QUACKBACK_BUILD === '1') return
 
   if (_logged) return
+  validateRuntimeConfig()
   _logged = true
 
   const runtime =
@@ -97,6 +99,10 @@ export function logStartupBanner(): void {
   import('@/lib/server/domains/ai/config')
     .then(({ validateAiConfig }) => validateAiConfig())
     .catch((err) => log.error({ err }, 'ai config validation failed'))
+
+  import('@/lib/server/integrations/segment/user-sync')
+    .then(({ warnIfSegmentInboundIsInsecure }) => warnIfSegmentInboundIsInsecure())
+    .catch((err) => log.error({ err }, 'failed to validate Segment inbound configuration'))
 
   // Wire SIGTERM/SIGINT once — the rest of this function spawns
   // long-lived workers + sweepers, so register the drain handler before

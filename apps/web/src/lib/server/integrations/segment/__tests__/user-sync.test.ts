@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createHmac } from 'node:crypto'
 
 // The module logs failures via the structured logger (a child of @/lib/server/
 // logger). Mock it so the child's `.error` is a spy we can assert on.
-const { logSpies } = vi.hoisted(() => ({
+const { logSpies, redisSet } = vi.hoisted(() => ({
   logSpies: {
     trace: vi.fn(),
     debug: vi.fn(),
@@ -11,13 +12,63 @@ const { logSpies } = vi.hoisted(() => ({
     error: vi.fn(),
     fatal: vi.fn(),
   },
+  redisSet: vi.fn().mockResolvedValue('OK'),
 }))
 vi.mock('@/lib/server/logger', () => {
   const child = () => ({ ...logSpies, child })
   return { logger: { ...logSpies, child }, createLogger: () => ({ ...logSpies, child }) }
 })
+vi.mock('@/lib/server/redis', () => ({ getRedis: () => ({ set: redisSet }) }))
 
 import { segmentUserSync } from '../user-sync'
+
+describe('segmentUserSync.handleIdentify', () => {
+  const body = JSON.stringify({ type: 'identify', traits: { email: 'user@example.com' } })
+
+  it('fails closed when no inbound secret is configured', async () => {
+    const result = await segmentUserSync.handleIdentify?.(
+      new Request('https://example.test'),
+      body,
+      {},
+      {}
+    )
+    expect(result).toBeInstanceOf(Response)
+    expect((result as Response).status).toBe(403)
+  })
+
+  it('accepts only a valid signature', async () => {
+    const secret = 'segment-secret'
+    const signature = createHmac('sha1', secret).update(body).digest('base64')
+    const result = await segmentUserSync.handleIdentify?.(
+      new Request('https://example.test', { headers: { 'x-signature': signature } }),
+      body,
+      {},
+      { incomingSecret: secret }
+    )
+    expect(result).toMatchObject({ email: 'user@example.com' })
+  })
+
+  it('acknowledges a replayed Segment message without reprocessing it', async () => {
+    const secret = 'segment-secret'
+    const replayBody = JSON.stringify({
+      type: 'identify',
+      messageId: 'segment-message-1',
+      traits: { email: 'user@example.com' },
+    })
+    redisSet.mockResolvedValueOnce(null)
+    const signature = createHmac('sha1', secret).update(replayBody).digest('base64')
+
+    const result = await segmentUserSync.handleIdentify?.(
+      new Request('https://example.test', { headers: { 'x-signature': signature } }),
+      replayBody,
+      {},
+      { incomingSecret: secret }
+    )
+
+    expect(result).toBeInstanceOf(Response)
+    expect((result as Response).status).toBe(200)
+  })
+})
 
 describe('segmentUserSync.syncSegmentMembership', () => {
   beforeEach(() => {

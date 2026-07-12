@@ -467,7 +467,10 @@ describe.skipIf(!fixture.available)('workflow run sweeper (real DB, rolled back)
     })
 
     it('leaves a waiting run whose durable timer job still exists untouched', async () => {
-      getWorkflowWaitJob.mockResolvedValue({ id: 'live-job' } as never) // job is queued, just late
+      getWorkflowWaitJob.mockResolvedValue({
+        id: 'live-job',
+        getState: async () => 'delayed',
+      } as never) // job is queued, just late
       const conversationId = await seedConversation()
       const wf = await seedWorkflow()
       // Overdue (fire time in the past) so the due-filter selects it — this is
@@ -558,7 +561,10 @@ describe.skipIf(!fixture.available)('workflow run sweeper (real DB, rolled back)
       expect(after.cursor).toMatchObject({ resumeNodeId: 'a2', waitSeq: 1, waitSeconds: 0 })
 
       getWorkflowWaitJob.mockClear()
-      getWorkflowWaitJob.mockResolvedValue({ id: 'live-job' } as never)
+      getWorkflowWaitJob.mockResolvedValue({
+        id: 'live-job',
+        getState: async () => 'delayed',
+      } as never)
       expect(await sweepOrphanedWaitingRuns(new Date())).toBe(0)
       expect(getWorkflowWaitJob).toHaveBeenCalledWith(workflowWaitJobId(run.id, 1))
 

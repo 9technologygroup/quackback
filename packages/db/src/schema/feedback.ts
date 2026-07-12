@@ -148,6 +148,9 @@ export const feedbackSignals = pgTable(
     index('feedback_signals_raw_idx').on(t.rawFeedbackItemId),
     index('feedback_signals_board_idx').on(t.boardId),
     index('feedback_signals_state_idx').on(t.processingState),
+    index('feedback_signals_embedding_hnsw_idx')
+      .using('hnsw', sql`${t.embedding} vector_cosine_ops`)
+      .where(sql`${t.embedding} IS NOT NULL`),
     check(
       'extraction_confidence_range',
       sql`${t.extractionConfidence} >= 0 and ${t.extractionConfidence} <= 1`
@@ -205,6 +208,9 @@ export const feedbackSuggestions = pgTable(
     index('feedback_suggestions_created_idx').on(t.createdAt),
     index('feedback_suggestions_result_post_idx').on(t.resultPostId),
     index('feedback_suggestions_signal_idx').on(t.signalId),
+    index('feedback_suggestions_embedding_hnsw_idx')
+      .using('hnsw', sql`${t.embedding} vector_cosine_ops`)
+      .where(sql`${t.embedding} IS NOT NULL`),
   ]
 )
 

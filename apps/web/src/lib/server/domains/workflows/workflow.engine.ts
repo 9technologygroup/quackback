@@ -317,11 +317,10 @@ async function applyPlanAndSettle(
   // leaks into a LATER hop's input-wait cursor.
   let blockMessageId: string | null
   let connectorHops = 0
-  // See the doc comment above: set true right before the first connector
-  // call this invocation actually makes, and never reset. Gates whether a
-  // later throw in the loop rethrows (nothing side-effecting yet — safe to
-  // let resumeWorkflowRun revert-and-retry) or is caught here instead.
-  let connectorExecutedOnce = false
+  // Once a non-idempotent action starts, a later failure must interrupt the
+  // run instead of reverting to its old cursor and replaying customer-visible
+  // work. Set before execution because an action may commit and then throw.
+  let sideEffectExecutedOnce = false
 
   // Per-RUN resolution (SF8 perf fix), mirroring the resolve-once
   // ConditionContext pattern the walk itself already uses: a plan with N
@@ -364,6 +363,13 @@ async function applyPlanAndSettle(
       blockMessageId = null
       for (const action of currentPlan.actions) {
         try {
+          if (
+            action.type === 'send_block' ||
+            action.type === 'add_note' ||
+            action.type === 'record_csat'
+          ) {
+            sideEffectExecutedOnce = true
+          }
           const actionActor =
             action.type === 'record_csat'
               ? visitorActor((ctx.conversation.visitorPrincipalId ?? null) as PrincipalId | null)
@@ -380,6 +386,19 @@ async function applyPlanAndSettle(
         } catch (err) {
           log.error({ err, action: action.type, workflowId: workflow.id }, 'workflow action failed')
           await logRunEvent(run.id, workflow.id, subjectPrincipalId, `action_failed:${action.type}`)
+          if (sideEffectExecutedOnce) {
+            await logRunEvent(
+              run.id,
+              workflow.id,
+              subjectPrincipalId,
+              'resume_failed_after_side_effects'
+            )
+            const interrupted = await settleRunning(run.id, {
+              state: 'interrupted',
+              endedAt: new Date(),
+            })
+            return interrupted ?? (await currentRun(run.id))
+          }
         }
       }
 
@@ -406,7 +425,7 @@ async function applyPlanAndSettle(
       const node = graph.nodes.find((n) => n.id === nodeId)
       // Set right before the call this hop is about to make — see this
       // function's connectorExecutedOnce doc comment above.
-      connectorExecutedOnce = true
+      sideEffectExecutedOnce = true
       // A missing node (a stale snapshot, a malformed edit) is treated the same
       // as a disabled/deleted connector: 'unavailable', not a thrown error —
       // executeCallConnectorNode's own contract never throws, so this branch
@@ -447,7 +466,7 @@ async function applyPlanAndSettle(
       }
       currentPlan = walkWorkflow(graph, ctx, nextId)
     } catch (err) {
-      if (!connectorExecutedOnce) throw err
+      if (!sideEffectExecutedOnce) throw err
       // A connector call already committed an external side effect this
       // invocation — see the doc comment above for why this must stop the
       // run rather than let resumeWorkflowRun's catch-all revert it to
@@ -603,15 +622,23 @@ async function settleTerminal(
  */
 export async function resumeWorkflowRun(
   runId: WorkflowRun['id'],
-  opts?: { blockAnswer?: BlockAnswer; assistantOutcome?: AssistantOutcome }
+  opts?: {
+    blockAnswer?: BlockAnswer
+    assistantOutcome?: AssistantOutcome
+    expectedWaitSeq?: number
+  }
 ): Promise<WorkflowRun | null> {
+  const claimFilters = [eq(workflowRuns.id, runId), eq(workflowRuns.state, 'waiting')]
+  if (opts?.expectedWaitSeq !== undefined) {
+    claimFilters.push(sql`(${workflowRuns.cursor}->>'waitSeq')::int = ${opts.expectedWaitSeq}`)
+  }
   const [claimed] = await db
     .update(workflowRuns)
     .set({
       state: 'running',
       cursor: sql`coalesce(${workflowRuns.cursor}, '{}'::jsonb) || jsonb_build_object('resumedAt', ${new Date().toISOString()}::text)`,
     })
-    .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.state, 'waiting')))
+    .where(and(...claimFilters))
     .returning()
   if (!claimed) return null // already claimed / interrupted / handled
 

@@ -26,7 +26,7 @@ import type { PostId, BoardId, PostStatusId } from '@quackback/ids'
 
 interface PublicPostListResult {
   items: PublicPostListItem[]
-  total: number
+  total?: number
   hasMore: boolean
 }
 
@@ -241,7 +241,7 @@ export function useCreatePublicPost() {
                 return {
                   ...page,
                   items: [newPostItem, ...page.items],
-                  total: page.total + 1,
+                  total: page.total === undefined ? undefined : page.total + 1,
                 }
               }
               return page
@@ -340,7 +340,7 @@ export function useUserDeletePost({ onSuccess, onError }: UseUserDeletePostOptio
             pages: old.pages.map((page) => ({
               ...page,
               items: page.items.filter((post) => post.id !== postId),
-              total: page.total - 1,
+              total: page.total === undefined ? undefined : page.total - 1,
             })),
           }
         }

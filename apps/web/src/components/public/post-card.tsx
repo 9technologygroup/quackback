@@ -310,7 +310,15 @@ export function PostCard({
       {/* More actions */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-7 w-7 hover:bg-muted/50">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 hover:bg-muted/50"
+            aria-label={intl.formatMessage({
+              id: 'portal.postCard.quickActions.open',
+              defaultMessage: 'Open post actions',
+            })}
+          >
             <EllipsisHorizontalIcon className="h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
@@ -444,9 +452,7 @@ export function PostCard({
           {authorAvatarUrl && (
             <AvatarImage src={authorAvatarUrl} alt={authorName || authorFallback} />
           )}
-          <AvatarFallback className="bg-muted text-[10px]">
-            {getInitials(authorName)}
-          </AvatarFallback>
+          <AvatarFallback className="bg-muted text-xs">{getInitials(authorName)}</AvatarFallback>
         </Avatar>
       )}
       <span className={showAvatar ? '' : 'text-foreground/80'}>{authorName || authorFallback}</span>
@@ -501,7 +507,7 @@ export function PostCard({
               </span>
             ))}
             {tags.length > 3 && (
-              <span className="text-[10px] text-muted-foreground/60">+{tags.length - 3}</span>
+              <span className="text-xs text-muted-foreground/60">+{tags.length - 3}</span>
             )}
           </div>
         )}

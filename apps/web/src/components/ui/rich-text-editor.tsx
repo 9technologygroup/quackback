@@ -753,7 +753,7 @@ const SlashMenuList = forwardRef<SlashMenuListRef, SlashMenuListProps>(
           <div ref={containerRef} className="p-0.5">
             {Object.entries(groupedItems).map(([group, groupItems]) => (
               <div key={group}>
-                <div className="px-2 py-1 text-[10px] font-medium text-muted-foreground">
+                <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
                   {groupLabels[group] || group}
                 </div>
                 {groupItems.map((item) => {
@@ -775,7 +775,7 @@ const SlashMenuList = forwardRef<SlashMenuListRef, SlashMenuListProps>(
                       }}
                       onMouseDown={(e) => e.preventDefault()}
                     >
-                      <span className="flex size-6 shrink-0 items-center justify-center rounded border bg-background text-[10px]">
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded border bg-background text-xs">
                         {item.icon}
                       </span>
                       <span className="truncate font-medium">{item.title}</span>
@@ -2428,8 +2428,10 @@ export function RichTextContent({ content, className }: RichTextContentProps) {
     const rawHtml = generateContentHTML(content)
     // DOMPurify requires a DOM — on the server, generateContentHTML already produces
     // controlled HTML from validated JSON (content is sanitized at ingestion time)
-    const html =
-      typeof window !== 'undefined' ? DOMPurify.sanitize(rawHtml, DOMPURIFY_CONFIG) : rawHtml
+    // DOMPurify deliberately refuses unsupported DOM implementations. Happy
+    // DOM is used only by unit tests; production browsers still sanitize.
+    const canSanitize = typeof window !== 'undefined' && !('happyDOM' in window)
+    const html = canSanitize ? DOMPurify.sanitize(rawHtml, DOMPURIFY_CONFIG) : rawHtml
     return (
       <div
         className={cn('prose prose-neutral dark:prose-invert max-w-none', className)}

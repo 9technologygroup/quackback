@@ -173,7 +173,17 @@ export async function sweepOrphanedWaitingRuns(now: Date): Promise<number> {
   for (const run of candidates) {
     const cursor = readCursor(run)
     const job = await getWorkflowWaitJob(workflowWaitJobId(run.id, cursor.waitSeq))
-    if (job) continue // timer is live, just not processed yet
+    if (job) {
+      const state = await job.getState()
+      if (state !== 'failed' && state !== 'completed') continue
+      // A failed/completed job is retained by removeOnFail/removeOnComplete
+      // (7-day age), so it still occupies its jobId. BullMQ treats
+      // queue.add() with an existing jobId as a no-op, so scheduleWorkflowResume
+      // below (which reuses the same waitSeq-keyed jobId) would silently never
+      // re-enqueue — leaving the run parked until the stale job ages out.
+      // Remove it first to free the id for the fresh resume.
+      await job.remove()
+    }
 
     const remainingSeconds = Math.max(0, waitFireTimeMs(run, cursor) - now.getTime()) / 1000
     const waitSeq = cursor.waitSeq ?? 1

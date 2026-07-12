@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { auth } from '@/lib/server/auth'
 import { isS3Configured, uploadImageFromFormData } from '@/lib/server/storage/s3'
+import { enforceWidgetQuota } from '@/lib/server/widget/public-endpoint'
 
 export async function handleWidgetUpload({ request }: { request: Request }): Promise<Response> {
   // Any valid widget session may attach images — identified or anonymous. We
@@ -11,6 +12,14 @@ export async function handleWidgetUpload({ request }: { request: Request }): Pro
   if (!sessionData?.user) {
     return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }
+  const limited = await enforceWidgetQuota(request, {
+    keyPrefix: 'widget-upload',
+    tenantId: request.headers.get('host') ?? new URL(request.url).host,
+    limit: 20,
+    windowSeconds: 60,
+    message: 'Too many uploads, slow down',
+  })
+  if (limited) return limited
   if (!isS3Configured()) {
     return Response.json({ error: 'Storage not configured' }, { status: 503 })
   }

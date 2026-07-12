@@ -428,6 +428,10 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
     'incidents/maintenance windows are authored by team members with status_page.publish; the merge source is always anonymous',
   'status_incident_updates.created_by':
     'incident updates are posted by team members with status_page.publish (same reasoning as status_incidents.created_by)',
+  'workflow_versions.created_by':
+    'workflow versions are saved by authenticated team members; anonymous principals cannot author them',
+  'assistant_events.principal_id':
+    'assistant event attribution is the acting teammate; customer subjects are carried by conversation or ticket instead',
   'post_merge_suggestions.resolved_by_principal_id': 'suggestion resolution is a team action',
   'feedback_suggestions.resolved_by_principal_id': 'suggestion resolution is a team action',
   'principal_role_assignments.principal_id':

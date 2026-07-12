@@ -51,6 +51,14 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
       // which forward to db here).
       transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
         fn({
+          query: {
+            posts: {
+              findFirst: vi
+                .fn()
+                .mockResolvedValueOnce(undefined)
+                .mockResolvedValueOnce({ canonicalPostId: null }),
+            },
+          },
           update: (..._args: unknown[]) => {
             mockDbUpdate(..._args)
             return createUpdateChain()

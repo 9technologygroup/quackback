@@ -303,7 +303,14 @@ export function PortalHeader({
         // Logged-in user - show user dropdown
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="relative h-9 w-9 rounded-full">
+            <Button
+              variant="ghost"
+              className="relative h-9 w-9 rounded-full"
+              aria-label={intl.formatMessage({
+                id: 'portal.header.auth.accountMenu',
+                defaultMessage: 'Open account menu',
+              })}
+            >
               <Avatar className="h-9 w-9" src={avatarUrl} name={name} />
             </Button>
           </DropdownMenuTrigger>

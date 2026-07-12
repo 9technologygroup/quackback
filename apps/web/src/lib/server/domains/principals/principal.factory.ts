@@ -21,6 +21,7 @@ import {
   user,
   eq,
   and,
+  sql,
   type Principal,
   type ServiceMetadata,
   type Database,
@@ -30,6 +31,7 @@ import { generateId, type PrincipalId, type UserId } from '@quackback/ids'
 import { isTeamMember, type Role, type PrincipalType } from '@/lib/shared/roles'
 import { cacheDel, CACHE_KEYS } from '@/lib/server/redis'
 import { addPrincipalToDefaultTeam } from '@/lib/server/domains/teams'
+import { ForbiddenError } from '@/lib/shared/errors'
 
 /** The live db or an open transaction — both expose insert/update/query. */
 export type Executor = Database | Transaction
@@ -209,7 +211,39 @@ export async function setPrincipalRole(
   role: Role,
   opts: MutateOpts = {}
 ): Promise<{ cacheKeysToBust: readonly string[] }> {
+  // Every demotion/removal is serialized through one transaction-scoped lock.
+  // Keeping this in the sole role writer covers admin UI, SSO/JIT, API-key
+  // teardown, and future callers without duplicating a TOCTOU-prone count.
+  if (!opts.executor && role !== 'admin' && typeof db.transaction === 'function') {
+    const result = await db.transaction((tx) =>
+      setPrincipalRole(ref, role, { ...opts, executor: tx })
+    )
+    for (const key of result.cacheKeysToBust) await cacheDel(key)
+    return result
+  }
+
   const exec = opts.executor ?? db
+  if (role !== 'admin' && typeof exec.execute === 'function') {
+    await exec.execute(sql`SELECT pg_advisory_xact_lock(7061636)`)
+    const current = await exec.query.principal.findFirst({ where: refWhere(ref) })
+    if (current?.type === 'user' && current.role === 'admin') {
+      const [row] = await exec
+        .select({ count: sql<number>`count(*)` })
+        .from(principal)
+        .where(
+          and(
+            eq(principal.type, 'user'),
+            eq(principal.role, 'admin'),
+            'principalId' in ref
+              ? sql`${principal.id} <> ${ref.principalId}`
+              : sql`${principal.userId} <> ${ref.userId}`
+          )
+        )
+      if (Number(row?.count ?? 0) === 0) {
+        throw new ForbiddenError('LAST_ADMIN', 'Cannot remove or demote the last admin')
+      }
+    }
+  }
   const conds = [refWhere(ref)]
   if (opts.guards?.onlyType) conds.push(eq(principal.type, opts.guards.onlyType))
   if (opts.guards?.onlyRole) conds.push(eq(principal.role, opts.guards.onlyRole))

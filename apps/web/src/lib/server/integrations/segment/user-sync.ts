@@ -16,9 +16,12 @@
  *   writeKey — Segment source write key for the HTTP Tracking API
  */
 
-import { timingSafeEqual, createHmac } from 'crypto'
+import { timingSafeEqual, createHmac, createHash } from 'crypto'
 import type { UserSyncHandler, UserIdentifyPayload } from '../user-sync-types'
 import { logger } from '@/lib/server/logger'
+import { db, integrations, and, eq } from '@/lib/server/db'
+import { decryptSecrets } from '../encryption'
+import { getRedis } from '@/lib/server/redis'
 
 const log = logger.child({ component: 'segment' })
 
@@ -28,27 +31,42 @@ const SEGMENT_TRACKING_API = 'https://api.segment.io/v1'
 const OUTBOUND_BATCH_SIZE = 10
 const MAX_ERROR_BODY_LENGTH = 300
 
-export const segmentUserSync: UserSyncHandler = {
-  async handleIdentify(request, body, config, _secrets): Promise<UserIdentifyPayload | Response> {
-    // Verify HMAC-SHA1 signature if a shared secret is configured.
-    // Segment signs the raw body with the source's shared secret.
-    const incomingSecret = config.incomingSecret as string | undefined
-    if (incomingSecret) {
-      const signature = request.headers.get('x-signature')
-      if (!signature) {
-        return new Response('Missing x-signature header', { status: 401 })
-      }
+export async function warnIfSegmentInboundIsInsecure(): Promise<void> {
+  const integration = await db.query.integrations.findFirst({
+    where: and(eq(integrations.integrationType, 'segment'), eq(integrations.status, 'active')),
+    columns: { secrets: true },
+  })
+  if (!integration) return
+  const secrets = integration.secrets ? decryptSecrets(integration.secrets) : {}
+  if (!secrets.incomingSecret) {
+    log.error('active Segment integration has no inbound secret; identify ingestion is disabled')
+  }
+}
 
-      const expected = createHmac('sha1', incomingSecret).update(body).digest('base64')
-      try {
-        const sigBuf = Buffer.from(signature, 'base64')
-        const expBuf = Buffer.from(expected, 'base64')
-        if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
-          return new Response('Invalid signature', { status: 401 })
-        }
-      } catch {
+export const segmentUserSync: UserSyncHandler = {
+  async handleIdentify(request, body, _config, secrets): Promise<UserIdentifyPayload | Response> {
+    // Fail closed: active Segment ingestion is disabled until an encrypted
+    // inbound secret has been provisioned through the settings flow.
+    // Segment signs the raw body with the source's shared secret.
+    const incomingSecret = secrets.incomingSecret as string | undefined
+    if (!incomingSecret) {
+      log.error('inbound Segment sync disabled: incoming secret is not configured')
+      return new Response('Segment inbound secret not configured', { status: 403 })
+    }
+    const signature = request.headers.get('x-signature')
+    if (!signature) {
+      return new Response('Missing x-signature header', { status: 401 })
+    }
+
+    const expected = createHmac('sha1', incomingSecret).update(body).digest('base64')
+    try {
+      const sigBuf = Buffer.from(signature, 'base64')
+      const expBuf = Buffer.from(expected, 'base64')
+      if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
         return new Response('Invalid signature', { status: 401 })
       }
+    } catch {
+      return new Response('Invalid signature', { status: 401 })
     }
 
     let payload: Record<string, unknown>
@@ -56,6 +74,14 @@ export const segmentUserSync: UserSyncHandler = {
       payload = JSON.parse(body) as Record<string, unknown>
     } catch {
       return new Response('Invalid JSON body', { status: 400 })
+    }
+
+    // Segment includes messageId on normal deliveries. Claim it before the
+    // write so provider retries cannot apply the same identify mutation twice.
+    if (typeof payload.messageId === 'string' && payload.messageId.length > 0) {
+      const digest = createHash('sha256').update(payload.messageId).digest('hex')
+      const claimed = await getRedis().set(`segment:identify:${digest}`, '1', 'EX', 86_400, 'NX')
+      if (claimed !== 'OK') return new Response('OK', { status: 200 })
     }
 
     // Only process identify events — acknowledge but ignore everything else

@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '17 3 * * *'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -17,9 +23,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
+      - name: Audit production dependencies
+        run: bun audit --production --audit-level=high
       - run: bun run lint
       # Build the widget bundle first — apps/web imports
       # packages/widget/dist/browser.js via Vite ?raw, so it must exist
@@ -29,6 +37,10 @@ jobs:
         env:
           SKIP_ENV_VALIDATION: true
       - run: bun run --filter @quackback/web typecheck
+      - run: bun run --cwd packages/widget typecheck
+      - run: bun run --cwd packages/widget test
+      - run: bun run --cwd packages/db typecheck
+      - run: bunx tsc --noEmit -p packages/email/tsconfig.json
 
   test:
     runs-on: ubuntu-latest
@@ -43,8 +55,8 @@ jobs:
           - 5432:5432
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
       - run: bun run db:migrate
       # Applies every migration to a scratch DB on the postgres service and
@@ -78,8 +90,8 @@ jobs:
       SECRET_KEY: e2e-smoke-secret-key-for-ci-only-at-least-32-chars
       BASE_URL: http://acme.localhost:3000
     steps:
-      - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       # The seed workspace is served on the acme.localhost subdomain; make sure
       # Node-side fetches (Playwright request API, webServer readiness probe)
       # resolve it regardless of the runner's resolver.
@@ -111,13 +123,117 @@ jobs:
         run: >
           bunx playwright test
           tests/admin/inbox.spec.ts
+          tests/admin/workflows.spec.ts
           tests/public/portal-support.spec.ts
           tests/widget/messenger.spec.ts
           --grep "@smoke"
         working-directory: apps/web
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
         with:
           name: e2e-smoke-report
           path: apps/web/blob-report
           retention-days: 7
+
+  live-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: quackback_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      CI: 'true'
+      REDIS_URL: redis://localhost:6379
+      SECRET_KEY: live-api-secret-key-for-ci-only-at-least-32-characters
+      BASE_URL: http://acme.localhost:3000
+      API_BASE_URL: http://acme.localhost:3000/api/v1
+      REQUIRE_LIVE_API: 'true'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Map tenant hostname to loopback
+        run: echo "127.0.0.1 acme.localhost" | sudo tee -a /etc/hosts
+      - run: bun install --frozen-lockfile
+      - run: bun run --filter @quackback/widget build
+      - run: bun run db:migrate
+      - run: bun run db:seed
+      - name: Write runtime environment
+        run: |
+          cat > .env <<EOF
+          DATABASE_URL=$DATABASE_URL
+          REDIS_URL=$REDIS_URL
+          SECRET_KEY=$SECRET_KEY
+          BASE_URL=$BASE_URL
+          EOF
+      - name: Provision CI API key
+        run: |
+          api_key=$(bun apps/web/scripts/create-ci-api-key.ts)
+          echo "::add-mask::$api_key"
+          echo "API_KEY=$api_key" >> "$GITHUB_ENV"
+      - name: Start application and require readiness
+        run: |
+          bun run dev > /tmp/quackback-live-api.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "$BASE_URL/api/health/ready" > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/quackback-live-api.log
+          exit 1
+      - name: Run live API assertions
+        run: bunx vitest run --config vitest.config.ts src/lib/server/domains/api/__tests__/api-integration.test.ts
+        working-directory: apps/web
+
+  e2e-full:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: quackback_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379
+      SECRET_KEY: e2e-full-secret-key-for-ci-only-at-least-32-chars
+      BASE_URL: http://acme.localhost:3000
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Map acme.localhost to loopback
+        run: echo "127.0.0.1 acme.localhost" | sudo tee -a /etc/hosts
+      - run: bun install --frozen-lockfile
+      - name: Write .env for the dev server and e2e scripts
+        run: |
+          cat > .env <<EOF
+          DATABASE_URL=$DATABASE_URL
+          REDIS_URL=$REDIS_URL
+          SECRET_KEY=$SECRET_KEY
+          BASE_URL=$BASE_URL
+          EOF
+      - run: bun run --filter @quackback/widget build
+      - run: bun run db:migrate
+      - run: bun run db:seed
+      - run: bunx playwright install --with-deps chromium
+        working-directory: apps/web
+      - run: bunx playwright test
+        working-directory: apps/web

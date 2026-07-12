@@ -67,7 +67,7 @@ export function WidgetResumeCard({
           <span className="text-sm font-medium text-foreground truncate">{name}</span>
           <TimeAgo
             date={conversation.lastMessageAt}
-            className="text-[10px] text-muted-foreground/60 shrink-0"
+            className="text-xs text-muted-foreground/60 shrink-0"
           />
         </span>
         <span className="block text-xs text-muted-foreground truncate">

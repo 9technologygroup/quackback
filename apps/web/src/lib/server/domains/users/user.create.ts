@@ -21,6 +21,7 @@ import { generateId, type PrincipalId, type UserId } from '@quackback/ids'
 import { createPrincipal } from '@/lib/server/domains/principals/principal.factory'
 import { recordAuditEvent, type AuditActor } from '@/lib/server/audit/log'
 import { ValidationError } from '@/lib/shared/errors'
+import { isUniqueViolation } from '@/lib/server/utils'
 
 export interface CreatePortalUserInput {
   name: string
@@ -71,21 +72,24 @@ export async function createPortalUser(
   // admin-attributed shells must be claimable via SSO on first sign-in.
   const emailVerified = normalizedEmail ? (input.emailVerified ?? true) : false
 
-  await db.insert(user).values({
-    id: userId,
-    name: trimmedName,
-    email: normalizedEmail,
-    emailVerified,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  })
-
-  await createPrincipal({
-    id: principalId,
-    userId,
-    role: 'user',
-    displayName: trimmedName,
-  })
+  try {
+    await db.transaction(async (tx) => {
+      await tx.insert(user).values({
+        id: userId,
+        name: trimmedName,
+        email: normalizedEmail,
+        emailVerified,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      await createPrincipal({ id: principalId, userId, role: 'user', displayName: trimmedName }, tx)
+    })
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new ValidationError('EMAIL_TAKEN', 'A user with this email already exists')
+    }
+    throw error
+  }
 
   if (emailVerified) {
     await recordAuditEvent({

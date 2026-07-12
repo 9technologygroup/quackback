@@ -39,15 +39,20 @@ function createInsertChain() {
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   // Spread the real db module so tables/operators stay current; override only what this suite drives.
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
-  db: {
-    select: (...args: unknown[]) => mockSelect(...args),
-    insert: vi.fn(() => createInsertChain()),
-    query: {
-      externalUserMappings: {
-        findFirst: (...args: unknown[]) => mockFindFirstExternalMapping(...args),
+  db: (() => {
+    const mocked = {
+      select: (...args: unknown[]) => mockSelect(...args),
+      insert: vi.fn(() => createInsertChain()),
+      execute: vi.fn().mockResolvedValue([]),
+      query: {
+        externalUserMappings: {
+          findFirst: (...args: unknown[]) => mockFindFirstExternalMapping(...args),
+        },
       },
-    },
-  },
+    } as Record<string, unknown>
+    mocked.transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(mocked)
+    return mocked
+  })(),
   eq: vi.fn((col: unknown, val: unknown) => ({ kind: 'eq', col, val })),
   // sql tagged template — the LOWER(email) lookup uses it. Return a
   // tagged marker so tests can assert it was used (instead of a raw

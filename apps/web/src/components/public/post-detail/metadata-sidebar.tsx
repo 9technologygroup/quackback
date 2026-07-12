@@ -736,7 +736,7 @@ export function MetadataSidebar({
                     <>
                       <Avatar className="h-5 w-5">
                         {owner.avatarUrl && <AvatarImage src={owner.avatarUrl} alt={owner.name} />}
-                        <AvatarFallback className="text-[9px]">
+                        <AvatarFallback className="text-xs">
                           {getInitials(owner.name)}
                         </AvatarFallback>
                       </Avatar>
@@ -789,9 +789,7 @@ export function MetadataSidebar({
                       >
                         <Avatar className="h-5 w-5 shrink-0">
                           {m.avatarUrl && <AvatarImage src={m.avatarUrl} alt={m.name} />}
-                          <AvatarFallback className="text-[9px]">
-                            {getInitials(m.name)}
-                          </AvatarFallback>
+                          <AvatarFallback className="text-xs">{getInitials(m.name)}</AvatarFallback>
                         </Avatar>
                         <span className="flex-1 truncate">{m.name}</span>
                         {owner?.principalId === m.principalId && (
@@ -1142,7 +1140,7 @@ export function MetadataSidebar({
                     }
                   />
                 )}
-                <AvatarFallback className="text-[9px]">{getInitials(authorName)}</AvatarFallback>
+                <AvatarFallback className="text-xs">{getInitials(authorName)}</AvatarFallback>
               </Avatar>
               <span className="text-sm font-medium text-foreground underline decoration-muted-foreground/30 underline-offset-2">
                 {authorName ||
@@ -1169,9 +1167,7 @@ export function MetadataSidebar({
                         }
                       />
                     )}
-                    <AvatarFallback className="text-[9px]">
-                      {getInitials(authorName)}
-                    </AvatarFallback>
+                    <AvatarFallback className="text-xs">{getInitials(authorName)}</AvatarFallback>
                   </Avatar>
                   <span className="text-sm font-medium text-foreground">
                     {authorName ||

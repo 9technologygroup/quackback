@@ -1212,6 +1212,13 @@
       "when": 1784772120000,
       "tag": "0189_assistant_events",
       "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1784772180000,
+      "tag": "0190_audit_invariants",
+      "breakpoints": true
     }
   ]
 }

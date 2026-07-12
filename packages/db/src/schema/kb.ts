@@ -150,6 +150,9 @@ export const helpCenterArticles = pgTable(
     index('kb_articles_category_published_idx').on(table.categoryId, table.publishedAt),
     index('kb_articles_category_position_idx').on(table.categoryId, table.position),
     index('kb_articles_search_vector_idx').using('gin', table.searchVector),
+    index('kb_articles_embedding_hnsw_idx')
+      .using('hnsw', sql`${table.embedding} vector_cosine_ops`)
+      .where(sql`${table.embedding} IS NOT NULL`),
   ]
 )
 

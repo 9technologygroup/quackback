@@ -457,6 +457,19 @@ export async function deleteComment(
 
   // Atomic transaction: delete comment + conditionally decrement comment count
   await db.transaction(async (tx) => {
+    const countedRows = await tx.execute(sql`
+      WITH RECURSIVE subtree AS (
+        SELECT id, is_private, moderation_state, deleted_at
+        FROM ${postComments} WHERE id = ${id}
+        UNION ALL
+        SELECT child.id, child.is_private, child.moderation_state, child.deleted_at
+        FROM ${postComments} child
+        JOIN subtree parent ON child.parent_id = parent.id
+      )
+      SELECT count(*)::int AS count FROM subtree
+      WHERE deleted_at IS NULL AND is_private = false AND moderation_state <> 'pending'
+    `)
+    const [counted] = Array.from(countedRows as Iterable<{ count: number }>)
     const result = await tx.delete(postComments).where(eq(postComments.id, id)).returning()
     if (result.length === 0) {
       throw new NotFoundError('COMMENT_NOT_FOUND', `Comment with ID ${id} not found`)
@@ -467,13 +480,11 @@ export async function deleteComment(
     // published + counted a previously-pending comment between the read and
     // here. Skip when already soft-deleted (the soft-delete already decremented)
     // or when the comment was never counted (private / still-pending).
-    const deleted = result[0]
-    const shouldDecrement =
-      !deleted.deletedAt && !deleted.isPrivate && deleted.moderationState !== 'pending'
-    if (shouldDecrement) {
+    const decrement = Number(counted?.count ?? 0)
+    if (decrement > 0) {
       await tx
         .update(posts)
-        .set({ commentCount: sql`GREATEST(0, ${posts.commentCount} - ${result.length})` })
+        .set({ commentCount: sql`GREATEST(0, ${posts.commentCount} - ${decrement})` })
         .where(eq(posts.id, existingComment.postId))
     }
   })

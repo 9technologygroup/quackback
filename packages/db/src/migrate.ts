@@ -19,6 +19,30 @@ const __dirname = path.dirname(__filename)
 // range and postgres-js has no bigint parameter type.
 const MIGRATION_LOCK_KEY = 4_820_231_099
 
+async function ensureConcurrentIndexes(sql: ReturnType<typeof postgres>): Promise<void> {
+  await sql`CREATE EXTENSION IF NOT EXISTS pg_trgm`
+  const statements = [
+    'CREATE INDEX CONCURRENTLY IF NOT EXISTS posts_embedding_hnsw_idx ON posts USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
+    'CREATE INDEX CONCURRENTLY IF NOT EXISTS feedback_signals_embedding_hnsw_idx ON feedback_signals USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
+    'CREATE INDEX CONCURRENTLY IF NOT EXISTS feedback_suggestions_embedding_hnsw_idx ON feedback_suggestions USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
+    'CREATE INDEX CONCURRENTLY IF NOT EXISTS kb_articles_embedding_hnsw_idx ON kb_articles USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
+    'CREATE INDEX CONCURRENTLY IF NOT EXISTS assistant_snippets_embedding_hnsw_idx ON assistant_snippets USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
+    'CREATE INDEX CONCURRENTLY IF NOT EXISTS conversation_summaries_embedding_hnsw_idx ON conversation_summaries USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
+    'CREATE INDEX CONCURRENTLY IF NOT EXISTS principal_display_name_trgm_idx ON principal USING gin (display_name gin_trgm_ops) WHERE display_name IS NOT NULL',
+    'CREATE INDEX CONCURRENTLY IF NOT EXISTS conversation_messages_content_trgm_idx ON conversation_messages USING gin (content gin_trgm_ops) WHERE deleted_at IS NULL',
+  ]
+  for (const statement of statements) await sql.unsafe(statement)
+
+  // page_views is range-partitioned (see 0137), and Postgres rejects
+  // CREATE INDEX CONCURRENTLY on a partitioned parent ("cannot create index on
+  // partitioned table ... concurrently"). Build it non-concurrently on the
+  // parent, matching how 0137 creates the table's other parent indexes; the
+  // index recurses to existing partitions. IF NOT EXISTS keeps re-runs a no-op.
+  await sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS page_views_principal_id_idx ON page_views (principal_id) WHERE principal_id IS NOT NULL'
+  )
+}
+
 async function runMigrations() {
   const connectionString = process.env.DATABASE_URL
 
@@ -50,6 +74,9 @@ async function runMigrations() {
     // Ensure pgvector extension is available before running migrations
     await sql`CREATE EXTENSION IF NOT EXISTS vector`
     await migrate(db, { migrationsFolder })
+    // Drizzle executes migration files transactionally; large production
+    // indexes need their own non-transactional concurrent path.
+    await ensureConcurrentIndexes(sql)
     console.log('✅ Migrations completed successfully!')
 
     // Seed the reference data every workspace needs (post statuses, the RBAC

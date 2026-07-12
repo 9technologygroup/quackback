@@ -219,6 +219,9 @@ export async function interpretSignal(
 
     log.info({ signal_id: signalId }, 'completed signal')
   } catch (error) {
+    const terminal =
+      error instanceof UnrecoverableError ||
+      (attemptContext?.currentAttempt ?? 1) >= (attemptContext?.maxAttempts ?? 1)
     await logPipelineEvent({
       eventType: 'interpretation.failed',
       rawFeedbackItemId: signal.rawFeedbackItemId,
@@ -227,15 +230,19 @@ export async function interpretSignal(
         error: error instanceof Error ? error.message : String(error),
         currentAttempt: attemptContext?.currentAttempt,
         maxAttempts: attemptContext?.maxAttempts,
+        terminal,
       },
     })
 
     await db
       .update(feedbackSignals)
-      .set({ processingState: 'failed', updatedAt: new Date() })
+      .set({
+        processingState: terminal ? 'failed' : 'pending_interpretation',
+        updatedAt: new Date(),
+      })
       .where(eq(feedbackSignals.id, signalId))
 
-    await checkRawItemCompletion(signal.rawFeedbackItemId)
+    if (terminal) await checkRawItemCompletion(signal.rawFeedbackItemId)
 
     throw error
   }

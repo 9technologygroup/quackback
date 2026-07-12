@@ -1,5 +1,5 @@
 import { pgTable, text, timestamp, index, customType } from 'drizzle-orm/pg-core'
-import { relations } from 'drizzle-orm'
+import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn } from '@quackback/ids/drizzle'
 import { conversations } from './conversation'
 import { principal } from './auth'
@@ -49,7 +49,12 @@ export const conversationSummaries = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [index('conversation_summaries_visitor_principal_id_idx').on(table.visitorPrincipalId)]
+  (table) => [
+    index('conversation_summaries_visitor_principal_id_idx').on(table.visitorPrincipalId),
+    index('conversation_summaries_embedding_hnsw_idx')
+      .using('hnsw', sql`${table.embedding} vector_cosine_ops`)
+      .where(sql`${table.embedding} IS NOT NULL`),
+  ]
 )
 
 export type ConversationSummary = typeof conversationSummaries.$inferSelect

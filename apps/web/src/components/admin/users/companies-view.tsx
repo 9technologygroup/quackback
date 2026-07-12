@@ -277,7 +277,7 @@ function AddCompanyFilterButton({
             {availableCustom.length > 0 && (
               <>
                 <div className="border-b border-border/30 my-1" />
-                <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="px-2.5 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   Custom attributes
                 </div>
                 {availableCustom.map((attr) => (
@@ -304,7 +304,7 @@ function AddCompanyFilterButton({
             <button
               type="button"
               onClick={() => setCategory(null)}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] text-muted-foreground hover:text-foreground border-b border-border/50"
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground border-b border-border/50"
             >
               <ChevronRightIcon className="h-2.5 w-2.5 rotate-180" />
               {category.label}
@@ -574,7 +574,7 @@ export function CompaniesView({
         ) : (
           <div className="rounded-xl overflow-hidden shadow-sm divide-y divide-border/50 bg-card border border-border/50">
             {/* Column header */}
-            <div className="hidden sm:flex items-center gap-3 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/30">
+            <div className="hidden sm:flex items-center gap-3 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/30">
               <span className="flex-1 min-w-0">Company</span>
               <span className="w-24 text-left">Plan</span>
               <span className="w-24 text-right">Monthly spend</span>

@@ -354,7 +354,7 @@ export const AgentMessageBubble = memo(function AgentMessageBubble({
       <Avatar
         src={message.author?.avatarUrl ?? null}
         name={authorName}
-        className="mt-0.5 size-7 shrink-0 text-[10px]"
+        className="mt-0.5 size-7 shrink-0 text-xs"
       />
 
       {/* flex-1 gives the column a definite width; without it the column

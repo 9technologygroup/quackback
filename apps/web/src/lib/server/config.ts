@@ -72,6 +72,8 @@ const configSchema = z.object({
 
   // Database
   databaseUrl: z.string().min(1),
+  dbPoolMax: envInt.pipe(z.number().int().min(1).max(100)).optional(),
+  dbIdleTimeout: envInt.pipe(z.number().int().min(1).max(3600)).default(20),
 
   // Auth
   secretKey: z.string().min(32, 'SECRET_KEY must be at least 32 characters'),
@@ -81,6 +83,7 @@ const configSchema = z.object({
 
   // Redis (BullMQ background jobs)
   redisUrl: z.string().min(1),
+  trustedProxyHops: envInt.pipe(z.number().int().min(0).max(10)).default(0),
 
   // Email (all optional)
   emailFrom: z.string().optional(),
@@ -144,6 +147,8 @@ function buildConfigFromEnv(): unknown {
 
     // Database
     databaseUrl: process.env.DATABASE_URL,
+    dbPoolMax: env('DB_POOL_MAX'),
+    dbIdleTimeout: env('DB_IDLE_TIMEOUT'),
 
     // Auth
     secretKey: process.env.SECRET_KEY,
@@ -151,6 +156,7 @@ function buildConfigFromEnv(): unknown {
 
     // Redis
     redisUrl: process.env.REDIS_URL,
+    trustedProxyHops: env('TRUSTED_PROXY_HOPS'),
 
     // Email
     emailFrom: env('EMAIL_FROM'),
@@ -203,7 +209,7 @@ function buildConfigFromEnv(): unknown {
 let _config: Config | null = null
 
 function isBuildTime(): boolean {
-  return !process.env.SECRET_KEY && process.env.NODE_ENV !== 'test'
+  return process.env.QUACKBACK_BUILD === '1'
 }
 
 function loadConfig(): Config {
@@ -255,6 +261,14 @@ export const config = {
   get databaseUrl() {
     return loadConfig().databaseUrl
   },
+  get dbPoolMax() {
+    const configured = loadConfig().dbPoolMax
+    if (configured) return configured
+    return process.env.QUACKBACK_ROLE === 'worker' ? 20 : 10
+  },
+  get dbIdleTimeout() {
+    return loadConfig().dbIdleTimeout
+  },
   get secretKey() {
     return loadConfig().secretKey
   },
@@ -265,6 +279,9 @@ export const config = {
   // Redis
   get redisUrl() {
     return loadConfig().redisUrl
+  },
+  get trustedProxyHops() {
+    return loadConfig().trustedProxyHops
   },
 
   // Email
@@ -407,6 +424,12 @@ export const config = {
     return this.nodeEnv === 'test'
   },
 } as const
+
+/** Validate every required runtime setting before traffic or workers start. */
+export function validateRuntimeConfig(): void {
+  if (isBuildTime()) return
+  loadConfig()
+}
 
 /**
  * Get base URL, returns empty string during build.

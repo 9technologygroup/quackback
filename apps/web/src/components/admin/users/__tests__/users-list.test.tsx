@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IntlProvider } from 'react-intl'
 import { UsersList } from '../users-list'
 import type { PortalUserListItemView, UsersFilters } from '@/lib/shared/types'
 import type { PrincipalId, SegmentId } from '@quackback/ids'
@@ -92,28 +93,30 @@ function renderList(
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   return render(
-    <QueryClientProvider client={queryClient}>
-      <UsersList
-        users={users}
-        hasMore={false}
-        isLoading={false}
-        isLoadingMore={false}
-        selectedUserId={null}
-        onSelectUser={noop}
-        onLoadMore={noop}
-        filters={FILTERS}
-        onFiltersChange={noop}
-        hasActiveFilters={false}
-        onClearFilters={noop}
-        total={users.length}
-        segments={[MANUAL_SEGMENT]}
-        selectedSegmentIds={[]}
-        onSelectSegment={noop}
-        onClearSegments={noop}
-        canManage
-        {...overrides}
-      />
-    </QueryClientProvider>
+    <IntlProvider locale="en" messages={{}}>
+      <QueryClientProvider client={queryClient}>
+        <UsersList
+          users={users}
+          hasMore={false}
+          isLoading={false}
+          isLoadingMore={false}
+          selectedUserId={null}
+          onSelectUser={noop}
+          onLoadMore={noop}
+          filters={FILTERS}
+          onFiltersChange={noop}
+          hasActiveFilters={false}
+          onClearFilters={noop}
+          total={users.length}
+          segments={[MANUAL_SEGMENT]}
+          selectedSegmentIds={[]}
+          onSelectSegment={noop}
+          onClearSegments={noop}
+          canManage
+          {...overrides}
+        />
+      </QueryClientProvider>
+    </IntlProvider>
   )
 }
 
@@ -241,27 +244,29 @@ describe('<UsersList> bulk segment selection', () => {
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     })
     rerender(
-      <QueryClientProvider client={queryClient}>
-        <UsersList
-          users={[USERS[0]]}
-          hasMore={false}
-          isLoading={false}
-          isLoadingMore={false}
-          selectedUserId={null}
-          onSelectUser={noop}
-          onLoadMore={noop}
-          filters={FILTERS}
-          onFiltersChange={noop}
-          hasActiveFilters={false}
-          onClearFilters={noop}
-          total={1}
-          segments={[MANUAL_SEGMENT]}
-          selectedSegmentIds={[]}
-          onSelectSegment={noop}
-          onClearSegments={noop}
-          canManage
-        />
-      </QueryClientProvider>
+      <IntlProvider locale="en" messages={{}}>
+        <QueryClientProvider client={queryClient}>
+          <UsersList
+            users={[USERS[0]]}
+            hasMore={false}
+            isLoading={false}
+            isLoadingMore={false}
+            selectedUserId={null}
+            onSelectUser={noop}
+            onLoadMore={noop}
+            filters={FILTERS}
+            onFiltersChange={noop}
+            hasActiveFilters={false}
+            onClearFilters={noop}
+            total={1}
+            segments={[MANUAL_SEGMENT]}
+            selectedSegmentIds={[]}
+            onSelectSegment={noop}
+            onClearSegments={noop}
+            canManage
+          />
+        </QueryClientProvider>
+      </IntlProvider>
     )
 
     expect(screen.getByText('1 selected')).toBeInTheDocument()

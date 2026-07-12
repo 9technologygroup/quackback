@@ -376,7 +376,7 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
                 ].map((s) => (
                   <div key={s.label} className="rounded-md bg-muted/40 py-1.5">
                     <p className="text-sm font-semibold">{s.value}</p>
-                    <p className="text-[10px] text-muted-foreground">{s.label}</p>
+                    <p className="text-xs text-muted-foreground">{s.label}</p>
                   </div>
                 ))}
               </div>
@@ -417,7 +417,7 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
                     <span className="block w-full min-w-0 truncate text-xs text-foreground/90">
                       {c.subject ?? c.lastMessagePreview ?? 'Conversation'}
                     </span>
-                    <span className="block w-full min-w-0 truncate text-[10px] capitalize text-muted-foreground">
+                    <span className="block w-full min-w-0 truncate text-xs capitalize text-muted-foreground">
                       {c.status} · <TimeAgo date={c.lastMessageAt} />
                     </span>
                   </button>

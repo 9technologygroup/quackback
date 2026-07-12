@@ -331,7 +331,7 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
                 onClick={handleCopyEndpoint}
                 className="group flex items-center gap-1.5 w-full text-left"
               >
-                <code className="flex-1 text-[10px] font-mono text-foreground bg-muted/30 border border-border/50 rounded px-2 py-1.5 truncate">
+                <code className="flex-1 text-xs font-mono text-foreground bg-muted/30 border border-border/50 rounded px-2 py-1.5 truncate">
                   {endpointUrl}
                 </code>
                 <span className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors">
@@ -411,7 +411,7 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
                       type="button"
                       onClick={() => setSelectedVariant(v.id)}
                       className={cn(
-                        'px-2 py-0.5 rounded text-[10px] font-medium transition-colors',
+                        'px-2 py-0.5 rounded text-xs font-medium transition-colors',
                         selectedVariant === v.id
                           ? 'bg-foreground/10 text-foreground'
                           : 'text-muted-foreground hover:text-foreground'
@@ -448,7 +448,7 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
               {MCP_TOOLS.map((tool) => (
                 <span
                   key={tool}
-                  className="text-[10px] font-mono bg-muted/50 text-muted-foreground px-1.5 py-0.5 rounded"
+                  className="text-xs font-mono bg-muted/50 text-muted-foreground px-1.5 py-0.5 rounded"
                 >
                   {tool}
                 </span>

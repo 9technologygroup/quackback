@@ -315,12 +315,16 @@ export function FeedbackHeaderAnimated({
             defaultMessage: "What's your idea?",
           })}
           value={title}
+          aria-label={intl.formatMessage({
+            id: 'portal.feedback.header.titleLabel',
+            defaultMessage: 'Feedback title',
+          })}
           onChange={(e) => {
             setTitle(e.target.value)
             if (!expanded) setExpanded(true)
           }}
           onFocus={() => !expanded && setExpanded(true)}
-          className="flex-1 bg-transparent border-0 outline-none text-foreground font-semibold placeholder:text-muted-foreground/60 placeholder:font-normal caret-primary"
+          className="flex-1 bg-transparent border-0 outline-none text-foreground font-semibold placeholder:text-muted-foreground/60 placeholder:font-normal caret-primary focus-visible:ring-2 focus-visible:ring-ring/50"
           initial={false}
           animate={{
             fontSize: expanded ? '1.25rem' : '1rem',

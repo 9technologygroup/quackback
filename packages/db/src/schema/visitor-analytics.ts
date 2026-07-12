@@ -42,6 +42,9 @@ export const pageViews = pgTable(
     index('page_views_device_id_idx')
       .on(t.deviceId)
       .where(sql`"device_id" IS NOT NULL`),
+    index('page_views_principal_id_idx')
+      .on(t.principalId)
+      .where(sql`"principal_id" IS NOT NULL`),
   ]
 )
 

@@ -573,6 +573,9 @@ export const principal = pgTable(
       'btree',
       sql`lower(display_name) text_pattern_ops`
     ),
+    index('principal_display_name_trgm_idx')
+      .using('gin', sql`${table.displayName} gin_trgm_ops`)
+      .where(sql`${table.displayName} IS NOT NULL`),
     // Company -> people lookups (sidebar roster, member counts).
     index('principal_company_id_idx')
       .on(table.companyId)

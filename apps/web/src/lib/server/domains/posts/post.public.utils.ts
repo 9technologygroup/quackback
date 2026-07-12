@@ -75,7 +75,7 @@ export async function getPublicRoadmapPostsPaginated(params: {
 
   return {
     items,
-    total: -1,
+    total: undefined,
     hasMore,
   }
 }

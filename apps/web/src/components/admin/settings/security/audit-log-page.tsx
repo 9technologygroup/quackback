@@ -217,9 +217,7 @@ function ActorCell({ row }: { row: AuditEventRow }) {
     <div className="flex flex-col">
       <span className="truncate">{primary}</span>
       {subtitle ? (
-        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-          {subtitle}
-        </span>
+        <span className="text-xs uppercase tracking-wide text-muted-foreground">{subtitle}</span>
       ) : null}
     </div>
   )
@@ -236,7 +234,7 @@ function TargetCell({ row }: { row: AuditEventRow }) {
   if (!row.targetType) return <span className="text-muted-foreground">—</span>
   return (
     <div className="flex flex-col">
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+      <span className="text-xs uppercase tracking-wide text-muted-foreground">
         {row.targetType}
       </span>
       {row.targetId ? (
@@ -330,7 +328,7 @@ export function AuditLogPage() {
                     {group}
                   </SelectLabel>
                   {group === WIDGET_ACTIVITY_GROUP && (
-                    <p className="px-2 pb-1 text-[10px] text-muted-foreground leading-snug">
+                    <p className="px-2 pb-1 text-xs text-muted-foreground leading-snug">
                       High-volume on active workspaces. Pick a specific event to view it.
                     </p>
                   )}
@@ -409,7 +407,7 @@ export function AuditLogPage() {
                     >
                       <div className="flex flex-col leading-tight">
                         <span>{stamp.date}</span>
-                        <span className="text-[10px]">{stamp.time}</span>
+                        <span className="text-xs">{stamp.time}</span>
                       </div>
                     </TableCell>
                     <TableCell className="truncate font-mono" title={row.eventType}>
@@ -471,9 +469,7 @@ export function AuditLogPage() {
                     <div className="flex gap-2">
                       <span className="w-12 shrink-0 font-medium text-foreground/60">Target</span>
                       <div className="min-w-0">
-                        <span className="uppercase tracking-wide text-[10px]">
-                          {row.targetType}
-                        </span>
+                        <span className="uppercase tracking-wide text-xs">{row.targetType}</span>
                         {row.targetId && (
                           <p className="font-mono text-[11px] truncate" title={row.targetId}>
                             {row.targetId}

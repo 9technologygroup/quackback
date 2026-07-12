@@ -69,6 +69,9 @@ export async function getCustomCss(): Promise<string> {
 export async function updateCustomCss(css: string): Promise<string> {
   log.info('update custom css')
   try {
+    if (css.includes('<')) {
+      throw new ValidationError('INVALID_CUSTOM_CSS', 'Custom CSS cannot contain the "<" character')
+    }
     // Clearing CSS (empty string) is always allowed so a workspace whose
     // tier just stopped including custom CSS can wipe it without being
     // blocked. Anything non-empty hits the feature gate.

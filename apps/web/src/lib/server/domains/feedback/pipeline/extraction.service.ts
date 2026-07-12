@@ -27,7 +27,10 @@ const EXTRACTION_PROMPT_VERSION = 'v1'
  * Extract signals from a raw feedback item.
  * Called by the {feedback-ai} queue worker.
  */
-export async function extractSignals(rawItemId: RawFeedbackItemId): Promise<void> {
+export async function extractSignals(
+  rawItemId: RawFeedbackItemId,
+  attemptContext?: { currentAttempt: number; maxAttempts: number }
+): Promise<void> {
   const item = await db.query.rawFeedbackItems.findFirst({
     where: eq(rawFeedbackItems.id, rawItemId),
   })
@@ -289,19 +292,23 @@ export async function extractSignals(rawItemId: RawFeedbackItemId): Promise<void
 
     log.info({ signal_count: signalIds.length, raw_item_id: rawItemId }, 'extracted signals')
   } catch (error) {
+    const terminal =
+      error instanceof UnrecoverableError ||
+      (attemptContext?.currentAttempt ?? 1) >= (attemptContext?.maxAttempts ?? 1)
     await logPipelineEvent({
       eventType: 'extraction.failed',
       rawFeedbackItemId: rawItemId,
       detail: {
         error: error instanceof Error ? error.message : String(error),
         attemptCount: (item.attemptCount ?? 0) + 1,
+        terminal,
       },
     })
 
     await db
       .update(rawFeedbackItems)
       .set({
-        processingState: 'failed',
+        processingState: terminal ? 'failed' : 'ready_for_extraction',
         stateChangedAt: new Date(),
         lastError: error instanceof Error ? error.message : String(error),
         updatedAt: new Date(),

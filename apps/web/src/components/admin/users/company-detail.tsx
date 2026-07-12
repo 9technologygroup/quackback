@@ -147,7 +147,7 @@ function AttachMemberButton({ companyId }: { companyId: CompanyId }) {
                 <Avatar
                   src={person.image}
                   name={person.name ?? 'User'}
-                  className="size-5 text-[9px]"
+                  className="size-5 text-xs"
                 />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium text-foreground">
@@ -205,11 +205,7 @@ function MembersSection({ companyId, canManage }: { companyId: CompanyId; canMan
         <div className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/50">
           {members.map((member) => (
             <div key={member.principalId} className="flex items-center gap-2.5 px-3 py-2">
-              <Avatar
-                src={null}
-                name={member.displayName ?? 'Person'}
-                className="size-7 text-[10px]"
-              />
+              <Avatar src={null} name={member.displayName ?? 'Person'} className="size-7 text-xs" />
               <div className="min-w-0 flex-1">
                 <Link
                   to="/admin/users"

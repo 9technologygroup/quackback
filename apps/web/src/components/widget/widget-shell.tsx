@@ -287,7 +287,7 @@ export function WidgetShell({
                   key={`${member.name}-${i}`}
                   src={member.avatarUrl}
                   name={member.name}
-                  className="size-7 text-[9px] ring-2 ring-background"
+                  className="size-7 text-xs ring-2 ring-background"
                 />
               ))}
             </div>
@@ -400,7 +400,7 @@ export function WidgetShell({
                         <Icon className="w-5 h-5" />
                         {tab === 'messages' && messengerUnread > 0 && (
                           <span
-                            className="absolute -top-1 -end-1.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold leading-none text-primary-foreground"
+                            className="absolute -top-1 -end-1.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-primary px-1 text-xs font-semibold leading-none text-primary-foreground"
                             aria-label={intl.formatMessage(
                               {
                                 id: 'widget.shell.tab.messages.unread',
@@ -428,7 +428,7 @@ export function WidgetShell({
           <a
             href={`https://quackback.io?utm_campaign=${encodeURIComponent(orgSlug || 'unknown')}&utm_content=widget&utm_medium=referral&utm_source=powered-by`}
             target="_blank"
-            className="group inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-all"
+            className="group inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-all"
           >
             <img
               src="/logo.png"
@@ -482,7 +482,7 @@ function UserAvatarPopover({
           defaultMessage: 'User menu',
         })}
       >
-        <Avatar src={user.avatarUrl} name={user.name} className="size-8 text-[10px]" />
+        <Avatar src={user.avatarUrl} name={user.name} className="size-8 text-xs" />
       </button>
 
       {open && (

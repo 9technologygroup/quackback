@@ -91,27 +91,40 @@ async function resolveByEmail(
     return { principalId: existing[0].principalId as PrincipalId, created: false }
   }
 
-  // Create new user + principal
-  const userId = createId('user')
-  const principalId = createId('principal')
   const displayName = name?.trim() || email.split('@')[0]
 
   // Credential-less shell: no account rows exist, so a verified email is
   // safe (nothing attacker-controlled to inherit) and lets the real person
   // claim this record on first trusted-provider sign-in instead of hitting
   // Better-Auth's requireLocalEmailVerified linking gate.
-  await db.insert(user).values({
-    id: userId,
-    email,
-    name: displayName,
-    emailVerified: true,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+  return db.transaction(async (tx) => {
+    const userId = createId('user')
+    const principalId = createId('principal')
+    const [inserted] = await tx
+      .insert(user)
+      .values({
+        id: userId,
+        email,
+        name: displayName,
+        emailVerified: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .onConflictDoNothing()
+      .returning({ id: user.id })
+    if (inserted) {
+      await createPrincipal({ id: principalId, userId, role: 'user' }, tx)
+      return { principalId, created: true }
+    }
+    const [winner] = await tx
+      .select({ principalId: principal.id })
+      .from(user)
+      .innerJoin(principal, eq(principal.userId, user.id))
+      .where(sql`LOWER(${user.email}) = ${email}`)
+      .limit(1)
+    if (!winner) throw new Error(`Concurrent author creation for ${email} has no principal`)
+    return { principalId: winner.principalId as PrincipalId, created: false }
   })
-
-  await createPrincipal({ id: principalId, userId, role: 'user' })
-
-  return { principalId, created: true }
 }
 
 async function resolveByExternalId(
@@ -150,33 +163,38 @@ async function resolveByExternalId(
     return result
   }
 
-  // Create a new user from external ID only (no real email)
-  const userId = createId('user')
-  const principalId = createId('principal')
-  const displayName = name?.trim() || `${sourceType}:${externalUserId}`
+  return db.transaction(async (tx) => {
+    // Serialize creators for this provider identity. This avoids creating a
+    // losing user/principal pair before ON CONFLICT reveals the mapping winner.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`${sourceType}:${externalUserId}`}))`
+    )
+    const mapped = await tx.query.externalUserMappings.findFirst({
+      where: (t, { and, eq }) =>
+        and(eq(t.sourceType, sourceType), eq(t.externalUserId, externalUserId)),
+      columns: { principalId: true },
+    })
+    if (mapped) return { principalId: mapped.principalId as PrincipalId, created: false }
 
-  await db.insert(user).values({
-    id: userId,
-    email: null,
-    name: displayName,
-    emailVerified: false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  })
-
-  await createPrincipal({ id: principalId, userId, role: 'user' })
-
-  // Create mapping
-  await db
-    .insert(externalUserMappings)
-    .values({
+    const userId = createId('user')
+    const principalId = createId('principal')
+    const displayName = name?.trim() || `${sourceType}:${externalUserId}`
+    await tx.insert(user).values({
+      id: userId,
+      email: null,
+      name: displayName,
+      emailVerified: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    await createPrincipal({ id: principalId, userId, role: 'user' }, tx)
+    await tx.insert(externalUserMappings).values({
       sourceType,
       externalUserId,
       principalId,
       externalName: name,
       externalEmail: email,
     })
-    .onConflictDoNothing()
-
-  return { principalId, created: true }
+    return { principalId, created: true }
+  })
 }

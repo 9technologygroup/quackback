@@ -84,7 +84,7 @@ export function InboxCommandBar({
                       >
                         <span>{action.label}</span>
                         {action.shortcut && (
-                          <kbd className="bg-muted text-muted-foreground ml-auto rounded border px-1.5 py-0.5 text-[10px]">
+                          <kbd className="bg-muted text-muted-foreground ml-auto rounded border px-1.5 py-0.5 text-xs">
                             {action.shortcut}
                           </kbd>
                         )}

@@ -78,7 +78,7 @@ export function SharePostDialog({
                 <span className="flex-1 truncate text-sm">{p.title}</span>
                 <span className="text-xs text-muted-foreground">{p.voteCount}▲</span>
                 {p.status && (
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
+                  <span className="text-xs uppercase tracking-wide text-muted-foreground/70">
                     {p.status.name}
                   </span>
                 )}

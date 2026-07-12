@@ -303,6 +303,9 @@ export const conversationMessages = pgTable(
       ),
     index('conversation_messages_created_at_idx').on(table.createdAt),
     index('conversation_messages_search_vector_idx').using('gin', table.searchVector),
+    index('conversation_messages_content_trgm_idx')
+      .using('gin', sql`${table.content} gin_trgm_ops`)
+      .where(sql`${table.deletedAt} IS NULL`),
     // Inbound-email dedupe: one message per provider Message-ID.
     uniqueIndex('conversation_messages_email_message_id_idx')
       .using('btree', sql`(metadata ->> 'emailMessageId')`)

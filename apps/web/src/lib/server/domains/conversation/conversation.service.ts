@@ -1794,14 +1794,14 @@ export async function executeAssistantHandoff(
   reason: string,
   author: ConversationAuthorInput
 ): Promise<void> {
-  const existing = await loadConversationOr404(conversationId)
-  const nextAttributes = {
-    ...(existing.customAttributes ?? {}),
-    assistant_escalation_reason: reason,
-  }
+  await loadConversationOr404(conversationId)
   const [updated] = await db
     .update(conversations)
-    .set({ customAttributes: nextAttributes, status: 'open', updatedAt: new Date() })
+    .set({
+      customAttributes: sql`coalesce(${conversations.customAttributes}, '{}'::jsonb) || jsonb_build_object('assistant_escalation_reason', ${reason}::text)`,
+      status: 'open',
+      updatedAt: new Date(),
+    })
     .where(eq(conversations.id, conversationId))
     .returning()
   // A visitor-visible transition marker so the customer clearly sees the shift

@@ -21,7 +21,7 @@ import type { PostId, PostStatusId, PostTagId } from '@quackback/ids'
 
 interface PublicPostListResult {
   items: PublicPostListItem[]
-  total: number
+  total?: number
   hasMore: boolean
 }
 

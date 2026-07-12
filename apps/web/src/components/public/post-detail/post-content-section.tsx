@@ -169,7 +169,11 @@ export function PostContentSection({
             maxLength={200}
             autoFocus
             disabled={isSaving}
-            className="w-full bg-transparent border-0 outline-none text-xl sm:text-2xl font-semibold text-foreground placeholder:text-muted-foreground/60 placeholder:font-normal caret-primary mb-4"
+            aria-label={intl.formatMessage({
+              id: 'portal.postDetail.edit.titleLabel',
+              defaultMessage: 'Post title',
+            })}
+            className="w-full bg-transparent border-0 outline-none text-xl sm:text-2xl font-semibold text-foreground placeholder:text-muted-foreground/60 placeholder:font-normal caret-primary mb-4 focus-visible:ring-2 focus-visible:ring-ring/50"
           />
 
           {/* Rich text editor */}

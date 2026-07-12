@@ -18,7 +18,6 @@ import {
   ilike,
   inArray,
   isNull,
-  isNotNull,
   desc,
   asc,
   sql,
@@ -130,8 +129,8 @@ function buildCountCondition(countExpr: ReturnType<typeof sql>, op: string, valu
  * List portal users for an organization with activity counts
  *
  * Queries principal table for role='user'.
- * Activity counts are computed via efficient LEFT JOINs with pre-aggregated subqueries,
- * using the indexed principal_id columns on posts, comments, and votes tables.
+ * Activity counts use indexed correlated probes so a page does not aggregate
+ * the complete posts, comments, votes, sessions, and devices tables.
  *
  * Supports optional filtering by segment IDs (OR logic — users in ANY selected segment).
  */
@@ -156,60 +155,28 @@ export async function listPortalUsers(
       lifecycle = 'users',
     } = params
 
-    // Pre-aggregate activity counts in subqueries (executed once, not per-row)
-    // These use the indexed principal_id columns for efficient lookups
-    // Each count column has a unique name to avoid ambiguity in the final SELECT
-    const postCounts = db
-      .select({
-        principalId: posts.principalId,
-        postCount: sql<number>`count(*)::int`.as('post_count'),
-      })
-      .from(posts)
-      .where(isNull(posts.deletedAt))
-      .groupBy(posts.principalId)
-      .as('post_counts')
-
-    const commentCounts = db
-      .select({
-        principalId: postComments.principalId,
-        commentCount: sql<number>`count(*)::int`.as('comment_count'),
-      })
-      .from(postComments)
-      .where(isNull(postComments.deletedAt))
-      .groupBy(postComments.principalId)
-      .as('comment_counts')
-
-    const voteCounts = db
-      .select({
-        principalId: postVotes.principalId,
-        voteCount: sql<number>`count(*)::int`.as('vote_count'),
-      })
-      .from(postVotes)
-      .groupBy(postVotes.principalId)
-      .as('vote_counts')
-
-    // Last-seen signals: freshest session touch (identified activity) and
-    // freshest device beacon (layer-2 visitor analytics, when enabled).
-    const lastSessions = db
-      .select({
-        userId: session.userId,
-        lastSessionAt: sql<Date>`max(${session.updatedAt})`.as('last_session_at'),
-      })
-      .from(session)
-      .groupBy(session.userId)
-      .as('last_sessions')
-
-    const lastDevices = db
-      .select({
-        principalId: visitorDevices.principalId,
-        lastDeviceAt: sql<Date>`max(${visitorDevices.lastSeenAt})`.as('last_device_at'),
-      })
-      .from(visitorDevices)
-      .where(isNotNull(visitorDevices.principalId))
-      .groupBy(visitorDevices.principalId)
-      .as('last_devices')
-
-    const lastSeenExpr = sql<Date | null>`greatest(${lastSessions.lastSessionAt}, ${lastDevices.lastDeviceAt})`
+    // Correlated index probes keep the common page query bounded to the
+    // filtered principals instead of grouping every row in five whole tables.
+    const postCountExpr = sql<number>`(
+      SELECT count(*)::int FROM ${posts} activity_posts
+      WHERE activity_posts.principal_id = ${principal.id}
+        AND activity_posts.deleted_at IS NULL
+    )`
+    const commentCountExpr = sql<number>`(
+      SELECT count(*)::int FROM ${postComments} activity_comments
+      WHERE activity_comments.principal_id = ${principal.id}
+        AND activity_comments.deleted_at IS NULL
+    )`
+    const voteCountExpr = sql<number>`(
+      SELECT count(*)::int FROM ${postVotes} activity_votes
+      WHERE activity_votes.principal_id = ${principal.id}
+    )`
+    const lastSeenExpr = sql<Date | null>`greatest(
+      (SELECT max(activity_sessions.updated_at) FROM ${session} activity_sessions
+       WHERE activity_sessions.user_id = ${user.id}),
+      (SELECT max(activity_devices.last_seen_at) FROM ${visitorDevices} activity_devices
+       WHERE activity_devices.principal_id = ${principal.id})
+    )`
 
     // Build conditions array - filter for role='user' (portal users only)
     const conditions = [eq(principal.role, 'user')]
@@ -249,18 +216,15 @@ export async function listPortalUsers(
 
     if (postCountFilter) {
       const { op, value } = postCountFilter
-      const countExpr = sql`COALESCE(${postCounts.postCount}, 0)`
-      conditions.push(buildCountCondition(countExpr, op, value))
+      conditions.push(buildCountCondition(postCountExpr, op, value))
     }
     if (voteCountFilter) {
       const { op, value } = voteCountFilter
-      const countExpr = sql`COALESCE(${voteCounts.voteCount}, 0)`
-      conditions.push(buildCountCondition(countExpr, op, value))
+      conditions.push(buildCountCondition(voteCountExpr, op, value))
     }
     if (commentCountFilter) {
       const { op, value } = commentCountFilter
-      const countExpr = sql`COALESCE(${commentCounts.commentCount}, 0)`
-      conditions.push(buildCountCondition(countExpr, op, value))
+      conditions.push(buildCountCondition(commentCountExpr, op, value))
     }
 
     // Custom attribute filters (metadata JSON fields)
@@ -327,18 +291,16 @@ export async function listPortalUsers(
         orderBy = asc(principal.createdAt)
         break
       case 'most_active':
-        orderBy = desc(
-          sql`COALESCE(${postCounts.postCount}, 0) + COALESCE(${commentCounts.commentCount}, 0) + COALESCE(${voteCounts.voteCount}, 0)`
-        )
+        orderBy = desc(sql`${postCountExpr} + ${commentCountExpr} + ${voteCountExpr}`)
         break
       case 'most_posts':
-        orderBy = desc(sql`COALESCE(${postCounts.postCount}, 0)`)
+        orderBy = desc(postCountExpr)
         break
       case 'most_comments':
-        orderBy = desc(sql`COALESCE(${commentCounts.commentCount}, 0)`)
+        orderBy = desc(commentCountExpr)
         break
       case 'most_votes':
-        orderBy = desc(sql`COALESCE(${voteCounts.voteCount}, 0)`)
+        orderBy = desc(voteCountExpr)
         break
       case 'last_active':
         orderBy = sql`${lastSeenExpr} DESC NULLS LAST`
@@ -351,7 +313,7 @@ export async function listPortalUsers(
         orderBy = desc(principal.createdAt)
     }
 
-    // Main query with LEFT JOINs to pre-aggregated counts
+    // Main query plus a matching filtered count.
     const [usersResult, countResult] = await Promise.all([
       db
         .select({
@@ -365,37 +327,22 @@ export async function listPortalUsers(
           principalType: principal.type,
           contactEmail: principal.contactEmail,
           joinedAt: principal.createdAt,
-          postCount: sql<number>`COALESCE(${postCounts.postCount}, 0)`,
-          commentCount: sql<number>`COALESCE(${commentCounts.commentCount}, 0)`,
-          voteCount: sql<number>`COALESCE(${voteCounts.voteCount}, 0)`,
+          postCount: postCountExpr,
+          commentCount: commentCountExpr,
+          voteCount: voteCountExpr,
           lastSeenAt: lastSeenExpr,
         })
         .from(principal)
         .innerJoin(user, eq(principal.userId, user.id))
-        .leftJoin(postCounts, eq(postCounts.principalId, principal.id))
-        .leftJoin(commentCounts, eq(commentCounts.principalId, principal.id))
-        .leftJoin(voteCounts, eq(voteCounts.principalId, principal.id))
-        .leftJoin(lastSessions, eq(lastSessions.userId, user.id))
-        .leftJoin(lastDevices, eq(lastDevices.principalId, principal.id))
         .where(whereClause)
         .orderBy(orderBy)
         .limit(limit)
         .offset((page - 1) * limit),
-      // Count query needs the same JOINs when activity count filters are used
-      postCountFilter || voteCountFilter || commentCountFilter
-        ? db
-            .select({ count: sql<number>`count(*)::int` })
-            .from(principal)
-            .innerJoin(user, eq(principal.userId, user.id))
-            .leftJoin(postCounts, eq(postCounts.principalId, principal.id))
-            .leftJoin(commentCounts, eq(commentCounts.principalId, principal.id))
-            .leftJoin(voteCounts, eq(voteCounts.principalId, principal.id))
-            .where(whereClause)
-        : db
-            .select({ count: sql<number>`count(*)::int` })
-            .from(principal)
-            .innerJoin(user, eq(principal.userId, user.id))
-            .where(whereClause),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(principal)
+        .innerJoin(user, eq(principal.userId, user.id))
+        .where(whereClause),
     ])
 
     const total = Number(countResult[0]?.count ?? 0)

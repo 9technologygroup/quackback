@@ -89,12 +89,12 @@ export function SavedMessagesColumn({
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate text-sm font-medium">{m.authorName ?? 'Unknown'}</span>
-                <span className="shrink-0 text-[10px] text-muted-foreground">
+                <span className="shrink-0 text-xs text-muted-foreground">
                   {relativeTime(m.flaggedAt)}
                 </span>
               </div>
               <p className="truncate text-xs text-muted-foreground">{m.preview}</p>
-              <p className="truncate text-[10px] text-muted-foreground/60">
+              <p className="truncate text-xs text-muted-foreground/60">
                 in {m.conversationLabel ?? (m.ticketId ? 'ticket' : 'conversation')}
               </p>
             </button>

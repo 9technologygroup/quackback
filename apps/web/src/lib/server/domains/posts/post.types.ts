@@ -108,7 +108,7 @@ export interface PublicPostListItem {
  */
 export interface PublicPostListResult {
   items: PublicPostListItem[]
-  total: number
+  total?: number
   hasMore: boolean
 }
 
@@ -197,7 +197,7 @@ export interface RoadmapPost {
  */
 export interface RoadmapPostListResult {
   items: RoadmapPost[]
-  total: number
+  total?: number
   hasMore: boolean
 }
 

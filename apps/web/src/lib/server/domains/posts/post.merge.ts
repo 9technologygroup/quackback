@@ -123,6 +123,30 @@ export async function mergePost(
   // `.returning()` lets us detect the lost-race and throw rather than
   // silently inflating the wrong canonical's vote count.
   const newVoteCount = await db.transaction(async (tx) => {
+    const lockIds = [duplicatePostId, canonicalPostId].sort()
+    for (const lockId of lockIds) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockId}))`)
+    }
+    const existingChild = await tx.query.posts.findFirst({
+      where: and(eq(posts.canonicalPostId, duplicatePostId), isNull(posts.deletedAt)),
+      columns: { id: true },
+    })
+    if (existingChild) {
+      throw new ConflictError(
+        'INVALID_MERGE_TARGET',
+        'A canonical post with merged children cannot itself be merged.'
+      )
+    }
+    const freshCanonical = await tx.query.posts.findFirst({
+      where: and(eq(posts.id, canonicalPostId), isNull(posts.deletedAt)),
+      columns: { canonicalPostId: true },
+    })
+    if (!freshCanonical || freshCanonical.canonicalPostId) {
+      throw new ConflictError(
+        'INVALID_MERGE_TARGET',
+        'The selected canonical post was merged elsewhere — refresh and try again.'
+      )
+    }
     const claimed = await tx
       .update(posts)
       .set({

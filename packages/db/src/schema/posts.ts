@@ -137,6 +137,9 @@ export const posts = pgTable(
     index('posts_tracked_by_principal_id_idx').on(table.trackedByPrincipalId),
     index('posts_created_at_idx').on(table.createdAt),
     index('posts_vote_count_idx').on(table.voteCount),
+    index('posts_embedding_hnsw_idx')
+      .using('hnsw', sql`${table.embedding} vector_cosine_ops`)
+      .where(sql`${table.embedding} IS NOT NULL`),
     // Composite indexes for post listings sorted by "top" and "new"
     index('posts_board_vote_idx').on(table.boardId, table.voteCount),
     index('posts_board_created_at_idx').on(table.boardId, table.createdAt),
@@ -296,6 +299,11 @@ export const postComments = pgTable(
       .default('published'),
   },
   (table) => [
+    foreignKey({
+      name: 'post_comments_parent_id_post_comments_id_fk',
+      columns: [table.parentId],
+      foreignColumns: [table.id],
+    }).onDelete('cascade'),
     index('post_comments_post_id_idx').on(table.postId),
     index('post_comments_parent_id_idx').on(table.parentId),
     index('post_comments_principal_id_idx').on(table.principalId),

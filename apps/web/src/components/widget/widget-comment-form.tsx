@@ -93,7 +93,7 @@ export function WidgetCommentForm({ isIdentified, user, onSubmit }: WidgetCommen
       </div>
 
       <div className="flex items-center gap-2 mt-1.5">
-        <p className="text-[10px] text-muted-foreground/50 flex-1">
+        <p className="text-xs text-muted-foreground/50 flex-1">
           {isIdentified ? (
             <FormattedMessage
               id="widget.commentForm.postingAs"
@@ -121,7 +121,7 @@ export function WidgetCommentForm({ isIdentified, user, onSubmit }: WidgetCommen
         </button>
       </div>
 
-      {error && <p className="text-[10px] text-destructive mt-1">{error}</p>}
+      {error && <p className="text-xs text-destructive mt-1">{error}</p>}
     </div>
   )
 }

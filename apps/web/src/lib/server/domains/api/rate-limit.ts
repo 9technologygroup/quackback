@@ -4,15 +4,15 @@
  * (INCR + EXPIRE NX) so this limiter shares plumbing with the sign-in
  * limiters rather than re-implementing bucket bookkeeping.
  *
- * SECURITY NOTE: This trusts proxy headers (cf-connecting-ip, x-forwarded-for).
- * The application MUST be deployed behind a trusted reverse proxy (Cloudflare, nginx)
- * that sets these headers. Direct exposure to the internet allows header spoofing.
+ * Forwarding headers are ignored unless TRUSTED_PROXY_HOPS is configured.
  */
 import {
   bucketRetryAfter,
   incrementBucket,
   type RateBucketSpec,
 } from '@/lib/server/utils/redis-rate-bucket'
+import { isIP } from 'node:net'
+import { config } from '@/lib/server/config'
 
 // Configuration
 const WINDOW_SECONDS = 60 // 1 minute
@@ -74,21 +74,33 @@ export async function checkRateLimit(
  */
 export function getClientIp(source: Request | Headers): string {
   const headers = source instanceof Headers ? source : source.headers
+  // Startup validates config before serving traffic. Unit-level consumers may
+  // intentionally load this helper without a complete runtime environment;
+  // fail closed to direct-peer semantics in that case.
+  const trustedHops = (() => {
+    try {
+      return config.trustedProxyHops
+    } catch {
+      return 0
+    }
+  })()
+  if (trustedHops === 0) return 'unknown'
 
-  // Check Cloudflare header first
   const cfIp = headers.get('cf-connecting-ip')
-  if (cfIp) return cfIp
+  if (cfIp && isIP(cfIp.trim())) return cfIp.trim()
 
-  // Check X-Forwarded-For (may contain comma-separated list)
   const forwarded = headers.get('x-forwarded-for')
   if (forwarded) {
-    const firstIp = forwarded.split(',')[0].trim()
-    if (firstIp) return firstIp
+    const chain = forwarded
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean)
+    const candidate = chain[Math.max(0, chain.length - trustedHops)]
+    if (candidate && isIP(candidate)) return candidate
   }
 
-  // Check X-Real-IP
   const realIp = headers.get('x-real-ip')
-  if (realIp) return realIp
+  if (realIp && isIP(realIp.trim())) return realIp.trim()
 
   // Fallback to unknown
   return 'unknown'

@@ -175,7 +175,7 @@ function WidgetCommentItem({
         <div className="py-1.5">
           <div className="flex items-center gap-1.5">
             <Avatar className="h-5 w-5 shrink-0 opacity-40">
-              <AvatarFallback className="text-[9px]">?</AvatarFallback>
+              <AvatarFallback className="text-xs">?</AvatarFallback>
             </Avatar>
             <span className="text-xs text-muted-foreground/60 italic">
               {comment.isRemovedByTeam ? (
@@ -184,8 +184,8 @@ function WidgetCommentItem({
                 <FormattedMessage id="widget.commentList.deleted" defaultMessage="[deleted]" />
               )}
             </span>
-            <span className="text-muted-foreground/50 text-[10px]">&middot;</span>
-            <TimeAgo date={comment.createdAt} className="text-[10px] text-muted-foreground/60" />
+            <span className="text-muted-foreground/50 text-xs">&middot;</span>
+            <TimeAgo date={comment.createdAt} className="text-xs text-muted-foreground/60" />
           </div>
           {hasReplies && (
             <div className="flex items-center gap-1 mt-1.5 ms-7">
@@ -250,9 +250,7 @@ function WidgetCommentItem({
             {comment.avatarUrl && (
               <AvatarImage src={comment.avatarUrl} alt={comment.authorName || ''} />
             )}
-            <AvatarFallback className="text-[9px]">
-              {getInitials(comment.authorName)}
-            </AvatarFallback>
+            <AvatarFallback className="text-xs">{getInitials(comment.authorName)}</AvatarFallback>
           </Avatar>
           <span className="text-xs font-medium text-foreground truncate">{authorName}</span>
           {comment.isTeamMember && (
@@ -266,11 +264,8 @@ function WidgetCommentItem({
               <FormattedMessage id="widget.commentList.pinnedBadge" defaultMessage="Pinned" />
             </span>
           )}
-          <span className="text-muted-foreground/50 text-[10px]">&middot;</span>
-          <TimeAgo
-            date={comment.createdAt}
-            className="text-[10px] text-muted-foreground/60 shrink-0"
-          />
+          <span className="text-muted-foreground/50 text-xs">&middot;</span>
+          <TimeAgo date={comment.createdAt} className="text-xs text-muted-foreground/60 shrink-0" />
         </div>
 
         {/* Content */}

@@ -621,7 +621,7 @@ export function CopilotPanel({
     <div className="flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
       <div className="flex items-center justify-between border-b border-border/50 px-3 py-2">
         <div className="flex items-center gap-2">
-          <Avatar src={assistant?.avatarUrl} name={assistantName} className="size-6 text-[10px]" />
+          <Avatar src={assistant?.avatarUrl} name={assistantName} className="size-6 text-xs" />
           <span className="text-sm font-medium">{headerLabel}</span>
         </div>
         <button

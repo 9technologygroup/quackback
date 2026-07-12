@@ -578,7 +578,7 @@ function WidgetPage() {
     view === 'messenger' ? (
       assistant ? (
         <div className="flex min-w-0 items-center gap-2.5 ps-1">
-          <Avatar src={assistant.avatarUrl} name={assistant.name} className="size-8 text-[10px]" />
+          <Avatar src={assistant.avatarUrl} name={assistant.name} className="size-8 text-xs" />
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold leading-tight text-foreground">
               {assistant.name}
@@ -833,7 +833,7 @@ function SuccessView({
             <h3 className="text-sm font-medium text-foreground line-clamp-2">{post.title}</h3>
             <div className="flex items-center gap-1.5 mt-0.5">
               {status && (
-                <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+                <span className="inline-flex items-center gap-0.5 text-xs text-muted-foreground">
                   <span
                     className="size-1.5 rounded-full shrink-0"
                     style={{ backgroundColor: status.color }}
@@ -841,7 +841,7 @@ function SuccessView({
                   {status.name}
                 </span>
               )}
-              <span className="text-[10px] text-muted-foreground/60">{post.board.name}</span>
+              <span className="text-xs text-muted-foreground/60">{post.board.name}</span>
             </div>
           </div>
         </div>

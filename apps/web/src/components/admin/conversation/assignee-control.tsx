@@ -44,7 +44,7 @@ export function AssigneeMenuItems({
           onClick={() => onSelect(m.id)}
           className="flex items-center gap-2"
         >
-          <Avatar src={m.image} name={m.name ?? m.email} className="size-5 text-[9px]" />
+          <Avatar src={m.image} name={m.name ?? m.email} className="size-5 text-xs" />
           <span className="truncate">{m.name ?? m.email}</span>
           {selectedPrincipalId === m.id && (
             <CheckIcon className="ml-auto h-3.5 w-3.5 text-primary" />
@@ -89,7 +89,7 @@ export function AssigneeControl({
             <Avatar
               src={assignedAgent.avatarUrl}
               name={assignedAgent.displayName ?? 'Agent'}
-              className="size-4 text-[8px]"
+              className="size-4 text-xs"
             />
           ) : (
             <UserCircleIcon className="h-4 w-4" />

@@ -216,7 +216,7 @@ function StatusPage() {
                 return (
                   <div key={incident.id} className="flex gap-3.5 p-4 sm:p-[18px]">
                     <div className="w-11 shrink-0 overflow-hidden rounded-lg border border-border/60 text-center">
-                      <div className="bg-blue-500/15 py-0.5 text-[9px] font-bold tracking-wide text-blue-600 uppercase dark:text-blue-400">
+                      <div className="bg-blue-500/15 py-0.5 text-xs font-bold tracking-wide text-blue-600 uppercase dark:text-blue-400">
                         {start.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' })}
                       </div>
                       <div className="py-0.5 text-base font-bold">

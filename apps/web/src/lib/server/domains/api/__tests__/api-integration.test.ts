@@ -28,6 +28,9 @@ function skipIfNoServer() {
 describe.skipIf(SKIP_INTEGRATION)('API Integration Tests', () => {
   beforeAll(async () => {
     state.serverAvailable = await checkServerAndSetup(state)
+    if (!state.serverAvailable && process.env.REQUIRE_LIVE_API === 'true') {
+      throw new Error('Live API test server is unavailable')
+    }
   })
 
   afterAll(async () => {

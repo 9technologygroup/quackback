@@ -7,6 +7,7 @@ import { resolveLocale } from '@/lib/shared/i18n'
 import { WidgetAuthProvider } from '@/components/widget/widget-auth-provider'
 import { extractSessionTokenFromCookie } from '@/lib/server/functions/portal-session-token'
 import { redactSettingsForClient } from '@/lib/shared/redact-portal-config'
+import { escapeInlineStyle } from '@/lib/shared/safe-inline-content'
 
 const setIframeHeaders = createServerFn({ method: 'GET' }).handler(async () => {
   setResponseHeader('Content-Security-Policy', 'frame-ancestors *')
@@ -114,8 +115,10 @@ function WidgetLayout() {
       hmacRequired={hmacRequired}
       initialLocale={locale}
     >
-      {themeStyles && <style dangerouslySetInnerHTML={{ __html: themeStyles }} />}
-      {customCss && <style dangerouslySetInnerHTML={{ __html: customCss }} />}
+      {themeStyles && (
+        <style dangerouslySetInnerHTML={{ __html: escapeInlineStyle(themeStyles) }} />
+      )}
+      {customCss && <style dangerouslySetInnerHTML={{ __html: escapeInlineStyle(customCss) }} />}
       <style
         dangerouslySetInnerHTML={{
           __html: `

@@ -11,6 +11,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { makeAuthConfig, makeTenant } from './_helpers'
 
+vi.mock('@/lib/server/config', () => ({ config: { trustedProxyHops: 1 } }))
+
 const mockIsDeviceUnseen = vi.fn()
 const mockMarkDeviceSeen = vi.fn(async (_userId: string) => undefined)
 const mockForgetDevice = vi.fn(async (_userId: string, _fp: string) => undefined)

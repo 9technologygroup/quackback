@@ -11,7 +11,7 @@ import { analyzeSentiment, saveSentiment } from '@/lib/server/domains/sentiment/
 import { generatePostEmbedding } from '@/lib/server/domains/embeddings/embedding.service'
 import type { PostId } from '@quackback/ids'
 import { db, postTagAssignments, postTags, eq } from '@/lib/server/db'
-import { claimHookDelivery } from '../hook-idempotency'
+import { claimHookDelivery, completeHookDelivery } from '../hook-idempotency'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'ai' })
@@ -63,6 +63,8 @@ export const aiHook: HookHandler = {
       { post_id: postId, sentiment_ok: sentimentOk, embedding_ok: embeddingOk },
       'post analysis complete'
     )
+
+    await completeHookDelivery(ctx?.jobId)
 
     return { success: true }
   },

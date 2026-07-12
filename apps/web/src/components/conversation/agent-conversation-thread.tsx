@@ -158,7 +158,13 @@ import { useImageUpload } from '@/lib/client/hooks/use-image-upload'
 import { useConversationComposerAttachments } from '@/lib/client/hooks/use-conversation-composer-attachments'
 import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
 import { useCopilotInsert } from '@/lib/client/hooks/use-copilot-insert'
-import { answerToInsertContent } from './copilot-insert-content'
+import {
+  EMPTY_DRAFT,
+  answerToDraft,
+  appendAnswerToDraft,
+  appendTextToDraft,
+  type ComposerDraft,
+} from './composer-draft'
 import { SuggestedReplyCard } from './suggested-reply-card'
 import { TypingDots } from '@/components/shared/typing-dots'
 import { EmojiPicker } from '@/components/shared/emoji-picker'
@@ -199,66 +205,6 @@ const MAX_JUMP_PAGES = 20
 // server; they only exist to satisfy the branded-id parameter types.
 const INACTIVE_CONVERSATION_ID = '' as ConversationId
 const INACTIVE_TICKET_ID = '' as TicketId
-
-/** A composer's live draft: the rich doc (persisted as contentJson) plus the
- *  derived markdown mirror (stored as `content` for FTS/preview/transcripts). */
-type ComposerDraft = { json: TiptapContent | null; markdown: string }
-const EMPTY_DRAFT: ComposerDraft = { json: null, markdown: '' }
-
-/** A plain-text string as Tiptap paragraphs (one per line). The unified editor
- *  is driven by its controlled `value`, not an imperative insert command, so the
- *  text seams (macro body, Copilot answer, emoji) build the draft doc directly. */
-function textToParagraphs(text: string): TiptapContent[] {
-  return text
-    .split('\n')
-    .map((line) =>
-      line.length > 0
-        ? { type: 'paragraph', content: [{ type: 'text', text: line }] }
-        : { type: 'paragraph' }
-    )
-}
-
-/** Append converted content (editor nodes + their matching markdown mirror)
- *  to a draft — the one append shape every insert seam shares. Existing rich
- *  content is preserved; an effectively-empty draft is replaced outright so
- *  an insert doesn't leave a leading blank paragraph. */
-function appendToDraft(
-  prev: ComposerDraft,
-  nodes: TiptapContent[],
-  markdown: string
-): ComposerDraft {
-  const empty = isEmptyTiptapDoc(prev.json ?? undefined)
-  const baseContent = !empty && prev.json?.content ? prev.json.content : []
-  const json: TiptapContent = { type: 'doc', content: [...baseContent, ...nodes] }
-  const merged =
-    !empty && prev.markdown.trim() ? `${prev.markdown.trim()}\n\n${markdown}` : markdown
-  return { json, markdown: merged }
-}
-
-/** Append plain text to a draft (the macro / emoji seams): literal paragraph
- *  nodes, the text itself as the markdown mirror. */
-function appendTextToDraft(prev: ComposerDraft, text: string): ComposerDraft {
-  return appendToDraft(prev, textToParagraphs(text), text)
-}
-
-/** Append a Copilot answer (or transform result) to a draft: markdown-lite
- *  becomes real editor nodes (bold/italic marks, lists) and `[n]` citation
- *  markers are stripped, instead of landing as literal text (the insert
- *  fidelity fix — see copilot-insert-content.ts). One conversion pass yields
- *  both the nodes and the matching marker-stripped markdown mirror. */
-function appendAnswerToDraft(prev: ComposerDraft, answer: string): ComposerDraft {
-  const { nodes, markdown } = answerToInsertContent(answer)
-  return appendToDraft(prev, nodes, markdown)
-}
-
-/** Replace a draft with a Copilot transform result (the Format chip): same
- *  single-pass conversion as appendAnswerToDraft, EXCEPT citation markers
- *  survive — the source here is the teammate's own draft, so a literal `[2]`
- *  is their content, not a dangling citation to strip. */
-function answerToDraft(answer: string): ComposerDraft {
-  const { nodes, markdown } = answerToInsertContent(answer, { stripCitations: false })
-  return { json: { type: 'doc', content: nodes }, markdown }
-}
 
 export function AgentConversationThread({
   item,
@@ -1349,7 +1295,7 @@ export function AgentConversationThread({
           </p>
         )
       case 'seen':
-        return <p className="pe-1 text-end text-[10px] text-muted-foreground/50">Seen</p>
+        return <p className="pe-1 text-end text-xs text-muted-foreground/50">Seen</p>
       case 'typing':
         return (
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">

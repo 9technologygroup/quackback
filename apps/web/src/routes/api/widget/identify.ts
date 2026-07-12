@@ -109,7 +109,11 @@ async function findOrCreateSession(
   request: Request
 ): Promise<{ id: string; token: string }> {
   const existingSession = await db.query.session.findFirst({
-    where: and(eq(session.userId, userId), gt(session.expiresAt, new Date())),
+    where: and(
+      eq(session.userId, userId),
+      gt(session.expiresAt, new Date()),
+      sql`exists (select 1 from widget_identified_session wis where wis.session_id = ${session.id} and wis.hmac_verified = true)`
+    ),
   })
   if (existingSession) {
     await db
@@ -128,7 +132,7 @@ async function findOrCreateSession(
     expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
     createdAt: now,
     updatedAt: now,
-    ipAddress: request.headers.get('x-forwarded-for') ?? null,
+    ipAddress: getClientIp(request),
     userAgent: request.headers.get('user-agent') ?? null,
   })
   return { id, token }
@@ -351,9 +355,8 @@ export const Route = createFileRoute('/api/widget/identify')({
         // person" moments — already resolving/creating the principal on this
         // request. No-op when changelog.autoSubscribe is off or the row
         // already exists.
-        const { ensureAutoSubscribed } = await import(
-          '@/lib/server/domains/changelog/changelog-subscription.service'
-        )
+        const { ensureAutoSubscribed } =
+          await import('@/lib/server/domains/changelog/changelog-subscription.service')
         ensureAutoSubscribed(principalId).catch((err) =>
           log.error({ err }, 'failed to auto-subscribe to changelog on widget identify')
         )

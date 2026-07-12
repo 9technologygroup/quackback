@@ -203,7 +203,7 @@ function TreeRow({
         <span className="truncate">{category.name}</span>
       </button>
       <span
-        className="shrink-0 tabular-nums text-[10px] text-muted-foreground pr-2 group-hover:opacity-0 transition-opacity"
+        className="shrink-0 tabular-nums text-xs text-muted-foreground pr-2 group-hover:opacity-0 transition-opacity"
         title={
           category.articleCount === category.recursiveArticleCount
             ? `${category.articleCount} article${category.articleCount === 1 ? '' : 's'}`

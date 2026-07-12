@@ -205,11 +205,11 @@ export async function updateChangelog(
   }
 
   if (input.displayDate !== undefined) {
-    validateDisplayDate(existing.publishedAt, input.displayDate)
     const publishedAtRef =
       input.publishState !== undefined
         ? getPublishedAtFromState(input.publishState)
         : existing.publishedAt
+    validateDisplayDate(publishedAtRef, input.displayDate)
     updateData.displayDate = normalizeDisplayDate(input.displayDate, publishedAtRef)
   }
 

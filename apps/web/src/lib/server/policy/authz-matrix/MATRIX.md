@@ -105,6 +105,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 | Surface | Enforces |
 | --- | --- |
+| `lib/server/domains/assistant/copilot-gate.ts`::gateCopilotFn | copilot.use |
 | `lib/server/domains/assistant/copilot-gate.ts`::gateCopilotRequest | copilot.use |
 | `lib/server/functions/activity.ts`::fetchActivityForPost | post.view_private |
 | `lib/server/functions/admin-reset-two-factor.ts`::adminResetTwoFactorFn | auth.manage |
@@ -297,8 +298,6 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/conversation.ts`::translateConversationMessagesFn | conversation.view |
 | `lib/server/functions/conversation.ts`::setInboxTranslationEnabledFn | conversation.manage |
 | `lib/server/functions/conversation.ts`::dismissInboxTranslationSuggestionFn | conversation.manage |
-| `lib/server/functions/copilot-summary.ts`::summarizeConversationNowFn | copilot.use |
-| `lib/server/functions/copilot-summary.ts`::summarizeTicketNowFn | copilot.use |
 | `lib/server/functions/data-connectors.ts`::fetchDataConnectorsFn | connector.manage |
 | `lib/server/functions/data-connectors.ts`::fetchDataConnectorFn | connector.manage |
 | `lib/server/functions/data-connectors.ts`::createDataConnectorFn | connector.manage |
@@ -447,6 +446,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/roadmaps.ts`::removePostFromRoadmapFn | roadmap.manage |
 | `lib/server/functions/roadmaps.ts`::reorderRoadmapsFn | roadmap.manage |
 | `lib/server/functions/roadmaps.ts`::getRoadmapPostsFn | roadmap.manage |
+| `lib/server/functions/segment-integration.ts`::saveSegmentConnectionFn | integration.manage |
 | `lib/server/functions/settings.ts`::fetchPortalConfig | settings.manage |
 | `lib/server/functions/settings.ts`::fetchAuthConfigFn | auth.manage |
 | `lib/server/functions/settings.ts`::fetchDeveloperConfig | settings.manage |
@@ -844,7 +844,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-168 of 823 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+173 of 827 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
@@ -865,7 +865,11 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `lib/server/functions/conversation.ts`::getMyConversationFn | server-fn |
 | `lib/server/functions/conversation.ts`::getMyConversationsFn | server-fn |
 | `lib/server/functions/conversation.ts`::getWidgetTeamAvatarsFn | server-fn |
+| `lib/server/functions/copilot-events.ts`::recordCopilotEventFn | server-fn |
+| `lib/server/functions/copilot-summary.ts`::summarizeConversationNowFn | server-fn |
+| `lib/server/functions/copilot-summary.ts`::summarizeTicketNowFn | server-fn |
 | `lib/server/functions/csat-email.ts`::recordCsatViaTokenFn | server-fn |
+| `lib/server/functions/csat-email.ts`::validateCsatEmailTokenFn | server-fn |
 | `lib/server/functions/embeds.ts`::getEmbedPreviewFn | server-fn |
 | `lib/server/functions/help-center-redirect-rules.ts`::resolveHelpCenterRedirectFn | server-fn |
 | `lib/server/functions/help-center.ts`::getPublicArticleBySlugFn | server-fn |
@@ -950,6 +954,7 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `routes/[.]well-known.oauth-protected-resource.ts`::GET | route |
 | `routes/[.]well-known.openid-configuration.ts`::GET | route |
 | `routes/api/admin/assistant/copilot.ts`::POST | route |
+| `routes/api/admin/assistant/suggest.ts`::POST | route |
 | `routes/api/admin/assistant/transform.ts`::POST | route |
 | `routes/api/auth/$.ts`::GET | route |
 | `routes/api/auth/$.ts`::POST | route |

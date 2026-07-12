@@ -81,7 +81,7 @@ export function TicketStatusControl({
             />
             <span className="min-w-0 flex-1 truncate">{s.name}</span>
             {s.publicStage && (
-              <span className="shrink-0 text-[10px] text-muted-foreground">
+              <span className="shrink-0 text-xs text-muted-foreground">
                 {stageLabels?.[s.publicStage] ?? DEFAULT_TICKET_STAGE_LABELS[s.publicStage]}
               </span>
             )}
@@ -131,7 +131,7 @@ export function TicketAssigneeControl({
             <Avatar
               src={undefined}
               name={assignee.displayName ?? 'Agent'}
-              className="size-4 text-[8px]"
+              className="size-4 text-xs"
             />
           ) : (
             <UserCircleIcon className="h-4 w-4" />

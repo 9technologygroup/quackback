@@ -215,7 +215,10 @@ export function ChangelogMetadataSidebarContent({
             <EnvelopeIcon className="h-4 w-4" />
             Send email to subscribers
           </span>
-          <Checkbox checked={notify} onCheckedChange={(checked) => onNotifyChange(checked === true)} />
+          <Checkbox
+            checked={notify}
+            onCheckedChange={(checked) => onNotifyChange(checked === true)}
+          />
         </div>
       )}
 
@@ -280,7 +283,7 @@ export function ChangelogMetadataSidebarContent({
                           <Checkbox checked={isSelected} className="mt-0.5" />
                           <div className="flex-1 min-w-0">
                             <div className="font-medium text-xs truncate">{post.title}</div>
-                            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                               <span className="flex items-center gap-0.5">
                                 <ChevronUpIcon className="h-2.5 w-2.5" />
                                 {post.voteCount}

@@ -349,7 +349,7 @@ export async function listPublicPosts(
     board: { id: post.boardId, name: post.boardName, slug: post.boardSlug },
   }))
 
-  return { items, total: -1, hasMore }
+  return { items, total: undefined, hasMore }
 }
 
 export async function getAllUserVotedPostIds(principalId: PrincipalId): Promise<Set<PostId>> {

@@ -51,6 +51,7 @@ import { resolveChannelAccountByRecipient } from '@/lib/server/domains/channel-a
 import {
   resolveColdInboundSender,
   createEmailConversation,
+  cleanupColdInboundLead,
 } from './conversation.email-cold-inbound'
 
 export type IngestInboundResult =
@@ -141,7 +142,10 @@ async function rehostInboundMedia(parsed: ParsedInboundEmail): Promise<RehostedI
       continue
     }
     if (part.bytes.length > MAX_FILE_SIZE) {
-      log.warn({ name: part.filename, size: part.bytes.length }, 'inbound email part dropped: over size cap')
+      log.warn(
+        { name: part.filename, size: part.bytes.length },
+        'inbound email part dropped: over size cap'
+      )
       continue
     }
     const declared = canonicalizeImageMime((part.contentType || '').toLowerCase())
@@ -379,15 +383,23 @@ async function ingestColdInbound(parsed: ParsedInboundEmail): Promise<IngestInbo
   const content =
     plainText || converted?.text || (media.attachments.length > 0 ? '' : '(no plain-text body)')
 
-  const conversationId = await createEmailConversation({
-    parsed,
-    channelAccountId: channelAccount.id,
-    principalId: resolution.principalId,
-    unverified: resolution.unverified,
-    content,
-    contentJson: converted?.contentJson ?? null,
-    attachments: media.attachments,
-  })
+  let conversationId: ConversationId
+  try {
+    conversationId = await createEmailConversation({
+      parsed,
+      channelAccountId: channelAccount.id,
+      principalId: resolution.principalId,
+      unverified: resolution.unverified,
+      content,
+      contentJson: converted?.contentJson ?? null,
+      attachments: media.attachments,
+    })
+  } catch (error) {
+    if (resolution.action === 'create') {
+      await cleanupColdInboundLead(resolution.principalId).catch(() => {})
+    }
+    throw error
+  }
   return { status: 'ingested', conversationId }
 }
 

@@ -4,6 +4,7 @@
  */
 import { getClientIp } from '@/lib/server/domains/api/rate-limit'
 import { incrementBucket, bucketRetryAfter } from '@/lib/server/utils/redis-rate-bucket'
+import { createHash } from 'node:crypto'
 
 /** Every public widget response: any origin may read it, nothing caches it. */
 export function widgetCorsHeaders(): Record<string, string> {
@@ -52,6 +53,31 @@ export async function enforcePerIpLimit(
   const { count } = await incrementBucket(bucket)
   if (count === null || count <= spec.limit) return null
   const retryAfter = await bucketRetryAfter(bucket)
+  return widgetJsonError(429, 'RATE_LIMITED', spec.message ?? 'Too many requests, slow down', {
+    'Retry-After': String(retryAfter),
+  })
+}
+
+/** Bound widget abuse across IP, bearer session, and workspace. */
+export async function enforceWidgetQuota(
+  request: Request,
+  spec: PerIpLimitSpec & { tenantId: string }
+): Promise<Response | null> {
+  const auth = request.headers.get('authorization') ?? ''
+  const sessionKey = auth
+    ? createHash('sha256').update(auth).digest('hex').slice(0, 24)
+    : 'anonymous'
+  const buckets = [
+    { key: `${spec.keyPrefix}:ip:${getClientIp(request)}`, windowSeconds: spec.windowSeconds },
+    { key: `${spec.keyPrefix}:session:${sessionKey}`, windowSeconds: spec.windowSeconds },
+    { key: `${spec.keyPrefix}:tenant:${spec.tenantId}`, windowSeconds: spec.windowSeconds },
+  ]
+  const results = await Promise.all(buckets.map((bucket) => incrementBucket(bucket)))
+  const blockedIndex = results.findIndex(
+    (result) => result.count !== null && result.count > spec.limit
+  )
+  if (blockedIndex < 0) return null
+  const retryAfter = await bucketRetryAfter(buckets[blockedIndex])
   return widgetJsonError(429, 'RATE_LIMITED', spec.message ?? 'Too many requests, slow down', {
     'Retry-After': String(retryAfter),
   })

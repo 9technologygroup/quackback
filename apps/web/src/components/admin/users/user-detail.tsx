@@ -347,7 +347,7 @@ function UserConversations({ principalId }: { principalId: PrincipalId }) {
                           <Avatar
                             src={c.assignedAgent.avatarUrl}
                             name={c.assignedAgent.displayName ?? 'Agent'}
-                            className="size-4 text-[8px]"
+                            className="size-4 text-xs"
                           />
                           {c.assignedAgent.displayName ?? 'Agent'}
                         </span>

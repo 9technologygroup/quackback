@@ -10,7 +10,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import crypto from 'crypto'
 
-const h = vi.hoisted(() => ({ safeFetch: vi.fn(), claim: vi.fn(async () => true) }))
+const h = vi.hoisted(() => ({
+  safeFetch: vi.fn(),
+  claim: vi.fn(async () => true),
+  release: vi.fn(async () => undefined),
+  complete: vi.fn(async () => undefined),
+  fail: vi.fn(async () => undefined),
+}))
 
 // Mock the db import before importing the handler
 // Spread the real db module so tables/operators stay current; override only what this suite drives.
@@ -33,7 +39,12 @@ vi.mock('@/lib/server/content/ssrf-guard', async (orig) => {
   const actual = await orig<typeof import('@/lib/server/content/ssrf-guard')>()
   return { ...actual, safeFetch: (...a: unknown[]) => h.safeFetch(...a) }
 })
-vi.mock('../hook-idempotency', () => ({ claimHookDelivery: () => h.claim() }))
+vi.mock('../hook-idempotency', () => ({
+  claimHookDelivery: () => h.claim(),
+  releaseHookDelivery: () => h.release(),
+  completeHookDelivery: () => h.complete(),
+  failHookDelivery: () => h.fail(),
+}))
 
 import { webhookHook } from '../handlers/webhook'
 import { SsrfError, TimeoutError } from '@/lib/server/content/ssrf-guard'

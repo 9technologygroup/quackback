@@ -58,7 +58,7 @@ export async function restoreComment(
     if (!updatedComment) return false
 
     // Re-increment comment count (only for public comments)
-    if (!comment.isPrivate) {
+    if (!comment.isPrivate && updatedComment.moderationState !== 'pending') {
       await tx
         .update(posts)
         .set({ commentCount: sql`${posts.commentCount} + 1` })

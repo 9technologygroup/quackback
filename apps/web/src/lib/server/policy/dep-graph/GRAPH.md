@@ -25,7 +25,7 @@ Hard rule (test-enforced, not just snapshotted): no package imports app code.
 Top-level directories of src, with lib split one level deeper; root-level files form `(root)`. The components -> lib/server edge is the TanStack Start server-function pattern, recorded as reality.
 
 Nodes (9): (root), components, lib/client, lib/server, lib/shared, locales, routes, test, types
-Edges (17):
+Edges (18):
 
 - (root) -> components
 - (root) -> lib/server
@@ -44,11 +44,12 @@ Edges (17):
 - routes -> lib/client
 - routes -> lib/server
 - routes -> lib/shared
+- test -> lib/client
 
 ## 3. Server domains (lib/server/domains)
 
 Nodes (45): activity, ai, analytics, api, api-keys, assistant, boards, changelog, channel-accounts, comments, companies, company-attributes, connectors, conversation, conversation-attributes, conversation-views, embeddings, feedback, help-center, import, inbox, macros, merge-suggestions, notifications, office-hours, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, segments, sentiment, settings, sla, status, statuses, subscriptions, summary, teams, tickets, user-attributes, users, webhooks, workflows
-Edges (95):
+Edges (101):
 
 - analytics -> api
 - analytics -> assistant
@@ -140,15 +141,21 @@ Edges (95):
 - users -> principals
 - users -> user-attributes
 - webhooks -> settings
+- workflows -> assistant
+- workflows -> connectors
 - workflows -> conversation
 - workflows -> conversation-attributes
+- workflows -> inbox
+- workflows -> office-hours
 - workflows -> segments
 - workflows -> settings
 - workflows -> sla
+- workflows -> tickets
+- workflows -> users
 
 ### Cycles
 
 Strongly connected components with more than one domain. A new entry here is a new cycle and needs an explicit decision.
 
-- assistant <-> connectors <-> conversation <-> conversation-attributes <-> tickets <-> workflows
+- assistant <-> connectors <-> conversation <-> conversation-attributes <-> inbox <-> tickets <-> workflows
 - embeddings <-> merge-suggestions <-> posts

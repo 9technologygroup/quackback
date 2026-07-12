@@ -136,6 +136,7 @@ const PIPELINE_LOG_RETENTION_DAYS = 180
 export async function cleanupExpiredLogs(): Promise<{
   aiUsageDeleted: number
   pipelineDeleted: number
+  operationalDeleted: number
 }> {
   const aiResult = await db.execute(
     sql`DELETE FROM ai_usage_log WHERE created_at < now() - interval '${sql.raw(String(AI_USAGE_RETENTION_DAYS))} days'`
@@ -147,12 +148,33 @@ export async function cleanupExpiredLogs(): Promise<{
 
   const aiUsageDeleted = (aiResult as { count: number }).count ?? 0
   const pipelineDeleted = (pipelineResult as { count: number }).count ?? 0
+  const operationalResult = await db.execute(sql`
+    WITH deleted_hooks AS (
+      DELETE FROM hook_deliveries WHERE processed_at < now() - interval '7 days' RETURNING 1
+    ), deleted_tokens AS (
+      DELETE FROM unsubscribe_tokens
+      WHERE expires_at < now() - interval '30 days' OR used_at < now() - interval '30 days'
+      RETURNING 1
+    ), deleted_notifications AS (
+      DELETE FROM in_app_notifications
+      WHERE created_at < now() - interval '365 days'
+         OR (archived_at IS NOT NULL AND archived_at < now() - interval '90 days')
+      RETURNING 1
+    )
+    SELECT
+      (SELECT count(*) FROM deleted_hooks)
+      + (SELECT count(*) FROM deleted_tokens)
+      + (SELECT count(*) FROM deleted_notifications) AS count
+  `)
+  const [operationalRow] = Array.from(operationalResult as Iterable<{ count: number }>)
+  const operationalDeleted = Number(operationalRow?.count ?? 0)
 
-  if (aiUsageDeleted > 0 || pipelineDeleted > 0) {
+  if (aiUsageDeleted > 0 || pipelineDeleted > 0 || operationalDeleted > 0) {
     log.info(
       {
         ai_usage_deleted: aiUsageDeleted,
         pipeline_deleted: pipelineDeleted,
+        operational_deleted: operationalDeleted,
         ai_usage_retention_days: AI_USAGE_RETENTION_DAYS,
         pipeline_log_retention_days: PIPELINE_LOG_RETENTION_DAYS,
       },
@@ -160,5 +182,5 @@ export async function cleanupExpiredLogs(): Promise<{
     )
   }
 
-  return { aiUsageDeleted, pipelineDeleted }
+  return { aiUsageDeleted, pipelineDeleted, operationalDeleted }
 }

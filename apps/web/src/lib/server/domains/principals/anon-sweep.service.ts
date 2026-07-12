@@ -50,6 +50,7 @@ export async function sweepAnonymousPrincipals(opts?: {
     FROM principal pr
     WHERE pr.type = 'anonymous'
       AND pr.user_id IS NOT NULL
+      AND pr.contact_email IS NULL
       AND pr.created_at < ${cutoffIso}::timestamptz
       AND NOT EXISTS (SELECT 1 FROM session s WHERE s.user_id = pr.user_id AND s.expires_at > now())
       AND NOT EXISTS (SELECT 1 FROM posts WHERE principal_id = pr.id)

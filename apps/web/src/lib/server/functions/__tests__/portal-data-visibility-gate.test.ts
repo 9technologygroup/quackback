@@ -109,7 +109,7 @@ const POSTS_RESULT = {
       board: { id: 'board_1', name: 'Roadmap', slug: 'roadmap' },
     },
   ],
-  total: -1,
+  total: undefined,
   hasMore: false,
 }
 

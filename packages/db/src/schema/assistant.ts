@@ -145,6 +145,9 @@ export const assistantSnippets = pgTable(
   },
   (table) => [
     index('assistant_snippets_enabled_audience_idx').on(table.enabled, table.audience),
+    index('assistant_snippets_embedding_hnsw_idx')
+      .using('hnsw', sql`${table.embedding} vector_cosine_ops`)
+      .where(sql`${table.embedding} IS NOT NULL`),
     check('assistant_snippets_title_length_check', sql`char_length(${table.title}) <= 120`),
     check('assistant_snippets_content_length_check', sql`char_length(${table.content}) <= 2000`),
     check(

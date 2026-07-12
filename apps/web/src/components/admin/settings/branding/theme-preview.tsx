@@ -216,7 +216,7 @@ function BoardPill({
       <span className="truncate min-w-0 flex-1">{label}</span>
       <span
         className={cn(
-          'text-[10px] font-semibold tabular-nums shrink-0',
+          'text-xs font-semibold tabular-nums shrink-0',
           active ? 'text-[var(--primary)]' : 'text-[var(--muted-foreground)]'
         )}
       >

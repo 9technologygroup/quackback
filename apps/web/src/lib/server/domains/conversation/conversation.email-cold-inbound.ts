@@ -15,7 +15,7 @@
  *
  * Resolution only touches identity; the caller owns creating the conversation.
  */
-import { db, sql, eq, user, conversations, conversationMessages } from '@/lib/server/db'
+import { db, sql, eq, user, principal, conversations, conversationMessages } from '@/lib/server/db'
 import type { TiptapContent, ConversationAttachment } from '@/lib/server/db'
 import type { PrincipalId, ChannelAccountId, ConversationId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
@@ -109,35 +109,38 @@ export async function createEmailConversation(input: {
     : null
   const attachments = validateAttachments(input.attachments)
   const now = new Date()
-  const [conversation] = await db
-    .insert(conversations)
-    .values({
-      visitorPrincipalId: principalId,
-      channel: 'email',
-      source: 'email',
-      channelAccountId,
-      status: 'open',
-      subject: parsed.subject?.slice(0, 200) ?? null,
-      lastMessagePreview: (content || (attachments[0] ? `📎 ${attachments[0].name}` : '')).slice(
-        0,
-        200
-      ),
-      lastMessageAt: now,
-      // The customer is waiting on the first reply from the moment it lands.
-      waitingSince: now,
-      visitorEmail: realEmail(parsed.from)?.toLowerCase() ?? null,
-      customAttributes: unverified ? { unverifiedSender: true } : {},
-    })
-    .returning()
+  const conversation = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(conversations)
+      .values({
+        visitorPrincipalId: principalId,
+        channel: 'email',
+        source: 'email',
+        channelAccountId,
+        status: 'open',
+        subject: parsed.subject?.slice(0, 200) ?? null,
+        lastMessagePreview: (content || (attachments[0] ? `📎 ${attachments[0].name}` : '')).slice(
+          0,
+          200
+        ),
+        lastMessageAt: now,
+        // The customer is waiting on the first reply from the moment it lands.
+        waitingSince: now,
+        visitorEmail: realEmail(parsed.from)?.toLowerCase() ?? null,
+        customAttributes: unverified ? { unverifiedSender: true } : {},
+      })
+      .returning()
 
-  await db.insert(conversationMessages).values({
-    conversationId: conversation.id,
-    principalId,
-    senderType: 'visitor',
-    content,
-    contentJson: safeContentJson,
-    attachments: attachments.length > 0 ? attachments : null,
-    metadata: { source: 'email', emailMessageId: parsed.messageId ?? undefined },
+    await tx.insert(conversationMessages).values({
+      conversationId: created.id,
+      principalId,
+      senderType: 'visitor',
+      content,
+      contentJson: safeContentJson,
+      attachments: attachments.length > 0 ? attachments : null,
+      metadata: { source: 'email', emailMessageId: parsed.messageId ?? undefined },
+    })
+    return created
   })
 
   // A customer-initiated event: the visitor is the actor so it counts as human.
@@ -150,4 +153,9 @@ export async function createEmailConversation(input: {
   await emitConversationCreated(actor, { principalId, displayName: null }, conversation)
 
   return conversation.id
+}
+
+/** Compensate a failed cold-inbound create before any durable activity exists. */
+export async function cleanupColdInboundLead(principalId: PrincipalId): Promise<void> {
+  await db.delete(principal).where(eq(principal.id, principalId))
 }

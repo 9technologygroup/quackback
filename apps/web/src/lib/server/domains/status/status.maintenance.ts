@@ -24,7 +24,7 @@ import type { StatusIncidentId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
 import { scheduleDispatch, cancelScheduledDispatch } from '@/lib/server/events/scheduler'
 import type { EventActor } from '@/lib/server/events/dispatch'
-import { setComponentStatus, dispatchStatusEvent } from './status.components'
+import { reconcileComponentStatus, dispatchStatusEvent } from './status.components'
 
 const log = logger.child({ component: 'status-maintenance' })
 
@@ -120,6 +120,7 @@ export async function handleMaintenanceStart(incidentId: StatusIncidentId): Prom
     where: and(eq(statusIncidents.id, incidentId), isNull(statusIncidents.deletedAt)),
   })
   if (!incident || incident.kind !== 'maintenance' || incident.status !== 'scheduled') return
+  if (!incident.scheduledStartAt || incident.scheduledStartAt.getTime() > Date.now()) return
 
   await db
     .update(statusIncidents)
@@ -128,7 +129,7 @@ export async function handleMaintenanceStart(incidentId: StatusIncidentId): Prom
 
   const links = await affectedComponentIds(incidentId)
   for (const link of links) {
-    await setComponentStatus(link.componentId, link.componentStatus, 'maintenance', incidentId)
+    await reconcileComponentStatus(link.componentId, 'maintenance', incidentId)
   }
 
   await db.insert(statusIncidentUpdates).values({
@@ -156,6 +157,7 @@ export async function handleMaintenanceComplete(incidentId: StatusIncidentId): P
     where: and(eq(statusIncidents.id, incidentId), isNull(statusIncidents.deletedAt)),
   })
   if (!incident || incident.kind !== 'maintenance' || incident.status === 'completed') return
+  if (!incident.scheduledEndAt || incident.scheduledEndAt.getTime() > Date.now()) return
 
   await db
     .update(statusIncidents)
@@ -168,7 +170,7 @@ export async function handleMaintenanceComplete(incidentId: StatusIncidentId): P
 
   const links = await affectedComponentIds(incidentId)
   for (const link of links) {
-    await setComponentStatus(link.componentId, 'operational', 'maintenance', incidentId)
+    await reconcileComponentStatus(link.componentId, 'maintenance', incidentId)
   }
 
   await db.insert(statusIncidentUpdates).values({

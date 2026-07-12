@@ -159,7 +159,7 @@ export function WidgetChangelog({ teamName, onEntrySelect }: WidgetChangelogProp
         {hasNextPage && (
           <div ref={sentinelRef} className="flex justify-center py-2">
             {isFetchingNextPage && (
-              <span className="text-[10px] text-muted-foreground/50">
+              <span className="text-xs text-muted-foreground/50">
                 <FormattedMessage id="widget.changelog.loadingMore" defaultMessage="Loading..." />
               </span>
             )}

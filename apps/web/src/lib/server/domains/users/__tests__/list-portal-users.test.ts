@@ -84,9 +84,8 @@ vi.mock('@/lib/server/db', () => ({
     select: vi.fn(() => {
       selectCallCount.count++
       const c = selectCallCount.count
-      if (c <= 5) return createChain([]) // subqueries (counts + last-seen)
-      if (c === 6) return createChain(mockUserRows) // main query
-      if (c === 7) return createChain(mockCountResult) // count query
+      if (c === 1) return createChain(mockUserRows) // main query
+      if (c === 2) return createChain(mockCountResult) // count query
       return createChain([]) // segment/other queries
     }),
     query: {
@@ -191,9 +190,8 @@ describe('listPortalUsers', () => {
     vi.mocked(db.select).mockImplementation(() => {
       selectCallCount.count++
       const c = selectCallCount.count
-      if (c <= 5) return createChain([]) as never
-      if (c === 6) return createChain(mockUserRows) as never
-      if (c === 7) return createChain(mockCountResult) as never
+      if (c === 1) return createChain(mockUserRows) as never
+      if (c === 2) return createChain(mockCountResult) as never
       return createChain([]) as never
     })
   })
