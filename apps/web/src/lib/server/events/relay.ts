@@ -21,6 +21,7 @@ import { logger } from '@/lib/server/logger'
 import { enqueueHookJobsWithIds } from './process'
 import { resolveTargets } from './resolvers/registry'
 import { tryAcquireRelayLeadership, type RelayLeadership } from './relay-lock'
+import { isEventingV2Enabled } from './eventing-v2-flag'
 import type { DomainEvent, EventActorType } from './envelope'
 import type { HookTarget } from './hook-types'
 import type { EventData, EventActor } from './types'
@@ -173,11 +174,6 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let draining = false
 
-/** Enabled behind an env gate for WO-3; WO-16 swaps this for the DB feature flag. */
-function relayEnabled(): boolean {
-  return process.env.EVENTING_V2_RELAY === 'true'
-}
-
 async function drainLoop(): Promise<void> {
   if (draining) return
   draining = true
@@ -204,8 +200,8 @@ export async function startOutboxRelay(): Promise<void> {
     log.info('QUACKBACK_ROLE=web — outbox relay not started')
     return
   }
-  if (!relayEnabled()) {
-    log.info('EVENTING_V2_RELAY not enabled — outbox relay dormant')
+  if (!isEventingV2Enabled()) {
+    log.info('EVENTING-V2 not enabled — outbox relay dormant')
     return
   }
   running = true

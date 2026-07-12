@@ -10,6 +10,7 @@ import { getQueueRedis, REDIS_READY_TIMEOUT_MS } from '@/lib/server/queue/redis-
 import { shouldRunWorkers } from '@/lib/server/queue/role'
 import { getHook } from './registry'
 import { getHookTargets } from './targets'
+import { isEventingV2Enabled } from './eventing-v2-flag'
 import { isRetryableError } from './hook-utils'
 import type { HookResult } from './hook-types'
 import type { EventData } from './types'
@@ -308,6 +309,16 @@ export async function processEvent(event: EventData): Promise<void> {
       .catch((err) =>
         log.error({ err, event_type: event.type }, 'conversation summary hook failed to load')
       )
+  }
+
+  // EVENTING-V2 cutover (WO-4): when enabled, write the event to the durable
+  // outbox and let the leader relay resolve targets + enqueue. This closes the
+  // commit-vs-enqueue loss window and makes the relay the sole enqueuer. Default
+  // OFF, so the legacy path below is unchanged until Phase 5 flips the flag.
+  if (isEventingV2Enabled()) {
+    const { writeEventToOutbox } = await import('./outbox-dispatch')
+    await writeEventToOutbox(event)
+    return
   }
 
   const targets = await getHookTargets(event)
