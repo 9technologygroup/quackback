@@ -329,6 +329,22 @@ export async function processEvent(event: EventData): Promise<void> {
 }
 
 /**
+ * Enqueue pre-resolved hook jobs with caller-supplied deterministic job IDs
+ * (EVENTING-V2 WO-3). The outbox relay is the sole caller: it passes
+ * `jobId = ${eventId}:${sink}:${targetKey}` so a re-drained event re-enqueues
+ * the SAME job id, which BullMQ dedupes (and `hook_deliveries` catches the rest)
+ * — the load-bearing mechanism for effectively-once delivery. `addBulk` with an
+ * explicit `opts.jobId` is idempotent: an existing id is not re-added.
+ */
+export async function enqueueHookJobsWithIds(
+  jobs: Array<{ name: string; data: HookJobData; jobId: string }>
+): Promise<void> {
+  if (jobs.length === 0) return
+  const queue = await ensureQueue()
+  await queue.addBulk(jobs.map(({ name, data, jobId }) => ({ name, data, opts: { jobId } })))
+}
+
+/**
  * Gracefully shut down the queue and worker.
  * Called in test cleanup. In production, BullMQ's stalled job checker
  * recovers any in-flight jobs on next startup if the process exits uncleanly.

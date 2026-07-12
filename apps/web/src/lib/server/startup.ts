@@ -148,6 +148,13 @@ function startBackgroundProcessing(): void {
   // is isolated: one failure is logged without blocking the rest.
   initAllWorkers()
 
+  // Durable event outbox relay (EVENTING-V2 WO-3). Leader-elected, so multiple
+  // worker replicas stay safe; self-gates on QUACKBACK_ROLE and the
+  // EVENTING_V2_RELAY flag (default OFF), so this is a no-op until cutover.
+  import('./events/relay')
+    .then(({ startOutboxRelay }) => startOutboxRelay())
+    .catch((err) => log.error({ err }, 'failed to start outbox relay'))
+
   // Periodic feedback maintenance (stuck-item recovery every 15min, suggestion expiry daily).
   // Runs under a cross-instance lock so only one replica executes per tick.
   Promise.all([
