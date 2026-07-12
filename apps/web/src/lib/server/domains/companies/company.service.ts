@@ -21,6 +21,8 @@ import {
   tickets,
 } from '@/lib/server/db'
 import type { PrincipalId } from '@quackback/ids'
+import { emitBestEffort } from '@/lib/server/events/emit'
+import { companyCreated, companyDeleted } from '@/lib/server/events/catalogue'
 import { NotFoundError, ValidationError, ConflictError } from '@/lib/shared/errors'
 import { isUniqueViolation } from '@/lib/server/utils'
 import { realEmail } from '@/lib/shared/anonymous-email'
@@ -85,6 +87,13 @@ export async function createCompany(input: CreateCompanyInput): Promise<Company>
         customAttributes: input.customAttributes ?? {},
       })
       .returning()
+    // WO-6c: audit-relevant company creation event.
+    void emitBestEffort(companyCreated, {
+      payload: { companyId: row.id, name: row.name },
+      actor: { type: 'service' },
+      entityId: row.id,
+      context: { source: 'admin' },
+    })
     return row
   } catch (err) {
     translateUniqueError(err)
@@ -134,6 +143,13 @@ export async function deleteCompany(id: CompanyId): Promise<void> {
   if (rows.length === 0) {
     throw new NotFoundError('COMPANY_NOT_FOUND', `Company with ID ${id} not found`)
   }
+  // WO-6c: audit-relevant company deletion event.
+  void emitBestEffort(companyDeleted, {
+    payload: { companyId: id },
+    actor: { type: 'service' },
+    entityId: id,
+    context: { source: 'admin' },
+  })
 }
 
 export async function getCompany(id: CompanyId): Promise<Company> {
@@ -319,9 +335,7 @@ export async function qualifyCompany(input: QualifyCompanyInput): Promise<Compan
     if (nullableTrim(input.website)) updates.website = input.website
     if (nullableTrim(input.industry)) updates.industry = input.industry
     company =
-      Object.keys(updates).length > 0
-        ? await updateCompany(match.id as CompanyId, updates)
-        : match
+      Object.keys(updates).length > 0 ? await updateCompany(match.id as CompanyId, updates) : match
   } else {
     company = await createCompany({
       name,

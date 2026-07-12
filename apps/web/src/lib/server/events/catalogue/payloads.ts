@@ -247,6 +247,9 @@ export const P = {
   'article.published': z.looseObject({ articleId: id, title: z.string() }),
   'article.updated': z.looseObject({ articleId: id, changedKeys: z.array(z.string()) }),
   'article.deleted': z.looseObject({ articleId: id }),
+  // --- WO-6c: crm / ops plane (new, catalogue-only) ---
+  'company.created': z.looseObject({ companyId: id, name: z.string() }),
+  'company.deleted': z.looseObject({ companyId: id }),
 } as const
 
 export type PayloadFor<T extends keyof typeof P> = z.infer<(typeof P)[T]>
