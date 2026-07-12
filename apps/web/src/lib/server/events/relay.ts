@@ -25,7 +25,7 @@ import { tryAcquireRelayLeadership, type RelayLeadership } from './relay-lock'
 import { isEventingV2Enabled } from './eventing-v2-flag'
 import type { DomainEvent, EventActorType } from './envelope'
 import type { HookTarget } from './hook-types'
-import type { EventData, EventActor } from './types'
+import { toLegacyEvent } from './to-legacy-event'
 import type { EvtId } from '@quackback/ids'
 
 const log = logger.child({ component: 'outbox-relay' })
@@ -50,25 +50,6 @@ export function hydrateEvent(row: EventRow): DomainEvent {
     schemaVersion: row.schemaVersion,
     occurredAt: row.occurredAt,
   }
-}
-
-/**
- * Reconstruct the legacy `EventData` shape the existing hook handlers consume.
- * Transitional: Phase 2 resolvers + Phase 5 cutover progressively make handlers
- * DomainEvent-native; until then the relay adapts at the boundary.
- */
-function toLegacyEvent(event: DomainEvent): EventData {
-  const actor: EventActor =
-    event.actorType === 'user'
-      ? { type: 'user', principalId: event.actorId, userId: undefined }
-      : { type: 'service', principalId: event.actorId, displayName: event.context.source }
-  return {
-    id: event.eventId,
-    type: event.type,
-    timestamp: event.occurredAt.toISOString(),
-    actor,
-    data: event.payload,
-  } as unknown as EventData
 }
 
 /** Stable per-target key so the same target always maps to the same job id. */

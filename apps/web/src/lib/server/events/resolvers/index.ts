@@ -9,6 +9,7 @@ import { registerResolver } from './registry'
 import { webhookResolver } from './webhook.resolver'
 import { integrationResolver } from './integration.resolver'
 import { aiResolver, summaryResolver } from './ai.resolver'
+import { notificationResolver } from './notification.resolver'
 
 let registered = false
 
@@ -18,6 +19,7 @@ export function registerAllResolvers(): void {
   registered = true
   registerResolver(webhookResolver)
   registerResolver(integrationResolver)
+  registerResolver(notificationResolver)
   registerResolver(aiResolver)
   registerResolver(summaryResolver)
 }

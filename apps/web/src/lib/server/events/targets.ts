@@ -153,13 +153,13 @@ function getNotificationEventType(eventType: string): NotificationEventType | nu
 }
 
 /** Events that trigger subscriber email and in-app notifications */
-const SUBSCRIBER_EVENT_TYPES = [
+export const SUBSCRIBER_EVENT_TYPES = [
   'post.status_changed',
   'comment.created',
   'changelog.published',
 ] as const
 /** Events that resolve a single mentioned principal as the notification target */
-const MENTION_EVENT_TYPES = ['post.mentioned'] as const
+export const MENTION_EVENT_TYPES = ['post.mentioned'] as const
 const AI_EVENT_TYPES = ['post.created'] as const
 const SUMMARY_EVENT_TYPES = ['post.created', 'comment.created'] as const
 /**
@@ -375,7 +375,10 @@ async function getIntegrationTargets(
  * Get email and in-app notification targets for subscribers.
  * Fetches subscribers once, then builds both email and notification targets.
  */
-async function getSubscriberTargets(event: EventData, context: HookContext): Promise<HookTarget[]> {
+export async function getSubscriberTargets(
+  event: EventData,
+  context: HookContext
+): Promise<HookTarget[]> {
   const postId = extractPostId(event)
   if (!postId) return []
 
@@ -662,7 +665,10 @@ const MENTION_ELIGIBLE_ROLES = new Set(['admin', 'member', 'user'])
  *  - one notification target (always, when the principal exists and is eligible)
  *  - one email target (only when the joined user has a non-null email)
  */
-async function getMentionTargets(event: EventData, context: HookContext): Promise<HookTarget[]> {
+export async function getMentionTargets(
+  event: EventData,
+  context: HookContext
+): Promise<HookTarget[]> {
   if (event.type !== 'post.mentioned') return []
 
   const { mentionedPrincipalId, postTitle, postUrl } = event.data
@@ -922,7 +928,7 @@ export function getConversationNoteMentionedTargets(event: EventData): HookTarge
  * the linked-post source, even for a principal who never had a
  * `changelog_subscriptions` row: {@link unsubscribeChangelog} upserts one.
  */
-async function getChangelogSubscriberTargets(
+export async function getChangelogSubscriberTargets(
   event: EventData,
   context: HookContext
 ): Promise<HookTarget[]> {
@@ -1118,7 +1124,7 @@ const STATUS_LIFECYCLE_LABELS: Record<string, string> = {
  * matrix (`status_incident`/email, which subsumes `emailMuted`); the in-app
  * notification ignores `emailsDisabled` (it's email-specific).
  */
-async function getStatusSubscriberTargets(
+export async function getStatusSubscriberTargets(
   event: EventData,
   context: HookContext
 ): Promise<HookTarget[]> {
