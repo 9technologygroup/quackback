@@ -23,6 +23,7 @@ import {
   getNotificationPreferences,
   updateNotificationPreferences,
 } from '@/lib/server/domains/subscriptions/subscription.service'
+import type { NotificationMatrix } from '@/lib/server/domains/subscriptions/notification-matrix'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'user' })
@@ -47,10 +48,20 @@ const saveAvatarKeySchema = z.object({
     .refine((k) => !k.includes('..'), 'Avatar key must not contain path traversal'),
 })
 
+const notificationChannelSchema = z.enum(['inApp', 'email', 'push'])
+
+// The UI always sends the FULL desired matrix on any single-cell change (it
+// reads the current matrix, applies the one toggle, and writes the whole
+// object back) — so the server does a plain replace of whatever it's given
+// here rather than merging per-cell. See NotificationMatrix in
+// notification-matrix.ts for the shape/precedence rules.
 const updateNotificationPreferencesSchema = z.object({
   emailStatusChange: z.boolean().optional(),
   emailNewComment: z.boolean().optional(),
   emailMuted: z.boolean().optional(),
+  matrix: z
+    .partialRecord(z.string(), z.partialRecord(notificationChannelSchema, z.boolean()))
+    .optional(),
 })
 
 // ============================================
@@ -80,6 +91,7 @@ export interface NotificationPreferences {
   emailStatusChange: boolean
   emailNewComment: boolean
   emailMuted: boolean
+  matrix?: NotificationMatrix
 }
 
 // ============================================
@@ -325,12 +337,13 @@ export const updateNotificationPreferencesFn = createServerFn({ method: 'POST' }
       log.debug('update notification preferences')
       try {
         const principalId = await requirePrincipalId()
-        const { emailStatusChange, emailNewComment, emailMuted } = data
+        const { emailStatusChange, emailNewComment, emailMuted, matrix } = data
 
         const updates: {
           emailStatusChange?: boolean
           emailNewComment?: boolean
           emailMuted?: boolean
+          matrix?: NotificationMatrix
         } = {}
 
         if (typeof emailStatusChange === 'boolean') {
@@ -341,6 +354,11 @@ export const updateNotificationPreferencesFn = createServerFn({ method: 'POST' }
         }
         if (typeof emailMuted === 'boolean') {
           updates.emailMuted = emailMuted
+        }
+        if (matrix) {
+          // Full-object replace, not a per-key merge — see the schema
+          // comment above.
+          updates.matrix = matrix
         }
 
         if (Object.keys(updates).length === 0) {

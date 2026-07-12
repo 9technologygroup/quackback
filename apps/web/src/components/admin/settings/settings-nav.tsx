@@ -23,6 +23,7 @@ import {
   ArrowDownTrayIcon,
   ChevronDownIcon,
   SignalIcon,
+  BellIcon,
 } from '@heroicons/react/24/solid'
 import { cn } from '@/lib/shared/utils'
 import { NAV_ICON_CLASS, NAV_ITEM_CLASS, NAV_SECTION_CLASS } from '@/components/shared/nav-tokens'
@@ -135,6 +136,7 @@ export function buildNavSections(flags?: {
       label: 'Workspace',
       items: [
         { label: 'General', to: '/admin/settings/general', icon: Cog6ToothIcon },
+        { label: 'Notifications', to: '/admin/settings/notifications', icon: BellIcon },
         { label: 'Branding', to: '/admin/settings/branding', icon: PaintBrushIcon },
         { label: 'Portal', to: '/admin/settings/portal', icon: MegaphoneIcon },
         { label: 'Widget', to: '/admin/settings/widget', icon: ChatBubbleLeftRightIcon },
