@@ -61,6 +61,9 @@ export interface NotificationConfig {
   title?: string
   stageLabel?: string
   previousStageLabel?: string | null
+  // message.created (WO-3 slice 5) — read back out by the anti-spam presence
+  // gate in run(), below.
+  isFirstMessage?: boolean
 }
 
 export const notificationHook: HookHandler = {
@@ -70,6 +73,20 @@ export const notificationHook: HookHandler = {
 
     if (!principalIds || principalIds.length === 0) {
       return { success: true }
+    }
+
+    // Anti-spam gate for the new-message team bell (WO-3 slice 5), moved
+    // here from notifyVisitorMessage's request-time check: only ping the
+    // team on the first message of a conversation, or when nobody is around
+    // to see it live. isAnyAgentOnline is a single GLOBAL Redis check, not
+    // per-recipient, so it's evaluated once for the whole target. This is a
+    // deliberate skew from notifyVisitorMessage's own (still request-time)
+    // presence check for the offline email — the two are never unified.
+    if (event.type === 'message.created' && !cfg.isFirstMessage) {
+      const { isAnyAgentOnline } = await import('@/lib/server/realtime/presence')
+      if (await isAnyAgentOnline()) {
+        return { success: true }
+      }
     }
 
     log.debug(
@@ -272,6 +289,17 @@ function buildNotifications(
       title: `${title} is now ${stageLabel}`,
       body,
       metadata: { ticketId },
+    }))
+  }
+
+  if (event.type === 'message.created') {
+    const { conversationId, authorName, preview } = config
+    return principalIds.map((principalId) => ({
+      principalId,
+      type: 'chat_message' as NotificationType,
+      title: `New message from ${authorName}`,
+      body: preview,
+      metadata: { conversationId, actorName: authorName },
     }))
   }
 

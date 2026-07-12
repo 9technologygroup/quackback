@@ -338,6 +338,15 @@ export interface ConversationNoteMentionedPayload {
 export interface MessageCreatedPayload {
   message: EventMessageData
   conversation: EventConversationRef
+  /**
+   * Whether this is the conversation's first message. Only meaningful for a
+   * visitor-sent message (the service knows this at send time; NEVER
+   * re-derive it by counting messages in the worker — it races). Drives the
+   * team bell's anti-spam gate (WO-3 slice 5): the bell fires on the first
+   * message of a conversation, or when no agent is online, matching the
+   * pre-move `notifyVisitorMessage` gate exactly.
+   */
+  isFirstMessage: boolean
 }
 export interface MessageNoteCreatedPayload {
   message: EventMessageData

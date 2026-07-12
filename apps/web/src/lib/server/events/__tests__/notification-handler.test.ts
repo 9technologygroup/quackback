@@ -20,6 +20,11 @@ vi.mock('@/lib/server/domains/conversation/sync-conversation-mentions', () => ({
   markConversationMentionsNotified: (...args: unknown[]) => markNotifiedSpy(...args),
 }))
 
+const isAnyAgentOnlineSpy = vi.fn().mockResolvedValue(false)
+vi.mock('@/lib/server/realtime/presence', () => ({
+  isAnyAgentOnline: () => isAnyAgentOnlineSpy(),
+}))
+
 import { notificationHook } from '../handlers/notification'
 import type { NotificationTarget } from '../handlers/notification'
 import type { EventData } from '../types'
@@ -28,6 +33,8 @@ beforeEach(() => {
   batchSpy.mockClear()
   prefsSpy.mockClear()
   markNotifiedSpy.mockClear()
+  isAnyAgentOnlineSpy.mockClear()
+  isAnyAgentOnlineSpy.mockResolvedValue(false)
 })
 
 describe('notificationHook — post.mentioned', () => {
@@ -535,6 +542,100 @@ describe('notificationHook — conversation.note_mentioned', () => {
 
     await notificationHook.run(makeEvent(), target, config)
     expect(markNotifiedSpy).toHaveBeenCalledWith('conversation_msg_1', ['principal_one'])
+  })
+})
+
+// WO-3 slice 5 (ported characterization, riskiest slice — replaces
+// notifyVisitorMessage's deleted team-bell block). Row shape (type
+// 'chat_message', title, body, metadata) is IDENTICAL to the old direct
+// write; what's NEW here is the anti-spam presence gate itself, which used
+// to run at request time inside notifyVisitorMessage and now runs in this
+// worker-side hook instead — see conversation-notify.test.ts's adjacent
+// comment for the pre-move behavior this replaces.
+describe('notificationHook — message.created', () => {
+  function makeEvent(isFirstMessage: boolean): EventData {
+    return {
+      id: 'evt-message-created-1',
+      type: 'message.created',
+      timestamp: new Date().toISOString(),
+      actor: { type: 'user', principalId: 'principal_visitor' },
+      data: {
+        message: {
+          id: 'conversation_msg_1',
+          conversationId: 'conversation_1',
+          senderType: 'visitor',
+          authorPrincipalId: 'principal_visitor',
+          authorName: 'Jane',
+          authorEmail: null,
+          content: 'urgent please help',
+          createdAt: new Date().toISOString(),
+        },
+        conversation: {
+          id: 'conversation_1',
+          status: 'open',
+          channel: 'messenger',
+          priority: 'none',
+        },
+        isFirstMessage,
+      },
+    } as EventData
+  }
+
+  const config = {
+    conversationId: 'conversation_1',
+    authorName: 'Jane',
+    preview: 'urgent please help',
+  }
+  const target: NotificationTarget = {
+    principalIds: ['principal_admin' as never, 'principal_member' as never],
+  }
+
+  it('bells the team on the first message even when an agent is online', async () => {
+    isAnyAgentOnlineSpy.mockResolvedValue(true)
+
+    const result = await notificationHook.run(makeEvent(true), target, {
+      ...config,
+      isFirstMessage: true,
+    })
+    expect(result.success).toBe(true)
+    expect(batchSpy).toHaveBeenCalledWith([
+      expect.objectContaining({
+        principalId: 'principal_admin',
+        type: 'chat_message',
+        title: 'New message from Jane',
+        body: 'urgent please help',
+        metadata: { conversationId: 'conversation_1', actorName: 'Jane' },
+      }),
+      expect.objectContaining({ principalId: 'principal_member', type: 'chat_message' }),
+    ])
+  })
+
+  it('gates out (success:true, no batch) a non-first message while an agent is online', async () => {
+    isAnyAgentOnlineSpy.mockResolvedValue(true)
+
+    const result = await notificationHook.run(makeEvent(false), target, {
+      ...config,
+      isFirstMessage: false,
+    })
+    expect(result).toEqual({ success: true })
+    expect(result.shouldRetry).toBeUndefined()
+    expect(batchSpy).not.toHaveBeenCalled()
+  })
+
+  it('bells the team for a non-first message when no agent is online', async () => {
+    isAnyAgentOnlineSpy.mockResolvedValue(false)
+
+    const result = await notificationHook.run(makeEvent(false), target, {
+      ...config,
+      isFirstMessage: false,
+    })
+    expect(result.success).toBe(true)
+    expect(batchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('never calls isAnyAgentOnline on the first message (skips the gate entirely)', async () => {
+    await notificationHook.run(makeEvent(true), target, { ...config, isFirstMessage: true })
+    expect(isAnyAgentOnlineSpy).not.toHaveBeenCalled()
   })
 })
 

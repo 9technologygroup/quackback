@@ -97,9 +97,9 @@ describe('conversation.webhooks emit helpers', () => {
     })
   })
 
-  it('emitMessageCreated strips a synthetic author email to null', async () => {
-    await emitMessageCreated(visitorActor, anonAuthor, message, baseConversation)
-    const [, msgArg, convRefArg] = dispatch.dispatchMessageCreated.mock.calls[0]
+  it('emitMessageCreated strips a synthetic author email to null and carries isFirstMessage', async () => {
+    await emitMessageCreated(visitorActor, anonAuthor, message, baseConversation, true)
+    const [, msgArg, convRefArg, isFirstMessage] = dispatch.dispatchMessageCreated.mock.calls[0]
     expect(msgArg).toMatchObject({
       id: 'conversation_msg_1',
       senderType: 'visitor',
@@ -107,6 +107,7 @@ describe('conversation.webhooks emit helpers', () => {
       authorEmail: null,
       content: 'hi there',
     })
+    expect(isFirstMessage).toBe(true)
     expect(convRefArg).toEqual({
       id: 'conversation_1',
       status: 'open',

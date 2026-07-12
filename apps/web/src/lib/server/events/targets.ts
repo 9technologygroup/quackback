@@ -230,6 +230,13 @@ export async function getHookTargets(event: EventData): Promise<HookTarget[]> {
       const statusChangedTarget = await getTicketStatusChangedTargets(event)
       if (statusChangedTarget) targets.push(statusChangedTarget)
     }
+    // New-message team bell (WO-3 slice 5): visitor messages only — the
+    // anti-spam presence gate runs in the notification hook's worker, not
+    // here (see notificationHook.run in events/handlers/notification.ts).
+    if (event.type === 'message.created') {
+      const messageCreatedTarget = await getMessageCreatedTargets(event)
+      if (messageCreatedTarget) targets.push(messageCreatedTarget)
+    }
 
     // AI targets (sentiment, embeddings) - only when AI is configured
     if (getOpenAI() && AI_EVENT_TYPES.includes(event.type as (typeof AI_EVENT_TYPES)[number])) {
@@ -944,6 +951,41 @@ export async function getTicketStatusChangedTargets(event: EventData): Promise<H
     type: 'notification',
     target: { principalIds: [requesterPrincipalId as PrincipalId] },
     config: { ticketId: ticket.id, title, stageLabel, previousStageLabel },
+  }
+}
+
+/**
+ * Notification target for `message.created` (WO-3 slice 5, the riskiest
+ * move — reproduces `notifyVisitorMessage`'s deleted team-bell block
+ * EXACTLY): only a VISITOR-sent message bells the team. Recipients are every
+ * admin/member principal — the SAME raw query notifyVisitorMessage used
+ * (role-only, no `principal.type` filter), not `listAssignableTeammates`,
+ * which additionally requires `type: 'user'` and would silently narrow the
+ * recipient set. The anti-spam presence gate is NOT applied here — it runs
+ * in the notification hook itself (events/handlers/notification.ts), since
+ * `isAnyAgentOnline` is a single global Redis check, not a per-recipient one,
+ * and the hook is where the config's `isFirstMessage` flag is read back out.
+ */
+export async function getMessageCreatedTargets(event: EventData): Promise<HookTarget | null> {
+  if (event.type !== 'message.created') return null
+  if (event.data.message.senderType !== 'visitor') return null
+
+  const team = await db
+    .select({ principalId: principal.id })
+    .from(principal)
+    .where(inArray(principal.role, ['admin', 'member']))
+  if (team.length === 0) return null
+
+  const authorName = event.data.message.authorName ?? 'A visitor'
+  return {
+    type: 'notification',
+    target: { principalIds: team.map((t) => t.principalId as PrincipalId) },
+    config: {
+      conversationId: event.data.conversation.id,
+      authorName,
+      preview: truncate(event.data.message.content, 140),
+      isFirstMessage: event.data.isFirstMessage,
+    },
   }
 }
 

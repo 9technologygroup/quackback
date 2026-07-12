@@ -443,12 +443,13 @@ export async function dispatchConversationNoteMentioned(
 export async function dispatchMessageCreated(
   actor: EventActor,
   message: EventMessageData,
-  conversation: EventConversationRef
+  conversation: EventConversationRef,
+  isFirstMessage: boolean
 ): Promise<void> {
   await dispatchEvent({
     ...eventEnvelope(actor),
     type: 'message.created',
-    data: { message, conversation },
+    data: { message, conversation, isFirstMessage },
   })
 }
 

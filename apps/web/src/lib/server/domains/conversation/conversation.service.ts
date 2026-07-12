@@ -460,7 +460,10 @@ export async function sendVisitorMessage(
   if (created) {
     void emitConversationCreated(actor, author, txResult.conversation)
   }
-  void emitMessageCreated(actor, author, txResult.message, txResult.conversation)
+  // `created` is exactly notifyVisitorMessage's own isFirstMessage above —
+  // the team bell's anti-spam gate (WO-3 slice 5) now reads it off this
+  // event instead of a direct call.
+  void emitMessageCreated(actor, author, txResult.message, txResult.conversation, created)
 
   // Quinn, out of band: a widget customer message may trigger an assistant turn.
   // Fire-and-forget with full error isolation so it never blocks or fails the
@@ -613,7 +616,9 @@ export async function startAgentConversation(
   })
 
   void emitConversationCreated(actor, agent, txResult.conversation)
-  void emitMessageCreated(actor, agent, txResult.message, txResult.conversation)
+  // isFirstMessage only matters for a VISITOR message (the team bell's
+  // anti-spam gate) — this is an agent-composed opening message, so false.
+  void emitMessageCreated(actor, agent, txResult.message, txResult.conversation, false)
 
   return { conversation: agentDTO, message: messageDTO, created: true }
 }
@@ -754,7 +759,9 @@ export async function sendAgentMessage(
     capturedEmail: txResult.conversation.visitorEmail,
   })
 
-  void emitMessageCreated(actor, agent, txResult.message, txResult.conversation)
+  // isFirstMessage only matters for a VISITOR message — this is an agent
+  // reply, so false.
+  void emitMessageCreated(actor, agent, txResult.message, txResult.conversation, false)
   if (
     txResult.previousAgentPrincipalId === null &&
     txResult.conversation.assignedAgentPrincipalId !== null
@@ -1729,11 +1736,14 @@ export async function appendAssistantReply(
     conversationId: txResult.conversation.id,
     message: messageDTO,
   })
+  // isFirstMessage only matters for a VISITOR message — this is Quinn's own
+  // reply, so false.
   void emitMessageCreated(
     assistantActor(author.principalId),
     author,
     txResult.message,
-    txResult.conversation
+    txResult.conversation,
+    false
   )
   return messageDTO
 }
