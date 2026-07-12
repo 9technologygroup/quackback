@@ -14,6 +14,17 @@ import { posts, postComments } from './posts'
 import { principal } from './auth'
 
 /**
+ * Per-type x per-channel notification preference overrides.
+ * String-keyed by notification type (not the enum) so new notification
+ * types never require a schema/migration change here.
+ * Kept in sync with NotificationMatrix in
+ * apps/web/src/lib/server/domains/subscriptions/notification-matrix.ts.
+ */
+type NotificationMatrix = Partial<
+  Record<string, Partial<Record<'inApp' | 'email' | 'push', boolean>>>
+>
+
+/**
  * Post subscriptions - tracks which users are subscribed to which posts.
  * Users are auto-subscribed when they create, vote on, or comment on a post.
  *
@@ -72,6 +83,10 @@ export const notificationPreferences = pgTable(
     emailStatusChange: boolean('email_status_change').default(true).notNull(),
     emailNewComment: boolean('email_new_comment').default(true).notNull(),
     emailMuted: boolean('email_muted').default(false).notNull(),
+    // Explicit per-type x per-channel overrides. Nullable with no default -
+    // read-time helpers (shouldNotify) supply defaults for absent entries so
+    // this column can be introduced without a backfill.
+    matrix: jsonb('matrix').$type<NotificationMatrix>(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

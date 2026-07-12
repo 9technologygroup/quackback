@@ -273,6 +273,7 @@ export async function getNotificationPreferences(
       emailStatusChange: prefs.emailStatusChange,
       emailNewComment: prefs.emailNewComment,
       emailMuted: prefs.emailMuted,
+      matrix: prefs.matrix ?? undefined,
     }
   }
 
@@ -306,6 +307,7 @@ export async function batchGetNotificationPreferences(
       emailStatusChange: notificationPreferences.emailStatusChange,
       emailNewComment: notificationPreferences.emailNewComment,
       emailMuted: notificationPreferences.emailMuted,
+      matrix: notificationPreferences.matrix,
     })
     .from(notificationPreferences)
     .where(inArray(notificationPreferences.principalId, principalIds))
@@ -318,6 +320,7 @@ export async function batchGetNotificationPreferences(
         emailStatusChange: row.emailStatusChange,
         emailNewComment: row.emailNewComment,
         emailMuted: row.emailMuted,
+        matrix: row.matrix ?? undefined,
       },
     ])
   )
@@ -357,6 +360,7 @@ export async function updateNotificationPreferences(
       emailStatusChange: updated.emailStatusChange,
       emailNewComment: updated.emailNewComment,
       emailMuted: updated.emailMuted,
+      matrix: updated.matrix ?? undefined,
     }
   } else {
     const [created] = await db
@@ -366,6 +370,7 @@ export async function updateNotificationPreferences(
         emailStatusChange: preferences.emailStatusChange ?? true,
         emailNewComment: preferences.emailNewComment ?? true,
         emailMuted: preferences.emailMuted ?? false,
+        matrix: preferences.matrix,
       })
       .returning()
 
@@ -373,6 +378,7 @@ export async function updateNotificationPreferences(
       emailStatusChange: created.emailStatusChange,
       emailNewComment: created.emailNewComment,
       emailMuted: created.emailMuted,
+      matrix: created.matrix ?? undefined,
     }
   }
 }

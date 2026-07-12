@@ -6,6 +6,7 @@
  */
 
 import type { PrincipalId, PostId, PostSubscriptionId } from '@quackback/ids'
+import type { NotificationMatrix } from './notification-matrix'
 
 export type SubscriptionReason = 'author' | 'vote' | 'comment' | 'manual' | 'feedback_author'
 
@@ -51,4 +52,5 @@ export interface NotificationPreferencesData {
   emailStatusChange: boolean
   emailNewComment: boolean
   emailMuted: boolean
+  matrix?: NotificationMatrix
 }
