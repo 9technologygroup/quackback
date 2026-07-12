@@ -495,6 +495,12 @@ function extractPostId(event: EventData): PostId | null {
  */
 function isActorSubscriber(subscriber: Subscriber, actor: EventActor): boolean {
   if (actor.type === 'service') return false
+  // principalId is the primary match: it survives the DomainEvent round-trip
+  // (the envelope carries actorId=principalId but not email/userId), so the
+  // "don't notify yourself" filter works identically whether the event came
+  // through the legacy full-actor path or the resolver registry. For a real
+  // user, principalId maps 1:1 to userId, so this is behaviour-preserving.
+  if (actor.principalId && subscriber.principalId === actor.principalId) return true
   return subscriber.userId === actor.userId || subscriber.email === actor.email
 }
 

@@ -19,6 +19,10 @@ import {
   getMentionTargets,
   getChangelogSubscriberTargets,
   getStatusSubscriberTargets,
+  getConversationAssignedTargets,
+  getTicketAssignedTargets,
+  getAssistantHandedOffTargets,
+  getConversationNoteMentionedTargets,
 } from '../targets'
 import { logger } from '@/lib/server/logger'
 import type { SinkResolver } from './registry'
@@ -34,32 +38,70 @@ const STATUS_NOTIFY_SET = new Set<string>([
   'status.incident_created',
   'status.maintenance_scheduled',
 ])
+/** Support-inbox "bell" events, each resolving to at most one notification target. */
+const BELL_SET = new Set<string>([
+  'conversation.assigned',
+  'ticket.assigned',
+  'assistant.handed_off',
+  'conversation.note_mentioned',
+])
 
 export const notificationResolver: SinkResolver = {
   sink: 'notification',
   interestedIn(type: string): boolean {
-    return SUBSCRIBER_SET.has(type) || MENTION_SET.has(type) || STATUS_NOTIFY_SET.has(type)
+    return (
+      SUBSCRIBER_SET.has(type) ||
+      MENTION_SET.has(type) ||
+      STATUS_NOTIFY_SET.has(type) ||
+      BELL_SET.has(type)
+    )
   },
   async resolve(event: DomainEvent): Promise<HookTarget[]> {
     try {
-      const context = await buildHookContext()
-      if (!context) return []
       const legacy = toLegacyEvent(event)
       const out: HookTarget[] = []
 
-      if (SUBSCRIBER_SET.has(event.type)) {
-        out.push(
-          ...(event.type === 'changelog.published'
-            ? await getChangelogSubscriberTargets(legacy, context)
-            : await getSubscriberTargets(legacy, context))
-        )
+      // Subscriber/mention/status fan-outs need the hook context; the bells
+      // resolve a single recipient from the payload/DB and don't.
+      if (
+        SUBSCRIBER_SET.has(event.type) ||
+        MENTION_SET.has(event.type) ||
+        STATUS_NOTIFY_SET.has(event.type)
+      ) {
+        const context = await buildHookContext()
+        if (context) {
+          if (SUBSCRIBER_SET.has(event.type)) {
+            out.push(
+              ...(event.type === 'changelog.published'
+                ? await getChangelogSubscriberTargets(legacy, context)
+                : await getSubscriberTargets(legacy, context))
+            )
+          }
+          if (MENTION_SET.has(event.type)) {
+            out.push(...(await getMentionTargets(legacy, context)))
+          }
+          if (STATUS_NOTIFY_SET.has(event.type)) {
+            out.push(...(await getStatusSubscriberTargets(legacy, context)))
+          }
+        }
       }
-      if (MENTION_SET.has(event.type)) {
-        out.push(...(await getMentionTargets(legacy, context)))
+
+      // Support-inbox bells (conversation/ticket assignment, assistant hand-off,
+      // internal-note @-mention). Each returns at most one target or null.
+      if (event.type === 'conversation.assigned') {
+        const t = await getConversationAssignedTargets(legacy)
+        if (t) out.push(t)
+      } else if (event.type === 'ticket.assigned') {
+        const t = await getTicketAssignedTargets(legacy)
+        if (t) out.push(t)
+      } else if (event.type === 'assistant.handed_off') {
+        const t = await getAssistantHandedOffTargets(legacy)
+        if (t) out.push(t)
+      } else if (event.type === 'conversation.note_mentioned') {
+        const t = getConversationNoteMentionedTargets(legacy)
+        if (t) out.push(t)
       }
-      if (STATUS_NOTIFY_SET.has(event.type)) {
-        out.push(...(await getStatusSubscriberTargets(legacy, context)))
-      }
+
       return out
     } catch (error) {
       log.error({ err: error, type: event.type }, 'failed to resolve notification targets')
