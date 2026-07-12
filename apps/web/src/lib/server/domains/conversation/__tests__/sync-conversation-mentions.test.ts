@@ -1,15 +1,27 @@
 /**
- * Tests for syncConversationMessageMentions — server-side persistence + in-app
- * notification of @-mentions inside an internal conversation note.
+ * Tests for syncConversationMessageMentions — server-side persistence of
+ * @-mentions inside an internal conversation note — and
+ * markConversationMentionsNotified, the notifiedAt watermark helper.
  *
  * Mirrors syncPostMentions but: notes are immutable (no delete/diff path),
  * mentions are TEAM-ONLY (admin/member; visitors and service principals are
- * dropped), and alerts are in-app only (no email/event fan-out).
+ * dropped).
+ *
+ * WO-3 slice 3: the in-app alert itself (previously a direct
+ * createNotificationsBatch call here) now rides the `conversation.note_mentioned`
+ * event/hook pipeline — this file asserts the dispatch call carries the exact
+ * recipient/content characterization the direct write used to (recipients,
+ * author-excluded); events/__tests__/notification-handler.test.ts and
+ * events/__tests__/targets-assignment.test.ts assert the ported
+ * title/body/metadata/target-resolution behavior on the event path. The
+ * notifiedAt watermark moved out of this function entirely into
+ * markConversationMentionsNotified, called by the hook AFTER its batch insert
+ * succeeds — tested directly below.
  *
  * Mock strategy: `db.select().from(principal).where()` resolves the
  * eligibility rows; the insert chain captures rows and returns a
- * test-controlled `insertReturning`; createNotificationsBatch is spied so we
- * assert exactly who gets alerted.
+ * test-controlled `insertReturning`; dispatchConversationNoteMentioned is
+ * spied so we assert exactly who gets alerted.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ConversationMessageId, ConversationId, PrincipalId } from '@quackback/ids'
@@ -73,12 +85,14 @@ vi.mock('@/lib/server/db', () => ({
   inArray: vi.fn((_col: unknown, vals: unknown[]) => ({ __principalIds: vals as string[] })),
 }))
 
-const createNotificationsBatch = vi.fn().mockResolvedValue(undefined)
-vi.mock('@/lib/server/domains/notifications/notification.service', () => ({
-  createNotificationsBatch: (...args: unknown[]) => createNotificationsBatch(...args),
+const dispatchConversationNoteMentioned = vi.fn().mockResolvedValue(undefined)
+vi.mock('@/lib/server/events/dispatch', () => ({
+  dispatchConversationNoteMentioned: (...args: unknown[]) =>
+    dispatchConversationNoteMentioned(...args),
 }))
 
-const { syncConversationMessageMentions } = await import('../sync-conversation-mentions')
+const { syncConversationMessageMentions, markConversationMentionsNotified } =
+  await import('../sync-conversation-mentions')
 
 const MESSAGE_ID = 'conversation_msg_test' as ConversationMessageId
 const CONVERSATION_ID = 'conversation_test' as ConversationId
@@ -112,36 +126,39 @@ describe('syncConversationMessageMentions', () => {
     insertReturning = []
     insertCalls.length = 0
     updateNotifiedCalls.length = 0
-    createNotificationsBatch.mockClear()
+    dispatchConversationNoteMentioned.mockClear()
   })
 
-  it('persists and notifies newly-mentioned teammates', async () => {
+  it('persists and dispatches conversation.note_mentioned for newly-mentioned teammates', async () => {
     eligibilityRows = [teamRow(P1), teamRow(P2)]
     insertReturning = [{ principalId: P1 }, { principalId: P2 }]
 
     await syncConversationMessageMentions(defaultInput({ mentionedIds: new Set([P1, P2]) }))
 
-    // One insert carrying both mentions, keyed to the message.
+    // One insert carrying both mentions, keyed to the message (unchanged
+    // behavior — the insert/eligibility path is not part of this move).
     expect(insertCalls).toHaveLength(1)
     expect(insertCalls[0].rows).toEqual([
       { conversationMessageId: MESSAGE_ID, principalId: P1 },
       { conversationMessageId: MESSAGE_ID, principalId: P2 },
     ])
-    // Both teammates alerted, with a chat_mention pointing at the conversation.
-    expect(createNotificationsBatch).toHaveBeenCalledTimes(1)
-    const batch = createNotificationsBatch.mock.calls[0][0] as Array<Record<string, unknown>>
-    expect(batch).toHaveLength(2)
-    expect(batch[0]).toMatchObject({
-      principalId: P1,
-      type: 'chat_mention',
-      metadata: { conversationId: CONVERSATION_ID },
+    // Both teammates dispatched, carrying the note's context.
+    expect(dispatchConversationNoteMentioned).toHaveBeenCalledTimes(1)
+    const [actorArg, payloadArg] = dispatchConversationNoteMentioned.mock.calls[0]
+    expect(actorArg).toEqual({ type: 'user', principalId: AUTHOR, displayName: 'Jane' })
+    expect(payloadArg).toEqual({
+      conversationId: CONVERSATION_ID,
+      conversationMessageId: MESSAGE_ID,
+      mentionedPrincipalIds: [P1, P2],
+      authorName: 'Jane',
+      preview: 'please take a look',
     })
   })
 
   it('drops non-team principals (visitors and service principals) server-side', async () => {
     // The query returns every mentioned principal; the service itself must drop
     // the visitor (role 'user') and the service principal (type 'service'),
-    // inserting/notifying only the genuine teammate.
+    // inserting/dispatching only the genuine teammate.
     eligibilityRows = [
       teamRow(P1),
       { id: VISITOR, type: 'user', role: 'user' },
@@ -154,11 +171,11 @@ describe('syncConversationMessageMentions', () => {
     )
 
     expect(insertCalls[0].rows).toEqual([{ conversationMessageId: MESSAGE_ID, principalId: P1 }])
-    const batch = createNotificationsBatch.mock.calls[0][0] as Array<Record<string, unknown>>
-    expect(batch.map((n) => n.principalId)).toEqual([P1])
+    const payloadArg = dispatchConversationNoteMentioned.mock.calls[0][1]
+    expect(payloadArg.mentionedPrincipalIds).toEqual([P1])
   })
 
-  it('persists a self-mention but never notifies the author', async () => {
+  it('persists a self-mention but never dispatches for the author', async () => {
     eligibilityRows = [teamRow(AUTHOR), teamRow(P1)]
     insertReturning = [{ principalId: AUTHOR }, { principalId: P1 }]
 
@@ -166,40 +183,66 @@ describe('syncConversationMessageMentions', () => {
 
     // Both rows persist (the author can mention themselves in a note)…
     expect(insertCalls[0].rows.map((r) => r.principalId)).toEqual([AUTHOR, P1])
-    // …but only the teammate is alerted.
-    const batch = createNotificationsBatch.mock.calls[0][0] as Array<Record<string, unknown>>
-    expect(batch.map((n) => n.principalId)).toEqual([P1])
+    // …but only the teammate is dispatched.
+    const payloadArg = dispatchConversationNoteMentioned.mock.calls[0][1]
+    expect(payloadArg.mentionedPrincipalIds).toEqual([P1])
   })
 
   it('does nothing when no one is mentioned', async () => {
     await syncConversationMessageMentions(defaultInput({ mentionedIds: new Set() }))
     expect(insertCalls).toHaveLength(0)
-    expect(createNotificationsBatch).not.toHaveBeenCalled()
+    expect(dispatchConversationNoteMentioned).not.toHaveBeenCalled()
   })
 
-  it('does not re-notify when the mention already existed (idempotent re-sync)', async () => {
+  it('does not re-dispatch when the mention already existed (idempotent re-sync)', async () => {
     eligibilityRows = [teamRow(P1)]
     insertReturning = [] // onConflictDoNothing inserted nothing — already present.
 
     await syncConversationMessageMentions(defaultInput({ mentionedIds: new Set([P1]) }))
 
-    // Insert was attempted, but since nothing was newly inserted, no alert.
+    // Insert was attempted, but since nothing was newly inserted, no dispatch.
     expect(insertCalls).toHaveLength(1)
-    expect(createNotificationsBatch).not.toHaveBeenCalled()
+    expect(dispatchConversationNoteMentioned).not.toHaveBeenCalled()
   })
 
-  it('swallows a thrown dependency (the note is saved even if mention sync fails)', async () => {
+  it('truncates the preview to 140 chars', async () => {
+    eligibilityRows = [teamRow(P1)]
+    insertReturning = [{ principalId: P1 }]
+    const long = 'x'.repeat(200)
+
+    await syncConversationMessageMentions(
+      defaultInput({ mentionedIds: new Set([P1]), content: long })
+    )
+
+    const payloadArg = dispatchConversationNoteMentioned.mock.calls[0][1]
+    expect((payloadArg.preview as string).length).toBeLessThanOrEqual(140)
+  })
+
+  it('swallows a thrown dependency (the note is saved even if dispatch fails)', async () => {
     // The note is already committed by the caller; a mid-flight failure here
     // must never reject into the caller's success path or lose the note.
     eligibilityRows = [teamRow(P1)]
     insertReturning = [{ principalId: P1 }]
-    createNotificationsBatch.mockRejectedValueOnce(new Error('db down'))
+    dispatchConversationNoteMentioned.mockRejectedValueOnce(new Error('queue down'))
 
     await expect(
       syncConversationMessageMentions(defaultInput({ mentionedIds: new Set([P1]) }))
     ).resolves.toBeUndefined()
-    // notifiedAt is stamped only after delivery, so a failed batch leaves the
-    // rows un-watermarked rather than claiming an alert that never landed.
+  })
+})
+
+describe('markConversationMentionsNotified', () => {
+  beforeEach(() => {
+    updateNotifiedCalls.length = 0
+  })
+
+  it('stamps notifiedAt for exactly the given principal ids', async () => {
+    await markConversationMentionsNotified(MESSAGE_ID, [P1, P2])
+    expect(updateNotifiedCalls).toEqual([{ principalIds: [P1, P2] }])
+  })
+
+  it('is a no-op for an empty principal id list (no update issued)', async () => {
+    await markConversationMentionsNotified(MESSAGE_ID, [])
     expect(updateNotifiedCalls).toHaveLength(0)
   })
 })

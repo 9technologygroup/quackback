@@ -218,6 +218,12 @@ export async function getHookTargets(event: EventData): Promise<HookTarget[]> {
       const handoffTarget = await getAssistantHandedOffTargets(event)
       if (handoffTarget) targets.push(handoffTarget)
     }
+    // Internal-note @-mention bell (WO-3 slice 3): recipients are already
+    // resolved (eligibility-filtered + author-excluded) by the emit site.
+    if (event.type === 'conversation.note_mentioned') {
+      const noteMentionTarget = getConversationNoteMentionedTargets(event)
+      if (noteMentionTarget) targets.push(noteMentionTarget)
+    }
 
     // AI targets (sentiment, embeddings) - only when AI is configured
     if (getOpenAI() && AI_EVENT_TYPES.includes(event.type as (typeof AI_EVENT_TYPES)[number])) {
@@ -882,6 +888,25 @@ export async function getAssistantHandedOffTargets(event: EventData): Promise<Ho
     type: 'notification',
     target: { principalIds: filtered },
     config: { conversationId, reason },
+  }
+}
+
+/**
+ * Notification target for `conversation.note_mentioned` (WO-3 slice 3):
+ * `mentionedPrincipalIds` is already eligibility-filtered (team-only) and
+ * author-excluded by the emit site (sync-conversation-mentions.ts), so this
+ * resolver trusts the payload outright — no DB round-trip, unlike the other
+ * resolvers above. Exported (like its siblings) for direct unit testing.
+ */
+export function getConversationNoteMentionedTargets(event: EventData): HookTarget | null {
+  if (event.type !== 'conversation.note_mentioned') return null
+  const { conversationId, conversationMessageId, mentionedPrincipalIds, authorName, preview } =
+    event.data
+  if (mentionedPrincipalIds.length === 0) return null
+  return {
+    type: 'notification',
+    target: { principalIds: mentionedPrincipalIds as PrincipalId[] },
+    config: { conversationId, conversationMessageId, authorName, preview },
   }
 }
 

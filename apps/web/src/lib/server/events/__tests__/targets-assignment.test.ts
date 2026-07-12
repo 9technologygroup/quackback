@@ -34,8 +34,12 @@ vi.mock('@/lib/server/domains/teams', () => ({
   listAssignableTeammates: () => listAssignableTeammates(),
 }))
 
-const { getConversationAssignedTargets, getTicketAssignedTargets, getAssistantHandedOffTargets } =
-  await import('../targets')
+const {
+  getConversationAssignedTargets,
+  getTicketAssignedTargets,
+  getAssistantHandedOffTargets,
+  getConversationNoteMentionedTargets,
+} = await import('../targets')
 
 beforeEach(() => {
   conversationRows = []
@@ -355,5 +359,58 @@ describe('getAssistantHandedOffTargets', () => {
     } as EventData
 
     expect(await getAssistantHandedOffTargets(event)).toBeNull()
+  })
+})
+
+// WO-3 slice 3 (ported characterization): replaces the deleted direct
+// createNotificationsBatch call in sync-conversation-mentions.ts. Recipients
+// are trusted straight from the payload (already eligibility-filtered +
+// author-excluded by the emit site) — no DB round-trip, unlike the other
+// resolvers above.
+describe('getConversationNoteMentionedTargets', () => {
+  it('targets exactly the mentioned principals, carrying the note context in config', () => {
+    const event = {
+      id: 'evt-12',
+      type: 'conversation.note_mentioned',
+      timestamp: '2026-01-01T00:00:00Z',
+      actor: { type: 'user', principalId: 'principal_author', displayName: 'Jane' },
+      data: {
+        conversationId: 'conversation_1',
+        conversationMessageId: 'conversation_msg_1',
+        mentionedPrincipalIds: ['principal_one', 'principal_two'],
+        authorName: 'Jane',
+        preview: 'please take a look',
+      },
+    } as EventData
+
+    const target = getConversationNoteMentionedTargets(event)
+    expect(target).toEqual({
+      type: 'notification',
+      target: { principalIds: ['principal_one', 'principal_two'] },
+      config: {
+        conversationId: 'conversation_1',
+        conversationMessageId: 'conversation_msg_1',
+        authorName: 'Jane',
+        preview: 'please take a look',
+      },
+    })
+  })
+
+  it('is a no-op when no one is mentioned', () => {
+    const event = {
+      id: 'evt-13',
+      type: 'conversation.note_mentioned',
+      timestamp: '2026-01-01T00:00:00Z',
+      actor: { type: 'user', principalId: 'principal_author' },
+      data: {
+        conversationId: 'conversation_1',
+        conversationMessageId: 'conversation_msg_1',
+        mentionedPrincipalIds: [],
+        authorName: 'Jane',
+        preview: '',
+      },
+    } as EventData
+
+    expect(getConversationNoteMentionedTargets(event)).toBeNull()
   })
 })

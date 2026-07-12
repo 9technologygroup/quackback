@@ -7,17 +7,23 @@
  *  - Mentions are TEAM-ONLY: a note is agent-facing, so only admin/member
  *    principals are eligible. Visitors (role 'user') and service principals are
  *    dropped server-side, defending against a tampered client.
- *  - Alerts are in-app only (a `chat_mention` notification); no email/event
- *    fan-out, matching the rest of the conversation-notify surface.
+ *  - Alerts are in-app only (a `chat_mention` notification), routed through the
+ *    `conversation.note_mentioned` event/hook pipeline (WO-3 slice 3) so they
+ *    pass the same in-app preference gate as everything else — no email/webhook
+ *    fan-out is implied by that move, matching the rest of the
+ *    conversation-notify surface.
  *
- * The inserted rows power the inbox "Mentions" view; the notifications power the
- * notification bell.
+ * The inserted rows power the inbox "Mentions" view; the notification hook
+ * (events/handlers/notification.ts) powers the notification bell and, on
+ * success, calls back into `markConversationMentionsNotified` below to stamp
+ * the watermark.
  */
 
 // Per eslint.config.js — app files import schema via @/lib/server/db, never
 // directly from @quackback/db.
 import { db, conversationMessageMentions, principal, and, eq, inArray } from '@/lib/server/db'
-import { createNotificationsBatch } from '@/lib/server/domains/notifications/notification.service'
+import { dispatchConversationNoteMentioned } from '@/lib/server/events/dispatch'
+import type { EventActor } from '@/lib/server/events/types'
 import { truncate } from '@/lib/shared/utils/string'
 import type { ConversationMessageId, ConversationId, PrincipalId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
@@ -73,33 +79,51 @@ export async function syncConversationMessageMentions(
 
     // Notify everyone newly mentioned except the author (you can mention
     // yourself in a note — the row persists for the Mentions view — but never
-    // ping yourself).
+    // ping yourself). The bell itself — and the notifiedAt watermark — now
+    // ride the conversation.note_mentioned event/hook pipeline: the hook's
+    // batch insert applies the same in-app preference gate as every other
+    // notification, then calls markConversationMentionsNotified below once
+    // delivery actually happened.
     const toNotify = inserted.map((r) => r.principalId).filter((id) => id !== authorPrincipalId)
     if (toNotify.length === 0) return
 
-    await createNotificationsBatch(
-      toNotify.map((principalId) => ({
-        principalId,
-        type: 'chat_mention' as const,
-        title: `${authorName} mentioned you in a conversation`,
-        body: truncate(input.content, NOTE_PREVIEW_MAX),
-        metadata: { conversationId, actorName: authorName },
-      }))
-    )
-
-    // Stamp notifiedAt only AFTER delivery — if the batch above throws, the
-    // catch leaves these rows un-watermarked, so the field never claims an
-    // alert that didn't happen.
-    await db
-      .update(conversationMessageMentions)
-      .set({ notifiedAt: new Date() })
-      .where(
-        and(
-          eq(conversationMessageMentions.conversationMessageId, conversationMessageId),
-          inArray(conversationMessageMentions.principalId, toNotify)
-        )
-      )
+    const actor: EventActor = {
+      type: 'user',
+      principalId: authorPrincipalId,
+      displayName: authorName,
+    }
+    await dispatchConversationNoteMentioned(actor, {
+      conversationId,
+      conversationMessageId,
+      mentionedPrincipalIds: toNotify,
+      authorName,
+      preview: truncate(input.content, NOTE_PREVIEW_MAX),
+    })
   } catch (err) {
     log.warn({ err }, 'sync conversation message mentions failed')
   }
+}
+
+/**
+ * Stamp `notifiedAt` for the given mention rows. Called by the
+ * `conversation.note_mentioned` notification hook (events/handlers/
+ * notification.ts) AFTER its batch insert succeeds — never from the emit
+ * site above — so the watermark only ever claims an alert that actually
+ * landed: a hook failure (and the BullMQ retry that follows) leaves the rows
+ * un-watermarked, exactly like the pre-move direct-write behavior.
+ */
+export async function markConversationMentionsNotified(
+  conversationMessageId: ConversationMessageId,
+  principalIds: PrincipalId[]
+): Promise<void> {
+  if (principalIds.length === 0) return
+  await db
+    .update(conversationMessageMentions)
+    .set({ notifiedAt: new Date() })
+    .where(
+      and(
+        eq(conversationMessageMentions.conversationMessageId, conversationMessageId),
+        inArray(conversationMessageMentions.principalId, principalIds)
+      )
+    )
 }

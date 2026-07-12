@@ -415,6 +415,31 @@ export async function dispatchConversationCsatCommentAdded(
   })
 }
 
+export interface ConversationNoteMentionedInput {
+  conversationId: string
+  conversationMessageId: string
+  mentionedPrincipalIds: string[]
+  authorName: string
+  preview: string
+}
+
+export async function dispatchConversationNoteMentioned(
+  actor: EventActor,
+  input: ConversationNoteMentionedInput
+): Promise<void> {
+  await dispatchEvent({
+    ...eventEnvelope(actor),
+    type: 'conversation.note_mentioned',
+    data: {
+      conversationId: input.conversationId,
+      conversationMessageId: input.conversationMessageId,
+      mentionedPrincipalIds: input.mentionedPrincipalIds,
+      authorName: input.authorName,
+      preview: input.preview,
+    },
+  })
+}
+
 export async function dispatchMessageCreated(
   actor: EventActor,
   message: EventMessageData,

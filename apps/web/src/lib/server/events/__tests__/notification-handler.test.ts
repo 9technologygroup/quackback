@@ -15,6 +15,11 @@ vi.mock('@/lib/server/domains/subscriptions/subscription.service', () => ({
   batchGetNotificationPreferences: prefsSpy,
 }))
 
+const markNotifiedSpy = vi.fn().mockResolvedValue(undefined)
+vi.mock('@/lib/server/domains/conversation/sync-conversation-mentions', () => ({
+  markConversationMentionsNotified: (...args: unknown[]) => markNotifiedSpy(...args),
+}))
+
 import { notificationHook } from '../handlers/notification'
 import type { NotificationTarget } from '../handlers/notification'
 import type { EventData } from '../types'
@@ -22,6 +27,7 @@ import type { EventData } from '../types'
 beforeEach(() => {
   batchSpy.mockClear()
   prefsSpy.mockClear()
+  markNotifiedSpy.mockClear()
 })
 
 describe('notificationHook — post.mentioned', () => {
@@ -354,6 +360,116 @@ describe('notificationHook — assistant.handed_off', () => {
         metadata: { conversationId: 'conversation_1' },
       }),
     ])
+  })
+})
+
+// WO-3 slice 3 (ported characterization): replaces the deleted direct
+// createNotificationsBatch call in sync-conversation-mentions.ts. Row shape
+// (type 'chat_mention', title, body, metadata) is IDENTICAL to the old direct
+// write — see conversation/__tests__/sync-conversation-mentions.test.ts for
+// the pre-move recipient/dispatch characterization this ports from.
+describe('notificationHook — conversation.note_mentioned', () => {
+  function makeEvent(): EventData {
+    return {
+      id: 'evt-note-mentioned-1',
+      type: 'conversation.note_mentioned',
+      timestamp: new Date().toISOString(),
+      actor: { type: 'user', principalId: 'principal_author', displayName: 'Jane' },
+      data: {
+        conversationId: 'conversation_1',
+        conversationMessageId: 'conversation_msg_1',
+        mentionedPrincipalIds: ['principal_one', 'principal_two'],
+        authorName: 'Jane',
+        preview: 'please take a look',
+      },
+    } as EventData
+  }
+
+  it('creates a chat_mention bell matching the pre-move row shape', async () => {
+    const target: NotificationTarget = {
+      principalIds: ['principal_one' as never, 'principal_two' as never],
+    }
+    const config = {
+      conversationId: 'conversation_1',
+      conversationMessageId: 'conversation_msg_1',
+      authorName: 'Jane',
+      preview: 'please take a look',
+    }
+
+    const result = await notificationHook.run(makeEvent(), target, config)
+    expect(result.success).toBe(true)
+    expect(batchSpy).toHaveBeenCalledWith([
+      expect.objectContaining({
+        principalId: 'principal_one',
+        type: 'chat_mention',
+        title: 'Jane mentioned you in a conversation',
+        body: 'please take a look',
+        metadata: { conversationId: 'conversation_1', actorName: 'Jane' },
+      }),
+      expect.objectContaining({
+        principalId: 'principal_two',
+        type: 'chat_mention',
+        title: 'Jane mentioned you in a conversation',
+      }),
+    ])
+  })
+
+  it('stamps the notifiedAt watermark AFTER the batch insert succeeds, for exactly the delivered principals', async () => {
+    const target: NotificationTarget = {
+      principalIds: ['principal_one' as never, 'principal_two' as never],
+    }
+    const config = {
+      conversationId: 'conversation_1',
+      conversationMessageId: 'conversation_msg_1',
+      authorName: 'Jane',
+      preview: 'please take a look',
+    }
+
+    await notificationHook.run(makeEvent(), target, config)
+    expect(markNotifiedSpy).toHaveBeenCalledTimes(1)
+    expect(markNotifiedSpy).toHaveBeenCalledWith('conversation_msg_1', [
+      'principal_one',
+      'principal_two',
+    ])
+    // Called after the batch, not before.
+    const batchOrder = batchSpy.mock.invocationCallOrder[0]
+    const markOrder = markNotifiedSpy.mock.invocationCallOrder[0]
+    expect(batchOrder).toBeLessThan(markOrder)
+  })
+
+  it('never stamps notifiedAt when the batch insert throws (no alert-that-never-happened watermark)', async () => {
+    batchSpy.mockRejectedValueOnce(new Error('db down'))
+    const target: NotificationTarget = { principalIds: ['principal_one' as never] }
+    const config = {
+      conversationId: 'conversation_1',
+      conversationMessageId: 'conversation_msg_1',
+      authorName: 'Jane',
+      preview: 'please take a look',
+    }
+
+    const result = await notificationHook.run(makeEvent(), target, config)
+    expect(result.success).toBe(false)
+    expect(markNotifiedSpy).not.toHaveBeenCalled()
+  })
+
+  it('excludes a preference-gated-out principal from the watermark too', async () => {
+    prefsSpy.mockResolvedValueOnce(
+      new Map([
+        ['principal_two', { emailMuted: false, matrix: { chat_mention: { inApp: false } } }],
+      ])
+    )
+    const target: NotificationTarget = {
+      principalIds: ['principal_one' as never, 'principal_two' as never],
+    }
+    const config = {
+      conversationId: 'conversation_1',
+      conversationMessageId: 'conversation_msg_1',
+      authorName: 'Jane',
+      preview: 'please take a look',
+    }
+
+    await notificationHook.run(makeEvent(), target, config)
+    expect(markNotifiedSpy).toHaveBeenCalledWith('conversation_msg_1', ['principal_one'])
   })
 })
 

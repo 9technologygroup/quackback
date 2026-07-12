@@ -10,7 +10,7 @@ import type { HookHandler, HookResult } from '../hook-types'
 import type { EventData, EventPostMentionedData } from '../types'
 import { createNotificationsBatch } from '@/lib/server/domains/notifications/notification.service'
 import type { CreateNotificationInput, NotificationType } from '@/lib/server/domains/notifications'
-import type { PrincipalId, PostId, PostCommentId } from '@quackback/ids'
+import type { PrincipalId, PostId, PostCommentId, ConversationMessageId } from '@quackback/ids'
 import { truncate, isRetryableError } from '../hook-utils'
 import { logger } from '@/lib/server/logger'
 import {
@@ -51,6 +51,10 @@ export interface NotificationConfig {
   assignedPrincipalId?: string | null
   // assistant.handed_off (WO-3 slice 1)
   reason?: string
+  // conversation.note_mentioned (WO-3 slice 3)
+  conversationMessageId?: string
+  authorName?: string
+  preview?: string
 }
 
 export const notificationHook: HookHandler = {
@@ -86,6 +90,20 @@ export const notificationHook: HookHandler = {
       }
 
       const ids = await createNotificationsBatch(filtered)
+
+      // The notifiedAt watermark for an internal-note @-mention lives on the
+      // conversation domain's own mention rows, not on the notification row
+      // itself — stamp it only AFTER the batch above actually landed, so a
+      // hook failure (and the BullMQ retry that follows) leaves the rows
+      // un-watermarked rather than claiming an alert that didn't happen.
+      if (event.type === 'conversation.note_mentioned') {
+        const { markConversationMentionsNotified } =
+          await import('@/lib/server/domains/conversation/sync-conversation-mentions')
+        await markConversationMentionsNotified(
+          event.data.conversationMessageId as ConversationMessageId,
+          filtered.map((n) => n.principalId)
+        )
+      }
 
       log.info({ event_type: event.type, count: ids.length }, 'notifications created')
       return {
@@ -223,6 +241,17 @@ function buildNotifications(
       title: 'Quinn handed off a conversation',
       body: truncate(reason ?? '', 150),
       metadata: { conversationId },
+    }))
+  }
+
+  if (event.type === 'conversation.note_mentioned') {
+    const { conversationId, authorName, preview } = config
+    return principalIds.map((principalId) => ({
+      principalId,
+      type: 'chat_mention' as NotificationType,
+      title: `${authorName} mentioned you in a conversation`,
+      body: preview,
+      metadata: { conversationId, actorName: authorName },
     }))
   }
 

@@ -35,6 +35,11 @@ export const EVENT_TYPES = [
   'conversation.attribute_changed',
   'conversation.csat_submitted',
   'conversation.csat_comment_added',
+  // Notification-only (WO-3 slice 3): an internal note @-mentions a teammate.
+  // Never a workflow trigger — see lib/shared/workflow-trigger-types.ts's own
+  // doc for why this event is deliberately absent from
+  // DISPATCHABLE_TRIGGER_TYPES.
+  'conversation.note_mentioned',
   'message.created',
   'message.note_created',
   'message.deleted',
@@ -314,6 +319,22 @@ export interface ConversationCsatCommentAddedPayload {
   comment: string
   submittedAt: string
 }
+/**
+ * Payload for conversation.note_mentioned — fired once per internal note that
+ * newly @-mentions one or more teammates (WO-3 slice 3, replaces the direct
+ * notification write in sync-conversation-mentions.ts). Notification-only:
+ * never a workflow trigger. `mentionedPrincipalIds` is already
+ * eligibility-filtered (team-only) and author-excluded by the emit site, so
+ * consumers can treat it as the final recipient set.
+ */
+export interface ConversationNoteMentionedPayload {
+  conversationId: string
+  conversationMessageId: string
+  mentionedPrincipalIds: string[]
+  authorName: string
+  /** Plain-text note preview (≤140 chars), used as the notification body. */
+  preview: string
+}
 export interface MessageCreatedPayload {
   message: EventMessageData
   conversation: EventConversationRef
@@ -550,6 +571,9 @@ export interface ConversationCsatSubmittedEvent extends EventBase<'conversation.
 export interface ConversationCsatCommentAddedEvent extends EventBase<'conversation.csat_comment_added'> {
   data: ConversationCsatCommentAddedPayload
 }
+export interface ConversationNoteMentionedEvent extends EventBase<'conversation.note_mentioned'> {
+  data: ConversationNoteMentionedPayload
+}
 export interface MessageCreatedEvent extends EventBase<'message.created'> {
   data: MessageCreatedPayload
 }
@@ -627,6 +651,7 @@ export type EventData =
   | ConversationAttributeChangedEvent
   | ConversationCsatSubmittedEvent
   | ConversationCsatCommentAddedEvent
+  | ConversationNoteMentionedEvent
   | MessageCreatedEvent
   | MessageNoteCreatedEvent
   | MessageDeletedEvent
