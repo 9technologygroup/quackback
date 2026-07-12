@@ -170,9 +170,15 @@ describe('integration target coverage', () => {
   })
 
   it.each(resolvingTypes)('resolves a delivery target for "%s" when connected', async (type) => {
-    mockCacheGet
-      .mockResolvedValueOnce([mappingRow(type, CONNECTED_FIXTURES[type] ?? {})]) // INTEGRATION_MAPPINGS
-      .mockResolvedValueOnce([]) // ACTIVE_WEBHOOKS
+    // Key-based (not call-order): the resolver registry runs sinks concurrently,
+    // so a mockResolvedValueOnce sequence is non-deterministic. Match on the key.
+    mockCacheGet.mockImplementation((key: string) =>
+      Promise.resolve(
+        key === 'hooks:integration-mappings'
+          ? [mappingRow(type, CONNECTED_FIXTURES[type] ?? {})]
+          : []
+      )
+    )
 
     const targets = await getHookTargets(makePostCreatedEvent())
     expect(targets.filter((t) => t.type === type).length).toBeGreaterThan(0)
@@ -184,9 +190,9 @@ describe('integration target coverage', () => {
   it.each([...KNOWN_UNRESOLVED])(
     'does NOT yet resolve a target for known-gap enrichment hook "%s"',
     async (type) => {
-      mockCacheGet
-        .mockResolvedValueOnce([mappingRow(type, {})]) // no channelId, as in production
-        .mockResolvedValueOnce([]) // ACTIVE_WEBHOOKS
+      mockCacheGet.mockImplementation((key: string) =>
+        Promise.resolve(key === 'hooks:integration-mappings' ? [mappingRow(type, {})] : [])
+      )
 
       const targets = await getHookTargets(makePostCreatedEvent())
       expect(targets.filter((t) => t.type === type)).toHaveLength(0)

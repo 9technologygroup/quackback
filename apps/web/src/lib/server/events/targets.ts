@@ -3,33 +3,21 @@
  * Queries database to determine all targets for an event.
  */
 
-import type {
-  ConversationId,
-  PostId,
-  PrincipalId,
-  SegmentId,
-  TeamId,
-  UserId,
-  WebhookId,
-} from '@quackback/ids'
+import type { ConversationId, PostId, PrincipalId, SegmentId, TeamId, UserId } from '@quackback/ids'
 import {
   db,
-  integrations,
-  integrationEventMappings,
   eq,
   and,
   inArray,
   isNull,
   principal,
   user,
-  webhooks,
   posts,
   boards,
   userSegments,
   conversations,
 } from '@/lib/server/db'
 import { canViewPost, type Actor } from '@/lib/server/policy'
-import { decryptSecrets } from '@/lib/server/integrations/encryption'
 import {
   getSubscribersForEvent,
   batchGetNotificationPreferences,
@@ -38,12 +26,10 @@ import {
   type NotificationEventType,
 } from '@/lib/server/domains/subscriptions/subscription.service'
 import { shouldNotify } from '@/lib/server/domains/subscriptions/notification-matrix'
-import { cacheGet, cacheSet, CACHE_KEYS } from '@/lib/server/redis'
 import type { HookTarget } from './hook-types'
 import { stripHtml, truncate } from './hook-utils'
-import { buildHookContext, type HookContext } from './hook-context'
+import { type HookContext } from './hook-context'
 import type { EventData, EventActor, PostMergedPayload, PostUnmergedPayload } from './types'
-import { getOpenAI } from '@/lib/server/domains/ai/config'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'targets' })
@@ -160,216 +146,53 @@ export const SUBSCRIBER_EVENT_TYPES = [
 ] as const
 /** Events that resolve a single mentioned principal as the notification target */
 export const MENTION_EVENT_TYPES = ['post.mentioned'] as const
-const AI_EVENT_TYPES = ['post.created'] as const
-const SUMMARY_EVENT_TYPES = ['post.created', 'comment.created'] as const
 /**
  * Get all hook targets for an event.
  * Gracefully handles errors - returns empty array on failure.
  */
 export async function getHookTargets(event: EventData): Promise<HookTarget[]> {
   try {
-    // Build context ONCE at the start - consolidates all settings/URL queries
-    const context = await buildHookContext()
-    if (!context) {
-      log.error('failed to build hook context')
-      return []
-    }
+    // WO-18 cutover: the resolver registry is the single resolution path. This
+    // adapter reconstructs the DomainEvent from the legacy EventData and
+    // delegates. Everything the old if-ladder did now lives in a resolver
+    // (integration/webhook/notification/ai/summary), each independently tested.
+    //
+    // Dynamic imports break the load-time cycle: this module's notification
+    // builders are imported BY the notification resolver, so a static import of
+    // the registry here would evaluate that resolver (and its top-level
+    // `new Set(SUBSCRIBER_EVENT_TYPES)`) before this module finished loading.
+    //
+    // 'workflow' targets are excluded — the legacy path never emitted workflow
+    // HOOK targets (workflows dispatch via their own branch); the flag-off
+    // processEvent still does, so including them here would double-dispatch.
+    const [{ registerAllResolvers, resolveTargets }, { extractEntityId }, { getEventDefinition }] =
+      await Promise.all([import('./resolvers'), import('./outbox-dispatch'), import('./catalogue')])
+    registerAllResolvers()
 
-    const targets: HookTarget[] = []
+    const domainEvent = {
+      eventId: event.id,
+      seq: 0n,
+      type: event.type,
+      entityType: getEventDefinition(event.type)?.entity ?? 'unknown',
+      entityId: extractEntityId(event),
+      actorType: event.actor.type === 'user' ? 'user' : 'service',
+      actorId: event.actor.principalId,
+      payload: event.data,
+      context: { depth: 0 },
+      schemaVersion: 1,
+      occurredAt: new Date(event.timestamp),
+    } as unknown as import('./envelope').DomainEvent
 
-    // Integration targets (Slack, Discord, etc.)
-    const integrationTargets = await getIntegrationTargets(event, context)
-    targets.push(...integrationTargets)
-
-    // Email and in-app notification targets (subscribers)
-    if (SUBSCRIBER_EVENT_TYPES.includes(event.type as (typeof SUBSCRIBER_EVENT_TYPES)[number])) {
-      if (event.type === 'changelog.published') {
-        const changelogTargets = await getChangelogSubscriberTargets(event, context)
-        targets.push(...changelogTargets)
-      } else {
-        const subscriberTargets = await getSubscriberTargets(event, context)
-        targets.push(...subscriberTargets)
-      }
-    }
-
-    // Status page publish events — email fires only here (Status Product Spec §9).
-    if (event.type === 'status.incident_created' || event.type === 'status.maintenance_scheduled') {
-      const statusTargets = await getStatusSubscriberTargets(event, context)
-      targets.push(...statusTargets)
-    }
-
-    // Direct-mention targets (single principal whose id is in the payload)
-    if (MENTION_EVENT_TYPES.includes(event.type as (typeof MENTION_EVENT_TYPES)[number])) {
-      const mentionTargets = await getMentionTargets(event, context)
-      targets.push(...mentionTargets)
-    }
-
-    // Support-inbox bells (WO-3 slice 1): conversation/ticket assignment and
-    // assistant hand-off each resolve to at most one notification target.
-    if (event.type === 'conversation.assigned') {
-      const assignedTarget = await getConversationAssignedTargets(event)
-      if (assignedTarget) targets.push(assignedTarget)
-    }
-    if (event.type === 'ticket.assigned') {
-      const ticketAssignedTarget = await getTicketAssignedTargets(event)
-      if (ticketAssignedTarget) targets.push(ticketAssignedTarget)
-    }
-    if (event.type === 'assistant.handed_off') {
-      const handoffTarget = await getAssistantHandedOffTargets(event)
-      if (handoffTarget) targets.push(handoffTarget)
-    }
-    // Internal-note @-mention bell (WO-3 slice 3): recipients are already
-    // resolved (eligibility-filtered + author-excluded) by the emit site.
-    if (event.type === 'conversation.note_mentioned') {
-      const noteMentionTarget = getConversationNoteMentionedTargets(event)
-      if (noteMentionTarget) targets.push(noteMentionTarget)
-    }
-
-    // AI targets (sentiment, embeddings) - only when AI is configured
-    if (getOpenAI() && AI_EVENT_TYPES.includes(event.type as (typeof AI_EVENT_TYPES)[number])) {
-      targets.push({
-        type: 'ai',
-        target: { type: 'ai' },
-        config: {},
-      })
-    }
-
-    // Summary targets - AI post summary generation
-    if (
-      getOpenAI() &&
-      SUMMARY_EVENT_TYPES.includes(event.type as (typeof SUMMARY_EVENT_TYPES)[number])
-    ) {
-      targets.push({
-        type: 'summary',
-        target: { type: 'summary' },
-        config: {},
-      })
-    }
-
-    // Webhook targets - external HTTP endpoints (all event types)
-    const webhookTargets = await getWebhookTargets(event)
-    targets.push(...webhookTargets)
-
-    return targets
+    const targets = await resolveTargets(domainEvent)
+    return targets.filter((t) => t.type !== 'workflow')
   } catch (error) {
     log.error({ err: error, event_type: event.type }, 'failed to resolve targets')
     return [] // Graceful degradation - don't crash event processing
   }
 }
 
-type CachedIntegrationMapping = {
-  eventType: string
-  integrationType: string
-  secrets: string | null
-  integrationConfig: unknown
-  actionConfig: unknown
-  filters: unknown
-}
-
-async function getCachedIntegrationMappings(): Promise<CachedIntegrationMapping[]> {
-  const cached = await cacheGet<CachedIntegrationMapping[]>(CACHE_KEYS.INTEGRATION_MAPPINGS)
-  if (cached) {
-    log.debug({ count: cached.length }, 'integration mappings cache hit')
-    return cached
-  }
-
-  const mappings = await db
-    .select({
-      eventType: integrationEventMappings.eventType,
-      integrationType: integrations.integrationType,
-      secrets: integrations.secrets,
-      integrationConfig: integrations.config,
-      actionConfig: integrationEventMappings.actionConfig,
-      filters: integrationEventMappings.filters,
-    })
-    .from(integrationEventMappings)
-    .innerJoin(integrations, eq(integrationEventMappings.integrationId, integrations.id))
-    .where(and(eq(integrationEventMappings.enabled, true), eq(integrations.status, 'active')))
-
-  log.debug({ count: mappings.length }, 'integration mappings cache miss')
-  await cacheSet(CACHE_KEYS.INTEGRATION_MAPPINGS, mappings, 300)
-  return mappings
-}
-
-/**
- * Get integration hook targets (Slack, Discord, etc.).
- */
-async function getIntegrationTargets(
-  event: EventData,
-  context: HookContext
-): Promise<HookTarget[]> {
-  // Never forward private comments to external integrations
-  if (
-    (event.type === 'comment.created' ||
-      event.type === 'comment.updated' ||
-      event.type === 'comment.deleted') &&
-    event.data.comment.isPrivate
-  ) {
-    return []
-  }
-
-  // Get all active mappings from cache or DB, then filter by event type
-  const allMappings = await getCachedIntegrationMappings()
-  const mappings = allMappings.filter((m) => m.eventType === event.type)
-
-  if (mappings.length === 0) {
-    return []
-  }
-
-  const targets: HookTarget[] = []
-  const boardIds = extractBoardIds(event)
-
-  // Track seen (integrationType, channelId) pairs to deduplicate
-  const seen = new Set<string>()
-
-  for (const m of mappings) {
-    // Apply board filter — match if any event board overlaps with filter
-    const filters = m.filters as { boardIds?: string[] } | null
-    if (
-      filters?.boardIds?.length &&
-      boardIds.length > 0 &&
-      !boardIds.some((id) => filters.boardIds!.includes(id))
-    ) {
-      continue
-    }
-
-    const integrationConfig = (m.integrationConfig as Record<string, unknown>) || {}
-    const actionConfig = (m.actionConfig as Record<string, unknown>) || {}
-    const channelId = (actionConfig.channelId || integrationConfig.channelId) as string | undefined
-
-    if (!channelId) {
-      log.warn({ integration_type: m.integrationType }, 'no channel id for integration, skipping')
-      continue
-    }
-
-    // Deduplicate by (integrationType, channelId)
-    const dedupeKey = `${m.integrationType}:${channelId}`
-    if (seen.has(dedupeKey)) continue
-    seen.add(dedupeKey)
-
-    let accessToken: string | undefined
-    if (m.secrets) {
-      try {
-        const secrets = decryptSecrets<{ accessToken?: string }>(m.secrets)
-        accessToken = secrets.accessToken
-      } catch (error) {
-        log.error(
-          { err: error, integration_type: m.integrationType },
-          'failed to decrypt integration secrets'
-        )
-        continue
-      }
-    }
-
-    targets.push({
-      type: m.integrationType,
-      target: { channelId },
-      config: { accessToken, rootUrl: context.portalBaseUrl },
-    })
-  }
-
-  return targets
-}
+// WO-18: integration target resolution moved to resolvers/integration.resolver.ts
+// (getIntegrationTargets / getCachedIntegrationMappings deleted here).
 
 /**
  * Get email and in-app notification targets for subscribers.
@@ -1360,68 +1183,9 @@ export function webhookSubscriptionMatches(
   return true
 }
 
-/**
- * Get webhook hook targets for an event.
- * Queries active webhooks subscribed to this event type and filters by board.
- */
-async function getWebhookTargets(event: EventData): Promise<HookTarget[]> {
-  // Never deliver private comments to external webhooks
-  if (
-    (event.type === 'comment.created' ||
-      event.type === 'comment.updated' ||
-      event.type === 'comment.deleted') &&
-    event.data.comment.isPrivate
-  ) {
-    return []
-  }
-
-  try {
-    // Get all active, non-deleted webhooks from cache or DB (filter in JS)
-    let activeWebhooks = await cacheGet<(typeof webhooks.$inferSelect)[]>(
-      CACHE_KEYS.ACTIVE_WEBHOOKS
-    )
-    if (activeWebhooks) {
-      log.debug({ count: activeWebhooks.length }, 'active webhooks cache hit')
-    } else {
-      activeWebhooks = await db.query.webhooks.findMany({
-        where: and(eq(webhooks.status, 'active'), isNull(webhooks.deletedAt)),
-      })
-      log.debug({ count: activeWebhooks.length }, 'active webhooks cache miss')
-      await cacheSet(CACHE_KEYS.ACTIVE_WEBHOOKS, activeWebhooks, 300)
-    }
-
-    if (activeWebhooks.length === 0) {
-      return []
-    }
-
-    // Extract boardId(s) from event for filtering
-    const boardIds = extractBoardIds(event)
-
-    // Filter by event-type subscription and (board-bearing events only) board.
-    const matchingWebhooks = activeWebhooks.filter((webhook) =>
-      webhookSubscriptionMatches(webhook, event)
-    )
-
-    log.debug(
-      { count: matchingWebhooks.length, event_type: event.type, board_ids: boardIds },
-      'found matching webhooks for event'
-    )
-
-    // Build targets. The signing secret is deliberately left out of the
-    // config — it would otherwise sit in plaintext inside the BullMQ job
-    // payload (Redis) for the life of the job. The delivery handler loads
-    // and decrypts it itself, right before signing, using the webhookId.
-    const targets: HookTarget[] = matchingWebhooks.map((webhook) => ({
-      type: 'webhook',
-      target: { url: webhook.url },
-      config: { webhookId: webhook.id as WebhookId },
-    }))
-    return targets
-  } catch (error) {
-    log.error({ err: error }, 'failed to resolve webhook targets')
-    return []
-  }
-}
+// WO-18: webhook target resolution moved to resolvers/webhook.resolver.ts
+// (getWebhookTargets deleted here). webhookSubscriptionMatches + extractBoardIds
+// stay — they are exported/tested and reused by the webhook resolver's logic.
 
 /**
  * Extract board ID(s) from event data.
