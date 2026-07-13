@@ -88,8 +88,14 @@ export async function emit<P>(
 /**
  * Emit in a fresh short transaction, best-effort — for WO-6 emission from
  * services that have no surrounding transaction. Never throws: a failed audit/
- * outbox write must not fail the domain mutation that already committed. Prefer
- * the in-tx `emit()` when the caller already owns a transaction.
+ * outbox write must not fail the domain mutation that already committed.
+ *
+ * NOT atomic with the caller's mutation: it opens its OWN transaction, so the
+ * event is not written in the same commit as the write it describes. A crash in
+ * the window between the mutation committing and this emit landing loses the
+ * event (the accepted best-effort tradeoff). When the caller owns a transaction,
+ * always prefer the in-tx `emit()` so the event commits atomically with the
+ * mutation — never wrap `emitBestEffort` expecting atomicity.
  */
 export async function emitBestEffort<P>(
   def: EventDefinition<P>,

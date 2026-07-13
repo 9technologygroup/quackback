@@ -171,9 +171,11 @@ async function drainLoop(): Promise<void> {
 }
 
 /**
- * Start the relay. Worker-role only and gated (default OFF), so calling it on a
- * web replica or with the flag off is a no-op. Acquires leadership; a non-leader
- * retries periodically so it takes over if the leader dies.
+ * Start the relay. Worker-role only, so calling it on a web replica is a no-op.
+ * Post-cutover (WO-18) the outbox is the sole delivery path — there is no flag
+ * to gate it, so a worker-role process ALWAYS runs the relay. Acquires
+ * leadership; a non-leader retries periodically so it takes over if the leader
+ * dies.
  */
 export async function startOutboxRelay(): Promise<void> {
   if (running) return

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 /**
  * WO-19 — "no old path remains" CI enforcement (structural half, active now).
@@ -16,7 +15,10 @@ import { fileURLToPath } from 'node:url'
  * soak-gated deletion lands.)
  */
 
-const EVENTS_DIR = fileURLToPath(new URL('..', import.meta.url))
+// `__dirname` (provided by the test runner) rather than import.meta.url — the
+// latter is not guaranteed to be a file: URL under every vitest/bun config, and
+// fileURLToPath then throws at load. Mirrors the sibling worker-registry gate.
+const EVENTS_DIR = join(__dirname, '..')
 
 /** process.ts owns the queue (ensureQueue/addBulk/enqueueHookJobsWithIds). */
 const QUEUE_OWNERS = new Set(['process.ts'])

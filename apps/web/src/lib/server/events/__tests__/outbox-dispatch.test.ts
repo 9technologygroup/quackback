@@ -82,4 +82,49 @@ describe('writeEventToOutbox (WO-4 bridge)', () => {
     } as unknown as EventData
     expect(extractEntityId(tkt)).toBe(tid)
   })
+
+  // Adjacent-systems fix: timer-driven events carry a caller-supplied
+  // deterministic id so repeated sweep ticks over the same still-qualifying
+  // condition dedupe. The outbox mints a fresh eventId per row, so without a
+  // dedupe key a later tick would re-fire. writeEventToOutbox threads the
+  // deterministic id into events.dedupeKey for timer types; the unique
+  // events_dedupe_idx then collapses the repeat, and the second write is a
+  // benign no-op (returns true, no throw).
+  it('dedupes a repeated timer event by its deterministic id', async () => {
+    const conversationId = createId('conversation')
+    const timerId = `sb:${conversationId}:resolution`
+    const event = {
+      id: timerId,
+      type: 'sla.breached',
+      timestamp: new Date().toISOString(),
+      actor: { type: 'service' },
+      data: {
+        conversationId,
+        conversation: {
+          id: conversationId,
+          status: 'open',
+          channel: 'messenger',
+          priority: 'high',
+        },
+        clock: 'resolution',
+        dueAt: new Date().toISOString(),
+      },
+    } as unknown as EventData
+
+    expect(await writeEventToOutbox(event)).toBe(true)
+    // Second tick over the same unbroken condition — same deterministic id.
+    expect(await writeEventToOutbox(event)).toBe(true)
+
+    const rows = await db.select().from(events).where(eq(events.dedupeKey, timerId))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].type).toBe('sla.breached')
+  })
+
+  it('writes a non-timer event with a null dedupe key (index stays lean)', async () => {
+    const postId = createId('post')
+    await writeEventToOutbox(postCreatedEvent(postId))
+    const rows = await db.select().from(events).where(eq(events.entityId, postId))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].dedupeKey).toBeNull()
+  })
 })

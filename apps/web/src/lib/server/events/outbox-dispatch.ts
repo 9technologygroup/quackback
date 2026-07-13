@@ -18,6 +18,42 @@ import type { EventActorType } from './envelope'
 
 const log = logger.child({ component: 'outbox-dispatch' })
 
+/**
+ * Timer-driven events dispatched with a CALLER-SUPPLIED deterministic `event.id`
+ * (see dispatch.ts `timerEventEnvelope`). Their idempotency across repeated sweep
+ * ticks relied on the queue keying its job off that deterministic id — but the
+ * outbox mints a FRESH `eventId` per row, so without a dedupe key a later tick
+ * over the same still-qualifying condition would write a new row and re-fire.
+ * For these types we thread the deterministic id into the outbox `dedupeKey`, so
+ * `events_dedupe_idx` collapses repeated ticks the way the queue used to. Scoped
+ * to the transitional bridge deliberately: everyday events carry no dedupe key
+ * (keeping the partial index lean) and gain it only when they move to native
+ * `emit()` with their own idempotency needs.
+ */
+const TIMER_DEDUPED_TYPES = new Set<EventData['type']>([
+  'conversation.customer_unresponsive',
+  'conversation.teammate_unresponsive',
+  'sla.approaching_breach',
+  'sla.breached',
+])
+
+/** Postgres unique-violation SQLSTATE. */
+const PG_UNIQUE_VIOLATION = '23505'
+
+/**
+ * True when an error is (or wraps) a Postgres unique-key violation. Drizzle can
+ * surface the driver error through `.cause`, so walk the chain rather than
+ * reading `.code` off the top-level throw only.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  let cursor: unknown = error
+  for (let i = 0; cursor && i < 5; i++) {
+    if ((cursor as { code?: string }).code === PG_UNIQUE_VIOLATION) return true
+    cursor = (cursor as { cause?: unknown }).cause
+  }
+  return false
+}
+
 /** Map the legacy actor union onto the outbox actor {type,id}. */
 function mapActor(actor: EventData['actor']): { type: EventActorType; id?: string } {
   if (actor.type === 'user') {
@@ -66,13 +102,30 @@ export async function writeEventToOutbox(event: EventData): Promise<boolean> {
     log.warn({ type: event.type }, 'no catalogue definition for event; not written to outbox')
     return false
   }
-  await db.transaction((tx) =>
-    emit(tx, def, {
-      payload: event.data as unknown as Record<string, unknown>,
-      actor: mapActor(event.actor),
-      entityId: extractEntityId(event),
-      context: { source: event.actor.service, correlationId: event.id },
-    })
-  )
+  const dedupeKey = TIMER_DEDUPED_TYPES.has(event.type) ? event.id : null
+  try {
+    await db.transaction((tx) =>
+      emit(tx, def, {
+        payload: event.data as unknown as Record<string, unknown>,
+        actor: mapActor(event.actor),
+        entityId: extractEntityId(event),
+        context: { source: event.actor.service, correlationId: event.id },
+        dedupeKey,
+      })
+    )
+  } catch (error) {
+    // A dedupe-key collision means this exact timer event was already written on
+    // an earlier tick — the intended fire-once outcome, not an error. Swallow it
+    // (the row is durably present from the first tick) and don't re-log it as a
+    // dispatch failure. Any other failure propagates.
+    if (dedupeKey && isUniqueViolation(error)) {
+      log.debug(
+        { type: event.type, dedupeKey },
+        'duplicate timer event skipped (already in outbox)'
+      )
+      return true
+    }
+    throw error
+  }
   return true
 }

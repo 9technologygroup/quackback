@@ -133,7 +133,16 @@ export function logStartupBanner(): void {
   if (shouldRunWorkers()) {
     startBackgroundProcessing()
   } else {
-    log.info('QUACKBACK_ROLE=web — skipping queue workers and periodic sweepers')
+    // Web replicas write domain events to the durable outbox but do NOT drain it
+    // — the relay runs worker-side only. Since EVENTING-V2's cutover made the
+    // outbox the SOLE delivery path, a deployment that scales web replicas MUST
+    // also run at least one worker-role (or 'all') replica, or every webhook /
+    // notification / workflow will pile up unpublished. Warn (not info) so a
+    // web-only topology is loud in the logs.
+    log.warn(
+      'QUACKBACK_ROLE=web — queue workers and the outbox relay are worker-side; ' +
+        'ensure a worker (or role=all) replica is running or events will not be delivered'
+    )
   }
 }
 
@@ -149,8 +158,9 @@ function startBackgroundProcessing(): void {
   initAllWorkers()
 
   // Durable event outbox relay (EVENTING-V2 WO-3). Leader-elected, so multiple
-  // worker replicas stay safe; self-gates on QUACKBACK_ROLE and the
-  // EVENTING_V2_RELAY flag (default OFF), so this is a no-op until cutover.
+  // worker replicas stay safe. Post-cutover (WO-18) the outbox is the SOLE
+  // delivery path, so the relay always runs here — the only gate is
+  // QUACKBACK_ROLE (worker/all), enforced inside startOutboxRelay().
   import('./events/relay')
     .then(({ startOutboxRelay }) => startOutboxRelay())
     .catch((err) => log.error({ err }, 'failed to start outbox relay'))
