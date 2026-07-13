@@ -1341,15 +1341,14 @@ const nonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.l
 const isLikelyUrl = (v: unknown): v is string => {
   if (typeof v !== 'string' || v.length === 0) return false
   try {
-    new URL(v)
-    return true
+    return new URL(v).protocol === 'https:'
   } catch {
     return false
   }
 }
 
 /** Shared send_webhook "needs a URL" phrase (used by validateAction + actionIssue). */
-const WEBHOOK_URL_HINT = 'a valid webhook URL (https://…)'
+const WEBHOOK_URL_HINT = 'a valid HTTPS webhook URL'
 
 // Mirrors z.string().datetime(): UTC, seconds required, optional fraction.
 const isUtcTimestamp = (v: unknown): v is string =>

@@ -87,6 +87,9 @@ vi.mock('@/lib/server/domains/assistant/assistant.orchestrator', () => ({
   runAssistantTurnForConversation,
 }))
 
+const { safeFetch } = vi.hoisted(() => ({ safeFetch: vi.fn() }))
+vi.mock('@/lib/server/content/ssrf-guard', () => ({ safeFetch }))
+
 // Ticket actions (set_ticket_status / convert_to_ticket) — each mocked at its
 // own seam so this stays a unit test of action.executor.ts's dispatch/
 // resolution logic, not an integration test of the tickets domain.
@@ -184,6 +187,7 @@ beforeEach(() => {
   })
   getMessengerConfig.mockResolvedValue({ assistant: { name: 'Quinn', avatarUrl: null } })
   appendAssistantReply.mockResolvedValue({ id: 'conversation_message_block_1' })
+  safeFetch.mockResolvedValue({ ok: true, status: 200 })
 
   mockConnectorRuntimeRow.current = null
   mockConnectorRuntimeRow.error = null
@@ -227,6 +231,43 @@ function selectChainOnce(rows: unknown[]) {
 }
 
 describe('applyAction', () => {
+  it('sends workflow webhooks with a stable delivery identity and run context', async () => {
+    await expect(
+      applyAction(
+        {
+          type: 'send_webhook',
+          url: 'https://example.test/hook',
+          deliveryId: 'action_webhook',
+        },
+        ctx
+      )
+    ).resolves.toMatchObject({ label: 'webhook sent' })
+
+    expect(safeFetch).toHaveBeenCalledOnce()
+    const [, options] = safeFetch.mock.calls[0]
+    expect(options.headers).toMatchObject({
+      'X-Quackback-Delivery-Id': 'workflow:workflow_run_1:action_webhook',
+      'Idempotency-Key': 'workflow:workflow_run_1:action_webhook',
+    })
+    expect(JSON.parse(options.body)).toMatchObject({
+      id: 'workflow:workflow_run_1:action_webhook',
+      type: 'workflow.send_webhook',
+      data: {
+        conversationId,
+        workflowId: 'workflow_abc',
+        runId: 'workflow_run_1',
+        actionId: 'action_webhook',
+      },
+    })
+  })
+
+  it('refuses to send a workflow webhook without a stable action identity', async () => {
+    await expect(
+      applyAction({ type: 'send_webhook', url: 'https://example.test/hook' }, ctx)
+    ).rejects.toThrow('requires workflow run and action identity')
+    expect(safeFetch).not.toHaveBeenCalled()
+  })
+
   it('dispatches each state-change action to its service with the right args', async () => {
     expect(
       await applyAction({ type: 'assign_agent', principalId: 'principal_x' as PrincipalId }, ctx)

@@ -313,7 +313,7 @@ export function ActionEditor({
             placeholder="https://example.com/hooks/quackback"
           />
           <p className="mt-1 text-[11px] text-muted-foreground">
-            Sends a POST with the event payload to this URL when the step runs.
+            Sends an idempotent POST with the workflow run and conversation context.
           </p>
         </Field>
       )}

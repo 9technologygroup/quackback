@@ -128,9 +128,17 @@ export const actionSchema = z.union([
   z.object({ type: z.literal('reopen') }),
   z.object({ type: z.literal('apply_sla'), policyId: z.string().min(1) }),
   z.object({ type: z.literal('set_attribute'), key: z.string().min(1), value: z.unknown() }),
-  // EVENTING-V2 WO-10: fire-and-forget outbound webhook alongside call_connector.
-  // Delivered through safeFetch (the SSRF chokepoint); the URL is validated here.
-  z.object({ type: z.literal('send_webhook'), url: z.string().url() }).strict(),
+  // EVENTING-V2 WO-10: outbound webhook alongside call_connector. Delivery is
+  // awaited through safeFetch (the SSRF chokepoint); the URL is validated here.
+  z
+    .object({
+      type: z.literal('send_webhook'),
+      url: z
+        .string()
+        .url()
+        .refine((url) => new URL(url).protocol === 'https:', 'Webhook URL must use HTTPS'),
+    })
+    .strict(),
   // Plain-text v1 (no rich body / mentions yet — see action.executor.ts's
   // WorkflowAction doc): bounded to the same length the underlying note write
   // path (conversation.service.ts's addAgentNote -> validateContent) already

@@ -363,11 +363,7 @@ async function applyPlanAndSettle(
       blockMessageId = null
       for (const action of currentPlan.actions) {
         try {
-          if (
-            action.type === 'send_block' ||
-            action.type === 'add_note' ||
-            action.type === 'record_csat'
-          ) {
+          if (['send_block', 'add_note', 'record_csat', 'send_webhook'].includes(action.type)) {
             sideEffectExecutedOnce = true
           }
           const actionActor =

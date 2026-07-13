@@ -235,7 +235,7 @@ export type WorkflowAction =
   // `src` overrides the actor-derived default provenance (see the module doc);
   // omitted for every pre-existing caller (macros, plain workflow actions).
   | { type: 'set_attribute'; key: string; value: unknown; src?: ConversationAttributeSource }
-  | { type: 'send_webhook'; url: string }
+  | { type: 'send_webhook'; url: string; deliveryId?: string }
   // Phase C conversational block layer — engine-only (the graph walker is the
   // only producer of these three; macros never emit them).
   | { type: 'send_block'; nodeId: string; block: BlockSendSpec }
@@ -472,14 +472,31 @@ export async function applyAction(
       // (SSRF chokepoint, no redirects, IP-pinned); dynamic import keeps the
       // executor's static graph unchanged. A non-2xx / network error throws so
       // the engine's retry handles it, same as any other failing action.
+      if (!ctx.runId || !ctx.workflowId || !action.deliveryId) {
+        throw new Error('send_webhook requires workflow run and action identity')
+      }
+      const deliveryId = `workflow:${ctx.runId}:${action.deliveryId}`
+      const createdAt = new Date().toISOString()
       const { safeFetch } = await import('@/lib/server/content/ssrf-guard')
       const res = await safeFetch(action.url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Quackback-Event': 'workflow.send_webhook',
+          'X-Quackback-Delivery-Id': deliveryId,
+          'Idempotency-Key': deliveryId,
         },
-        body: JSON.stringify({ conversationId, at: new Date().toISOString() }),
+        body: JSON.stringify({
+          id: deliveryId,
+          type: 'workflow.send_webhook',
+          createdAt,
+          data: {
+            conversationId,
+            workflowId: ctx.workflowId,
+            runId: ctx.runId,
+            actionId: action.deliveryId,
+          },
+        }),
         timeoutMs: 5000,
       })
       if (!res.ok) throw new Error(`send_webhook HTTP ${res.status}`)

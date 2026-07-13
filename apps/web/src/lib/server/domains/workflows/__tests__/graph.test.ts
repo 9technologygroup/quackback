@@ -186,6 +186,30 @@ describe('walkWorkflow', () => {
 })
 
 describe('walkWorkflow — conversational block kinds (Phase C, slice C-1)', () => {
+  it('stamps send_webhook actions with their graph node id for delivery dedupe', () => {
+    const graph: WorkflowGraph = {
+      nodes: [
+        { id: 't', type: 'trigger' },
+        {
+          id: 'webhook_action',
+          type: 'action',
+          action: { type: 'send_webhook', url: 'https://example.test/hook' },
+        },
+      ],
+      edges: [{ from: 't', to: 'webhook_action' }],
+    }
+    expect(walkWorkflow(graph, ctx())).toMatchObject({
+      status: 'completed',
+      actions: [
+        {
+          type: 'send_webhook',
+          url: 'https://example.test/hook',
+          deliveryId: 'webhook_action',
+        },
+      ],
+    })
+  })
+
   it('message and show_reply_time are SEND kinds: push one action and continue immediately', () => {
     const graph: WorkflowGraph = {
       nodes: [
