@@ -50,13 +50,14 @@ describe('getGuidanceRuleStatsFn', () => {
     expect(hoisted.getGuidanceRuleStats).not.toHaveBeenCalled()
   })
 
-  it('returns the stats map from the domain layer as-is', async () => {
+  it('returns Applied count and lastAppliedAt from the domain layer as-is', async () => {
+    const lastAppliedAt = new Date('2026-07-02T00:00:00.000Z')
     hoisted.getGuidanceRuleStats.mockResolvedValue({
-      assistant_guidance_1: { used: 2, resolved: 1, resolvedPct: 50 },
+      assistant_guidance_1: { applied: 2, lastAppliedAt },
     })
     const result = await getGuidanceRuleStatsFn()
     expect(result).toEqual({
-      assistant_guidance_1: { used: 2, resolved: 1, resolvedPct: 50 },
+      assistant_guidance_1: { applied: 2, lastAppliedAt },
     })
   })
 })

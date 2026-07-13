@@ -1,31 +1,5 @@
-/**
- * Tools & connectors metrics for the "Tools and connectors" section of the
- * Quinn performance area: per-tool action counts from assistant_tool_calls,
- * and connector health from data_connectors. Tool volume is low (like the
- * rest of Quinn performance — see quinn-performance.ts), so the per-tool
- * breakdown is one grouped scan with a conditional (FILTER) count per status
- * rather than a materialized rollup; adding a status never costs another
- * round trip. Connector health is a plain read — connectors are admin-defined
- * and low in number.
- *
- * `connectorHealthStatus` here is a coarse three-tier summary
- * (healthy/degraded/unhealthy) for this glance-level reporting card. It's
- * deliberately simpler than the five-label badge in
- * components/admin/automation/connectors/connector-health.ts, which drives
- * the connector management table and needs the finer Issues/Failing
- * distinction an admin fixing a specific connector wants.
- */
-import {
-  db,
-  and,
-  gte,
-  lt,
-  sql,
-  assistantToolCalls,
-  dataConnectors,
-  type ConnectorStatus,
-} from '@/lib/server/db'
-import type { DataConnectorId } from '@quackback/ids'
+/** Action metrics for the Quinn performance area. */
+import { db, and, gte, lt, sql, assistantToolCalls } from '@/lib/server/db'
 import { ratePctOrNull } from '@/lib/shared/percent'
 
 export interface QuinnToolMetric {
@@ -38,31 +12,6 @@ export interface QuinnToolMetric {
   successRate: number | null
   /** Average latency (ms) of succeeded calls; null when there were none. */
   avgLatencyMs: number | null
-}
-
-export type ConnectorHealthStatus = 'healthy' | 'degraded' | 'unhealthy'
-
-export interface ConnectorHealth {
-  id: DataConnectorId
-  name: string
-  enabled: boolean
-  status: ConnectorStatus
-  failureCount: number
-  lastError: string | null
-  healthStatus: ConnectorHealthStatus
-}
-
-/** disabled means the circuit breaker has tripped (or an admin disabled it
- *  outright) — either way the connector isn't callable, so it's unhealthy.
- *  Any failures while still active are a degradation worth flagging; zero
- *  failures is healthy. */
-export function connectorHealthStatus(
-  status: ConnectorStatus,
-  failureCount: number
-): ConnectorHealthStatus {
-  if (status === 'disabled') return 'unhealthy'
-  if (failureCount > 0) return 'degraded'
-  return 'healthy'
 }
 
 interface ToolCallAggregateRow {
@@ -114,25 +63,4 @@ export async function getQuinnToolMetrics(from: Date, to: Date): Promise<QuinnTo
     const totalB = b.succeeded + b.failed + b.denied + b.skippedDuplicate
     return totalB - totalA || a.toolName.localeCompare(b.toolName)
   })
-}
-
-/** Connector health for the admin-defined data connectors: enabled/status/
- *  failureCount/lastError plus the derived Healthy/Degraded/Unhealthy tier. */
-export async function getConnectorHealth(): Promise<ConnectorHealth[]> {
-  const rows = await db
-    .select({
-      id: dataConnectors.id,
-      name: dataConnectors.name,
-      enabled: dataConnectors.enabled,
-      status: dataConnectors.status,
-      failureCount: dataConnectors.failureCount,
-      lastError: dataConnectors.lastError,
-    })
-    .from(dataConnectors)
-    .orderBy(dataConnectors.name)
-
-  return rows.map((row) => ({
-    ...row,
-    healthStatus: connectorHealthStatus(row.status, row.failureCount),
-  }))
 }

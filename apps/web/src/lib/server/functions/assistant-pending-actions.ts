@@ -15,7 +15,6 @@ import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import type { AssistantPendingActionId } from '@quackback/ids'
 import { requireAuth, policyActorFromAuth } from './auth-helpers'
-import { PERMISSIONS } from '@/lib/shared/permissions'
 import { NotFoundError } from '@/lib/shared/errors'
 import { logger } from '@/lib/server/logger'
 import {
@@ -43,6 +42,7 @@ function toDTO(row: AssistantPendingAction): AssistantPendingActionDTO {
     toolName: row.toolName,
     args: row.args as AssistantPendingActionDTO['args'],
     summary: row.summary,
+    originRole: row.originRole,
     status: row.status,
     proposedAt: row.proposedAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
@@ -58,7 +58,7 @@ export const getAssistantPendingActionFn = createServerFn({ method: 'GET' })
   .handler(async ({ data }) => {
     try {
       // Base gate: any inbox teammate may open the approval queue.
-      const auth = await requireAuth({ permission: PERMISSIONS.CONVERSATION_VIEW })
+      const auth = await requireAuth()
       const row = await getPendingActionById(data.pendingActionId as AssistantPendingActionId)
       if (!row) throw new NotFoundError('PENDING_ACTION_NOT_FOUND', 'Pending action not found')
       // Row-level authz (unified inbox §3.3): see this file's doc comment —

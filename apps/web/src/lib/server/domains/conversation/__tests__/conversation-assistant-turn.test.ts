@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ConversationId } from '@quackback/ids'
+import type { AssistantTurnResult } from '@/lib/server/domains/assistant/assistant.runtime'
 
 const assistantMock = vi.hoisted(() => ({
   isAssistantConfigured: vi.fn(() => true),
@@ -24,7 +25,6 @@ const assistantMock = vi.hoisted(() => ({
   recordHandoff: vi.fn(async () => {}),
   recordAssistantAnswer: vi.fn(async () => {}),
   setInvolvementRating: vi.fn(async () => {}),
-  buildAssistantHandoverMessage: vi.fn(() => 'HANDOVER'),
   // Mirrors the real assistant.runtime.ts mapping (thinking -> thinking; any
   // tool -> searching_kb for search_knowledge, else reviewing_conversation) so
   // the activity-snapshot assertions below see the same status strings the
@@ -111,6 +111,16 @@ vi.mock('../conversation.query', () => ({
   loadAuthors: vi.fn(async () => new Map()),
 }))
 
+const mockAppendAssistantHandoffNote = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]): Promise<void> => {})
+)
+vi.mock('@/lib/server/domains/conversation/conversation.service', async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import('@/lib/server/domains/conversation/conversation.service')
+  >()),
+  appendAssistantHandoffNote: mockAppendAssistantHandoffNote,
+}))
+
 const insertedMessages: Record<string, unknown>[] = []
 const updateSets: Record<string, unknown>[] = []
 
@@ -191,8 +201,60 @@ import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 
 const CONV = 'conversation_1' as ConversationId
 
-function answered(extra: Record<string, unknown>) {
-  return { status: 'answered', text: 'ok', citations: [], ...extra }
+type AnsweredTurn = Extract<AssistantTurnResult, { status: 'answered' }>
+type CannotAnswerTurn = Extract<AssistantTurnResult, { status: 'cannot_answer' }>
+type DeliveredFields = Omit<AnsweredTurn, 'status'>
+
+const V2_IDENTITY: DeliveredFields['identity'] = {
+  name: 'Nova',
+  avatarUrl: 'https://cdn.example.com/nova.png',
+  showAiLabel: true,
+}
+
+// Durable trace fixtures contain only bounded config metadata and tool names/outcomes,
+// never prompts, customer text, tool arguments, or tool results.
+const PRIVACY_SAFE_TRACE: DeliveredFields['trace'] = {
+  promptVersion: 'support-agent-v2',
+  configRevision: 12,
+  role: 'customer_support',
+  tone: 'balanced',
+  responseLength: 'brief',
+  appliedGuidance: [],
+  toolCalls: [],
+}
+
+const HANDOFF_PACKET: Omit<NonNullable<AnsweredTurn['escalation']>, 'mode'> = {
+  reason: 'low_confidence',
+  customerNeed: 'Restore access to the feature that keeps failing.',
+  attempted: ['Reviewed the available troubleshooting guidance.'],
+  recommendedNextStep: 'Inspect the account and reproduce the failure.',
+}
+
+function delivered(extra: Partial<DeliveredFields> = {}): DeliveredFields {
+  return {
+    text: 'ok',
+    answerType: 'draft_reply',
+    citations: [],
+    internalSourced: false,
+    proposedActions: [],
+    skip: false,
+    identity: V2_IDENTITY,
+    trace: PRIVACY_SAFE_TRACE,
+    ...extra,
+  }
+}
+
+function answered(extra: Partial<DeliveredFields> = {}): AnsweredTurn {
+  return { status: 'answered', ...delivered(extra) }
+}
+
+function cannotAnswer(
+  extra: Partial<DeliveredFields> & {
+    cannotAnswerReason?: CannotAnswerTurn['cannotAnswerReason']
+  } = {}
+): CannotAnswerTurn {
+  const { cannotAnswerReason = 'no_relevant_sources', ...deliveredExtra } = extra
+  return { status: 'cannot_answer', cannotAnswerReason, ...delivered(deliveredExtra) }
 }
 
 beforeEach(() => {
@@ -272,62 +334,71 @@ describe('runAssistantTurnForConversation gate', () => {
 })
 
 describe('runAssistantTurnForConversation escalation dispatch', () => {
-  it('on an offer, persists Quinn reply + citations and stamps the offer (no hand-off)', async () => {
+  it('persists an honest inability without opening involvement or stamping an answer', async () => {
+    assistantMock.runAssistantTurn.mockResolvedValue(
+      cannotAnswer({ text: 'I could not find that. I can connect you with a teammate.' })
+    )
+
+    await runAssistantTurnForConversation(CONV)
+
+    expect(insertedMessages).toHaveLength(1)
+    expect(insertedMessages[0].content).toBe(
+      'I could not find that. I can connect you with a teammate.'
+    )
+    expect(assistantMock.openInvolvement).not.toHaveBeenCalled()
+    expect(assistantMock.recordAssistantAnswer).not.toHaveBeenCalled()
+  })
+
+  it('persists a normal model-authored answer and its citations', async () => {
     assistantMock.runAssistantTurn.mockResolvedValue(
       answered({
         text: 'Here is the answer. Want me to connect a human?',
         citations: [{ type: 'article', id: 'a1', title: 'T', url: 'u' }],
-        escalation: { reason: 'low_confidence', mode: 'offer' },
       })
     )
     await runAssistantTurnForConversation(CONV)
 
     expect(insertedMessages).toHaveLength(1)
     expect(insertedMessages[0].content).toBe('Here is the answer. Want me to connect a human?')
-    // One combined involvement update: sources + inactivity stamp + the single
-    // escalation offer (mode 'offer').
+    // A normal answer moves the inactivity clock but never smuggles an action
+    // through response metadata.
     expect(assistantMock.recordAssistantAnswer).toHaveBeenCalledWith('assistant_involvement_1', {
       sources: [{ type: 'article', id: 'a1', title: 'T', url: 'u' }],
-      offeredEscalation: true,
     })
     expect(assistantMock.recordHandoff).not.toHaveBeenCalled()
   })
 
-  it('strips the ledger-only internal flag before persisting citations onto the conversation message', async () => {
+  it('refuses an internal-sourced public result before persisting anything', async () => {
     assistantMock.runAssistantTurn.mockResolvedValue(
       answered({
         text: 'Here is the internal-sourced answer.',
-        citations: [
-          { type: 'article', id: 'a1', title: 'T', url: 'u' },
-          {
-            type: 'summary',
-            id: 'conversation_past_1',
-            title: 'Past conversation',
-            url: '',
-            internal: true,
-          },
-        ],
+        citations: [{ type: 'article', id: 'a1', title: 'Public article', url: '/hc/a1' }],
         internalSourced: true,
       })
     )
-    await runAssistantTurnForConversation(CONV)
 
-    expect(insertedMessages).toHaveLength(1)
-    // The stored shape is byte-identical to the pre-copilot shape: no
-    // `internal` key survives onto the persisted row, on any citation.
-    expect(insertedMessages[0].citations).toEqual([
-      { type: 'article', id: 'a1', title: 'T', url: 'u' },
-      { type: 'summary', id: 'conversation_past_1', title: 'Past conversation', url: '' },
-    ])
+    await expect(runAssistantTurnForConversation(CONV)).rejects.toThrow(
+      'refusing to persist an internal-sourced customer reply'
+    )
+
+    expect(insertedMessages).toHaveLength(0)
+    expect(updateSets).toHaveLength(0)
+    expect(assistantMock.openInvolvement).not.toHaveBeenCalled()
+    expect(assistantMock.recordAssistantAnswer).not.toHaveBeenCalled()
+    expect(assistantMock.recordHandoff).not.toHaveBeenCalled()
+    expect(mockAppendAssistantHandoffNote).not.toHaveBeenCalled()
   })
 
-  it('on a hand-off, records the reason, writes the custom attribute, and posts the handover', async () => {
+  it('passes the structured handoff packet to the note while preserving the model-authored reply', async () => {
     assistantMock.getActiveInvolvement.mockResolvedValue({
       id: 'assistant_involvement_1',
       escalationOfferedAt: new Date(),
     })
     assistantMock.runAssistantTurn.mockResolvedValue(
-      answered({ escalation: { reason: 'low_confidence', mode: 'handoff' } })
+      answered({
+        text: 'I am connecting you with a teammate now.',
+        escalation: { ...HANDOFF_PACKET, mode: 'handoff' },
+      })
     )
     await runAssistantTurnForConversation(CONV)
 
@@ -335,10 +406,23 @@ describe('runAssistantTurnForConversation escalation dispatch', () => {
       'assistant_involvement_1',
       'low_confidence'
     )
-    // The hand-off path posts the handover + records the reason; it never runs
-    // the answer/offer involvement update.
+    expect(mockAppendAssistantHandoffNote).toHaveBeenCalledWith(
+      CONV,
+      { ...HANDOFF_PACKET, mode: 'handoff' },
+      {
+        principalId: 'principal_assistant',
+        displayName: 'Nova',
+        avatarUrl: 'https://cdn.example.com/nova.png',
+      }
+    )
+    // The hand-off path keeps the model's exact customer-facing prose; the
+    // structured packet is only passed to the internal note seam.
     expect(assistantMock.recordAssistantAnswer).not.toHaveBeenCalled()
-    expect(insertedMessages.some((m) => m.content === 'HANDOVER')).toBe(true)
+    expect(insertedMessages[0]).toMatchObject({
+      principalId: 'principal_assistant',
+      senderType: 'agent',
+      content: 'I am connecting you with a teammate now.',
+    })
     expect(
       updateSets.some(
         (s) =>
@@ -346,18 +430,6 @@ describe('runAssistantTurnForConversation escalation dispatch', () => {
             ?.assistant_escalation_reason === 'low_confidence'
       )
     ).toBe(true)
-  })
-
-  it('escalationAlreadyOffered rides the involvement offer stamp into the engine', async () => {
-    assistantMock.getActiveInvolvement.mockResolvedValue({
-      id: 'assistant_involvement_1',
-      escalationOfferedAt: new Date(),
-    })
-    assistantMock.runAssistantTurn.mockResolvedValue(answered({}))
-    await runAssistantTurnForConversation(CONV)
-    expect(assistantMock.runAssistantTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ escalationAlreadyOffered: true })
-    )
   })
 
   it('threads the active involvement id and the latest customer message id into the engine', async () => {
@@ -384,11 +456,26 @@ describe('runAssistantTurnForConversation escalation dispatch', () => {
     )
   })
 
-  it('threads the widget surface into the engine', async () => {
+  it('threads the explicit customer-support widget boundary into the engine', async () => {
     assistantMock.runAssistantTurn.mockResolvedValue(answered({}))
     await runAssistantTurnForConversation(CONV)
     expect(assistantMock.runAssistantTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ surface: 'widget' })
+      expect.objectContaining({ role: 'customer_support', surface: 'widget' })
+    )
+  })
+
+  it('threads the workflow_step surface and one-time instructions into the engine', async () => {
+    assistantMock.runAssistantTurn.mockResolvedValue(answered({}))
+    await runAssistantTurnForConversation(CONV, {
+      surface: 'workflow_step',
+      stepInstructions: 'Answer only the billing question.',
+    })
+    expect(assistantMock.runAssistantTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: 'customer_support',
+        surface: 'workflow_step',
+        stepInstructions: 'Answer only the billing question.',
+      })
     )
   })
 })
@@ -421,7 +508,7 @@ describe('runAssistantTurnForConversation activity snapshot (Redis mirror)', () 
       escalationOfferedAt: new Date(),
     })
     assistantMock.runAssistantTurn.mockResolvedValue(
-      answered({ escalation: { reason: 'low_confidence', mode: 'handoff' } })
+      answered({ escalation: { ...HANDOFF_PACKET, mode: 'handoff' } })
     )
     await runAssistantTurnForConversation(CONV)
     expect(mockClearActivitySnapshot).toHaveBeenCalledWith(CONV)
@@ -430,6 +517,15 @@ describe('runAssistantTurnForConversation activity snapshot (Redis mirror)', () 
   it('clears the snapshot when the engine suppresses on the silence rule', async () => {
     assistantMock.runAssistantTurn.mockResolvedValue({ status: 'suppressed', reason: 'silence' })
     await runAssistantTurnForConversation(CONV)
+    expect(mockClearActivitySnapshot).toHaveBeenCalledWith(CONV)
+  })
+
+  it('propagates a model failure, persists no canned reply, and clears the snapshot', async () => {
+    assistantMock.runAssistantTurn.mockRejectedValue(new Error('provider exhausted'))
+
+    await expect(runAssistantTurnForConversation(CONV)).rejects.toThrow('provider exhausted')
+
+    expect(insertedMessages).toHaveLength(0)
     expect(mockClearActivitySnapshot).toHaveBeenCalledWith(CONV)
   })
 
@@ -495,7 +591,7 @@ describe('runAssistantTurnForConversation Phase 2 live attribute re-check', () =
       escalationOfferedAt: new Date(),
     })
     assistantMock.runAssistantTurn.mockResolvedValue(
-      answered({ escalation: { reason: 'low_confidence', mode: 'handoff' } })
+      answered({ escalation: { ...HANDOFF_PACKET, mode: 'handoff' } })
     )
     await runAssistantTurnForConversation(CONV)
     await vi.waitFor(() => {

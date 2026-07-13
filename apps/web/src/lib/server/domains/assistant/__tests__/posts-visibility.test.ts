@@ -1,23 +1,30 @@
 /**
- * Execution-level test for `postsVisibilityConditions`: for a matrix of post
- * states (published on a public board, pending, merged, soft-deleted,
- * published on a non-public board), the SQL predicate admits exactly the rows
- * the ceiling should see. This is the safety-critical property the posts
- * grounding source depends on — a post on a non-public board (or a
- * draft/merged/deleted one) must never reach a public-ceiling caller.
- *
- * Connects via DATABASE_URL (falling back to the dev DB), skipping gracefully
- * if neither is reachable — matches board-view-filter-parity.test.ts /
- * post-view-filter-parity.test.ts.
+ * Feedback-post trust boundary plus execution-level coverage for the team-only
+ * SQL predicate. Public retrieval must return before embedding or database IO;
+ * teammate retrieval still excludes unpublished, merged, and deleted rows.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { sql, eq, and } from 'drizzle-orm'
 import { boards, posts, principal, type BoardAccess, type Database } from '@/lib/server/db'
 // eslint-disable-next-line no-restricted-imports -- legitimate second createDb caller (see board-view-filter-parity.test.ts)
 import { createDb } from '@quackback/db/client'
-import { postsVisibilityConditions } from '../posts-retrieval'
-import type { ContentAudience } from '../audience'
+import { postsVisibilityConditions, retrievePosts } from '../posts-retrieval'
 import { createId, type PrincipalId, type BoardId, type PostId } from '@quackback/ids'
+
+const mockGenerateEmbedding = vi.hoisted(() => vi.fn())
+const mockDbSelect = vi.hoisted(() => vi.fn())
+
+vi.mock('@/lib/server/domains/embeddings/embedding.service', () => ({
+  generateEmbedding: (...args: unknown[]) => mockGenerateEmbedding(...args),
+}))
+
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/server/db')>()
+  return {
+    ...actual,
+    db: { select: (...args: unknown[]) => mockDbSelect(...args) },
+  }
+})
 
 const P_AUTHOR = createId('principal') as PrincipalId
 
@@ -74,8 +81,6 @@ interface PostCase {
   moderationState: 'published' | 'pending'
   merged?: boolean
   deleted?: boolean
-  /** Whether this row should be visible for the 'public' ceiling. */
-  publicVisible: boolean
   /** Whether this row should be visible for the 'team' ceiling. */
   teamVisible: boolean
 }
@@ -85,14 +90,12 @@ const cases: PostCase[] = [
     name: 'published_public_board',
     boardName: 'public',
     moderationState: 'published',
-    publicVisible: true,
     teamVisible: true,
   },
   {
     name: 'pending_public_board',
     boardName: 'public',
     moderationState: 'pending',
-    publicVisible: false,
     teamVisible: false,
   },
   {
@@ -100,7 +103,6 @@ const cases: PostCase[] = [
     boardName: 'public',
     moderationState: 'published',
     merged: true,
-    publicVisible: false,
     teamVisible: false,
   },
   {
@@ -108,20 +110,28 @@ const cases: PostCase[] = [
     boardName: 'public',
     moderationState: 'published',
     deleted: true,
-    publicVisible: false,
     teamVisible: false,
   },
   {
     name: 'published_restricted_board',
     boardName: 'restricted',
     moderationState: 'published',
-    publicVisible: false,
     teamVisible: true,
   },
 ]
 
 const boardIds = new Map<string, BoardId>()
 const postIds = new Map<string, PostId>()
+
+describe('retrievePosts public trust boundary', () => {
+  it('returns [] without generating an embedding or touching the DB', async () => {
+    const result = await retrievePosts('dark mode', 'public')
+
+    expect(result).toEqual([])
+    expect(mockGenerateEmbedding).not.toHaveBeenCalled()
+    expect(mockDbSelect).not.toHaveBeenCalled()
+  })
+})
 
 describe.skipIf(!dbAvailable)('postsVisibilityConditions (execution-level)', () => {
   beforeAll(async () => {
@@ -171,27 +181,20 @@ describe.skipIf(!dbAvailable)('postsVisibilityConditions (execution-level)', () 
     }
   })
 
-  const ceilings: Array<{ ceiling: ContentAudience; key: 'publicVisible' | 'teamVisible' }> = [
-    { ceiling: 'public', key: 'publicVisible' },
-    { ceiling: 'team', key: 'teamVisible' },
-  ]
-
   for (const c of cases) {
-    for (const { ceiling, key } of ceilings) {
-      it(`case=${c.name} ceiling=${ceiling} -> visible=${c[key]}`, async () => {
-        if (!activeDb) return
-        const postId = postIds.get(c.name)
-        expect(postId, `seed missing for ${c.name}`).toBeDefined()
-        if (!postId) return
+    it(`case=${c.name} ceiling=team -> visible=${c.teamVisible}`, async () => {
+      if (!activeDb) return
+      const postId = postIds.get(c.name)
+      expect(postId, `seed missing for ${c.name}`).toBeDefined()
+      if (!postId) return
 
-        const matched = await activeDb
-          .select({ id: posts.id })
-          .from(posts)
-          .innerJoin(boards, eq(posts.boardId, boards.id))
-          .where(and(eq(posts.id, postId), ...postsVisibilityConditions(ceiling)))
+      const matched = await activeDb
+        .select({ id: posts.id })
+        .from(posts)
+        .innerJoin(boards, eq(posts.boardId, boards.id))
+        .where(and(eq(posts.id, postId), ...postsVisibilityConditions('team')))
 
-        expect(matched.length === 1).toBe(c[key])
-      })
-    }
+      expect(matched.length === 1).toBe(c.teamVisible)
+    })
   }
 })

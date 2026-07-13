@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import { createFileRoute, Outlet, useRouterState, useRouteContext } from '@tanstack/react-router'
 import { IntlProvider } from 'react-intl'
 import { useAdminPresence } from '@/lib/client/hooks/use-admin-presence'
-import { DEFAULT_LOCALE } from '@/lib/shared/i18n'
+import { DEFAULT_LOCALE, loadMessages } from '@/lib/shared/i18n'
 import { fetchUserAvatar } from '@/lib/server/functions/portal'
 import { getLatestVersion, isNewerVersion } from '@/lib/server/functions/version'
 import { AdminSidebar } from '@/components/admin/admin-sidebar'
@@ -11,6 +11,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { UpdateBanner } from '@/components/admin/update-banner'
 import { PlanNoticeBanner } from '@/components/admin/plan-notice-banner'
 import { getPlanNotice } from '@/lib/server/functions/plan-notice'
+import { isProductEnabled } from '@/lib/shared/types/settings'
 
 export const Route = createFileRoute('/admin')({
   beforeLoad: async ({ location }) => {
@@ -24,13 +25,14 @@ export const Route = createFileRoute('/admin')({
     // Only team members (admin, member roles) can access admin dashboard
     // Portal users (role='user') don't have access to this
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
-    const { user, principal } = await requireWorkspaceRole({
+    const { user, principal, permissions } = await requireWorkspaceRole({
       data: { allowedRoles: ['admin', 'member'] },
     })
 
     return {
       user,
       principal,
+      permissions,
     }
   },
   loader: async ({ context, location }) => {
@@ -43,6 +45,8 @@ export const Route = createFileRoute('/admin')({
         latestVersion: null,
         currentUser: null,
         planNotice: null,
+        locale: DEFAULT_LOCALE,
+        messages: await loadMessages(DEFAULT_LOCALE),
       }
     }
 
@@ -52,12 +56,14 @@ export const Route = createFileRoute('/admin')({
       principal: NonNullable<typeof context.principal>
     }
 
-    const [avatarData, latestRelease, planNotice] = await Promise.all([
+    const locale = context.acceptLanguageLocale ?? DEFAULT_LOCALE
+    const [avatarData, latestRelease, planNotice, messages] = await Promise.all([
       fetchUserAvatar({
         data: { userId: user.id, fallbackImageUrl: user.image },
       }),
       getLatestVersion(),
       getPlanNotice(),
+      loadMessages(locale),
     ])
 
     const latestVersion =
@@ -75,6 +81,8 @@ export const Route = createFileRoute('/admin')({
       initialUserData,
       latestVersion,
       planNotice,
+      locale,
+      messages,
       currentUser: {
         name: user.name,
         email: user.email,
@@ -95,7 +103,8 @@ function usePostIdFromUrl(): string | undefined {
 }
 
 function AdminLayout() {
-  const { initialUserData, latestVersion, planNotice, currentUser } = Route.useLoaderData()
+  const { initialUserData, latestVersion, planNotice, currentUser, locale, messages } =
+    Route.useLoaderData()
   const postId = usePostIdFromUrl()
 
   // Mark team members online for conversation routing across the whole admin (not just
@@ -103,6 +112,7 @@ function AdminLayout() {
   const { settings } = useRouteContext({ from: '__root__' })
   const conversationsEnabled =
     (settings?.featureFlags as { supportInbox?: boolean } | undefined)?.supportInbox ?? false
+  const feedbackEnabled = isProductEnabled(settings?.featureFlags, 'feedback')
   useAdminPresence(Boolean(initialUserData) && conversationsEnabled)
 
   // For public routes (login, signup), render just the outlet without the admin layout
@@ -111,7 +121,7 @@ function AdminLayout() {
   }
 
   return (
-    <IntlProvider locale={DEFAULT_LOCALE} defaultLocale={DEFAULT_LOCALE}>
+    <IntlProvider locale={locale} defaultLocale={DEFAULT_LOCALE} messages={messages}>
       <TooltipProvider delayDuration={0}>
         <div className="flex h-screen bg-background">
           <AdminSidebar initialUserData={initialUserData} latestVersion={latestVersion} />
@@ -125,7 +135,7 @@ function AdminLayout() {
               </div>
             </div>
           </main>
-          {currentUser && (
+          {currentUser && feedbackEnabled && (
             <Suspense>
               <PostModal postId={postId} currentUser={currentUser} />
             </Suspense>

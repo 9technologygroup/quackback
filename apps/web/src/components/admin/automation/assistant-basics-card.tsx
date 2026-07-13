@@ -1,121 +1,287 @@
-/**
- * Basics: the coarse tone + length preset most workspaces reach for before
- * ever touching a guidance rule. Saved independently per field; an unset
- * field adds no persona directive to the prompt (see buildBasicsPrompt in
- * assistant.runtime.ts). The selects always show a value — the neutral
- * defaults below are a display fallback only, not written until the admin
- * actually changes a field.
- */
-import { useState, useTransition } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useRouter } from '@tanstack/react-router'
+import { useIntl } from 'react-intl'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
-import { InlineSpinner } from '@/components/admin/settings/inline-spinner'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import {
-  ASSISTANT_TONES,
-  ASSISTANT_TONE_LABELS,
-  ASSISTANT_LENGTHS,
-  ASSISTANT_LENGTH_LABELS,
-  type AssistantTone,
-  type AssistantLength,
-} from '@/lib/shared/assistant/basics'
+import { Button } from '@/components/ui/button'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { assistantQueries } from '@/lib/client/queries/assistant'
-import { useUpdateAssistantBasics } from '@/lib/client/mutations/assistant'
+import { useUpdateAssistantVoice } from '@/lib/client/mutations/assistant'
+import {
+  ASSISTANT_RESPONSE_LENGTHS,
+  ASSISTANT_TONES,
+  type AssistantResponseLength,
+  type AssistantTone,
+} from '@/lib/shared/assistant/config'
+import {
+  AssistantSaveFeedback,
+  type AssistantSaveState,
+  isAssistantFieldManaged,
+  isAssistantRevisionConflict,
+  ManagedSettingHint,
+  useUnsavedChanges,
+} from './assistant-form'
 
-const DEFAULT_TONE: AssistantTone = 'neutral'
-const DEFAULT_LENGTH: AssistantLength = 'standard'
+const TONE_MESSAGES: Record<AssistantTone, { label: string; description: string }> = {
+  warm: {
+    label: 'Warm',
+    description: 'Friendly, empathetic, and conversational.',
+  },
+  balanced: {
+    label: 'Balanced',
+    description: 'Clear, calm, and natural. Recommended.',
+  },
+  professional: {
+    label: 'Professional',
+    description: 'Polished and more formal.',
+  },
+}
 
-export function AssistantBasicsCard() {
-  const router = useRouter()
-  const [, startTransition] = useTransition()
+const LENGTH_MESSAGES: Record<AssistantResponseLength, { label: string; description: string }> = {
+  brief: {
+    label: 'Brief',
+    description: 'Gives the answer and immediate next step.',
+  },
+  balanced: {
+    label: 'Balanced',
+    description: 'Adds useful context without over-explaining. Recommended.',
+  },
+  detailed: {
+    label: 'Detailed',
+    description: 'Uses fuller explanations or steps when helpful.',
+  },
+}
+
+export function AssistantVoiceCard() {
+  const intl = useIntl()
   const settingsQuery = useQuery(assistantQueries.settings())
-  const updateBasics = useUpdateAssistantBasics()
-  // Instant feedback while a save is in flight; cleared on failure so the
-  // select falls back to the last-saved value, same idiom as ToolControlsCard.
-  const [toneOverride, setToneOverride] = useState<AssistantTone | null>(null)
-  const [lengthOverride, setLengthOverride] = useState<AssistantLength | null>(null)
-  const [saving, setSaving] = useState<'tone' | 'length' | null>(null)
+  const updateVoice = useUpdateAssistantVoice()
+  const [tone, setTone] = useState<AssistantTone | null>(null)
+  const [responseLength, setResponseLength] = useState<AssistantResponseLength | null>(null)
+  const [savedTone, setSavedTone] = useState<AssistantTone | null>(null)
+  const [savedLength, setSavedLength] = useState<AssistantResponseLength | null>(null)
+  const [saveState, setSaveState] = useState<AssistantSaveState>('idle')
+  const dirty = Boolean(
+    tone && responseLength && (tone !== savedTone || responseLength !== savedLength)
+  )
+  useUnsavedChanges(dirty, 'basics')
 
-  const saved = settingsQuery.data?.basics ?? {}
-  const tone = toneOverride ?? saved.tone ?? DEFAULT_TONE
-  const length = lengthOverride ?? saved.length ?? DEFAULT_LENGTH
+  useEffect(() => {
+    if (!settingsQuery.data || dirty) return
+    const voice = settingsQuery.data.config.voice
+    setTone(voice.tone)
+    setResponseLength(voice.responseLength)
+    setSavedTone(voice.tone)
+    setSavedLength(voice.responseLength)
+  }, [settingsQuery.data, dirty])
 
-  async function save(
-    field: 'tone' | 'length',
-    next: { tone?: AssistantTone; length?: AssistantLength },
-    revert: () => void
-  ) {
-    setSaving(field)
+  if (settingsQuery.isError) {
+    return (
+      <SettingsCard
+        title={intl.formatMessage({
+          id: 'automation.agent.voice.title',
+          defaultMessage: 'Response style',
+        })}
+      >
+        <div className="flex flex-col items-start gap-3">
+          <p role="alert" className="text-sm text-destructive">
+            {intl.formatMessage({
+              id: 'automation.agent.loadError',
+              defaultMessage: 'AI agent settings could not be loaded.',
+            })}
+          </p>
+          <Button variant="outline" size="sm" onClick={() => void settingsQuery.refetch()}>
+            {intl.formatMessage({ id: 'automation.agent.retry', defaultMessage: 'Try again' })}
+          </Button>
+        </div>
+      </SettingsCard>
+    )
+  }
+
+  if (!tone || !responseLength || settingsQuery.isPending) {
+    return (
+      <SettingsCard
+        title={intl.formatMessage({
+          id: 'automation.agent.voice.title',
+          defaultMessage: 'Response style',
+        })}
+      >
+        <p role="status" className="text-sm text-muted-foreground">
+          {intl.formatMessage({
+            id: 'automation.agent.loading',
+            defaultMessage: 'Loading AI agent settings…',
+          })}
+        </p>
+      </SettingsCard>
+    )
+  }
+
+  const managedPaths = settingsQuery.data.managedFieldPaths
+  const toneManaged = isAssistantFieldManaged(managedPaths, 'voice.tone')
+  const lengthManaged = isAssistantFieldManaged(managedPaths, 'voice.responseLength')
+
+  async function reloadLatest() {
+    const result = await settingsQuery.refetch()
+    if (!result.data) return
+    const voice = result.data.config.voice
+    setTone(voice.tone)
+    setResponseLength(voice.responseLength)
+    setSavedTone(voice.tone)
+    setSavedLength(voice.responseLength)
+    setSaveState('idle')
+  }
+
+  async function save() {
+    if (!settingsQuery.data) return
+    const selectedTone = tone
+    const selectedLength = responseLength
+    if (!selectedTone || !selectedLength) return
+    setSaveState('saving')
     try {
-      await updateBasics.mutateAsync({ tone, length, ...next })
-      startTransition(() => router.invalidate())
-    } catch {
-      revert()
-    } finally {
-      setSaving(null)
+      const result = await updateVoice.mutateAsync({
+        expectedRevision: settingsQuery.data.revision,
+        voice: {
+          ...settingsQuery.data.config.voice,
+          tone: selectedTone,
+          responseLength: selectedLength,
+        },
+      })
+      setTone(result.config.voice.tone)
+      setResponseLength(result.config.voice.responseLength)
+      setSavedTone(result.config.voice.tone)
+      setSavedLength(result.config.voice.responseLength)
+      setSaveState('saved')
+    } catch (error) {
+      setSaveState(isAssistantRevisionConflict(error) ? 'conflict' : 'error')
     }
   }
 
   return (
     <SettingsCard
-      title="Basics"
-      description="Set the assistant's tone and answer length. Guidance rules below can refine specific situations further."
+      title={intl.formatMessage({
+        id: 'automation.agent.voice.title',
+        defaultMessage: 'Response style',
+      })}
+      description={intl.formatMessage({
+        id: 'automation.agent.voice.description',
+        defaultMessage: 'Set the tone and level of detail used in customer replies.',
+      })}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="assistant-basics-tone">Tone</Label>
-            <InlineSpinner visible={saving === 'tone'} />
-          </div>
-          <Select
+      <div className="space-y-6">
+        <fieldset className="space-y-3">
+          <legend id="assistant-tone-label" className="text-sm font-medium">
+            {intl.formatMessage({ id: 'automation.agent.voice.tone', defaultMessage: 'Tone' })}
+          </legend>
+          <RadioGroup
             value={tone}
+            aria-labelledby="assistant-tone-label"
+            className="grid gap-2 sm:grid-cols-3"
+            disabled={toneManaged || saveState === 'saving'}
             onValueChange={(value) => {
-              const next = value as AssistantTone
-              setToneOverride(next)
-              void save('tone', { tone: next }, () => setToneOverride(null))
+              setTone(value as AssistantTone)
+              setSaveState('idle')
             }}
-            disabled={saving === 'tone'}
           >
-            <SelectTrigger id="assistant-basics-tone" className="w-full" aria-label="Tone">
-              <SelectValue>{ASSISTANT_TONE_LABELS[tone]}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {ASSISTANT_TONES.map((t) => (
-                <SelectItem key={t} value={t}>
-                  {ASSISTANT_TONE_LABELS[t]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+            {ASSISTANT_TONES.map((value) => {
+              const descriptionId = `assistant-tone-${value}-description`
+              return (
+                <label
+                  key={value}
+                  className="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-border/60 p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+                >
+                  <RadioGroupItem
+                    value={value}
+                    aria-describedby={descriptionId}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium">
+                      {intl.formatMessage({
+                        id: `automation.agent.voice.tone.${value}.label`,
+                        defaultMessage: TONE_MESSAGES[value].label,
+                      })}
+                    </span>
+                    <span id={descriptionId} className="mt-0.5 block text-xs text-muted-foreground">
+                      {intl.formatMessage({
+                        id: `automation.agent.voice.tone.${value}.description`,
+                        defaultMessage: TONE_MESSAGES[value].description,
+                      })}
+                    </span>
+                  </span>
+                </label>
+              )
+            })}
+          </RadioGroup>
+          {toneManaged && <ManagedSettingHint />}
+        </fieldset>
 
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="assistant-basics-length">Answer length</Label>
-            <InlineSpinner visible={saving === 'length'} />
-          </div>
-          <Select
-            value={length}
+        <fieldset className="space-y-3">
+          <legend id="assistant-length-label" className="text-sm font-medium">
+            {intl.formatMessage({
+              id: 'automation.agent.voice.responseLength',
+              defaultMessage: 'Response length',
+            })}
+          </legend>
+          <RadioGroup
+            value={responseLength}
+            aria-labelledby="assistant-length-label"
+            className="grid gap-2 sm:grid-cols-3"
+            disabled={lengthManaged || saveState === 'saving'}
             onValueChange={(value) => {
-              const next = value as AssistantLength
-              setLengthOverride(next)
-              void save('length', { length: next }, () => setLengthOverride(null))
+              setResponseLength(value as AssistantResponseLength)
+              setSaveState('idle')
             }}
-            disabled={saving === 'length'}
           >
-            <SelectTrigger id="assistant-basics-length" className="w-full" aria-label="Answer length">
-              <SelectValue>{ASSISTANT_LENGTH_LABELS[length]}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {ASSISTANT_LENGTHS.map((l) => (
-                <SelectItem key={l} value={l}>
-                  {ASSISTANT_LENGTH_LABELS[l]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            {ASSISTANT_RESPONSE_LENGTHS.map((value) => {
+              const descriptionId = `assistant-length-${value}-description`
+              return (
+                <label
+                  key={value}
+                  className="flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-border/60 p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+                >
+                  <RadioGroupItem
+                    value={value}
+                    aria-describedby={descriptionId}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium">
+                      {intl.formatMessage({
+                        id: `automation.agent.voice.length.${value}.label`,
+                        defaultMessage: LENGTH_MESSAGES[value].label,
+                      })}
+                    </span>
+                    <span id={descriptionId} className="mt-0.5 block text-xs text-muted-foreground">
+                      {intl.formatMessage({
+                        id: `automation.agent.voice.length.${value}.description`,
+                        defaultMessage: LENGTH_MESSAGES[value].description,
+                      })}
+                    </span>
+                  </span>
+                </label>
+              )
+            })}
+          </RadioGroup>
+          {lengthManaged && <ManagedSettingHint />}
+        </fieldset>
+
+        <AssistantSaveFeedback state={saveState} onReload={reloadLatest} />
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            className="min-h-11 sm:min-h-9"
+            disabled={!dirty || saveState === 'saving'}
+            onClick={() => void save()}
+          >
+            {saveState === 'saving'
+              ? intl.formatMessage({
+                  id: 'automation.agent.save.savingButton',
+                  defaultMessage: 'Saving…',
+                })
+              : intl.formatMessage({
+                  id: 'automation.agent.save.button',
+                  defaultMessage: 'Save changes',
+                })}
+          </Button>
         </div>
       </div>
     </SettingsCard>

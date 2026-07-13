@@ -3,13 +3,13 @@
  * flag gate, the AI-configured/budget gates, the conversation-exists gate,
  * the SSE turn stream, and the safety property that matters most: that this
  * route never writes to the conversation (no involvement row, no unread-count
- * change) beyond the ONE documented P2-C.4 exception: a write-tool call
+ * change) beyond the documented exception: a write-tool call
  * proposes (creates a pending-action row plus its announcing internal note)
  * rather than executing or writing anything else. `runAssistantTurn` itself
  * is mocked throughout this file, so the pipeline behavior that enforces
  * "propose never executes" is pinned in assistant.tools.test.ts; these tests
- * only pin what THIS route does with the result, including passing
- * `writeToolPolicy: 'propose'` and relaying `proposedActions` untouched.
+ * only pin what THIS route does with the result, including selecting the
+ * explicit `copilot_qa` role and relaying `proposedActions` untouched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -254,19 +254,21 @@ describe('POST /api/admin/assistant/copilot', () => {
     })
   })
 
-  it('calls the runtime directly with a real conversationId, surface copilot, and writeToolPolicy: propose, never the orchestrator (no involvement row, no unread change)', async () => {
+  it('calls the runtime directly with the explicit Copilot Q&A boundary, never the orchestrator', async () => {
     await handleCopilot({ request: makeRequest(validBody) })
 
     expect(mockRunAssistantTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: CONVERSATION_ID,
+        role: 'copilot_qa',
         surface: 'copilot',
-        writeToolPolicy: 'propose',
       })
     )
-    // simulate is no longer set from this route: 'propose' alone is what
-    // keeps a write tool from executing here (see resolveEffectiveToolMode).
-    expect(mockRunAssistantTurn.mock.calls[0][0]).not.toHaveProperty('simulate')
+    const input = mockRunAssistantTurn.mock.calls[0][0]
+    expect(input).not.toHaveProperty('simulate')
+    expect(input).not.toHaveProperty('askerActor')
+    expect(input).not.toHaveProperty('writeToolPolicy')
+    expect(input).not.toHaveProperty('copilotIntent')
   })
 
   it('attributes the turn to the asking teammate for the Copilot usage report', async () => {
@@ -277,12 +279,7 @@ describe('POST /api/admin/assistant/copilot', () => {
     )
   })
 
-  it("threads the gate's resolved actor into the turn as askerActor (the metadata-write ceiling)", async () => {
-    // The metadata-write ceiling (P2-C.4 hardening): the actor the route
-    // hands the runtime must be THE SAME one the viewability gate resolved —
-    // the asking teammate's own permission set — so a copilot.use-only
-    // teammate can never trigger a direct set_attribute they could not
-    // perform themselves.
+  it('uses the resolved actor only for the viewability gate, not as runtime policy input', async () => {
     const resolvedActor = {
       principalId: 'principal_1',
       permissions: new Set(['conversation.set_attributes']),
@@ -291,8 +288,8 @@ describe('POST /api/admin/assistant/copilot', () => {
 
     await handleCopilot({ request: makeRequest(validBody) })
 
-    const input = mockRunAssistantTurn.mock.calls[0][0] as { askerActor?: unknown }
-    expect(input.askerActor).toBe(resolvedActor)
+    expect(mockAssertConversationViewable).toHaveBeenCalledWith(CONVERSATION_ID, resolvedActor)
+    expect(mockRunAssistantTurn.mock.calls[0][0]).not.toHaveProperty('askerActor')
   })
 
   it('relays a turn that proposed a write-tool action: the pending action surfaces on the final payload untouched', async () => {
@@ -397,7 +394,7 @@ describe('POST /api/admin/assistant/copilot: ticket-scoped (unified inbox §2.9)
     expect(mockRunAssistantTurn).not.toHaveBeenCalled()
   })
 
-  it('calls the runtime with the ticketId, a null conversationId, surface copilot, and writeToolPolicy propose', async () => {
+  it('calls the runtime with the ticketId and explicit Copilot Q&A boundary', async () => {
     const res = await handleCopilot({ request: makeRequest(ticketBody) })
     expect(res.status).toBe(200)
 
@@ -405,8 +402,8 @@ describe('POST /api/admin/assistant/copilot: ticket-scoped (unified inbox §2.9)
       expect.objectContaining({
         conversationId: null,
         ticketId: TICKET_ID,
+        role: 'copilot_qa',
         surface: 'copilot',
-        writeToolPolicy: 'propose',
       })
     )
     // The conversation-viewable gate is never consulted for a ticket-scoped request.

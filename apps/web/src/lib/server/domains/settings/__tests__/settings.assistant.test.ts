@@ -1,220 +1,475 @@
-/**
- * Assistant customization settings: tool-execution controls and per-surface
- * instructions. Both ride in the generic `settings.metadata` bag, so
- * `settings.helpers` is mocked directly (mirrors managed-guard-mutators.test)
- * rather than standing up a full DB double — `writeMetadataKey` itself already
- * guarantees sibling-key preservation and cache invalidation elsewhere.
- */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_ASSISTANT_CONFIG, type AssistantConfig } from '@/lib/shared/assistant/config'
 
 const hoisted = vi.hoisted(() => ({
-  mockRequireSettings: vi.fn(),
-  mockWriteMetadataKey: vi.fn(),
+  requireSettings: vi.fn(),
+  invalidateSettingsCache: vi.fn(),
+  transaction: vi.fn(),
+  txSelect: vi.fn(),
+  txForUpdate: vi.fn(),
+  txUpdate: vi.fn(),
+  txSet: vi.fn(),
+  recordAuditEventInTransaction: vi.fn(),
+  settingsTable: {
+    id: 'settings.id',
+    assistantConfig: 'settings.assistantConfig',
+    assistantConfigRevision: 'settings.assistantConfigRevision',
+    managedFieldPaths: 'settings.managedFieldPaths',
+  },
+  principalTable: {
+    type: 'principal.type',
+    serviceMetadata: 'principal.serviceMetadata',
+  },
+  txRow: null as null | {
+    id: string
+    assistantConfig: unknown
+    assistantConfigRevision: number
+    managedFieldPaths: string[]
+  },
+  committedWrites: [] as Array<{
+    table: unknown
+    values: Record<string, unknown>
+  }>,
+  events: [] as string[],
 }))
 
-vi.mock('../settings.helpers', () => ({
-  requireSettings: hoisted.mockRequireSettings,
-  writeMetadataKey: hoisted.mockWriteMetadataKey,
-  parseJsonOrNull: <T>(json: string | null): T | null => {
-    if (!json) return null
-    try {
-      return JSON.parse(json) as T
-    } catch {
-      return null
-    }
+vi.mock('@/lib/server/db', () => ({
+  db: {
+    transaction: (...args: unknown[]) => hoisted.transaction(...args),
   },
-  wrapDbError: (_operation: string, error: unknown) => {
-    throw error
-  },
+  settings: hoisted.settingsTable,
+  principal: hoisted.principalTable,
+  eq: vi.fn((left: unknown, right: unknown) => ({ left, right })),
+  and: vi.fn((...conditions: unknown[]) => ({ conditions })),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
+}))
+
+vi.mock('@/lib/server/domains/settings/settings.helpers', () => ({
+  requireSettings: hoisted.requireSettings,
+  invalidateSettingsCache: hoisted.invalidateSettingsCache,
+}))
+
+vi.mock('@/lib/server/audit/log', () => ({
+  recordAuditEventInTransaction: (...args: unknown[]) =>
+    hoisted.recordAuditEventInTransaction(...args),
+}))
+
+vi.mock('@/lib/server/logger', () => ({
+  logger: { child: () => ({ error: vi.fn() }) },
 }))
 
 import {
-  getAssistantToolControls,
-  updateAssistantToolControls,
-  getAssistantSurfaces,
-  updateAssistantSurfaces,
-  getAssistantBasics,
-  updateAssistantBasics,
   getAssistantConfig,
+  getAssistantRuntimeConfig,
+  getAssistantSettings,
+  updateAssistantChannels,
+  updateAssistantIdentity,
+  updateAssistantToolControls,
+  updateAssistantVoice,
 } from '../settings.assistant'
 
-function settingsRow(metadata: Record<string, unknown> | null = null) {
-  return { id: 'settings_1', metadata: metadata ? JSON.stringify(metadata) : null }
+const CONFIG: AssistantConfig = {
+  version: 2,
+  identity: {
+    name: 'Avery',
+    avatarUrl: 'https://cdn.example.test/avery.png',
+    showAiLabel: true,
+  },
+  voice: {
+    tone: 'balanced',
+    responseLength: 'balanced',
+    additionalInstructions: 'Use short replies.',
+  },
+  channels: {
+    widget: { additionalInstructions: 'Open with a greeting.' },
+  },
+  toolControls: { end_conversation: 'approval' },
+}
+
+const REQUEST_HEADERS = new Headers({
+  'user-agent': 'settings-test',
+  'x-request-id': 'request_1',
+})
+
+const ACTOR = {
+  email: 'admin@example.com',
+  role: 'admin',
+  type: 'user' as const,
+  headers: REQUEST_HEADERS,
+}
+
+function settingsRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'settings_1',
+    name: 'Acme Support',
+    assistantConfig: structuredClone(CONFIG),
+    assistantConfigRevision: 7,
+    managedFieldPaths: [],
+    featureFlags: JSON.stringify({
+      assistantTools: true,
+      assistantKnowledge: false,
+    }),
+    ...overrides,
+  }
+}
+
+function transactionRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'settings_1',
+    assistantConfig: structuredClone(CONFIG),
+    assistantConfigRevision: 7,
+    managedFieldPaths: [],
+    ...overrides,
+  } as NonNullable<typeof hoisted.txRow>
+}
+
+function committedSettingsWrites() {
+  return hoisted.committedWrites.filter((write) => write.table === hoisted.settingsTable)
+}
+
+function committedPrincipalWrites() {
+  return hoisted.committedWrites.filter((write) => write.table === hoisted.principalTable)
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  hoisted.mockRequireSettings.mockResolvedValue(settingsRow())
-  hoisted.mockWriteMetadataKey.mockResolvedValue(undefined)
+  hoisted.events.length = 0
+  hoisted.committedWrites.length = 0
+  hoisted.txRow = transactionRow()
+  hoisted.requireSettings.mockResolvedValue(settingsRow())
+  hoisted.invalidateSettingsCache.mockImplementation(async () => {
+    hoisted.events.push('invalidate')
+  })
+  hoisted.recordAuditEventInTransaction.mockImplementation(async () => {
+    hoisted.events.push('audit')
+  })
+
+  hoisted.transaction.mockImplementation(
+    async (callback: (tx: Record<string, unknown>) => Promise<unknown>) => {
+      const stagedWrites: Array<{ table: unknown; values: Record<string, unknown> }> = []
+      hoisted.events.push('begin')
+
+      const tx = {
+        select: (selection: unknown) => {
+          hoisted.txSelect(selection)
+          return {
+            from: (_table: unknown) => ({
+              limit: (_limit: number) => ({
+                for: async (mode: string) => {
+                  hoisted.txForUpdate(mode)
+                  hoisted.events.push(`lock:${mode}`)
+                  return hoisted.txRow ? [hoisted.txRow] : []
+                },
+              }),
+            }),
+          }
+        },
+        update: (table: unknown) => {
+          hoisted.txUpdate(table)
+          return {
+            set: (values: Record<string, unknown>) => {
+              hoisted.txSet(table, values)
+              return {
+                where: async (_condition: unknown) => {
+                  stagedWrites.push({ table, values })
+                  hoisted.events.push(
+                    table === hoisted.settingsTable ? 'write:settings' : 'write:principal'
+                  )
+                },
+              }
+            },
+          }
+        },
+      }
+
+      try {
+        const result = await callback(tx)
+        hoisted.events.push('commit')
+        hoisted.committedWrites.push(...stagedWrites)
+        for (const write of stagedWrites) {
+          if (write.table === hoisted.settingsTable && hoisted.txRow) {
+            Object.assign(hoisted.txRow, write.values)
+          }
+        }
+        return result
+      } catch (error) {
+        hoisted.events.push('rollback')
+        throw error
+      }
+    }
+  )
 })
 
-describe('assistant tool controls', () => {
-  it('returns {} when unset', async () => {
-    expect(await getAssistantToolControls()).toEqual({})
-  })
-
-  it('resolves a previously saved map', async () => {
-    hoisted.mockRequireSettings.mockResolvedValue(
-      settingsRow({ assistantToolControls: { end_conversation: 'approval' } })
-    )
-    expect(await getAssistantToolControls()).toEqual({ end_conversation: 'approval' })
-  })
-
-  it('roundtrips a write through writeMetadataKey', async () => {
-    const result = await updateAssistantToolControls({ end_conversation: 'approval' })
-    expect(result).toEqual({ end_conversation: 'approval' })
-    expect(hoisted.mockWriteMetadataKey).toHaveBeenCalledWith('assistantToolControls', {
-      end_conversation: 'approval',
-    })
-  })
-
-  it('rejects an invalid mode value', async () => {
-    await expect(
-      updateAssistantToolControls({ end_conversation: 'bogus' } as never)
-    ).rejects.toThrow()
-    expect(hoisted.mockWriteMetadataKey).not.toHaveBeenCalled()
-  })
-
-  it('accepts a control for a tool name the registry does not know about yet', async () => {
-    // The registry (assistant domain) validates real tool names; settings must
-    // tolerate a control saved ahead of a connector tool that ships later.
-    const result = await updateAssistantToolControls({ future_connector_tool: 'autonomous' })
-    expect(result).toEqual({ future_connector_tool: 'autonomous' })
-  })
-
-  it('rejects non-record shapes', async () => {
-    await expect(updateAssistantToolControls(['approval'] as never)).rejects.toThrow()
-    await expect(updateAssistantToolControls('approval' as never)).rejects.toThrow()
-    await expect(updateAssistantToolControls(null as never)).rejects.toThrow()
-  })
-
-  it('leaves sibling metadata keys untouched (writeMetadataKey owns the merge)', async () => {
-    await updateAssistantToolControls({ end_conversation: 'disabled' })
-    // Only the tool-controls key is written; writeMetadataKey itself preserves
-    // whatever else lives in the bag (officeHours, ticketForms, ...).
-    expect(hoisted.mockWriteMetadataKey).toHaveBeenCalledTimes(1)
-    expect(hoisted.mockWriteMetadataKey).toHaveBeenCalledWith('assistantToolControls', {
-      end_conversation: 'disabled',
-    })
-  })
-})
-
-describe('assistant surfaces', () => {
-  it('returns {} when unset', async () => {
-    expect(await getAssistantSurfaces()).toEqual({})
-  })
-
-  it('roundtrips a partial surface map', async () => {
-    const result = await updateAssistantSurfaces({ widget: { instructions: 'Be concise.' } })
-    expect(result).toEqual({ widget: { instructions: 'Be concise.' } })
-    expect(hoisted.mockWriteMetadataKey).toHaveBeenCalledWith('assistantSurfaces', {
-      widget: { instructions: 'Be concise.' },
-    })
-  })
-
-  it('resolves a previously saved map', async () => {
-    hoisted.mockRequireSettings.mockResolvedValue(
-      settingsRow({ assistantSurfaces: { email: { instructions: 'Sign off warmly.' } } })
-    )
-    expect(await getAssistantSurfaces()).toEqual({ email: { instructions: 'Sign off warmly.' } })
-  })
-
-  it('rejects an unknown surface key', async () => {
-    await expect(
-      updateAssistantSurfaces({ sms: { instructions: 'Be concise.' } } as never)
-    ).rejects.toThrow()
-    expect(hoisted.mockWriteMetadataKey).not.toHaveBeenCalled()
-  })
-
-  it('enforces the instructions max length', async () => {
-    await expect(
-      updateAssistantSurfaces({ widget: { instructions: 'x'.repeat(2001) } })
-    ).rejects.toThrow()
-    await expect(
-      updateAssistantSurfaces({ widget: { instructions: 'x'.repeat(2000) } })
-    ).resolves.toBeDefined()
-  })
-
-  it('normalizes empty-string instructions to the key being dropped', async () => {
-    const result = await updateAssistantSurfaces({ widget: { instructions: '' } })
-    expect(result).toEqual({})
-    expect(hoisted.mockWriteMetadataKey).toHaveBeenCalledWith('assistantSurfaces', {})
-  })
-
-  it('normalizes whitespace-only instructions to the key being dropped', async () => {
-    const result = await updateAssistantSurfaces({ widget: { instructions: '   ' } })
-    expect(result).toEqual({})
-  })
-})
-
-describe('assistant basics', () => {
-  it('returns {} when unset', async () => {
-    expect(await getAssistantBasics()).toEqual({})
-  })
-
-  it('resolves a previously saved preset', async () => {
-    hoisted.mockRequireSettings.mockResolvedValue(
-      settingsRow({ assistantBasics: { tone: 'friendly', length: 'concise' } })
-    )
-    expect(await getAssistantBasics()).toEqual({ tone: 'friendly', length: 'concise' })
-  })
-
-  it('roundtrips a write through writeMetadataKey', async () => {
-    const result = await updateAssistantBasics({ tone: 'professional', length: 'thorough' })
-    expect(result).toEqual({ tone: 'professional', length: 'thorough' })
-    expect(hoisted.mockWriteMetadataKey).toHaveBeenCalledWith('assistantBasics', {
-      tone: 'professional',
-      length: 'thorough',
-    })
-  })
-
-  it('accepts a partial preset (tone only, or length only)', async () => {
-    expect(await updateAssistantBasics({ tone: 'neutral' })).toEqual({ tone: 'neutral' })
-    expect(await updateAssistantBasics({ length: 'standard' })).toEqual({ length: 'standard' })
-  })
-
-  it('accepts an empty object, clearing any saved preset', async () => {
-    const result = await updateAssistantBasics({})
-    expect(result).toEqual({})
-    expect(hoisted.mockWriteMetadataKey).toHaveBeenCalledWith('assistantBasics', {})
-  })
-
-  it('rejects an invalid tone value', async () => {
-    await expect(updateAssistantBasics({ tone: 'sarcastic' } as never)).rejects.toThrow()
-    expect(hoisted.mockWriteMetadataKey).not.toHaveBeenCalled()
-  })
-
-  it('rejects an invalid length value', async () => {
-    await expect(updateAssistantBasics({ length: 'novel' } as never)).rejects.toThrow()
-    expect(hoisted.mockWriteMetadataKey).not.toHaveBeenCalled()
-  })
-
-  it('leaves sibling metadata keys untouched (writeMetadataKey owns the merge)', async () => {
-    await updateAssistantBasics({ tone: 'friendly' })
-    expect(hoisted.mockWriteMetadataKey).toHaveBeenCalledTimes(1)
-    expect(hoisted.mockWriteMetadataKey).toHaveBeenCalledWith('assistantBasics', { tone: 'friendly' })
-  })
-})
-
-describe('getAssistantConfig', () => {
-  it('resolves all three namespaces off a single settings read', async () => {
-    hoisted.mockRequireSettings.mockResolvedValue(
+describe('V2 assistant configuration reads', () => {
+  it('strictly returns the complete persisted config and revision without inventing defaults', async () => {
+    const persisted = structuredClone(CONFIG)
+    persisted.identity.name = 'Persisted Agent'
+    persisted.channels.email = { additionalInstructions: 'Use an email sign-off.' }
+    hoisted.requireSettings.mockResolvedValue(
       settingsRow({
-        assistantToolControls: { end_conversation: 'approval' },
-        assistantSurfaces: { widget: { instructions: 'Be concise.' } },
-        assistantBasics: { tone: 'friendly', length: 'concise' },
+        assistantConfig: persisted,
+        assistantConfigRevision: 19,
+        managedFieldPaths: ['assistant.voice.tone'],
       })
     )
 
-    expect(await getAssistantConfig()).toEqual({
-      toolControls: { end_conversation: 'approval' },
-      surfaces: { widget: { instructions: 'Be concise.' } },
-      basics: { tone: 'friendly', length: 'concise' },
+    await expect(getAssistantConfig()).resolves.toEqual({
+      config: persisted,
+      revision: 19,
     })
-    expect(hoisted.mockRequireSettings).toHaveBeenCalledTimes(1)
+    await expect(getAssistantSettings()).resolves.toEqual({
+      config: persisted,
+      revision: 19,
+      managedFieldPaths: ['assistant.voice.tone'],
+    })
   })
 
-  it('resolves to empty defaults when nothing is saved', async () => {
-    expect(await getAssistantConfig()).toEqual({ toolControls: {}, surfaces: {}, basics: {} })
+  it('fails settings-page loads when persisted JSON is not a valid complete V2 config', async () => {
+    hoisted.requireSettings.mockResolvedValue(
+      settingsRow({ assistantConfig: '{"version":2,"identity":' })
+    )
+
+    await expect(getAssistantConfig()).rejects.toMatchObject({
+      code: 'ASSISTANT_CONFIG_INVALID',
+      statusCode: 500,
+    })
+    await expect(getAssistantSettings()).rejects.toMatchObject({
+      code: 'ASSISTANT_CONFIG_INVALID',
+      statusCode: 500,
+    })
+  })
+
+  it('uses an explicit runtime fallback for invalid config while preserving runtime fields', async () => {
+    hoisted.requireSettings.mockResolvedValue(
+      settingsRow({
+        assistantConfig: { version: 2, identity: { name: 'Incomplete' } },
+        assistantConfigRevision: 23,
+      })
+    )
+
+    const result = await getAssistantRuntimeConfig()
+    expect(result).toEqual({
+      config: DEFAULT_ASSISTANT_CONFIG,
+      revision: 23,
+      workspaceName: 'Acme Support',
+      actionsEnabled: true,
+      knowledgeEnabled: false,
+      configFallbackReason: 'invalid_assistant_config',
+    })
+    expect(result.config).not.toBe(DEFAULT_ASSISTANT_CONFIG)
+  })
+})
+
+describe('V2 assistant configuration writes', () => {
+  it('validates every complete section before writing', async () => {
+    await expect(
+      updateAssistantIdentity(7, { name: '   ', avatarUrl: null, showAiLabel: true }, ACTOR)
+    ).rejects.toThrow()
+    await expect(
+      updateAssistantVoice(
+        7,
+        {
+          tone: 'sarcastic',
+          responseLength: 'balanced',
+          additionalInstructions: '',
+        } as never,
+        ACTOR
+      )
+    ).rejects.toThrow()
+    await expect(
+      updateAssistantChannels(7, { widget: { additionalInstructions: 'x'.repeat(1_001) } }, ACTOR)
+    ).rejects.toThrow()
+    await expect(
+      updateAssistantToolControls(7, { end_conversation: 'invalid' } as never, ACTOR)
+    ).rejects.toThrow()
+
+    expect(hoisted.txSet).not.toHaveBeenCalled()
+    expect(hoisted.recordAuditEventInTransaction).not.toHaveBeenCalled()
+    expect(hoisted.invalidateSettingsCache).not.toHaveBeenCalled()
+  })
+
+  it('locks the row and atomically writes the complete normalized config with an incremented revision', async () => {
+    const result = await updateAssistantVoice(
+      7,
+      {
+        tone: 'warm',
+        responseLength: 'brief',
+        additionalInstructions: '  Keep\ncalm.\u0000  ',
+      },
+      ACTOR
+    )
+
+    const expectedConfig: AssistantConfig = {
+      ...CONFIG,
+      voice: {
+        tone: 'warm',
+        responseLength: 'brief',
+        additionalInstructions: 'Keep\ncalm.',
+      },
+    }
+    expect(hoisted.txForUpdate).toHaveBeenCalledOnce()
+    expect(hoisted.txForUpdate).toHaveBeenCalledWith('update')
+    expect(committedSettingsWrites()).toEqual([
+      {
+        table: hoisted.settingsTable,
+        values: {
+          assistantConfig: expectedConfig,
+          assistantConfigRevision: 8,
+        },
+      },
+    ])
+    expect(result).toEqual({ config: expectedConfig, revision: 8 })
+    expect(hoisted.events).toEqual([
+      'begin',
+      'lock:update',
+      'write:settings',
+      'audit',
+      'commit',
+      'invalidate',
+    ])
+    expect(hoisted.invalidateSettingsCache).toHaveBeenCalledOnce()
+  })
+
+  it('preserves a prior section update when a later revision updates another section', async () => {
+    const voiceResult = await updateAssistantVoice(
+      7,
+      { ...CONFIG.voice, tone: 'professional' },
+      ACTOR
+    )
+    const toolsResult = await updateAssistantToolControls(
+      voiceResult.revision,
+      { end_conversation: 'autonomous', create_ticket: 'approval' },
+      ACTOR
+    )
+
+    expect(toolsResult).toEqual({
+      config: {
+        ...CONFIG,
+        voice: { ...CONFIG.voice, tone: 'professional' },
+        toolControls: {
+          end_conversation: 'autonomous',
+          create_ticket: 'approval',
+        },
+      },
+      revision: 9,
+    })
+    expect(committedSettingsWrites()).toHaveLength(2)
+  })
+
+  it('rejects a stale revision after locking without writing, auditing, or invalidating', async () => {
+    hoisted.txRow = transactionRow({ assistantConfigRevision: 8 })
+
+    await expect(
+      updateAssistantVoice(7, { ...CONFIG.voice, tone: 'professional' }, ACTOR)
+    ).rejects.toMatchObject({
+      code: 'ASSISTANT_CONFIG_REVISION_CONFLICT',
+      statusCode: 409,
+    })
+
+    expect(hoisted.txForUpdate).toHaveBeenCalledWith('update')
+    expect(hoisted.txSet).not.toHaveBeenCalled()
+    expect(hoisted.recordAuditEventInTransaction).not.toHaveBeenCalled()
+    expect(hoisted.invalidateSettingsCache).not.toHaveBeenCalled()
+    expect(hoisted.events).toEqual(['begin', 'lock:update', 'rollback'])
+  })
+
+  it('rejects changes to a managed path before writing', async () => {
+    hoisted.txRow = transactionRow({ managedFieldPaths: ['assistant.voice'] })
+
+    await expect(
+      updateAssistantVoice(7, { ...CONFIG.voice, tone: 'professional' }, ACTOR)
+    ).rejects.toMatchObject({ code: 'MANAGED_SETTING', statusCode: 403 })
+
+    expect(hoisted.txSet).not.toHaveBeenCalled()
+    expect(hoisted.recordAuditEventInTransaction).not.toHaveBeenCalled()
+    expect(hoisted.invalidateSettingsCache).not.toHaveBeenCalled()
+  })
+
+  it('audits instruction changes by path and revision without storing instruction bodies', async () => {
+    const nextInstructions = 'Never quote internal guidance.'
+    await updateAssistantVoice(
+      7,
+      { ...CONFIG.voice, additionalInstructions: nextInstructions },
+      ACTOR
+    )
+
+    expect(hoisted.recordAuditEventInTransaction).toHaveBeenCalledWith(expect.anything(), {
+      event: 'assistant.instructions.changed',
+      actor: { email: 'admin@example.com', role: 'admin', type: 'user' },
+      headers: REQUEST_HEADERS,
+      target: { type: 'settings', id: 'settings_1' },
+      metadata: {
+        changedPaths: ['voice.additionalInstructions'],
+        previousRevision: 7,
+        revision: 8,
+        transitions: [],
+      },
+    })
+    const auditPayload = hoisted.recordAuditEventInTransaction.mock.calls[0]?.[1]
+    expect(JSON.stringify(auditPayload)).not.toContain(CONFIG.voice.additionalInstructions)
+    expect(JSON.stringify(auditPayload)).not.toContain(nextInstructions)
+  })
+
+  it('synchronizes the assistant principal identity and keeps names out of the audit payload', async () => {
+    const identity = {
+      name: 'Customer Care Agent',
+      avatarUrl: 'https://cdn.example.test/customer-care.png',
+      showAiLabel: false,
+    }
+    await updateAssistantIdentity(7, identity, ACTOR)
+
+    expect(committedPrincipalWrites()).toEqual([
+      {
+        table: hoisted.principalTable,
+        values: {
+          displayName: identity.name,
+          avatarUrl: identity.avatarUrl,
+        },
+      },
+    ])
+    const auditPayload = hoisted.recordAuditEventInTransaction.mock.calls[0]?.[1] as {
+      event: string
+      metadata: { changedPaths: string[]; transitions: unknown[] }
+    }
+    expect(auditPayload.event).toBe('assistant.identity.changed')
+    expect(auditPayload.metadata.changedPaths).toEqual([
+      'identity.avatarUrl',
+      'identity.name',
+      'identity.showAiLabel',
+    ])
+    expect(auditPayload.metadata.transitions).toEqual([
+      { path: 'identity.showAiLabel', from: true, to: false },
+    ])
+    expect(JSON.stringify(auditPayload)).not.toContain(CONFIG.identity.name)
+    expect(JSON.stringify(auditPayload)).not.toContain(identity.name)
+  })
+
+  it('rolls back staged config writes when the in-transaction audit insert fails', async () => {
+    hoisted.recordAuditEventInTransaction.mockImplementationOnce(async () => {
+      hoisted.events.push('audit')
+      throw new Error('audit insert failed')
+    })
+
+    await expect(
+      updateAssistantVoice(7, { ...CONFIG.voice, tone: 'professional' }, ACTOR)
+    ).rejects.toThrow('audit insert failed')
+
+    expect(hoisted.txSet).toHaveBeenCalled()
+    expect(hoisted.committedWrites).toEqual([])
+    expect(hoisted.txRow?.assistantConfigRevision).toBe(7)
+    expect(hoisted.events).toEqual(['begin', 'lock:update', 'write:settings', 'audit', 'rollback'])
+    expect(hoisted.invalidateSettingsCache).not.toHaveBeenCalled()
+  })
+
+  it('does not write, audit, increment, or invalidate for a normalized no-op', async () => {
+    await expect(updateAssistantVoice(7, structuredClone(CONFIG.voice), ACTOR)).resolves.toEqual({
+      config: CONFIG,
+      revision: 7,
+    })
+
+    expect(hoisted.committedWrites).toEqual([])
+    expect(hoisted.recordAuditEventInTransaction).not.toHaveBeenCalled()
+    expect(hoisted.invalidateSettingsCache).not.toHaveBeenCalled()
+    expect(hoisted.events).toEqual(['begin', 'lock:update', 'commit'])
   })
 })

@@ -75,9 +75,6 @@ export const ID_PREFIXES = {
   assistant_snippet: 'assistant_snippet',
   assistant_event: 'assistant_event',
 
-  // Data connectors (assistant-callable external API definitions)
-  data_connector: 'data_connector',
-
   // Tickets (support platform §4.2)
   ticket: 'ticket',
   ticket_status: 'ticket_status',

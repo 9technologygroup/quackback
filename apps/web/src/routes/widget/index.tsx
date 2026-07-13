@@ -15,6 +15,7 @@ import {
   resolveInitialTab,
   resolveInitialView,
   homeEnabled,
+  contentSurfaceCount,
   isExpandedView,
 } from '@/components/widget/widget-nav'
 import { WidgetHome } from '@/components/widget/widget-home'
@@ -58,14 +59,24 @@ export const Route = createFileRoute('/widget/')({
   loader: async ({ context, location }) => {
     const { queryClient, settings, session } = context
     const search = location.search as z.infer<typeof searchSchema>
+    const feedbackProductEnabled = settings?.featureFlags?.feedback ?? true
+    const changelogProductEnabled = settings?.featureFlags?.changelog ?? true
 
-    const portalData = await queryClient.ensureQueryData(
-      portalQueries.portalData({
-        boardSlug: search.board,
-        sort: 'top',
-        userId: session?.user?.id,
-      })
-    )
+    const portalData = feedbackProductEnabled
+      ? await queryClient.ensureQueryData(
+          portalQueries.portalData({
+            boardSlug: search.board,
+            sort: 'top',
+            userId: session?.user?.id,
+          })
+        )
+      : {
+          boards: [],
+          posts: { items: [], hasMore: false },
+          statuses: [],
+          votedPostIds: [],
+          boardPermissions: {} as Record<string, { canSubmit: boolean; canVote: boolean }>,
+        }
 
     queryClient.setQueryData(
       widgetQueryKeys.votedPosts.bySession(INITIAL_SESSION_VERSION),
@@ -121,7 +132,8 @@ export const Route = createFileRoute('/widget/')({
       ((settings?.featureFlags as { helpCenter?: boolean } | undefined)?.helpCenter ?? false) &&
       (settings?.helpCenterConfig?.enabled ?? false) &&
       (settings?.publicWidgetConfig?.tabs?.help ?? false)
-    const changelogTabEnabled = settings?.publicWidgetConfig?.tabs?.changelog ?? false
+    const changelogTabEnabled =
+      changelogProductEnabled && (settings?.publicWidgetConfig?.tabs?.changelog ?? false)
 
     let topArticles: { slug: string; title: string }[] = []
     await Promise.all([
@@ -184,8 +196,8 @@ export const Route = createFileRoute('/widget/')({
       // advertises an action the board's tier rejects (#191). Keyed by board id.
       boardPermissions: portalData.boardPermissions,
       tabs: {
-        feedback: settings?.publicWidgetConfig?.tabs?.feedback ?? true,
-        changelog: settings?.publicWidgetConfig?.tabs?.changelog ?? false,
+        feedback: feedbackProductEnabled && (settings?.publicWidgetConfig?.tabs?.feedback ?? true),
+        changelog: changelogTabEnabled,
         help:
           ((settings?.featureFlags as { helpCenter?: boolean } | undefined)?.helpCenter ?? false) &&
           (settings?.helpCenterConfig?.enabled ?? false) &&
@@ -232,8 +244,14 @@ export const Route = createFileRoute('/widget/')({
       portalOrigin: getBaseUrl(),
     }
   },
-  component: WidgetPage,
+  component: WidgetRoute,
 })
+
+function WidgetRoute() {
+  const { tabs } = Route.useLoaderData()
+  if (contentSurfaceCount(tabs) === 0) return null
+  return <WidgetPage />
+}
 
 interface SuccessPost {
   id: string
@@ -316,6 +334,7 @@ function WidgetPage() {
     initialData: sessionVersion === INITIAL_SESSION_VERSION ? boardPermissions : undefined,
     placeholderData: keepPreviousData,
     staleTime: 30 * 1000,
+    enabled: !!tabs.feedback,
   })
 
   const { c: resumeConversationId } = Route.useSearch()

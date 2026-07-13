@@ -87,7 +87,10 @@ async function seedTicket(): Promise<TicketId> {
 
 const fixture = await createDbTestFixture({
   probe: async (db) => {
-    await db.select({ id: assistantPendingActions.id }).from(assistantPendingActions).limit(0)
+    await db
+      .select({ id: assistantPendingActions.id, originRole: assistantPendingActions.originRole })
+      .from(assistantPendingActions)
+      .limit(0)
   },
 })
 
@@ -226,7 +229,7 @@ describe.skipIf(!fixture.available)('sweepAndNotifyExpiredPendingActions', () =>
     mockGetAssistantPrincipal.mockResolvedValue(null) // keep propose-time notes out of the way
   })
 
-  it('emits the expiry system message once per expired conversation', async () => {
+  it('emits the expiry system message once per expired customer-support conversation', async () => {
     const conversationId = await seedConversation()
     const other = await seedConversation()
 
@@ -235,12 +238,14 @@ describe.skipIf(!fixture.available)('sweepAndNotifyExpiredPendingActions', () =>
       toolName: 'close_conversation',
       args: {},
       summary: 'Nobody decided in time.',
+      originRole: 'customer_support',
     })
     const staleOther = await proposePendingAction({
       conversationId: other,
       toolName: 'close_conversation',
       args: {},
       summary: 'Also stale.',
+      originRole: 'customer_support',
     })
     await testDb
       .update(assistantPendingActions)
@@ -257,6 +262,27 @@ describe.skipIf(!fixture.available)('sweepAndNotifyExpiredPendingActions', () =>
     expect(mockEmitExpired).toHaveBeenCalledTimes(2)
     expect(mockEmitExpired).toHaveBeenCalledWith(conversationId)
     expect(mockEmitExpired).toHaveBeenCalledWith(other)
+  })
+
+  it('expires a copilot proposal without sending a customer system message', async () => {
+    const conversationId = await seedConversation()
+    const stale = await proposePendingAction({
+      conversationId,
+      toolName: 'close_conversation',
+      args: {},
+      summary: 'Copilot proposal nobody reviewed.',
+      originRole: 'copilot_qa',
+    })
+    await testDb
+      .update(assistantPendingActions)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(assistantPendingActions.id, stale.id))
+
+    const expired = await sweepAndNotifyExpiredPendingActions()
+
+    expect(expired.map((row) => row.id)).toEqual([stale.id])
+    expect(expired[0]?.originRole).toBe('copilot_qa')
+    expect(mockEmitExpired).not.toHaveBeenCalled()
   })
 
   it('does not notify for a proposal still within its TTL', async () => {

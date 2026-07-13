@@ -1037,7 +1037,7 @@ function AssistantLinkCard({
   return (
     <SettingsCard title="AI Assistant" description="The assistant that fronts new conversations">
       <Link
-        to="/admin/automation/assistant"
+        to="/admin/automation/agent"
         className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-3 transition-colors hover:bg-muted/40"
       >
         <span className="flex items-center gap-2.5">

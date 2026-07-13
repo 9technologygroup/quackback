@@ -78,6 +78,8 @@ function emptyStateMessage(nav: InboxNavItem, facet: InboxTriageFacet, scopeLabe
         return `No ${facetPart}conversations assigned to you`
       case 'unassigned':
         return `No ${facetPart}unassigned conversations`
+      case 'tickets_all':
+        return `No ${facetPart}tickets`
       case 'tickets_customer':
         return `No ${facetPart}customer tickets`
       case 'tickets_back_office':

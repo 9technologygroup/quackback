@@ -1,12 +1,14 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, notFound } from '@tanstack/react-router'
 import { useIntl } from 'react-intl'
 import { RssIcon } from '@heroicons/react/24/outline'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/shared/page-header'
 import { ChangelogListPublic, ChangelogSubscribeButton } from '@/components/portal/changelog'
+import { isProductEnabled } from '@/lib/shared/types/settings'
 
 export const Route = createFileRoute('/_portal/changelog/')({
   loader: async ({ context }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'changelog')) throw notFound()
     return {
       workspaceName: context.settings?.name ?? 'Quackback',
       baseUrl: context.baseUrl ?? '',

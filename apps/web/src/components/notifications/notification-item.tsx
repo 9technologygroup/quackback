@@ -144,8 +144,8 @@ interface ContentProps {
  * type icon as a small overlay badge; system-driven types (status changes,
  * assignments, changelogs) and any row created before actorName existed keep
  * the plain icon circle. Shared by both variants so the two layouts never
- * drift from each other. Fixed at 36px wide so the 320px dropdown never
- * overflows.
+ * drift from each other. Fixed at 36px wide so the compact dropdown remains
+ * bounded.
  */
 function NotificationLeadingVisual({
   notification,
@@ -198,7 +198,7 @@ function CompactContent({ notification, icon: Icon, iconClass, bgClass, isUnread
   return (
     <div
       className={cn(
-        'flex items-start gap-3 px-4 py-3 transition-colors hover:bg-muted/50',
+        'flex items-start gap-2.5 px-3 py-2.5 transition-colors hover:bg-muted/50',
         isUnread && 'bg-primary/[0.02]'
       )}
     >

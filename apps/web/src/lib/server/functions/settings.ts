@@ -741,8 +741,6 @@ const messengerConfigInputSchema = z.object({
   assistant: z
     .object({
       enabled: z.boolean().optional(),
-      name: z.string().max(80).optional(),
-      avatarUrl: z.string().url().max(2000).optional().or(z.literal('')),
       // Whether the assistant actually replies (vs. identity-only).
       respond: z.boolean().optional(),
     })

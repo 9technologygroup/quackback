@@ -44,7 +44,6 @@ import {
   isAssistantConfigured,
   respondEligible,
   runAssistantTurn,
-  buildAssistantHandoverMessage,
   activityToStatus,
 } from '.'
 import { logger } from '@/lib/server/logger'
@@ -109,7 +108,10 @@ async function triggerLiveAttributeRecheck(conversationId: ConversationId): Prom
  */
 export async function runAssistantTurnForConversation(
   conversationId: ConversationId,
-  opts?: { stepInstructions?: string | null }
+  opts?: {
+    surface?: 'widget' | 'workflow_step'
+    stepInstructions?: string | null
+  }
 ): Promise<void> {
   if (!isAssistantConfigured()) return
 
@@ -198,10 +200,10 @@ export async function runAssistantTurnForConversation(
       messages,
       assistantPrincipalId,
       conversationId,
-      surface: 'widget',
+      role: 'customer_support',
+      surface: opts?.surface ?? 'widget',
       involvementId: active?.id ?? null,
       latestCustomerMessageId,
-      escalationAlreadyOffered: active?.escalationOfferedAt != null,
       stepInstructions: opts?.stepInstructions ?? null,
       onActivity: (activity) => {
         if (activity.kind === 'thinking') streamed = ''
@@ -220,40 +222,36 @@ export async function runAssistantTurnForConversation(
         })
       },
     })
-    // Suppressed by the engine's own silence check — nothing to persist.
-    if (result.status !== 'answered') return
+    // Suppressed by the engine's own silence check — nothing to persist. An
+    // honest cannot-answer outcome is still a customer-visible terminal reply
+    // and must be persisted; it simply must not advance resolution state.
+    if (result.status === 'suppressed') return
 
-    // Open on first touch; reuse the active involvement otherwise.
+    // Defense in depth: public delivery is forbidden if any internal context
+    // reached the model, even when the model omitted that source from its final
+    // citations. Retrieval should prevent this upstream; persistence also
+    // fails closed so a future source cannot silently weaken the boundary.
+    if (result.internalSourced) {
+      throw new Error('refusing to persist an internal-sourced customer reply')
+    }
+
+    // A substantive answer or escalation engages Quinn and needs an
+    // involvement. A standalone inability reply does not open an involvement
+    // that could otherwise sit active forever with no answer clock.
     const involvement =
-      active ?? (await openInvolvement({ conversationId, triggeredBy: 'first_touch' }))
+      active ??
+      (result.status === 'answered' || result.escalation
+        ? await openInvolvement({ conversationId, triggeredBy: 'first_touch' })
+        : null)
 
     const author: ConversationAuthorInput = {
       principalId: assistantPrincipalId,
-      displayName: messenger.assistant?.name ?? 'Quinn',
-      avatarUrl: messenger.assistant?.avatarUrl ?? null,
+      displayName: result.identity.name,
+      avatarUrl: result.identity.avatarUrl,
     }
 
-    if (result.escalation?.mode === 'handoff') {
-      const { getOfficeHoursSchedule } =
-        await import('@/lib/server/domains/settings/settings.office-hours')
-      const schedule = await getOfficeHoursSchedule()
-      await appendAssistantReply(conversationId, buildAssistantHandoverMessage(schedule), author, {
-        waiting: true,
-      })
-      // Reply posted; record the hand-off, drop an agent-only note explaining why
-      // (so the teammate has context), and route it to a human — in parallel
-      // (distinct rows — the involvement vs the note vs the conversation).
-      await Promise.all([
-        recordHandoff(involvement.id, result.escalation.reason),
-        appendAssistantHandoffNote(conversationId, result.escalation.reason, author),
-        executeAssistantHandoff(conversationId, result.escalation.reason, author),
-      ])
-      return
-    }
-
-    // Answer or offer: persist Quinn's reply (its text carries any offer), then
-    // record the cited sources + stamp the inactivity clock (+ the single
-    // escalation offer) in one involvement update. This is the ONE persistence
+    // Answer, inability, or handoff: persist the model-authored reply. This is
+    // the ONE persistence
     // point for citations, and the projection is an ALLOWLIST typed as the
     // stored shape (ConversationMessageCitation): the persisted shape is
     // structural, so a new ephemeral field on the in-flight AssistantCitation
@@ -264,18 +262,40 @@ export async function runAssistantTurnForConversation(
       (c): ConversationMessageCitation => ({ type: c.type, id: c.id, title: c.title, url: c.url })
     )
     await appendAssistantReply(conversationId, result.text, author, {
-      waiting: false,
+      waiting: result.escalation?.mode === 'handoff',
       citations: persistedCitations,
     })
-    await recordAssistantAnswer(involvement.id, {
-      sources: result.citations.map((c) => ({
-        type: c.type,
-        id: c.id,
-        title: c.title,
-        url: c.url,
-      })),
-      offeredEscalation: result.escalation?.mode === 'offer',
-    })
+
+    if (result.escalation?.mode === 'handoff') {
+      if (!involvement) {
+        throw new Error('assistant handoff requires an involvement')
+      }
+      // handoff_to_human was called during the agentic cycle. The model's own
+      // final text is already persisted above; apply the requested operation
+      // and its internal audit note without replacing that text server-side.
+      await Promise.all([
+        recordHandoff(involvement.id, result.escalation.reason),
+        appendAssistantHandoffNote(conversationId, result.escalation, author),
+        executeAssistantHandoff(conversationId, result.escalation.reason, author),
+      ])
+      return
+    }
+
+    if (result.status === 'answered') {
+      if (!involvement) {
+        throw new Error('assistant answer requires an involvement')
+      }
+      // Only a validated answer stamps the inactivity clock and can later be
+      // interpreted as an assumed resolution.
+      await recordAssistantAnswer(involvement.id, {
+        sources: result.citations.map((c) => ({
+          type: c.type,
+          id: c.id,
+          title: c.title,
+          url: c.url,
+        })),
+      })
+    }
   } finally {
     await clearActivitySnapshot(conversationId)
   }

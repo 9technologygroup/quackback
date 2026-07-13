@@ -1,5 +1,5 @@
 /**
- * Quinn Copilot's "Save as macro" dialog (split out of copilot-panel.tsx, a
+ * Copilot's "Save as macro" dialog (split out of copilot-panel.tsx, a
  * pure move — see that file's header for the surface this belongs to): the
  * answer card "..." menu's P2-C.2 action, promoting a Copilot answer to a
  * reusable support macro.

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useTransition } from 'react'
-import { createFileRoute, useRouter, useNavigate, Navigate } from '@tanstack/react-router'
+import { createFileRoute, useRouter, useNavigate, redirect } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import { BookOpenIcon, GlobeAltIcon } from '@heroicons/react/24/solid'
@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { DomainsLanguagesTab } from '@/components/admin/settings/help-center/domains-languages-tab'
 import { settingsQueries } from '@/lib/client/queries/settings'
 import { useUpdateHelpCenterConfig } from '@/lib/client/mutations/settings'
-import type { HelpCenterConfig, FeatureFlags } from '@/lib/shared/types/settings'
+import { isProductEnabled, type HelpCenterConfig } from '@/lib/shared/types/settings'
 
 /**
  * Split by concern, matching the Access & Security page's `?tab=` pattern:
@@ -28,6 +28,11 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute('/admin/settings/help-center')({
   validateSearch: searchSchema,
+  beforeLoad: ({ context }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'helpCenter')) {
+      throw redirect({ to: '/admin/settings/general' })
+    }
+  },
   loader: async ({ context }) => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
     await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })
@@ -39,13 +44,7 @@ export const Route = createFileRoute('/admin/settings/help-center')({
   component: HelpCenterSettingsRoute,
 })
 
-/** Gate behind the `helpCenter` flag; the wrapper keeps the check above the page hooks. */
 function HelpCenterSettingsRoute() {
-  const { settings } = Route.useRouteContext()
-  const flags = settings?.featureFlags as FeatureFlags | undefined
-  if (!flags?.helpCenter) {
-    return <Navigate to="/admin/settings" />
-  }
   return <HelpCenterSettingsPage />
 }
 

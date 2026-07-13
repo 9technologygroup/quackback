@@ -53,7 +53,7 @@ export const API_KEY_SCOPE_LABELS: Record<ApiKeyScope, string> = {
  * read:changelog scope, matching the MCP search / get_details convention.
  * Support (tickets) shares the chat scopes with conversations. AI rides the
  * feedback scopes like the other workspace-config families: its keys gate
- * assistant/connector configuration, not conversation access. Status page
+ * assistant configuration, not conversation access. Status page
  * rides the feedback scopes too — `/api/v1/status/*` (Status Product Spec
  * §10) has no dedicated REST scope of its own, same rationale as changelog.
  */

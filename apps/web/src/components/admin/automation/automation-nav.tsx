@@ -1,69 +1,108 @@
-import { Link, useRouterState, useRouteContext } from '@tanstack/react-router'
-import { SparklesIcon, BoltIcon, BeakerIcon, CircleStackIcon } from '@heroicons/react/24/solid'
+import { Link, useRouteContext, useRouterState } from '@tanstack/react-router'
+import { useIntl } from 'react-intl'
+import { BeakerIcon, BoltIcon, ChartBarIcon, SparklesIcon } from '@heroicons/react/24/solid'
+import { MENU_ICON, MENU_ROW } from '@/components/ui/menu'
+import { usePermission } from '@/lib/client/hooks/use-permission'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { cn } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
 interface NavItem {
-  label: string
+  labelId: string
+  defaultLabel: string
   to: string
   icon: typeof SparklesIcon
 }
 
-const BASE_NAV_ITEMS: NavItem[] = [
-  { label: 'Assistant', to: '/admin/automation/assistant', icon: SparklesIcon },
-  { label: 'Workflows', to: '/admin/automation/workflows', icon: BoltIcon },
-  { label: 'Sandbox', to: '/admin/automation/sandbox', icon: BeakerIcon },
-]
-
-/** Data connectors only appears once its flag is on, mirroring the flag-gated
- *  items in settings-nav.tsx's buildNavSections. */
-export function buildAutomationNavItems(flags?: { assistantTools?: boolean }): NavItem[] {
-  const items = [...BASE_NAV_ITEMS]
-  if (flags?.assistantTools) {
-    items.push({
-      label: 'Data connectors',
-      to: '/admin/automation/connectors',
-      icon: CircleStackIcon,
-    })
-  }
-  return items
+interface AutomationNavPermissions {
+  assistant: boolean
+  workflows: boolean
+  analytics: boolean
 }
 
-/**
- * Left sub-nav for the AI & Automation area. Flat (no accordions, unlike
- * SettingsNav's Products group) since the area only has a few pages today;
- * Knowledge joins later per SUPPORT-PLATFORM-SPEC §4.7 Track Q. Reuses the
- * SettingsNav card/link styling idioms so the area feels native.
- */
+export function buildAutomationNavItems(
+  flags: { supportInbox?: boolean } | undefined,
+  permissions: AutomationNavPermissions
+): NavItem[] {
+  return [
+    permissions.assistant
+      ? {
+          labelId: 'automation.nav.agent',
+          defaultLabel: 'AI agent',
+          to: '/admin/automation/agent',
+          icon: SparklesIcon,
+        }
+      : null,
+    permissions.workflows && flags?.supportInbox
+      ? {
+          labelId: 'automation.nav.workflows',
+          defaultLabel: 'Workflows',
+          to: '/admin/automation/workflows',
+          icon: BoltIcon,
+        }
+      : null,
+    permissions.assistant
+      ? {
+          labelId: 'automation.nav.test',
+          defaultLabel: 'Test agent',
+          to: '/admin/automation/test',
+          icon: BeakerIcon,
+        }
+      : null,
+    permissions.analytics
+      ? {
+          labelId: 'automation.nav.performance',
+          defaultLabel: 'Performance',
+          to: '/admin/automation/performance',
+          icon: ChartBarIcon,
+        }
+      : null,
+  ].filter((item): item is NavItem => item !== null)
+}
+
 export function AutomationNav() {
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const intl = useIntl()
+  const pathname = useRouterState({ select: (state) => state.location.pathname })
   const { settings } = useRouteContext({ from: '__root__' })
   const flags = settings?.featureFlags as FeatureFlags | undefined
-  const navItems = buildAutomationNavItems(flags)
+  const permissions: AutomationNavPermissions = {
+    assistant: usePermission(PERMISSIONS.ASSISTANT_MANAGE),
+    workflows: usePermission(PERMISSIONS.WORKFLOW_MANAGE),
+    analytics: usePermission(PERMISSIONS.ANALYTICS_VIEW),
+  }
+  const navItems = buildAutomationNavItems(flags, permissions)
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border/50 bg-muted/20 bg-gradient-to-b from-foreground/[0.04] to-transparent">
-      <div className="space-y-0.5 px-1.5 py-2">
+    <nav
+      aria-label={intl.formatMessage({
+        id: 'automation.nav.label',
+        defaultMessage: 'AI & Automation',
+      })}
+    >
+      <div className="space-y-1">
         {navItems.map((item) => {
-          const isActive = pathname === item.to || pathname.startsWith(item.to + '/')
+          const isActive = pathname === item.to || pathname.startsWith(`${item.to}/`)
           const Icon = item.icon
           return (
             <Link
               key={item.to}
               to={item.to}
               className={cn(
-                'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors',
+                MENU_ROW,
+                'min-h-9',
                 isActive
-                  ? 'bg-primary/10 text-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-foreground/[0.04]'
+                  ? 'bg-primary/10 font-medium text-foreground'
+                  : 'text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground'
               )}
             >
-              <Icon className={cn('h-3.5 w-3.5 shrink-0', isActive && 'text-primary')} />
-              <span className="truncate flex-1">{item.label}</span>
+              <Icon className={cn(MENU_ICON, isActive && 'text-primary')} />
+              <span className="min-w-0 flex-1 truncate">
+                {intl.formatMessage({ id: item.labelId, defaultMessage: item.defaultLabel })}
+              </span>
             </Link>
           )
         })}
       </div>
-    </div>
+    </nav>
   )
 }

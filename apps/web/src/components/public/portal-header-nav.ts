@@ -21,8 +21,6 @@ const NAV_ITEM_CHANGELOG = {
   defaultMessage: 'Changelog',
 } as const
 
-const NAV_ITEMS_BASE = [NAV_ITEM_FEEDBACK, NAV_ITEM_ROADMAP] as const
-
 const NAV_ITEM_HELP = {
   to: '/hc',
   messageId: 'portal.header.nav.help',
@@ -42,7 +40,8 @@ const NAV_ITEM_STATUS = {
 } as const
 
 export type PortalNavItem =
-  | (typeof NAV_ITEMS_BASE)[number]
+  | typeof NAV_ITEM_FEEDBACK
+  | typeof NAV_ITEM_ROADMAP
   | typeof NAV_ITEM_CHANGELOG
   | typeof NAV_ITEM_HELP
   | typeof NAV_ITEM_SUPPORT
@@ -50,27 +49,27 @@ export type PortalNavItem =
 
 /**
  * Returns the nav items shown in the portal header.
- * Feedback/roadmap are always shown; Changelog appears unless the admin
- * turned off its portal nav tab (Settings > Changelog > Visibility — default
- * on, so a workspace that never customized it keeps today's behavior). A
- * Help tab is appended when the help center feature is enabled, a Support
- * tab (the signed-in user's conversations) when portal support is enabled,
- * and a Status tab when the status page is enabled and its portal tab is on.
+ * Feedback and its roadmap appear when the Feedback product is enabled.
+ * Changelog also respects its portal-tab setting. Help, Support, and Status
+ * retain their publication controls beneath workspace product availability.
  * Enablement already folds in the viewer's audience gate, so the tab only
  * renders for a viewer who can see the page.
  */
 export function buildNavItems({
+  feedbackEnabled = true,
   helpCenterEnabled,
   supportEnabled,
   changelogEnabled = true,
   statusEnabled = false,
 }: {
+  feedbackEnabled?: boolean
   helpCenterEnabled: boolean
   supportEnabled: boolean
   changelogEnabled?: boolean
   statusEnabled?: boolean
 }): readonly PortalNavItem[] {
-  const items: PortalNavItem[] = [...NAV_ITEMS_BASE]
+  const items: PortalNavItem[] = []
+  if (feedbackEnabled) items.push(NAV_ITEM_FEEDBACK, NAV_ITEM_ROADMAP)
   if (changelogEnabled) items.push(NAV_ITEM_CHANGELOG)
   if (helpCenterEnabled) items.push(NAV_ITEM_HELP)
   if (supportEnabled) items.push(NAV_ITEM_SUPPORT)

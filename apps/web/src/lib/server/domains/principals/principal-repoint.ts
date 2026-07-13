@@ -472,8 +472,6 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
     'the actor attributed to a tool call is a team member or the assistant itself, never the anonymous merge source',
   'import_runs.initiated_by_principal_id':
     'import runs are launched by admins (route requires the admin role); the merge source is always anonymous',
-  'data_connectors.created_by_id':
-    'connector authors are team members with connector.manage; the merge source is always anonymous',
 }
 
 /**

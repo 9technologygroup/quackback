@@ -123,10 +123,6 @@ const configSchema = z.object({
 
   // Telemetry (optional)
   disableTelemetry: envBoolean,
-
-  // Data connectors (optional): comma-separated host allowlist for connector
-  // calls. Empty/unset means any public host, subject to the SSRF guard.
-  connectorAllowedHosts: z.string().optional(),
 })
 
 type Config = z.infer<typeof configSchema>
@@ -196,9 +192,6 @@ function buildConfigFromEnv(): unknown {
 
     // Telemetry
     disableTelemetry: env('DISABLE_TELEMETRY'),
-
-    // Data connectors
-    connectorAllowedHosts: env('CONNECTOR_ALLOWED_HOSTS'),
   }
 }
 
@@ -383,11 +376,6 @@ export const config = {
   // Telemetry
   get disableTelemetry() {
     return loadConfig().disableTelemetry
-  },
-
-  // Data connectors
-  get connectorAllowedHosts() {
-    return loadConfig().connectorAllowedHosts
   },
 
   // Help center

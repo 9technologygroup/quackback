@@ -451,24 +451,16 @@ export interface UpdateDeveloperConfigInput {
  * and projected into PublicMessengerConfig; agent-only fields (routing) are
  * stripped from the public projection (see getPublicWidgetConfig).
  */
-/**
- * Display identity for the workspace's AI assistant, plus whether it replies.
- * Replies are no longer exclusively from the external agent layer: the assistant
- * may reply in-process as a service principal through a defined tool layer, or
- * out-of-process via the MCP service principal — `respond` gates whether it
- * answers at all. Keep this the single source of the assistant's name/avatar so
- * the future agent principal adopts it rather than adding a second identity.
- */
-export interface AssistantIdentityConfig {
+/** Web-widget deployment flags. Shared identity lives in settings.assistant_config. */
+export interface AssistantDeploymentConfig {
   enabled?: boolean
-  /** Display name (e.g. "Quinn"). */
-  name?: string
-  /** Avatar image URL; falls back to an initial when unset. */
-  avatarUrl?: string
-  /** Whether the assistant actually replies (vs. identity-only). Default false. */
   respond?: boolean
-  /** Whether to show an "AI" label after the assistant name. Default false. */
-  showAiLabel?: boolean
+}
+
+export interface PublicAssistantConfig extends AssistantDeploymentConfig {
+  name: string
+  avatarUrl: string | null
+  showAiLabel: boolean
 }
 
 export interface MessengerConfig {
@@ -488,7 +480,7 @@ export interface MessengerConfig {
    */
   preventRepliesWhenClosed?: boolean
   /** AI-assistant display identity (client-safe). */
-  assistant?: AssistantIdentityConfig
+  assistant?: AssistantDeploymentConfig
   /**
    * @deprecated Migration-only. The canonical office-hours schedule now lives in
    * the `settings.metadata` bag (see settings.office-hours.ts). This field only
@@ -506,7 +498,12 @@ export interface MessengerConfig {
 }
 
 /** Client-safe subset of MessengerConfig (drops agent-only + deprecated fields). */
-export type PublicMessengerConfig = Omit<MessengerConfig, 'routing' | 'officeHours'>
+export type PublicMessengerConfig = Omit<
+  MessengerConfig,
+  'routing' | 'officeHours' | 'assistant'
+> & {
+  assistant?: PublicAssistantConfig
+}
 
 /**
  * Types of card the widget Home surface can show. Built-in types route to a
@@ -627,7 +624,7 @@ export const DEFAULT_MESSENGER_CONFIG: MessengerConfig = {
   // AI-first by default: conversations open fronted by the assistant identity.
   // Admins can rename or disable it under Settings → AI & Automation. `respond`
   // defaults off — identity is on, in-process answering is opt-in.
-  assistant: { enabled: true, name: 'Quinn', respond: false },
+  assistant: { enabled: true, respond: false },
 }
 
 export const DEFAULT_WIDGET_CONFIG: WidgetConfig = {
@@ -904,7 +901,7 @@ export interface TenantSettings {
   statusConfig: StatusSettings
   /** Public widget config (no secret, safe for client) */
   publicWidgetConfig: PublicWidgetConfig
-  /** Feature flags for experimental features */
+  /** Product availability and experimental feature flags */
   featureFlags: FeatureFlags
   brandingData: SettingsBrandingData
   faviconData: { url: string } | null
@@ -923,15 +920,18 @@ export interface TenantSettings {
 }
 
 // =============================================================================
-// Feature Flags (Experimental features)
+// Product and Feature Flags
 // =============================================================================
 
 /**
- * Feature flags for experimental/in-development features.
- * New flags default to false. When a feature is ready for rollout,
- * enable it via migration. Eventually remove the flag entirely.
+ * Workspace product availability and experimental/in-development features.
+ * Product flags default on; optional AI and analytics flags default off.
  */
 export interface FeatureFlags {
+  /** Feedback boards, posts, voting, and roadmaps */
+  feedback: boolean
+  /** Product changelog */
+  changelog: boolean
   /** Help center knowledge base */
   helpCenter: boolean
   /** AI answers with citations on help-center search surfaces */
@@ -949,7 +949,7 @@ export interface FeatureFlags {
    *  across visits. Subordinate to `visitorAnalytics` — rendered as a nested
    *  sub-toggle in Labs and only effective when analytics is on. */
   visitorDeviceTracking: boolean
-  /** Teammate-facing AI in the inbox: Quinn Copilot's private Q&A tab,
+  /** Teammate-facing AI in the inbox: Copilot's private Q&A tab,
    *  two-way conversation translation, and AI classification of
    *  ai_detect-enabled conversation attributes. Each capability keeps its
    *  own finer-grained controls (copilot.use permission, per-conversation
@@ -962,14 +962,13 @@ export interface FeatureFlags {
    *  `copilot.use` permission and item-viewability gate; see
    *  routes/api/admin/assistant/suggest.ts). */
   assistantProactiveSuggestions: boolean
-  /** Extra knowledge sources the AI assistant may ground answers in beyond
-   *  the help center: published feedback posts, admin-curated private
-   *  snippets, and the SAME customer's own past-conversation summaries. */
+  /** Extra team-only knowledge for Copilot: feedback posts, private snippets,
+   *  and same-customer past-conversation summaries. Customer-facing Quinn
+   *  remains limited to vetted public support content. */
   assistantKnowledge: boolean
-  /** What the AI assistant may DO: built-in actions (closing conversations,
-   *  creating tickets, ...) and admin-defined external data connectors.
-   *  Umbrella only — every action has per-action controls/approvals and
-   *  every connector defaults to disabled. */
+  /** What the AI assistant may DO: built-in actions such as closing
+   *  conversations and creating tickets. Every action has per-action
+   *  controls and approvals. */
   assistantTools: boolean
   /** Status page: public/private/segment-scoped service status with incidents,
    *  maintenance windows, uptime history, and subscriber notifications. */
@@ -993,7 +992,6 @@ export const LEGACY_FLAG_MAP: Record<string, keyof FeatureFlags> = {
   assistantSnippets: 'assistantKnowledge',
   assistantConversationGrounding: 'assistantKnowledge',
   assistantActions: 'assistantTools',
-  dataConnectors: 'assistantTools',
 }
 
 /**
@@ -1031,6 +1029,8 @@ export function resolveFeatureFlags(storedJson: string | null | undefined): Feat
  */
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   // Products — on
+  feedback: true,
+  changelog: true,
   helpCenter: true,
   supportInbox: true,
   supportTickets: true,
@@ -1053,6 +1053,14 @@ export const FEATURE_FLAG_REGISTRY: Record<
   keyof FeatureFlags,
   { label: string; description: string }
 > = {
+  feedback: {
+    label: 'Feedback & Roadmaps',
+    description: 'Collect ideas, votes, and comments from customers and share what comes next.',
+  },
+  changelog: {
+    label: 'Changelog',
+    description: 'Publish product updates and keep customers informed about what you ship.',
+  },
   helpCenter: {
     label: 'Help Center',
     description: 'Publish a searchable help center so customers can find answers on their own.',
@@ -1089,17 +1097,17 @@ export const FEATURE_FLAG_REGISTRY: Record<
   inboxAi: {
     label: 'Inbox AI',
     description:
-      'AI for your team inside the inbox: a private Quinn Copilot tab for asking questions about a conversation, two-way message translation, and automatic classification of conversation attributes you opt in. Requires an AI model to be configured; each capability has its own controls.',
+      'AI for your team inside the inbox: a private Copilot tab for asking questions about a conversation, two-way message translation, and automatic classification of conversation attributes you opt in. Requires an AI model to be configured; each capability has its own controls.',
   },
   assistantKnowledge: {
     label: 'Assistant knowledge sources',
     description:
-      "Let the AI assistant ground answers in more than the help center: published feedback posts, private snippets your team curates, and the same customer's own past conversation summaries.",
+      "Let Copilot use team-only feedback posts, private snippets, and the same customer's past conversation summaries. Customer-facing Quinn remains limited to vetted public support content.",
   },
   assistantTools: {
-    label: 'Assistant actions & connectors',
+    label: 'Assistant actions',
     description:
-      'Let the AI assistant take actions such as closing conversations or creating tickets, and call external APIs you define via data connectors. Nothing runs by default: actions have per-action controls and approvals, and every connector starts disabled.',
+      'Let the AI assistant take actions such as closing conversations or creating tickets. Actions have per-action controls and approvals.',
   },
   assistantProactiveSuggestions: {
     label: 'Proactive suggested replies',
@@ -1113,13 +1121,105 @@ export const FEATURE_FLAG_REGISTRY: Record<
   },
 }
 
+export type ProductId = 'feedback' | 'support' | 'helpCenter' | 'changelog' | 'status'
+
+export interface ProductDefinition {
+  id: ProductId
+  label: string
+  description: string
+  featureFlags: readonly (keyof FeatureFlags)[]
+  adminPath:
+    | '/admin/feedback'
+    | '/admin/inbox'
+    | '/admin/help-center'
+    | '/admin/changelog'
+    | '/admin/status'
+}
+
+/**
+ * Workspace products shown on Settings > General. Support retains its two
+ * persisted capability flags for compatibility, but the UI changes them as a
+ * single product so workspaces no longer need to coordinate two Labs toggles.
+ */
+export const PRODUCT_DEFINITIONS = [
+  {
+    id: 'feedback',
+    label: 'Feedback & Roadmaps',
+    description: 'Collect ideas, votes, and comments from customers and share your roadmap.',
+    featureFlags: ['feedback'],
+    adminPath: '/admin/feedback',
+  },
+  {
+    id: 'support',
+    label: 'Support',
+    description: 'Manage customer conversations and tickets together in a shared inbox.',
+    featureFlags: ['supportInbox', 'supportTickets'],
+    adminPath: '/admin/inbox',
+  },
+  {
+    id: 'helpCenter',
+    label: 'Help Center',
+    description: 'Publish searchable help articles so customers can find answers themselves.',
+    featureFlags: ['helpCenter'],
+    adminPath: '/admin/help-center',
+  },
+  {
+    id: 'changelog',
+    label: 'Changelog',
+    description: 'Publish product updates and keep customers informed about what you ship.',
+    featureFlags: ['changelog'],
+    adminPath: '/admin/changelog',
+  },
+  {
+    id: 'status',
+    label: 'Status',
+    description: 'Share live service status, incidents, maintenance, and uptime history.',
+    featureFlags: ['statusPage'],
+    adminPath: '/admin/status',
+  },
+] as const satisfies readonly ProductDefinition[]
+
+function getProductDefinition(productId: ProductId): ProductDefinition {
+  return PRODUCT_DEFINITIONS.find((product) => product.id === productId)!
+}
+
+/** A product is available when any of its backing capabilities is enabled. */
+export function isProductEnabled(
+  flags: Partial<FeatureFlags> | null | undefined,
+  productId: ProductId
+): boolean {
+  const definition = getProductDefinition(productId)
+  const effectiveFlags = flags ?? DEFAULT_FEATURE_FLAGS
+  return definition.featureFlags.some((key) => effectiveFlags[key] === true)
+}
+
+/** Build the partial feature-flag update represented by one product switch. */
+export function getProductFlagUpdate(
+  productId: ProductId,
+  enabled: boolean
+): Partial<FeatureFlags> {
+  const definition = getProductDefinition(productId)
+  return Object.fromEntries(
+    definition.featureFlags.map((key) => [key, enabled])
+  ) as Partial<FeatureFlags>
+}
+
+/** First usable product destination, with a non-product fallback for all-off workspaces. */
+export function getFirstEnabledAdminProductPath(
+  flags: Partial<FeatureFlags> | null | undefined
+): ProductDefinition['adminPath'] | '/admin/analytics' {
+  return (
+    PRODUCT_DEFINITIONS.find((product) => isProductEnabled(flags, product.id))?.adminPath ??
+    '/admin/analytics'
+  )
+}
+
 /**
  * Labs page layout: experimental flags grouped into sections, each rendered as
- * a card with a heading + high-level description. Every flag in FeatureFlags
- * must appear exactly once across sections — as a row or as a sub-flag of one
- * (pinned by a test) so a new flag can never silently go unsurfaced. A
- * sub-flag renders indented beneath its parent row and is only toggleable
- * while the parent is on.
+ * a card with a heading + high-level description. Product flags are surfaced
+ * on General instead; a coverage test pins every flag to exactly one page. A
+ * sub-flag renders indented beneath its parent row and is only toggleable while
+ * the parent is on.
  */
 export interface LabSectionRow {
   key: keyof FeatureFlags
@@ -1131,17 +1231,6 @@ export const LAB_SECTIONS: Array<{
   description: string
   flags: LabSectionRow[]
 }> = [
-  {
-    title: 'Products',
-    description:
-      'Core modules of the platform. On by default for new workspaces; turn off any you do not need.',
-    flags: [
-      { key: 'supportInbox' },
-      { key: 'supportTickets' },
-      { key: 'helpCenter' },
-      { key: 'statusPage' },
-    ],
-  },
   {
     title: 'AI',
     description:

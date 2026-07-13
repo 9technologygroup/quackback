@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { z } from 'zod'
@@ -30,6 +30,7 @@ import {
   useBoardSelection,
   type BoardTab,
 } from '@/components/admin/settings/boards/use-board-selection'
+import { isProductEnabled } from '@/lib/shared/types/settings'
 
 const searchSchema = z.object({
   board: z.string().optional(),
@@ -38,6 +39,11 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute('/admin/settings/boards/')({
   validateSearch: searchSchema,
+  beforeLoad: ({ context }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'feedback')) {
+      throw redirect({ to: '/admin/settings/general' })
+    }
+  },
   loader: async ({ context }) => {
     const { queryClient } = context
     // Warm both queries the board forms read so they render with real data

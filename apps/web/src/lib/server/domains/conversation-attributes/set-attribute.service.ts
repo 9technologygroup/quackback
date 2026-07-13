@@ -79,15 +79,8 @@ export function validateAttributeValue(
   }
 }
 
-/** The conversation.attribute_changed event actor, derived from `src` alone
- *  (this generic writer has no caller identity to thread through — every
- *  caller already records its own identity elsewhere, e.g. the classification
- *  note's Quinn author, the macro/inbox audit log). AI writes are
- *  service-actored, displayName resolved from the configured assistant name
- *  (settings.widget's messenger.assistant.name, falling back to 'Quinn' when
- *  unset) — the same `messenger.assistant?.name ?? 'Quinn'` convention every
- *  other assistant-actor site follows (assistant.orchestrator.ts,
- *  action.executor.ts's sendBlock), rather than hardcoding the default name.
+/** The conversation.attribute_changed event actor, derived from `src` alone.
+ *  AI writes use the configured V2 assistant identity.
  *  Consumers of this event's actor (e.g. the notification handler's
  *  `event.actor.displayName`) show it verbatim to a human, so a renamed
  *  assistant must actually carry through here, not merely omit the field.
@@ -96,9 +89,10 @@ export function validateAttributeValue(
  *  (including anonymous visitors) as 'user'. */
 async function attributeChangeActor(src: ConversationAttributeSource): Promise<EventActor> {
   if (src !== 'ai') return { type: 'user' }
-  const { getMessengerConfig } = await import('@/lib/server/domains/settings/settings.widget')
-  const messenger = await getMessengerConfig()
-  return { type: 'service', displayName: messenger.assistant?.name ?? 'Quinn' }
+  const { getAssistantRuntimeConfig } =
+    await import('@/lib/server/domains/settings/settings.assistant')
+  const assistant = await getAssistantRuntimeConfig()
+  return { type: 'service', displayName: assistant.config.identity.name }
 }
 
 /** The visible refusal thrown when a customer-sourced write loses the

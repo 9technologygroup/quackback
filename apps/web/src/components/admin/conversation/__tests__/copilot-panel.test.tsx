@@ -34,7 +34,6 @@ vi.mock('@tanstack/react-router', () => ({
 
 const hoisted = vi.hoisted(() => ({
   saveCopilotAnswerAsMacroFn: vi.fn(),
-  summarizeConversationNowFn: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
   getAssistantPendingActionFn: vi.fn(),
@@ -62,9 +61,6 @@ vi.mock('@/lib/client/copilot-events', async () => ({
 vi.mock('@/lib/server/functions/macros', () => ({
   saveCopilotAnswerAsMacroFn: hoisted.saveCopilotAnswerAsMacroFn,
 }))
-vi.mock('@/lib/server/functions/copilot-summary', () => ({
-  summarizeConversationNowFn: hoisted.summarizeConversationNowFn,
-}))
 vi.mock('@/lib/server/functions/assistant-pending-actions', () => ({
   getAssistantPendingActionFn: hoisted.getAssistantPendingActionFn,
 }))
@@ -89,25 +85,20 @@ function renderPanel(
   props: Partial<{
     flags: FeatureFlags | undefined
     onInsert: (t: string, m: 'reply' | 'note') => void
-    getComposerText: () => string
-    onReplaceComposerText: (t: string) => void
   }> = {}
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const onInsert = props.onInsert ?? vi.fn()
-  const onReplaceComposerText = props.onReplaceComposerText ?? vi.fn()
   render(
     <QueryClientProvider client={client}>
       <CopilotPanel
         item={{ kind: 'conversation', id: CONVERSATION_ID }}
         flags={props.flags ?? ALL_FLAGS_ON}
         onInsert={onInsert}
-        getComposerText={props.getComposerText ?? (() => '')}
-        onReplaceComposerText={onReplaceComposerText}
       />
     </QueryClientProvider>
   )
-  return { onInsert, onReplaceComposerText }
+  return { onInsert }
 }
 
 function transformSseFrames(text: string): string {
@@ -299,7 +290,7 @@ describe('<CopilotPanel> ask -> stream -> answer', () => {
     fireEvent.click(screen.getByRole('button', { name: /new chat/i }))
 
     expect(screen.queryByText('Answer.')).not.toBeInTheDocument()
-    expect(screen.getByText(/Ask Quinn anything about this conversation/)).toBeInTheDocument()
+    expect(screen.getByText(/Ask Copilot anything about this conversation/)).toBeInTheDocument()
     vi.unstubAllGlobals()
   })
 })
@@ -694,48 +685,6 @@ describe('<CopilotPanel> "Add to composer & modify" menu', () => {
   })
 })
 
-describe('<CopilotPanel> Format chip', () => {
-  it('is disabled with a "Write a draft first" tooltip when the composer is empty', async () => {
-    vi.stubGlobal('fetch', vi.fn())
-    renderPanel({ getComposerText: () => '' })
-
-    const chip = screen.getByRole('button', { name: /^format$/i })
-    expect(chip).toBeDisabled()
-    expect(chip).toHaveAttribute('title', 'Write a draft first')
-  })
-
-  it('is enabled when the composer has a draft', async () => {
-    vi.stubGlobal('fetch', vi.fn())
-    renderPanel({ getComposerText: () => 'A draft reply.' })
-
-    expect(screen.getByRole('button', { name: /^format$/i })).not.toBeDisabled()
-  })
-
-  it('streams the transform and replaces the composer content with the final text', async () => {
-    const fetchMock = stubFetchByUrl({
-      transform: transformSseFrames('Expanded and improved draft.'),
-    })
-    const { onReplaceComposerText } = renderPanel({ getComposerText: () => 'Short draft.' })
-
-    // Radix DropdownMenuTrigger opens on pointerDown, not click.
-    fireEvent.pointerDown(screen.getByRole('button', { name: /^format$/i }), { button: 0 })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Expand' }))
-
-    await waitFor(() => {
-      expect(onReplaceComposerText).toHaveBeenCalledWith('Expanded and improved draft.')
-    })
-    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/transform'))
-    expect(call).toBeDefined()
-    const body = JSON.parse((call as [string, RequestInit])[1].body as string)
-    expect(body).toEqual({
-      conversationId: CONVERSATION_ID,
-      text: 'Short draft.',
-      transform: 'expand',
-    })
-    vi.unstubAllGlobals()
-  })
-})
-
 describe('<CopilotPanel> Answer-sources popover', () => {
   it('hides rows whose flag is off', async () => {
     vi.stubGlobal('fetch', vi.fn())
@@ -885,73 +834,6 @@ describe('<CopilotPanel> Save as macro', () => {
   })
 })
 
-describe('<CopilotPanel> Summarize chip', () => {
-  it('inserts a formatted Question/Summary block as an internal note on success', async () => {
-    hoisted.summarizeConversationNowFn.mockResolvedValue({
-      question: 'Refund window',
-      bullets: ['Customer asked about refunds.', 'Explained the 30-day window.'],
-    })
-    const onInsert = vi.fn()
-    renderPanel({ onInsert })
-
-    fireEvent.click(screen.getByRole('button', { name: /^summarize$/i }))
-
-    await waitFor(() => {
-      expect(onInsert).toHaveBeenCalledWith(
-        'Question\nRefund window\n\nSummary\n- Customer asked about refunds.\n- Explained the 30-day window.',
-        'note'
-      )
-    })
-    expect(hoisted.summarizeConversationNowFn).toHaveBeenCalledWith({
-      data: { conversationId: CONVERSATION_ID },
-    })
-  })
-
-  it('shows an error toast on failure and inserts nothing', async () => {
-    hoisted.summarizeConversationNowFn.mockRejectedValue(
-      new Error('The assistant is not configured')
-    )
-    const onInsert = vi.fn()
-    renderPanel({ onInsert })
-
-    fireEvent.click(screen.getByRole('button', { name: /^summarize$/i }))
-
-    await waitFor(() => {
-      expect(hoisted.toastError).toHaveBeenCalledWith('The assistant is not configured')
-    })
-    expect(onInsert).not.toHaveBeenCalled()
-  })
-
-  it('disables the chip while a copilot answer is streaming', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => new Promise(() => {}))
-    )
-    renderPanel()
-    await ask('Still thinking...')
-
-    expect(screen.getByRole('button', { name: /^summarize$/i })).toBeDisabled()
-    vi.unstubAllGlobals()
-  })
-
-  it('disables the chip and swaps the label while a summarize is in flight', async () => {
-    let resolveSummary: (value: { question: string; bullets: string[] }) => void = () => {}
-    hoisted.summarizeConversationNowFn.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveSummary = resolve
-        })
-    )
-    renderPanel()
-
-    fireEvent.click(screen.getByRole('button', { name: /^summarize$/i }))
-
-    const summarizingButton = await screen.findByRole('button', { name: /summarizing/i })
-    expect(summarizingButton).toBeDisabled()
-    resolveSummary({ question: 'Q', bullets: ['B'] })
-  })
-})
-
 describe('<CopilotPanel> empty state', () => {
   it('teases act-on-approval with the shield-check bullet', async () => {
     vi.stubGlobal('fetch', vi.fn())
@@ -961,12 +843,15 @@ describe('<CopilotPanel> empty state', () => {
     vi.unstubAllGlobals()
   })
 
-  it('uses the configured assistant name in the headline', async () => {
+  it('keeps the teammate-facing Copilot identity separate from the customer assistant', async () => {
     hoisted.widgetConfig = { messenger: { assistant: { name: 'Fin', avatarUrl: '' } } }
     vi.stubGlobal('fetch', vi.fn())
     renderPanel()
 
-    expect(await screen.findByText('Ask Fin anything about this conversation.')).toBeInTheDocument()
+    expect(
+      await screen.findByText('Ask Copilot anything about this conversation.')
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Ask Fin anything about this conversation.')).not.toBeInTheDocument()
     vi.unstubAllGlobals()
   })
 })
@@ -1068,25 +953,6 @@ describe('<CopilotPanel> usage events', () => {
       })
     })
     vi.unstubAllGlobals()
-  })
-
-  it('logs summary_inserted with destination note when the Summarize chip writes its note', async () => {
-    hoisted.summarizeConversationNowFn.mockResolvedValue({
-      question: 'Refund window',
-      bullets: ['Explained the 30-day window.'],
-    })
-    const onInsert = vi.fn()
-    renderPanel({ onInsert })
-
-    fireEvent.click(screen.getByRole('button', { name: /^summarize$/i }))
-
-    await waitFor(() => {
-      expect(hoisted.recordCopilotEvent).toHaveBeenCalledWith({
-        item: { conversationId: CONVERSATION_ID },
-        eventType: 'summary_inserted',
-        destination: 'note',
-      })
-    })
   })
 })
 

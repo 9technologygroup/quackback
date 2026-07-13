@@ -1,5 +1,5 @@
 /**
- * Quinn Copilot: a private, teammate-facing Q&A thread scoped to a single
+ * Copilot: a private, teammate-facing Q&A thread scoped to a single
  * conversation OR ticket (COPILOT-SIDEBAR-UX.md; item-scoped per unified
  * inbox §2.9). Renders inside the unified inbox detail panel's "Copilot" tab
  * (inbox-detail-panel.tsx). Streams against POST /api/admin/assistant/copilot
@@ -19,12 +19,9 @@ import {
   type Ref,
 } from 'react'
 import { useRouteContext } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { toast } from 'sonner'
 import {
   ArrowPathIcon,
   BoltIcon,
-  ClipboardDocumentListIcon,
   EllipsisHorizontalIcon,
   FunnelIcon,
   HandThumbDownIcon,
@@ -69,13 +66,12 @@ import {
   type SourceType,
 } from './copilot-sources'
 import { useSseTurn } from '@/lib/client/hooks/use-sse-turn'
+import { useCopilotTransform } from '@/lib/client/hooks/use-copilot-transform'
 import { extractHttpErrorMessage, GENERIC_ERROR } from '@/lib/client/utils/http-error'
-import { settingsQueries } from '@/lib/client/queries/settings'
 import { cn } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import {
   COPILOT_EVENTS,
-  TRANSFORM_EVENTS,
   type CopilotActivityPayload,
   type CopilotAnswerType,
   type CopilotCitation,
@@ -85,11 +81,7 @@ import {
   type CopilotHistoryEntry,
   type CopilotProposedAction,
   type TransformKind,
-  type TransformDeltaPayload,
-  type TransformFinalPayload,
-  type TransformErrorPayload,
 } from '@/lib/shared/assistant/copilot-contract'
-import { formatConversationSummaryNote } from '@/lib/shared/assistant/copilot-format'
 import {
   itemRefBody,
   recordCopilotEvent,
@@ -97,10 +89,6 @@ import {
 } from '@/lib/client/copilot-events'
 import type { AssistantActivityStatus } from '@/lib/shared/conversation/types'
 import type { InboxItemRef } from '@/lib/shared/inbox/items'
-import {
-  summarizeConversationNowFn,
-  summarizeTicketNowFn,
-} from '@/lib/server/functions/copilot-summary'
 
 const MAX_QUESTION_CHARS = 4000
 const MAX_HISTORY_ENTRIES = 20
@@ -125,22 +113,6 @@ const MODIFY_ROWS: { transform: TransformKind; label: string }[] = [
   { transform: 'more_formal', label: 'More formal' },
   { transform: 'more_concise', label: 'More concise' },
 ]
-
-/** The reply composer's Format chip menu rows (P2-C.1): acts on the
- *  composer's own draft rather than an answer. */
-const FORMAT_ROWS: { transform: TransformKind; label: string }[] = [
-  { transform: 'expand', label: 'Expand' },
-  { transform: 'rephrase', label: 'Rephrase' },
-  { transform: 'more_friendly', label: 'More friendly' },
-  { transform: 'more_formal', label: 'More formal' },
-  { transform: 'more_concise', label: 'More concise' },
-  { transform: 'fix_grammar', label: 'Fix grammar and spelling' },
-]
-
-/** Which control currently owns the in-flight transform stream: used to show
- *  its own inline progress state and disable every OTHER transform entry
- *  point until it settles (only one transform runs at a time). */
-type TransformState = { scope: 'answer'; turnId: string } | { scope: 'composer' }
 
 /** The usage event to record once an insert actually happens — carried
  *  alongside the text so the leak-gate confirm logs on proceed, never on the
@@ -269,29 +241,19 @@ export function CopilotPanel({
   item,
   flags,
   onInsert,
-  getComposerText,
-  onReplaceComposerText,
   askInputRef,
 }: {
-  /** The open item (unified inbox §2.9) — grounds the turn on the
-   *  conversation or ticket's own thread + drives the Summarize chip. */
+  /** The open item (unified inbox §2.9) grounds the turn on its thread. */
   item: InboxItemRef
   flags: FeatureFlags | undefined
   onInsert: (text: string, mode: InsertMode) => void
-  /** Current plain text of the reply composer: the Format chip's
-   *  empty-check and its transform source (P2-C.1). */
-  getComposerText: () => string
-  /** Replace the reply composer's content with a Format transform's result. */
-  onReplaceComposerText: (text: string) => void
   /** The ask textarea's DOM node, for hosts that focus it from outside
    *  (e.g. an inbox keyboard shortcut). */
   askInputRef?: Ref<HTMLTextAreaElement>
 }) {
   const { principal } = useRouteContext({ from: '/admin' }) as { principal?: { id: string } | null }
-  const { data: widgetConfig } = useQuery(settingsQueries.widgetConfig())
-  const assistant = widgetConfig?.messenger?.assistant
-  const assistantName = assistant?.name || 'Quinn'
-  const headerLabel = assistantName !== 'Quinn' ? `${assistantName} Copilot` : 'Copilot'
+  const assistantName = 'Copilot'
+  const headerLabel = 'Copilot'
 
   const sourceOptions = useMemo(() => visibleSourceOptions(flags), [flags])
   const visibleTypes = useMemo(() => sourceOptions.map((o) => o.type), [sourceOptions])
@@ -302,26 +264,18 @@ export function CopilotPanel({
   const [input, setInput] = useState('')
   const [pendingInsert, setPendingInsert] = useState<PendingInsert | null>(null)
   const [saveMacroTurnId, setSaveMacroTurnId] = useState<string | null>(null)
-  const [summarizing, setSummarizing] = useState(false)
   const { start, stop } = useSseTurn()
-  // A transform (modify-answer or Format) runs on its own SSE turn, separate
-  // from the ask/answer stream above, so asking a follow-up and transforming
-  // a prior answer never abort each other.
-  const { start: startTransform, stop: stopTransform } = useSseTurn()
-  const [transformState, setTransformState] = useState<TransformState | null>(null)
-  const transforming = transformState !== null
+  // Answer rewrites run independently from the ask/answer stream, so changing
+  // a prior answer never aborts a follow-up question.
+  const runTransform = useCopilotTransform(item)
+  const [transformingTurnId, setTransformingTurnId] = useState<string | null>(null)
+  const transforming = transformingTurnId !== null
   const nextIdRef = useRef(0)
 
   const busy = turns.some((t) => t.status === 'streaming')
   const saveMacroTurn = turns.find((t) => t.id === saveMacroTurnId) ?? null
-  // Pull-based read (mirrors insertMacroBody): re-read on every render rather
-  // than threading composer text through props on every keystroke, which
-  // would re-render this whole panel (and the virtualized thread above it)
-  // on every character typed.
-  const composerEmpty = getComposerText().trim().length === 0
 
   useEffect(() => stop, [stop])
-  useEffect(() => stopTransform, [stopTransform])
 
   // Fire-and-forget usage logging (inserts + thumbs feedback). recordCopilotEvent
   // swallows every failure, so a logging hiccup can never affect the insert.
@@ -360,72 +314,20 @@ export function CopilotPanel({
     [performInsert]
   )
 
-  const runTransform = useCallback(
-    async (transform: TransformKind, text: string): Promise<string | null> => {
-      let result = ''
-      let ok = true
-      await startTransform({
-        url: '/api/admin/assistant/transform',
-        body: { ...itemRefBody(item), text, transform },
-        handlers: {
-          [TRANSFORM_EVENTS.delta]: (data) => {
-            result += (data as TransformDeltaPayload).text
-          },
-          [TRANSFORM_EVENTS.final]: (data) => {
-            const final = data as TransformFinalPayload
-            if (final.text) result = final.text
-          },
-          [TRANSFORM_EVENTS.error]: (data) => {
-            ok = false
-            toast.error((data as TransformErrorPayload).message || GENERIC_ERROR)
-          },
-        },
-        onHttpError: async (res) => {
-          ok = false
-          toast.error(await extractHttpErrorMessage(res))
-        },
-        onAbort: () => {
-          ok = false
-        },
-        onError: () => {
-          ok = false
-          toast.error(GENERIC_ERROR)
-        },
-      })
-      return ok && result ? result : null
-    },
-    [item, startTransform]
-  )
-
   const modifyAnswer = useCallback(
     async (turn: CopilotTurn, transform: TransformKind) => {
       if (transforming || !turn.answer) return
-      setTransformState({ scope: 'answer', turnId: turn.id })
+      setTransformingTurnId(turn.id)
       try {
         const result = await runTransform(transform, turn.answer)
         if (result) {
           requestInsert(result, { eventType: 'transform_inserted', ...turnMeta(turn) })
         }
       } finally {
-        setTransformState(null)
+        setTransformingTurnId(null)
       }
     },
     [transforming, runTransform, requestInsert]
-  )
-
-  const formatComposer = useCallback(
-    async (transform: TransformKind) => {
-      const text = getComposerText()
-      if (transforming || !text.trim()) return
-      setTransformState({ scope: 'composer' })
-      try {
-        const result = await runTransform(transform, text)
-        if (result) onReplaceComposerText(result)
-      } finally {
-        setTransformState(null)
-      }
-    },
-    [transforming, runTransform, getComposerText, onReplaceComposerText]
   )
 
   const runTurn = useCallback(
@@ -597,31 +499,13 @@ export function CopilotPanel({
     [insertLastAnswer]
   )
 
-  const summarizeNow = useCallback(async () => {
-    if (busy || summarizing) return
-    setSummarizing(true)
-    try {
-      const result =
-        item.kind === 'conversation'
-          ? await summarizeConversationNowFn({ data: { conversationId: item.id } })
-          : await summarizeTicketNowFn({ data: { ticketId: item.id } })
-      performInsert(formatConversationSummaryNote(result.question, result.bullets), 'note', {
-        eventType: 'summary_inserted',
-      })
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to summarize the conversation')
-    } finally {
-      setSummarizing(false)
-    }
-  }, [busy, summarizing, item, performInsert])
-
   return (
     // Bubble-phase only: fires for keydowns on the panel's own focusable
     // children (ask input, answer buttons), never globally.
     <div className="flex h-full min-h-0 flex-col" onKeyDown={onPanelKeyDown}>
       <div className="flex items-center justify-between border-b border-border/50 px-3 py-2">
         <div className="flex items-center gap-2">
-          <Avatar src={assistant?.avatarUrl} name={assistantName} className="size-6 text-xs" />
+          <Avatar src={null} name={assistantName} className="size-6 text-xs" />
           <span className="text-sm font-medium">{headerLabel}</span>
         </div>
         <button
@@ -659,9 +543,7 @@ export function CopilotPanel({
                   })
                 }
                 transformBusy={transforming}
-                isTransforming={
-                  transformState?.scope === 'answer' && transformState.turnId === turn.id
-                }
+                isTransforming={transformingTurnId === turn.id}
               />
             ))}
           </div>
@@ -679,12 +561,6 @@ export function CopilotPanel({
         sourceOptions={sourceOptions}
         checked={checked}
         onToggleSource={toggle}
-        onSummarize={() => void summarizeNow()}
-        summarizing={summarizing}
-        onFormat={(transform) => void formatComposer(transform)}
-        formatDisabled={busy || transforming || composerEmpty}
-        formatBusy={transformState?.scope === 'composer'}
-        composerEmpty={composerEmpty}
       />
 
       <SaveAsMacroDialog
@@ -1013,12 +889,6 @@ function CopilotAskInput({
   sourceOptions,
   checked,
   onToggleSource,
-  onSummarize,
-  summarizing,
-  onFormat,
-  formatDisabled,
-  formatBusy,
-  composerEmpty,
 }: {
   /** See CopilotPanel's askInputRef: the textarea node for outside focus. */
   inputRef?: Ref<HTMLTextAreaElement>
@@ -1031,62 +901,10 @@ function CopilotAskInput({
   sourceOptions: SourceOption[]
   checked: Set<SourceType>
   onToggleSource: (type: SourceType) => void
-  /** Chips row above the input (COPILOT-SIDEBAR-UX.md P2-C): [Format] acts on
-   *  the reply composer's own draft; [Summarize] writes a note. */
-  onSummarize: () => void
-  summarizing: boolean
-  /** Run a Format transform on the reply composer's current draft. */
-  onFormat: (transform: TransformKind) => void
-  /** Disabled while busy/transforming, or while the composer has no draft. */
-  formatDisabled: boolean
-  /** This chip's own transform is the one in flight right now. */
-  formatBusy: boolean
-  /** Whether the disabled state above is specifically "no draft yet": drives
-   *  the "Write a draft first" tooltip rather than a generic disabled state. */
-  composerEmpty: boolean
 }) {
   const placeholder = hasAskedBefore ? 'Ask a follow-up question...' : 'Ask a question...'
   return (
     <div className="border-t border-border/50 p-3">
-      <div className="mb-2 flex items-center gap-1.5">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              disabled={formatDisabled}
-              title={composerEmpty ? 'Write a draft first' : undefined}
-              className="flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
-            >
-              {formatBusy ? (
-                <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <SparklesIcon className="h-3.5 w-3.5" />
-              )}
-              {formatBusy ? 'Formatting…' : 'Format'}
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            {FORMAT_ROWS.map((row) => (
-              <DropdownMenuItem key={row.transform} onClick={() => onFormat(row.transform)}>
-                {row.label}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <button
-          type="button"
-          onClick={onSummarize}
-          disabled={busy || summarizing}
-          className="flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
-        >
-          {summarizing ? (
-            <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <ClipboardDocumentListIcon className="h-3.5 w-3.5" />
-          )}
-          {summarizing ? 'Summarizing…' : 'Summarize'}
-        </button>
-      </div>
       <div className="relative rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-primary/20">
         <Textarea
           ref={inputRef}

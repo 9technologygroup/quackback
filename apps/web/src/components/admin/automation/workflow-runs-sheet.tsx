@@ -64,39 +64,18 @@ const EVENT_KIND_LABELS: Record<string, string> = {
   // sentRuns/engagedRuns rollup for the aggregate this timeline backs.
   block_sent: 'Block sent',
   block_engaged: 'Customer engaged',
-  // call_connector park-and-continue loop (workflow.engine.ts's
-  // applyPlanAndSettle): logged once per connector hop, plus once if the
-  // MAX_CONNECTOR_HOPS safety bound is hit.
-  'connector_result:success': 'Connector call succeeded',
-  connector_hop_limit: 'Stopped (connector hop limit)',
-  // Logged instead of reverting to 'waiting' when a hop AFTER the first
-  // connector call already committed an external side effect throws
-  // (workflow.engine.ts's applyPlanAndSettle) — replaying that call on a
-  // BullMQ retry would risk a duplicate non-idempotent request, so the run
-  // stops here instead.
-  resume_failed_after_side_effects: 'Stopped (error after external call)',
-}
-
-/** Human-readable text for a `connector_failed:<reason>` event's reason —
- *  the same reasons action.executor.ts's CallConnectorResult/
- *  ConnectorExecutionResult can carry. Falls back to the raw reason string
- *  for one this map doesn't know (a future addition to the reason union). */
-const CONNECTOR_FAILURE_REASON_LABELS: Record<string, string> = {
-  rate_limited: 'rate limited',
-  host_not_allowed: 'blocked host',
-  http_error: 'HTTP error',
-  network_error: 'network error',
-  unavailable: 'connector unavailable',
-  invalid_params: 'invalid inputs',
+  // Logged instead of reverting to 'waiting' when an action may already have
+  // committed a non-idempotent side effect. Retrying from the old cursor could
+  // duplicate customer-visible work, so the run stops here instead.
+  resume_failed_after_side_effects: 'Stopped (error after side effects)',
 }
 
 /**
  * Humanize a stored run-event kind (workflow-run-events.ts's logRunEvent,
  * written by both the engine and workflow-sweep.ts): the static labels
  * above, or `action_failed:<type>` ->
- * "Action failed: <the action's display label>", or `connector_failed:
- * <reason>` -> "Connector call failed (<human reason>)" — falling back to
- * the raw type/reason string for an unknown/removed one (the same
+ * "Action failed: <the action's display label>" — falling back to
+ * the raw type string for an unknown/removed one (the same
  * defensive-read stance the rest of the builder takes on a stored reference
  * it can't resolve, e.g. actionSummary's `named()` helper in
  * workflow-graph.ts). Anything else round-trips verbatim so a future event
@@ -109,11 +88,6 @@ export function humanizeRunEventKind(kind: string): string {
     const actionType = kind.slice('action_failed:'.length)
     const label = (ACTION_LABELS as Partial<Record<string, string>>)[actionType] ?? actionType
     return `Action failed: ${label}`
-  }
-  if (kind.startsWith('connector_failed:')) {
-    const reason = kind.slice('connector_failed:'.length)
-    const label = CONNECTOR_FAILURE_REASON_LABELS[reason] ?? reason
-    return `Connector call failed (${label})`
   }
   return kind
 }
@@ -174,8 +148,7 @@ function RunRow({
 }
 
 function TimelineRow({ event }: { event: WorkflowRunEventRow }) {
-  const failed =
-    event.kind.startsWith('action_failed:') || event.kind.startsWith('connector_failed:')
+  const failed = event.kind.startsWith('action_failed:')
   return (
     <div className="flex items-center justify-between gap-3 py-2 text-[13px]">
       <span className={cn('font-medium', failed && 'text-destructive')}>

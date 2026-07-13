@@ -214,6 +214,11 @@ export async function retrievePosts(
   ceiling: ContentAudience,
   options: RetrievePostsOptions = {}
 ): Promise<RetrievedPost[]> {
+  // Published feedback is still customer-authored, not vetted support
+  // knowledge. Keep it available to teammates, but never ground an autonomous
+  // customer-facing answer with it.
+  if (ceiling === 'public') return []
+
   const topK = options.topK ?? POSTS_ASK_TOP_K
   const minScore = options.minScore ?? POSTS_SEMANTIC_SIMILARITY_FLOOR
   const keywordRankFloor = options.keywordRankFloor ?? POSTS_KEYWORD_RANK_FLOOR

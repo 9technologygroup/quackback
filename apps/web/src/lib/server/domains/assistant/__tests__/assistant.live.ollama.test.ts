@@ -68,16 +68,44 @@ describe.skipIf(!reachable)('assistant runtime (live AI endpoint)', () => {
 
     const result = await runAssistantTurn({
       assistantPrincipalId: 'principal_assistant' as never,
+      role: 'customer_support',
+      surface: 'widget',
       messages: [{ sender: 'customer', content: 'What is your refund policy?' }],
     })
 
-    expect(result.status).toBe('answered')
-    if (result.status === 'answered') {
+    expect(result.status).not.toBe('suppressed')
+    if (result.status !== 'suppressed') {
       expect(typeof result.text).toBe('string')
       expect(result.text.length).toBeGreaterThan(0)
       // Citations are a structured contract: an array of ledger-backed sources
-      // (empty here, since the test KB has no matching article).
+      // (an honest no-source result may instead be `cannot_answer`).
       expect(Array.isArray(result.citations)).toBe(true)
     }
   }, 60_000)
+
+  it('uses search for pricing while allowing zero-tool casual conversation', async () => {
+    const { runAssistantTurn } = await import('../assistant.runtime')
+
+    const pricingActivities: Array<{ kind: 'thinking' } | { kind: 'tool'; tool: string }> = []
+    await runAssistantTurn({
+      assistantPrincipalId: 'principal_assistant' as never,
+      role: 'customer_support',
+      surface: 'widget',
+      messages: [
+        { sender: 'customer', content: "I'd like to learn more about Quackback pricing." },
+      ],
+      onActivity: (activity) => pricingActivities.push(activity),
+    })
+    expect(pricingActivities).toContainEqual({ kind: 'tool', tool: 'search_knowledge' })
+
+    const casualActivities: Array<{ kind: 'thinking' } | { kind: 'tool'; tool: string }> = []
+    await runAssistantTurn({
+      assistantPrincipalId: 'principal_assistant' as never,
+      role: 'customer_support',
+      surface: 'widget',
+      messages: [{ sender: 'customer', content: "What's your favourite pizza?" }],
+      onActivity: (activity) => casualActivities.push(activity),
+    })
+    expect(casualActivities.some((activity) => activity.kind === 'tool')).toBe(false)
+  }, 120_000)
 })

@@ -213,7 +213,8 @@ describe('facetToStatusFilter', () => {
 })
 
 describe('ticket inbox views', () => {
-  it('isTicketInboxView recognizes only the three Tickets-section scopes', () => {
+  it('isTicketInboxView recognizes every Tickets-section scope', () => {
+    expect(isTicketInboxView('tickets_all')).toBe(true)
     expect(isTicketInboxView('tickets_customer')).toBe(true)
     expect(isTicketInboxView('tickets_back_office')).toBe(true)
     expect(isTicketInboxView('tickets_tracker')).toBe(true)
@@ -228,9 +229,9 @@ describe('ticket inbox views', () => {
   })
 
   it('navFromSearch resolves a Tickets-section view like any other view', () => {
-    expect(navFromSearch({ view: 'tickets_customer' })).toEqual({
+    expect(navFromSearch({ view: 'tickets_all' })).toEqual({
       kind: 'view',
-      view: 'tickets_customer',
+      view: 'tickets_all',
     })
   })
 })
@@ -244,6 +245,7 @@ describe('usesUnifiedInboxList', () => {
   })
 
   it('routes every Tickets-section scope through the unified endpoint', () => {
+    expect(usesUnifiedInboxList({ kind: 'view', view: 'tickets_all' })).toBe(true)
     expect(usesUnifiedInboxList({ kind: 'view', view: 'tickets_customer' })).toBe(true)
     expect(usesUnifiedInboxList({ kind: 'view', view: 'tickets_back_office' })).toBe(true)
     expect(usesUnifiedInboxList({ kind: 'view', view: 'tickets_tracker' })).toBe(true)
@@ -301,10 +303,10 @@ describe('buildInboxListParams', () => {
     })
   })
 
-  it('maps "all" to both kinds, with no assignee filter', () => {
+  it('maps "all" to conversations only, with no assignee filter', () => {
     expect(buildInboxListParams({ kind: 'view', view: 'all' }, 'closed', 'all', '')).toEqual({
       facet: 'closed',
-      kinds: ['conversation', 'ticket'],
+      kinds: ['conversation'],
       priority: undefined,
       search: undefined,
       companyId: undefined,
@@ -324,7 +326,13 @@ describe('buildInboxListParams', () => {
     })
   })
 
-  it('maps each Tickets-section scope to ticket-only kinds + ticketType', () => {
+  it('maps All tickets to ticket-only kinds without a type filter', () => {
+    expect(
+      buildInboxListParams({ kind: 'view', view: 'tickets_all' }, 'all', 'all', '')
+    ).toMatchObject({ kinds: ['ticket'], ticketType: undefined })
+  })
+
+  it('maps type-specific Tickets scopes to ticket-only kinds + ticketType', () => {
     expect(
       buildInboxListParams({ kind: 'view', view: 'tickets_customer' }, 'all', 'all', '')
     ).toMatchObject({ kinds: ['ticket'], ticketType: 'customer' })

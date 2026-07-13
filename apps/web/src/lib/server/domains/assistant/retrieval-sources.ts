@@ -8,10 +8,9 @@
  * past-conversation summaries each behind their own flag — composed by
  * `retrieveKnowledge` into one ranked, budgeted result.
  *
- * Mirrors the static-plus-flagged-dynamic shape of `resolveToolSpecs()`
- * (assistant.toolspec.ts): the knowledge-base source is always registered; a
- * source gated behind a flag is registered only when that flag is on, via a
- * lazy import so this module never eagerly pulls in that source's domain.
+ * The knowledge-base source is always registered; a source gated behind a
+ * flag is registered only when that flag is on, via a lazy import so this
+ * module never eagerly pulls in that source's domain.
  * With only the knowledge-base source registered (the flag-off default),
  * `retrieveKnowledge` is a byte-identical pass-through of
  * `retrieveKbArticles`'s own ranking — merging and re-ranking a single
@@ -139,13 +138,15 @@ const STATIC_SOURCES: readonly KnowledgeSource[] = [kbKnowledgeSource]
  * snippets source, and the past-conversation-summaries source. Each optional
  * source's domain is imported dynamically so this module (and everything
  * that statically imports it, including assistant.toolspec.ts) never pulls
- * in that source's schema at load time when the flag is off — mirrors
- * `resolveToolSpecs()`'s lazy import of the connectors domain behind
- * `assistantTools`.
+ * in that source's schema at load time when the flag is off.
  */
-export async function resolveKnowledgeSources(): Promise<KnowledgeSource[]> {
+export async function resolveKnowledgeSources(
+  knowledgeEnabled?: boolean
+): Promise<KnowledgeSource[]> {
   const sources: KnowledgeSource[] = [...STATIC_SOURCES]
-  if (await isFeatureEnabled('assistantKnowledge')) {
+  const includeAdditionalSources =
+    knowledgeEnabled ?? (await isFeatureEnabled('assistantKnowledge'))
+  if (includeAdditionalSources) {
     const [{ postsKnowledgeSource }, { snippetsKnowledgeSource }, summaries] = await Promise.all([
       import('./posts-retrieval'),
       import('./snippets-retrieval'),
@@ -204,10 +205,12 @@ export async function retrieveKnowledge(
     customerPrincipalId?: PrincipalId
     conversationId?: ConversationId | null
     sourceTypes?: RetrievedItem['sourceType'][]
+    /** Turn-scoped feature snapshot; omitted only by legacy direct callers/tests. */
+    knowledgeEnabled?: boolean
   } = {}
 ): Promise<RetrievedItem[]> {
   const topK = opts.topK ?? KNOWLEDGE_TOP_K
-  const resolved = await resolveKnowledgeSources()
+  const resolved = await resolveKnowledgeSources(opts.knowledgeEnabled)
   const sources = opts.sourceTypes
     ? resolved.filter((source) => opts.sourceTypes!.includes(source.sourceType))
     : resolved

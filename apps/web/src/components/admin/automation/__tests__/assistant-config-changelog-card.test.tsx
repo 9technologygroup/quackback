@@ -8,6 +8,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { render, screen, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IntlProvider } from 'react-intl'
 
 const hoisted = vi.hoisted(() => ({
   getAssistantConfigChangelogFn: vi.fn(),
@@ -23,7 +24,11 @@ afterEach(cleanup)
 
 function renderWithClient(ui: ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>)
+  return render(
+    <IntlProvider locale="en" messages={{}} onError={() => {}}>
+      <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+    </IntlProvider>
+  )
 }
 
 const ENTRIES = [
@@ -39,12 +44,12 @@ const ENTRIES = [
   },
   {
     id: 'audit_2',
-    eventType: 'assistant.connector.deleted',
+    eventType: 'assistant.deployment.changed',
     actorEmail: 'owner@example.com',
     actorRole: 'admin',
     occurredAt: '2026-07-02T09:30:00.000Z',
-    targetType: 'data_connector',
-    targetId: 'data_connector_1',
+    targetType: 'assistant_settings',
+    targetId: null,
     metadata: null,
   },
 ]
@@ -59,8 +64,8 @@ describe('AssistantConfigChangelogCard', () => {
     hoisted.getAssistantConfigChangelogFn.mockResolvedValue(ENTRIES)
     renderWithClient(<AssistantConfigChangelogCard />)
 
-    expect(await screen.findByText('Guidance rule created')).toBeInTheDocument()
-    expect(screen.getByText('Connector deleted')).toBeInTheDocument()
+    expect(await screen.findByText('Guidance added')).toBeInTheDocument()
+    expect(screen.getByText('Automatic replies changed')).toBeInTheDocument()
     expect(screen.getByText('admin@example.com')).toBeInTheDocument()
     expect(screen.getByText('owner@example.com')).toBeInTheDocument()
   })
@@ -69,7 +74,7 @@ describe('AssistantConfigChangelogCard', () => {
     hoisted.getAssistantConfigChangelogFn.mockResolvedValue([])
     renderWithClient(<AssistantConfigChangelogCard />)
 
-    expect(await screen.findByText(/no ai config changes recorded yet/i)).toBeInTheDocument()
+    expect(await screen.findByText(/no ai agent setting changes/i)).toBeInTheDocument()
   })
 
   it('falls back to the raw event string for an unrecognized event type', async () => {

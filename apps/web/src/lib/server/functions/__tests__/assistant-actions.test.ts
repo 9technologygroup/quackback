@@ -8,6 +8,7 @@
  * constructed actor so the permission gate is meaningfully exercised.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { z } from 'zod'
 import { fakePendingActionRow } from '@/lib/server/domains/assistant/__tests__/assistant-tool-fixtures'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { NotFoundError } from '@/lib/shared/errors'
@@ -71,18 +72,9 @@ vi.mock('@/lib/server/domains/assistant/pending-actions.service', () => ({
 }))
 
 vi.mock('@/lib/server/domains/assistant/assistant.toolspec', () => ({
-  resolveToolSpecs: hoisted.resolveToolSpecs,
-  // The fn under test looks specs up by name; derive the record lazily from
-  // the same mocked list so each test controls both surfaces with one mock.
-  get ASSISTANT_TOOL_SPECS() {
+  // Static lookup over the test-controlled built-in registry fixture.
+  getToolSpecByName: (name: string) => {
     const specs = (hoisted.resolveToolSpecs() ?? []) as Array<{ name: string }>
-    return Object.fromEntries(specs.map((s) => [s.name, s]))
-  },
-  // Faithful pure replica of the real lookup (async over the same mocked
-  // list — the fn under test now calls this instead of indexing
-  // ASSISTANT_TOOL_SPECS directly, so a connector_* name resolves too).
-  getToolSpecByName: async (name: string) => {
-    const specs = ((await hoisted.resolveToolSpecs()) ?? []) as Array<{ name: string }>
     return specs.find((s) => s.name === name) ?? null
   },
   // Faithful pure replica of the real factory (the module is fully mocked to
@@ -90,10 +82,17 @@ vi.mock('@/lib/server/domains/assistant/assistant.toolspec', () => ({
   makeAssistantToolContext: (init: Record<string, unknown>) => ({
     db: init.db,
     assistantPrincipalId: init.assistantPrincipalId,
+    assistantName: init.assistantName,
+    role: init.role,
     audience: init.audience,
     conversationId: init.conversationId,
     ticketId: init.ticketId ?? null,
     sources: new Map(),
+    toolCalls: [],
+    handoffRequest: null,
+    inabilityReport: null,
+    proposedActions: [],
+    toolOutcomes: [],
     searchCalls: 0,
     simulate: init.simulate ?? init.conversationId === null,
     involvementId: init.involvementId ?? null,
@@ -140,8 +139,9 @@ const CLOSE_SPEC = {
   risk: 'write' as const,
   supportedModes: ['approval', 'autonomous'] as const,
   defaultMode: 'approval' as const,
+  parents: ['conversation', 'ticket'] as const,
   permissions: [PERMISSIONS.CONVERSATION_SET_STATUS],
-  definition: {} as never,
+  definition: { inputSchema: z.object({ reason: z.string() }) } as never,
   execute: vi.fn(),
   summarize: () => 'Close conversation',
 }
@@ -150,7 +150,8 @@ function actorWith(permissions: string[]) {
   return { principalId: 'principal_agent1', role: 'member', permissions: new Set(permissions) }
 }
 
-const pendingRow = fakePendingActionRow
+const pendingRow = (overrides: Partial<Record<string, unknown>> = {}) =>
+  fakePendingActionRow({ originRole: 'customer_support', ...overrides })
 
 /** DTO shape assertion helper — approve/reject return the JSON-serializable
  *  DTO (toDTO), not the raw row with Date fields, so expectations compare
@@ -162,6 +163,7 @@ function expectDTOFrom(row: Record<string, unknown>): Partial<AssistantPendingAc
     conversationId: row.conversationId as string,
     involvementId: row.involvementId as string | null,
     toolName: row.toolName as string,
+    originRole: row.originRole as AssistantPendingActionDTO['originRole'],
     status: row.status as string,
     proposedAt: iso(row.proposedAt) as string,
     decidedById: (row.decidedById as string | null) ?? null,
@@ -189,6 +191,8 @@ beforeEach(() => {
 describe('approveAssistantActionFn', () => {
   it('executes via the same pipeline seam, links the audit row, and settles the row', async () => {
     const pending = pendingRow()
+    const approver = actorWith([PERMISSIONS.CONVERSATION_SET_STATUS])
+    hoisted.policyActorFromAuth.mockResolvedValue(approver)
     hoisted.getPendingActionById.mockResolvedValue(pending)
     const decided = { ...pending, status: 'approved', decidedById: 'principal_agent1' }
     hoisted.decidePendingAction.mockResolvedValue(decided)
@@ -211,15 +215,18 @@ describe('approveAssistantActionFn', () => {
       decided,
       expect.objectContaining({
         assistantPrincipalId: 'principal_quinn',
+        role: 'customer_support',
         conversationId: 'conversation_1',
         involvementId: 'assistant_involvement_1',
         simulate: false,
+        actor: approver,
       })
     )
     expect(hoisted.markPendingActionExecuted).toHaveBeenCalledWith('assistant_action_1', {
       closed: true,
     })
     expect(hoisted.markPendingActionFailed).not.toHaveBeenCalled()
+    expect(hoisted.requireAuth).toHaveBeenCalledWith()
     expect(out).toEqual(expect.objectContaining(expectDTOFrom(settled)))
   })
 
@@ -268,14 +275,60 @@ describe('approveAssistantActionFn', () => {
     expect(out).toEqual(expect.objectContaining(expectDTOFrom(settled)))
   })
 
-  it('rejects with no execution when the approver is missing a permission the tool declares', async () => {
+  it('rejects with no execution unless the approver holds every permission the tool declares', async () => {
     hoisted.getPendingActionById.mockResolvedValue(pendingRow())
-    hoisted.policyActorFromAuth.mockResolvedValue(actorWith([])) // missing conversation.set_status
+    hoisted.resolveToolSpecs.mockReturnValue([
+      {
+        ...CLOSE_SPEC,
+        permissions: [PERMISSIONS.CONVERSATION_SET_STATUS, PERMISSIONS.CONVERSATION_REPLY],
+      },
+    ])
+    hoisted.policyActorFromAuth.mockResolvedValue(actorWith([PERMISSIONS.CONVERSATION_SET_STATUS]))
 
     await expect(approve({ pendingActionId: 'assistant_action_1' })).rejects.toThrow(
-      /conversation\.set_status/
+      /conversation\.reply/
     )
 
+    expect(hoisted.decidePendingAction).not.toHaveBeenCalled()
+    expect(hoisted.executeApprovedPendingAction).not.toHaveBeenCalled()
+  })
+
+  it('rejects when the current tool spec is read-only', async () => {
+    hoisted.getPendingActionById.mockResolvedValue(pendingRow())
+    hoisted.resolveToolSpecs.mockReturnValue([{ ...CLOSE_SPEC, risk: 'read' }])
+
+    await expect(approve({ pendingActionId: 'assistant_action_1' })).rejects.toMatchObject({
+      statusCode: 409,
+    })
+    expect(hoisted.decidePendingAction).not.toHaveBeenCalled()
+  })
+
+  it('rejects when the current tool spec no longer supports approval', async () => {
+    hoisted.getPendingActionById.mockResolvedValue(pendingRow())
+    hoisted.resolveToolSpecs.mockReturnValue([{ ...CLOSE_SPEC, supportedModes: ['autonomous'] }])
+
+    await expect(approve({ pendingActionId: 'assistant_action_1' })).rejects.toMatchObject({
+      statusCode: 409,
+    })
+    expect(hoisted.decidePendingAction).not.toHaveBeenCalled()
+  })
+
+  it('rejects when the current tool spec does not support the stored parent', async () => {
+    hoisted.getPendingActionById.mockResolvedValue(pendingRow())
+    hoisted.resolveToolSpecs.mockReturnValue([{ ...CLOSE_SPEC, parents: ['ticket'] }])
+
+    await expect(approve({ pendingActionId: 'assistant_action_1' })).rejects.toMatchObject({
+      statusCode: 409,
+    })
+    expect(hoisted.decidePendingAction).not.toHaveBeenCalled()
+  })
+
+  it('rejects when the stored args no longer pass the current input schema', async () => {
+    hoisted.getPendingActionById.mockResolvedValue(pendingRow({ args: {} }))
+
+    await expect(approve({ pendingActionId: 'assistant_action_1' })).rejects.toMatchObject({
+      statusCode: 409,
+    })
     expect(hoisted.decidePendingAction).not.toHaveBeenCalled()
     expect(hoisted.executeApprovedPendingAction).not.toHaveBeenCalled()
   })
@@ -377,9 +430,11 @@ describe('approveAssistantActionFn', () => {
 })
 
 describe('rejectAssistantActionFn', () => {
-  it('decides rejected and never executes', async () => {
-    const pending = pendingRow()
+  it('decides rejected without a live tool spec or write permission and never executes', async () => {
+    const pending = pendingRow({ toolName: 'vanished_tool' })
     hoisted.getPendingActionById.mockResolvedValue(pending)
+    hoisted.resolveToolSpecs.mockReturnValue([])
+    hoisted.policyActorFromAuth.mockResolvedValue(actorWith([]))
     const rejected = { ...pending, status: 'rejected', decidedById: 'principal_agent1' }
     hoisted.decidePendingAction.mockResolvedValue(rejected)
 
@@ -390,6 +445,8 @@ describe('rejectAssistantActionFn', () => {
       'rejected',
       'principal_agent1'
     )
+    expect(hoisted.requireAuth).toHaveBeenCalledWith()
+    expect(hoisted.resolveToolSpecs).not.toHaveBeenCalled()
     expect(hoisted.executeApprovedPendingAction).not.toHaveBeenCalled()
     expect(out).toEqual(expect.objectContaining(expectDTOFrom(rejected)))
   })

@@ -1,38 +1,47 @@
 // @vitest-environment happy-dom
-/**
- * Smoke coverage for the surface instructions card: the widget textarea
- * loads its saved value from getAssistantSettingsFn.
- */
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import type { ReactElement } from 'react'
-import { render, screen, cleanup } from '@testing-library/react'
+import { afterEach, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IntlProvider } from 'react-intl'
+
+const updateChannels = vi.fn()
+const config = {
+  version: 2 as const,
+  identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+  voice: {
+    tone: 'balanced' as const,
+    responseLength: 'balanced' as const,
+    additionalInstructions: '',
+  },
+  channels: { widget: { additionalInstructions: 'Keep replies concise.' } },
+  toolControls: {},
+}
 
 vi.mock('@/lib/server/functions/assistant-settings', () => ({
-  getAssistantSettingsFn: vi.fn(async () => ({
-    toolControls: {},
-    surfaces: { widget: { instructions: 'Keep replies under three sentences.' } },
-  })),
+  getAssistantSettingsFn: vi.fn(async () => ({ config, revision: 4, managedFieldPaths: [] })),
+  updateAssistantIdentityFn: vi.fn(),
+  updateAssistantVoiceFn: vi.fn(),
+  updateAssistantChannelsFn: (input: { data: unknown }) => updateChannels(input),
   updateAssistantToolControlsFn: vi.fn(),
-  updateAssistantSurfacesFn: vi.fn(),
+  updateWidgetAssistantDeploymentFn: vi.fn(),
 }))
 
-vi.mock('@tanstack/react-router', () => ({
-  useRouter: () => ({ invalidate: vi.fn() }),
-}))
-
-import { SurfaceInstructionsCard } from '../surface-instructions-card'
+import { ChannelInstructionsCard } from '../surface-instructions-card'
 
 afterEach(cleanup)
 
-function renderWithClient(ui: ReactElement) {
+it('loads V2 Web widget instructions and requires explicit save', async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>)
-}
-
-describe('SurfaceInstructionsCard', () => {
-  it('loads the widget surface instructions from getAssistantSettingsFn', async () => {
-    renderWithClient(<SurfaceInstructionsCard />)
-    expect(await screen.findByDisplayValue('Keep replies under three sentences.')).toBeInTheDocument()
-  })
+  render(
+    <IntlProvider locale="en" messages={{}} onError={() => {}}>
+      <QueryClientProvider client={queryClient}>
+        <ChannelInstructionsCard />
+      </QueryClientProvider>
+    </IntlProvider>
+  )
+  expect(await screen.findByRole('heading', { name: 'Channel guidance' })).toBeInTheDocument()
+  const field = await screen.findByDisplayValue('Keep replies concise.')
+  fireEvent.change(field, { target: { value: 'Use short paragraphs.' } })
+  expect(updateChannels).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled()
 })

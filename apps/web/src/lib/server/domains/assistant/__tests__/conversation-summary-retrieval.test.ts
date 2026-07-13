@@ -41,7 +41,7 @@ vi.mock('@/lib/server/db', () => ({
   ),
 }))
 
-import { eq, ne } from '@/lib/server/db'
+import { db, eq, ne } from '@/lib/server/db'
 import {
   retrieveConversationSummaries,
   conversationSummariesKnowledgeSource,
@@ -64,26 +64,37 @@ beforeEach(() => {
 
 describe('retrieveConversationSummaries: MANDATORY customer scope', () => {
   it('returns [] without touching the DB or generating an embedding when customerPrincipalId is absent', async () => {
-    const items = await retrieveConversationSummaries('billing question', 'public', {
+    const items = await retrieveConversationSummaries('billing question', 'team', {
       conversationId: 'conversation_current' as never,
     })
 
     expect(items).toEqual([])
     expect(mockGenerateEmbedding).not.toHaveBeenCalled()
-    expect(mockLimit).not.toHaveBeenCalled()
+    expect(db.select).not.toHaveBeenCalled()
   })
 
   it('returns [] when opts is entirely omitted (no customer, no conversation)', async () => {
-    const items = await retrieveConversationSummaries('billing question', 'public')
+    const items = await retrieveConversationSummaries('billing question', 'team')
     expect(items).toEqual([])
-    expect(mockLimit).not.toHaveBeenCalled()
+    expect(db.select).not.toHaveBeenCalled()
+  })
+
+  it('returns [] for public retrieval without generating an embedding or touching the DB', async () => {
+    const items = await retrieveConversationSummaries('billing question', 'public', {
+      customerPrincipalId: 'principal_customer_1' as never,
+      conversationId: 'conversation_current' as never,
+    })
+
+    expect(items).toEqual([])
+    expect(mockGenerateEmbedding).not.toHaveBeenCalled()
+    expect(db.select).not.toHaveBeenCalled()
   })
 
   it('filters on the given customerPrincipalId when present', async () => {
     mockGenerateEmbedding.mockResolvedValue(null) // exercise the keyword path
     mockLimit.mockResolvedValue([])
 
-    await retrieveConversationSummaries('billing question', 'public', {
+    await retrieveConversationSummaries('billing question', 'team', {
       customerPrincipalId: 'principal_customer_1' as never,
     })
 
@@ -94,7 +105,7 @@ describe('retrieveConversationSummaries: MANDATORY customer scope', () => {
     mockGenerateEmbedding.mockResolvedValue(null)
     mockLimit.mockResolvedValue([])
 
-    await retrieveConversationSummaries('billing question', 'public', {
+    await retrieveConversationSummaries('billing question', 'team', {
       customerPrincipalId: 'principal_customer_1' as never,
       conversationId: 'conversation_current' as never,
     })
@@ -106,25 +117,11 @@ describe('retrieveConversationSummaries: MANDATORY customer scope', () => {
     mockGenerateEmbedding.mockResolvedValue(null)
     mockLimit.mockResolvedValue([])
 
-    await retrieveConversationSummaries('billing question', 'public', {
+    await retrieveConversationSummaries('billing question', 'team', {
       customerPrincipalId: 'principal_customer_1' as never,
     })
 
     expect(vi.mocked(ne)).not.toHaveBeenCalled()
-  })
-
-  it('ignores the ceiling entirely — this source is customer-scoped, not audience-scoped', async () => {
-    mockGenerateEmbedding.mockResolvedValue(null)
-    mockLimit.mockResolvedValue([row('conversation_a')])
-
-    const asPublic = await retrieveConversationSummaries('q', 'public', {
-      customerPrincipalId: 'principal_customer_1' as never,
-    })
-    const asInternal = await retrieveConversationSummaries('q', 'internal', {
-      customerPrincipalId: 'principal_customer_1' as never,
-    })
-
-    expect(asPublic).toEqual(asInternal)
   })
 })
 
@@ -133,7 +130,7 @@ describe('retrieveConversationSummaries: ranking paths', () => {
     mockGenerateEmbedding.mockResolvedValue([0.1, 0.2])
     mockLimit.mockResolvedValue([row('conversation_a', { score: 0.9 })])
 
-    const items = await retrieveConversationSummaries('billing', 'public', {
+    const items = await retrieveConversationSummaries('billing', 'team', {
       customerPrincipalId: 'principal_customer_1' as never,
     })
 
@@ -151,7 +148,7 @@ describe('retrieveConversationSummaries: ranking paths', () => {
     mockGenerateEmbedding.mockResolvedValue(null)
     mockLimit.mockResolvedValue([row('conversation_b')])
 
-    const items = await retrieveConversationSummaries('billing', 'public', {
+    const items = await retrieveConversationSummaries('billing', 'team', {
       customerPrincipalId: 'principal_customer_1' as never,
     })
 
@@ -165,7 +162,7 @@ describe('conversationSummariesKnowledgeSource', () => {
     mockGenerateEmbedding.mockResolvedValue(null)
     mockLimit.mockResolvedValue([row('conversation_past_1', { score: 0.77 })])
 
-    const items = await conversationSummariesKnowledgeSource.retrieve('billing', 'public', {
+    const items = await conversationSummariesKnowledgeSource.retrieve('billing', 'team', {
       topK: 5,
       customerPrincipalId: 'principal_customer_1' as never,
       conversationId: 'conversation_current' as never,
@@ -195,11 +192,11 @@ describe('conversationSummariesKnowledgeSource', () => {
   it('returns [] when the opts carry no customerPrincipalId (never falls back to unscoped)', async () => {
     mockLimit.mockResolvedValue([row('conversation_should_not_appear')])
 
-    const items = await conversationSummariesKnowledgeSource.retrieve('billing', 'public', {
+    const items = await conversationSummariesKnowledgeSource.retrieve('billing', 'team', {
       topK: 5,
     })
 
     expect(items).toEqual([])
-    expect(mockLimit).not.toHaveBeenCalled()
+    expect(db.select).not.toHaveBeenCalled()
   })
 })

@@ -1,70 +1,64 @@
 // @vitest-environment happy-dom
-/**
- * Smoke coverage for the Basics card: the tone + length selects seed from
- * getAssistantSettingsFn.basics, falling back to a neutral default display
- * when nothing is saved, and save through updateAssistantBasicsFn on change.
- */
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import type { ReactElement } from 'react'
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IntlProvider } from 'react-intl'
 
-const mockUpdateAssistantBasicsFn = vi.fn(async (input: { data: unknown }) => input.data)
+const updateVoice = vi.fn()
+const config = {
+  version: 2 as const,
+  identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+  voice: {
+    tone: 'warm' as const,
+    responseLength: 'brief' as const,
+    additionalInstructions: 'Use UK English.',
+  },
+  channels: {},
+  toolControls: {},
+}
 
 vi.mock('@/lib/server/functions/assistant-settings', () => ({
-  getAssistantSettingsFn: vi.fn(async () => ({
-    toolControls: {},
-    surfaces: {},
-    basics: { tone: 'friendly', length: 'concise' },
-  })),
+  getAssistantSettingsFn: vi.fn(async () => ({ config, revision: 2, managedFieldPaths: [] })),
+  updateAssistantIdentityFn: vi.fn(),
+  updateAssistantVoiceFn: (input: { data: unknown }) => updateVoice(input),
+  updateAssistantChannelsFn: vi.fn(),
   updateAssistantToolControlsFn: vi.fn(),
-  updateAssistantSurfacesFn: vi.fn(),
-  updateAssistantBasicsFn: (input: { data: unknown }) => mockUpdateAssistantBasicsFn(input),
+  updateWidgetAssistantDeploymentFn: vi.fn(),
 }))
 
-vi.mock('@tanstack/react-router', () => ({
-  useRouter: () => ({ invalidate: vi.fn() }),
-}))
-
-// Radix Select relies on pointer-capture/scrollIntoView APIs jsdom/happy-dom
-// don't implement; swap in the shared native-select test double so tone and
-// length can be asserted with a plain toHaveValue check.
-vi.mock('@/components/ui/select', async () => import('@/test/radix-select'))
-
-import { AssistantBasicsCard } from '../assistant-basics-card'
+import { AssistantVoiceCard } from '../assistant-basics-card'
 
 afterEach(cleanup)
 
-function renderWithClient(ui: ReactElement) {
+function renderCard() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>)
+  return render(
+    <IntlProvider locale="en" messages={{}} onError={() => {}}>
+      <QueryClientProvider client={queryClient}>
+        <AssistantVoiceCard />
+      </QueryClientProvider>
+    </IntlProvider>
+  )
 }
 
-describe('AssistantBasicsCard', () => {
-  it('renders the card title', async () => {
-    renderWithClient(<AssistantBasicsCard />)
-    expect(await screen.findByText('Basics')).toBeInTheDocument()
+describe('AssistantVoiceCard', () => {
+  it('renders described semantic radio groups from persisted V2 values', async () => {
+    renderCard()
+    expect(await screen.findByRole('heading', { name: 'Response style' })).toBeInTheDocument()
+    expect(await screen.findByRole('radio', { name: /Warm/ })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /Brief/ })).toBeChecked()
+    expect(screen.getByText('Friendly, empathetic, and conversational.')).toBeInTheDocument()
   })
 
-  it('seeds tone and length from the saved preset', async () => {
-    renderWithClient(<AssistantBasicsCard />)
-    await waitFor(() => expect(screen.getByLabelText('Tone')).toHaveValue('friendly'))
-    expect(screen.getByLabelText('Answer length')).toHaveValue('concise')
-  })
-})
-
-describe('AssistantBasicsCard with nothing saved', () => {
-  it('falls back to a neutral display default without writing anything', async () => {
-    const { getAssistantSettingsFn } = await import('@/lib/server/functions/assistant-settings')
-    vi.mocked(getAssistantSettingsFn).mockResolvedValueOnce({
-      toolControls: {},
-      surfaces: {},
-      basics: {},
-    } as never)
-
-    renderWithClient(<AssistantBasicsCard />)
-    expect(await screen.findByLabelText('Tone')).toHaveValue('neutral')
-    expect(screen.getByLabelText('Answer length')).toHaveValue('standard')
-    expect(mockUpdateAssistantBasicsFn).not.toHaveBeenCalled()
+  it('does not save until Save changes is pressed', async () => {
+    updateVoice.mockResolvedValue({
+      config: { ...config, voice: { ...config.voice, tone: 'professional' } },
+      revision: 3,
+    })
+    renderCard()
+    fireEvent.click(await screen.findByRole('radio', { name: /Professional/ }))
+    expect(updateVoice).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(updateVoice).toHaveBeenCalled())
   })
 })

@@ -68,7 +68,7 @@ export {
   type OutcomeContext,
 } from './assistant.involvement'
 
-// Quinn — messenger thread mapping + handover copy
+// Quinn — messenger thread mapping
 export {
   mapRowsToThreadMessages,
   loadConversationThread,
@@ -76,8 +76,6 @@ export {
   ASSISTANT_THREAD_WINDOW,
   type AssistantItemState,
 } from './assistant.thread'
-export { buildAssistantHandoverMessage } from './assistant.handover'
-
 // Quinn — tool catalogue
 export {
   ASSISTANT_TOOL_SPECS,
@@ -101,13 +99,25 @@ export {
 export {
   createGuidanceRule,
   listGuidanceRules,
+  listEnabledGuidanceCandidates,
   updateGuidanceRule,
   reorderGuidanceRules,
   deleteGuidanceRule,
-  GUIDANCE_MAX_ENABLED_PER_SURFACE,
+  GUIDANCE_MAX_ENABLED_PER_ROLE_CHANNEL,
   GUIDANCE_CHAR_BUDGET,
   type AssistantGuidanceRule,
+  type GuidanceRuleInput,
 } from './guidance.service'
+export {
+  selectApplicableGuidance,
+  splitGuidanceCandidates,
+  GUIDANCE_SELECTOR_RECENT_MESSAGE_LIMIT,
+  GUIDANCE_SELECTOR_MESSAGE_CHAR_LIMIT,
+  GUIDANCE_SELECTOR_TIMEOUT_MS,
+  type GuidanceSelectorMessage,
+  type GuidanceSelectorCandidate,
+  type SelectApplicableGuidanceInput,
+} from './guidance-selector'
 export {
   proposePendingAction,
   decidePendingAction,
@@ -123,26 +133,45 @@ export {
   type AssistantToolCall,
 } from './tool-audit'
 
-// Quinn Copilot transforms (P2-C.1): tone/format rewrites over
+// Copilot transforms (P2-C.1): tone/format rewrites over
 // already-composed text, run directly through the synthesis core.
 export {
-  fetchTeammateStyleExcerpts,
+  fetchTeammateStyleProfile,
   buildTransformSystemPrompts,
   runCopilotTransform,
   type RunCopilotTransformParams,
   type CopilotTransformResult,
+  type TeammateStyleProfile,
 } from './copilot-transform'
 
 // Quinn — tools + runtime
 export { assembleAssistantToolset } from './assistant.tools'
 export {
+  ASSISTANT_PROMPT_VERSION,
+  ASSISTANT_ROLE_POLICIES,
+  buildAssistantPrompt,
+  buildAssistantSystemMessages,
+  buildAssistantRoleProfile,
+  resolveAssistantRolePolicy,
+  type AssistantPromptRole,
+  type AssistantPromptTone,
+  type AssistantPromptResponseLength,
+  type AssistantPromptConfig,
+  type AssistantPromptTool,
+  type AssistantPromptGuidance,
+  type AssistantAttributeOption,
+  type AssistantAttributeCatalogueEntry,
+  type BuildAssistantPromptInput,
+  type AssistantChannelInstructionPolicy,
+  type AssistantRolePolicy,
+  type AssistantPromptBuildResult,
+} from './assistant.system-prompt'
+export {
   runAssistantTurn,
   isAssistantConfigured,
   respondEligible,
   assembleCitations,
-  decideEscalation,
   isSubstantiveAnswer,
-  buildAssistantSystemPrompt,
   activityToStatus,
   AssistantNotConfiguredError,
   ASSISTANT_MAX_ITERATIONS,
@@ -151,6 +180,10 @@ export {
   type AssistantThreadMessage,
   type AssistantThreadSender,
   type AssistantActivity,
+  type AssistantTurnTrace,
+  type AssistantRuntimeConfig,
+  type AssistantAnswerType,
+  type AssistantCannotAnswerReason,
   type EscalationOutcome,
   type EscalationReason,
 } from './assistant.runtime'

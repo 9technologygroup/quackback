@@ -24,24 +24,22 @@ describe('assistant.actor', () => {
     expect(actor.permissions).toEqual(new Set(ASSISTANT_PERMISSIONS))
   })
 
-  it('quinnActor can perform conversation operations', () => {
+  it('quinnActor can view and reply to conversations and publish team-only action notices', () => {
     const principalId = 'principal_xyz123' as PrincipalId
     const actor = quinnActor(principalId)
 
     expect(can(actor, PERMISSIONS.CONVERSATION_VIEW)).toBe(true)
     expect(can(actor, PERMISSIONS.CONVERSATION_VIEW_ALL)).toBe(true)
     expect(can(actor, PERMISSIONS.CONVERSATION_REPLY)).toBe(true)
-    expect(can(actor, PERMISSIONS.CONVERSATION_SET_STATUS)).toBe(true)
-    expect(can(actor, PERMISSIONS.CONVERSATION_SET_ATTRIBUTES)).toBe(true)
-  })
-
-  it('quinnActor can create tickets and posts', () => {
-    const principalId = 'principal_xyz123' as PrincipalId
-    const actor = quinnActor(principalId)
-
-    expect(can(actor, PERMISSIONS.TICKET_CREATE)).toBe(true)
-    expect(can(actor, PERMISSIONS.POST_CREATE)).toBe(true)
-    expect(can(actor, PERMISSIONS.POST_VOTE_ON_BEHALF)).toBe(true)
+    expect(can(actor, PERMISSIONS.TICKET_NOTE)).toBe(true)
+    expect(actor.permissions).toEqual(
+      new Set([
+        PERMISSIONS.CONVERSATION_VIEW,
+        PERMISSIONS.CONVERSATION_VIEW_ALL,
+        PERMISSIONS.CONVERSATION_REPLY,
+        PERMISSIONS.TICKET_NOTE,
+      ])
+    )
   })
 
   it('quinnActor cannot perform operations outside the permission set', () => {
@@ -52,6 +50,11 @@ describe('assistant.actor', () => {
     expect(can(actor, PERMISSIONS.MEMBER_MANAGE)).toBe(false)
     expect(can(actor, PERMISSIONS.SETTINGS_MANAGE)).toBe(false)
     expect(can(actor, PERMISSIONS.WORKFLOW_MANAGE)).toBe(false)
+    expect(can(actor, PERMISSIONS.CONVERSATION_SET_STATUS)).toBe(false)
+    expect(can(actor, PERMISSIONS.CONVERSATION_SET_ATTRIBUTES)).toBe(false)
+    expect(can(actor, PERMISSIONS.TICKET_CREATE)).toBe(false)
+    expect(can(actor, PERMISSIONS.POST_CREATE)).toBe(false)
+    expect(can(actor, PERMISSIONS.POST_VOTE_ON_BEHALF)).toBe(false)
   })
 
   it('ASSISTANT_PERMISSIONS is a non-empty set', () => {

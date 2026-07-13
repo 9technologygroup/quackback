@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useRouter, useRouterState, useRouteContext } from '@tanstack/react-router'
 import { useTheme } from 'next-themes'
 import { buildNavItems } from './portal-header-nav'
+import { isProductEnabled } from '@/lib/shared/types/settings'
 import { useIntl, FormattedMessage } from 'react-intl'
 import { cn } from '@/lib/shared/utils'
 import { isTeamMember, Role } from '@/lib/shared/roles'
@@ -63,13 +64,16 @@ export function PortalHeader({
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const { session, settings, registeredAuthProviders } = useRouteContext({ from: '__root__' })
 
+  const flags = settings?.featureFlags
+  const feedbackEnabled = isProductEnabled(flags, 'feedback')
   const helpCenterEnabled =
-    !!settings?.featureFlags?.helpCenter && !!settings?.helpCenterConfig?.enabled
+    isProductEnabled(flags, 'helpCenter') && !!settings?.helpCenterConfig?.enabled
   const supportEnabled =
-    !!settings?.featureFlags?.supportInbox && !!settings?.portalConfig?.support?.enabled
+    !!flags?.supportTickets || (!!flags?.supportInbox && !!settings?.portalConfig?.support?.enabled)
   // Default true so a workspace that never customized this setting keeps
   // the changelog tab it had before this toggle existed.
-  const changelogEnabled = settings?.changelogConfig?.portalTabEnabled ?? true
+  const changelogEnabled =
+    isProductEnabled(flags, 'changelog') && (settings?.changelogConfig?.portalTabEnabled ?? true)
   // Status tab: flag + product enabled + tab toggle. A non-public audience
   // still needs a signed-in viewer to bother showing the tab; the route
   // enforces the real per-viewer segment gate (settings here are
@@ -77,12 +81,13 @@ export function PortalHeader({
   const statusAudience = settings?.statusConfig?.audience ?? 'public'
   const statusLoggedIn = !!session?.user && session.user.principalType !== 'anonymous'
   const statusEnabled =
-    !!settings?.featureFlags?.statusPage &&
+    isProductEnabled(flags, 'status') &&
     !!settings?.statusConfig?.enabled &&
     (settings?.statusConfig?.portalTabEnabled ?? true) &&
     (statusAudience === 'public' || statusLoggedIn)
   const onHelpPages = pathname === '/hc' || pathname.startsWith('/hc/')
   const navItems = buildNavItems({
+    feedbackEnabled,
     helpCenterEnabled,
     supportEnabled,
     changelogEnabled,

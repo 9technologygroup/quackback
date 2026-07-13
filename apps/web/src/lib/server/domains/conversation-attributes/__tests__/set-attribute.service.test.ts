@@ -27,14 +27,11 @@ const { dispatchConversationAttributeChanged } = vi.hoisted(() => ({
 }))
 vi.mock('@/lib/server/events/dispatch', () => ({ dispatchConversationAttributeChanged }))
 
-// attributeChangeActor resolves the AI actor's displayName off the configured
-// assistant name (settings.widget's messenger.assistant.name) — mocked here
-// (same as action.executor.test.ts's sendBlock coverage) so this suite
-// doesn't need a real `settings` row in the fixture. Default has no
-// configured name, so the 'Quinn' fallback is exercised unless a test
-// overrides it.
-const { getMessengerConfig } = vi.hoisted(() => ({ getMessengerConfig: vi.fn() }))
-vi.mock('@/lib/server/domains/settings/settings.widget', () => ({ getMessengerConfig }))
+// attributeChangeActor resolves the AI actor's displayName from the same V2
+// runtime config snapshot as production assistant turns. Mock that boundary so
+// this service suite does not need a real settings row in every transaction.
+const { getAssistantRuntimeConfig } = vi.hoisted(() => ({ getAssistantRuntimeConfig: vi.fn() }))
+vi.mock('@/lib/server/domains/settings/settings.assistant', () => ({ getAssistantRuntimeConfig }))
 
 import { setConversationAttribute } from '../set-attribute.service'
 import {
@@ -103,7 +100,9 @@ async function conversationAttributes(id: ConversationId): Promise<Record<string
 describe.skipIf(!fixture.available)('setConversationAttribute (real DB, rolled back)', () => {
   beforeEach(() => {
     dispatchConversationAttributeChanged.mockClear()
-    getMessengerConfig.mockReset().mockResolvedValue({ assistant: undefined })
+    getAssistantRuntimeConfig.mockReset().mockResolvedValue({
+      config: { identity: { name: 'Quinn' } },
+    })
     return fixture.begin()
   })
   afterEach(fixture.rollback)
@@ -343,7 +342,9 @@ describe.skipIf(!fixture.available)('setConversationAttribute (real DB, rolled b
     it('emits for an AI write with the CONFIGURED assistant name, not a hardcoded "Quinn"', async () => {
       await createConversationAttribute({ key: 'plan', label: 'Plan', fieldType: 'text' })
       const conversationId = await seedConversation()
-      getMessengerConfig.mockResolvedValue({ assistant: { name: 'Aria', avatarUrl: null } })
+      getAssistantRuntimeConfig.mockResolvedValue({
+        config: { identity: { name: 'Aria' } },
+      })
 
       await setConversationAttribute({ conversationId }, 'plan', 'starter', 'ai')
 

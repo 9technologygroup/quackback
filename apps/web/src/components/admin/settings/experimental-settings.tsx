@@ -5,8 +5,12 @@ import { toast } from 'sonner'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
-import { FEATURE_FLAG_REGISTRY, LAB_SECTIONS, type FeatureFlags } from '@/lib/shared/types'
-import { DEFAULT_FEATURE_FLAGS } from '@/lib/server/domains/settings/settings.types'
+import {
+  DEFAULT_FEATURE_FLAGS,
+  FEATURE_FLAG_REGISTRY,
+  LAB_SECTIONS,
+  type FeatureFlags,
+} from '@/lib/shared/types'
 import { updateFeatureFlagsFn } from '@/lib/server/functions/feature-flags'
 
 export function ExperimentalSettings() {
@@ -46,8 +50,7 @@ export function ExperimentalSettings() {
       <div>
         <h2 className="text-lg font-semibold">Labs</h2>
         <p className="text-xs text-muted-foreground mt-1">
-          Toggle product modules and optional AI. Core products start on for new workspaces; AI and
-          privacy-sensitive features stay off until you enable them.
+          Try optional AI and analytics features. These stay off until you enable them.
         </p>
       </div>
 

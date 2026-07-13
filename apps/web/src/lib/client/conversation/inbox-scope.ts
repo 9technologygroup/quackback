@@ -41,30 +41,36 @@ export type InboxView =
   // UNIFIED-INBOX-SPEC.md §2.3: the Tickets nav section. A separate group in
   // the sidebar (see inbox-nav-sidebar.tsx), but the same InboxView/InboxNavItem
   // machinery carries them through the URL + query layer.
+  | 'tickets_all'
   | 'tickets_customer'
   | 'tickets_back_office'
   | 'tickets_tracker'
 
-const TICKET_VIEW_TYPE: Record<
-  'tickets_customer' | 'tickets_back_office' | 'tickets_tracker',
-  TicketType
-> = {
+type TicketInboxView =
+  | 'tickets_all'
+  | 'tickets_customer'
+  | 'tickets_back_office'
+  | 'tickets_tracker'
+type TypedTicketInboxView = Exclude<TicketInboxView, 'tickets_all'>
+
+const TICKET_VIEW_TYPE: Record<TypedTicketInboxView, TicketType> = {
   tickets_customer: 'customer',
   tickets_back_office: 'back_office',
   tickets_tracker: 'tracker',
 }
 
-/** Whether a view is one of the three Tickets-section scopes. */
-export function isTicketInboxView(
-  view: InboxView
-): view is 'tickets_customer' | 'tickets_back_office' | 'tickets_tracker' {
-  return view === 'tickets_customer' || view === 'tickets_back_office' || view === 'tickets_tracker'
+/** Whether a view is one of the Tickets-section scopes. */
+export function isTicketInboxView(view: InboxView): view is TicketInboxView {
+  return (
+    view === 'tickets_all' ||
+    view === 'tickets_customer' ||
+    view === 'tickets_back_office' ||
+    view === 'tickets_tracker'
+  )
 }
 
-/** The ticket `type` a Tickets-section view scopes the unified list to. */
-export function ticketTypeForView(
-  view: 'tickets_customer' | 'tickets_back_office' | 'tickets_tracker'
-): TicketType {
+/** The ticket `type` a type-specific Tickets-section view scopes to. */
+export function ticketTypeForView(view: TypedTicketInboxView): TicketType {
   return TICKET_VIEW_TYPE[view]
 }
 
@@ -253,7 +259,7 @@ export function facetToStatusFilter(facet: InboxTriageFacet): StatusFilter {
 // Unified list params (UNIFIED-INBOX-SPEC.md §3.1) — the subset of
 // InboxNavItem scopes the unified `listInboxItemsFn` endpoint actually
 // supports today: assignee queues (mine/unassigned/all), a per-team inbox,
-// and the three Tickets-section scopes. Tag/segment/custom/mentions/quinn/
+// and the Tickets-section scopes. Tag/segment/custom/mentions/quinn/
 // saved stay on the legacy `buildListParams` + conversation-only endpoint
 // (see the inbox route report — the unified endpoint's filter has no
 // tagIds/segmentIds/mentionedPrincipalId/assistantStatuses support yet).
@@ -362,7 +368,7 @@ export function buildInboxListParams(
     return {
       facet,
       kinds: ['ticket'],
-      ticketType: ticketTypeForView(nav.view),
+      ticketType: nav.view === 'tickets_all' ? undefined : ticketTypeForView(nav.view),
       priority,
       search: searchParam,
       companyId: company,
@@ -372,7 +378,7 @@ export function buildInboxListParams(
   if (nav.kind === 'view' && nav.view === 'all') {
     return {
       facet,
-      kinds: ['conversation', 'ticket'],
+      kinds: ['conversation'],
       priority,
       search: searchParam,
       companyId: company,

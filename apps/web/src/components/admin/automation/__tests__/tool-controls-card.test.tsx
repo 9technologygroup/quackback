@@ -1,19 +1,14 @@
 // @vitest-environment happy-dom
-/**
- * Smoke coverage for the tool controls card: renders a row per tool from
- * listAssistantToolsFn, seeded from the saved control (or the tool's default
- * when nothing is saved).
- */
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest'
-import type { ReactElement } from 'react'
-import { render, screen, cleanup } from '@testing-library/react'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IntlProvider } from 'react-intl'
 
-const FIXTURE_TOOLS = [
+const tools = [
   {
     name: 'search_knowledge',
-    label: 'Search knowledge',
-    description: 'Search the published help center.',
+    label: 'Find an answer',
+    description: 'Search published help content.',
     risk: 'read' as const,
     supportedModes: ['disabled', 'autonomous'] as const,
     defaultMode: 'autonomous' as const,
@@ -21,66 +16,85 @@ const FIXTURE_TOOLS = [
   {
     name: 'end_conversation',
     label: 'End conversation',
-    description: 'Close the conversation once resolved.',
+    description: 'End a resolved conversation.',
     risk: 'write' as const,
     supportedModes: ['disabled', 'approval', 'autonomous'] as const,
     defaultMode: 'approval' as const,
   },
+  {
+    name: 'external_lookup',
+    label: 'External lookup',
+    description: 'An unrecognized extension action.',
+    risk: 'read' as const,
+    supportedModes: ['disabled', 'autonomous'] as const,
+    defaultMode: 'disabled' as const,
+  },
 ]
+const config = {
+  version: 2 as const,
+  identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+  voice: {
+    tone: 'balanced' as const,
+    responseLength: 'balanced' as const,
+    additionalInstructions: '',
+  },
+  channels: {},
+  toolControls: { end_conversation: 'autonomous' as const },
+}
 
 vi.mock('@/lib/server/functions/assistant-guidance', () => ({
-  listAssistantToolsFn: vi.fn(async () => FIXTURE_TOOLS),
+  listAssistantToolsFn: vi.fn(async () => tools),
+  listGuidanceRulesFn: vi.fn(),
+  createGuidanceRuleFn: vi.fn(),
+  updateGuidanceRuleFn: vi.fn(),
+  deleteGuidanceRuleFn: vi.fn(),
+  reorderGuidanceRulesFn: vi.fn(),
 }))
-
 vi.mock('@/lib/server/functions/assistant-settings', () => ({
-  getAssistantSettingsFn: vi.fn(async () => ({
-    toolControls: { end_conversation: 'autonomous' },
-    surfaces: {},
-  })),
+  getAssistantSettingsFn: vi.fn(async () => ({ config, revision: 2, managedFieldPaths: [] })),
+  updateAssistantIdentityFn: vi.fn(),
+  updateAssistantVoiceFn: vi.fn(),
+  updateAssistantChannelsFn: vi.fn(),
   updateAssistantToolControlsFn: vi.fn(),
-  updateAssistantSurfacesFn: vi.fn(),
-}))
-
-vi.mock('@tanstack/react-router', () => ({
-  useRouter: () => ({ invalidate: vi.fn() }),
+  updateWidgetAssistantDeploymentFn: vi.fn(),
 }))
 
 import { ToolControlsCard } from '../tool-controls-card'
 
-// Radix Select relies on these pointer/layout APIs happy-dom does not implement.
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.hasPointerCapture = vi.fn(() => false)
   Element.prototype.setPointerCapture = vi.fn()
   Element.prototype.releasePointerCapture = vi.fn()
 })
-
 afterEach(cleanup)
 
-function renderWithClient(ui: ReactElement) {
+function renderCard() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>)
+  return render(
+    <IntlProvider locale="en" messages={{}} onError={() => {}}>
+      <QueryClientProvider client={queryClient}>
+        <ToolControlsCard />
+      </QueryClientProvider>
+    </IntlProvider>
+  )
 }
 
 describe('ToolControlsCard', () => {
-  it('renders a row per tool from listAssistantToolsFn', async () => {
-    renderWithClient(<ToolControlsCard />)
-    expect(await screen.findByText('Search knowledge')).toBeInTheDocument()
-    expect(await screen.findByText('End conversation')).toBeInTheDocument()
+  it('groups actions by customer outcome without Read/Write badges', async () => {
+    renderCard()
+    expect(await screen.findByText('Answer and understand')).toBeInTheDocument()
+    expect(screen.getByText('Update the conversation')).toBeInTheDocument()
+    expect(screen.queryByText('External lookup')).not.toBeInTheDocument()
+    expect(screen.queryByText('Read')).not.toBeInTheDocument()
+    expect(screen.queryByText('Write')).not.toBeInTheDocument()
   })
 
-  it('shows a risk badge per tool', async () => {
-    renderWithClient(<ToolControlsCard />)
-    await screen.findByText('Search knowledge')
-    expect(screen.getByText('Read')).toBeInTheDocument()
-    expect(screen.getByText('Write')).toBeInTheDocument()
-  })
-
-  it('seeds the mode select from the saved control, falling back to the tool default', async () => {
-    renderWithClient(<ToolControlsCard />)
-    // end_conversation has a saved override (autonomous, not its approval default).
-    expect(await screen.findByLabelText('End conversation mode')).toHaveTextContent('Autonomous')
-    // search_knowledge has no saved control, so it falls back to its own default.
-    expect(screen.getByLabelText('Search knowledge mode')).toHaveTextContent('Autonomous')
+  it('shows V2 mode labels and an explicit section save', async () => {
+    renderCard()
+    expect(await screen.findByLabelText('End conversation setting')).toHaveTextContent(
+      'Runs automatically'
+    )
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
   })
 })

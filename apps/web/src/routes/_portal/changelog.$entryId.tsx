@@ -5,9 +5,11 @@ import { publicChangelogQueries } from '@/lib/client/queries/changelog'
 import { ChangelogEntryDetail } from '@/components/portal/changelog'
 import { BackLink } from '@/components/ui/back-link'
 import type { ChangelogId } from '@quackback/ids'
+import { isProductEnabled } from '@/lib/shared/types/settings'
 
 export const Route = createFileRoute('/_portal/changelog/$entryId')({
   loader: async ({ context, params }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'changelog')) throw notFound()
     const { queryClient } = context
     const entryId = params.entryId as ChangelogId
 

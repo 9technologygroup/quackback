@@ -1,8 +1,8 @@
 /**
- * Quinn Copilot transforms (P2-C.1, COPILOT-SIDEBAR-UX.md "What P2-C adds"):
+ * Copilot transforms (P2-C.1, COPILOT-SIDEBAR-UX.md "What P2-C adds"):
  * tone/format rewrites over already-composed text. Two entry points drive it:
  * the answer card's "Add to composer & modify" menu (source = the streamed
- * answer text) and the reply composer's Format chip (source = the teammate's
+ * answer text) and the composer's Improve menu (source = the teammate's
  * own draft). Both funnel through this one module.
  *
  * Calls the shared synthesis core (synthesis-core.ts) DIRECTLY with
@@ -11,10 +11,9 @@
  * turn (assistant.runtime.ts). No citations, no retrieval: the input text is
  * the entire context, so the output schema is just `{ text: string }`.
  *
- * `my_tone` is the one transform that needs extra context: a handful of the
- * teammate's own recent outbound replies (across ALL their conversations),
- * mined as short style excerpts and folded into the system prompt as
- * reference only, never content to copy or cite. A teammate with no prior
+ * `my_tone` is the one transform that needs extra context. It derives aggregate
+ * style statistics from the teammate's recent outbound replies without sending
+ * any prior customer's text to the model. A teammate with no prior
  * replies degrades to a neutral "match a professional, warm support voice"
  * instruction rather than failing or stalling.
  */
@@ -22,21 +21,15 @@ import { z } from 'zod'
 import { db, conversationMessages, eq, and, desc, isNull } from '@/lib/server/db'
 import type { PrincipalId } from '@quackback/ids'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { truncate } from '@/lib/shared/utils/string'
 import type { TransformKind } from '@/lib/shared/assistant/copilot-contract'
 import { runSynthesis, salvageJsonWithSchema } from './synthesis-core'
 import { wrapUntrustedText } from './injection-guard'
 
 /** How far back we look for the teammate's own outbound replies. */
 const STYLE_LOOKBACK_MESSAGES = 10
-/** At most this many excerpts make it into the prompt. */
-const STYLE_EXCERPT_LIMIT = 3
-/** Each excerpt is truncated to this many characters before it's quoted. */
-const STYLE_EXCERPT_CHARS = 400
-
 const TRANSFORM_TASK: Record<TransformKind, string> = {
   my_tone:
-    "Rewrite the text to sound like the teammate's own voice, following the style reference below.",
+    "Rewrite the text to sound like the teammate's own voice, following the derived style profile below.",
   more_friendly: 'Rewrite the text in a warmer, more friendly tone.',
   more_formal: 'Rewrite the text in a more formal, professional tone.',
   more_concise: 'Rewrite the text to be noticeably tighter and shorter without losing any facts.',
@@ -50,14 +43,21 @@ const TRANSFORM_TASK: Record<TransformKind, string> = {
 const transformOutputSchema = z.object({ text: z.string() })
 
 /**
- * Mine the teammate's voice: their last ~10 outbound, customer-facing replies
- * (agent-sent, not an internal note, not deleted) across ALL their
- * conversations, newest first, each truncated to a style-reference length.
- * Returns at most `STYLE_EXCERPT_LIMIT` non-empty excerpts, or an empty array
- * when the teammate has no prior replies on file: the prompt builder turns
- * that into a graceful neutral-voice fallback rather than an error.
+ * Aggregate the teammate's last customer-facing replies into non-content style
+ * signals. Raw reply text never leaves this function.
  */
-export async function fetchTeammateStyleExcerpts(principalId: PrincipalId): Promise<string[]> {
+export interface TeammateStyleProfile {
+  replyCount: number
+  averageWords: number
+  averageSentenceWords: number
+  exclamationRate: number
+  questionRate: number
+  multilineRate: number
+}
+
+export async function fetchTeammateStyleProfile(
+  principalId: PrincipalId
+): Promise<TeammateStyleProfile | null> {
   const rows = await db
     .select({ content: conversationMessages.content })
     .from(conversationMessages)
@@ -72,25 +72,40 @@ export async function fetchTeammateStyleExcerpts(principalId: PrincipalId): Prom
     .orderBy(desc(conversationMessages.createdAt))
     .limit(STYLE_LOOKBACK_MESSAGES)
 
-  const excerpts: string[] = []
-  for (const row of rows) {
-    const trimmed = row.content?.trim()
-    if (!trimmed) continue
-    excerpts.push(truncate(trimmed, STYLE_EXCERPT_CHARS))
-    if (excerpts.length >= STYLE_EXCERPT_LIMIT) break
+  const replies = rows.flatMap((row) => {
+    const content = row.content?.trim()
+    return content ? [content] : []
+  })
+  if (replies.length === 0) return null
+
+  const wordCounts = replies.map((reply) => reply.split(/\s+/u).length)
+  const sentenceCount = replies.reduce(
+    (total, reply) => total + Math.max(1, reply.split(/[.!?]+/u).filter(Boolean).length),
+    0
+  )
+  const round = (value: number) => Math.round(value * 10) / 10
+  return {
+    replyCount: replies.length,
+    averageWords: round(wordCounts.reduce((total, count) => total + count, 0) / replies.length),
+    averageSentenceWords: round(
+      wordCounts.reduce((total, count) => total + count, 0) / sentenceCount
+    ),
+    exclamationRate: round(replies.filter((reply) => reply.includes('!')).length / replies.length),
+    questionRate: round(replies.filter((reply) => reply.includes('?')).length / replies.length),
+    multilineRate: round(replies.filter((reply) => reply.includes('\n')).length / replies.length),
   }
-  return excerpts
 }
 
-/** The `my_tone` style-reference block: framed as reference only, never
- *  content the model should copy or cite verbatim. */
-function buildStyleReferenceBlock(excerpts: string[]): string {
-  if (excerpts.length === 0) {
+/** The `my_tone` aggregate style block. It contains no prior reply content. */
+function buildStyleReferenceBlock(profile: TeammateStyleProfile | null): string {
+  if (!profile) {
     return 'No prior replies are on file for this teammate: match a professional, warm support voice instead.'
   }
   return [
-    "Style reference only, NOT content to copy or cite: excerpts from this teammate's own past replies, given only so you can match their voice (word choice, sentence length, level of formality).",
-    ...excerpts.map((excerpt, i) => `Excerpt ${i + 1}: """${excerpt}"""`),
+    `Derived style profile from ${profile.replyCount} prior replies; no prior reply content is included.`,
+    `Average reply length: ${profile.averageWords} words.`,
+    `Average sentence length: ${profile.averageSentenceWords} words.`,
+    `Exclamation frequency: ${profile.exclamationRate}. Question frequency: ${profile.questionRate}. Multiline frequency: ${profile.multilineRate}.`,
   ].join('\n')
 }
 
@@ -99,15 +114,14 @@ function buildStyleReferenceBlock(excerpts: string[]): string {
  * the `my_tone` style reference block (only for that transform), then the
  * input text itself, wrapped by the shared `wrapUntrustedText` helper
  * (injection-guard.ts) as content to transform rather than instructions to
- * follow — the same guard family as the connector external-data note
- * (`EXTERNAL_DATA_NOTE` in connector.toolspec.ts) and `buildAskAiSystemPrompts`'s
- * injection guard. Exported so tests can pin the guard, the grounding rule,
+ * follow, in the same guard family as `buildAskAiSystemPrompts`'s injection
+ * guard. Exported so tests can pin the guard, the grounding rule,
  * and that one transform never leaks another transform's instructions.
  */
 export function buildTransformSystemPrompts(
   transform: TransformKind,
   text: string,
-  styleExcerpts: string[] = []
+  styleProfile: TeammateStyleProfile | null = null
 ): string[] {
   const instructions = [
     'You are helping a support teammate edit a piece of text for a customer conversation.',
@@ -121,7 +135,7 @@ export function buildTransformSystemPrompts(
 
   const blocks = [instructions]
   if (transform === 'my_tone') {
-    blocks.push(buildStyleReferenceBlock(styleExcerpts))
+    blocks.push(buildStyleReferenceBlock(styleProfile))
   }
   blocks.push(wrapUntrustedText('Text to transform', text))
   return blocks
@@ -155,9 +169,9 @@ export async function runCopilotTransform(
   // which guarantees getChatModel('assistant') is non-null.
   const model = getChatModel('assistant')!
 
-  const styleExcerpts =
-    params.transform === 'my_tone' ? await fetchTeammateStyleExcerpts(params.principalId) : []
-  const systemPrompts = buildTransformSystemPrompts(params.transform, params.text, styleExcerpts)
+  const styleProfile =
+    params.transform === 'my_tone' ? await fetchTeammateStyleProfile(params.principalId) : null
+  const systemPrompts = buildTransformSystemPrompts(params.transform, params.text, styleProfile)
 
   const outcome = await runSynthesis<never>({
     model,

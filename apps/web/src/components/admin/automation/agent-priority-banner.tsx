@@ -22,7 +22,7 @@ export function AgentPriorityBanner() {
         trigger.
       </span>
       <Link
-        to="/admin/automation/assistant"
+        to="/admin/automation/agent"
         className="ml-auto inline-flex shrink-0 items-center gap-1 text-primary hover:underline font-medium"
       >
         Manage agent deployment

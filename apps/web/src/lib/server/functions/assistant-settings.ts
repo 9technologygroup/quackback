@@ -1,98 +1,71 @@
-/**
- * Assistant customization server fns: per-tool execution controls,
- * per-surface instructions, and the Basics tone/length preset. All four gate
- * on assistant.manage — the same permission the AI & Automation settings
- * area gates on.
- */
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
+import { actorFromAuth } from '@/lib/server/audit/log'
 import {
-  assistantToolControlsSchema,
-  assistantSurfacesSchema,
-  assistantBasicsSchema,
+  assistantChannelsUpdateSchema,
+  assistantIdentityUpdateSchema,
+  assistantToolControlsUpdateSchema,
+  assistantVoiceUpdateSchema,
 } from '@/lib/server/domains/settings/settings.assistant'
-import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
-import { recordAuditEvent, actorFromAuth } from '@/lib/server/audit/log'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { requireAuth } from './auth-helpers'
+import { z } from 'zod'
 
 const log = logger.child({ component: 'assistant-settings' })
 
-/** All three namespaces in one request — the settings page renders them together. */
 export const getAssistantSettingsFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch assistant settings')
-  try {
-    await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
-    const { getAssistantConfig } = await import('@/lib/server/domains/settings/settings.assistant')
-    return await getAssistantConfig()
-  } catch (error) {
-    log.error({ err: error }, 'fetch assistant settings failed')
-    throw error
-  }
+  await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+  const { getAssistantSettings } = await import('@/lib/server/domains/settings/settings.assistant')
+  return getAssistantSettings()
 })
 
+function configActor(ctx: Awaited<ReturnType<typeof requireAuth>>) {
+  return { ...actorFromAuth(ctx), headers: getRequestHeaders() }
+}
+
+export const updateAssistantIdentityFn = createServerFn({ method: 'POST' })
+  .validator(assistantIdentityUpdateSchema)
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const { updateAssistantIdentity } =
+      await import('@/lib/server/domains/settings/settings.assistant')
+    return updateAssistantIdentity(data.expectedRevision, data.identity, configActor(ctx))
+  })
+
+export const updateAssistantVoiceFn = createServerFn({ method: 'POST' })
+  .validator(assistantVoiceUpdateSchema)
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const { updateAssistantVoice } =
+      await import('@/lib/server/domains/settings/settings.assistant')
+    return updateAssistantVoice(data.expectedRevision, data.voice, configActor(ctx))
+  })
+
+export const updateAssistantChannelsFn = createServerFn({ method: 'POST' })
+  .validator(assistantChannelsUpdateSchema)
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const { updateAssistantChannels } =
+      await import('@/lib/server/domains/settings/settings.assistant')
+    return updateAssistantChannels(data.expectedRevision, data.channels, configActor(ctx))
+  })
+
 export const updateAssistantToolControlsFn = createServerFn({ method: 'POST' })
-  .validator(assistantToolControlsSchema)
+  .validator(assistantToolControlsUpdateSchema)
   .handler(async ({ data }) => {
-    log.info('update assistant tool controls')
-    try {
-      const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
-      const { updateAssistantToolControls } =
-        await import('@/lib/server/domains/settings/settings.assistant')
-      const result = await updateAssistantToolControls(data)
-      await recordAuditEvent({
-        event: 'assistant.tool_controls.changed',
-        actor: actorFromAuth(ctx),
-        headers: getRequestHeaders(),
-        after: data,
-      })
-      return result
-    } catch (error) {
-      log.error({ err: error }, 'update assistant tool controls failed')
-      throw error
-    }
+    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const { updateAssistantToolControls } =
+      await import('@/lib/server/domains/settings/settings.assistant')
+    return updateAssistantToolControls(data.expectedRevision, data.toolControls, configActor(ctx))
   })
 
-export const updateAssistantSurfacesFn = createServerFn({ method: 'POST' })
-  .validator(assistantSurfacesSchema)
+export const updateWidgetAssistantDeploymentFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ enabled: z.boolean(), respond: z.boolean() }))
   .handler(async ({ data }) => {
-    log.info('update assistant surfaces')
-    try {
-      const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
-      const { updateAssistantSurfaces } =
-        await import('@/lib/server/domains/settings/settings.assistant')
-      const result = await updateAssistantSurfaces(data)
-      await recordAuditEvent({
-        event: 'assistant.surfaces.changed',
-        actor: actorFromAuth(ctx),
-        headers: getRequestHeaders(),
-        after: data,
-      })
-      return result
-    } catch (error) {
-      log.error({ err: error }, 'update assistant surfaces failed')
-      throw error
-    }
-  })
-
-export const updateAssistantBasicsFn = createServerFn({ method: 'POST' })
-  .validator(assistantBasicsSchema)
-  .handler(async ({ data }) => {
-    log.info('update assistant basics')
-    try {
-      const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
-      const { updateAssistantBasics } =
-        await import('@/lib/server/domains/settings/settings.assistant')
-      const result = await updateAssistantBasics(data)
-      await recordAuditEvent({
-        event: 'assistant.basics.changed',
-        actor: actorFromAuth(ctx),
-        headers: getRequestHeaders(),
-        after: data,
-      })
-      return result
-    } catch (error) {
-      log.error({ err: error }, 'update assistant basics failed')
-      throw error
-    }
+    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const { updateWidgetAssistantDeployment } =
+      await import('@/lib/server/domains/settings/settings.widget')
+    return updateWidgetAssistantDeployment(data, configActor(ctx))
   })

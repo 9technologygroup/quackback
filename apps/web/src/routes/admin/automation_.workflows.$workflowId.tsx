@@ -21,7 +21,7 @@ function WorkflowBuilderPage() {
   const { settings } = Route.useRouteContext()
   const flags = settings?.featureFlags as FeatureFlags | undefined
   if (!flags?.supportInbox) {
-    return <Navigate to="/admin/automation/assistant" />
+    return <Navigate to="/admin/automation/agent" />
   }
   return <WorkflowBuilder workflowId={workflowId} />
 }

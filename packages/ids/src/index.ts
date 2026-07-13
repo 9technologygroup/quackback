@@ -122,7 +122,6 @@ export type {
   AssistantPendingActionId,
   AssistantToolCallId,
   AssistantSnippetId,
-  DataConnectorId,
   TicketId,
   TicketStatusId,
   TicketActivityId,

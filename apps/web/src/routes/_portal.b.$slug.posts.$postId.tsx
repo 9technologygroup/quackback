@@ -35,6 +35,7 @@ import { similarPostsQuery } from '@/components/public/post-detail/similar-posts
 import { isValidTypeId, type PostCommentId, type PostId } from '@quackback/ids'
 import type { TiptapContent } from '@/lib/shared/schemas/posts'
 import type { PostStatusEntity } from '@/lib/shared/db-types'
+import { isProductEnabled } from '@/lib/shared/types/settings'
 
 export const Route = createFileRoute('/_portal/b/$slug/posts/$postId')({
   loader: async ({ params, context }) => {
@@ -44,6 +45,7 @@ export const Route = createFileRoute('/_portal/b/$slug/posts/$postId')({
     if (!settings) {
       throw notFound()
     }
+    if (!isProductEnabled(settings.featureFlags, 'feedback')) throw notFound()
 
     if (!isValidTypeId(postIdParam, 'post')) {
       throw notFound()

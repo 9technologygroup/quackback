@@ -122,7 +122,6 @@ export const PERMISSIONS = {
 
   // ai
   ASSISTANT_MANAGE: 'assistant.manage',
-  CONNECTOR_MANAGE: 'connector.manage',
   COPILOT_USE: 'copilot.use',
 
   // status_page (named status_page.* to avoid colliding with the existing
@@ -192,7 +191,6 @@ export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.WORKFLOW_MANAGE,
   PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
   PERMISSIONS.ASSISTANT_MANAGE,
-  PERMISSIONS.CONNECTOR_MANAGE,
   PERMISSIONS.STATUS_PAGE_MANAGE,
 ]
 
@@ -336,7 +334,6 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   { key: PERMISSIONS.WORKFLOW_MANAGE, category: 'support' },
   { key: PERMISSIONS.CHANNEL_ACCOUNT_MANAGE, category: 'support' },
   { key: PERMISSIONS.ASSISTANT_MANAGE, category: 'ai' },
-  { key: PERMISSIONS.CONNECTOR_MANAGE, category: 'ai' },
   { key: PERMISSIONS.COPILOT_USE, category: 'ai' },
   { key: PERMISSIONS.STATUS_PAGE_MANAGE, category: 'status_page' },
   { key: PERMISSIONS.STATUS_PAGE_PUBLISH, category: 'status_page' },

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
+import { IntlProvider } from 'react-intl'
 
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -8,8 +9,13 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 vi.stubGlobal('__APP_VERSION__', '0.0.0-test')
 
 // vi.hoisted so the mock is ready when the hoisted vi.mock factory runs.
-const { mockGetRouteContext } = vi.hoisted(() => ({
+const { mockGetRouteContext, mockRole } = vi.hoisted(() => ({
   mockGetRouteContext: vi.fn(),
+  mockRole: { current: 'admin' as 'admin' | 'member' },
+}))
+
+vi.mock('@/lib/client/hooks/use-permission', () => ({
+  usePermission: () => mockRole.current === 'admin',
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -52,15 +58,18 @@ vi.mock('@/lib/server/functions/conversation', () => ({ setAgentAvailabilityFn: 
 import { AdminSidebar } from '../admin-sidebar'
 
 function renderSidebar(userRole: 'admin' | 'member') {
+  mockRole.current = userRole
   mockGetRouteContext.mockReturnValue({
     session: { user: { name: 'Test', email: 'test@example.com', image: null } },
     settings: { featureFlags: {} },
     userRole,
   })
   return render(
-    <TooltipProvider>
-      <AdminSidebar />
-    </TooltipProvider>
+    <IntlProvider locale="en" messages={{}}>
+      <TooltipProvider>
+        <AdminSidebar />
+      </TooltipProvider>
+    </IntlProvider>
   )
 }
 
@@ -81,15 +90,15 @@ describe('AdminSidebar — settings cog visibility', () => {
 describe('AdminSidebar — AI & Automation visibility', () => {
   afterEach(() => cleanup())
 
-  it('shows AI & Automation to admins, linking to the assistant page', () => {
+  it('shows AI & Automation to admins, linking to the agent page', () => {
     const { container } = renderSidebar('admin')
-    expect(
-      container.querySelectorAll('a[href="/admin/automation/assistant"]').length
-    ).toBeGreaterThan(0)
+    expect(container.querySelectorAll('a[href="/admin/automation/agent"]').length).toBeGreaterThan(
+      0
+    )
   })
 
   it('hides AI & Automation from non-admin team members', () => {
     const { container } = renderSidebar('member')
-    expect(container.querySelectorAll('a[href="/admin/automation/assistant"]').length).toBe(0)
+    expect(container.querySelectorAll('a[href="/admin/automation/agent"]').length).toBe(0)
   })
 })

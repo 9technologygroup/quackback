@@ -1,21 +1,15 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import {
   ASSISTANT_TOOL_SPECS,
+  getToolSpecByName,
+  makeAssistantToolContext,
   resolveToolSpecs,
   type ToolControlMode,
   type AssistantToolSpec,
 } from '../assistant.toolspec'
 
-// resolveToolSpecs checks the dataConnectors flag before merging in
-// connector-backed tools; this suite is about the fixed catalogue's shape, so
-// the flag stays off and the static registry is the whole story (matches the
-// exact-name-list assertion below).
-vi.mock('@/lib/server/domains/settings/settings.service', () => ({
-  isFeatureEnabled: vi.fn().mockResolvedValue(false),
-}))
-
 const SNAKE_CASE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/
-const VALID_RISKS = ['read', 'write']
+const VALID_RISKS = ['read', 'write', 'control']
 const VALID_MODES: ToolControlMode[] = ['disabled', 'approval', 'autonomous']
 
 describe('assistant.toolspec registry completeness', () => {
@@ -62,6 +56,21 @@ describe('assistant.toolspec registry completeness', () => {
       if (spec.risk === 'read') {
         expect(spec.supportedModes).not.toContain('approval')
       }
+    }
+  })
+
+  it('static write tools support only disabled and approval, and default to approval', () => {
+    const writes = specs.filter((spec) => spec.risk === 'write')
+    expect(writes.length).toBeGreaterThan(0)
+    for (const spec of writes) {
+      expect(spec.supportedModes, spec.name).toEqual(['disabled', 'approval'])
+      expect(spec.defaultMode, spec.name).toBe('approval')
+    }
+  })
+
+  it('control tools are autonomous protocol primitives, never configurable actions', () => {
+    for (const spec of specs) {
+      if (spec.risk === 'control') expect(spec.supportedModes).toEqual(['autonomous'])
     }
   })
 
@@ -141,15 +150,72 @@ describe('search_knowledge spec', () => {
   })
 })
 
+describe('handoff_to_human spec', () => {
+  const spec = ASSISTANT_TOOL_SPECS.handoff_to_human
+  const packet = {
+    reason: 'low_confidence',
+    customerNeed: 'Restore access to a feature that keeps failing.',
+    attempted: ['Reviewed the available troubleshooting guidance.'],
+    recommendedNextStep: 'Inspect the account and reproduce the failure.',
+  }
+
+  it('accepts every handoff field at its maximum bound', () => {
+    expect(
+      spec.definition.inputSchema.safeParse({
+        reason: packet.reason,
+        customerNeed: 'n'.repeat(500),
+        attempted: Array.from({ length: 5 }, () => 'a'.repeat(160)),
+        recommendedNextStep: 'r'.repeat(300),
+      }).success
+    ).toBe(true)
+  })
+
+  it('rejects handoff strings and arrays above their maximum bounds', () => {
+    const invalidPackets = [
+      { ...packet, customerNeed: 'n'.repeat(501) },
+      { ...packet, attempted: Array.from({ length: 6 }, () => 'attempted') },
+      { ...packet, attempted: ['a'.repeat(161)] },
+      { ...packet, recommendedNextStep: 'r'.repeat(301) },
+    ]
+
+    for (const invalid of invalidPackets) {
+      expect(spec.definition.inputSchema.safeParse(invalid).success).toBe(false)
+    }
+  })
+
+  it('accepts a simulated sandbox handoff and retains the complete packet', async () => {
+    const context = makeAssistantToolContext({
+      db: {} as never,
+      assistantPrincipalId: 'principal_assistant' as never,
+      audience: 'public',
+      conversationId: null,
+      simulate: true,
+    })
+
+    await expect(spec.execute(packet, context)).resolves.toEqual({
+      accepted: true,
+      reason: 'low_confidence',
+    })
+    expect(context.handoffRequest).toEqual(packet)
+  })
+})
+
 describe('resolveToolSpecs', () => {
-  it('returns exactly the read and write specs that exist today', async () => {
+  it('returns exactly the read, control, and write specs that exist today', async () => {
     const names = (await resolveToolSpecs()).map((s) => s.name).sort()
     expect(names).toEqual([
       'capture_feedback',
       'create_ticket',
       'end_conversation',
+      'handoff_to_human',
+      'report_inability',
       'search_knowledge',
       'set_attribute',
     ])
+  })
+
+  it('looks up tools only from the static registry', () => {
+    expect(getToolSpecByName('end_conversation')).toBe(ASSISTANT_TOOL_SPECS.end_conversation)
+    expect(getToolSpecByName('unknown_tool')).toBeNull()
   })
 })

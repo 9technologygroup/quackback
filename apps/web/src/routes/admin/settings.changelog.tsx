@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { MegaphoneIcon } from '@heroicons/react/24/solid'
 import { BackLink } from '@/components/ui/back-link'
@@ -10,8 +10,14 @@ import { EmailCard } from '@/components/admin/settings/changelog/email-card'
 import { updateChangelogSettingsFn } from '@/lib/server/functions/settings'
 import { changelogCategoryQueries, changelogSettingsQueries } from '@/lib/client/queries/changelog'
 import { DEFAULT_CHANGELOG_SETTINGS, type ChangelogSettings } from '@/lib/shared/changelog-settings'
+import { isProductEnabled } from '@/lib/shared/types/settings'
 
 export const Route = createFileRoute('/admin/settings/changelog')({
+  beforeLoad: ({ context }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'changelog')) {
+      throw redirect({ to: '/admin/settings/general' })
+    }
+  },
   loader: async ({ context }) => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
     await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })

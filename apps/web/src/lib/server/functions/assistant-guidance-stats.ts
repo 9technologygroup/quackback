@@ -1,8 +1,4 @@
-/**
- * Guidance-rule effectiveness stats server fn: the Used count + Resolved %
- * the guidance rules card shows per rule. Gates on assistant.manage, same as
- * the guidance rule CRUD fns in assistant-guidance.ts.
- */
+/** Guidance Applied count and last-applied timestamp, gated on assistant.manage. */
 import { createServerFn } from '@tanstack/react-start'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
@@ -10,7 +6,7 @@ import { requireAuth } from './auth-helpers'
 
 const log = logger.child({ component: 'assistant-guidance-stats' })
 
-/** Per-rule Used/Resolved % stats, keyed by guidance rule id. */
+/** Per-rule application stats, keyed by guidance rule id. */
 export const getGuidanceRuleStatsFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch guidance rule stats')
   try {

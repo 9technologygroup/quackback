@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, type ReactNode } from 'react'
 import { useRouteContext } from '@tanstack/react-router'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import type { FeatureFlags } from '@/lib/shared/types/settings'
+import { isProductEnabled, type FeatureFlags } from '@/lib/shared/types/settings'
 import { analyticsQueries, type AnalyticsPeriod } from '@/lib/client/queries/analytics'
 import { formatDistanceToNow } from 'date-fns'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -120,12 +120,13 @@ const periods: Array<{ value: AnalyticsPeriod; label: string }> = [
 export function AnalyticsPage() {
   const { settings } = useRouteContext({ from: '__root__' })
   const flags = settings?.featureFlags as FeatureFlags | undefined
-  // Flag-gated sections: Support reports CSAT (Support Inbox flag), Visitors
-  // reports pageview analytics (Visitor Analytics flag) — same gates as the
-  // features themselves.
+  // Product reports follow product availability; visitor reporting retains
+  // its separate privacy-sensitive Labs gate.
   const sections = SECTION_NAV_ITEMS.filter(
     (i) =>
-      (i.key !== 'support' || (flags?.supportInbox ?? false)) &&
+      (i.key !== 'feedback' || isProductEnabled(flags, 'feedback')) &&
+      (i.key !== 'support' || isProductEnabled(flags, 'support')) &&
+      (i.key !== 'changelog' || isProductEnabled(flags, 'changelog')) &&
       (i.key !== 'visitors' || (flags?.visitorAnalytics ?? false))
   )
 

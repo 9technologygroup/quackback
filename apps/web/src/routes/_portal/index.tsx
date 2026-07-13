@@ -1,4 +1,4 @@
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import { createFileRoute, notFound, redirect } from '@tanstack/react-router'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { z } from 'zod'
 import { useIntl } from 'react-intl'
@@ -8,6 +8,7 @@ import { Spinner } from '@/components/shared/spinner'
 import { FeedbackContainer } from '@/components/public/feedback/feedback-container'
 import { portalQueries } from '@/lib/client/queries/portal'
 import { votedPostsKeys } from '@/lib/client/hooks/use-portal-posts-query'
+import { isProductEnabled } from '@/lib/shared/types/settings'
 
 const searchSchema = z.object({
   board: z.string().optional(),
@@ -39,6 +40,25 @@ export const Route = createFileRoute('/_portal/')({
 
     if (!org) {
       throw redirect({ to: '/onboarding' })
+    }
+
+    if (!isProductEnabled(org.featureFlags, 'feedback')) {
+      if (isProductEnabled(org.featureFlags, 'support')) {
+        const supportPublished =
+          org.featureFlags.supportTickets ||
+          (org.featureFlags.supportInbox && org.portalConfig.support?.enabled === true)
+        if (supportPublished) throw redirect({ to: '/support' })
+      }
+      if (isProductEnabled(org.featureFlags, 'helpCenter') && org.helpCenterConfig.enabled) {
+        throw redirect({ to: '/hc' })
+      }
+      if (isProductEnabled(org.featureFlags, 'changelog')) {
+        throw redirect({ to: '/changelog' })
+      }
+      if (isProductEnabled(org.featureFlags, 'status') && org.statusConfig.enabled) {
+        throw redirect({ to: '/status' })
+      }
+      throw notFound()
     }
 
     // Parse search params for initial SSR (not using loaderDeps to avoid re-execution)

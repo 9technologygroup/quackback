@@ -1,26 +1,20 @@
-/**
- * Assistant guidance-rule + tool-catalogue server fns: permission gate +
- * boundary validation. createServerFn is stubbed to a directly-callable fn
- * (mirrors assistant-settings.test.ts) so the real zod validator runs on
- * each call.
- */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 
 vi.mock('@tanstack/react-start', () => ({
   createServerFn: () => {
-    let _schema: { parse: (v: unknown) => unknown } | null = null
-    let _handler: ((args: { data: unknown }) => Promise<unknown>) | null = null
+    let schema: { parse: (value: unknown) => unknown } | null = null
+    let handler: ((args: { data: never }) => Promise<unknown>) | null = null
     const fn = async (args?: { data: unknown }) => {
-      if (!_handler) throw new Error('handler not registered')
-      return _handler({ data: _schema ? _schema.parse(args?.data) : args?.data })
+      if (!handler) throw new Error('handler not registered')
+      return handler({ data: (schema ? schema.parse(args?.data) : args?.data) as never })
     }
-    fn.validator = (schema: { parse: (v: unknown) => unknown }) => {
-      _schema = schema
+    fn.validator = (nextSchema: { parse: (value: unknown) => unknown }) => {
+      schema = nextSchema
       return fn
     }
-    fn.handler = (h: (args: { data: unknown }) => Promise<unknown>) => {
-      _handler = h
+    fn.handler = (nextHandler: (args: { data: never }) => Promise<unknown>) => {
+      handler = nextHandler
       return fn
     }
     return fn
@@ -46,7 +40,7 @@ vi.mock('@/lib/server/domains/assistant/guidance.service', () => ({
   updateGuidanceRule: hoisted.updateGuidanceRule,
   reorderGuidanceRules: hoisted.reorderGuidanceRules,
   deleteGuidanceRule: hoisted.deleteGuidanceRule,
-  GUIDANCE_CHAR_BUDGET: 4000,
+  GUIDANCE_CHAR_BUDGET: 4_000,
 }))
 vi.mock('@/lib/server/domains/assistant/assistant.toolspec', () => ({
   resolveToolSpecs: hoisted.resolveToolSpecs,
@@ -55,17 +49,15 @@ vi.mock('@/lib/server/audit/log', () => ({
   recordAuditEvent: hoisted.recordAuditEvent,
   actorFromAuth: hoisted.actorFromAuth,
 }))
-vi.mock('@tanstack/react-start/server', () => ({
-  getRequestHeaders: () => new Headers(),
-}))
+vi.mock('@tanstack/react-start/server', () => ({ getRequestHeaders: () => new Headers() }))
 
 import {
-  listGuidanceRulesFn,
   createGuidanceRuleFn,
-  updateGuidanceRuleFn,
-  reorderGuidanceRulesFn,
   deleteGuidanceRuleFn,
   listAssistantToolsFn,
+  listGuidanceRulesFn,
+  reorderGuidanceRulesFn,
+  updateGuidanceRuleFn,
 } from '../assistant-guidance'
 
 beforeEach(() => {
@@ -76,193 +68,186 @@ beforeEach(() => {
 })
 
 describe('permission gates', () => {
-  it('every fn gates on assistant.manage', async () => {
+  it('gates every guidance and catalogue function on assistant.manage', async () => {
     await listGuidanceRulesFn()
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
     hoisted.createGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1' })
-    await createGuidanceRuleFn({ data: { title: 'Refund policy', body: 'Always mention it.' } })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
+    await createGuidanceRuleFn({ data: { name: 'Refunds', instruction: 'Explain refunds.' } })
     hoisted.updateGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1' })
     await updateGuidanceRuleFn({ data: { id: 'assistant_guidance_1', enabled: false } })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
-    hoisted.reorderGuidanceRules.mockResolvedValue(undefined)
     await reorderGuidanceRulesFn({ data: { ids: ['assistant_guidance_1'] } })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
-    hoisted.deleteGuidanceRule.mockResolvedValue(undefined)
     await deleteGuidanceRuleFn({ data: { id: 'assistant_guidance_1' } })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
     await listAssistantToolsFn()
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
+
+    expect(hoisted.requireAuth).toHaveBeenCalledTimes(6)
+    for (const call of hoisted.requireAuth.mock.calls) {
+      expect(call[0]).toEqual({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    }
   })
 
-  it('propagates an auth rejection without touching the domain layer', async () => {
+  it('propagates auth rejection before the domain call', async () => {
     hoisted.requireAuth.mockRejectedValue(new Error('Access denied'))
     await expect(listGuidanceRulesFn()).rejects.toThrow('Access denied')
     expect(hoisted.listGuidanceRules).not.toHaveBeenCalled()
   })
 })
 
-describe('listGuidanceRulesFn', () => {
-  it('returns every rule (enabled or not) plus the char budget', async () => {
+describe('V2 guidance boundary', () => {
+  it('returns all rules with the 4,000-character budget', async () => {
     hoisted.listGuidanceRules.mockResolvedValue([{ id: 'assistant_guidance_1', enabled: false }])
-    const result = await listGuidanceRulesFn()
-    expect(hoisted.listGuidanceRules).toHaveBeenCalledWith({ enabledOnly: false })
-    expect(result).toEqual({
+    await expect(listGuidanceRulesFn()).resolves.toEqual({
       rules: [{ id: 'assistant_guidance_1', enabled: false }],
-      charBudget: 4000,
+      charBudget: 4_000,
     })
-  })
-})
-
-describe('createGuidanceRuleFn', () => {
-  it('rejects a title over 80 characters at the boundary', async () => {
-    await expect(
-      createGuidanceRuleFn({ data: { title: 'x'.repeat(81), body: 'Body.' } })
-    ).rejects.toThrow()
-    expect(hoisted.createGuidanceRule).not.toHaveBeenCalled()
+    expect(hoisted.listGuidanceRules).toHaveBeenCalledWith({ enabledOnly: false })
   })
 
-  it('rejects a body over 1000 characters at the boundary', async () => {
-    await expect(
-      createGuidanceRuleFn({ data: { title: 'Title', body: 'x'.repeat(1001) } })
-    ).rejects.toThrow()
-    expect(hoisted.createGuidanceRule).not.toHaveBeenCalled()
-  })
-
-  it('rejects an unknown surface at the boundary', async () => {
-    await expect(
-      createGuidanceRuleFn({
-        data: { title: 'Title', body: 'Body.', surfaces: ['sms'] } as never,
-      })
-    ).rejects.toThrow()
-    expect(hoisted.createGuidanceRule).not.toHaveBeenCalled()
-  })
-
-  it('rejects an unknown category at the boundary', async () => {
-    await expect(
-      createGuidanceRuleFn({
-        data: { title: 'Title', body: 'Body.', category: 'not_a_real_category' } as never,
-      })
-    ).rejects.toThrow()
-    expect(hoisted.createGuidanceRule).not.toHaveBeenCalled()
-  })
-
-  it('passes a valid rule through with the caller as creator', async () => {
+  it('normalizes and passes a complete V2 create input with the caller as creator', async () => {
     hoisted.createGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1' })
-    const result = await createGuidanceRuleFn({
-      data: { title: 'Refund policy', body: 'Always mention it.', surfaces: ['widget'] },
+    await createGuidanceRuleFn({
+      data: {
+        name: ' Refunds\u0000 ',
+        appliesWhen: ' When a customer asks for a refund ',
+        instruction: ' Explain the policy. ',
+        roles: ['customer_support'],
+        channels: ['widget'],
+      },
     })
-    expect(result).toEqual({ id: 'assistant_guidance_1' })
+
     expect(hoisted.createGuidanceRule).toHaveBeenCalledWith({
-      title: 'Refund policy',
-      body: 'Always mention it.',
-      enabled: undefined,
-      surfaces: ['widget'],
-      category: undefined,
+      name: 'Refunds',
+      appliesWhen: 'When a customer asks for a refund',
+      instruction: 'Explain the policy.',
+      roles: ['customer_support'],
+      channels: ['widget'],
+      enabled: true,
+      priority: 0,
       createdById: 'principal_admin',
     })
   })
 
-  it('passes an explicit category through', async () => {
+  it('normalizes an empty condition to null', async () => {
     hoisted.createGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1' })
     await createGuidanceRuleFn({
-      data: { title: 'Tone', body: 'Be warm.', category: 'communication_style' },
+      data: { name: 'Always', appliesWhen: ' \u0000 ', instruction: 'Always do this.' },
     })
     expect(hoisted.createGuidanceRule).toHaveBeenCalledWith(
-      expect.objectContaining({ category: 'communication_style' })
+      expect.objectContaining({ appliesWhen: null })
     )
   })
-})
 
-describe('updateGuidanceRuleFn', () => {
-  it('rejects an unknown surface at the boundary', async () => {
-    await expect(
-      updateGuidanceRuleFn({ data: { id: 'assistant_guidance_1', surfaces: ['sms'] } as never })
-    ).rejects.toThrow()
-    expect(hoisted.updateGuidanceRule).not.toHaveBeenCalled()
+  it.each([
+    { name: 'x'.repeat(81), instruction: 'Fine.' },
+    { name: 'Fine', appliesWhen: 'x'.repeat(501), instruction: 'Fine.' },
+    { name: 'Fine', instruction: 'x'.repeat(1_001) },
+    { name: 'Fine', instruction: 'Fine.', roles: ['unknown'] },
+    { name: 'Fine', instruction: 'Fine.', channels: ['sms'] },
+  ])('rejects invalid create input %#', async (data) => {
+    await expect(createGuidanceRuleFn({ data: data as never })).rejects.toThrow()
+    expect(hoisted.createGuidanceRule).not.toHaveBeenCalled()
   })
 
-  it('rejects an unknown category at the boundary', async () => {
-    await expect(
-      updateGuidanceRuleFn({
-        data: { id: 'assistant_guidance_1', category: 'not_a_real_category' } as never,
-      })
-    ).rejects.toThrow()
-    expect(hoisted.updateGuidanceRule).not.toHaveBeenCalled()
-  })
-
-  it('passes a partial patch through to the domain layer', async () => {
+  it('passes a V2 partial update without injecting defaults', async () => {
     hoisted.updateGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1', enabled: false })
-    const result = await updateGuidanceRuleFn({
-      data: { id: 'assistant_guidance_1', enabled: false },
-    })
-    expect(result).toEqual({ id: 'assistant_guidance_1', enabled: false })
+    await updateGuidanceRuleFn({ data: { id: 'assistant_guidance_1', enabled: false } })
     expect(hoisted.updateGuidanceRule).toHaveBeenCalledWith('assistant_guidance_1', {
-      title: undefined,
-      body: undefined,
+      name: undefined,
+      appliesWhen: undefined,
+      instruction: undefined,
+      roles: undefined,
+      channels: undefined,
       enabled: false,
-      surfaces: undefined,
-      category: undefined,
+      priority: undefined,
     })
   })
 
-  it('passes an explicit category patch through', async () => {
-    hoisted.updateGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1', category: 'spam' })
-    await updateGuidanceRuleFn({ data: { id: 'assistant_guidance_1', category: 'spam' } })
-    expect(hoisted.updateGuidanceRule).toHaveBeenCalledWith(
-      'assistant_guidance_1',
-      expect.objectContaining({ category: 'spam' })
-    )
-  })
-})
-
-describe('reorderGuidanceRulesFn', () => {
-  it('rejects an empty id list at the boundary', async () => {
+  it('validates reorder and delete inputs', async () => {
     await expect(reorderGuidanceRulesFn({ data: { ids: [] } })).rejects.toThrow()
     expect(hoisted.reorderGuidanceRules).not.toHaveBeenCalled()
-  })
 
-  it('passes the ordered id list through', async () => {
-    hoisted.reorderGuidanceRules.mockResolvedValue(undefined)
-    const result = await reorderGuidanceRulesFn({
+    await reorderGuidanceRulesFn({
       data: { ids: ['assistant_guidance_2', 'assistant_guidance_1'] },
     })
-    expect(result).toEqual({ ids: ['assistant_guidance_2', 'assistant_guidance_1'] })
     expect(hoisted.reorderGuidanceRules).toHaveBeenCalledWith([
       'assistant_guidance_2',
       'assistant_guidance_1',
     ])
-  })
-})
 
-describe('deleteGuidanceRuleFn', () => {
-  it('deletes by id', async () => {
-    hoisted.deleteGuidanceRule.mockResolvedValue(undefined)
-    const result = await deleteGuidanceRuleFn({ data: { id: 'assistant_guidance_1' } })
-    expect(result).toEqual({ id: 'assistant_guidance_1' })
+    await deleteGuidanceRuleFn({ data: { id: 'assistant_guidance_1' } })
     expect(hoisted.deleteGuidanceRule).toHaveBeenCalledWith('assistant_guidance_1')
   })
 })
 
+describe('privacy-safe audit logging', () => {
+  const persistedRule = {
+    id: 'assistant_guidance_1',
+    name: 'Refund policy',
+    appliesWhen: 'When a customer requests a refund',
+    instruction: 'Private instruction body',
+    roles: ['customer_support'],
+    channels: ['widget'],
+    enabled: true,
+    priority: 2,
+  }
+
+  it('records V2 create metadata without the instruction body', async () => {
+    hoisted.createGuidanceRule.mockResolvedValue(persistedRule)
+    await createGuidanceRuleFn({
+      data: {
+        name: persistedRule.name,
+        appliesWhen: persistedRule.appliesWhen,
+        instruction: persistedRule.instruction,
+        roles: ['customer_support'],
+        channels: ['widget'],
+        priority: 2,
+      },
+    })
+
+    const audit = hoisted.recordAuditEvent.mock.calls[0][0]
+    expect(audit).toMatchObject({
+      event: 'assistant.guidance.created',
+      target: { type: 'assistant_guidance', id: persistedRule.id },
+      after: {
+        name: persistedRule.name,
+        alwaysOn: false,
+        enabled: true,
+        roles: ['customer_support'],
+        channels: ['widget'],
+        priority: 2,
+      },
+    })
+    expect(JSON.stringify(audit)).not.toContain(persistedRule.instruction)
+    expect(JSON.stringify(audit)).not.toContain(persistedRule.appliesWhen)
+  })
+
+  it('records V2 update metadata without the instruction body', async () => {
+    hoisted.updateGuidanceRule.mockResolvedValue({ ...persistedRule, enabled: false })
+    await updateGuidanceRuleFn({
+      data: { id: persistedRule.id, instruction: persistedRule.instruction, enabled: false },
+    })
+
+    const audit = hoisted.recordAuditEvent.mock.calls[0][0]
+    expect(audit.after).toMatchObject({ name: persistedRule.name, enabled: false, alwaysOn: false })
+    expect(JSON.stringify(audit)).not.toContain(persistedRule.instruction)
+  })
+
+  it('records reorder count and delete target only', async () => {
+    await reorderGuidanceRulesFn({ data: { ids: ['assistant_guidance_2'] } })
+    expect(hoisted.recordAuditEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ event: 'assistant.guidance.reordered', metadata: { count: 1 } })
+    )
+
+    await deleteGuidanceRuleFn({ data: { id: 'assistant_guidance_1' } })
+    expect(hoisted.recordAuditEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        event: 'assistant.guidance.deleted',
+        target: { type: 'assistant_guidance', id: 'assistant_guidance_1' },
+      })
+    )
+  })
+})
+
 describe('listAssistantToolsFn', () => {
-  it('projects the resolved tool catalogue to the admin-facing shape', async () => {
+  it('projects configurable tools and excludes control primitives', async () => {
     hoisted.resolveToolSpecs.mockResolvedValue([
       {
         name: 'end_conversation',
@@ -271,15 +256,17 @@ describe('listAssistantToolsFn', () => {
         risk: 'write',
         supportedModes: ['disabled', 'approval', 'autonomous'],
         defaultMode: 'approval',
-        // Fields a model-facing spec carries that the settings UI never sees.
-        permissions: [],
-        definition: {},
-        execute: vi.fn(),
-        summarize: vi.fn(),
+      },
+      {
+        name: 'handoff_to_human',
+        label: 'Hand off',
+        description: 'Hand off.',
+        risk: 'control',
+        supportedModes: ['autonomous'],
+        defaultMode: 'autonomous',
       },
     ])
-    const result = await listAssistantToolsFn()
-    expect(result).toEqual([
+    await expect(listAssistantToolsFn()).resolves.toEqual([
       {
         name: 'end_conversation',
         label: 'End conversation',
@@ -289,81 +276,5 @@ describe('listAssistantToolsFn', () => {
         defaultMode: 'approval',
       },
     ])
-  })
-})
-
-describe('audit logging', () => {
-  it('createGuidanceRuleFn records assistant.guidance.created with the new rule', async () => {
-    hoisted.createGuidanceRule.mockResolvedValue({
-      id: 'assistant_guidance_1',
-      title: 'Refund policy',
-      enabled: true,
-      surfaces: ['widget'],
-      category: 'other',
-    })
-    await createGuidanceRuleFn({
-      data: { title: 'Refund policy', body: 'Always mention it.', surfaces: ['widget'] },
-    })
-    expect(hoisted.recordAuditEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'assistant.guidance.created',
-        target: { type: 'assistant_guidance', id: 'assistant_guidance_1' },
-        after: {
-          title: 'Refund policy',
-          enabled: true,
-          surfaces: ['widget'],
-          category: 'other',
-        },
-      })
-    )
-  })
-
-  it('updateGuidanceRuleFn records assistant.guidance.updated with after and no before', async () => {
-    hoisted.updateGuidanceRule.mockResolvedValue({
-      id: 'assistant_guidance_1',
-      title: 'Refund policy',
-      enabled: false,
-      surfaces: null,
-      category: 'other',
-    })
-    await updateGuidanceRuleFn({ data: { id: 'assistant_guidance_1', enabled: false } })
-    expect(hoisted.recordAuditEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'assistant.guidance.updated',
-        target: { type: 'assistant_guidance', id: 'assistant_guidance_1' },
-        after: {
-          title: 'Refund policy',
-          enabled: false,
-          surfaces: null,
-          category: 'other',
-        },
-      })
-    )
-    const call = hoisted.recordAuditEvent.mock.calls[0][0]
-    expect(call.before).toBeUndefined()
-  })
-
-  it('reorderGuidanceRulesFn records assistant.guidance.reordered with the moved count', async () => {
-    hoisted.reorderGuidanceRules.mockResolvedValue(undefined)
-    await reorderGuidanceRulesFn({
-      data: { ids: ['assistant_guidance_2', 'assistant_guidance_1'] },
-    })
-    expect(hoisted.recordAuditEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'assistant.guidance.reordered',
-        metadata: { count: 2 },
-      })
-    )
-  })
-
-  it('deleteGuidanceRuleFn records assistant.guidance.deleted with the target id', async () => {
-    hoisted.deleteGuidanceRule.mockResolvedValue(undefined)
-    await deleteGuidanceRuleFn({ data: { id: 'assistant_guidance_1' } })
-    expect(hoisted.recordAuditEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'assistant.guidance.deleted',
-        target: { type: 'assistant_guidance', id: 'assistant_guidance_1' },
-      })
-    )
   })
 })

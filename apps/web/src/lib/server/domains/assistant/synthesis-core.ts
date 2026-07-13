@@ -68,6 +68,12 @@ export type SalvageMode = 'strict' | 'forgiving'
 export interface AttemptOutcome {
   final: unknown | null
   usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number }
+  /**
+   * A schema-valid final that failed the caller's semantic completion contract.
+   * Kept on the attempt so usage logging can classify the real model call before
+   * the retry harness turns it into a failed attempt.
+   */
+  validationError?: Error
 }
 
 export type SynthesisActivity = { kind: 'thinking' } | { kind: 'tool'; tool: string }
@@ -263,8 +269,8 @@ export interface RunSynthesisOptions<
 > extends RunAttemptOptions<TContext> {
   /** Total attempts beyond the first. Defaults to `DEFAULT_RETRIES` (one retry). */
   retries?: number
-  /** Quinn never leaves the customer in silence: 'fallback'. Ask AI surfaces a
-   *  hard failure to its route: 'throw'. */
+  /** Caller-owned terminal failure policy. Quinn uses 'throw' so infrastructure
+   *  failure can never be published as model-authored customer text. */
   onFailure: 'throw' | 'fallback'
   /** Required (and only used) when `onFailure` is 'fallback'. */
   fallbackValue?: TValue
@@ -276,6 +282,16 @@ export interface RunSynthesisOptions<
   }
   /** Classify an attempt for the usage-log metadata; caller policy, not the core's. */
   deriveAnswerKind: (attempt: AttemptOutcome, attemptIndex: number) => AiAnswerKind
+  /** Additional caller-owned, non-sensitive attempt trace metadata. */
+  deriveAttemptMetadata?: (attempt: AttemptOutcome, attemptIndex: number) => Record<string, unknown>
+  /**
+   * Optional semantic completion gate, run after schema decoding/salvage but
+   * before an attempt may terminate the loop. Throwing rejects the final and
+   * lets the ordinary retry/fallback policy handle it. Agentic callers use this
+   * for objective checks against their observed tool/source ledger without
+   * teaching the shared core anything about their output shape.
+   */
+  validateFinal?: (final: unknown, attemptIndex: number) => void | Promise<void>
   /** Runs before each attempt (e.g. resetting a per-attempt tool ledger). */
   onAttemptStart?: (attemptIndex: number) => void
   /** Runs after a non-final attempt fails, before the next attempt starts. */
@@ -313,10 +329,20 @@ export async function runSynthesis<TValue, TContext = unknown>(
         },
         async () => {
           const result = await runOneAttempt(options)
+          if (result.final !== null && options.validateFinal) {
+            try {
+              await options.validateFinal(result.final, attempt)
+            } catch (error) {
+              result.validationError = error instanceof Error ? error : new Error(String(error))
+            }
+          }
           return {
             result,
             retryCount: 0,
-            metadata: { answerKind: options.deriveAnswerKind(result, attempt) },
+            metadata: {
+              answerKind: options.deriveAnswerKind(result, attempt),
+              ...options.deriveAttemptMetadata?.(result, attempt),
+            },
           }
         },
         (r: AttemptOutcome) => ({
@@ -325,6 +351,7 @@ export async function runSynthesis<TValue, TContext = unknown>(
           totalTokens: r.usage?.totalTokens ?? 0,
         })
       )
+      if (attemptOutcome.validationError) throw attemptOutcome.validationError
       if (attemptOutcome.final !== null) {
         return { outcome: 'success', final: attemptOutcome.final, usage: attemptOutcome.usage }
       }
@@ -338,7 +365,7 @@ export async function runSynthesis<TValue, TContext = unknown>(
 
   if (options.onFailure === 'fallback') {
     // An abort is the caller's to handle, so propagate it; otherwise resolve
-    // to the fallback value rather than leaving a silent gap.
+    // to the caller-provided fallback value.
     if (options.signal?.aborted) throw lastError ?? new Error('synthesis aborted')
     return { outcome: 'fallback', value: options.fallbackValue as TValue, lastError }
   }

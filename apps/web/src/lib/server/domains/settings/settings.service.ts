@@ -10,6 +10,7 @@ import type { IdentityProviderId } from '@quackback/ids'
 import { cacheGet, cacheSet, CACHE_KEYS } from '@/lib/server/redis'
 import { ValidationError, NotFoundError } from '@/lib/shared/errors'
 import { httpsUrl } from '@/lib/shared/schemas/auth'
+import { assistantConfigSchema, DEFAULT_ASSISTANT_CONFIG } from '@/lib/shared/assistant/config'
 import { assertNotManaged } from '@/lib/server/config-file/managed-guard'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
 import { logger } from '@/lib/server/logger'
@@ -853,6 +854,10 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
     const developerConfig = parseJsonConfig(org.developerConfig, DEFAULT_DEVELOPER_CONFIG)
 
     const widgetConfig = parseJsonConfig(org.widgetConfig, DEFAULT_WIDGET_CONFIG)
+    const assistantConfig = assistantConfigSchema.safeParse(org.assistantConfig)
+    const assistantIdentity = assistantConfig.success
+      ? assistantConfig.data.identity
+      : DEFAULT_ASSISTANT_CONFIG.identity
     const helpCenterConfig = parseJsonConfig(org.helpCenterConfig, DEFAULT_HELP_CENTER_CONFIG)
     const changelogConfig = resolveChangelogSettings(org.metadata)
     const statusConfig = resolveStatusSettings(org.metadata)
@@ -915,7 +920,13 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
         enabled: widgetConfig.enabled,
         defaultBoard: widgetConfig.defaultBoard,
         position: widgetConfig.position,
-        tabs: widgetConfig.tabs,
+        tabs: {
+          ...widgetConfig.tabs,
+          feedback: (widgetConfig.tabs?.feedback ?? true) && featureFlags.feedback,
+          changelog: (widgetConfig.tabs?.changelog ?? false) && featureFlags.changelog,
+          help: (widgetConfig.tabs?.help ?? false) && featureFlags.helpCenter,
+          messenger: (widgetConfig.tabs?.messenger ?? false) && featureFlags.supportInbox,
+        },
         // Identify is verified-only (backend-signed ssoToken; GH issue #300).
         hmacRequired: true,
         // Home customisation is client-safe (greeting, hero style, quick links);
@@ -924,7 +935,10 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
         // Client-safe messenger config — the widget gates its messenger tab on
         // messenger.enabled, so this must be projected here (routing stays
         // agent-only).
-        messenger: publicMessengerConfig(widgetConfig.messenger ?? DEFAULT_MESSENGER_CONFIG),
+        messenger: publicMessengerConfig(
+          widgetConfig.messenger ?? DEFAULT_MESSENGER_CONFIG,
+          assistantIdentity
+        ),
       },
       featureFlags,
       brandingData,

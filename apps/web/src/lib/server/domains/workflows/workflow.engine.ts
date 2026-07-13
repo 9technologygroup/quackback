@@ -11,13 +11,6 @@
  * admin-configured automation acting on the workspace's behalf, mirroring the
  * full-API-key service principal. Each action is best-effort (a failure is logged
  * to the timeline and the run continues) so one bad action never strands a run.
- *
- * `call_connector` nodes (see graph.ts's module doc) are a fourth park kind
- * the walker returns, but unlike a wait/interactive/assistant park they never
- * leave the run in state 'waiting' — applyPlanAndSettle's loop executes the
- * connector call inline, logs its outcome, and re-walks from the resolved
- * success/failed successor, bounded by MAX_CONNECTOR_HOPS, all within this
- * same engine invocation.
  */
 import {
   db,
@@ -36,8 +29,8 @@ import type { Actor } from '@/lib/server/policy/types'
 import { boundedServiceActor } from '@/lib/server/policy/service-actor'
 import { logger } from '@/lib/server/logger'
 import { isUniqueViolation } from '@/lib/server/utils'
-import { applyAction, executeCallConnectorNode, type ResolvedBlockDeps } from './action.executor'
-import { walkWorkflow, successorId, type WorkflowGraph, type WalkResult } from './graph'
+import { applyAction, type ResolvedBlockDeps } from './action.executor'
+import { walkWorkflow, type WorkflowGraph, type WalkResult } from './graph'
 import type { ConditionContext, BlockAnswer, AssistantOutcome } from './condition.evaluator'
 import { getWorkflow } from './workflow.service'
 import { resolveConditionContext } from './condition.context'
@@ -56,16 +49,6 @@ import { hasFrequencyCap, claimFrequencyCapSlot } from './dispatcher.guards'
 import { getWorkflowAbandonedAutoCloseSettings } from '@/lib/server/domains/settings/settings.workflows'
 
 const log = logger.child({ component: 'workflow-engine' })
-
-/** Bounds the park-and-continue connector loop (applyPlanAndSettle) within a
- *  SINGLE engine invocation — a `call_connector` graph is storable with a
- *  cycle back through itself or another connector node (the authoring
- *  schema tolerates cycles, same as every other node kind), and unlike a
- *  timer/input wait a connector hop never leaves 'running', so nothing else
- *  would ever stop a genuine cycle from spinning forever inline. Exceeding
- *  this settles the run 'done' with a `connector_hop_limit` run event rather
- *  than looping unboundedly. */
-const MAX_CONNECTOR_HOPS = 20
 
 function workflowActor(): Actor {
   return boundedServiceActor(AUTOMATION_PERMISSIONS)
@@ -177,10 +160,7 @@ export async function runWorkflow(
 ): Promise<WorkflowRun | null> {
   const graph = readGraph(workflow.graph)
   const plan = walkWorkflow(graph, ctx)
-  // A fresh entry that immediately parks at a call_connector node (no prior
-  // actions) still needs a run to exist — same "waiting counts, empty
-  // completed doesn't" rule the pre-existing waiting check already encodes.
-  if (plan.actions.length === 0 && plan.status !== 'waiting' && plan.status !== 'connector') {
+  if (plan.actions.length === 0 && plan.status !== 'waiting') {
     return null
   }
 
@@ -227,15 +207,7 @@ export async function runWorkflow(
   }
   if (!run) return null // frequency cap denied on the authoritative re-check
 
-  return applyPlanAndSettle(
-    run,
-    workflow,
-    graph,
-    plan,
-    opts.conversationId,
-    subjectPrincipalId,
-    ctx
-  )
+  return applyPlanAndSettle(run, workflow, plan, opts.conversationId, subjectPrincipalId, ctx)
 }
 
 /**
@@ -256,82 +228,38 @@ export async function runWorkflow(
  * the conversation's VISITOR (ctx.conversation.visitorPrincipalId) rather than
  * the run's own service actor (see visitorActor's doc); every other action is
  * unaffected.
- *
- * `graph` is the SAME graph `plan` was walked against (workflow.graph for a
- * fresh run, the run's own pinned snapshot for a resume — see runWorkflow /
- * resumeWorkflowRun) — needed here (not just by the initial walk) because a
- * `call_connector` park requires re-walking from its resolved successor
- * in-process: the loop below runs a plan's actions, and whenever the walk
- * parked at a connector node instead of stopping for a real reason, executes
- * that connector inline (action.executor.ts's executeCallConnectorNode, which
- * never throws) and re-walks from `successorId(graph, nodeId, ok ? undefined
- * : 'failed')` — bounded by MAX_CONNECTOR_HOPS — until the walk returns a
- * non-connector status. The run stays 'running' throughout every hop: there
- * is no durable wait for this park kind (see graph.ts's module doc), so a
- * crash mid-loop is recovered the same way any other stuck 'running' row is,
- * by the existing stale-running sweeper — not by a special connector-aware
- * resume path.
- *
- * Two more hop-loop safeguards, both scoped to hops AFTER the first
- * connector call actually executes (a `connectorExecutedOnce` local, set
- * right before that first invocation):
- *
- *  - No replay of a committed side effect: once a connector call has fired,
- *    a throw anywhere later in the loop (e.g. a later hop's ensureDeps, a
- *    logRunEvent write) is caught HERE rather than left to propagate to
- *    resumeWorkflowRun's catch-all, which reverts the run to 'waiting' at
- *    its ORIGINAL cursor — a BullMQ retry from there would re-walk from the
- *    start and re-invoke that same non-idempotent external call. Instead the
- *    run settles 'interrupted' (guarded settleRunning) with a
- *    `resume_failed_after_side_effects` run event: partial execution + stop
- *    beats replaying an external call. A throw BEFORE any connector call has
- *    executed still rethrows — nothing side-effecting has happened yet, so
- *    the existing revert-and-retry contract is safe.
- *  - Mid-loop interrupt observation: at the top of every hop iteration after
- *    the first, the run row's state is re-read (a cheap PK select). A
- *    teammate close/reply can flip a 'running' row to 'interrupted' while
- *    this loop is still firing HTTP calls (interruptWaitingRuns only touches
- *    'running'/'waiting' rows, and this run IS 'running' for the loop's
- *    entire duration) — without this check, every remaining hop's connector
- *    call and actions would still fire even though the run is already done.
- *    No longer 'running' here means the interrupt already settled the row;
- *    the loop stops immediately, executing nothing further and settling
- *    nothing again.
+ * Once a non-idempotent action starts, a later failure is caught here rather
+ * than reaching resumeWorkflowRun's catch-all, which would revert the run to
+ * its original waiting cursor and replay already-committed customer-visible
+ * work. The run is interrupted with a `resume_failed_after_side_effects`
+ * event instead. A failure before any such action still rethrows so the
+ * existing retry contract remains available when it is safe.
  */
 async function applyPlanAndSettle(
   run: WorkflowRun,
   workflow: Workflow,
-  graph: WorkflowGraph,
   plan: WalkResult,
   conversationId: ConversationId,
   subjectPrincipalId: PrincipalId | null,
   ctx: ConditionContext
 ): Promise<WorkflowRun | null> {
   const actor = workflowActor()
-  let currentPlan = plan
   // Set only when a send_block action posts a message — the one block kind
   // that also parks (status 'waiting', waitKind 'input') stamps it onto the
-  // InputWaitCursor below as the correlation key a customer's reply matches
-  // against. Reset at the top of every loop iteration (see below) before any
-  // read, so a stale id from an earlier connector hop's own send_block never
-  // leaks into a LATER hop's input-wait cursor.
-  let blockMessageId: string | null
-  let connectorHops = 0
+  // InputWaitCursor below as the correlation key a customer's reply matches.
+  let blockMessageId: string | null = null
   // Once a non-idempotent action starts, a later failure must interrupt the
   // run instead of reverting to its old cursor and replaying customer-visible
   // work. Set before execution because an action may commit and then throw.
   let sideEffectExecutedOnce = false
 
-  // Per-RUN resolution (SF8 perf fix), mirroring the resolve-once
+  // Per-plan resolution (SF8 perf fix), mirroring the resolve-once
   // ConditionContext pattern the walk itself already uses: a plan with N
   // chained send_block actions (message, then buttons, ...) previously paid
   // ~3N queries (ensureAssistantPrincipal + resolveWorkflowVariables's own
-  // two reads, ALL re-run per action inside sendBlock) — and, before this
-  // memoization, once more per hop of a multi-hop connector plan even though
-  // the conversation's variables/assistant principal never change mid-run.
-  // Resolved at most ONCE across every hop, the first time a hop's plan
-  // actually has a send_block to feed (ensureDeps below); a run with no
-  // send_block anywhere pays nothing extra, same as before. A failure here
+  // two reads, all re-run per action inside sendBlock). Resolved at most once
+  // when the plan has a send_block to feed; a plan with none pays nothing
+  // extra, same as before. A failure here
   // propagates uncaught, same policy as resolveConditionContext's own reads:
   // by the time a plan exists, this conversation is known to exist (the walk
   // itself already required it), so a failure resolving these is a genuine
@@ -348,140 +276,60 @@ async function applyPlanAndSettle(
     return deps
   }
 
-  // Bounded by MAX_CONNECTOR_HOPS below; every non-connector status returns or
-  // breaks. The whole iteration is wrapped in a try/catch (see the doc
-  // comment above): once connectorExecutedOnce flips true, a throw anywhere
-  // in here is caught and settles the run 'interrupted' instead of
-  // propagating to resumeWorkflowRun's revert-to-waiting catch-all.
-  while (true) {
-    try {
-      const resolvedBlockDeps: ResolvedBlockDeps | undefined = currentPlan.actions.some(
-        (a) => a.type === 'send_block'
-      )
-        ? await ensureDeps()
-        : undefined
-      blockMessageId = null
-      for (const action of currentPlan.actions) {
-        try {
-          if (['send_block', 'add_note', 'record_csat', 'send_webhook'].includes(action.type)) {
-            sideEffectExecutedOnce = true
-          }
-          const actionActor =
-            action.type === 'record_csat'
-              ? visitorActor((ctx.conversation.visitorPrincipalId ?? null) as PrincipalId | null)
-              : actor
-          const result = await applyAction(action, {
-            conversationId,
-            actor: actionActor,
-            runId: run.id,
-            workflowId: workflow.id,
+  try {
+    const resolvedBlockDeps: ResolvedBlockDeps | undefined = plan.actions.some(
+      (a) => a.type === 'send_block'
+    )
+      ? await ensureDeps()
+      : undefined
+    for (const action of plan.actions) {
+      try {
+        if (['send_block', 'add_note', 'record_csat', 'send_webhook'].includes(action.type)) {
+          sideEffectExecutedOnce = true
+        }
+        const actionActor =
+          action.type === 'record_csat'
+            ? visitorActor((ctx.conversation.visitorPrincipalId ?? null) as PrincipalId | null)
+            : actor
+        const result = await applyAction(action, {
+          conversationId,
+          actor: actionActor,
+          runId: run.id,
+          workflowId: workflow.id,
+          subjectPrincipalId,
+          resolvedBlockDeps,
+        })
+        if (result.blockMessageId) blockMessageId = result.blockMessageId
+      } catch (err) {
+        log.error({ err, action: action.type, workflowId: workflow.id }, 'workflow action failed')
+        await logRunEvent(run.id, workflow.id, subjectPrincipalId, `action_failed:${action.type}`)
+        if (sideEffectExecutedOnce) {
+          await logRunEvent(
+            run.id,
+            workflow.id,
             subjectPrincipalId,
-            resolvedBlockDeps,
+            'resume_failed_after_side_effects'
+          )
+          const interrupted = await settleRunning(run.id, {
+            state: 'interrupted',
+            endedAt: new Date(),
           })
-          if (result.blockMessageId) blockMessageId = result.blockMessageId
-        } catch (err) {
-          log.error({ err, action: action.type, workflowId: workflow.id }, 'workflow action failed')
-          await logRunEvent(run.id, workflow.id, subjectPrincipalId, `action_failed:${action.type}`)
-          if (sideEffectExecutedOnce) {
-            await logRunEvent(
-              run.id,
-              workflow.id,
-              subjectPrincipalId,
-              'resume_failed_after_side_effects'
-            )
-            const interrupted = await settleRunning(run.id, {
-              state: 'interrupted',
-              endedAt: new Date(),
-            })
-            return interrupted ?? (await currentRun(run.id))
-          }
+          return interrupted ?? (await currentRun(run.id))
         }
       }
-
-      if (currentPlan.status !== 'connector') break
-
-      connectorHops++
-      if (connectorHops > MAX_CONNECTOR_HOPS) {
-        await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'connector_hop_limit')
-        const stopped = await settleRunning(run.id, { state: 'done', endedAt: new Date() })
-        return stopped ?? (await currentRun(run.id))
-      }
-
-      // Mid-loop interrupt observation (see the doc comment above): only from
-      // the SECOND connector hop onward — the first hop of this invocation
-      // has had no opportunity yet to race a fresh interrupt beyond what the
-      // caller (runWorkflow's insert / resumeWorkflowRun's claim) already
-      // guards.
-      if (connectorHops > 1) {
-        const fresh = await currentRun(run.id)
-        if (!fresh || fresh.state !== 'running') return fresh
-      }
-
-      const nodeId = currentPlan.nodeId!
-      const node = graph.nodes.find((n) => n.id === nodeId)
-      // Set right before the call this hop is about to make — see this
-      // function's connectorExecutedOnce doc comment above.
-      sideEffectExecutedOnce = true
-      // A missing node (a stale snapshot, a malformed edit) is treated the same
-      // as a disabled/deleted connector: 'unavailable', not a thrown error —
-      // executeCallConnectorNode's own contract never throws, so this branch
-      // shouldn't either. `deps?.variables` reuses an earlier hop's send_block
-      // resolution when one already paid for it in THIS run (see ensureDeps
-      // above) — deliberately not `await ensureDeps()` here, since a connector-
-      // only run (no send_block anywhere) should never force-resolve variables
-      // just to feed a hop that can resolve them itself.
-      const outcome =
-        node && node.type === 'call_connector'
-          ? await executeCallConnectorNode(
-              conversationId,
-              {
-                connectorId: node.connectorId,
-                params: node.params,
-                timeoutMs: node.timeoutMs,
-              },
-              deps?.variables
-            )
-          : ({ ok: false, reason: 'unavailable' } as const)
-
-      await logRunEvent(
-        run.id,
-        workflow.id,
-        subjectPrincipalId,
-        outcome.ok ? 'connector_result:success' : `connector_failed:${outcome.reason}`
-      )
-
-      const nextId = successorId(graph, nodeId, outcome.ok ? undefined : 'failed')
-      if (!nextId) {
-        // No default edge on success, or no 'failed' edge on failure — same
-        // "missing successor ends the run" contract as every other node kind
-        // (graph.ts's walk loop falls off the end the same way).
-        const finished = await settleRunning(run.id, { state: 'done', endedAt: new Date() })
-        if (!finished) return currentRun(run.id)
-        await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'completed')
-        return finished
-      }
-      currentPlan = walkWorkflow(graph, ctx, nextId)
-    } catch (err) {
-      if (!sideEffectExecutedOnce) throw err
-      // A connector call already committed an external side effect this
-      // invocation — see the doc comment above for why this must stop the
-      // run rather than let resumeWorkflowRun's catch-all revert it to
-      // 'waiting' at its original (pre-hop) cursor and risk a retry
-      // replaying that same non-idempotent call.
-      log.error(
-        { err, workflowId: workflow.id, runId: run.id },
-        'workflow resume failed after a connector call already committed a side effect; stopping the run instead of risking a replay'
-      )
-      await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'resume_failed_after_side_effects')
-      const interrupted = await settleRunning(run.id, { state: 'interrupted', endedAt: new Date() })
-      return interrupted ?? (await currentRun(run.id))
     }
+  } catch (err) {
+    if (!sideEffectExecutedOnce) throw err
+    log.error(
+      { err, workflowId: workflow.id, runId: run.id },
+      'workflow resume failed after a side effect may have committed; stopping the run instead of risking a replay'
+    )
+    await logRunEvent(run.id, workflow.id, subjectPrincipalId, 'resume_failed_after_side_effects')
+    const interrupted = await settleRunning(run.id, { state: 'interrupted', endedAt: new Date() })
+    return interrupted ?? (await currentRun(run.id))
   }
 
-  if (
-    currentPlan.status === 'waiting' &&
-    (currentPlan.waitKind === 'input' || currentPlan.waitKind === 'assistant')
-  ) {
+  if (plan.status === 'waiting' && (plan.waitKind === 'input' || plan.waitKind === 'assistant')) {
     // Interactive block / let_assistant_answer park: no BullMQ timer for
     // either — resumed by event-trigger.ts on a matching structured reply
     // ('input') or Quinn's own hand-off/close signal ('assistant'), never a
@@ -498,7 +346,7 @@ async function applyPlanAndSettle(
     // park, so an 'assistant' park never pays for a settings lookup it
     // can't use.
     const expiresAt =
-      currentPlan.waitKind === 'input'
+      plan.waitKind === 'input'
         ? await (async () => {
             const autoClose = await getWorkflowAbandonedAutoCloseSettings()
             if (!autoClose.enabled) return null
@@ -506,13 +354,13 @@ async function applyPlanAndSettle(
           })()
         : null
     const cursor: WaitCursor | InputWaitCursor =
-      currentPlan.waitKind === 'input'
+      plan.waitKind === 'input'
         ? {
             waitKind: 'input',
-            resumeNodeId: currentPlan.resumeNodeId!,
+            resumeNodeId: plan.resumeNodeId!,
             blockMessageId: blockMessageId ?? '',
-            blockKind: currentPlan.blockKind!,
-            allowTypingInterrupt: currentPlan.allowTypingInterrupt ?? false,
+            blockKind: plan.blockKind!,
+            allowTypingInterrupt: plan.allowTypingInterrupt ?? false,
             expiresAt,
             waitSeconds: 0,
             waitSeq,
@@ -520,7 +368,7 @@ async function applyPlanAndSettle(
           }
         : {
             waitKind: 'assistant',
-            resumeNodeId: currentPlan.resumeNodeId!,
+            resumeNodeId: plan.resumeNodeId!,
             waitSeconds: 0,
             waitSeq,
             waitStartedAt: new Date().toISOString(),
@@ -534,14 +382,14 @@ async function applyPlanAndSettle(
     return waiting
   }
 
-  if (currentPlan.status === 'waiting') {
-    const waitSeconds = currentPlan.waitSeconds ?? 0
+  if (plan.status === 'waiting') {
+    const waitSeconds = plan.waitSeconds ?? 0
     // Increments on every park in this run (starting from 0) so each wait gets
     // its own durable-timer job id instead of colliding with an earlier one.
     const waitSeq = (readCursor(run).waitSeq ?? 0) + 1
     const cursor: WaitCursor = {
       waitKind: 'timer',
-      resumeNodeId: currentPlan.resumeNodeId ?? null,
+      resumeNodeId: plan.resumeNodeId ?? null,
       waitSeconds,
       waitSeq,
       waitStartedAt: new Date().toISOString(),
@@ -670,7 +518,6 @@ export async function resumeWorkflowRun(
     return await applyPlanAndSettle(
       claimed,
       workflow,
-      graph,
       plan,
       claimed.conversationId,
       claimed.subjectPrincipalId,

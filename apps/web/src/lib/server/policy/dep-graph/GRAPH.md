@@ -48,8 +48,8 @@ Edges (18):
 
 ## 3. Server domains (lib/server/domains)
 
-Nodes (45): activity, ai, analytics, api, api-keys, assistant, boards, changelog, channel-accounts, comments, companies, company-attributes, connectors, conversation, conversation-attributes, conversation-views, embeddings, feedback, help-center, import, inbox, macros, merge-suggestions, notifications, office-hours, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, segments, sentiment, settings, sla, status, statuses, subscriptions, summary, teams, tickets, user-attributes, users, webhooks, workflows
-Edges (99):
+Nodes (44): activity, ai, analytics, api, api-keys, assistant, boards, changelog, channel-accounts, comments, companies, company-attributes, conversation, conversation-attributes, conversation-views, embeddings, feedback, help-center, import, inbox, macros, merge-suggestions, notifications, office-hours, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, segments, sentiment, settings, sla, status, statuses, subscriptions, summary, teams, tickets, user-attributes, users, webhooks, workflows
+Edges (96):
 
 - analytics -> api
 - analytics -> assistant
@@ -61,7 +61,6 @@ Edges (99):
 - api-keys -> principals
 - assistant -> ai
 - assistant -> api
-- assistant -> connectors
 - assistant -> conversation
 - assistant -> conversation-attributes
 - assistant -> embeddings
@@ -76,7 +75,6 @@ Edges (99):
 - comments -> posts
 - comments -> settings
 - comments -> subscriptions
-- connectors -> assistant
 - conversation -> ai
 - conversation -> assistant
 - conversation -> changelog
@@ -140,7 +138,6 @@ Edges (99):
 - users -> user-attributes
 - webhooks -> settings
 - workflows -> assistant
-- workflows -> connectors
 - workflows -> conversation
 - workflows -> conversation-attributes
 - workflows -> inbox
@@ -155,5 +152,5 @@ Edges (99):
 
 Strongly connected components with more than one domain. A new entry here is a new cycle and needs an explicit decision.
 
-- assistant <-> connectors <-> conversation <-> conversation-attributes <-> inbox <-> tickets <-> workflows
+- assistant <-> conversation <-> conversation-attributes <-> inbox <-> tickets <-> workflows
 - embeddings <-> merge-suggestions <-> posts

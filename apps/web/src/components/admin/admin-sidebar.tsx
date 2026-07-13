@@ -13,7 +13,7 @@ import {
   BookOpenIcon,
   ChartBarIcon,
   QuestionMarkCircleIcon,
-  SparklesIcon,
+  CpuChipIcon,
   RocketLaunchIcon,
 } from '@heroicons/react/24/solid'
 import { SignalIcon } from '@heroicons/react/24/outline'
@@ -39,6 +39,14 @@ import { setAgentAvailabilityFn } from '@/lib/server/functions/conversation'
 import { adminQueries } from '@/lib/client/queries/admin'
 import { launchChecklistSummary, type LaunchStatus } from '@/lib/shared/launch-checklist'
 import { useIntl } from 'react-intl'
+import { usePermission } from '@/lib/client/hooks/use-permission'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import {
+  getFirstEnabledAdminProductPath,
+  isProductEnabled,
+  type FeatureFlags,
+  type ProductId,
+} from '@/lib/shared/types/settings'
 
 /** Availability toggle for the account menu (conversation routing). The label shows the
  *  state you'll switch to; the avatar dot shows the current one. */
@@ -67,18 +75,23 @@ interface AdminSidebarProps {
   latestVersion?: LatestVersionResult | null
 }
 
-const navItems = [
-  { label: 'Feedback', href: '/admin/feedback', icon: ChatBubbleLeftIcon },
+const navItems: Array<{
+  label: string
+  href: string
+  icon: typeof ChatBubbleLeftIcon
+  product?: ProductId
+}> = [
+  { label: 'Feedback', href: '/admin/feedback', icon: ChatBubbleLeftIcon, product: 'feedback' },
   // UNIFIED-INBOX-SPEC.md §2.3/§4: one Support entry replaces the old
   // Conversations + Tickets pair — the unified /admin/inbox shell now covers
   // both (gated below on either flag being on).
-  { label: 'Support', href: '/admin/inbox', icon: ChatBubbleLeftRightIcon },
-  { label: 'Roadmap', href: '/admin/roadmap', icon: MapIcon },
-  { label: 'Changelog', href: '/admin/changelog', icon: DocumentTextIcon },
-  { label: 'Help Center', href: '/admin/help-center', icon: BookOpenIcon },
-  { label: 'Status', href: '/admin/status', icon: SignalIcon },
+  { label: 'Support', href: '/admin/inbox', icon: ChatBubbleLeftRightIcon, product: 'support' },
+  { label: 'Roadmap', href: '/admin/roadmap', icon: MapIcon, product: 'feedback' },
+  { label: 'Changelog', href: '/admin/changelog', icon: DocumentTextIcon, product: 'changelog' },
+  { label: 'Help Center', href: '/admin/help-center', icon: BookOpenIcon, product: 'helpCenter' },
+  { label: 'Status', href: '/admin/status', icon: SignalIcon, product: 'status' },
   { label: 'Analytics', href: '/admin/analytics', icon: ChartBarIcon },
-  { label: 'AI & Automation', href: '/admin/automation/assistant', icon: SparklesIcon },
+  { label: 'AI & Automation', href: '/admin/automation/agent', icon: CpuChipIcon },
   { label: 'Users', href: '/admin/users', icon: UsersIcon },
 ]
 
@@ -109,12 +122,12 @@ function NavItem({
           to={href}
           onClick={onClick}
           className={cn(
-            'relative flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-200',
+            'relative flex size-8 items-center justify-center rounded-lg transition-all duration-200',
             'text-muted-foreground/70 hover:text-foreground hover:bg-muted/50',
             isActive && 'bg-muted/80 text-foreground'
           )}
         >
-          <Icon className="h-5 w-5" />
+          <Icon className="size-5" />
           {badge != null && badge !== '' && (
             <span
               className={cn(
@@ -145,6 +158,9 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
   // The settings area is admin-only (every tab gates on requireAuth(['admin'])).
   // Members would only ever land on the access-denied page, so hide the cog.
   const isAdmin = userRole === 'admin'
+  const canManageAssistant = usePermission(PERMISSIONS.ASSISTANT_MANAGE)
+  const canManageWorkflows = usePermission(PERMISSIONS.WORKFLOW_MANAGE)
+  const canOpenAutomation = canManageAssistant || canManageWorkflows
   // Launch-plan progress for the shell badge (admins only). Once the
   // checklist is complete there's nothing left to watch for, so the query
   // stops refetching — read the last-known result straight from the cache
@@ -183,14 +199,7 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
           defaultMessage: 'Launch plan',
         })
 
-  const flags = settings?.featureFlags as
-    | {
-        helpCenter?: boolean
-        supportInbox?: boolean
-        supportTickets?: boolean
-        statusPage?: boolean
-      }
-    | undefined
+  const flags = settings?.featureFlags as FeatureFlags | undefined
   // The org's own logo (resolved in brandingData by the root loader, same source
   // PortalBrandMark uses); fall back to the Quackback mark when none is set.
   const branding = (settings as { brandingData?: SettingsBrandingData } | undefined)?.brandingData
@@ -198,17 +207,11 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
   const orgName = branding?.name ?? 'Quackback'
 
   const filteredNavItems = navItems.filter((item) => {
-    if (item.href === '/admin/help-center') return flags?.helpCenter ?? false
-    if (item.href === '/admin/status') return flags?.statusPage ?? false
-    // Support covers both conversations and tickets now — shown when either is
-    // enabled (a tickets-only workspace still needs the shell, minus the
-    // conversation affordances the unified route hides on its own).
-    if (item.href === '/admin/inbox')
-      return (flags?.supportInbox ?? false) || (flags?.supportTickets ?? false)
-    // AI & Automation is admin-only, same gate as the settings cog below.
-    if (item.href === '/admin/automation/assistant') return isAdmin
+    if (item.product && !isProductEnabled(flags, item.product)) return false
+    if (item.href === '/admin/automation/agent') return canOpenAutomation
     return true
   })
+  const homePath = getFirstEnabledAdminProductPath(flags)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   const user = session?.user
@@ -240,13 +243,13 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
   return (
     <>
       {/* Desktop Sidebar */}
-      <aside className="hidden sm:flex w-18 shrink-0 flex-col">
-        <ScrollArea className="h-full" scrollBarClassName="w-2" type="always">
-          <div className="flex flex-col h-full min-h-screen py-6">
+      <aside className="hidden w-14 shrink-0 flex-col sm:flex">
+        <ScrollArea className="h-full" scrollBarClassName="w-2" type="auto">
+          <div className="flex h-full min-h-screen flex-col py-2">
             {/* Logo */}
             <Link
-              to="/admin/feedback"
-              className="flex items-center justify-center mb-8 opacity-90 hover:opacity-100 transition-opacity"
+              to={homePath}
+              className="mb-4 flex items-center justify-center opacity-90 transition-opacity hover:opacity-100"
             >
               <img
                 src={orgLogo}
@@ -258,7 +261,7 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
             </Link>
 
             {/* Main Navigation */}
-            <nav className="flex flex-col items-center gap-3">
+            <nav className="flex flex-col items-center gap-2.5">
               {filteredNavItems.map((item) => (
                 <NavItem
                   key={item.href}
@@ -271,10 +274,10 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
             </nav>
 
             {/* Spacer */}
-            <div className="flex-1 min-h-12" />
+            <div className="min-h-3 flex-1" />
 
             {/* Bottom Section */}
-            <div className="flex flex-col items-center gap-3">
+            <div className="flex flex-col items-center gap-2.5">
               {/* Launch plan — first-run path; hide when all tasks are resolved. */}
               {showLaunchNav && (
                 <NavItem
@@ -297,16 +300,16 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
               )}
 
               {/* Notifications */}
-              <NotificationBell />
+              <NotificationBell className="size-8" />
 
               {/* Portal Link */}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Link
                     to="/"
-                    className="flex items-center justify-center w-10 h-10 rounded-lg text-muted-foreground/70 hover:text-foreground hover:bg-muted/50 transition-all duration-200"
+                    className="flex size-8 items-center justify-center rounded-lg text-muted-foreground/70 transition-all duration-200 hover:bg-muted/50 hover:text-foreground"
                   >
-                    <GlobeAltIcon className="h-5 w-5" />
+                    <GlobeAltIcon className="size-5" />
                     <span className="sr-only">View Portal</span>
                   </Link>
                 </TooltipTrigger>
@@ -320,8 +323,8 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <DropdownMenuTrigger asChild>
-                      <button className="relative flex items-center justify-center w-10 h-10 rounded-lg text-muted-foreground/70 hover:text-foreground hover:bg-muted/50 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                        <QuestionMarkCircleIcon className="h-5 w-5" />
+                      <button className="relative flex size-8 items-center justify-center rounded-lg text-muted-foreground/70 transition-all duration-200 hover:bg-muted/50 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <QuestionMarkCircleIcon className="size-5" />
                         {latestVersion && (
                           <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-primary" />
                         )}
@@ -376,8 +379,8 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <DropdownMenuTrigger asChild>
-                      <button className="relative flex items-center justify-center w-10 h-10 rounded-full hover:bg-muted/50 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                        <Avatar className="h-9 w-9" src={avatarUrl} name={name} />
+                      <button className="relative flex size-8 items-center justify-center rounded-full transition-all duration-200 hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <Avatar className="size-7" src={avatarUrl} name={name} />
                         {conversationsEnabled && (
                           <span
                             className={cn(
@@ -433,7 +436,7 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
           <SheetContent side="left" className="w-72 p-0">
             <SheetHeader className="px-5 pt-6 pb-4">
               <SheetTitle className="flex items-center gap-3">
-                <Link to="/admin/feedback" onClick={() => setMobileMenuOpen(false)}>
+                <Link to={homePath} onClick={() => setMobileMenuOpen(false)}>
                   <img
                     src={orgLogo}
                     alt={orgName}
@@ -540,7 +543,7 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
           </SheetContent>
         </Sheet>
 
-        <Link to="/admin/feedback" className="absolute left-1/2 -translate-x-1/2">
+        <Link to={homePath} className="absolute left-1/2 -translate-x-1/2">
           <img
             src={orgLogo}
             alt={orgName}

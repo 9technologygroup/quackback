@@ -166,19 +166,17 @@ async function keywordQuery(
 
 /**
  * Retrieve the top-k most relevant past-conversation summaries for the SAME
- * customer as the current conversation. `ceiling` is accepted for
- * `KnowledgeSource` conformance but unused: this source's scope is the
- * customer, not the content-audience tier (see the module doc). Returns `[]`
- * without querying anything when `customerPrincipalId` is absent — the one
- * mandatory guard this whole module exists to enforce.
+ * customer as the current conversation. Past support history is team-only,
+ * even when it belongs to the same customer, so a public turn returns nothing.
+ * Also returns `[]` without querying when `customerPrincipalId` is absent.
  */
 export async function retrieveConversationSummaries(
   query: string,
-  _ceiling: ContentAudience,
+  ceiling: ContentAudience,
   options: RetrieveConversationSummariesOptions = {}
 ): Promise<RetrievedConversationSummary[]> {
   const { customerPrincipalId } = options
-  if (!customerPrincipalId) return []
+  if (ceiling === 'public' || !customerPrincipalId) return []
 
   const topK = options.topK ?? CONVERSATION_SUMMARIES_TOP_K
   const minScore = options.minScore ?? CONVERSATION_SUMMARIES_SEMANTIC_SIMILARITY_FLOOR
@@ -234,10 +232,7 @@ export const conversationSummariesKnowledgeSource: KnowledgeSource = {
           // citation renders (e.g. the widget), so this stays title-referential
           // only, like a snippet's.
           url: '',
-          // Always internal: another conversation's content is never
-          // customer-facing material, regardless of the turn's audience
-          // ceiling (this source is customer-scoped, not audience-scoped;
-          // see the module doc).
+          // Another conversation's content is never customer-facing material.
           internal: true,
         },
       })

@@ -19,8 +19,6 @@
 import {
   ACTION_LABELS,
   BLOCK_STEP_LABELS,
-  CALL_CONNECTOR_LABEL,
-  callConnectorSummary,
   durationPhrase,
   frequencyCapSummary,
   OPERATOR_LABELS,
@@ -93,14 +91,7 @@ export type Tone = 'amber' | 'violet' | 'green' | 'blue' | 'pink'
 
 /** Icon lookup key: the trigger, a step kind, (for actions) the action type,
  *  or (for conversational blocks) the block kind. */
-export type IconKey =
-  | 'trigger'
-  | 'condition'
-  | 'branch'
-  | 'wait'
-  | 'call_connector'
-  | ActionType
-  | BlockStepKind
+export type IconKey = 'trigger' | 'condition' | 'branch' | 'wait' | ActionType | BlockStepKind
 
 export interface ChipData {
   label: string
@@ -406,16 +397,6 @@ function buildStepNodeData(
             : step.action.type === 'reopen'
               ? 'Reactivates the conversation'
               : undefined,
-      }
-    case 'call_connector':
-      return {
-        ...base,
-        eyebrow: 'Action',
-        title: CALL_CONNECTOR_LABEL,
-        icon: 'call_connector',
-        tone: 'green',
-        meta: callConnectorSummary(step, ctx.labels.connectors),
-        nestedCount: step.paths.reduce((sum, p) => sum + countSteps(p.steps), 0),
       }
     // ── Conversational block kinds (Phase C, slice C-5) ───────────────────
     // Every card previews the customer-visible content per the design

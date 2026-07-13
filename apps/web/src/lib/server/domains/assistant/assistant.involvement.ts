@@ -164,15 +164,13 @@ export async function getLatestInvolvement(
 
 /**
  * Record the outcome of one answered turn on the involvement in a single UPDATE:
- * the sources Quinn cited, the substantive-answer time (the inactivity clock the
- * stale-involvement sweep reads), and — only when this turn made the single
- * escalation OFFER — the offer stamp. The offer stamp is written via COALESCE so
- * it only lands when not already set (the "offer once" guard the engine reads as
- * `escalationAlreadyOffered`), keeping the whole write one statement.
+ * the sources Quinn cited and the substantive-answer time (the inactivity
+ * clock the stale-involvement sweep reads). Handoff is a separate tool-led
+ * terminal operation and is recorded through recordHandoff.
  */
 export async function recordAssistantAnswer(
   id: AssistantInvolvementId,
-  input: { sources: AssistantInvolvementSource[]; offeredEscalation: boolean; at?: Date },
+  input: { sources: AssistantInvolvementSource[]; at?: Date },
   exec: Executor = db
 ): Promise<void> {
   const at = input.at ?? new Date()
@@ -181,14 +179,6 @@ export async function recordAssistantAnswer(
     .set({
       sources: input.sources,
       lastAssistantAnswerAt: at,
-      ...(input.offeredEscalation
-        ? {
-            // Interpolate an ISO string (not a raw Date): inside a `sql` template
-            // the column codec that maps Date -> timestamptz text is bypassed, so
-            // a bare Date reaches the driver and fails to serialize.
-            escalationOfferedAt: sql`COALESCE(${assistantInvolvements.escalationOfferedAt}, ${at.toISOString()}::timestamptz)`,
-          }
-        : {}),
     })
     .where(eq(assistantInvolvements.id, id))
 }

@@ -8,6 +8,7 @@
  * load.
  */
 import { useCallback, useMemo, useState } from 'react'
+import { useIntl } from 'react-intl'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import type { ConversationId } from '@quackback/ids'
@@ -78,16 +79,22 @@ export function useInboxTranslation({
   messages,
   onChanged,
 }: UseInboxTranslationOptions): UseInboxTranslationResult {
+  const intl = useIntl()
   // Per-message "Show original" toggle state; keyed by message id, shared
   // across both directions (an incoming translation vs an outgoing one).
   const [showOriginalIds, setShowOriginalIds] = useState<ReadonlySet<string>>(() => new Set())
 
-  const { data: myLanguage } = useQuery({
+  const { data: myLanguagePreference } = useQuery({
     queryKey: ['teammate', 'language-preference'],
     queryFn: () => getMyLanguagePreferenceFn().then((r) => r.language),
     enabled: enabledFlag,
     staleTime: 5 * 60_000,
   })
+  // An explicit translation preference wins. Without one, compare against the
+  // admin's effective locale, which is resolved from the browser's
+  // Accept-Language header. Keep `undefined` while the preference query loads
+  // so an explicit preference cannot cause the banner to flash briefly.
+  const myLanguage = myLanguagePreference === null ? intl.locale : myLanguagePreference
 
   // Only plain-text, non-internal visitor messages are ever translated (see
   // the message-bubble guard) — no point asking the server to translate the

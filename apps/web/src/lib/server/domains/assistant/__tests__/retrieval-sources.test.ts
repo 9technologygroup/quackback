@@ -12,9 +12,7 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
 }))
 
 // Stands in for the real feedback-posts source: resolveKnowledgeSources
-// dynamically imports './posts-retrieval' only when assistantKnowledge is
-// on, mirroring resolveToolSpecs's lazy import of the connectors domain
-// behind assistantTools (see assistant.tools.test.ts / assistant.runtime.test.ts).
+// dynamically imports './posts-retrieval' only when assistantKnowledge is on.
 const mockPostsRetrieve = vi.fn()
 vi.mock('../posts-retrieval', () => ({
   postsKnowledgeSource: {

@@ -132,8 +132,6 @@ function renderPanel(
         onTrackAsFeedback={vi.fn()}
         onCreateTicket={vi.fn()}
         onInsertFromCopilot={vi.fn()}
-        getComposerText={() => ''}
-        onReplaceComposerText={vi.fn()}
         {...props}
       />
     </QueryClientProvider>
@@ -201,6 +199,21 @@ describe('<InboxDetailPanel> tab host', () => {
     // Both stay in the DOM (forceMount + CSS-hide) — Details content is still present.
     expect(screen.getByText('Properties')).toBeInTheDocument()
     expect(screen.getByTestId('copilot-panel-stub')).toBeInTheDocument()
+  })
+
+  it('keeps the Details viewport height-constrained so its ScrollArea can overflow', () => {
+    routeContextState.settings = {
+      featureFlags: { inboxAi: true } as unknown as FeatureFlags,
+    }
+    routeContextState.principal = { role: 'admin' }
+
+    const { container } = renderPanel()
+    const aside = screen.getByRole('complementary', { name: 'Item details' })
+    const detailsTab = container.querySelector('[data-slot="tabs-content"][data-state="active"]')
+
+    expect(aside).toHaveClass('h-full', 'min-h-0', 'overflow-hidden')
+    expect(detailsTab).toHaveClass('data-[state=active]:flex', 'min-h-0', 'overflow-hidden')
+    expect(detailsTab?.querySelector('[data-slot="scroll-area"]')).toHaveClass('min-h-0', 'flex-1')
   })
 })
 

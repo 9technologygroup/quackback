@@ -1,7 +1,7 @@
 /**
  * The copilot.v1 SSE contract, shared by the server route (emit) and the
  * inbox Copilot sidebar (consume). Client-safe: names and payload types only.
- * Mirrors sandbox-contract.ts's shape (same delta/activity/final/error
+ * Uses the same delta/activity/final/error vocabulary as Test agent,
  * vocabulary), scoped to a real conversation and a teammate asker instead of
  * an admin preview.
  *
@@ -159,7 +159,7 @@ export interface CopilotErrorPayload {
  * transform.v1 SSE contract (P2-C.1): rewrites over already-composed text, run
  * from two entry points (COPILOT-SIDEBAR-UX.md "What P2-C adds"): the answer
  * card's "Add to composer & modify" menu (source = the streamed answer) and
- * the reply composer's Format chip (source = the teammate's own draft). Same
+ * the composer's Improve menu (source = the teammate's active draft). Same
  * delta/final/error vocabulary as copilot.v1, scoped down to a single field
  * (`text`) since a transform has no citations or sources of its own.
  */
@@ -172,7 +172,7 @@ export const TRANSFORM_EVENTS = {
 /**
  * `my_tone` mines the teammate's own past replies for style excerpts.
  * `more_friendly`/`more_formal`/`more_concise` are shared by both entry
- * points; `expand`/`rephrase`/`fix_grammar` are Format-chip only (there is no
+ * points; `expand`/`rephrase`/`fix_grammar` are Improve-menu only (there is no
  * "expand the answer" row on the answer card).
  */
 export const TRANSFORM_KINDS = [

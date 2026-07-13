@@ -68,6 +68,11 @@ vi.mock('../message-bubble', () => ({
 }))
 
 vi.mock('../macro-picker', () => ({ MacroPicker: () => <div data-testid="macro-picker" /> }))
+vi.mock('../composer-ai-actions', () => ({
+  ComposerAiActions: ({ activeMode }: { activeMode: string }) => (
+    <div data-testid="composer-ai-actions" data-active-mode={activeMode} />
+  ),
+}))
 vi.mock('@/components/admin/conversation/priority-control', () => ({
   PriorityControl: () => null,
 }))
@@ -430,6 +435,7 @@ describe('AgentConversationThread — conversation kind unaffected', () => {
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
     expect(await screen.findByRole('menuitemradio', { name: 'Note' })).toBeInTheDocument()
     expect(screen.getByTestId('inbox-detail-panel')).toBeInTheDocument()
+    expect(screen.getByTestId('composer-ai-actions')).toHaveAttribute('data-active-mode', 'reply')
   })
 })
 

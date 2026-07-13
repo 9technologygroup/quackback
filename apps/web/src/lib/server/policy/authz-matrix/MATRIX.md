@@ -94,14 +94,13 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | workflow.manage | support | ✓ | · |
 | channel_account.manage | support | ✓ | · |
 | assistant.manage | ai | ✓ | · |
-| connector.manage | ai | ✓ | · |
 | copilot.use | ai | ✓ | ✓ |
 | status_page.manage | status_page | ✓ | · |
 | status_page.publish | status_page | ✓ | ✓ |
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 566 surfaces
+### Server functions (`requireAuth`) — 561 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -157,8 +156,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/api-keys.ts`::updateApiKeyFn | api_key.manage |
 | `lib/server/functions/api-keys.ts`::rotateApiKeyFn | api_key.manage |
 | `lib/server/functions/api-keys.ts`::revokeApiKeyFn | api_key.manage |
-| `lib/server/functions/assistant-actions.ts`::approveAssistantActionFn | conversation.view |
-| `lib/server/functions/assistant-actions.ts`::rejectAssistantActionFn | conversation.view |
+| `lib/server/functions/assistant-actions.ts`::approveAssistantActionFn | DYNAMIC (conversation.view | ticket.view | conversation.set_attributes | conversation.set_status | ticket.create | post.create | post.vote_on_behalf) |
+| `lib/server/functions/assistant-actions.ts`::rejectAssistantActionFn | DYNAMIC (conversation.view | ticket.view) |
 | `lib/server/functions/assistant-analytics.ts`::getQuinnPerformanceFn | analytics.view |
 | `lib/server/functions/assistant-config-changelog.ts`::getAssistantConfigChangelogFn | assistant.manage |
 | `lib/server/functions/assistant-copilot-analytics.ts`::getCopilotUsageMetricsFn | analytics.view |
@@ -169,17 +168,18 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/assistant-guidance.ts`::reorderGuidanceRulesFn | assistant.manage |
 | `lib/server/functions/assistant-guidance.ts`::deleteGuidanceRuleFn | assistant.manage |
 | `lib/server/functions/assistant-guidance.ts`::listAssistantToolsFn | assistant.manage |
-| `lib/server/functions/assistant-pending-actions.ts`::getAssistantPendingActionFn | conversation.view |
+| `lib/server/functions/assistant-pending-actions.ts`::getAssistantPendingActionFn | DYNAMIC (conversation.view | ticket.view) |
 | `lib/server/functions/assistant-settings.ts`::getAssistantSettingsFn | assistant.manage |
+| `lib/server/functions/assistant-settings.ts`::updateAssistantIdentityFn | assistant.manage |
+| `lib/server/functions/assistant-settings.ts`::updateAssistantVoiceFn | assistant.manage |
+| `lib/server/functions/assistant-settings.ts`::updateAssistantChannelsFn | assistant.manage |
 | `lib/server/functions/assistant-settings.ts`::updateAssistantToolControlsFn | assistant.manage |
-| `lib/server/functions/assistant-settings.ts`::updateAssistantSurfacesFn | assistant.manage |
-| `lib/server/functions/assistant-settings.ts`::updateAssistantBasicsFn | assistant.manage |
+| `lib/server/functions/assistant-settings.ts`::updateWidgetAssistantDeploymentFn | assistant.manage |
 | `lib/server/functions/assistant-snippets.ts`::listSnippetsFn | assistant.manage |
 | `lib/server/functions/assistant-snippets.ts`::createSnippetFn | assistant.manage |
 | `lib/server/functions/assistant-snippets.ts`::updateSnippetFn | assistant.manage |
 | `lib/server/functions/assistant-snippets.ts`::deleteSnippetFn | assistant.manage |
 | `lib/server/functions/assistant-tools-analytics.ts`::getQuinnToolMetricsFn | analytics.view |
-| `lib/server/functions/assistant-tools-analytics.ts`::getConnectorHealthFn | analytics.view |
 | `lib/server/functions/audit-log.ts`::listAuditEventsFn | audit.view |
 | `lib/server/functions/auth-provider-credentials.ts`::saveAuthProviderCredentialsFn | auth.manage |
 | `lib/server/functions/auth-provider-credentials.ts`::deleteAuthProviderCredentialsFn | auth.manage |
@@ -302,12 +302,6 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/conversation.ts`::translateConversationMessagesFn | conversation.view |
 | `lib/server/functions/conversation.ts`::setInboxTranslationEnabledFn | conversation.manage |
 | `lib/server/functions/conversation.ts`::dismissInboxTranslationSuggestionFn | conversation.manage |
-| `lib/server/functions/data-connectors.ts`::fetchDataConnectorsFn | connector.manage |
-| `lib/server/functions/data-connectors.ts`::fetchDataConnectorFn | connector.manage |
-| `lib/server/functions/data-connectors.ts`::createDataConnectorFn | connector.manage |
-| `lib/server/functions/data-connectors.ts`::updateDataConnectorFn | connector.manage |
-| `lib/server/functions/data-connectors.ts`::deleteDataConnectorFn | connector.manage |
-| `lib/server/functions/data-connectors.ts`::testDataConnectorFn | connector.manage |
 | `lib/server/functions/external-statuses.ts`::fetchExternalStatusesFn | integration.manage |
 | `lib/server/functions/feature-flags.ts`::updateFeatureFlagsFn | settings.manage |
 | `lib/server/functions/feedback.ts`::fetchSuggestions | suggestion.view |
@@ -676,7 +670,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 | Surface | Enforces |
 | --- | --- |
-| `routes/api/admin/assistant/sandbox.ts`::handleSandbox | settings.manage |
+| `routes/api/admin/assistant/test.ts`::handleTestAgent | assistant.manage |
 | `routes/api/export.companies.ts`::GET | company.view |
 | `routes/api/export.users.ts`::handleExportUsers | people.view |
 | `routes/api/v1/apps/boards.ts`::GET | PUBLIC (any valid key) |
@@ -849,7 +843,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-171 of 829 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+172 of 825 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
@@ -957,6 +951,7 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `routes/[.]well-known.oauth-protected-resource.ts`::GET | route |
 | `routes/[.]well-known.openid-configuration.ts`::GET | route |
 | `routes/api/admin/assistant/copilot.ts`::POST | route |
+| `routes/api/admin/assistant/sandbox.ts`::POST | route |
 | `routes/api/admin/assistant/suggest.ts`::POST | route |
 | `routes/api/admin/assistant/transform.ts`::POST | route |
 | `routes/api/auth/$.ts`::GET | route |

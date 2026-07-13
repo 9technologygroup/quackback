@@ -51,10 +51,19 @@ export async function ensureAssistantPrincipal(exec: Executor = db): Promise<Pri
   const existing = await getAssistantPrincipal(exec)
   if (existing) return existing
 
-  return createServicePrincipal(
+  let identity = { name: ASSISTANT_DEFAULT_NAME, avatarUrl: null as string | null }
+  try {
+    const { getAssistantConfig } = await import('@/lib/server/domains/settings/settings.assistant')
+    const current = await getAssistantConfig()
+    identity = current.config.identity
+  } catch {
+    // Provisioning must still work before workspace settings are available.
+  }
+
+  const created = await createServicePrincipal(
     {
       role: 'member',
-      displayName: ASSISTANT_DEFAULT_NAME,
+      displayName: identity.name,
       serviceMetadata: {
         kind: ASSISTANT_SERVICE_KIND,
         integrationType: ASSISTANT_INTEGRATION_TYPE,
@@ -62,4 +71,11 @@ export async function ensureAssistantPrincipal(exec: Executor = db): Promise<Pri
     },
     exec
   )
+  if (!identity.avatarUrl) return created
+  const [withAvatar] = await exec
+    .update(principal)
+    .set({ avatarUrl: identity.avatarUrl })
+    .where(eq(principal.id, created.id))
+    .returning()
+  return withAvatar ?? created
 }

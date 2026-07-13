@@ -17,8 +17,8 @@
  * message, the suggestion framing prompt, the 'copilot_suggest' usage-log
  * `pipelineStep` (see analytics/copilot-usage.ts's header on the convention),
  * the read-only tool policy (never even a preview or a pending-approval
- * proposal: a suggestion drafts, it never acts), the honored honest-miss
- * `skip`, and the degrade-to-skip failure mode — is owned end-to-end by
+ * proposal: a suggestion drafts, it never acts), and the tool-led honest miss
+ * that the server maps to `skip` — is owned end-to-end by
  * `copilotIntent: 'suggest'` (see `COPILOT_INTENT_PROFILES`,
  * assistant.runtime.ts), so this route passes no messages, no writeToolPolicy,
  * nothing intent-shaped: it just invokes the intent. `surface: 'copilot'`
@@ -52,7 +52,7 @@
  * closed state, rejected with the same 409 shape: a closed item's latest
  * customer message is typically a thank-you that needs no reply, so drafting
  * for it would burn a paid turn per teammate who dwells on it. The client
- * renders NOTHING for a 409 (a silent skip, same as a `skip: true` final):
+ * renders NOTHING for a 409 (the same UI result as a tool-led honest miss):
  * recovery needs no user action — for staleness the client's
  * per-(item, lastCustomerMessageId) cache key already changed with the newer
  * message, and for a closed item there is nothing to suggest until it reopens
@@ -60,7 +60,7 @@
  *
  * Streaming contract: FINAL-ONLY, per the suggest.v1 contract doc
  * (copilot-contract.ts) — no delta frames are sent. A suggestion's honest
- * miss (`skip`) is only knowable at the end of the run, so streaming deltas
+ * miss is only knowable at the end of the run, so streaming deltas
  * would put a half-drafted guess on screen that a trailing skip then
  * evaporates. The error frame is unchanged.
  */
@@ -108,7 +108,7 @@ export async function handleSuggest({ request }: { request: Request }): Promise<
     'A valid conversationId or ticketId, and lastCustomerMessageId, are required'
   )
   if (!gate.ok) return gate.response
-  const { auth, actor, parsed, conversationId, ticketId } = gate
+  const { auth, parsed, conversationId, ticketId } = gate
 
   // Additional gate past assertCopilotAvailable's inboxAi check: the
   // same 404 NOT_FOUND shape, one flag layer up. A workspace can run Copilot
@@ -148,25 +148,23 @@ export async function handleSuggest({ request }: { request: Request }): Promise<
       // are ever sent (see the streaming contract in this file's doc comment).
       const result = await runAssistantTurn({
         assistantPrincipalId: assistant.id,
+        role: 'suggested_reply',
         conversationId,
         ticketId,
         surface: 'copilot',
         // Owns the suggestion invariants end-to-end: the turn's fixed
         // drafting message, the framing, the 'copilot_suggest' usage-log
-        // step, the read-only tool policy, the honored honest-miss skip, and
-        // the degrade-to-skip failure mode (see COPILOT_INTENT_PROFILES,
+        // step, the read-only tool policy, and the report_inability-to-skip
+        // mapping (see COPILOT_INTENT_PROFILES,
         // assistant.runtime.ts).
-        copilotIntent: 'suggest',
         actorPrincipalId: auth.principal.id,
-        askerActor: actor,
         latestCustomerMessageId: item.latestCustomerMessageId,
         signal: request.signal,
       })
 
       // Every no-suggestion outcome collapses to the one skip frame: the
       // engine muting the turn (defensive; the intent's own turn messages
-      // never carry human_agent), the honored/degraded `skip` (honest miss
-      // or total synthesis failure — see COPILOT_INTENT_PROFILES), and a
+      // never carry human_agent), the tool-derived `skip` honest miss, and a
       // done-but-empty text (a model that left "text" blank without setting
       // skip: an empty card is a stuck card, so blank means skip here).
       if (result.status === 'suppressed' || result.skip || !result.text.trim()) {

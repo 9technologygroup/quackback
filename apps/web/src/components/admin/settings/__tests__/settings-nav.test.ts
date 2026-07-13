@@ -49,15 +49,18 @@ describe('buildNavSections', () => {
     expect(allLabels(sections)).not.toContain('Sandbox')
   })
 
-  it('Products always contains the Feedback accordion with its four pages', () => {
+  it('Products contains the Feedback & Roadmaps accordion with its four pages when enabled', () => {
     const sections = buildNavSections()
-    expect(itemLabels(sections, 'Products')).toContain('Feedback')
-    expect(groupKids(sections, 'Products', 'Feedback').map((k) => k.label)).toEqual([
+    expect(itemLabels(sections, 'Products')).toContain('Feedback & Roadmaps')
+    expect(groupKids(sections, 'Products', 'Feedback & Roadmaps').map((k) => k.label)).toEqual([
       'Boards',
       'Statuses',
       'Tags',
       'Moderation',
     ])
+    expect(itemLabels(buildNavSections({ feedback: false }), 'Products')).not.toContain(
+      'Feedback & Roadmaps'
+    )
   })
 
   it('has no Support accordion when both support flags are off', () => {
@@ -104,19 +107,19 @@ describe('buildNavSections', () => {
   })
 
   it('Help Center accordion appears only with the helpCenter flag', () => {
-    expect(itemLabels(buildNavSections(), 'Products')).not.toContain('Help Center')
+    expect(itemLabels(buildNavSections({ helpCenter: false }), 'Products')).not.toContain(
+      'Help Center'
+    )
     const sections = buildNavSections({ helpCenter: true })
     expect(groupKids(sections, 'Products', 'Help Center')).toEqual([
       { label: 'Settings', to: '/admin/settings/help-center' },
     ])
   })
 
-  it('Changelog accordion is always present (core product) and last in Products', () => {
-    for (const flags of [undefined, { helpCenter: true, supportInbox: true }] as const) {
-      const sections = buildNavSections(flags)
-      const products = itemLabels(sections, 'Products')
-      expect(products[products.length - 1]).toBe('Changelog')
-    }
+  it('Changelog accordion appears only when the product is enabled', () => {
+    expect(itemLabels(buildNavSections({ changelog: false }), 'Products')).not.toContain(
+      'Changelog'
+    )
     expect(groupKids(buildNavSections(), 'Products', 'Changelog')).toEqual([
       { label: 'Settings', to: '/admin/settings/changelog' },
     ])

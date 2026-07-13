@@ -1,12 +1,4 @@
-/**
- * Guidance rules — short admin-authored directives Quinn's prompt assembly
- * folds in alongside its system prompt (e.g. "always mention the refund
- * policy on billing questions"). A NULL `surfaces` list means the rule
- * applies everywhere; otherwise it is scoped to an allowlist of
- * `AssistantSurface` values. `position` orders both prompt assembly and the
- * admin reorder UI. `category` (one of `AssistantGuidanceCategory`) groups
- * the admin list and defaults to "other" for rules that predate it.
- */
+/** Situational guidance selected for an eligible assistant role and channel. */
 import { pgTable, text, boolean, integer, timestamp, index, check } from 'drizzle-orm/pg-core'
 import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumnNullable } from '@quackback/ids/drizzle'
@@ -16,15 +8,15 @@ export const assistantGuidanceRules = pgTable(
   'assistant_guidance_rules',
   {
     id: typeIdWithDefault('assistant_guidance')('id').primaryKey(),
-    title: text('title').notNull(),
-    body: text('body').notNull(),
+    name: text('name').notNull(),
+    appliesWhen: text('applies_when'),
+    instruction: text('instruction').notNull(),
+    roles: text('roles').array().notNull().default(['customer_support', 'suggested_reply']),
     enabled: boolean('enabled').notNull().default(true),
-    // NULL = every surface; otherwise an allowlist of AssistantSurface values.
-    surfaces: text('surfaces').array(),
-    // App-validated against ASSISTANT_GUIDANCE_CATEGORIES, not a DB CHECK, so
-    // the catalogue can grow without an enum migration.
-    category: text('category').notNull().default('other'),
-    position: integer('position').notNull().default(0),
+    // NULL = every eligible channel; otherwise an allowlist of assistant surfaces.
+    channels: text('channels').array(),
+    // Lower values run first. This preserves the V1 position ordering.
+    priority: integer('priority').notNull().default(0),
     // Nulled on the author's deletion — the rule outlives them.
     createdById: typeIdColumnNullable('principal')('created_by_id').references(() => principal.id, {
       onDelete: 'set null',
@@ -33,10 +25,23 @@ export const assistantGuidanceRules = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    index('assistant_guidance_rules_enabled_position_idx').on(table.enabled, table.position),
-    index('assistant_guidance_rules_category_position_idx').on(table.category, table.position),
-    check('assistant_guidance_rules_title_length_check', sql`char_length(${table.title}) <= 80`),
-    check('assistant_guidance_rules_body_length_check', sql`char_length(${table.body}) <= 1000`),
+    index('assistant_guidance_rules_enabled_priority_idx').on(table.enabled, table.priority),
+    check(
+      'assistant_guidance_rules_name_length_check',
+      sql`char_length(${table.name}) BETWEEN 1 AND 80`
+    ),
+    check(
+      'assistant_guidance_rules_applies_when_length_check',
+      sql`${table.appliesWhen} IS NULL OR char_length(${table.appliesWhen}) BETWEEN 1 AND 500`
+    ),
+    check(
+      'assistant_guidance_rules_instruction_length_check',
+      sql`char_length(${table.instruction}) BETWEEN 1 AND 1000`
+    ),
+    check(
+      'assistant_guidance_rules_roles_length_check',
+      sql`cardinality(${table.roles}) BETWEEN 1 AND 3`
+    ),
   ]
 )
 

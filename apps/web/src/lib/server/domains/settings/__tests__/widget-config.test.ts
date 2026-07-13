@@ -12,10 +12,9 @@ import { deepMerge } from '../settings.helpers'
 
 describe('Widget Config Types', () => {
   describe('DEFAULT_MESSENGER_CONFIG', () => {
-    it('is AI-first by default: the assistant identity is on and named Quinn, replies off', () => {
+    it('is AI-first by default: assistant deployment is on and replies are off', () => {
       expect(DEFAULT_MESSENGER_CONFIG.assistant).toEqual({
         enabled: true,
-        name: 'Quinn',
         respond: false,
       })
     })
@@ -104,12 +103,24 @@ describe('Widget Config Types', () => {
 
   describe('publicMessengerConfig', () => {
     it('projects the assistant identity but strips agent-only fields', () => {
-      const projected = publicMessengerConfig({
+      const projected = publicMessengerConfig(
+        {
+          enabled: true,
+          assistant: { enabled: true },
+          routing: { enabled: true, strategy: 'auto_assign_active' },
+        },
+        {
+          name: 'Quinn',
+          avatarUrl: null,
+          showAiLabel: true,
+        }
+      )
+      expect(projected.assistant).toEqual({
         enabled: true,
-        assistant: { enabled: true, name: 'Quinn' },
-        routing: { enabled: true, strategy: 'auto_assign_active' },
+        name: 'Quinn',
+        avatarUrl: null,
+        showAiLabel: true,
       })
-      expect(projected.assistant).toEqual({ enabled: true, name: 'Quinn' })
       expect('routing' in projected).toBe(false)
     })
   })

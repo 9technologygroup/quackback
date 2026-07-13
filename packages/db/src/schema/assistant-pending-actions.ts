@@ -58,6 +58,12 @@ export const ASSISTANT_PENDING_ACTION_STATUSES = [
 
 export type AssistantPendingActionStatus = (typeof ASSISTANT_PENDING_ACTION_STATUSES)[number]
 
+export const ASSISTANT_PENDING_ACTION_ORIGIN_ROLES = [
+  'customer_support',
+  'copilot_qa',
+  'suggested_reply',
+] as const
+
 export const assistantPendingActions = pgTable(
   'assistant_pending_actions',
   {
@@ -79,6 +85,9 @@ export const assistantPendingActions = pgTable(
     toolName: text('tool_name').notNull(),
     args: jsonb('args').$type<Record<string, unknown>>().notNull(),
     summary: text('summary').notNull(),
+    originRole: text('origin_role', { enum: ASSISTANT_PENDING_ACTION_ORIGIN_ROLES })
+      .notNull()
+      .default('customer_support'),
     status: text('status', { enum: ASSISTANT_PENDING_ACTION_STATUSES })
       .notNull()
       .default('proposed'),

@@ -16,7 +16,13 @@ export default defineConfig({
     testTimeout: 15_000,
     include: ['src/**/*.test.tsx', 'src/**/*.test.ts'],
     setupFiles: [path.resolve(__dirname, '../../vitest.setup.ts')],
-    exclude: ['**/node_modules/**', '**/.output/**', '**/e2e/**'],
+    exclude: [
+      '**/node_modules/**',
+      '**/.output/**',
+      '**/e2e/**',
+      // TanStack route for /admin/automation/test, not a Vitest suite.
+      'src/routes/admin/automation.test.tsx',
+    ],
     env: {
       DATABASE_URL: 'postgresql://postgres:password@localhost:5432/quackback_test',
     },

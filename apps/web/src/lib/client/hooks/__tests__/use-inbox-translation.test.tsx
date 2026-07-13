@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IntlProvider } from 'react-intl'
 import type { ReactNode } from 'react'
 import type { ConversationId } from '@quackback/ids'
 import type { AgentConversationMessageDTO } from '@/lib/shared/conversation/types'
@@ -34,7 +35,11 @@ const conversationId = 'conversation_1' as ConversationId
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  return (
+    <IntlProvider locale="en-GB" messages={{}}>
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    </IntlProvider>
+  )
 }
 
 function visitorMessage(
@@ -154,6 +159,28 @@ describe('useInboxTranslation — suggestion banner', () => {
       { wrapper }
     )
     await waitFor(() => expect(result.current.showSuggestionBanner).toBe(false))
+  })
+
+  it('falls back to the browser-resolved locale when no teammate preference is set', async () => {
+    hoisted.getMyLanguagePreferenceFn.mockResolvedValue({ language: null })
+    const { result } = renderHook(
+      () =>
+        useInboxTranslation({
+          enabledFlag: true,
+          conversationId,
+          translationState: {
+            enabled: false,
+            detectedCustomerLanguage: 'en',
+            suggestionDismissed: false,
+          },
+          messages: [],
+          onChanged: vi.fn(),
+        }),
+      { wrapper }
+    )
+
+    await waitFor(() => expect(hoisted.getMyLanguagePreferenceFn).toHaveBeenCalled())
+    expect(result.current.showSuggestionBanner).toBe(false)
   })
 
   it('does not suggest once translation is already enabled', () => {

@@ -27,7 +27,7 @@ import {
 } from '@heroicons/react/24/solid'
 import { cn } from '@/lib/shared/utils'
 import { NAV_ICON_CLASS, NAV_ITEM_CLASS, NAV_SECTION_CLASS } from '@/components/shared/nav-tokens'
-import type { FeatureFlags } from '@/lib/shared/types'
+import { isProductEnabled, type FeatureFlags } from '@/lib/shared/types'
 
 interface NavItem {
   label: string
@@ -35,7 +35,7 @@ interface NavItem {
   icon: typeof Cog6ToothIcon
 }
 
-/** A product accordion inside the Products section (Feedback, Support, ...). */
+/** A product accordion inside the Products section (Feedback & Roadmaps, Support, ...). */
 interface NavGroup {
   label: string
   icon: typeof Cog6ToothIcon
@@ -56,19 +56,15 @@ export function isNavGroup(entry: NavEntry): entry is NavGroup {
 /**
  * The settings IA (SETTINGS-IA-SPEC Option B): three stable sections. Flags hide
  * ITEMS (or whole product accordions), never sections, so the sidebar layout
- * does not reflow when a flag flips - Products always renders because Feedback
- * is always on. AI & Automation lives outside settings entirely, as its own
- * main-nav area at /admin/automation (M5).
+ * does not reflow when a flag flips. AI & Automation lives outside settings
+ * entirely, as its own main-nav area at /admin/automation (M5).
  */
-export function buildNavSections(flags?: {
-  helpCenter?: boolean
-  supportInbox?: boolean
-  supportTickets?: boolean
-  statusPage?: boolean
-}): NavSection[] {
-  const products: NavEntry[] = [
-    {
-      label: 'Feedback',
+export function buildNavSections(flags?: Partial<FeatureFlags>): NavSection[] {
+  const products: NavEntry[] = []
+
+  if (isProductEnabled(flags, 'feedback')) {
+    products.push({
+      label: 'Feedback & Roadmaps',
       icon: ChatBubbleLeftIcon,
       kids: [
         { label: 'Boards', to: '/admin/settings/boards', icon: Squares2X2Icon },
@@ -76,8 +72,8 @@ export function buildNavSections(flags?: {
         { label: 'Tags', to: '/admin/settings/tags', icon: TagIcon },
         { label: 'Moderation', to: '/admin/settings/moderation', icon: ShieldCheckIcon },
       ],
-    },
-  ]
+    })
+  }
 
   const supportKids: NavItem[] = [
     ...(flags?.supportInbox
@@ -103,11 +99,11 @@ export function buildNavSections(flags?: {
         ]
       : []),
   ]
-  if (supportKids.length > 0) {
+  if (isProductEnabled(flags, 'support') && supportKids.length > 0) {
     products.push({ label: 'Support', icon: ChatBubbleLeftRightIcon, kids: supportKids })
   }
 
-  if (flags?.helpCenter) {
+  if (isProductEnabled(flags, 'helpCenter')) {
     products.push({
       label: 'Help Center',
       icon: BookOpenIcon,
@@ -115,14 +111,15 @@ export function buildNavSections(flags?: {
     })
   }
 
-  // Changelog is a core product (no flag).
-  products.push({
-    label: 'Changelog',
-    icon: MegaphoneIcon,
-    kids: [{ label: 'Settings', to: '/admin/settings/changelog', icon: MegaphoneIcon }],
-  })
+  if (isProductEnabled(flags, 'changelog')) {
+    products.push({
+      label: 'Changelog',
+      icon: MegaphoneIcon,
+      kids: [{ label: 'Settings', to: '/admin/settings/changelog', icon: MegaphoneIcon }],
+    })
+  }
 
-  if (flags?.statusPage) {
+  if (isProductEnabled(flags, 'status')) {
     products.push({
       label: 'Status',
       icon: SignalIcon,

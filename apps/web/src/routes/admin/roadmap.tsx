@@ -1,9 +1,10 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import { adminQueries } from '@/lib/client/queries/admin'
 import { RoadmapAdmin } from '@/components/admin/roadmap-admin'
 import { RoadmapModal } from '@/components/admin/roadmap-modal'
+import { getFirstEnabledAdminProductPath, isProductEnabled } from '@/lib/shared/types/settings'
 
 const searchSchema = z.object({
   roadmap: z.string().optional(),
@@ -17,6 +18,11 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute('/admin/roadmap')({
   validateSearch: searchSchema,
+  beforeLoad: ({ context }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'feedback')) {
+      throw redirect({ to: getFirstEnabledAdminProductPath(context.settings?.featureFlags) })
+    }
+  },
   loader: async ({ context }) => {
     const { queryClient } = context
 

@@ -1,221 +1,300 @@
-/**
- * Assistant customization settings: per-tool execution controls, per-surface
- * system-prompt instructions, and the Basics tone/length preset.
- *
- * Storage: like office-hours and ticket settings, all three families ride in
- * the generic `settings.metadata` JSON bag (no dedicated column, no
- * migration). Reads default to an empty map — an absent tool control falls
- * back to whatever the assistant runtime bakes in for that tool, and a
- * surface with no saved instructions falls back to the runtime's built-in
- * prompt.
- *
- * Each family's parsing is split into a pure `resolveX(metadataJson)` (no DB)
- * and a `getX()` wrapper (`requireSettings` + `resolveX`) for callers that
- * only need one value. `getAssistantConfig()` reads the settings row once and
- * resolves all three, for callers (the settings page, the per-turn runtime)
- * that need more than one — three separate `getX()` calls would read the same
- * row three times.
- *
- * `ToolControlMode` is defined here rather than imported from the assistant
- * domain so settings has no dependency on assistant.
- */
-import { z } from 'zod'
+import type { AuditActor, AuditEventType } from '@/lib/server/audit/log'
+import { recordAuditEventInTransaction } from '@/lib/server/audit/log'
+import { and, db, eq, principal, settings, sql } from '@/lib/server/db'
+import { isPathManaged } from '@/lib/server/config-file/managed-paths'
 import { logger } from '@/lib/server/logger'
-import { ASSISTANT_SURFACES, type AssistantSurface } from '@/lib/shared/assistant/surfaces'
-import { ASSISTANT_TONES, ASSISTANT_LENGTHS } from '@/lib/shared/assistant/basics'
-import { requireSettings, wrapDbError, writeMetadataKey, parseJsonOrNull } from './settings.helpers'
+import {
+  assistantChannelsSchema,
+  assistantConfigSchema,
+  assistantIdentitySchema,
+  assistantVoiceSchema,
+  assistantToolControlSchema,
+  DEFAULT_ASSISTANT_CONFIG,
+  normalizeAssistantConfig,
+  type AssistantChannels,
+  type AssistantConfig,
+  type AssistantIdentity,
+  type AssistantToolControl,
+  type AssistantVoice,
+} from '@/lib/shared/assistant/config'
+import { ConflictError, ForbiddenError, InternalError, NotFoundError } from '@/lib/shared/errors'
+import { z } from 'zod'
+import { invalidateSettingsCache, requireSettings } from './settings.helpers'
+import { resolveFeatureFlags } from './settings.types'
 
 const log = logger.child({ component: 'settings-assistant' })
 
-/** Keys inside the `settings.metadata` JSON bag. */
-const TOOL_CONTROLS_KEY = 'assistantToolControls'
-const SURFACES_KEY = 'assistantSurfaces'
-const BASICS_KEY = 'assistantBasics'
+export const assistantToolControlsSchema = z.record(z.string(), assistantToolControlSchema)
+export type AssistantToolControls = Record<string, AssistantToolControl>
 
-// ---------------------------------------------------------------------------
-// Tool controls
-// ---------------------------------------------------------------------------
-
-/** How the assistant may exercise a given tool. */
-export const toolControlModeSchema = z.enum(['disabled', 'approval', 'autonomous'])
-export type ToolControlMode = z.infer<typeof toolControlModeSchema>
-
-/**
- * Per-tool overrides, keyed by tool name. Unknown tool names are accepted at
- * this layer — the assistant's tool registry is the source of truth for which
- * names currently exist, and a control may be saved for a connector tool that
- * ships after this one. Exported so the server-fn layer's validator reuses
- * the same schema rather than redefining it.
- */
-export const assistantToolControlsSchema = z.record(z.string(), toolControlModeSchema)
-
-export type AssistantToolControls = z.infer<typeof assistantToolControlsSchema>
-
-/** Pure parse of the tool-controls map out of raw `settings.metadata`. */
-export function resolveAssistantToolControls(metadataJson: string | null): AssistantToolControls {
-  const meta = parseJsonOrNull<Record<string, unknown>>(metadataJson) ?? {}
-  const parsed = assistantToolControlsSchema.safeParse(meta[TOOL_CONTROLS_KEY])
-  return parsed.success ? parsed.data : {}
-}
-
-export async function getAssistantToolControls(): Promise<AssistantToolControls> {
-  try {
-    const org = await requireSettings()
-    return resolveAssistantToolControls(org.metadata)
-  } catch (error) {
-    log.error({ err: error }, 'get assistant tool controls failed')
-    wrapDbError('fetch assistant tool controls', error)
-  }
-}
-
-export async function updateAssistantToolControls(
-  input: AssistantToolControls
-): Promise<AssistantToolControls> {
-  log.info('update assistant tool controls')
-  try {
-    const validated = assistantToolControlsSchema.parse(input)
-    await writeMetadataKey(TOOL_CONTROLS_KEY, validated)
-    return validated
-  } catch (error) {
-    log.error({ err: error }, 'update assistant tool controls failed')
-    wrapDbError('update assistant tool controls', error)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Surface instructions
-// ---------------------------------------------------------------------------
-
-/** Max length for a surface's saved instructions. */
-const SURFACE_INSTRUCTIONS_MAX = 2000
-
-const surfaceConfigSchema = z.object({
-  instructions: z.string().max(SURFACE_INSTRUCTIONS_MAX),
+export const assistantIdentityUpdateSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+  identity: assistantIdentitySchema,
 })
 
-/**
- * Partial map of surface -> instructions; an absent surface uses the default
- * prompt. Exported so the server-fn layer's validator reuses this schema.
- */
-export const assistantSurfacesSchema = z.partialRecord(z.enum(ASSISTANT_SURFACES), surfaceConfigSchema)
-
-export type AssistantSurfaceConfig = z.infer<typeof surfaceConfigSchema>
-export type AssistantSurfacesConfig = Partial<Record<AssistantSurface, AssistantSurfaceConfig>>
-
-/** Pure parse of the per-surface instructions map out of raw `settings.metadata`. */
-export function resolveAssistantSurfaces(metadataJson: string | null): AssistantSurfacesConfig {
-  const meta = parseJsonOrNull<Record<string, unknown>>(metadataJson) ?? {}
-  const parsed = assistantSurfacesSchema.safeParse(meta[SURFACES_KEY])
-  return parsed.success ? parsed.data : {}
-}
-
-export async function getAssistantSurfaces(): Promise<AssistantSurfacesConfig> {
-  try {
-    const org = await requireSettings()
-    return resolveAssistantSurfaces(org.metadata)
-  } catch (error) {
-    log.error({ err: error }, 'get assistant surfaces failed')
-    wrapDbError('fetch assistant surfaces', error)
-  }
-}
-
-/**
- * Persist the full per-surface instructions map. A blank (or whitespace-only)
- * instructions value drops that surface's key so it falls back to the
- * built-in prompt instead of an explicit empty override.
- */
-export async function updateAssistantSurfaces(
-  input: AssistantSurfacesConfig
-): Promise<AssistantSurfacesConfig> {
-  log.info('update assistant surfaces')
-  try {
-    const validated = assistantSurfacesSchema.parse(input)
-    const normalized: AssistantSurfacesConfig = {}
-    for (const surface of ASSISTANT_SURFACES) {
-      const config = validated[surface]
-      const trimmed = config?.instructions.trim()
-      if (trimmed) normalized[surface] = { instructions: trimmed }
-    }
-    await writeMetadataKey(SURFACES_KEY, normalized)
-    return normalized
-  } catch (error) {
-    log.error({ err: error }, 'update assistant surfaces failed')
-    wrapDbError('update assistant surfaces', error)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Basics (persona preset)
-// ---------------------------------------------------------------------------
-
-/**
- * The coarse tone + length dial: a persona preset that sits above the
- * granular guidance rules. Both fields are optional and independent — a
- * workspace can set just a tone, just a length, or neither (in which case
- * the runtime adds no persona directive at all).
- */
-export const assistantBasicsSchema = z.object({
-  tone: z.enum(ASSISTANT_TONES).optional(),
-  length: z.enum(ASSISTANT_LENGTHS).optional(),
+export const assistantVoiceUpdateSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+  voice: assistantVoiceSchema,
 })
 
-export type AssistantBasics = z.infer<typeof assistantBasicsSchema>
+export const assistantChannelsUpdateSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+  channels: assistantChannelsSchema,
+})
 
-/** Pure parse of the basics preset out of raw `settings.metadata`. */
-export function resolveAssistantBasics(metadataJson: string | null): AssistantBasics {
-  const meta = parseJsonOrNull<Record<string, unknown>>(metadataJson) ?? {}
-  const parsed = assistantBasicsSchema.safeParse(meta[BASICS_KEY])
-  return parsed.success ? parsed.data : {}
+export const assistantToolControlsUpdateSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+  toolControls: assistantToolControlsSchema,
+})
+
+export interface AssistantConfigState {
+  config: AssistantConfig
+  revision: number
 }
 
-export async function getAssistantBasics(): Promise<AssistantBasics> {
-  try {
-    const org = await requireSettings()
-    return resolveAssistantBasics(org.metadata)
-  } catch (error) {
-    log.error({ err: error }, 'get assistant basics failed')
-    wrapDbError('fetch assistant basics', error)
+export type AssistantConfigFallbackReason = 'invalid_assistant_config'
+
+export interface AssistantRuntimeConfigState extends AssistantConfigState {
+  workspaceName: string
+  actionsEnabled: boolean
+  knowledgeEnabled: boolean
+  configFallbackReason?: AssistantConfigFallbackReason
+}
+
+export interface AssistantSettingsState extends AssistantConfigState {
+  managedFieldPaths: string[]
+}
+
+export type AssistantConfigAuditActor = AuditActor & { headers?: Headers }
+
+/** Strict settings-page read. Invalid persisted JSON is a load failure, never an invented UI default. */
+export async function getAssistantConfig(): Promise<AssistantConfigState> {
+  const row = await requireSettings()
+  const parsed = assistantConfigSchema.safeParse(row.assistantConfig)
+  if (!parsed.success) {
+    log.error({ issues: parsed.error.issues }, 'stored assistant config is invalid')
+    throw new InternalError('ASSISTANT_CONFIG_INVALID', 'Stored AI agent settings are invalid')
+  }
+  return { config: parsed.data, revision: row.assistantConfigRevision }
+}
+
+export async function getAssistantSettings(): Promise<AssistantSettingsState> {
+  const row = await requireSettings()
+  const parsed = assistantConfigSchema.safeParse(row.assistantConfig)
+  if (!parsed.success) {
+    log.error({ issues: parsed.error.issues }, 'stored assistant config is invalid')
+    throw new InternalError('ASSISTANT_CONFIG_INVALID', 'Stored AI agent settings are invalid')
+  }
+  return {
+    config: parsed.data,
+    revision: row.assistantConfigRevision,
+    managedFieldPaths: row.managedFieldPaths,
   }
 }
 
-export async function updateAssistantBasics(input: AssistantBasics): Promise<AssistantBasics> {
-  log.info('update assistant basics')
-  try {
-    const validated = assistantBasicsSchema.parse(input)
-    await writeMetadataKey(BASICS_KEY, validated)
-    return validated
-  } catch (error) {
-    log.error({ err: error }, 'update assistant basics failed')
-    wrapDbError('update assistant basics', error)
+/** Runtime read posture: invalid behavior JSON falls back without reintroducing a V1 reader. */
+export async function getAssistantRuntimeConfig(): Promise<AssistantRuntimeConfigState> {
+  const row = await requireSettings()
+  const flags = resolveFeatureFlags(row.featureFlags)
+  const parsed = assistantConfigSchema.safeParse(row.assistantConfig)
+  const runtimeFields = {
+    revision: row.assistantConfigRevision,
+    workspaceName: row.name,
+    actionsEnabled: flags.assistantTools,
+    knowledgeEnabled: flags.assistantKnowledge,
+  }
+  if (parsed.success) return { config: parsed.data, ...runtimeFields }
+
+  log.error({ issues: parsed.error.issues }, 'using default assistant config for invalid V2 JSON')
+  return {
+    config: structuredClone(DEFAULT_ASSISTANT_CONFIG),
+    ...runtimeFields,
+    configFallbackReason: 'invalid_assistant_config',
   }
 }
 
-// ---------------------------------------------------------------------------
-// Combined per-turn config
-// ---------------------------------------------------------------------------
+function changedLeafPaths(before: unknown, after: unknown, prefix = ''): string[] {
+  if (Object.is(before, after)) return []
 
-export interface AssistantConfig {
-  toolControls: AssistantToolControls
-  surfaces: AssistantSurfacesConfig
-  basics: AssistantBasics
+  const beforeObject =
+    typeof before === 'object' && before !== null && !Array.isArray(before)
+      ? (before as Record<string, unknown>)
+      : null
+  const afterObject =
+    typeof after === 'object' && after !== null && !Array.isArray(after)
+      ? (after as Record<string, unknown>)
+      : null
+
+  if (!beforeObject || !afterObject) return prefix ? [prefix] : []
+
+  const paths: string[] = []
+  const keys = new Set([...Object.keys(beforeObject), ...Object.keys(afterObject)])
+  for (const key of [...keys].sort()) {
+    const path = prefix ? `${prefix}.${key}` : key
+    paths.push(...changedLeafPaths(beforeObject[key], afterObject[key], path))
+  }
+  return paths
+}
+
+function auditEventForPaths(paths: string[]): AuditEventType {
+  const root = paths[0]?.split('.')[0]
+  if (root === 'identity') return 'assistant.identity.changed'
+  if (root === 'channels') return 'assistant.channels.changed'
+  if (root === 'toolControls') return 'assistant.tool_controls.changed'
+  if (paths.every((path) => path === 'voice.additionalInstructions')) {
+    return 'assistant.instructions.changed'
+  }
+  return 'assistant.voice.changed'
+}
+
+const SAFE_TRANSITION_PATHS = new Set([
+  'identity.showAiLabel',
+  'voice.tone',
+  'voice.responseLength',
+])
+
+function valueAtPath(config: AssistantConfig, path: string): unknown {
+  return path
+    .split('.')
+    .reduce<unknown>(
+      (value, key) =>
+        typeof value === 'object' && value !== null
+          ? (value as Record<string, unknown>)[key]
+          : undefined,
+      config
+    )
+}
+
+function safeTransitions(before: AssistantConfig, after: AssistantConfig, paths: string[]) {
+  return paths.flatMap((path) => {
+    if (!SAFE_TRANSITION_PATHS.has(path) && !path.startsWith('toolControls.')) return []
+    return [{ path, from: valueAtPath(before, path) ?? null, to: valueAtPath(after, path) ?? null }]
+  })
 }
 
 /**
- * Fetch all three assistant-customization namespaces off a single settings
- * read. Callers that need more than one namespace (the settings page, the
- * per-turn assistant runtime) should use this instead of combining the
- * individual `getX()` fns, which would each read the row on their own.
+ * The only V2 assistant-configuration write boundary.
+ *
+ * It serializes writers on the settings row, rejects stale revisions, validates
+ * the complete normalized config, and writes the privacy-minimal audit event in
+ * the same transaction. Cache invalidation happens once, after commit.
  */
-export async function getAssistantConfig(): Promise<AssistantConfig> {
-  try {
-    const org = await requireSettings()
-    return {
-      toolControls: resolveAssistantToolControls(org.metadata),
-      surfaces: resolveAssistantSurfaces(org.metadata),
-      basics: resolveAssistantBasics(org.metadata),
+export async function updateAssistantConfig(
+  expectedRevision: number,
+  mutate: (current: AssistantConfig) => AssistantConfig,
+  actor: AssistantConfigAuditActor
+): Promise<AssistantConfigState> {
+  const result = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({
+        id: settings.id,
+        assistantConfig: settings.assistantConfig,
+        assistantConfigRevision: settings.assistantConfigRevision,
+        managedFieldPaths: settings.managedFieldPaths,
+      })
+      .from(settings)
+      .limit(1)
+      .for('update')
+
+    if (!row) throw new NotFoundError('SETTINGS_NOT_FOUND', 'Settings not found')
+
+    const current = assistantConfigSchema.safeParse(row.assistantConfig)
+    if (!current.success) {
+      throw new InternalError('ASSISTANT_CONFIG_INVALID', 'Stored AI agent settings are invalid')
     }
-  } catch (error) {
-    log.error({ err: error }, 'get assistant config failed')
-    wrapDbError('fetch assistant config', error)
-  }
+    if (row.assistantConfigRevision !== expectedRevision) {
+      throw new ConflictError(
+        'ASSISTANT_CONFIG_REVISION_CONFLICT',
+        'AI agent settings changed in another session. Reload the latest settings and try again.'
+      )
+    }
+
+    const next = normalizeAssistantConfig(mutate(structuredClone(current.data)))
+    const changedPaths = changedLeafPaths(current.data, next)
+    for (const path of changedPaths) {
+      if (isPathManaged(`assistant.${path}`, row.managedFieldPaths)) {
+        throw new ForbiddenError(
+          'MANAGED_SETTING',
+          'This AI agent setting is managed by your deployment configuration.'
+        )
+      }
+    }
+
+    if (changedPaths.length === 0) {
+      return { config: current.data, revision: row.assistantConfigRevision, changed: false }
+    }
+
+    const revision = row.assistantConfigRevision + 1
+    await tx
+      .update(settings)
+      .set({ assistantConfig: next, assistantConfigRevision: revision })
+      .where(eq(settings.id, row.id))
+
+    if (changedPaths.some((path) => path.startsWith('identity.'))) {
+      await tx
+        .update(principal)
+        .set({
+          displayName: next.identity.name,
+          avatarUrl: next.identity.avatarUrl,
+        })
+        .where(
+          and(
+            eq(principal.type, 'service'),
+            sql`${principal.serviceMetadata}->>'kind' = 'integration'`,
+            sql`${principal.serviceMetadata}->>'integrationType' = 'assistant'`
+          )
+        )
+    }
+
+    const { headers, ...auditActor } = actor
+    await recordAuditEventInTransaction(tx, {
+      event: auditEventForPaths(changedPaths),
+      actor: auditActor,
+      headers,
+      target: { type: 'settings', id: row.id },
+      metadata: {
+        changedPaths,
+        previousRevision: row.assistantConfigRevision,
+        revision,
+        transitions: safeTransitions(current.data, next, changedPaths),
+      },
+    })
+
+    return { config: next, revision, changed: true }
+  })
+
+  if (result.changed) await invalidateSettingsCache()
+  return { config: result.config, revision: result.revision }
+}
+
+export function updateAssistantIdentity(
+  expectedRevision: number,
+  identity: AssistantIdentity,
+  actor: AssistantConfigAuditActor
+): Promise<AssistantConfigState> {
+  return updateAssistantConfig(expectedRevision, (current) => ({ ...current, identity }), actor)
+}
+
+export function updateAssistantVoice(
+  expectedRevision: number,
+  voice: AssistantVoice,
+  actor: AssistantConfigAuditActor
+): Promise<AssistantConfigState> {
+  return updateAssistantConfig(expectedRevision, (current) => ({ ...current, voice }), actor)
+}
+
+export function updateAssistantChannels(
+  expectedRevision: number,
+  channels: AssistantChannels,
+  actor: AssistantConfigAuditActor
+): Promise<AssistantConfigState> {
+  return updateAssistantConfig(expectedRevision, (current) => ({ ...current, channels }), actor)
+}
+
+export function updateAssistantToolControls(
+  expectedRevision: number,
+  toolControls: AssistantToolControls,
+  actor: AssistantConfigAuditActor
+): Promise<AssistantConfigState> {
+  return updateAssistantConfig(expectedRevision, (current) => ({ ...current, toolControls }), actor)
 }

@@ -11,7 +11,12 @@
  */
 import { toolDefinition, type ToolDefinition } from '@tanstack/ai'
 import { z } from 'zod'
-import { conversations, eq } from '@/lib/server/db'
+import {
+  conversations,
+  eq,
+  ASSISTANT_HANDOFF_REASONS,
+  type AssistantHandoffReason,
+} from '@/lib/server/db'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
 import type {
   PrincipalId,
@@ -37,9 +42,9 @@ import { setConversationStatus } from '@/lib/server/domains/conversation/convers
 import { createTicket } from '@/lib/server/domains/tickets/ticket.service'
 import { createPostFromConversation } from '@/lib/server/domains/conversation/conversation.convert'
 import { quinnActor } from './assistant.actor'
-import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service'
 import { RETRIEVED_CONTENT_NOTE } from './injection-guard'
 import { logger } from '@/lib/server/logger'
+import type { AssistantRole } from '@/lib/shared/assistant/config'
 
 const log = logger.child({ component: 'assistant-toolspec' })
 
@@ -87,6 +92,27 @@ export interface AssistantProposedAction {
   label: string
 }
 
+export interface AssistantToolOutcome {
+  name: string
+  outcome: 'read' | 'simulated' | 'proposed' | 'executed' | 'failed'
+}
+
+/** A handoff Quinn explicitly requested through the handoff tool this attempt. */
+export interface AssistantHandoffRequest {
+  reason: AssistantHandoffReason
+  customerNeed: string
+  attempted: string[]
+  recommendedNextStep: string
+}
+
+export const ASSISTANT_INABILITY_REASONS = [
+  'no_relevant_sources',
+  'tool_unavailable',
+  'insufficient_context',
+] as const
+
+export type AssistantInabilityReason = (typeof ASSISTANT_INABILITY_REASONS)[number]
+
 /**
  * Request-local context threaded to server tools (and middleware). Carries the
  * tenant db handle, Quinn's service principal, the viewer audience for
@@ -97,6 +123,10 @@ export interface AssistantProposedAction {
 export interface AssistantToolContext {
   db: Executor
   assistantPrincipalId: PrincipalId
+  /** Configured V2 identity for service-authored records created by tools. */
+  assistantName: string
+  /** Trust profile that originated this tool call and any pending action. */
+  role: AssistantRole
   /**
    * The turn's retrieval ceiling, minted exclusively by `resolveContentAudience`
    * (see `./audience`). Never construct this from a raw string literal.
@@ -131,8 +161,22 @@ export interface AssistantToolContext {
    * `retrieveKnowledge` in `./retrieval-sources`.
    */
   sourceTypes?: RetrievedItem['sourceType'][]
+  /** Turn-scoped feature snapshot used by search without re-reading settings. */
+  knowledgeEnabled?: boolean
   /** Sources surfaced by search_knowledge this run, keyed by id, for citation assembly. */
   sources: Map<string, AssistantCitation>
+  /**
+   * Tool names actually invoked this attempt, in call order. Completion
+   * validation and durable tracing use this observed ledger instead of
+   * trying to infer actions from customer-facing prose.
+   */
+  toolCalls: string[]
+  /** Privacy-safe outcomes for Test agent and operational traces. */
+  toolOutcomes: AssistantToolOutcome[]
+  /** Set only by the handoff_to_human control tool. */
+  handoffRequest: AssistantHandoffRequest | null
+  /** Set only by the report_inability control tool. */
+  inabilityReport: { reason: AssistantInabilityReason } | null
   /**
    * Pending actions this run's write-tool calls turned into approval-queue
    * rows (P2-C.4), in call order. Populated by the approval branch of
@@ -182,20 +226,6 @@ export interface AssistantToolContext {
    * on-behalf-of-teammate actor without touching the pipeline or executors.
    */
   actor: Actor
-  /**
-   * The resolved Actor of the human whose question this turn answers — the
-   * asking teammate's permission ceiling. Copilot-only, and consulted in
-   * exactly one place — the metadataWrite exemption from propose-forcing
-   * (see `resolveEffectiveToolMode`): tools execute under Quinn's own actor
-   * (`actor` above), so without this ceiling a teammate holding only
-   * copilot.use could trigger a direct metadata write they could not perform
-   * themselves. Absent fails closed: with `writeToolPolicy: 'propose'` and
-   * no known asker, the exemption never applies and the tool proposes.
-   * Quinn's own autonomous surfaces never set this — nothing forces
-   * 'propose' there, so the exemption is not in play and the pipeline's
-   * `actor` permission check still bounds every execution.
-   */
-  askerActor?: Actor
 }
 
 /**
@@ -207,27 +237,36 @@ export interface AssistantToolContext {
 export function makeAssistantToolContext(init: {
   db: Executor
   assistantPrincipalId: PrincipalId
+  assistantName?: string
+  role?: AssistantRole
   audience: ContentAudience
   conversationId: ConversationId | null
   ticketId?: TicketId | null
   customerPrincipalId?: PrincipalId | null
   sourceTypes?: RetrievedItem['sourceType'][]
+  knowledgeEnabled?: boolean
   involvementId?: AssistantInvolvementId | null
   latestCustomerMessageId?: string | null
   simulate?: boolean
   writeToolPolicy?: 'simulate' | 'controls' | 'propose' | 'disabled'
   actor?: Actor
-  askerActor?: Actor
 }): AssistantToolContext {
   return {
     db: init.db,
     assistantPrincipalId: init.assistantPrincipalId,
+    assistantName: init.assistantName ?? 'Quinn',
+    role: init.role ?? 'customer_support',
     audience: init.audience,
     conversationId: init.conversationId,
     ticketId: init.ticketId ?? null,
     customerPrincipalId: init.customerPrincipalId ?? undefined,
     sourceTypes: init.sourceTypes,
+    knowledgeEnabled: init.knowledgeEnabled ?? false,
     sources: new Map<string, AssistantCitation>(),
+    toolCalls: [],
+    toolOutcomes: [],
+    handoffRequest: null,
+    inabilityReport: null,
     proposedActions: [],
     searchCalls: 0,
     simulate: init.simulate ?? init.conversationId === null,
@@ -235,28 +274,27 @@ export function makeAssistantToolContext(init: {
     involvementId: init.involvementId ?? null,
     latestCustomerMessageId: init.latestCustomerMessageId ?? null,
     actor: init.actor ?? quinnActor(init.assistantPrincipalId),
-    askerActor: init.askerActor,
   }
 }
 
 /**
  * Hard per-attempt budget on search_knowledge. Prompt discipline alone does not
  * hold — a model that dislikes its results keeps reformulating until the
- * iteration cap kills the whole turn with no answer (observed as fallback
- * replies). Past the budget the tool returns no articles and an explicit
+ * iteration cap kills the whole turn with no answer. Past the budget the tool
+ * returns no articles and an explicit
  * instruction to answer from what was already retrieved, which deterministically
  * ends the exploration while keeping everything already in context usable.
  */
 export const SEARCH_BUDGET_PER_TURN = 3
 
-/** Read tools only observe; write tools change state and can require approval. */
-export type ToolRiskClass = 'read' | 'write'
+/**
+ * Read tools observe; write tools change state and can require approval;
+ * control tools emit a core orchestration decision and are always available.
+ */
+export type ToolRiskClass = 'read' | 'write' | 'control'
 
-// The control-mode vocabulary is owned by the settings namespace that persists
-// it (assistant -> settings is an established dependency direction); one union
-// means the E-2 gate compares saved modes and supportedModes as one type.
-export type { ToolControlMode } from '@/lib/server/domains/settings/settings.assistant'
-import type { ToolControlMode } from '@/lib/server/domains/settings/settings.assistant'
+// Shared by persisted V2 configuration and the registry's supported modes.
+export type ToolControlMode = import('@/lib/shared/assistant/config').AssistantToolControl
 
 /**
  * The pipeline's gate results. Every tool's declared output must also admit
@@ -276,9 +314,7 @@ export const assistantGateEnvelopeSchema = z.union([
 
 /**
  * Compose a tool's outputSchema so it also admits the pipeline's gate
- * envelopes (pending-approval/denied/duplicate/failed/simulated). Exported so
- * connector.toolspec.ts (a connector's outputSchema needs the same admission)
- * doesn't reimplement the union.
+ * envelopes (pending-approval/denied/duplicate/failed/simulated).
  */
 export function withGateEnvelope<T extends z.ZodTypeAny>(schema: T) {
   return z.union([schema, assistantGateEnvelopeSchema])
@@ -310,25 +346,6 @@ export interface AssistantToolSpec<In = unknown, Out = unknown> {
   risk: ToolRiskClass
   supportedModes: readonly ToolControlMode[]
   defaultMode: ToolControlMode
-  /**
-   * A write that records classification metadata about the item (an attribute
-   * value) rather than taking an outward action on it. Metadata writes are
-   * guarded by the AI-precedence rule in the single write path — an `src:'ai'`
-   * write can never overwrite a human/workflow/customer value (silent no-op) —
-   * so they carry none of the consequence of a close/ticket/publish. This is
-   * the one property the copilot surface's `writeToolPolicy: 'propose'` honours:
-   * a metadata write is not forced to approval there PROVIDED the asking
-   * teammate's own permission set covers the tool's declared `permissions`
-   * (`ctx.askerActor` — see `resolveEffectiveToolMode`). Quinn's autonomous
-   * surfaces keep the exemption unconditionally (nothing forces 'propose'
-   * there); the copilot inherits the teammate's ceiling, because tools run
-   * under Quinn's actor and a teammate holding only copilot.use must not be
-   * able to trigger a write they could not perform themselves — a teammate
-   * below the ceiling gets a proposal, whose approval flow re-checks the
-   * approver's permissions. Absent/false ⇒ a genuine action, always proposed
-   * on the copilot surface. See `resolveEffectiveToolMode` (assistant.tools.ts).
-   */
-  metadataWrite?: boolean
   /** Checked via can(quinnActor, p) before execute (wiring lands in a later task). */
   permissions: readonly PermissionKey[]
   /**
@@ -345,6 +362,8 @@ export interface AssistantToolSpec<In = unknown, Out = unknown> {
    * ticket-aware write tool declares `['ticket']` or both explicitly.
    */
   parents: readonly ('conversation' | 'ticket')[]
+  /** Optional turn-local availability gate, applied before mode resolution. */
+  availableWhen?: (ctx: AssistantToolContext) => boolean
   /** The TanStack tool definition: model-facing name, description, and zod schemas. */
   definition: ToolDefinition<any, any, string>
   execute(args: In, ctx: AssistantToolContext): Promise<Out>
@@ -407,6 +426,7 @@ async function executeSearchKnowledge(
     customerPrincipalId: ctx.customerPrincipalId,
     conversationId: ctx.conversationId,
     sourceTypes: ctx.sourceTypes,
+    knowledgeEnabled: ctx.knowledgeEnabled,
   })
   for (const item of items) {
     // `updatedAt` rides the ledgered citation itself (see its doc on
@@ -429,6 +449,95 @@ async function executeSearchKnowledge(
     // (injection-guard.ts) for why it is a trailing note rather than a fence.
     ...(items.length > 0 ? { note: RETRIEVED_CONTENT_NOTE } : {}),
   }
+}
+
+export const handoffToHumanTool = toolDefinition({
+  name: 'handoff_to_human',
+  description:
+    'Hand the current customer conversation to a human teammate. Call this when the customer explicitly asks for a person, when safety requires human judgment, or when you have determined a teammate must take over. After it succeeds, write the customer-facing handoff message yourself in the final response.',
+  inputSchema: z.object({
+    reason: z
+      .enum(ASSISTANT_HANDOFF_REASONS)
+      .describe('The concrete reason a human teammate must take over.'),
+    customerNeed: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .describe('What the customer needs help with, in plain language.'),
+    attempted: z
+      .array(z.string().trim().min(1).max(160))
+      .max(5)
+      .describe(
+        'Useful checks or actions already attempted. May be empty for an explicit request.'
+      ),
+    recommendedNextStep: z
+      .string()
+      .trim()
+      .min(1)
+      .max(300)
+      .describe('The most useful next step for the teammate receiving the handoff.'),
+  }),
+  outputSchema: withGateEnvelope(
+    z.object({
+      accepted: z.boolean(),
+      reason: z.enum(ASSISTANT_HANDOFF_REASONS).optional(),
+      note: z.string().optional(),
+    })
+  ),
+})
+
+interface HandoffToHumanArgs {
+  reason: AssistantHandoffReason
+  customerNeed: string
+  attempted: string[]
+  recommendedNextStep: string
+}
+
+interface HandoffToHumanOutput {
+  accepted: boolean
+  reason?: AssistantHandoffReason
+  note?: string
+}
+
+async function executeHandoffToHuman(
+  args: HandoffToHumanArgs,
+  ctx: AssistantToolContext
+): Promise<HandoffToHumanOutput> {
+  if (!ctx.conversationId && !ctx.simulate) return { accepted: false, note: NO_CONVERSATION_NOTE }
+  ctx.handoffRequest = {
+    reason: args.reason,
+    customerNeed: args.customerNeed,
+    attempted: args.attempted,
+    recommendedNextStep: args.recommendedNextStep,
+  }
+  return { accepted: true, reason: args.reason }
+}
+
+export const reportInabilityTool = toolDefinition({
+  name: 'report_inability',
+  description:
+    'Record that you cannot complete the customer request with the tools and context available in this turn. Call this after searches return no relevant sources, a required tool is unavailable, or essential context is missing. After it succeeds, write the honest customer-facing explanation yourself in the final response.',
+  inputSchema: z.object({
+    reason: z
+      .enum(ASSISTANT_INABILITY_REASONS)
+      .describe('Why the request cannot be completed in this turn.'),
+  }),
+  outputSchema: withGateEnvelope(
+    z.object({ accepted: z.boolean(), reason: z.enum(ASSISTANT_INABILITY_REASONS) })
+  ),
+})
+
+interface ReportInabilityArgs {
+  reason: AssistantInabilityReason
+}
+
+async function executeReportInability(
+  args: ReportInabilityArgs,
+  ctx: AssistantToolContext
+): Promise<{ accepted: true; reason: AssistantInabilityReason }> {
+  ctx.inabilityReport = { reason: args.reason }
+  return { accepted: true, reason: args.reason }
 }
 
 export const setAttributeTool = toolDefinition({
@@ -721,7 +830,7 @@ async function executeCaptureFeedback(
     {
       agentActor: ctx.actor,
       agentPrincipalId: ctx.assistantPrincipalId,
-      agent: { principalId: ctx.assistantPrincipalId, displayName: 'Quinn' },
+      agent: { principalId: ctx.assistantPrincipalId, displayName: ctx.assistantName },
     }
   )
   return { created: result.created, postId: result.postId }
@@ -740,12 +849,11 @@ function defineToolSpec<In, Out>(spec: {
   risk: ToolRiskClass
   supportedModes: readonly ToolControlMode[]
   defaultMode: ToolControlMode
-  /** See the field's doc on `AssistantToolSpec`. */
-  metadataWrite?: boolean
   permissions: readonly PermissionKey[]
   /** Defaults to `['conversation']` — every write tool defined below predates
    *  ticket-scoped turns; see the field's doc on `AssistantToolSpec`. */
   parents?: readonly ('conversation' | 'ticket')[]
+  availableWhen?: (ctx: AssistantToolContext) => boolean
   definition: ToolDefinition<any, any, string>
   execute: (args: In, ctx: AssistantToolContext) => Promise<Out>
   summarize: (args: In) => string
@@ -781,23 +889,44 @@ const SPECS: readonly AssistantToolSpec[] = [
     summarize: (args) => `Search knowledge for "${args.query}"`,
   }),
   defineToolSpec({
+    label: 'Handoff to human',
+    description: 'Route the current customer conversation to a human teammate.',
+    promptGuidance:
+      'Call when a human must take over, especially after an explicit request, for safety, or when the issue cannot be handled autonomously. After the tool result, write the handoff reply yourself.',
+    risk: 'control',
+    supportedModes: ['autonomous'],
+    defaultMode: 'autonomous',
+    permissions: [],
+    definition: handoffToHumanTool,
+    execute: executeHandoffToHuman,
+    summarize: (args) => `Handoff to a human: ${args.reason}`,
+    // The customer-facing widget is the public-audience turn with a real
+    // conversation. Never expose an operational handoff in sandbox/copilot.
+    availableWhen: (ctx) => ctx.audience === 'public' && ctx.conversationId !== null,
+  }),
+  defineToolSpec({
+    label: 'Report inability',
+    description: "Record that the current request cannot be completed with this turn's tools.",
+    promptGuidance:
+      'Call only after you determine the request cannot be completed with the available tools or context. Then write the honest explanation yourself; this tool never supplies customer-facing wording.',
+    risk: 'control',
+    supportedModes: ['autonomous'],
+    defaultMode: 'autonomous',
+    permissions: [],
+    parents: ['conversation', 'ticket'],
+    definition: reportInabilityTool,
+    execute: executeReportInability,
+    summarize: (args) => `Unable to complete request: ${args.reason}`,
+  }),
+  defineToolSpec({
     label: 'Set attribute',
     description:
       'Record a structured fact on the conversation (category, plan tier, etc.) learned from what the customer said.',
     promptGuidance:
       'Use to record a fact you learned for reporting only; never to reply to the customer or to change conversation status.',
     risk: 'write',
-    supportedModes: ['disabled', 'approval', 'autonomous'],
-    defaultMode: 'autonomous',
-    // Recording an attribute is classification metadata, not an action on the
-    // conversation, and the write path's AI-precedence rule stops it clobbering
-    // a human value — so it is exempt from the copilot surface's propose-forcing
-    // when the asking teammate holds conversation.set_attributes themselves
-    // (the exemption is ceiling-checked via ctx.askerActor; see the metadataWrite
-    // field's doc above), matching the deterministic classifier and the widget
-    // surface. The genuine actions below (close/ticket/feedback) are not
-    // metadata writes and always propose on copilot.
-    metadataWrite: true,
+    supportedModes: ['disabled', 'approval'],
+    defaultMode: 'approval',
     permissions: [PERMISSIONS.CONVERSATION_SET_ATTRIBUTES],
     definition: setAttributeTool,
     execute: executeSetAttribute,
@@ -813,7 +942,7 @@ const SPECS: readonly AssistantToolSpec[] = [
     promptGuidance:
       'Only call once the customer has clearly confirmed the issue is resolved or said they need nothing else; never close on your own judgement that the answer seems to solve it.',
     risk: 'write',
-    supportedModes: ['disabled', 'approval', 'autonomous'],
+    supportedModes: ['disabled', 'approval'],
     defaultMode: 'approval',
     permissions: [PERMISSIONS.CONVERSATION_SET_STATUS],
     definition: endConversationTool,
@@ -827,7 +956,7 @@ const SPECS: readonly AssistantToolSpec[] = [
     promptGuidance:
       'Use for a bug or an account problem that needs a teammate to investigate beyond this conversation, not for a feature request.',
     risk: 'write',
-    supportedModes: ['disabled', 'approval', 'autonomous'],
+    supportedModes: ['disabled', 'approval'],
     defaultMode: 'approval',
     permissions: [PERMISSIONS.TICKET_CREATE],
     definition: createTicketTool,
@@ -855,42 +984,21 @@ const SPECS: readonly AssistantToolSpec[] = [
 /**
  * Static registry of Quinn's built-in tools, keyed by name: the read tools
  * plus the write tools that act on the conversation, a ticket, or a feedback
- * post. Connector-backed tools are NOT in this registry — they are
- * per-workspace, DB-backed, and gated by the assistantTools flag, so they only
- * ever appear via `resolveToolSpecs`. Tests and the settings UI that only
- * care about the fixed catalogue use this directly (sync, no DB read).
+ * post.
  */
 export const ASSISTANT_TOOL_SPECS: Record<string, AssistantToolSpec> = Object.fromEntries(
   SPECS.map((s) => [s.name, s])
 )
 
 /**
- * Resolve the active tool catalogue: the static registry plus, when the
- * assistantTools flag is on, one tool per enabled connector. The connectors
- * domain is imported dynamically so this module (and everything that
- * statically imports it) never pulls in the connectors domain at load time —
- * connector.toolspec.ts imports types and `withGateEnvelope` from here, and a
- * static import back would be circular.
+ * Return Quinn's built-in tool catalogue. The registry is code-defined and
+ * never reads workspace data.
  */
-export async function resolveToolSpecs(): Promise<AssistantToolSpec[]> {
-  const staticSpecs = Object.values(ASSISTANT_TOOL_SPECS)
-  const connectorsEnabled = await isFeatureEnabled('assistantTools')
-  if (!connectorsEnabled) return staticSpecs
-  const { listEnabledConnectorToolSpecs } =
-    await import('@/lib/server/domains/connectors/connector.toolspec')
-  return [...staticSpecs, ...(await listEnabledConnectorToolSpecs())]
+export function resolveToolSpecs(): AssistantToolSpec[] {
+  return Object.values(ASSISTANT_TOOL_SPECS)
 }
 
-/**
- * Look up one tool spec by name, static or connector-backed. Static names
- * resolve without touching the DB; a `connector_*` name (or any name absent
- * from the static registry) falls back to the full resolved catalogue. Used
- * by the approve/reject seam (functions/assistant-actions.ts), which only
- * knows a tool by the name stored on the pending action.
- */
-export async function getToolSpecByName(name: string): Promise<AssistantToolSpec | null> {
-  const staticSpec = ASSISTANT_TOOL_SPECS[name]
-  if (staticSpec) return staticSpec
-  const specs = await resolveToolSpecs()
-  return specs.find((s) => s.name === name) ?? null
+/** Look up a built-in tool by the name persisted on a pending action. */
+export function getToolSpecByName(name: string): AssistantToolSpec | null {
+  return ASSISTANT_TOOL_SPECS[name] ?? null
 }

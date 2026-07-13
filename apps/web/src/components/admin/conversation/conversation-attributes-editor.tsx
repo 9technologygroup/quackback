@@ -25,6 +25,7 @@ export type ConversationAttributesEditorTarget =
   | { conversationId: ConversationId }
   | { ticketId: TicketId }
 import { Badge } from '@/components/ui/badge'
+import { MENU_LABEL } from '@/components/ui/menu'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import {
@@ -212,8 +213,7 @@ export function ConversationAttributesEditor({
 
   return (
     <div className="space-y-4 border-t border-border/30 pt-4">
-      <span className="text-sm text-muted-foreground">Attributes</span>
-      <div className="border-t border-border/30" />
+      <span className={MENU_LABEL}>Attributes</span>
       {definitions.map((def) => {
         const raw = customAttributes[def.key]
         const isAiSet = readAttributeValue(raw)?.src === 'ai'

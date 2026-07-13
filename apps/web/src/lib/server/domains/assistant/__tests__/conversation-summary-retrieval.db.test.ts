@@ -96,7 +96,7 @@ describe.skipIf(!fixture.available)(
       const conversationA2 = await seedConversation(customerA)
       await seedSummary(conversationA1, customerA, BILLING_SUMMARY)
 
-      const items = await retrieveConversationSummaries('billing dispute', 'public', {
+      const items = await retrieveConversationSummaries('billing dispute', 'team', {
         customerPrincipalId: customerA,
         conversationId: conversationA2,
       })
@@ -111,7 +111,7 @@ describe.skipIf(!fixture.available)(
       const conversationB1 = await seedConversation(customerB)
       await seedSummary(conversationA1, customerA, BILLING_SUMMARY)
 
-      const items = await retrieveConversationSummaries('billing dispute', 'public', {
+      const items = await retrieveConversationSummaries('billing dispute', 'team', {
         customerPrincipalId: customerB,
         conversationId: conversationB1,
       })
@@ -124,7 +124,7 @@ describe.skipIf(!fixture.available)(
       const conversationA1 = await seedConversation(customerA)
       await seedSummary(conversationA1, customerA, BILLING_SUMMARY)
 
-      const items = await retrieveConversationSummaries('billing dispute', 'public', {
+      const items = await retrieveConversationSummaries('billing dispute', 'team', {
         customerPrincipalId: customerA,
         conversationId: conversationA1,
       })
@@ -138,7 +138,7 @@ describe.skipIf(!fixture.available)(
       const conversationA2 = await seedConversation(customerA)
       await seedSummary(conversationA1, customerA, BILLING_SUMMARY)
 
-      const items = await retrieveConversationSummaries('billing dispute', 'public', {
+      const items = await retrieveConversationSummaries('billing dispute', 'team', {
         conversationId: conversationA2,
       })
 
@@ -155,7 +155,7 @@ describe.skipIf(!fixture.available)(
         .set({ createdAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000) })
         .where(eq(conversationSummaries.conversationId, conversationA1))
 
-      const items = await retrieveConversationSummaries('billing dispute', 'public', {
+      const items = await retrieveConversationSummaries('billing dispute', 'team', {
         customerPrincipalId: customerA,
         conversationId: conversationA2,
       })

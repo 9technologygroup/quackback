@@ -9,7 +9,7 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 export const Route = createFileRoute('/admin/settings/ai')({
   beforeLoad: ({ location }) => {
     if (location.pathname === '/admin/settings/ai') {
-      throw redirect({ to: '/admin/automation/assistant', replace: true })
+      throw redirect({ to: '/admin/automation/agent', replace: true })
     }
   },
 })

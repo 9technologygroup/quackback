@@ -452,6 +452,8 @@ export const getMyConversationFn = createServerFn({ method: 'GET' })
       const { isEmailConfigured } = await import('@quackback/email')
       const { canEmailVisitor } = await import('@/lib/shared/conversation/reply-capability')
       const { widgetTranslationFor } = await import('@/lib/shared/widget/translations')
+      const { assistantConfigSchema, DEFAULT_ASSISTANT_CONFIG } =
+        await import('@/lib/shared/assistant/config')
       const [enabled, messengerConfig, appSettings, widgetConfig] = await Promise.all([
         isConversationsEnabled(),
         getMessengerConfig(),
@@ -462,6 +464,10 @@ export const getMyConversationFn = createServerFn({ method: 'GET' })
       // fallback).
       const t = widgetTranslationFor(widgetConfig.translations, data?.locale)
       const emailConfigured = isEmailConfigured()
+      const parsedAssistantConfig = assistantConfigSchema.safeParse(appSettings?.assistantConfig)
+      const assistantIdentity = parsedAssistantConfig.success
+        ? parsedAssistantConfig.data.identity
+        : DEFAULT_ASSISTANT_CONFIG.identity
       // Note: team-availability presence is NOT returned here. The widget reads it
       // from the shared useConversationPresence query (getConversationPresenceFn) so every surface
       // agrees and only one poll runs — this fn is just the visitor's thread.
@@ -477,9 +483,9 @@ export const getMyConversationFn = createServerFn({ method: 'GET' })
         // come from the team until the integrated agent lands.
         assistant: messengerConfig.assistant?.enabled
           ? {
-              name: messengerConfig.assistant.name?.trim() || 'Quinn',
-              avatarUrl: messengerConfig.assistant.avatarUrl || null,
-              showAiLabel: messengerConfig.assistant.showAiLabel ?? false,
+              name: assistantIdentity.name,
+              avatarUrl: assistantIdentity.avatarUrl,
+              showAiLabel: assistantIdentity.showAiLabel,
             }
           : null,
         // Whether we already have a contact email for this visitor.

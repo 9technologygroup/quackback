@@ -18,7 +18,6 @@ import type { AssistantPendingActionId, PrincipalId } from '@quackback/ids'
 import { requireAuth, policyActorFromAuth } from './auth-helpers'
 import type { Actor } from '@/lib/server/policy/types'
 import { can } from '@/lib/server/policy/authorize'
-import { PERMISSIONS } from '@/lib/shared/permissions'
 import { NotFoundError, ForbiddenError, ConflictError, DomainException } from '@/lib/shared/errors'
 import type { JsonValue } from '@/lib/shared/json'
 import { logger } from '@/lib/server/logger'
@@ -61,6 +60,7 @@ export interface AssistantPendingActionDTO {
   toolName: string
   args: JsonValue
   summary: string
+  originRole: AssistantPendingAction['originRole']
   status: string
   proposedAt: string
   expiresAt: string
@@ -79,6 +79,7 @@ function toDTO(row: AssistantPendingAction): AssistantPendingActionDTO {
     toolName: row.toolName,
     args: row.args as JsonValue,
     summary: row.summary,
+    originRole: row.originRole,
     status: row.status,
     proposedAt: row.proposedAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
@@ -97,10 +98,12 @@ class ToolSpecGoneError extends DomainException {
   }
 }
 
-/** Build the tool-execution context an approved action runs under — Quinn's
- *  own identity, never the approver's, since the approver only authorizes it. */
+/** Build the tool-execution context for an approved action. Records remain
+ * attributed to Quinn, while authorization and domain writes use the approving
+ * teammate's actor. */
 async function buildExecutionContext(
-  pending: AssistantPendingAction
+  pending: AssistantPendingAction,
+  approver: Actor
 ): Promise<AssistantToolContext> {
   const assistant = await ensureAssistantPrincipal()
   // simulate is explicit: the conversation id is always set here, but this
@@ -108,17 +111,16 @@ async function buildExecutionContext(
   return makeAssistantToolContext({
     db,
     assistantPrincipalId: assistant.id,
-    // A teammate approved this proposal from the inbox approval queue — the
-    // same teammate-facing surface as copilot — so it resolves through the
-    // same allow-list as any other context construction, rather than writing
-    // the 'team' literal directly. This executor never runs for a
-    // customer-facing surface's proposals, so 'copilot' is the correct fixed
-    // choice, not a per-call parameter.
-    audience: resolveContentAudience('copilot'),
+    assistantName: assistant.displayName ?? 'Quinn',
+    role: pending.originRole,
+    audience: resolveContentAudience(
+      pending.originRole === 'customer_support' ? 'widget' : 'copilot'
+    ),
     conversationId: pending.conversationId,
     ticketId: pending.ticketId,
     involvementId: pending.involvementId,
     simulate: false,
+    actor: approver,
   })
 }
 
@@ -149,8 +151,37 @@ async function decideAssistantAction(
     await assertTicketVisible(pending.ticketId, actor)
   }
 
+  if (decision === 'rejected') {
+    const rejected = await decidePendingAction(pendingActionId, decision, approverPrincipalId)
+    if (!rejected) {
+      throw new ConflictError(
+        'PENDING_ACTION_NOT_DECIDABLE',
+        'This request was already decided or has expired'
+      )
+    }
+    return rejected
+  }
+
   const spec = await getToolSpecByName(pending.toolName)
   if (!spec) throw new ToolSpecGoneError(pending.toolName)
+  const parentKind = pending.conversationId ? 'conversation' : 'ticket'
+  if (
+    spec.risk !== 'write' ||
+    !spec.supportedModes.includes('approval') ||
+    !spec.parents.includes(parentKind)
+  ) {
+    throw new ConflictError(
+      'ASSISTANT_ACTION_POLICY_CHANGED',
+      'This action no longer supports approval for this item'
+    )
+  }
+  const parsedArgs = spec.definition.inputSchema.safeParse(pending.args)
+  if (!parsedArgs.success) {
+    throw new ConflictError(
+      'ASSISTANT_ACTION_INPUT_CHANGED',
+      'This action no longer matches the current input contract'
+    )
+  }
 
   for (const permission of spec.permissions) {
     if (!can(actor, permission)) {
@@ -168,10 +199,9 @@ async function decideAssistantAction(
       'This request was already decided or has expired'
     )
   }
-  if (decision === 'rejected') return decided
-
-  const ctx = await buildExecutionContext(decided)
-  const outcome = await executeApprovedPendingAction(spec, decided, ctx)
+  const validated = { ...decided, args: parsedArgs.data as Record<string, unknown> }
+  const ctx = await buildExecutionContext(validated, actor)
+  const outcome = await executeApprovedPendingAction(spec, validated, ctx)
   if (outcome.status === 'executed') {
     return (
       (await markPendingActionExecuted(
@@ -194,7 +224,7 @@ export const approveAssistantActionFn = createServerFn({ method: 'POST' })
       // Base gate: any inbox teammate may act on the queue. The real
       // authority check is per-proposal, below (every permission the
       // proposed tool declares).
-      const auth = await requireAuth({ permission: PERMISSIONS.CONVERSATION_VIEW })
+      const auth = await requireAuth()
       const actor = await policyActorFromAuth(auth)
       const settled = await decideAssistantAction(
         data.pendingActionId as AssistantPendingActionId,
@@ -214,7 +244,7 @@ export const rejectAssistantActionFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     try {
       // Same base gate as approve — see the comment there.
-      const auth = await requireAuth({ permission: PERMISSIONS.CONVERSATION_VIEW })
+      const auth = await requireAuth()
       const actor = await policyActorFromAuth(auth)
       const settled = await decideAssistantAction(
         data.pendingActionId as AssistantPendingActionId,

@@ -56,19 +56,6 @@
  * matching every other kind here uses; no matching edge ends the path rather
  * than guessing, exactly like an unwired reply_buttons/request_csat branch),
  * 'resolved' follows the unlabeled default edge.
- *
- * `call_connector` is a FOURTH, structurally different park: it is never
- * resumed externally (no event-trigger.ts hook, no durable wait row) — the
- * engine itself performs the HTTP call synchronously within the same
- * dispatch, then continues the walk inline. The walker's job here is only to
- * stop (status 'connector', nodeId = the node's own id) and hand back
- * whatever actions came before it; it never awaits I/O and never inspects
- * `ctx` for a prior outcome, since there's no "resume-with-answer" concept —
- * the engine always re-walks from the RESOLVED SUCCESSOR node (never from
- * this node again), so this case has no ctx-branching arm the way
- * `let_assistant_answer`/the interactive blocks do. See workflow.engine.ts's
- * applyPlanAndSettle for the park-and-continue loop this status drives, and
- * connector.execute.ts's executeConnector for the actual call.
  */
 import type { WorkflowAction } from './action.executor'
 import type {
@@ -138,21 +125,6 @@ export type WorkflowNode =
       allowTypingInterrupt: boolean
       commentPrompt?: string
     }
-  // Calls an existing data connector mid-workflow (see the module doc's
-  // fourth-park-kind paragraph). `params` maps the connector's declared input
-  // names to `{key|fallback}` template strings (workflow-variables.ts's
-  // catalogue), interpolated at execution time — the connector's OWN builtins
-  // ({customer.email} etc.) are separate and resolve inside executeConnector.
-  // `timeoutMs` is an optional per-node override of the connector's own
-  // configured timeout, clamped 1..30000 at execution (workflow.schemas.ts
-  // bounds it the same way at authoring time).
-  | {
-      id: string
-      type: 'call_connector'
-      connectorId: string
-      params: Record<string, string>
-      timeoutMs?: number
-    }
 
 export interface WorkflowGraph {
   nodes: WorkflowNode[]
@@ -163,11 +135,8 @@ export interface WalkResult {
   /** Actions to run now, in order (empty if the path halts before any action). */
   actions: WorkflowAction[]
   /** completed = reached the end; waiting = hit a wait; halted = a gate/branch
-   *  matched nothing (the path stops, no more actions); connector = parked at
-   *  a `call_connector` node — see `nodeId` and the module doc's fourth-park
-   *  paragraph. Unlike 'waiting', this is never persisted as a run state: the
-   *  engine handles it inline within the same dispatch (workflow.engine.ts). */
-  status: 'completed' | 'waiting' | 'halted' | 'connector'
+   *  matched nothing (the path stops, no more actions). */
+  status: 'completed' | 'waiting' | 'halted'
   /** Seconds to wait (status = waiting, waitKind = 'timer'). */
   waitSeconds?: number
   /** The node to resume from after the wait (status = waiting). For a timer
@@ -191,11 +160,6 @@ export interface WalkResult {
    *  alongside the interactive affordance (baked into the cursor at park
    *  time so the hot resume path never re-reads the graph). */
   allowTypingInterrupt?: boolean
-  /** Set only when status = 'connector': the `call_connector` node's own id.
-   *  The engine looks it up on the graph, executes it, and resumes the walk
-   *  from `successorId(graph, nodeId, ok ? undefined : 'failed')` — never
-   *  from this node again (see the module doc). */
-  nodeId?: string
 }
 
 const MAX_STEPS = 1000
@@ -212,15 +176,8 @@ function startNode(graph: WorkflowGraph, startNodeId?: string): WorkflowNode | u
   return graph.nodes.find((n) => n.type === 'trigger')
 }
 
-/** Follow the single successor of a node, or the branch-labeled one. Exported
- *  for workflow.engine.ts's connector park-and-continue loop, which resolves
- *  a `call_connector` node's success/failed successor itself (the walker
- *  parks rather than routing that edge — see the module doc). */
-export function successorId(
-  graph: WorkflowGraph,
-  nodeId: string,
-  branch?: string
-): string | undefined {
+/** Follow the single successor of a node, or the branch-labeled one. */
+function successorId(graph: WorkflowGraph, nodeId: string, branch?: string): string | undefined {
   const edge = graph.edges.find(
     (e) => e.from === nodeId && (branch === undefined ? !e.branch : e.branch === branch)
   )
@@ -472,13 +429,6 @@ export function walkWorkflow(
           allowTypingInterrupt: node.allowTypingInterrupt,
         }
       }
-
-      case 'call_connector':
-        // Always parks — there is no ctx-based "already resumed" branch here
-        // (see the module doc): the engine executes the connector call
-        // itself and re-walks from the resolved successor node, never from
-        // this node again.
-        return { actions, status: 'connector', nodeId: node.id }
     }
 
     node = nextId ? graph.nodes.find((n) => n.id === nextId) : undefined

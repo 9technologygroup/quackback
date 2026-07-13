@@ -1,8 +1,6 @@
 /**
- * Tools & connectors metrics server fns: gate on analytics.view and delegate
- * to the domain queries with parsed dates. Domain math is covered directly in
- * domains/analytics/__tests__/quinn-tools.test.ts; this only exercises the
- * fns' own wiring (mirrors assistant-analytics.test.ts).
+ * Action metrics server fn: gate on analytics.view and delegate with parsed
+ * dates. Domain math is covered in domains/analytics/__tests__/quinn-tools.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { PERMISSIONS } from '@/lib/shared/permissions'
@@ -32,16 +30,14 @@ vi.mock('@tanstack/react-start', () => ({
 const hoisted = vi.hoisted(() => ({
   requireAuth: vi.fn(),
   getQuinnToolMetrics: vi.fn(),
-  getConnectorHealth: vi.fn(),
 }))
 
 vi.mock('@/lib/server/functions/auth-helpers', () => ({ requireAuth: hoisted.requireAuth }))
 vi.mock('@/lib/server/domains/analytics/quinn-tools', () => ({
   getQuinnToolMetrics: hoisted.getQuinnToolMetrics,
-  getConnectorHealth: hoisted.getConnectorHealth,
 }))
 
-import { getQuinnToolMetricsFn, getConnectorHealthFn } from '../assistant-tools-analytics'
+import { getQuinnToolMetricsFn } from '../assistant-tools-analytics'
 
 const TOOL_METRICS = [
   {
@@ -55,23 +51,10 @@ const TOOL_METRICS = [
   },
 ]
 
-const CONNECTOR_HEALTH = [
-  {
-    id: 'data_connector_123',
-    name: 'Billing lookup',
-    enabled: true,
-    status: 'active' as const,
-    failureCount: 0,
-    lastError: null,
-    healthStatus: 'healthy' as const,
-  },
-]
-
 beforeEach(() => {
   vi.clearAllMocks()
   hoisted.requireAuth.mockResolvedValue({})
   hoisted.getQuinnToolMetrics.mockResolvedValue(TOOL_METRICS)
-  hoisted.getConnectorHealth.mockResolvedValue(CONNECTOR_HEALTH)
 })
 
 describe('getQuinnToolMetricsFn', () => {
@@ -112,23 +95,5 @@ describe('getQuinnToolMetricsFn', () => {
       getQuinnToolMetricsFn({ data: { from: '2026-06-01T00:00:00Z', to: '2026-07-01T00:00:00Z' } })
     ).rejects.toThrow('Access denied')
     expect(hoisted.getQuinnToolMetrics).not.toHaveBeenCalled()
-  })
-})
-
-describe('getConnectorHealthFn', () => {
-  it('gates on analytics.view', async () => {
-    await getConnectorHealthFn()
-    expect(hoisted.requireAuth).toHaveBeenCalledWith({ permission: PERMISSIONS.ANALYTICS_VIEW })
-  })
-
-  it('returns the domain result verbatim', async () => {
-    const out = await getConnectorHealthFn()
-    expect(out).toEqual(CONNECTOR_HEALTH)
-  })
-
-  it('propagates a denied auth gate without calling the domain query', async () => {
-    hoisted.requireAuth.mockRejectedValue(new Error('Access denied'))
-    await expect(getConnectorHealthFn()).rejects.toThrow('Access denied')
-    expect(hoisted.getConnectorHealth).not.toHaveBeenCalled()
   })
 })

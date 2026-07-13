@@ -79,6 +79,7 @@ function expectDTOFrom(row: Record<string, unknown>): Partial<AssistantPendingAc
     conversationId: row.conversationId as string,
     involvementId: row.involvementId as string | null,
     toolName: row.toolName as string,
+    originRole: row.originRole as AssistantPendingActionDTO['originRole'],
     status: row.status as string,
     proposedAt: iso(row.proposedAt) as string,
     decidedById: (row.decidedById as string | null) ?? null,
@@ -95,6 +96,9 @@ function actorWith(permissions: string[]) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fetchPendingAction = (data: any) => getAssistantPendingActionFn({ data })
 
+const pendingRow = (overrides: Partial<Record<string, unknown>> = {}) =>
+  fakePendingActionRow({ originRole: 'customer_support', ...overrides })
+
 beforeEach(() => {
   vi.clearAllMocks()
   hoisted.requireAuth.mockResolvedValue(AUTH)
@@ -104,16 +108,17 @@ beforeEach(() => {
 })
 
 describe('getAssistantPendingActionFn', () => {
-  it('gates on conversation.view before reading the row', async () => {
-    hoisted.getPendingActionById.mockResolvedValue(fakePendingActionRow())
+  it('uses bare auth before authorizing the row parent', async () => {
+    hoisted.getPendingActionById.mockResolvedValue(pendingRow())
 
     await fetchPendingAction({ pendingActionId: 'assistant_action_1' })
 
-    expect(hoisted.requireAuth).toHaveBeenCalledWith({ permission: PERMISSIONS.CONVERSATION_VIEW })
+    expect(hoisted.requireAuth).toHaveBeenCalledWith()
+    expect(hoisted.assertConversationViewable).toHaveBeenCalled()
   })
 
   it('returns the live row as the settled DTO shape', async () => {
-    const row = fakePendingActionRow({ status: 'proposed' })
+    const row = pendingRow({ status: 'proposed' })
     hoisted.getPendingActionById.mockResolvedValue(row)
 
     const out = await fetchPendingAction({ pendingActionId: 'assistant_action_1' })
@@ -123,7 +128,7 @@ describe('getAssistantPendingActionFn', () => {
   })
 
   it('reflects a decided/executed row (not the stale proposed snapshot)', async () => {
-    const row = fakePendingActionRow({
+    const row = pendingRow({
       status: 'executed',
       decidedById: 'principal_agent1',
       decidedAt: new Date('2026-07-01T00:05:00.000Z'),
@@ -147,7 +152,7 @@ describe('getAssistantPendingActionFn', () => {
 
   describe('row-level parent authz (unified inbox §3.3)', () => {
     it('authorizes a conversation-scoped row against the conversation, not the ticket helper', async () => {
-      const row = fakePendingActionRow({ conversationId: 'conversation_1', ticketId: null })
+      const row = pendingRow({ conversationId: 'conversation_1', ticketId: null })
       hoisted.getPendingActionById.mockResolvedValue(row)
 
       await fetchPendingAction({ pendingActionId: 'assistant_action_1' })
@@ -160,7 +165,7 @@ describe('getAssistantPendingActionFn', () => {
     })
 
     it('authorizes a ticket-scoped row against the ticket, not the conversation helper', async () => {
-      const row = fakePendingActionRow({ conversationId: null, ticketId: 'ticket_1' })
+      const row = pendingRow({ conversationId: null, ticketId: 'ticket_1' })
       hoisted.getPendingActionById.mockResolvedValue(row)
 
       await fetchPendingAction({ pendingActionId: 'assistant_action_1' })
@@ -173,7 +178,7 @@ describe('getAssistantPendingActionFn', () => {
     })
 
     it('404s when the caller holds conversation.view but cannot see this ticket-scoped row', async () => {
-      const row = fakePendingActionRow({ conversationId: null, ticketId: 'ticket_1' })
+      const row = pendingRow({ conversationId: null, ticketId: 'ticket_1' })
       hoisted.getPendingActionById.mockResolvedValue(row)
       hoisted.assertTicketVisible.mockRejectedValue(
         new NotFoundError('TICKET_NOT_FOUND', 'Ticket not found')

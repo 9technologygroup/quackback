@@ -22,6 +22,7 @@ import { quinnActor } from './assistant.actor'
 // announcement path. Never edited as part of this task.
 import { addTicketNote } from '@/lib/server/domains/tickets/ticket-message.service'
 import { logger } from '@/lib/server/logger'
+import type { AssistantRole } from '@/lib/shared/assistant/config'
 
 const log = logger.child({ component: 'assistant-pending-actions' })
 
@@ -44,6 +45,7 @@ export type ProposePendingActionInput = ProposePendingActionParent & {
   toolName: string
   args: Record<string, unknown>
   summary: string
+  originRole?: AssistantRole
   ttlHours?: number
   /**
    * A stable per-turn key, same shape as `assistant_tool_calls.idempotency_key`
@@ -84,6 +86,7 @@ export async function proposePendingAction(
       toolName: input.toolName,
       args: input.args,
       summary: input.summary,
+      originRole: input.originRole ?? 'customer_support',
       expiresAt,
       idempotencyKey: input.idempotencyKey ?? null,
     })
@@ -297,7 +300,7 @@ export async function sweepAndNotifyExpiredPendingActions(
       row
     ): row is AssistantPendingAction & {
       conversationId: NonNullable<AssistantPendingAction['conversationId']>
-    } => row.conversationId !== null
+    } => row.conversationId !== null && row.originRole === 'customer_support'
   )
   const ticketExpired = expired.filter(
     (

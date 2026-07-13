@@ -1,16 +1,7 @@
-/**
- * Tools & connectors metrics (Quinn performance area): per-tool action
- * counts and success rate over the last 30 days, plus a health glance at the
- * admin-defined data connectors Quinn calls out to. Read-only reporting;
- * gated server-side on analytics.view like the rest of the Quinn performance
- * surface. `healthStatus` is a coarse three-tier summary computed server-side
- * (domains/analytics/quinn-tools.ts) — the connector management table
- * (connectors/connector-health.ts) has the finer Issues/Failing breakdown for
- * an admin actually fixing a connector.
- */
 import { useQuery } from '@tanstack/react-query'
+import { useIntl } from 'react-intl'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
-import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   Table,
@@ -20,111 +11,175 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { MetricTile, useLast30DaysRange, pct, asRate } from './metric-tile'
-import {
-  quinnToolMetricsQuery,
-  connectorHealthQuery,
-} from '@/lib/client/queries/assistant-tools-analytics'
-import type { ConnectorHealthStatus } from '@/lib/server/domains/analytics/quinn-tools'
+import { MetricTile, useLast30DaysRange } from './metric-tile'
+import { quinnToolMetricsQuery } from '@/lib/client/queries/assistant-tools-analytics'
 
-const HEALTH_BADGE: Record<ConnectorHealthStatus, { label: string; className: string }> = {
-  healthy: { label: 'Healthy', className: 'border-green-500/30 text-green-600' },
-  degraded: { label: 'Degraded', className: 'border-amber-500/30 text-amber-600' },
-  unhealthy: { label: 'Unhealthy', className: '' },
-}
-
-function ConnectorBadge({ health }: { health: ConnectorHealthStatus }) {
-  const { label, className } = HEALTH_BADGE[health]
-  return health === 'unhealthy' ? (
-    <Badge variant="destructive">{label}</Badge>
-  ) : (
-    <Badge variant="outline" className={className}>
-      {label}
-    </Badge>
+function ActionLabel({ toolName }: { toolName: string }) {
+  const intl = useIntl()
+  const defaults: Record<string, string> = {
+    search_knowledge: 'Find an answer',
+    set_attribute: 'Update customer details',
+    end_conversation: 'End a conversation',
+    create_ticket: 'Create a ticket',
+    capture_feedback: 'Capture feedback',
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="cursor-help font-medium">
+          {intl.formatMessage({
+            id: `automation.performance.action.${toolName}`,
+            defaultMessage: defaults[toolName] ?? 'Action',
+          })}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>
+        {intl.formatMessage(
+          {
+            id: 'automation.performance.action.technicalName',
+            defaultMessage: 'Technical name: {name}',
+          },
+          { name: toolName }
+        )}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
 export function QuinnToolsCard() {
+  const intl = useIntl()
   const range = useLast30DaysRange()
-  const { data: tools } = useQuery(quinnToolMetricsQuery(range.from, range.to))
-  const { data: connectors } = useQuery(connectorHealthQuery())
-
-  const toolList = tools ?? []
-  const connectorList = connectors ?? []
-  const totalActions = toolList.reduce((sum, t) => sum + t.succeeded, 0)
+  const toolsQuery = useQuery(quinnToolMetricsQuery(range.from, range.to))
+  const toolList = toolsQuery.data ?? []
+  const totals = toolList.reduce(
+    (sum, tool) => ({
+      attempted: sum.attempted + tool.succeeded + tool.failed + tool.denied,
+      completed: sum.completed + tool.succeeded,
+      failed: sum.failed + tool.failed,
+      denied: sum.denied + tool.denied + tool.skippedDuplicate,
+    }),
+    { attempted: 0, completed: 0, failed: 0, denied: 0 }
+  )
 
   return (
     <SettingsCard
-      title="Tools and connectors"
-      description="Actions Quinn has taken and the health of its data connectors, over the last 30 days."
+      title={intl.formatMessage({
+        id: 'automation.performance.actions.title',
+        defaultMessage: 'Actions',
+      })}
+      description={intl.formatMessage({
+        id: 'automation.performance.actions.description',
+        defaultMessage: 'Confirmed action outcomes over the last 30 days.',
+      })}
     >
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <MetricTile label="Actions taken" value={String(totalActions)} />
-      </div>
-
-      <div className="mt-4">
-        {toolList.length === 0 ? (
-          <p className="py-2 text-sm text-muted-foreground">No tool activity for this period.</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Tool</TableHead>
-                <TableHead className="text-right">Calls</TableHead>
-                <TableHead className="text-right">Success rate</TableHead>
-                <TableHead className="text-right">Denied / duplicate</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {toolList.map((tool) => {
-                const deniedOrDuplicate = tool.denied + tool.skippedDuplicate
-                const total = tool.succeeded + tool.failed + tool.denied + tool.skippedDuplicate
-                return (
-                  <TableRow key={tool.toolName}>
-                    <TableCell className="font-mono text-xs">{tool.toolName}</TableCell>
-                    <TableCell className="text-right tabular-nums">{total}</TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {pct(asRate(tool.successRate))}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {deniedOrDuplicate > 0 ? deniedOrDuplicate : '—'}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
-        )}
-      </div>
-
-      <div className="mt-6">
-        <h3 className="mb-2 text-sm font-medium">Connectors</h3>
-        {connectorList.length === 0 ? (
-          <p className="py-2 text-sm text-muted-foreground">
-            No connectors configured. Set one up in AI &amp; Automation to let Quinn call your APIs.
+      {toolsQuery.isError ? (
+        <div className="flex items-center justify-between gap-3">
+          <p role="alert" className="text-sm text-destructive">
+            {intl.formatMessage({
+              id: 'automation.performance.actions.error',
+              defaultMessage: 'Action performance could not be loaded.',
+            })}
           </p>
-        ) : (
-          <ul className="space-y-2">
-            {connectorList.map((connector) => (
-              <li key={connector.id} className="flex items-center justify-between gap-2 text-sm">
-                <span>{connector.name}</span>
-                {connector.lastError ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span>
-                        <ConnectorBadge health={connector.healthStatus} />
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>{connector.lastError}</TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <ConnectorBadge health={connector.healthStatus} />
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              void toolsQuery.refetch()
+            }}
+          >
+            {intl.formatMessage({ id: 'automation.agent.retry', defaultMessage: 'Try again' })}
+          </Button>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <MetricTile
+              label={intl.formatMessage({
+                id: 'automation.performance.actions.attempted',
+                defaultMessage: 'Attempted',
+              })}
+              value={String(totals.attempted)}
+            />
+            <MetricTile
+              label={intl.formatMessage({
+                id: 'automation.performance.actions.completed',
+                defaultMessage: 'Completed',
+              })}
+              value={String(totals.completed)}
+            />
+            <MetricTile
+              label={intl.formatMessage({
+                id: 'automation.performance.actions.failed',
+                defaultMessage: 'Failed',
+              })}
+              value={String(totals.failed)}
+            />
+            <MetricTile
+              label={intl.formatMessage({
+                id: 'automation.performance.actions.notRun',
+                defaultMessage: 'Not run',
+              })}
+              value={String(totals.denied)}
+            />
+          </div>
+
+          <div className="mt-4">
+            {toolList.length === 0 ? (
+              <p className="py-2 text-sm text-muted-foreground">
+                {intl.formatMessage({
+                  id: 'automation.performance.actions.empty',
+                  defaultMessage: 'No action activity for this period.',
+                })}
+              </p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>
+                      {intl.formatMessage({
+                        id: 'automation.performance.actions.action',
+                        defaultMessage: 'Action',
+                      })}
+                    </TableHead>
+                    <TableHead className="text-end">
+                      {intl.formatMessage({
+                        id: 'automation.performance.actions.attempted',
+                        defaultMessage: 'Attempted',
+                      })}
+                    </TableHead>
+                    <TableHead className="text-end">
+                      {intl.formatMessage({
+                        id: 'automation.performance.actions.completed',
+                        defaultMessage: 'Completed',
+                      })}
+                    </TableHead>
+                    <TableHead className="text-end">
+                      {intl.formatMessage({
+                        id: 'automation.performance.actions.failed',
+                        defaultMessage: 'Failed',
+                      })}
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {toolList.map((tool) => (
+                    <TableRow key={tool.toolName}>
+                      <TableCell>
+                        <ActionLabel toolName={tool.toolName} />
+                      </TableCell>
+                      <TableCell className="text-end tabular-nums">
+                        {tool.succeeded + tool.failed + tool.denied}
+                      </TableCell>
+                      <TableCell className="text-end tabular-nums">{tool.succeeded}</TableCell>
+                      <TableCell className="text-end tabular-nums">{tool.failed}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+        </>
+      )}
     </SettingsCard>
   )
 }

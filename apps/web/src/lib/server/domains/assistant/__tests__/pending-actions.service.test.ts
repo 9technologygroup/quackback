@@ -37,7 +37,10 @@ import { ensureAssistantPrincipal } from '../assistant.principal'
 
 const fixture = await createDbTestFixture({
   probe: async (db) => {
-    await db.select({ id: assistantPendingActions.id }).from(assistantPendingActions).limit(0)
+    await db
+      .select({ id: assistantPendingActions.id, originRole: assistantPendingActions.originRole })
+      .from(assistantPendingActions)
+      .limit(0)
   },
 })
 
@@ -85,6 +88,7 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
       summary: 'Close this conversation as resolved.',
     })
     expect(proposed.status).toBe('proposed')
+    expect(proposed.originRole).toBe('customer_support')
     expect(proposed.expiresAt.getTime()).toBeGreaterThan(Date.now())
 
     const approved = await decidePendingAction(proposed.id, 'approved', agentId)
@@ -96,6 +100,25 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
     expect(executed?.status).toBe('executed')
     expect(executed?.result).toEqual({ closed: true })
     expect(executed?.executedAt).not.toBeNull()
+  })
+
+  it('persists an explicit proposal origin role', async () => {
+    const conversationId = await seedConversation()
+
+    const proposed = await proposePendingAction({
+      conversationId,
+      toolName: 'close_conversation',
+      args: { reason: 'resolved' },
+      summary: 'Close this conversation as resolved.',
+      originRole: 'copilot_qa',
+    })
+
+    expect(proposed.originRole).toBe('copilot_qa')
+    const [stored] = await testDb
+      .select({ originRole: assistantPendingActions.originRole })
+      .from(assistantPendingActions)
+      .where(eq(assistantPendingActions.id, proposed.id))
+    expect(stored?.originRole).toBe('copilot_qa')
   })
 
   it('rejects a proposal', async () => {

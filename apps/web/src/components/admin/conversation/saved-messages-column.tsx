@@ -27,7 +27,7 @@ function relativeTime(iso: string): string {
 }
 
 /**
- * The middle column for the "Saved for later" view: the agent's own flagged
+ * The middle column for the "Saved messages" view: the agent's own flagged
  * messages (newest flag first), each previewing the message and the conversation
  * it lives in. Clicking opens that conversation in the thread pane.
  */
@@ -58,7 +58,7 @@ export function SavedMessagesColumn({
       <div className="border-b border-border/50 px-4 py-[1.1rem]">
         <h2 className="flex items-center gap-1.5 truncate text-sm font-semibold leading-tight">
           <BookmarkIcon className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-          Saved for later
+          Saved messages
         </h2>
       </div>
       <ScrollArea className="min-h-0 flex-1">

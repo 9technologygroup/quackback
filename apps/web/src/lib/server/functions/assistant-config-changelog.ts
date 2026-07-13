@@ -1,8 +1,8 @@
 /**
  * AI config changelog: a read-only feed of assistant-config mutations
- * (guidance rule CRUD, tool controls, per-surface instructions, the Basics
- * preset, data connector CRUD) for the assistant admin page. Thin wrapper
- * over the shared queryAuditEvents helper (audit/log.ts), filtered to
+ * (guidance, actions, identity, voice, channel instructions, and deployment)
+ * for the assistant admin page. Thin wrapper over the shared queryAuditEvents
+ * helper (audit/log.ts), filtered to
  * ASSISTANT_CONFIG_AUDIT_EVENTS so the query stays on the existing
  * (event_type, occurred_at) index.
  */

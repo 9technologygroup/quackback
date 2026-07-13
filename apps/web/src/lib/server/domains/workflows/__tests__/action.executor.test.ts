@@ -13,7 +13,6 @@ import type {
   TeamId,
   ConversationTagId,
   SlaPolicyId,
-  DataConnectorId,
 } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
 import { NotFoundError } from '@/lib/shared/errors'
@@ -35,7 +34,7 @@ const {
   setConversationAttribute,
   ensureAssistantPrincipal,
   resolveWorkflowVariables,
-  getMessengerConfig,
+  getAssistantRuntimeConfig,
   getOfficeHoursSchedule,
   buildReplyTimeMessage,
   runAssistantTurnForConversation,
@@ -54,7 +53,7 @@ const {
   setConversationAttribute: vi.fn(),
   ensureAssistantPrincipal: vi.fn(),
   resolveWorkflowVariables: vi.fn(),
-  getMessengerConfig: vi.fn(),
+  getAssistantRuntimeConfig: vi.fn(),
   getOfficeHoursSchedule: vi.fn(),
   buildReplyTimeMessage: vi.fn(),
   runAssistantTurnForConversation: vi.fn(),
@@ -80,7 +79,7 @@ vi.mock('@/lib/server/domains/conversation-attributes/set-attribute.service', ()
 }))
 vi.mock('@/lib/server/domains/assistant/assistant.principal', () => ({ ensureAssistantPrincipal }))
 vi.mock('../workflow-variables', () => ({ resolveWorkflowVariables }))
-vi.mock('@/lib/server/domains/settings/settings.widget', () => ({ getMessengerConfig }))
+vi.mock('@/lib/server/domains/settings/settings.assistant', () => ({ getAssistantRuntimeConfig }))
 vi.mock('@/lib/server/domains/settings/settings.office-hours', () => ({ getOfficeHoursSchedule }))
 vi.mock('@/lib/server/domains/office-hours/reply-time-message', () => ({ buildReplyTimeMessage }))
 vi.mock('@/lib/server/domains/assistant/assistant.orchestrator', () => ({
@@ -118,29 +117,6 @@ vi.mock('@/lib/server/domains/inbox/inbox.query', () => ({ getLinkedCustomerTick
 const { notifyCsatRequestEmail } = vi.hoisted(() => ({ notifyCsatRequestEmail: vi.fn() }))
 vi.mock('@/lib/server/domains/conversation/conversation.notify', () => ({ notifyCsatRequestEmail }))
 
-// executeCallConnectorNode's own dependencies: the connector row lookup +
-// the shared HTTP executor (both mocked so this stays a unit test of the
-// interpolation/coercion/routing logic, not a connector.execute integration
-// test — that module has its own suite).
-const { getConnectorRowForExecution, executeConnector } = vi.hoisted(() => ({
-  getConnectorRowForExecution: vi.fn(),
-  executeConnector: vi.fn(),
-}))
-vi.mock('@/lib/server/domains/connectors/connector.execute', () => ({
-  getConnectorRowForExecution,
-  executeConnector,
-}))
-
-// The connector call's own builtins ({customer.email} etc.) are resolved via
-// a small local db lookup (see action.executor.ts's
-// resolveConnectorRuntimeContextForConversation doc — replicated from
-// connector.toolspec.ts's resolveRuntimeContext, not imported). Mocked at the
-// db chain exactly like connector.toolspec.test.ts mocks the same query
-// shape: select().from().innerJoin().leftJoin().where().limit().
-const mockConnectorRuntimeRow = vi.hoisted(() => ({
-  current: null as Record<string, unknown> | null,
-  error: null as Error | null,
-}))
 const mockDbSelect = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/server/db', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/lib/server/db')>()
@@ -160,7 +136,7 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
 const { logRunEvent } = vi.hoisted(() => ({ logRunEvent: vi.fn() }))
 vi.mock('../workflow-run-events', () => ({ logRunEvent }))
 
-import { applyAction, executeCallConnectorNode, type WorkflowContext } from '../action.executor'
+import { applyAction, type WorkflowContext } from '../action.executor'
 
 const conversationId = 'conversation_1' as ConversationId
 const actor = {
@@ -185,20 +161,15 @@ beforeEach(() => {
     email: 'jane@example.com',
     workspace_name: 'Acme',
   })
-  getMessengerConfig.mockResolvedValue({ assistant: { name: 'Quinn', avatarUrl: null } })
+  getAssistantRuntimeConfig.mockResolvedValue({
+    config: { identity: { name: 'Quinn', avatarUrl: null } },
+  })
   appendAssistantReply.mockResolvedValue({ id: 'conversation_message_block_1' })
   safeFetch.mockResolvedValue({ ok: true, status: 200 })
 
-  mockConnectorRuntimeRow.current = null
-  mockConnectorRuntimeRow.error = null
-  // A generic chainable stub (every drizzle verb no-ops back to itself,
-  // terminal `.limit()` resolves the connector-runtime row) so it satisfies
-  // every raw db.select shape this file's code under test can produce:
-  // connector.toolspec's own .from().innerJoin().leftJoin().where().limit(),
-  // AND the ticket-actions/CSAT-over-email additions' simpler
-  // .from().where().limit() / .from().where().orderBy().limit() /
-  // .from().leftJoin().where().limit() shapes. Individual tests below
-  // override with mockImplementationOnce for their own specific rows.
+  // A generic chainable stub satisfying every raw db.select shape this file's
+  // code under test can produce. Individual tests below override it with
+  // mockImplementationOnce for their own specific rows.
   mockDbSelect.mockImplementation(() => {
     const chain = {
       from: () => chain,
@@ -206,10 +177,7 @@ beforeEach(() => {
       leftJoin: () => chain,
       where: () => chain,
       orderBy: () => chain,
-      limit: async () => {
-        if (mockConnectorRuntimeRow.error) throw mockConnectorRuntimeRow.error
-        return mockConnectorRuntimeRow.current ? [mockConnectorRuntimeRow.current] : []
-      },
+      limit: async () => [],
     }
     return chain
   })
@@ -667,6 +635,7 @@ describe('applyAction', () => {
       // for it rather than asserting synchronously.
       await vi.waitFor(() =>
         expect(runAssistantTurnForConversation).toHaveBeenCalledWith(conversationId, {
+          surface: 'workflow_step',
           stepInstructions: undefined,
         })
       )
@@ -681,6 +650,7 @@ describe('applyAction', () => {
       )
       await vi.waitFor(() =>
         expect(runAssistantTurnForConversation).toHaveBeenCalledWith(conversationId, {
+          surface: 'workflow_step',
           stepInstructions: 'Focus only on billing questions',
         })
       )
@@ -846,198 +816,5 @@ describe('applyAction', () => {
         expect.anything()
       )
     })
-  })
-})
-
-// call_connector is NOT a WorkflowAction (see the module doc's new section) —
-// workflow.engine.ts calls this directly, not through applyAction. Covered
-// here as its own unit: connector-row lookup, param interpolation + type
-// coercion, and the never-throws contract.
-describe('executeCallConnectorNode', () => {
-  const connectorId = 'data_connector_1' as DataConnectorId
-
-  function baseRow(overrides: Partial<Record<string, unknown>> = {}) {
-    return {
-      id: connectorId,
-      enabled: true,
-      status: 'active',
-      timeoutMs: 10000,
-      inputs: [
-        { name: 'ticket_id', type: 'string', required: true },
-        { name: 'priority', type: 'number', required: false },
-        { name: 'urgent', type: 'boolean', required: false },
-      ],
-      ...overrides,
-    }
-  }
-
-  it('returns { ok: true } and calls executeConnector with interpolated + coerced values when the connector exists and is enabled', async () => {
-    getConnectorRowForExecution.mockResolvedValue(baseRow())
-    executeConnector.mockResolvedValue({ ok: true, status: 200, data: {} })
-    resolveWorkflowVariables.mockResolvedValue({
-      first_name: 'Jane',
-      name: 'Jane Doe',
-      email: 'jane@example.com',
-      workspace_name: 'Acme',
-    })
-
-    const result = await executeCallConnectorNode(conversationId, {
-      connectorId,
-      params: { ticket_id: '{first_name|there}-42', priority: '3', urgent: 'TRUE' },
-    })
-
-    expect(result).toEqual({ ok: true })
-    expect(getConnectorRowForExecution).toHaveBeenCalledWith(connectorId)
-    expect(executeConnector).toHaveBeenCalledTimes(1)
-    const [row, values] = executeConnector.mock.calls[0]!
-    expect(row).toEqual(baseRow())
-    expect(values).toEqual({ ticket_id: 'Jane-42', priority: 3, urgent: true })
-  })
-
-  it('threads the conversation visitor as ConnectorRuntimeContext (customer.email/name builtins)', async () => {
-    getConnectorRowForExecution.mockResolvedValue(baseRow({ inputs: [] }))
-    executeConnector.mockResolvedValue({ ok: true, status: 200, data: {} })
-    mockConnectorRuntimeRow.current = {
-      displayName: 'Jane Doe',
-      contactEmail: 'jane@example.com',
-      userName: null,
-      userEmail: null,
-    }
-
-    await executeCallConnectorNode(conversationId, { connectorId, params: {} })
-
-    const [, , runtimeCtx] = executeConnector.mock.calls[0]!
-    expect(runtimeCtx).toMatchObject({
-      customerEmail: 'jane@example.com',
-      customerName: 'Jane Doe',
-      conversationId,
-    })
-  })
-
-  it('a runtime-context lookup failure degrades to a conversationId-only context rather than throwing (never a reason to fail the call)', async () => {
-    getConnectorRowForExecution.mockResolvedValue(baseRow({ inputs: [] }))
-    executeConnector.mockResolvedValue({ ok: true, status: 200, data: {} })
-    mockConnectorRuntimeRow.error = new Error('db blip')
-
-    const result = await executeCallConnectorNode(conversationId, { connectorId, params: {} })
-
-    expect(result).toEqual({ ok: true })
-    const [, , runtimeCtx] = executeConnector.mock.calls[0]!
-    expect(runtimeCtx).toEqual({ conversationId })
-  })
-
-  it('clamps an out-of-bounds timeoutMs override to [1, 30000] before passing it to executeConnector', async () => {
-    getConnectorRowForExecution.mockResolvedValue(baseRow({ inputs: [] }))
-    executeConnector.mockResolvedValue({ ok: true, status: 200, data: {} })
-
-    await executeCallConnectorNode(conversationId, { connectorId, params: {}, timeoutMs: 999999 })
-    expect(executeConnector.mock.calls[0]![3]).toBe(30000)
-
-    await executeCallConnectorNode(conversationId, { connectorId, params: {}, timeoutMs: -5 })
-    expect(executeConnector.mock.calls[1]![3]).toBe(1)
-
-    await executeCallConnectorNode(conversationId, { connectorId, params: {}, timeoutMs: 2500 })
-    expect(executeConnector.mock.calls[2]![3]).toBe(2500)
-
-    await executeCallConnectorNode(conversationId, { connectorId, params: {} })
-    expect(executeConnector.mock.calls[3]![3]).toBeUndefined()
-  })
-
-  it('reason "unavailable" when the connector no longer exists (getConnectorRowForExecution throws NotFoundError) — never propagates the throw', async () => {
-    getConnectorRowForExecution.mockRejectedValue(
-      new NotFoundError('CONNECTOR_NOT_FOUND', 'Connector not found')
-    )
-    const result = await executeCallConnectorNode(conversationId, { connectorId, params: {} })
-    expect(result).toEqual({ ok: false, reason: 'unavailable' })
-    expect(executeConnector).not.toHaveBeenCalled()
-  })
-
-  it('re-throws a non-NotFoundError from the row lookup (a genuine infra failure, not a routing outcome)', async () => {
-    getConnectorRowForExecution.mockRejectedValue(new Error('db unreachable'))
-    await expect(
-      executeCallConnectorNode(conversationId, { connectorId, params: {} })
-    ).rejects.toThrow('db unreachable')
-  })
-
-  it('reason "unavailable" when the connector is disabled or its circuit breaker has tripped it to disabled status', async () => {
-    getConnectorRowForExecution.mockResolvedValue(baseRow({ enabled: false }))
-    expect(await executeCallConnectorNode(conversationId, { connectorId, params: {} })).toEqual({
-      ok: false,
-      reason: 'unavailable',
-    })
-
-    getConnectorRowForExecution.mockResolvedValue(baseRow({ status: 'disabled' }))
-    expect(await executeCallConnectorNode(conversationId, { connectorId, params: {} })).toEqual({
-      ok: false,
-      reason: 'unavailable',
-    })
-    expect(executeConnector).not.toHaveBeenCalled()
-  })
-
-  it('reason "invalid_params" when a required string input resolves empty (no value and no fallback)', async () => {
-    getConnectorRowForExecution.mockResolvedValue(baseRow())
-    resolveWorkflowVariables.mockResolvedValue({
-      first_name: '',
-      name: '',
-      email: '',
-      workspace_name: '',
-    })
-    const result = await executeCallConnectorNode(conversationId, {
-      connectorId,
-      params: { ticket_id: '{first_name}' }, // no fallback, and the variable is empty
-    })
-    expect(result).toEqual({ ok: false, reason: 'invalid_params' })
-    expect(executeConnector).not.toHaveBeenCalled()
-  })
-
-  it('reason "invalid_params" when a required number input does not parse', async () => {
-    getConnectorRowForExecution.mockResolvedValue(
-      baseRow({ inputs: [{ name: 'count', type: 'number', required: true }] })
-    )
-    const result = await executeCallConnectorNode(conversationId, {
-      connectorId,
-      params: { count: 'not-a-number' },
-    })
-    expect(result).toEqual({ ok: false, reason: 'invalid_params' })
-    expect(executeConnector).not.toHaveBeenCalled()
-  })
-
-  it('reason "invalid_params" when a required boolean input is neither "true" nor "false"', async () => {
-    getConnectorRowForExecution.mockResolvedValue(
-      baseRow({ inputs: [{ name: 'flag', type: 'boolean', required: true }] })
-    )
-    const result = await executeCallConnectorNode(conversationId, {
-      connectorId,
-      params: { flag: 'maybe' },
-    })
-    expect(result).toEqual({ ok: false, reason: 'invalid_params' })
-    expect(executeConnector).not.toHaveBeenCalled()
-  })
-
-  it('an unresolved OPTIONAL input is simply omitted from values, not a failure', async () => {
-    getConnectorRowForExecution.mockResolvedValue(baseRow())
-    executeConnector.mockResolvedValue({ ok: true, status: 200, data: {} })
-    resolveWorkflowVariables.mockResolvedValue({
-      first_name: 'Jane',
-      name: '',
-      email: '',
-      workspace_name: '',
-    })
-    // priority/urgent are optional and left unmapped entirely.
-    await executeCallConnectorNode(conversationId, {
-      connectorId,
-      params: { ticket_id: '{first_name}' },
-    })
-    const [, values] = executeConnector.mock.calls[0]!
-    expect(values).toEqual({ ticket_id: 'Jane' })
-  })
-
-  it('passes through every ConnectorExecutionResult failure reason from executeConnector verbatim', async () => {
-    getConnectorRowForExecution.mockResolvedValue(baseRow({ inputs: [] }))
-    for (const reason of ['rate_limited', 'host_not_allowed', 'http_error', 'network_error']) {
-      executeConnector.mockResolvedValueOnce({ ok: false, reason })
-      const result = await executeCallConnectorNode(conversationId, { connectorId, params: {} })
-      expect(result).toEqual({ ok: false, reason })
-    }
   })
 })

@@ -193,4 +193,8 @@ describe('RBAC permission catalogue', () => {
     // the other conversation.* operate keys.
     expect(SYSTEM_ROLE_PERMISSIONS.contributor).toContain(PERMISSIONS.COPILOT_USE)
   })
+
+  it('does not expose the removed data-connector permission', () => {
+    expect(ALL_PERMISSIONS).not.toContain('connector.manage')
+  })
 })

@@ -1,5 +1,5 @@
 /**
- * Quinn Copilot's proposed-action card (split out of copilot-panel.tsx, a
+ * Copilot's proposed-action card (split out of copilot-panel.tsx, a
  * pure move — see that file's header for the surface this belongs to):
  * one write-tool call a Copilot turn proposed (P2-C.4, "act-on-approval").
  */

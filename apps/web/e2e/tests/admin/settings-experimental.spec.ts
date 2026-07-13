@@ -10,13 +10,6 @@ test.describe('Admin Labs Settings', () => {
     await expect(page.getByRole('heading', { name: 'Labs' })).toBeVisible({ timeout: 10000 })
   })
 
-  test('shows Help Center feature flag card', async ({ page }) => {
-    await expect(page.getByText('Help Center', { exact: true })).toBeVisible({ timeout: 10000 })
-    await expect(
-      page.getByText('Publish a searchable help center so customers can find answers on their own.')
-    ).toBeVisible()
-  })
-
   test('shows AI Feedback Extraction feature flag card', async ({ page }) => {
     await expect(page.getByText('AI Feedback Extraction')).toBeVisible({ timeout: 10000 })
     await expect(
@@ -24,41 +17,33 @@ test.describe('Admin Labs Settings', () => {
     ).toBeVisible()
   })
 
-  test('shows Conversations feature flag card', async ({ page }) => {
-    await expect(page.getByText('Conversations', { exact: true })).toBeVisible({ timeout: 10000 })
-  })
-
   test('each feature flag card has a toggle switch', async ({ page }) => {
-    const helpCenterSwitch = page.locator('#flag-helpCenter')
     const aiFeedbackSwitch = page.locator('#flag-aiFeedbackExtraction')
-    const conversationsSwitch = page.locator('#flag-supportInbox')
 
-    await expect(helpCenterSwitch).toBeVisible({ timeout: 10000 })
-    await expect(aiFeedbackSwitch).toBeVisible()
-    await expect(conversationsSwitch).toBeVisible()
+    await expect(aiFeedbackSwitch).toBeVisible({ timeout: 10000 })
   })
 
   test('feature flag switches are interactive (not disabled)', async ({ page }) => {
-    const helpCenterSwitch = page.locator('#flag-helpCenter')
-    await expect(helpCenterSwitch).toBeVisible({ timeout: 10000 })
-    await expect(helpCenterSwitch).toBeEnabled()
+    const analyticsSwitch = page.locator('#flag-visitorAnalytics')
+    await expect(analyticsSwitch).toBeVisible({ timeout: 10000 })
+    await expect(analyticsSwitch).toBeEnabled()
   })
 
   test('can toggle a feature flag on and off', async ({ page }) => {
-    const helpCenterSwitch = page.locator('#flag-helpCenter')
-    await expect(helpCenterSwitch).toBeVisible({ timeout: 10000 })
+    const analyticsSwitch = page.locator('#flag-visitorAnalytics')
+    await expect(analyticsSwitch).toBeVisible({ timeout: 10000 })
 
-    const wasChecked = await helpCenterSwitch.isChecked()
+    const wasChecked = await analyticsSwitch.isChecked()
 
-    await helpCenterSwitch.click()
+    await analyticsSwitch.click()
     // Page reloads on mutation success — wait for it to settle
     await page.waitForLoadState('networkidle')
     await page.waitForLoadState('networkidle')
 
     // Toggle it back to restore state
-    const helpCenterAfterReload = page.locator('#flag-helpCenter')
-    await expect(helpCenterAfterReload).toBeVisible({ timeout: 10000 })
-    const nowChecked = await helpCenterAfterReload.isChecked()
+    const analyticsAfterReload = page.locator('#flag-visitorAnalytics')
+    await expect(analyticsAfterReload).toBeVisible({ timeout: 10000 })
+    const nowChecked = await analyticsAfterReload.isChecked()
 
     if (nowChecked === wasChecked) {
       // Toggle did not flip — that is unexpected but not worth failing
@@ -66,18 +51,14 @@ test.describe('Admin Labs Settings', () => {
     }
 
     // Restore original state
-    await helpCenterAfterReload.click()
+    await analyticsAfterReload.click()
     await page.waitForLoadState('networkidle')
     await page.waitForLoadState('networkidle')
   })
 
   test('flag label is clickable (htmlFor association with switch)', async ({ page }) => {
-    // Labels are associated via htmlFor="flag-helpCenter"
-    const helpCenterLabel = page.locator('label[for="flag-helpCenter"]')
-    await expect(helpCenterLabel).toBeVisible({ timeout: 10000 })
-
     const aiFeedbackLabel = page.locator('label[for="flag-aiFeedbackExtraction"]')
-    await expect(aiFeedbackLabel).toBeVisible()
+    await expect(aiFeedbackLabel).toBeVisible({ timeout: 10000 })
   })
 
   test('feature flag descriptions are rendered below their labels', async ({ page }) => {
@@ -88,18 +69,16 @@ test.describe('Admin Labs Settings', () => {
     } else {
       // Fallback: at least one known description text is present
       await expect(
-        page.getByText(
-          'Publish a searchable help center so customers can find answers on their own.'
-        )
+        page.getByText('Automatically pull in and categorize feedback from your connected sources.')
       ).toBeVisible({ timeout: 10000 })
     }
   })
 
   test('page shows every consolidated flag switch', async ({ page }) => {
-    // 9 top-level cards plus the nested Visitor Identity and Proactive
-    // suggested replies sub-toggles.
+    // Six top-level flags plus the nested Visitor Identity and Proactive
+    // suggested replies sub-toggles. Product flags live on General.
     const switches = page.locator('button[role="switch"]')
-    await expect(switches).toHaveCount(11, { timeout: 10000 })
+    await expect(switches).toHaveCount(8, { timeout: 10000 })
   })
 
   test('Visitor Identity sub-toggle is disabled while Visitor Analytics is off', async ({

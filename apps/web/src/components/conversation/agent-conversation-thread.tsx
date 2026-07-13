@@ -166,6 +166,7 @@ import {
   type ComposerDraft,
 } from './composer-draft'
 import { SuggestedReplyCard } from './suggested-reply-card'
+import { ComposerAiActions, type ComposerMode } from './composer-ai-actions'
 import { TypingDots } from '@/components/shared/typing-dots'
 import { EmojiPicker } from '@/components/shared/emoji-picker'
 import { Avatar } from '@/components/ui/avatar'
@@ -280,9 +281,13 @@ export function AgentConversationThread({
   const [noteDraft, setNoteDraft] = useState<ComposerDraft>(EMPTY_DRAFT)
   const [replyKey, setReplyKey] = useState(0)
   const [noteKey, setNoteKey] = useState(0)
-  // Latest reply draft for the stable, pull-based Copilot Format seam.
+  // Latest drafts for stable, pull-based composer AI actions. Reading from
+  // refs lets an async transform verify that the draft did not change without
+  // recreating its callbacks on every keystroke.
   const replyDraftRef = useRef(replyDraft)
   replyDraftRef.current = replyDraft
+  const noteDraftRef = useRef(noteDraft)
+  noteDraftRef.current = noteDraft
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // The one controlled convert dialog's seed, built at whichever entry point
@@ -1159,35 +1164,34 @@ export function AgentConversationThread({
     noteEditorRef: noteInsertRef,
   })
 
-  // The Copilot Format chip's read/replace seam onto the REPLY draft only
-  // (P2-C.1, conversation-only). `getComposerText` is a stable pull that reads
-  // the latest draft via a ref (no re-subscribe on every keystroke);
-  // `replaceComposerText` swaps the whole draft for the transform result
-  // (remount lands the cursor at the end) and offers an Undo that re-seeds the
-  // pre-format draft — the RichTextEditor has no undo handle, so we snapshot
-  // and restore instead.
-  const getComposerText = useCallback(() => replyDraftRef.current.markdown, [])
+  const getComposerText = useCallback(
+    (mode: ComposerMode) =>
+      mode === 'note' ? noteDraftRef.current.markdown : replyDraftRef.current.markdown,
+    []
+  )
   // The suggested-reply card's composer gate: a teammate already mid-draft
   // when the card's dwell elapses doesn't need (or pay for) a suggestion.
-  // Same pull-based ref read as getComposerText, so the getter stays stable
-  // across keystrokes.
   const composerHasText = useCallback(() => replyDraftRef.current.markdown.trim().length > 0, [])
-  const replaceComposerText = useCallback((text: string) => {
-    const prev = replyDraftRef.current
-    setReplyDraft(answerToDraft(text))
-    setReplyKey((k) => k + 1)
-    // The remount resets the editor's own history, so the toast's Undo action
-    // is the only way back — never advertise Ctrl+Z here.
-    toast.success('Draft updated', {
-      action: {
-        label: 'Undo',
-        onClick: () => {
-          setReplyDraft(prev)
-          setReplyKey((k) => k + 1)
-        },
-      },
-    })
+  const replaceComposerText = useCallback((mode: ComposerMode, text: string) => {
+    const previous = mode === 'note' ? noteDraftRef.current : replyDraftRef.current
+    const apply = (draft: ComposerDraft) => {
+      if (mode === 'note') {
+        setNoteDraft(draft)
+        setNoteKey((k) => k + 1)
+      } else {
+        setReplyDraft(draft)
+        setReplyKey((k) => k + 1)
+      }
+    }
+    apply(answerToDraft(text))
+    // Replacing the document remounts the editor and clears its native history.
+    // Return a full-fidelity restore for the composer's persistent inline Undo.
+    return () => apply(previous)
   }, [])
+  const insertSummaryNote = useCallback(
+    (text: string) => insertFromCopilot(text, 'note'),
+    [insertFromCopilot]
+  )
 
   // Track each mode's draft from the editor's onChange (json + markdown mirror).
   // The reply keystroke also drives the visitor-facing typing indicator (only
@@ -1791,7 +1795,7 @@ export function AgentConversationThread({
             {/* Live link unfurl while composing (Slack-style) — part of the
                 preview tray, gated by the flag + capability. */}
             {linkPreviewsEnabled && <LinkPreviews content={debouncedComposerText} />}
-            <div className="flex items-center gap-0.5 pt-1">
+            <div className="flex flex-wrap items-center gap-0.5 pt-1">
               {/* Attach is available in both reply and note mode, for both kinds. */}
               <button
                 type="button"
@@ -1825,6 +1829,14 @@ export function AgentConversationThread({
               {capabilities.macros && !noteMode && conversationId && (
                 <WorkflowRunPicker conversationId={conversationId} onApplied={refreshThread} />
               )}
+              <ComposerAiActions
+                item={item}
+                activeMode={noteMode || !capabilities.reply ? 'note' : 'reply'}
+                activeDraftText={activeDraft.markdown}
+                getDraftText={getComposerText}
+                onReplaceDraftText={replaceComposerText}
+                onInsertNote={insertSummaryNote}
+              />
               <div className="flex-1" />
               <button
                 type="button"
@@ -1948,8 +1960,6 @@ export function AgentConversationThread({
           onTrackAsFeedback={handleTrackAsFeedback}
           onCreateTicket={handleCreateTicketFromPanel}
           onInsertFromCopilot={insertFromCopilot}
-          getComposerText={getComposerText}
-          onReplaceComposerText={replaceComposerText}
           openCopilotToken={openCopilotToken}
         />
       )}

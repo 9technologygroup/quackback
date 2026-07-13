@@ -1,13 +1,10 @@
-/**
- * Real-DB coverage for the guidance-rules service: create/list/toggle/reorder/
- * delete, the surface-scoping filter (a null-surfaces rule matches every
- * surface), and the title/body length guards at both the service and DB
- * layers. Runs inside the db-test-fixture rollback transaction.
- */
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
 import { assistantGuidanceRules } from '@/lib/server/db'
+import {
+  applyGuidanceBudget,
+  assistantGuidanceRuleInputSchema,
+} from '@/lib/shared/assistant/guidance'
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
@@ -16,16 +13,65 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
 
 import {
   createGuidanceRule,
-  listGuidanceRules,
-  updateGuidanceRule,
-  reorderGuidanceRules,
   deleteGuidanceRule,
+  listEnabledGuidanceCandidates,
+  listGuidanceRules,
+  reorderGuidanceRules,
+  updateGuidanceRule,
 } from '../guidance.service'
 
 const fixture = await createDbTestFixture({
   probe: async (db) => {
-    await db.select({ id: assistantGuidanceRules.id }).from(assistantGuidanceRules).limit(0)
+    await db.select({ name: assistantGuidanceRules.name }).from(assistantGuidanceRules).limit(0)
   },
+})
+
+describe('guidance shared contract', () => {
+  it('normalizes text, preserves Unicode/newlines, and represents always-on as null', () => {
+    const parsed = assistantGuidanceRuleInputSchema.parse({
+      name: '  Ref\u0000unds  ',
+      appliesWhen: ' \u0007 ',
+      instruction: '  مرحبا\nExplain it.\u007f  ',
+    })
+
+    expect(parsed).toMatchObject({
+      name: 'Refunds',
+      appliesWhen: null,
+      instruction: 'مرحبا\nExplain it.',
+      roles: ['customer_support', 'suggested_reply'],
+      channels: null,
+      enabled: true,
+      priority: 0,
+    })
+  })
+
+  it('validates role and channel values', () => {
+    expect(() =>
+      assistantGuidanceRuleInputSchema.parse({
+        name: 'Bad role',
+        instruction: 'Do something.',
+        roles: ['administrator'],
+      })
+    ).toThrow()
+    expect(() =>
+      assistantGuidanceRuleInputSchema.parse({
+        name: 'Bad channel',
+        instruction: 'Do something.',
+        channels: ['sms'],
+      })
+    ).toThrow()
+  })
+
+  it('skips an oversized instruction and continues within the character budget', () => {
+    const rules = [
+      { id: 'oversized', instruction: 'x'.repeat(4_001) },
+      { id: 'first', instruction: 'a'.repeat(3_000) },
+      { id: 'does-not-fit', instruction: 'b'.repeat(1_001) },
+      { id: 'later-shorter', instruction: 'c'.repeat(1_000) },
+    ]
+
+    expect(applyGuidanceBudget(rules).map((rule) => rule.id)).toEqual(['first', 'later-shorter'])
+  })
 })
 
 describe.skipIf(!fixture.available)('guidance.service (real DB, rolled back)', () => {
@@ -33,135 +79,144 @@ describe.skipIf(!fixture.available)('guidance.service (real DB, rolled back)', (
   afterEach(fixture.rollback)
   afterAll(fixture.close)
 
-  it('creates a rule and lists it back', async () => {
-    const rule = await createGuidanceRule({ title: 'Refund policy', body: 'Always mention it.' })
-    expect(rule.enabled).toBe(true)
-    expect(rule.surfaces).toBeNull()
-    expect(rule.position).toBe(0)
-    expect(rule.category).toBe('other')
-
-    const rules = await listGuidanceRules()
-    expect(rules.map((r) => r.id)).toEqual([rule.id])
-    expect(rules[0].category).toBe('other')
-  })
-
-  it('creates a rule with an explicit category', async () => {
-    const rule = await createGuidanceRule({
-      title: 'Tone',
-      body: 'Be warm and concise.',
-      category: 'communication_style',
+  it('creates normalized V2 guidance with defaults and lists by priority', async () => {
+    const lower = await createGuidanceRule({
+      name: '  Refund policy\u0000 ',
+      appliesWhen: '   ',
+      instruction: '  Always mention it.\u0007 ',
+      priority: 2,
     })
-    expect(rule.category).toBe('communication_style')
-
-    const [listed] = await listGuidanceRules()
-    expect(listed.category).toBe('communication_style')
-  })
-
-  it('rejects an unknown category at the service layer', async () => {
-    await expect(
-      createGuidanceRule({
-        title: 'Bad category',
-        body: 'Body text.',
-        category: 'not_a_real_category' as never,
-      })
-    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
-  })
-
-  it('updates a rule category', async () => {
-    const rule = await createGuidanceRule({ title: 'Recategorize me', body: 'Body text.' })
-    const updated = await updateGuidanceRule(rule.id, { category: 'spam' })
-    expect(updated?.category).toBe('spam')
-  })
-
-  it('rejects an unknown category on update', async () => {
-    const rule = await createGuidanceRule({ title: 'Recategorize me', body: 'Body text.' })
-    await expect(
-      updateGuidanceRule(rule.id, { category: 'not_a_real_category' as never })
-    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
-  })
-
-  it('defaults category to other for a legacy row inserted without one', async () => {
-    const [row] = await testDb
-      .insert(assistantGuidanceRules)
-      .values({ title: 'Legacy row', body: 'Predates categories.' })
-      .returning()
-    expect(row.category).toBe('other')
-
-    const [listed] = await listGuidanceRules()
-    expect(listed.category).toBe('other')
-  })
-
-  it('scopes the list to a surface; a null-surfaces rule matches every surface', async () => {
-    const everywhere = await createGuidanceRule({ title: 'Everywhere', body: 'Applies always.' })
-    const widgetOnly = await createGuidanceRule({
-      title: 'Widget only',
-      body: 'Widget-specific.',
-      surfaces: ['widget'],
-    })
-    const emailOnly = await createGuidanceRule({
-      title: 'Email only',
-      body: 'Email-specific.',
-      surfaces: ['email'],
+    const higher = await createGuidanceRule({
+      name: 'Security',
+      appliesWhen: 'When a security issue is reported',
+      instruction: 'Hand off to the security team.',
+      priority: 1,
     })
 
-    const widgetRules = await listGuidanceRules({ surface: 'widget' })
-    expect(widgetRules.map((r) => r.id).sort()).toEqual([everywhere.id, widgetOnly.id].sort())
-
-    const emailRules = await listGuidanceRules({ surface: 'email' })
-    expect(emailRules.map((r) => r.id).sort()).toEqual([everywhere.id, emailOnly.id].sort())
+    expect(lower).toMatchObject({
+      name: 'Refund policy',
+      appliesWhen: null,
+      instruction: 'Always mention it.',
+      roles: ['customer_support', 'suggested_reply'],
+      channels: null,
+      enabled: true,
+      priority: 2,
+    })
+    expect((await listGuidanceRules()).map((rule) => rule.id)).toEqual([higher.id, lower.id])
   })
 
-  it('filters to enabled-only when asked', async () => {
-    const enabled = await createGuidanceRule({ title: 'Enabled', body: 'Stays on.' })
-    const disabled = await createGuidanceRule({ title: 'Disabled', body: 'Toggled off.' })
-    await updateGuidanceRule(disabled.id, { enabled: false })
+  it('prefilters enabled candidates by resolved role/channel', async () => {
+    const everywhere = await createGuidanceRule({
+      name: 'Everywhere',
+      instruction: 'Always applies.',
+      roles: ['customer_support'],
+      priority: 1,
+    })
+    const widget = await createGuidanceRule({
+      name: 'Widget',
+      instruction: 'Widget only.',
+      roles: ['customer_support'],
+      channels: ['widget'],
+      priority: 2,
+    })
+    await createGuidanceRule({
+      name: 'Email',
+      instruction: 'Email only.',
+      roles: ['customer_support'],
+      channels: ['email'],
+    })
+    await createGuidanceRule({
+      name: 'Copilot role',
+      instruction: 'Copilot only.',
+      roles: ['copilot_qa'],
+      channels: null,
+    })
+    await createGuidanceRule({
+      name: 'Disabled',
+      instruction: 'Disabled.',
+      roles: ['customer_support'],
+      enabled: false,
+    })
 
-    const all = await listGuidanceRules()
-    expect(all.map((r) => r.id).sort()).toEqual([enabled.id, disabled.id].sort())
-
-    const enabledOnly = await listGuidanceRules({ enabledOnly: true })
-    expect(enabledOnly.map((r) => r.id)).toEqual([enabled.id])
+    const candidates = await listEnabledGuidanceCandidates({
+      role: 'customer_support',
+      channel: 'widget',
+    })
+    expect(candidates.map((rule) => rule.id)).toEqual([everywhere.id, widget.id])
   })
 
-  it('toggles enabled via updateGuidanceRule', async () => {
-    const rule = await createGuidanceRule({ title: 'Toggle me', body: 'Body text.' })
-    const updated = await updateGuidanceRule(rule.id, { enabled: false })
-    expect(updated?.enabled).toBe(false)
-    expect((await listGuidanceRules({ enabledOnly: true })).map((r) => r.id)).not.toContain(rule.id)
+  it('orders candidate ties by createdAt and caps the list at 25', async () => {
+    await testDb.insert(assistantGuidanceRules).values(
+      Array.from({ length: 27 }, (_, index) => ({
+        name: `Rule ${index}`,
+        instruction: `Instruction ${index}`,
+        roles: ['customer_support'],
+        priority: 0,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
+      }))
+    )
+
+    const candidates = await listEnabledGuidanceCandidates({
+      role: 'customer_support',
+      channel: 'email',
+    })
+    expect(candidates).toHaveLength(25)
+    expect(candidates.map((rule) => rule.name)).toEqual(
+      Array.from({ length: 25 }, (_, index) => `Rule ${index}`)
+    )
   })
 
-  it('reorders rules to match the given id order', async () => {
-    const a = await createGuidanceRule({ title: 'A', body: 'A body' })
-    const b = await createGuidanceRule({ title: 'B', body: 'B body' })
-    const c = await createGuidanceRule({ title: 'C', body: 'C body' })
+  it('updates every V2 field and normalizes an empty condition to always-on', async () => {
+    const rule = await createGuidanceRule({ name: 'Original', instruction: 'Original instruction' })
+    const updated = await updateGuidanceRule(rule.id, {
+      name: ' Updated ',
+      appliesWhen: '\u0000 ',
+      instruction: ' Updated instruction ',
+      roles: ['copilot_qa'],
+      channels: ['copilot'],
+      enabled: false,
+      priority: 7,
+    })
+
+    expect(updated).toMatchObject({
+      name: 'Updated',
+      appliesWhen: null,
+      instruction: 'Updated instruction',
+      roles: ['copilot_qa'],
+      channels: ['copilot'],
+      enabled: false,
+      priority: 7,
+    })
+  })
+
+  it('reorders priorities and deletes rules', async () => {
+    const a = await createGuidanceRule({ name: 'A', instruction: 'A body' })
+    const b = await createGuidanceRule({ name: 'B', instruction: 'B body' })
+    const c = await createGuidanceRule({ name: 'C', instruction: 'C body' })
 
     await reorderGuidanceRules([c.id, a.id, b.id])
+    expect((await listGuidanceRules()).map((rule) => rule.id)).toEqual([c.id, a.id, b.id])
 
-    const ordered = await listGuidanceRules()
-    expect(ordered.map((r) => r.id)).toEqual([c.id, a.id, b.id])
+    await deleteGuidanceRule(a.id)
+    expect((await listGuidanceRules()).map((rule) => rule.id)).not.toContain(a.id)
   })
 
-  it('deletes a rule', async () => {
-    const rule = await createGuidanceRule({ title: 'Temp', body: 'Delete me.' })
-    await deleteGuidanceRule(rule.id)
-    expect(await listGuidanceRules()).toHaveLength(0)
-  })
-
-  it('rejects a body over 1000 characters at the service layer', async () => {
+  it('rejects invalid and over-limit V2 fields at the service layer', async () => {
     await expect(
-      createGuidanceRule({ title: 'Too long', body: 'x'.repeat(1001) })
+      createGuidanceRule({ name: 'x'.repeat(81), instruction: 'Fine.' })
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
-  })
-
-  it('rejects a title over 80 characters at the service layer', async () => {
     await expect(
-      createGuidanceRule({ title: 'x'.repeat(81), body: 'Fine.' })
+      createGuidanceRule({ name: 'Fine', appliesWhen: 'x'.repeat(501), instruction: 'Fine.' })
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
-  })
-
-  it('DB CHECK constraint rejects an over-length body inserted directly', async () => {
     await expect(
-      testDb.insert(assistantGuidanceRules).values({ title: 'Bypass service', body: 'x'.repeat(1001) })
-    ).rejects.toThrow()
+      createGuidanceRule({ name: 'Fine', instruction: 'x'.repeat(1_001) })
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+    await expect(
+      createGuidanceRule({
+        name: 'Fine',
+        instruction: 'Fine.',
+        roles: ['unknown'] as never,
+      })
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
   })
 })

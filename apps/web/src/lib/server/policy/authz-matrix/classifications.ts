@@ -72,6 +72,30 @@ const DYNAMIC_PERMISSION = (
 ): Classification => ({ intent: 'DYNAMIC_PERMISSION', resolvesToAny, why })
 
 export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
+  // Assistant proposals are item-scoped after authentication. Reads/rejections
+  // require visibility of the concrete parent; approval additionally checks
+  // every permission declared by the current Writer tool specification.
+  'lib/server/functions/assistant-pending-actions.ts::getAssistantPendingActionFn':
+    DYNAMIC_PERMISSION(
+      [PERMISSIONS.CONVERSATION_VIEW, PERMISSIONS.TICKET_VIEW],
+      'caller must be able to view the pending action parent'
+    ),
+  'lib/server/functions/assistant-actions.ts::rejectAssistantActionFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.CONVERSATION_VIEW, PERMISSIONS.TICKET_VIEW],
+    'caller must be able to view the pending action parent'
+  ),
+  'lib/server/functions/assistant-actions.ts::approveAssistantActionFn': DYNAMIC_PERMISSION(
+    [
+      PERMISSIONS.CONVERSATION_VIEW,
+      PERMISSIONS.TICKET_VIEW,
+      PERMISSIONS.CONVERSATION_SET_ATTRIBUTES,
+      PERMISSIONS.CONVERSATION_SET_STATUS,
+      PERMISSIONS.TICKET_CREATE,
+      PERMISSIONS.POST_CREATE,
+      PERMISSIONS.POST_VOTE_ON_BEHALF,
+    ],
+    'caller must view the parent and hold every permission declared by the Writer tool'
+  ),
   // Changelog self-serve subscribe/unsubscribe + status: any authenticated
   // principal manages their own changelog email subscription.
   'lib/server/functions/changelog-subscriptions.ts::subscribeToChangelogFn': END_USER(

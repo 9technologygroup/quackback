@@ -39,8 +39,8 @@ const workspaceSchema = z
     // control-plane on CP-provisioned tenants where the operator did
     // the equivalent of the wizard out-of-band (named the workspace,
     // picked a plan) before the user ever sees the OSS portal. The
-    // reconciler stamps every setupState.step + completedAt so the
-    // /onboarding/* routes redirect straight to /admin.
+    // reconciler records a managed starting point and completion time so the
+    // user sees the one-time activation handoff before entering the admin app.
     onboardingComplete: z.boolean().optional(),
   })
   .strict()

@@ -10,7 +10,19 @@ import type {
   UpdateWidgetConfigInput,
   MessengerConfig,
 } from './settings.types'
-import { DEFAULT_WIDGET_CONFIG, DEFAULT_MESSENGER_CONFIG } from './settings.types'
+import {
+  DEFAULT_WIDGET_CONFIG,
+  DEFAULT_MESSENGER_CONFIG,
+  DEFAULT_HELP_CENTER_CONFIG,
+  resolveFeatureFlags,
+} from './settings.types'
+import type { AssistantConfigAuditActor } from './settings.assistant'
+import { recordAuditEventInTransaction } from '@/lib/server/audit/log'
+import {
+  assistantConfigSchema,
+  DEFAULT_ASSISTANT_CONFIG,
+  type AssistantIdentity,
+} from '@/lib/shared/assistant/config'
 
 const log = logger.child({ component: 'settings-widget' })
 export const WIDGET_OBSERVATION_THROTTLE_MS = 15 * 60 * 1000
@@ -98,13 +110,24 @@ export function publicHomeConfig(home: WidgetHomeConfig | undefined): WidgetHome
  *  Office hours are NOT projected here — the widget reads availability from the
  *  presence snapshot (getConversationPresenceFn), which resolves the one canonical
  *  schedule via `@/lib/shared/office-hours`. */
-export function publicMessengerConfig(messenger: MessengerConfig): PublicMessengerConfig {
+export function publicMessengerConfig(
+  messenger: MessengerConfig,
+  identity: AssistantIdentity = DEFAULT_ASSISTANT_CONFIG.identity
+): PublicMessengerConfig {
   return {
     enabled: messenger.enabled,
     welcomeMessage: messenger.welcomeMessage,
     offlineMessage: messenger.offlineMessage,
     teamName: messenger.teamName,
-    assistant: messenger.assistant,
+    assistant: messenger.assistant
+      ? {
+          enabled: messenger.assistant.enabled,
+          respond: messenger.assistant.respond,
+          name: identity.name,
+          avatarUrl: identity.avatarUrl,
+          showAiLabel: identity.showAiLabel,
+        }
+      : undefined,
   }
 }
 import {
@@ -146,33 +169,84 @@ export async function updateWidgetConfig(input: UpdateWidgetConfigInput): Promis
   }
 }
 
+/** Update only the web-widget deployment flags; behavior config is never touched. */
+export async function updateWidgetAssistantDeployment(
+  input: { enabled: boolean; respond: boolean },
+  actor: AssistantConfigAuditActor
+): Promise<{ enabled: boolean; respond: boolean }> {
+  const result = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ id: settings.id, widgetConfig: settings.widgetConfig })
+      .from(settings)
+      .limit(1)
+      .for('update')
+    if (!row) throw new Error('Settings not found')
+
+    const config = parseJsonConfig(row.widgetConfig, DEFAULT_WIDGET_CONFIG)
+    const current = config.messenger?.assistant ?? {}
+    const messenger = {
+      ...(config.messenger ?? DEFAULT_MESSENGER_CONFIG),
+      assistant: { enabled: input.enabled, respond: input.respond },
+    }
+    await tx
+      .update(settings)
+      .set({ widgetConfig: JSON.stringify({ ...config, messenger }) })
+      .where(eq(settings.id, row.id))
+
+    const { headers, ...auditActor } = actor
+    await recordAuditEventInTransaction(tx, {
+      event: 'assistant.deployment.changed',
+      actor: auditActor,
+      headers,
+      target: { type: 'settings', id: row.id },
+      metadata: {
+        changedPaths: ['widget.assistant.enabled', 'widget.assistant.respond'],
+        transitions: [
+          { path: 'widget.assistant.enabled', from: current.enabled ?? true, to: input.enabled },
+          { path: 'widget.assistant.respond', from: current.respond ?? false, to: input.respond },
+        ],
+      },
+    })
+    return input
+  })
+  await invalidateSettingsCache()
+  return result
+}
+
 export async function getPublicWidgetConfig(): Promise<PublicWidgetConfig> {
   try {
     const org = await requireSettings()
     const config = parseJsonConfig(org.widgetConfig, DEFAULT_WIDGET_CONFIG)
-    const { isFeatureEnabled } = await import('./settings.service')
+    const assistantConfig = assistantConfigSchema.safeParse(org.assistantConfig)
+    const identity = assistantConfig.success
+      ? assistantConfig.data.identity
+      : DEFAULT_ASSISTANT_CONFIG.identity
+    const flags = resolveFeatureFlags(org.featureFlags)
+    const helpCenter = parseJsonConfig(org.helpCenterConfig, DEFAULT_HELP_CENTER_CONFIG)
+    const tabs = {
+      feedback: (config.tabs?.feedback ?? true) && flags.feedback,
+      changelog: (config.tabs?.changelog ?? false) && flags.changelog,
+      help: (config.tabs?.help ?? false) && flags.helpCenter && helpCenter.enabled,
+      messenger:
+        (config.tabs?.messenger ?? false) &&
+        flags.supportInbox &&
+        (config.messenger?.enabled ?? false),
+      home: config.tabs?.home,
+    }
     return {
-      enabled: config.enabled,
+      enabled:
+        config.enabled && [tabs.feedback, tabs.changelog, tabs.help, tabs.messenger].some(Boolean),
       defaultBoard: config.defaultBoard,
       position: config.position,
       launcherGreeting: config.launcherGreeting,
-      tabs: {
-        feedback: config.tabs?.feedback,
-        changelog: config.tabs?.changelog,
-        help: config.tabs?.help,
-        // The Messages tab is gated by the experimental `supportInbox` flag (off
-        // by default), so a public consumer never surfaces it until the
-        // workspace opts in — no per-endpoint gating needed downstream.
-        messenger: (config.tabs?.messenger ?? false) && (await isFeatureEnabled('supportInbox')),
-        home: config.tabs?.home,
-      },
+      tabs,
       // Identify is verified-only (backend-signed ssoToken; GH issue #300).
       hmacRequired: true,
       // Home customisation is client-safe (greeting, hero style, quick links);
       // the stored hero-image key is resolved to a public URL.
       home: publicHomeConfig(config.home),
       // Project only client-safe messenger fields; routing is agent-only.
-      messenger: publicMessengerConfig(config.messenger ?? DEFAULT_MESSENGER_CONFIG),
+      messenger: publicMessengerConfig(config.messenger ?? DEFAULT_MESSENGER_CONFIG, identity),
       // Per-locale copy overrides — client-safe (customer-facing strings the
       // widget resolves against its own locale for the Home surface).
       translations: config.translations,

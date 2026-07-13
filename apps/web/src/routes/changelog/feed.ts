@@ -17,6 +17,7 @@ export const Route = createFileRoute('/changelog/feed')({
           { resolvePortalAccessForRequest },
           { isChangelogAudienceGranted },
           { getOptionalAuth, policyActorFromAuth },
+          { isFeatureEnabled },
         ] = await Promise.all([
           import('@/lib/server/config'),
           import('@/lib/server/db'),
@@ -25,6 +26,7 @@ export const Route = createFileRoute('/changelog/feed')({
           import('@/lib/server/functions/portal-access'),
           import('@/lib/server/domains/changelog/changelog.audience'),
           import('@/lib/server/functions/auth-helpers'),
+          import('@/lib/server/domains/settings/settings.service'),
         ])
 
         const effectiveDisplayDate = sql<Date>`coalesce(${changelogEntries.displayDate}, ${changelogEntries.publishedAt})`
@@ -41,13 +43,12 @@ export const Route = createFileRoute('/changelog/feed')({
 
         // Changelog audience gate (Settings > Changelog > Visibility):
         // 'authenticated' hides the feed from anonymous fetchers too.
-        const actor = access.granted
-          ? await policyActorFromAuth(await getOptionalAuth())
-          : null
+        const actor = access.granted ? await policyActorFromAuth(await getOptionalAuth()) : null
         const audienceGranted = actor ? await isChangelogAudienceGranted(actor) : false
 
+        const productEnabled = await isFeatureEnabled('changelog')
         const entries =
-          access.granted && audienceGranted
+          productEnabled && access.granted && audienceGranted
             ? await db
                 .select()
                 .from(changelogEntries)

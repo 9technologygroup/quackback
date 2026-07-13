@@ -1254,6 +1254,20 @@
       "when": 1784772480000,
       "tag": "0195_widget_install_observation",
       "breakpoints": true
+    },
+    {
+      "idx": 196,
+      "version": "7",
+      "when": 1784772540000,
+      "tag": "0196_assistant_config_v2",
+      "breakpoints": true
+    },
+    {
+      "idx": 197,
+      "version": "7",
+      "when": 1784772600000,
+      "tag": "0197_remove_data_connectors",
+      "breakpoints": true
     }
   ]
 }

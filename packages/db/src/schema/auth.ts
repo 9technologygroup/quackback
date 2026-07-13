@@ -24,6 +24,18 @@ import { apiKeys } from './api-keys'
 import { integrations } from './integrations'
 import { companies } from './companies'
 
+interface StoredAssistantConfig {
+  version: number
+  identity: { name: string; avatarUrl: string | null; showAiLabel: boolean }
+  voice: {
+    tone: string
+    responseLength: string
+    additionalInstructions: string
+  }
+  channels: Record<string, { additionalInstructions: string }>
+  toolControls: Record<string, string>
+}
+
 /**
  * User table - User identities for the application
  */
@@ -286,6 +298,22 @@ export const settings = pgTable('settings', {
    * packages/db/src/types.ts for the source-of-truth shape.
    */
   setupState: text('setup_state'),
+  /**
+   * Versioned AI-agent identity and behavior configuration. The application
+   * validates this JSONB value with the client-safe V2 schema before use.
+   */
+  assistantConfig: jsonb('assistant_config')
+    .$type<StoredAssistantConfig>()
+    .notNull()
+    .default({
+      version: 2,
+      identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+      voice: { tone: 'balanced', responseLength: 'balanced', additionalInstructions: '' },
+      channels: {},
+      toolControls: {},
+    }),
+  /** Optimistic-concurrency token incremented with every assistant config write. */
+  assistantConfigRevision: integer('assistant_config_revision').notNull().default(1),
   /**
    * Widget configuration (JSON)
    * Structure: { enabled, defaultBoard?, position?, buttonText?, identifyVerification? }

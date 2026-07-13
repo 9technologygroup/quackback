@@ -7,7 +7,19 @@
  * being visible to a subsequent SELECT in the same transaction —
  * inserts are made on the global connection, not the caller's tx.
  */
-import { db, auditLog, and, desc, eq, gte, lte, ilike, inArray, notInArray } from '@/lib/server/db'
+import {
+  db,
+  auditLog,
+  and,
+  desc,
+  eq,
+  gte,
+  lte,
+  ilike,
+  inArray,
+  notInArray,
+  type Transaction,
+} from '@/lib/server/db'
 import type { SQL } from 'drizzle-orm'
 import type { UserId } from '@quackback/ids'
 import { getClientIp } from '@/lib/server/domains/api/rate-limit'
@@ -100,9 +112,8 @@ export type AuditEventType =
   | 'portal.invite.expired' // emitted by the daily sweep for pending invites past their expiry
   // Imports & exports hub (§I3): full-content conversation/ticket export
   | 'export.conversations.downloaded'
-  // AI config changelog: assistant customization mutations (guidance rules,
-  // tool controls, per-surface instructions, the Basics preset) and data
-  // connector CRUD, surfaced together on the assistant admin page.
+  // AI config changelog: assistant customization mutations surfaced together
+  // on the assistant admin page.
   | 'assistant.guidance.created'
   | 'assistant.guidance.updated'
   | 'assistant.guidance.reordered'
@@ -110,9 +121,11 @@ export type AuditEventType =
   | 'assistant.tool_controls.changed'
   | 'assistant.surfaces.changed'
   | 'assistant.basics.changed'
-  | 'assistant.connector.created'
-  | 'assistant.connector.updated'
-  | 'assistant.connector.deleted'
+  | 'assistant.identity.changed'
+  | 'assistant.voice.changed'
+  | 'assistant.instructions.changed'
+  | 'assistant.channels.changed'
+  | 'assistant.deployment.changed'
   // Verified-email assertion. `emailVerified: true` is a trust decision, not a
   // data field — it grants the same portal access as a confirmed email
   // (domain-match, invite claim, segment portal-access grants). Every path
@@ -193,33 +206,47 @@ function capRequestId(value: string | null): string | null {
 }
 
 export async function recordAuditEvent(input: RecordAuditEventInput): Promise<void> {
+  const values = auditInsertValues(input)
+
+  try {
+    await db.insert(auditLog).values(values)
+  } catch (error) {
+    log.error({ err: error, event: input.event }, 'recordAuditEvent failed')
+  }
+}
+
+function auditInsertValues(input: RecordAuditEventInput): typeof auditLog.$inferInsert {
   const ip = input.headers ? getClientIp(input.headers) : null
   const userAgent = input.headers?.get('user-agent') ?? null
   const requestId = capRequestId(
     input.headers?.get('x-request-id') ?? input.headers?.get('x-correlation-id') ?? null
   )
 
-  try {
-    await db.insert(auditLog).values({
-      eventType: input.event,
-      eventOutcome: input.outcome ?? 'success',
-      actorUserId: input.actor.userId ?? null,
-      actorEmail: input.actor.email ?? null,
-      actorRole: input.actor.role ?? null,
-      actorIp: ip === 'unknown' ? null : ip,
-      actorUserAgent: userAgent,
-      requestId,
-      actorType: input.actor.type ?? null,
-      authMethod: input.actor.authMethod ?? null,
-      targetType: input.target?.type ?? null,
-      targetId: input.target?.id ?? null,
-      beforeValue: input.before ?? null,
-      afterValue: input.after ?? null,
-      metadata: input.metadata ?? null,
-    })
-  } catch (error) {
-    log.error({ err: error, event: input.event }, 'recordAuditEvent failed')
+  return {
+    eventType: input.event,
+    eventOutcome: input.outcome ?? 'success',
+    actorUserId: input.actor.userId ?? null,
+    actorEmail: input.actor.email ?? null,
+    actorRole: input.actor.role ?? null,
+    actorIp: ip === 'unknown' ? null : ip,
+    actorUserAgent: userAgent,
+    requestId,
+    actorType: input.actor.type ?? null,
+    authMethod: input.actor.authMethod ?? null,
+    targetType: input.target?.type ?? null,
+    targetId: input.target?.id ?? null,
+    beforeValue: input.before ?? null,
+    afterValue: input.after ?? null,
+    metadata: input.metadata ?? null,
   }
+}
+
+/** Strict audit insert for mutations whose data write and audit row must commit together. */
+export async function recordAuditEventInTransaction(
+  tx: Transaction,
+  input: RecordAuditEventInput
+): Promise<void> {
+  await tx.insert(auditLog).values(auditInsertValues(input))
 }
 
 /**

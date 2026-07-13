@@ -61,8 +61,16 @@ export type { Webhook } from './webhooks'
 export type { ApiKey } from './api-keys'
 
 // Settings types
-export type { FeatureFlags } from './settings'
-export { FEATURE_FLAG_REGISTRY, LAB_SECTIONS } from './settings'
+export type { FeatureFlags, ProductId } from './settings'
+export {
+  DEFAULT_FEATURE_FLAGS,
+  FEATURE_FLAG_REGISTRY,
+  LAB_SECTIONS,
+  PRODUCT_DEFINITIONS,
+  getFirstEnabledAdminProductPath,
+  getProductFlagUpdate,
+  isProductEnabled,
+} from './settings'
 
 // Import types
 export type { ImportResult } from './import'

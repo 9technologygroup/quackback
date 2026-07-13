@@ -19,7 +19,6 @@ import {
   MoonIcon,
   NoSymbolIcon,
   PaperAirplaneIcon,
-  PuzzlePieceIcon,
   RectangleStackIcon,
   ShieldCheckIcon,
   SignalIcon,
@@ -73,13 +72,6 @@ export const BLOCK_ICONS: Record<BlockStepKind, typeof BoltIcon> = {
   collect_reply: ChatBubbleLeftEllipsisIcon,
   request_csat: FaceSmileIcon,
 }
-
-/** call_connector isn't an ActionType (it's its own top-level node kind, not
- *  a catalogue action — see workflow-graph.ts's TreeStep doc) and isn't a
- *  BlockStepKind either (it never posts a message and is legal in both
- *  workflow classes), so it gets its own single icon constant rather than an
- *  entry in either Record above. */
-export const CALL_CONNECTOR_ICON = PuzzlePieceIcon
 
 export const GATE_TINT = 'bg-amber-500/10 text-amber-600 dark:text-amber-500'
 export const STEP_TINT = 'bg-muted text-muted-foreground'

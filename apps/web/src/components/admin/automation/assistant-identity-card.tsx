@@ -1,202 +1,280 @@
-import { useRouter } from '@tanstack/react-router'
-import { useState, useTransition } from 'react'
+import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useIntl } from 'react-intl'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
-import { InlineSpinner } from '@/components/admin/settings/inline-spinner'
 import { Avatar } from '@/components/ui/avatar'
-import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import { useUpdateWidgetConfig } from '@/lib/client/mutations/settings'
+import { assistantQueries } from '@/lib/client/queries/assistant'
+import { useUpdateAssistantIdentity } from '@/lib/client/mutations/assistant'
+import type { AssistantIdentity } from '@/lib/shared/assistant/config'
+import {
+  AssistantSaveFeedback,
+  type AssistantSaveState,
+  isAssistantFieldManaged,
+  isAssistantRevisionConflict,
+  ManagedSettingHint,
+  useUnsavedChanges,
+} from './assistant-form'
 
-/**
- * The AI agent's deploy card: enable + auto-reply toggles, and the identity
- * (name + avatar) that fronts new messenger conversations. This is the
- * fastest path to putting the assistant in front of customers.
- */
-export function AssistantIdentityCard({
-  initial,
-}: {
-  initial: {
-    enabled: boolean
-    respond: boolean
-    name: string
-    avatarUrl: string
-    showAiLabel?: boolean
+function identityEquals(a: AssistantIdentity | null, b: AssistantIdentity | null): boolean {
+  return Boolean(
+    a && b && a.name === b.name && a.avatarUrl === b.avatarUrl && a.showAiLabel === b.showAiLabel
+  )
+}
+
+export function AssistantIdentityCard() {
+  const intl = useIntl()
+  const settingsQuery = useQuery(assistantQueries.settings())
+  const updateIdentity = useUpdateAssistantIdentity()
+  const [draft, setDraft] = useState<AssistantIdentity | null>(null)
+  const [saved, setSaved] = useState<AssistantIdentity | null>(null)
+  const [saveState, setSaveState] = useState<AssistantSaveState>('idle')
+
+  const dirty = Boolean(draft && saved && !identityEquals(draft, saved))
+  useUnsavedChanges(dirty, 'basics')
+
+  useEffect(() => {
+    if (!settingsQuery.data || dirty) return
+    setDraft(settingsQuery.data.config.identity)
+    setSaved(settingsQuery.data.config.identity)
+  }, [settingsQuery.data, dirty])
+
+  if (settingsQuery.isError) {
+    return (
+      <SettingsCard
+        title={intl.formatMessage({
+          id: 'automation.agent.identity.title',
+          defaultMessage: 'Identity',
+        })}
+      >
+        <div className="flex flex-col items-start gap-3">
+          <p role="alert" className="text-sm text-destructive">
+            {intl.formatMessage({
+              id: 'automation.agent.loadError',
+              defaultMessage: 'AI agent settings could not be loaded.',
+            })}
+          </p>
+          <Button variant="outline" size="sm" onClick={() => void settingsQuery.refetch()}>
+            {intl.formatMessage({ id: 'automation.agent.retry', defaultMessage: 'Try again' })}
+          </Button>
+        </div>
+      </SettingsCard>
+    )
   }
-}) {
-  const router = useRouter()
-  const updateWidgetConfig = useUpdateWidgetConfig()
-  const [isPending, startTransition] = useTransition()
-  const [saving, setSaving] = useState(false)
 
-  const [enabled, setEnabled] = useState(initial.enabled)
-  const [respond, setRespond] = useState(initial.respond)
-  const [name, setName] = useState(initial.name)
-  const [avatarUrl, setAvatarUrl] = useState(initial.avatarUrl)
-  const [showAiLabel, setShowAiLabel] = useState(initial.showAiLabel ?? false)
-  // Last persisted values, so blur only saves actual changes.
-  const [savedName, setSavedName] = useState(initial.name)
-  const [savedAvatarUrl, setSavedAvatarUrl] = useState(initial.avatarUrl)
+  if (settingsQuery.isPending || !draft || !saved) {
+    return (
+      <SettingsCard
+        title={intl.formatMessage({
+          id: 'automation.agent.identity.title',
+          defaultMessage: 'Identity',
+        })}
+      >
+        <p role="status" className="text-sm text-muted-foreground">
+          {intl.formatMessage({
+            id: 'automation.agent.loading',
+            defaultMessage: 'Loading AI agent settings…',
+          })}
+        </p>
+      </SettingsCard>
+    )
+  }
 
-  const isBusy = saving || isPending
-
-  async function save(
-    updates: { enabled?: boolean; respond?: boolean; name?: string; avatarUrl?: string; showAiLabel?: boolean },
-    revert: () => void
-  ) {
-    setSaving(true)
+  const managedPaths = settingsQuery.data.managedFieldPaths
+  const nameManaged = isAssistantFieldManaged(managedPaths, 'identity.name')
+  const avatarManaged = isAssistantFieldManaged(managedPaths, 'identity.avatarUrl')
+  const labelManaged = isAssistantFieldManaged(managedPaths, 'identity.showAiLabel')
+  const nameError = draft.name.trim()
+    ? draft.name.length > 80
+      ? intl.formatMessage({
+          id: 'automation.agent.identity.nameTooLong',
+          defaultMessage: 'Use 80 characters or fewer.',
+        })
+      : null
+    : intl.formatMessage({
+        id: 'automation.agent.identity.nameRequired',
+        defaultMessage: 'Enter a name for your AI agent.',
+      })
+  let avatarError: string | null = null
+  if (draft.avatarUrl && draft.avatarUrl.length > 2_000) {
+    avatarError = intl.formatMessage({
+      id: 'automation.agent.identity.avatarTooLong',
+      defaultMessage: 'Use 2,000 characters or fewer.',
+    })
+  } else if (draft.avatarUrl) {
     try {
-      await updateWidgetConfig.mutateAsync({ messenger: { assistant: updates } })
-      startTransition(() => router.invalidate())
+      const url = new URL(draft.avatarUrl)
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('invalid protocol')
     } catch {
-      revert()
-    } finally {
-      setSaving(false)
+      avatarError = intl.formatMessage({
+        id: 'automation.agent.identity.avatarInvalid',
+        defaultMessage: 'Enter a valid HTTP or HTTPS URL.',
+      })
+    }
+  }
+
+  async function reloadLatest() {
+    const result = await settingsQuery.refetch()
+    if (!result.data) return
+    setDraft(result.data.config.identity)
+    setSaved(result.data.config.identity)
+    setSaveState('idle')
+  }
+
+  async function save() {
+    if (nameError || avatarError || !settingsQuery.data) return
+    const identity = draft
+    if (!identity) return
+    setSaveState('saving')
+    try {
+      const result = await updateIdentity.mutateAsync({
+        expectedRevision: settingsQuery.data.revision,
+        identity: {
+          name: identity.name.trim(),
+          avatarUrl: identity.avatarUrl?.trim() || null,
+          showAiLabel: identity.showAiLabel,
+        },
+      })
+      setDraft(result.config.identity)
+      setSaved(result.config.identity)
+      setSaveState('saved')
+    } catch (error) {
+      setSaveState(isAssistantRevisionConflict(error) ? 'conflict' : 'error')
     }
   }
 
   return (
     <SettingsCard
-      title="AI Agent"
-      description="The fastest way to deploy your AI assistant to the messenger"
+      title={intl.formatMessage({
+        id: 'automation.agent.identity.title',
+        defaultMessage: 'Identity',
+      })}
+      description={intl.formatMessage({
+        id: 'automation.agent.identity.description',
+        defaultMessage: 'Choose how the AI agent appears to customers.',
+      })}
     >
-      <div className="space-y-4">
-        <div className="flex items-center justify-between rounded-lg border border-border/50 p-4">
-          <div>
-            <Label htmlFor="assistant-enabled" className="text-sm font-medium cursor-pointer">
-              Enable AI agent
-            </Label>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Your assistant greets visitors and fronts new conversations. When off, the messenger
-              uses your team name and live availability instead.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <InlineSpinner visible={isBusy} />
-            <Switch
-              id="assistant-enabled"
-              checked={enabled}
-              onCheckedChange={(checked) => {
-                setEnabled(checked)
-                void save({ enabled: checked }, () => setEnabled(!checked))
-              }}
-              disabled={isBusy}
-              aria-label="Assistant identity"
-            />
-          </div>
+      <div className="space-y-5">
+        <div className="flex items-center gap-3">
+          <Avatar src={draft.avatarUrl} name={draft.name || 'AI'} className="size-10 text-sm" />
+          <p className="max-w-xl text-xs text-muted-foreground">
+            {intl.formatMessage({
+              id: 'automation.agent.identity.previewHelp',
+              defaultMessage: 'This identity appears in the Web widget and customer conversations.',
+            })}
+          </p>
         </div>
 
-        {enabled && (
-          <>
-            <div className="flex items-center justify-between rounded-lg border border-border/50 p-4">
-              <div>
-                <Label htmlFor="assistant-respond" className="text-sm font-medium cursor-pointer">
-                  Reply to messages automatically
-                </Label>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Your assistant answers new messenger conversations from your help center and hands
-                  off to your team when it can&apos;t help. When off, it only greets and fronts new
-                  conversations.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <InlineSpinner visible={isBusy} />
-                <Switch
-                  id="assistant-respond"
-                  checked={respond}
-                  onCheckedChange={(checked) => {
-                    setRespond(checked)
-                    void save({ respond: checked }, () => setRespond(!checked))
-                  }}
-                  disabled={isBusy}
-                  aria-label="Reply to messages automatically"
-                />
-              </div>
-            </div>
+        <div className="space-y-2">
+          <Label htmlFor="assistant-name">
+            {intl.formatMessage({ id: 'automation.agent.identity.name', defaultMessage: 'Name' })}
+          </Label>
+          <Input
+            id="assistant-name"
+            value={draft.name}
+            aria-invalid={Boolean(nameError)}
+            aria-describedby={nameError ? 'assistant-name-error' : undefined}
+            disabled={nameManaged || saveState === 'saving'}
+            onChange={(event) => {
+              setDraft({ ...draft, name: event.target.value })
+              setSaveState('idle')
+            }}
+          />
+          {nameError && (
+            <p id="assistant-name-error" className="text-xs text-destructive">
+              {nameError}
+            </p>
+          )}
+          {nameManaged && <ManagedSettingHint />}
+        </div>
 
-            <div className="space-y-4 rounded-lg border border-border/50 p-4">
-              <div className="flex items-center gap-3">
-                <Avatar
-                  src={avatarUrl || null}
-                  name={name || 'Quinn'}
-                  className="size-10 text-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  This identity appears on the greeting, the new-conversation header, and unassigned
-                  conversations in the Messages tab.
-                </p>
-              </div>
+        <div className="space-y-2">
+          <Label htmlFor="assistant-avatar">
+            {intl.formatMessage({
+              id: 'automation.agent.identity.avatar',
+              defaultMessage: 'Avatar URL',
+            })}
+          </Label>
+          <Input
+            id="assistant-avatar"
+            type="url"
+            value={draft.avatarUrl ?? ''}
+            placeholder={intl.formatMessage({
+              id: 'automation.agent.identity.avatarPlaceholder',
+              defaultMessage: 'https://example.com/agent.png',
+            })}
+            aria-invalid={Boolean(avatarError)}
+            aria-describedby={avatarError ? 'assistant-avatar-error' : 'assistant-avatar-help'}
+            disabled={avatarManaged || saveState === 'saving'}
+            onChange={(event) => {
+              setDraft({ ...draft, avatarUrl: event.target.value || null })
+              setSaveState('idle')
+            }}
+          />
+          {avatarError ? (
+            <p id="assistant-avatar-error" className="text-xs text-destructive">
+              {avatarError}
+            </p>
+          ) : (
+            <p id="assistant-avatar-help" className="text-xs text-muted-foreground">
+              {intl.formatMessage({
+                id: 'automation.agent.identity.avatarHelp',
+                defaultMessage: 'Leave this empty to use the agent’s initial.',
+              })}
+            </p>
+          )}
+          {avatarManaged && <ManagedSettingHint />}
+        </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="assistant-name" className="text-xs text-muted-foreground">
-                  Name
-                </Label>
-                <Input
-                  id="assistant-name"
-                  value={name}
-                  maxLength={80}
-                  placeholder="Quinn"
-                  onChange={(e) => setName(e.target.value)}
-                  onBlur={() => {
-                    const next = name.trim() || 'Quinn'
-                    setName(next)
-                    if (next === savedName) return
-                    void save({ name: next }, () => setName(savedName))
-                    setSavedName(next)
-                  }}
-                  disabled={isBusy}
-                />
-              </div>
+        <div className="flex min-h-11 items-center justify-between gap-4 rounded-lg border border-border/50 p-3 sm:p-4">
+          <div>
+            <Label htmlFor="assistant-show-ai-label" className="cursor-pointer text-sm font-medium">
+              {intl.formatMessage({
+                id: 'automation.agent.identity.aiLabel',
+                defaultMessage: 'Show AI label',
+              })}
+            </Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {intl.formatMessage({
+                id: 'automation.agent.identity.aiLabelHelp',
+                defaultMessage: 'Helps customers understand that they are talking to an AI agent.',
+              })}
+            </p>
+            {labelManaged && <ManagedSettingHint />}
+          </div>
+          <Switch
+            id="assistant-show-ai-label"
+            checked={draft.showAiLabel}
+            disabled={labelManaged || saveState === 'saving'}
+            onCheckedChange={(checked) => {
+              setDraft({ ...draft, showAiLabel: checked })
+              setSaveState('idle')
+            }}
+          />
+        </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="assistant-avatar" className="text-xs text-muted-foreground">
-                  Avatar URL
-                </Label>
-                <Input
-                  id="assistant-avatar"
-                  value={avatarUrl}
-                  maxLength={2000}
-                  placeholder="https://example.com/assistant.png"
-                  onChange={(e) => setAvatarUrl(e.target.value)}
-                  onBlur={() => {
-                    const next = avatarUrl.trim()
-                    if (next === savedAvatarUrl) return
-                    void save({ avatarUrl: next }, () => setAvatarUrl(savedAvatarUrl))
-                    setSavedAvatarUrl(next)
-                  }}
-                  disabled={isBusy}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Falls back to the assistant&apos;s initial when empty.
-                </p>
-              </div>
-
-              <div className="flex items-center justify-between rounded-lg border border-border/50 p-4">
-                <div>
-                  <Label htmlFor="assistant-show-ai-label" className="text-sm font-medium cursor-pointer">
-                    Show AI label
-                  </Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Adds an AI label after the assistant name so customers know they are talking to an assistant.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <InlineSpinner visible={isBusy} />
-                  <Switch
-                    id="assistant-show-ai-label"
-                    checked={showAiLabel}
-                    onCheckedChange={(checked) => {
-                      setShowAiLabel(checked)
-                      void save({ showAiLabel: checked }, () => setShowAiLabel(!checked))
-                    }}
-                    disabled={isBusy}
-                    aria-label="Show AI label"
-                  />
-                </div>
-              </div>
-            </div>
-          </>
-        )}
+        <AssistantSaveFeedback state={saveState} onReload={reloadLatest} />
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            className="min-h-11 sm:min-h-9"
+            disabled={!dirty || Boolean(nameError || avatarError) || saveState === 'saving'}
+            onClick={() => void save()}
+          >
+            {saveState === 'saving'
+              ? intl.formatMessage({
+                  id: 'automation.agent.save.savingButton',
+                  defaultMessage: 'Saving…',
+                })
+              : intl.formatMessage({
+                  id: 'automation.agent.save.button',
+                  defaultMessage: 'Save changes',
+                })}
+          </Button>
+        </div>
       </div>
     </SettingsCard>
   )

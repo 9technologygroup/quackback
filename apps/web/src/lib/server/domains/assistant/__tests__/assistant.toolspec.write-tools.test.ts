@@ -76,8 +76,8 @@ describe('set_attribute', () => {
 
   it('has the expected spec shape', () => {
     expect(spec.risk).toBe('write')
-    expect(spec.supportedModes).toEqual(['disabled', 'approval', 'autonomous'])
-    expect(spec.defaultMode).toBe('autonomous')
+    expect(spec.supportedModes).toEqual(['disabled', 'approval'])
+    expect(spec.defaultMode).toBe('approval')
     expect(spec.permissions).toEqual([PERMISSIONS.CONVERSATION_SET_ATTRIBUTES])
   })
 
@@ -187,7 +187,7 @@ describe('end_conversation', () => {
 
   it('has the expected spec shape', () => {
     expect(spec.risk).toBe('write')
-    expect(spec.supportedModes).toEqual(['disabled', 'approval', 'autonomous'])
+    expect(spec.supportedModes).toEqual(['disabled', 'approval'])
     expect(spec.defaultMode).toBe('approval')
     expect(spec.permissions).toEqual([PERMISSIONS.CONVERSATION_SET_STATUS])
   })
@@ -276,7 +276,7 @@ describe('create_ticket', () => {
 
   it('has the expected spec shape', () => {
     expect(spec.risk).toBe('write')
-    expect(spec.supportedModes).toEqual(['disabled', 'approval', 'autonomous'])
+    expect(spec.supportedModes).toEqual(['disabled', 'approval'])
     expect(spec.defaultMode).toBe('approval')
     expect(spec.permissions).toEqual([PERMISSIONS.TICKET_CREATE])
   })

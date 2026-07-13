@@ -1,89 +1,72 @@
 // @vitest-environment happy-dom
-/**
- * Test for the assistant identity card: enable, respond, name, avatar, and AI label toggle
- */
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import type { ReactElement } from 'react'
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IntlProvider } from 'react-intl'
 
-const mockUpdateWidgetConfig = vi.fn()
+const updateIdentity = vi.fn()
+const config = {
+  version: 2 as const,
+  identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+  voice: {
+    tone: 'balanced' as const,
+    responseLength: 'balanced' as const,
+    additionalInstructions: '',
+  },
+  channels: {},
+  toolControls: {},
+}
 
-vi.mock('@/lib/client/mutations/settings', () => ({
-  useUpdateWidgetConfig: () => ({
-    mutateAsync: mockUpdateWidgetConfig,
-  }),
-}))
-
-vi.mock('@tanstack/react-router', () => ({
-  useRouter: () => ({ invalidate: vi.fn() }),
+vi.mock('@/lib/server/functions/assistant-settings', () => ({
+  getAssistantSettingsFn: vi.fn(async () => ({ config, revision: 3, managedFieldPaths: [] })),
+  updateAssistantIdentityFn: (input: { data: unknown }) => updateIdentity(input),
+  updateAssistantVoiceFn: vi.fn(),
+  updateAssistantChannelsFn: vi.fn(),
+  updateAssistantToolControlsFn: vi.fn(),
+  updateWidgetAssistantDeploymentFn: vi.fn(),
 }))
 
 import { AssistantIdentityCard } from '../assistant-identity-card'
 
 afterEach(() => {
   cleanup()
-  mockUpdateWidgetConfig.mockClear()
+  updateIdentity.mockReset()
 })
 
-function renderWithClient(ui: ReactElement) {
+function renderCard() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>)
+  return render(
+    <IntlProvider locale="en" messages={{}} onError={() => {}}>
+      <QueryClientProvider client={queryClient}>
+        <AssistantIdentityCard />
+      </QueryClientProvider>
+    </IntlProvider>
+  )
 }
 
 describe('AssistantIdentityCard', () => {
-  const defaultProps = {
-    initial: {
-      enabled: true,
-      respond: false,
-      name: 'Quinn',
-      avatarUrl: '',
-      showAiLabel: false,
-    },
-  }
-
-  it('renders the assistant identity card with all sections', () => {
-    renderWithClient(<AssistantIdentityCard {...defaultProps} />)
-    expect(screen.getByText('AI Agent')).toBeInTheDocument()
-    expect(screen.getByText('Enable AI agent')).toBeInTheDocument()
+  it('loads the V2 identity', async () => {
+    renderCard()
+    expect(await screen.findByDisplayValue('Quinn')).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Show AI label' })).toBeChecked()
   })
 
-  it('displays the name input field', () => {
-    renderWithClient(<AssistantIdentityCard {...defaultProps} />)
-    const nameInput = screen.getByDisplayValue('Quinn')
-    expect(nameInput).toBeInTheDocument()
-  })
-
-  it('saves showAiLabel when the toggle is clicked', async () => {
-    mockUpdateWidgetConfig.mockResolvedValue({})
-    renderWithClient(<AssistantIdentityCard {...defaultProps} />)
-
-    // Find the "Show AI label" switch
-    const switches = screen.getAllByRole('switch')
-    const showAiLabelSwitch = switches[switches.length - 1] // Last switch should be the AI label toggle
-
-    fireEvent.click(showAiLabelSwitch)
-
-    await waitFor(() => {
-      expect(mockUpdateWidgetConfig).toHaveBeenCalledWith({
-        messenger: {
-          assistant: {
-            showAiLabel: true,
-          },
+  it('uses an explicit save and sends the complete identity with its revision', async () => {
+    updateIdentity.mockResolvedValue({
+      config: { ...config, identity: { ...config.identity, name: 'Fibi' } },
+      revision: 4,
+    })
+    renderCard()
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Fibi' } })
+    expect(updateIdentity).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(updateIdentity).toHaveBeenCalledWith({
+        data: {
+          expectedRevision: 3,
+          identity: { name: 'Fibi', avatarUrl: null, showAiLabel: true },
         },
       })
-    })
-  })
-
-  it('displays the Show AI label toggle when assistant is enabled', () => {
-    renderWithClient(<AssistantIdentityCard {...defaultProps} />)
-    expect(screen.getByText(/Show AI label/i)).toBeInTheDocument()
-  })
-
-  it('displays the helper text for the AI label toggle', () => {
-    renderWithClient(<AssistantIdentityCard {...defaultProps} />)
-    expect(
-      screen.getByText(/Adds an AI label after the assistant name/i)
-    ).toBeInTheDocument()
+    )
   })
 })

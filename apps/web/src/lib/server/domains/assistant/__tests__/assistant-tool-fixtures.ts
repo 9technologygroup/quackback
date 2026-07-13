@@ -29,6 +29,7 @@ export function fakePendingActionRow(
     conversationId: 'conversation_1',
     ticketId: null,
     involvementId: 'assistant_involvement_1',
+    originRole: 'customer_support',
     toolName: 'close_conversation',
     args: { reason: 'resolved' },
     summary: 'Close conversation: resolved',

@@ -66,7 +66,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { cn } from '@/lib/shared/utils'
 import { useWorkflowEntities } from './entities'
-import { BLOCK_ICONS, CALL_CONNECTOR_ICON, ConfirmDeleteDialog, TONE_TILE } from './step-visuals'
+import { BLOCK_ICONS, ConfirmDeleteDialog, TONE_TILE } from './step-visuals'
 import type { BuilderSelection } from './types'
 import type {
   FrequencyCap,
@@ -111,7 +111,6 @@ const ICONS: Record<IconKey, ComponentType<{ className?: string }>> = {
   set_ticket_status: TicketIcon,
   convert_to_ticket: TicketIcon,
   send_webhook: PaperAirplaneIcon,
-  call_connector: CALL_CONNECTOR_ICON,
   ...BLOCK_ICONS,
 }
 

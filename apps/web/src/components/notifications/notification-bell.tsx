@@ -71,7 +71,7 @@ export function NotificationBell({ className, popoverSide = 'right' }: Notificat
         align={isBottomAligned ? 'end' : 'start'}
         side={popoverSide}
         sideOffset={8}
-        className="w-80 p-0"
+        className="w-76 p-0"
       >
         <NotificationDropdown onClose={() => setOpen(false)} />
       </PopoverContent>

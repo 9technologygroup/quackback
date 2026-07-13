@@ -40,6 +40,7 @@ export {
   ONBOARDING_OUTCOMES,
   INTERACTIVE_BLOCK_KINDS,
   CSAT_FACES,
+  DEFAULT_SETUP_STATE,
 } from '@quackback/db/types'
 export type {
   AccessTier,

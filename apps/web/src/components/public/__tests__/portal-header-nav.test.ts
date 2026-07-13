@@ -31,6 +31,15 @@ describe('buildNavItems', () => {
     expect(items.map((i) => i.to)).toEqual(['/', '/roadmap'])
   })
 
+  it('drops Feedback and Roadmap when the Feedback product is disabled', () => {
+    const items = buildNavItems({
+      feedbackEnabled: false,
+      helpCenterEnabled: true,
+      supportEnabled: false,
+    })
+    expect(items.map((item) => item.to)).toEqual(['/changelog', '/hc'])
+  })
+
   it('keeps Changelog by default when changelogEnabled is omitted', () => {
     const items = buildNavItems({ helpCenterEnabled: false, supportEnabled: false })
     expect(items.map((i) => i.to)).toContain('/changelog')

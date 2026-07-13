@@ -5,9 +5,9 @@
  * backs the closed-item and lastCustomerMessageId-staleness gates (both 409
  * CONFLICT — the client renders nothing for a 409), the FINAL-ONLY SSE stream
  * (no suggest.v1.delta frames, per the contract doc), and the exact
- * `runAssistantTurn` input this route commits to (`surface: 'copilot'`,
- * `copilotIntent: 'suggest'`, and nothing intent-shaped — no messages, no
- * writeToolPolicy, no onTextDelta: the intent profile owns all of it inside
+ * `runAssistantTurn` input this route commits to (`role: 'suggested_reply'`,
+ * `surface: 'copilot'`, and no messages or caller-owned tool policy: the role
+ * owns those invariants inside
  * the runtime). `runAssistantTurn` itself is mocked throughout, mirroring
  * copilot.test.ts.
  */
@@ -232,14 +232,14 @@ describe('POST /api/admin/assistant/suggest', () => {
     expect(mockLoadAssistantItemState).toHaveBeenCalledWith(CONVERSATION_ID, null)
   })
 
-  it('calls the runtime with surface copilot and copilotIntent suggest, passing nothing intent-shaped (no messages, no writeToolPolicy, no onTextDelta — the intent profile owns all of it)', async () => {
+  it('calls the runtime with the explicit suggested-reply boundary and no messages', async () => {
     await handleSuggest({ request: makeRequest(validBody) })
 
     expect(mockRunAssistantTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: CONVERSATION_ID,
+        role: 'suggested_reply',
         surface: 'copilot',
-        copilotIntent: 'suggest',
         latestCustomerMessageId: LATEST_MESSAGE_ID,
       })
     )
@@ -247,19 +247,23 @@ describe('POST /api/admin/assistant/suggest', () => {
     // assistant.runtime.ts), not on this caller — pinned there, absent here.
     const input = mockRunAssistantTurn.mock.calls[0][0]
     expect(input).not.toHaveProperty('writeToolPolicy')
+    expect(input).not.toHaveProperty('copilotIntent')
+    expect(input).not.toHaveProperty('askerActor')
     expect(input).not.toHaveProperty('messages')
     expect(input).not.toHaveProperty('onTextDelta')
   })
 
-  it('attributes the turn to the viewing teammate and threads askerActor', async () => {
+  it('attributes the turn to the viewing teammate without threading the gate actor', async () => {
     const resolvedActor = { principalId: 'principal_1' }
     mockPolicyActorFromAuth.mockResolvedValue(resolvedActor)
 
     await handleSuggest({ request: makeRequest(validBody) })
 
     expect(mockRunAssistantTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ actorPrincipalId: 'principal_1', askerActor: resolvedActor })
+      expect.objectContaining({ actorPrincipalId: 'principal_1' })
     )
+    expect(mockAssertConversationViewable).toHaveBeenCalledWith(CONVERSATION_ID, resolvedActor)
+    expect(mockRunAssistantTurn.mock.calls[0][0]).not.toHaveProperty('askerActor')
   })
 
   it('streams the final frame ONLY: no suggest.v1.delta frames, per the final-only contract', async () => {
@@ -300,7 +304,7 @@ describe('POST /api/admin/assistant/suggest', () => {
     ])
   })
 
-  it('streams a skip final payload (empty card) when the model declares the honest-miss', async () => {
+  it('streams a skip final payload (empty card) for a tool-derived honest miss', async () => {
     mockRunAssistantTurn.mockResolvedValue({
       status: 'answered',
       text: 'Would have been a guess.',
@@ -316,7 +320,7 @@ describe('POST /api/admin/assistant/suggest', () => {
     expect(frames.at(-1)).toEqual(SKIP_FINAL_FRAME)
   })
 
-  it('maps a done-but-EMPTY final text to a skip (a model that left "text" blank without setting skip must not render a bare card)', async () => {
+  it('maps a done-but-EMPTY final text to a skip so a malformed result cannot render a bare card', async () => {
     mockRunAssistantTurn.mockResolvedValue({
       status: 'answered',
       text: '',
@@ -365,7 +369,12 @@ describe('POST /api/admin/assistant/suggest: ticket-scoped (unified inbox §2.9)
     expect(res.status).toBe(200)
     expect(mockLoadAssistantItemState).toHaveBeenCalledWith(null, TICKET_ID)
     expect(mockRunAssistantTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: null, ticketId: TICKET_ID, surface: 'copilot' })
+      expect.objectContaining({
+        conversationId: null,
+        ticketId: TICKET_ID,
+        role: 'suggested_reply',
+        surface: 'copilot',
+      })
     )
   })
 

@@ -45,6 +45,7 @@ export const ASSISTANT_HANDOFF_REASONS = [
   'frustration',
   'repetition',
   'low_confidence',
+  'capability_limit',
   'safety',
 ] as const
 

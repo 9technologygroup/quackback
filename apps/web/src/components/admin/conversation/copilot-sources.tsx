@@ -1,5 +1,5 @@
 /**
- * Quinn Copilot's source metadata + rendering (split out of copilot-panel.tsx,
+ * Copilot source metadata + rendering (split out of copilot-panel.tsx,
  * a pure move — see that file's header for the surface this belongs to):
  * the source-type table driving icons/labels for both the Answer-sources
  * filter popover (copilot-panel.tsx's `CopilotAskInput`) and the per-citation

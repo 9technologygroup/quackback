@@ -23,13 +23,21 @@ vi.mock('@/lib/server/domains/principals/principal.service', () => ({
   createServicePrincipal: (...a: unknown[]) => mockCreate(...a),
 }))
 
+const mockGetAssistantConfig = vi.fn()
+vi.mock('@/lib/server/domains/settings/settings.assistant', () => ({
+  getAssistantConfig: (...args: unknown[]) => mockGetAssistantConfig(...args),
+}))
+
 import {
   getAssistantPrincipal,
   ensureAssistantPrincipal,
   ASSISTANT_DEFAULT_NAME,
 } from '../assistant.principal'
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockGetAssistantConfig.mockRejectedValue(new Error('settings unavailable'))
+})
 
 describe('getAssistantPrincipal', () => {
   it('returns the assistant service principal when present', async () => {
@@ -62,6 +70,22 @@ describe('ensureAssistantPrincipal', () => {
         displayName: ASSISTANT_DEFAULT_NAME,
         serviceMetadata: { kind: 'integration', integrationType: 'assistant' },
       },
+      expect.anything()
+    )
+  })
+
+  it('uses the configured customer-facing identity when provisioning', async () => {
+    mockLimit.mockResolvedValue([])
+    mockGetAssistantConfig.mockResolvedValue({
+      revision: 4,
+      config: { identity: { name: 'Avery', avatarUrl: null, showAiLabel: true } },
+    })
+    mockCreate.mockResolvedValue({ id: 'principal_new' })
+
+    await ensureAssistantPrincipal()
+
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ displayName: 'Avery' }),
       expect.anything()
     )
   })

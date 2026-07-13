@@ -102,7 +102,7 @@ function jsonEqual(a: unknown, b: unknown): boolean {
 }
 
 export function useWorkflowBuilder(workflow: WorkflowDTO) {
-  const { labels, connectorMeta } = useWorkflowEntities()
+  const { labels } = useWorkflowEntities()
   const updateMutation = useUpdateWorkflow()
   const statusMutation = useSetWorkflowStatus()
 
@@ -230,14 +230,11 @@ export function useWorkflowBuilder(workflow: WorkflowDTO) {
   const stepIssues = useMemo(
     () =>
       graphDraft.mode === 'visual'
-        ? collectStepIssues(graphDraft.tree, workflowClass, connectorMeta)
+        ? collectStepIssues(graphDraft.tree, workflowClass)
         : new Map<string, string>(),
-    [graphDraft, workflowClass, connectorMeta]
+    [graphDraft, workflowClass]
   )
-  const issues = useMemo(
-    () => draftIssues(graphDraft, workflowClass, connectorMeta),
-    [graphDraft, workflowClass, connectorMeta]
-  )
+  const issues = useMemo(() => draftIssues(graphDraft, workflowClass), [graphDraft, workflowClass])
   const outline = useMemo(
     () =>
       graphDraft.mode === 'visual'

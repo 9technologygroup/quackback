@@ -15,11 +15,7 @@
  * graceful note instead.
  */
 import { createHash } from 'node:crypto'
-import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service'
-import {
-  getAssistantToolControls,
-  type AssistantToolControls,
-} from '@/lib/server/domains/settings/settings.assistant'
+import type { AssistantToolControls } from '@/lib/server/domains/settings/settings.assistant'
 import { can } from '@/lib/server/policy/authorize'
 import { logger } from '@/lib/server/logger'
 import type { ConversationId, TicketId } from '@quackback/ids'
@@ -97,40 +93,21 @@ export function resolveEffectiveToolMode(
   saved: ToolControlMode | undefined,
   ctx: AssistantToolContext
 ): EffectiveToolMode {
+  // Core orchestration controls are part of the agent protocol, not workspace
+  // capabilities. They are always autonomous and never approval/disable
+  // settings: the model must express these decisions as tool calls on every
+  // deployment, including while the broader actions feature is off.
+  if (spec.risk === 'control') return 'autonomous'
   const mode = saved ?? spec.defaultMode
-  if (!spec.supportedModes.includes(mode)) {
-    log.warn(
-      { tool: spec.name, mode },
-      'assistant tool control mode not supported by this tool; disabling'
-    )
-    return 'disabled'
-  }
   if (mode === 'disabled') return 'disabled'
   if (spec.risk === 'write') {
     // Fold 5: a suggestion turn never even considers proposing or simulating
     // a write — read-only by contract, so this short-circuits before the
     // propose/simulate folds below.
     if (ctx.writeToolPolicy === 'disabled') return 'disabled'
-    // The copilot surface proposes every genuine ACTION for teammate approval
-    // (P2-C.4), but a metadata write (recording a classification attribute) is
-    // not an action: it is guarded by the write path's AI-precedence rule and
-    // mirrors the deterministic classifier, so it is exempt from the forcing
-    // and falls through to its configured mode below (autonomous by default) —
-    // PROVIDED the asking teammate's own permission set covers every
-    // permission the tool declares (`ctx.askerActor`). Tools execute under
-    // Quinn's actor, so the exemption alone would let a teammate holding only
-    // copilot.use trigger a write they could not perform themselves; the
-    // ceiling fails closed (no `askerActor`, or any missing permission ⇒ the
-    // tool proposes, and the approval flow re-checks the approver). Quinn's
-    // own autonomous surfaces never set 'propose', so the exemption — and
-    // this ceiling — are not in play there. See `metadataWrite` on
-    // AssistantToolSpec.
-    const asker = ctx.askerActor
-    const metadataWriteWithinAskerCeiling =
-      spec.metadataWrite === true &&
-      asker !== undefined &&
-      spec.permissions.every((permission) => can(asker, permission))
-    if (ctx.writeToolPolicy === 'propose' && !metadataWriteWithinAskerCeiling) {
+    // Every Writer action from autonomous customer support or Copilot requires
+    // an explicit teammate decision. Classification writes are mutations too.
+    if (ctx.writeToolPolicy === 'propose') {
       if (!spec.supportedModes.includes('approval')) {
         log.warn(
           { tool: spec.name, mode: 'approval' },
@@ -141,6 +118,13 @@ export function resolveEffectiveToolMode(
       return 'approval'
     }
     if (ctx.simulate && (ctx.writeToolPolicy ?? 'simulate') === 'simulate') return 'simulate'
+  }
+  if (!spec.supportedModes.includes(mode)) {
+    log.warn(
+      { tool: spec.name, mode },
+      'assistant tool control mode not supported by this tool; disabling'
+    )
+    return 'disabled'
   }
   return mode
 }
@@ -212,6 +196,7 @@ async function runWithPipeline(
   args: unknown,
   ctx: AssistantToolContext
 ): Promise<unknown> {
+  ctx.toolCalls.push(spec.name)
   if (mode === 'simulate') {
     // A write tool's outcome resolved to a preview instead of a real run.
     // Two distinct reasons land here (see `AssistantToolContext.writeToolPolicy`
@@ -220,6 +205,7 @@ async function runWithPipeline(
     // (nowhere to attach), while copilot has a real conversation but previews
     // anyway because a teammate asking Quinn a question about the
     // conversation must never let Quinn act in it (policy says preview).
+    ctx.toolOutcomes.push({ name: spec.name, outcome: 'simulated' })
     return { simulated: true, summary: spec.summarize(args) }
   }
 
@@ -238,6 +224,7 @@ async function runWithPipeline(
       toolName: spec.name,
       args: args as Record<string, unknown>,
       summary,
+      originRole: ctx.role,
       // Same-shaped key as the autonomous branch's claim below: a synthesis
       // retry that re-runs this exact write-tool call for the same turn
       // dedupes onto the first proposal row instead of inserting a duplicate
@@ -254,6 +241,7 @@ async function runWithPipeline(
     // EXISTING row on a deduped retry, so this still references the one real
     // proposal rather than a phantom second one.
     ctx.proposedActions.push({ id: pending.id, toolName: spec.name, summary, label: spec.label })
+    ctx.toolOutcomes.push({ name: spec.name, outcome: 'proposed' })
     return { status: 'pending_approval', note: PENDING_APPROVAL_NOTE }
   }
 
@@ -268,6 +256,7 @@ async function runWithPipeline(
       reason: `insufficient_permission:${permission}`,
       principalId: ctx.assistantPrincipalId,
     })
+    ctx.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
     return { status: 'denied', note: DENIED_NOTE }
   }
 
@@ -285,10 +274,17 @@ async function runWithPipeline(
       idempotencyKey: resolveIdempotencyKey(spec, args, ctx),
       principalId: ctx.assistantPrincipalId,
     })
-    if (!claimed) return { status: 'skipped_duplicate', note: DUPLICATE_NOTE }
+    if (!claimed) {
+      ctx.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
+      return { status: 'skipped_duplicate', note: DUPLICATE_NOTE }
+    }
   }
 
   const settled = await executeAndFinalize(spec, args, claimed, ctx)
+  ctx.toolOutcomes.push({
+    name: spec.name,
+    outcome: settled.ok ? (spec.risk === 'read' ? 'read' : 'executed') : 'failed',
+  })
   return settled.ok ? settled.result : { status: 'failed', note: FAILED_NOTE }
 }
 
@@ -388,19 +384,25 @@ export async function executeApprovedPendingAction(
 /** Bind a spec straight to its own execute, no pipeline — the shape used
  *  when assistant actions are off, byte-identical to the pre-pipeline tools. */
 function toLegacyServerTool(spec: AssistantToolSpec, ctx: AssistantToolContext) {
-  return spec.definition.server<AssistantToolContext>((args) => spec.execute(args, ctx))
+  return spec.definition.server<AssistantToolContext>(async (args) => {
+    ctx.toolCalls.push(spec.name)
+    try {
+      const result = await spec.execute(args, ctx)
+      ctx.toolOutcomes.push({ name: spec.name, outcome: 'read' })
+      return result
+    } catch (error) {
+      ctx.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
+      throw error
+    }
+  })
 }
 
 /**
  * Build this turn's tool set, paired with the specs that produced it
  * (`activeSpecs[i]` is the spec behind `tools[i]`). Assistant actions off
  * means every catalogue tool runs exactly as before the pipeline existed,
- * with no settings read beyond the flag — that legacy branch uses the static
- * registry directly and never resolves connector tools, even if
- * assistantTools is on: every connector's defaultMode is 'disabled' and the
- * legacy branch does not consult control modes at all, so a connector must
- * never reach it unwrapped. Actions on resolves the full catalogue (static +
- * connector, via `resolveToolSpecs`) and each spec's fully resolved mode (see
+ * with no settings read beyond the flag. Actions on resolves each built-in
+ * spec's fully resolved mode (see
  * `resolveEffectiveToolMode`, saved-or-default plus the simulate override),
  * drops disabled tools, and wraps the rest in the control-mode pipeline.
  *
@@ -417,22 +419,23 @@ function toLegacyServerTool(spec: AssistantToolSpec, ctx: AssistantToolContext) 
 export async function assembleAssistantToolset(
   ctx: AssistantToolContext,
   specs?: readonly AssistantToolSpec[],
-  controls?: AssistantToolControls
+  controls: AssistantToolControls = {},
+  actionsEnabled = false
 ): Promise<{ tools: ReturnType<typeof toLegacyServerTool>[]; activeSpecs: AssistantToolSpec[] }> {
   // Unified inbox §2.9/§3.3: never even consider a spec whose `parents`
-  // excludes this turn's actual parent kind — a conversation-only write tool
-  // (or a connector tool that only resolves conversation context) must not
-  // reach mode resolution, proposal, or the model at all on a ticket-scoped
-  // turn. See `parents`'s own doc on AssistantToolSpec.
+  // excludes this turn's actual parent kind: a conversation-only write tool
+  // must not reach mode resolution, proposal, or the model at all on a
+  // ticket-scoped turn. See `parents`'s own doc on AssistantToolSpec.
   const parentKind = turnParentKind(ctx)
+  const availableForTurn = (spec: AssistantToolSpec) =>
+    spec.parents.includes(parentKind) && (spec.availableWhen?.(ctx) ?? true)
 
-  const actionsEnabled = await isFeatureEnabled('assistantTools')
   if (!actionsEnabled) {
-    // Flag off exposes ONLY the read tools, unwrapped. Write specs must never
-    // register without the pipeline, so a growing catalogue cannot widen the
-    // legacy surface on its own.
+    // Flag off exposes read tools plus core control tools, unwrapped. Write
+    // specs must never register without the pipeline, while handoff/inability
+    // remain part of Quinn's agent protocol regardless of this feature flag.
     const legacySpecs = (specs ?? Object.values(ASSISTANT_TOOL_SPECS)).filter(
-      (spec) => spec.risk === 'read' && spec.parents.includes(parentKind)
+      (spec) => spec.risk !== 'write' && availableForTurn(spec)
     )
     return {
       tools: legacySpecs.map((spec) => toLegacyServerTool(spec, ctx)),
@@ -440,14 +443,11 @@ export async function assembleAssistantToolset(
     }
   }
 
-  const resolvedSpecs = (specs ?? (await resolveToolSpecs())).filter((spec) =>
-    spec.parents.includes(parentKind)
-  )
-  const resolvedControls = controls ?? (await getAssistantToolControls())
+  const resolvedSpecs = (specs ?? resolveToolSpecs()).filter(availableForTurn)
   const active = resolvedSpecs
     .map((spec) => ({
       spec,
-      mode: resolveEffectiveToolMode(spec, resolvedControls[spec.name], ctx),
+      mode: resolveEffectiveToolMode(spec, controls[spec.name], ctx),
     }))
     .filter(
       (entry): entry is { spec: AssistantToolSpec; mode: Exclude<EffectiveToolMode, 'disabled'> } =>

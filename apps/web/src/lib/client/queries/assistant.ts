@@ -8,8 +8,8 @@ import { getGuidanceRuleStatsFn } from '@/lib/server/functions/assistant-guidanc
 import { getAssistantConfigChangelogFn } from '@/lib/server/functions/assistant-config-changelog'
 
 const STALE_TIME = 30 * 1000
-// The tool catalogue only changes when a connector is enabled/disabled, so it
-// can sit stale far longer than the settings a teammate is actively editing.
+// The tool catalogue is static, so it can sit stale far longer than settings
+// a teammate is actively editing.
 const TOOLS_STALE_TIME = 5 * 60 * 1000
 
 export const assistantKeys = {
@@ -20,7 +20,7 @@ export const assistantKeys = {
   configChangelog: () => ['assistant', 'configChangelog'] as const,
 }
 
-/** Assistant customization settings queries: tool controls, surface instructions, the Basics preset, guidance rules, and the tool catalogue. */
+/** AI agent settings, guidance, action catalogue, and change-history queries. */
 export const assistantQueries = {
   settings: () =>
     queryOptions({
@@ -36,7 +36,7 @@ export const assistantQueries = {
       staleTime: STALE_TIME,
     }),
 
-  /** Per-rule Used/Resolved % effectiveness stats, keyed by guidance rule id. */
+  /** Honest per-rule Applied count and last-applied timestamp, keyed by rule id. */
   guidanceRuleStats: () =>
     queryOptions({
       queryKey: assistantKeys.guidanceRuleStats(),
@@ -51,7 +51,7 @@ export const assistantQueries = {
       staleTime: TOOLS_STALE_TIME,
     }),
 
-  /** Recent assistant-config mutations (guidance, tool controls, surfaces, basics, connectors). */
+  /** Privacy-minimal AI agent configuration change history. */
   configChangelog: () =>
     queryOptions({
       queryKey: assistantKeys.configChangelog(),

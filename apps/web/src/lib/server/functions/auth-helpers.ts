@@ -11,7 +11,11 @@ import { getRequestHeaders } from '@tanstack/react-start/server'
 import { getSettings } from './workspace'
 import { db, principal, eq, type PermissionKey } from '@/lib/server/db'
 import { ensurePrincipalForUser } from '@/lib/server/domains/principals/principal.factory'
-import { permissionsForLegacyRole, resolveActorPermissions } from '@/lib/server/policy/permissions'
+import {
+  permissionsForLegacyRole,
+  permissionsForPrincipal,
+  resolveActorPermissions,
+} from '@/lib/server/policy/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'auth-helpers' })
@@ -76,6 +80,7 @@ export interface AuthContext {
     role: Role
     type: string
   }
+  permissions?: PermissionKey[]
 }
 
 /**
@@ -112,8 +117,9 @@ export async function requireAuth(options?: { permission?: PermissionKey }): Pro
     }
 
     const role = principalRecord.role as Role
+    const resolvedPermissions = await permissionsForPrincipal(principalRecord.id, role)
 
-    if (options?.permission && !permissionsForLegacyRole(role).has(options.permission)) {
+    if (options?.permission && !resolvedPermissions.has(options.permission)) {
       throw new Error(
         `Access denied: Requires permission '${options.permission}', role ${role} lacks it`
       )
@@ -137,6 +143,7 @@ export async function requireAuth(options?: { permission?: PermissionKey }): Pro
         role: principalRecord.role as Role,
         type: principalRecord.type,
       },
+      permissions: [...resolvedPermissions],
     }
   } catch (error) {
     log.error({ err: error }, 'require auth failed')
@@ -254,6 +261,8 @@ export async function policyActorFromAuth(auth: AuthContext | null): Promise<Act
     role: auth.principal.role,
     principalType: normalizePrincipalType(auth.principal.type),
     segmentIds,
-    permissions: resolveActorPermissions(auth.principal.role),
+    permissions: auth.permissions
+      ? new Set(auth.permissions)
+      : resolveActorPermissions(auth.principal.role),
   }
 }

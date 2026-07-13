@@ -1,8 +1,7 @@
 /**
- * Pure text helpers for the Copilot panel's P2-C features (COPILOT-SIDEBAR-UX.md
- * "What P2-C adds"): saving an answer as a macro (C.2) and the Summarize chip
- * (C.3, manual half). Isomorphic: no client- or server-only imports, so the
- * server fn and the panel component can share the same formatting rules.
+ * Pure text helpers for Copilot's P2-C features (COPILOT-SIDEBAR-UX.md "What
+ * P2-C adds"): saving an answer as a macro (C.2) and the composer's manual
+ * summary action (C.3). Isomorphic so client and server share formatting.
  */
 import { parseMarkdownLite, type MarkdownLiteBlock, type MarkdownLiteSpan } from './markdown-lite'
 
@@ -26,7 +25,7 @@ export function stripCitationMarkers(text: string): string {
 }
 
 /**
- * Format an on-demand conversation summary (P2-C.3's Summarize chip) as the
+ * Format an on-demand conversation summary (P2-C.3) as the
  * plain-text "Question / Summary" block Fin writes into the note composer
  * (COPILOT-SIDEBAR-UX.md screenshot 20). Inserted verbatim through the
  * existing note-insert seam; no markdown rendering is assumed downstream.
@@ -52,7 +51,7 @@ export type AnswerInsertBlock = MarkdownLiteBlock | { kind: 'codeBlock'; text: s
  * The strip rules a pass through the insert pipeline applies — made explicit
  * so the two callers can't share the wrong defaults: an ANSWER insert strips
  * `[n]` citation markers (a composer has no citation list to resolve them
- * against), while a DRAFT transform (the Format chip replacing the teammate's
+ * against), while a DRAFT transform (Improve replacing the teammate's
  * own text) must not — a literal `[2]` the teammate typed is their content,
  * not a dangling citation.
  */

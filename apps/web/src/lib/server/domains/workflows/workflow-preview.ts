@@ -106,11 +106,6 @@ function describeNode(node: WorkflowNode): { summary: string; parks: boolean } {
       return { summary: 'Collect reply (awaiting customer)', parks: true }
     case 'request_csat':
       return { summary: 'Request CSAT (awaiting customer)', parks: true }
-    case 'call_connector':
-      // The engine's fourth park kind (see graph.ts's module doc): a preview
-      // never actually invokes the connector, so it parks here rather than
-      // guessing at a success/failed outcome it has no way to simulate.
-      return { summary: 'Call connector (result not simulated)', parks: true }
     default:
       // Any node kind this module doesn't recognize (a future addition, or a
       // malformed stored value) is treated as an unknown PARK status per the

@@ -1,9 +1,9 @@
 /**
- * Quinn Copilot transforms (P2-C.1, COPILOT-SIDEBAR-UX.md "What P2-C adds"): a
+ * Copilot transforms (P2-C.1, COPILOT-SIDEBAR-UX.md "What P2-C adds"): a
  * teammate-facing rewrite over already-composed text, streamed the same way as
  * the copilot route it's cloned from. Two client entry points share this one
  * endpoint: the answer card's "Add to composer & modify" menu and the reply
- * composer's Format chip. Both send whatever text they're acting on plus a
+ * composer's Improve menu. Both send whatever text they're acting on plus a
  * transform kind, and get back the rewritten text.
  *
  * The item id (conversation OR ticket — exactly one, see `item-ref.schema.ts`)

@@ -24,6 +24,7 @@ export function CompanyCard({
   principalId: string
   enabled?: boolean
 }) {
+  const [editing, setEditing] = useState(false)
   const queryClient = useQueryClient()
   const { data: company, isPending } = useQuery({
     queryKey: ['admin', 'company', 'for-principal', principalId],
@@ -36,15 +37,35 @@ export function CompanyCard({
 
   if (!company) {
     return (
-      <QualificationEditor
-        principalId={principalId}
-        onQualified={() =>
-          Promise.all([
-            queryClient.invalidateQueries({ queryKey: ['admin', 'company'] }),
-            queryClient.invalidateQueries({ queryKey: ['admin', 'companies'] }),
-          ])
-        }
-      />
+      <div className="space-y-3 border-t border-border/30 pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+            <BuildingOffice2Icon className="size-4" />
+            <span>Company</span>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            shape="default"
+            onClick={() => setEditing((open) => !open)}
+          >
+            {editing ? 'Cancel' : 'Add company'}
+          </Button>
+        </div>
+        {editing && (
+          <QualificationEditor
+            principalId={principalId}
+            onQualified={() => {
+              setEditing(false)
+              return Promise.all([
+                queryClient.invalidateQueries({ queryKey: ['admin', 'company'] }),
+                queryClient.invalidateQueries({ queryKey: ['admin', 'companies'] }),
+              ])
+            }}
+          />
+        )}
+      </div>
     )
   }
 
@@ -153,11 +174,7 @@ function QualificationEditor({
   }
 
   return (
-    <div className="space-y-2 border-t border-border/30 pt-4">
-      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-        <BuildingOffice2Icon className="h-4 w-4" />
-        <span>Company</span>
-      </div>
+    <div className="space-y-2">
       <div className="space-y-1.5">
         {(
           [
@@ -176,14 +193,14 @@ function QualificationEditor({
               if (e.key === 'Enter') void commit()
             }}
             placeholder={field.placeholder}
-            className="h-7 text-xs"
           />
         ))}
       </div>
       <Button
         size="sm"
         variant="outline"
-        className="h-7 w-full text-xs"
+        shape="default"
+        className="w-full"
         disabled={!name.trim() || saving}
         onClick={() => void commit()}
       >

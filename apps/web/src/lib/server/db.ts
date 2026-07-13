@@ -392,13 +392,6 @@ export {
   ASSISTANT_TOOL_CALL_STATUSES,
   // Schema tables - assistant usage events (Copilot outcome loop)
   assistantEvents,
-  // Schema tables - data connectors
-  dataConnectors,
-  dataConnectorsRelations,
-  CONNECTOR_METHODS,
-  CONNECTOR_STATUSES,
-  CONNECTOR_AUTH_TYPES,
-  CONNECTOR_INPUT_TYPES,
   // Schema tables - RBAC
   roles,
   permissions,
@@ -435,15 +428,6 @@ export type {
   MacroPriority,
   MacroSnoozePreset,
   MacroAction,
-} from '@quackback/db'
-export type {
-  ConnectorMethod,
-  ConnectorStatus,
-  ConnectorAuthType,
-  ConnectorAuthConfig,
-  ConnectorInputType,
-  ConnectorInputField,
-  ConnectorHeader,
 } from '@quackback/db'
 export type { ServiceMetadata } from '@quackback/db'
 export type { IdentityProviderAttributeMapping } from '@quackback/db'

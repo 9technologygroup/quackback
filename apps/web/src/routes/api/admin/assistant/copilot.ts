@@ -1,5 +1,5 @@
 /**
- * Quinn Copilot: a private, teammate-facing Q&A sidebar in the inbox item
+ * Copilot: a private, teammate-facing Q&A sidebar in the inbox item
  * panel (COPILOT-SIDEBAR-UX.md; item-scoped per unified inbox §2.9). Streams
  * a single turn scoped to a real conversation OR a real ticket — exactly one,
  * see `item-ref.schema.ts` — for grounding (the customer-scoped
@@ -18,20 +18,12 @@
  * each tool's configured mode: a copilot turn is a teammate asking Quinn a
  * question about the conversation, never Quinn acting in it directly, so a
  * write-tool call turns into a pending-approval proposal instead of running
- * for real (P2-C.4, "act-on-approval"). The ONE exception is a metadata write
- * (`set_attribute` — recording a classification attribute, `metadataWrite` on
- * its spec): that is not an action, is guarded by the write path's AI-precedence
- * rule, and runs autonomously here like on the widget surface — but only within
- * the asking teammate's own permission ceiling (`askerActor` below): tools execute
- * under Quinn's actor, so a teammate who could not set the attribute themselves
- * gets a proposal instead, whose approval flow re-checks the approver's
- * permissions. So proposing is ONE documented exception
- * to "never writes to it" and metadata classification is the OTHER: a proposal
+ * for real (P2-C.4, "act-on-approval"). This includes metadata writes such as
+ * `set_attribute`: every state change requires an explicit teammate decision.
+ * Proposing is the one documented exception to "never writes to it": a proposal
  * inserts a real `assistant_pending_actions` row and an accompanying internal
  * note on the conversation announcing it (surfacePendingActionNote, so other
- * teammates see the proposal in the thread without polling), while an
- * autonomous metadata write sets the attribute via the single write path
- * (src:'ai', never overwriting a human value). No OTHER conversation message is
+ * teammates see the proposal in the thread without polling). No other conversation message is
  * written and no involvement is opened. `proposedActions` on the final payload
  * mirrors what got proposed, straight off the tool context's ledger.
  *
@@ -107,7 +99,7 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
     'A valid conversationId or ticketId, and a question, are required'
   )
   if (!gate.ok) return gate.response
-  const { auth, actor, parsed, conversationId, ticketId } = gate
+  const { auth, parsed, conversationId, ticketId } = gate
 
   // Provisioning Quinn's identity is idempotent and, like the sandbox, not a
   // conversation write of its own.
@@ -125,6 +117,7 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
       const result = await runAssistantTurn({
         messages,
         assistantPrincipalId: assistant.id,
+        role: 'copilot_qa',
         // A real conversation OR ticket id (unlike the sandbox's null-null),
         // never both — so the turn gets item-scoped grounding (the
         // past-conversation-summaries source on the conversation branch, the
@@ -139,13 +132,7 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
         // the per-teammate breakdown in analytics/copilot-usage.ts — Quinn's
         // own principal id above never identifies the human on the other end.
         actorPrincipalId: auth.principal.id,
-        // The gate's resolved actor, doubling as the asking teammate's
-        // permission ceiling: it bounds the metadata-write exemption from
-        // 'propose' (see this file's doc comment), so a direct set_attribute
-        // only fires when THIS teammate could set it themselves.
-        askerActor: actor,
         sourceTypes: parsed.sourceTypes,
-        writeToolPolicy: 'propose',
         signal: request.signal,
         onTextDelta: (text) =>
           sse.send(COPILOT_EVENTS.delta, { text } satisfies CopilotDeltaPayload),

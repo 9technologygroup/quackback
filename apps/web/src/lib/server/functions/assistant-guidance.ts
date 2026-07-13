@@ -9,33 +9,18 @@ import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import type { AssistantGuidanceRuleId } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
-import { ASSISTANT_SURFACES } from '@/lib/shared/assistant/surfaces'
-import { ASSISTANT_GUIDANCE_CATEGORIES } from '@/lib/shared/assistant/guidance-categories'
+import {
+  assistantGuidanceRuleInputSchema,
+  assistantGuidanceRulePatchSchema,
+} from '@/lib/shared/assistant/guidance'
 import { logger } from '@/lib/server/logger'
 import { recordAuditEvent, actorFromAuth } from '@/lib/server/audit/log'
 import { requireAuth } from './auth-helpers'
 
 const log = logger.child({ component: 'assistant-guidance' })
 
-const surfacesSchema = z.array(z.enum(ASSISTANT_SURFACES)).nullable().optional()
-const categorySchema = z.enum(ASSISTANT_GUIDANCE_CATEGORIES).optional()
-
-const createGuidanceRuleSchema = z.object({
-  title: z.string().min(1).max(80),
-  body: z.string().min(1).max(1000),
-  enabled: z.boolean().optional(),
-  surfaces: surfacesSchema,
-  category: categorySchema,
-})
-
-const updateGuidanceRuleSchema = z.object({
-  id: z.string(),
-  title: z.string().min(1).max(80).optional(),
-  body: z.string().min(1).max(1000).optional(),
-  enabled: z.boolean().optional(),
-  surfaces: surfacesSchema,
-  category: categorySchema,
-})
+const createGuidanceRuleSchema = assistantGuidanceRuleInputSchema
+const updateGuidanceRuleSchema = assistantGuidanceRulePatchSchema.extend({ id: z.string() })
 
 const reorderGuidanceRulesSchema = z.object({
   ids: z.array(z.string()).min(1),
@@ -66,11 +51,13 @@ export const createGuidanceRuleFn = createServerFn({ method: 'POST' })
       const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
       const { createGuidanceRule } = await import('@/lib/server/domains/assistant/guidance.service')
       const rule = await createGuidanceRule({
-        title: data.title,
-        body: data.body,
+        name: data.name,
+        appliesWhen: data.appliesWhen,
+        instruction: data.instruction,
+        roles: data.roles,
+        channels: data.channels,
         enabled: data.enabled,
-        surfaces: data.surfaces,
-        category: data.category,
+        priority: data.priority,
         createdById: ctx.principal.id,
       })
       await recordAuditEvent({
@@ -79,10 +66,12 @@ export const createGuidanceRuleFn = createServerFn({ method: 'POST' })
         headers: getRequestHeaders(),
         target: { type: 'assistant_guidance', id: rule.id },
         after: {
-          title: rule.title,
+          name: rule.name,
+          alwaysOn: rule.appliesWhen === null,
           enabled: rule.enabled,
-          surfaces: rule.surfaces,
-          category: rule.category,
+          roles: rule.roles,
+          channels: rule.channels,
+          priority: rule.priority,
         },
       })
       return rule
@@ -100,27 +89,27 @@ export const updateGuidanceRuleFn = createServerFn({ method: 'POST' })
       const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
       const { updateGuidanceRule } = await import('@/lib/server/domains/assistant/guidance.service')
       const rule = await updateGuidanceRule(data.id as AssistantGuidanceRuleId, {
-        title: data.title,
-        body: data.body,
+        name: data.name,
+        appliesWhen: data.appliesWhen,
+        instruction: data.instruction,
+        roles: data.roles,
+        channels: data.channels,
         enabled: data.enabled,
-        surfaces: data.surfaces,
-        category: data.category,
+        priority: data.priority,
       })
       await recordAuditEvent({
         event: 'assistant.guidance.updated',
         actor: actorFromAuth(ctx),
         headers: getRequestHeaders(),
         target: { type: 'assistant_guidance', id: data.id },
-        // updateGuidanceRule doesn't return the prior row, so there's no
-        // meaningful before snapshot here — the target id already identifies
-        // which rule changed. The after snapshot (the full updated row) is
-        // what matters for reconstructing what changed.
         after: rule
           ? {
-              title: rule.title,
+              name: rule.name,
+              alwaysOn: rule.appliesWhen === null,
               enabled: rule.enabled,
-              surfaces: rule.surfaces,
-              category: rule.category,
+              roles: rule.roles,
+              channels: rule.channels,
+              priority: rule.priority,
             }
           : null,
       })
@@ -184,23 +173,30 @@ export interface AssistantToolSummary {
   defaultMode: 'disabled' | 'approval' | 'autonomous'
 }
 
-/** The resolved tool catalogue (built-ins plus enabled connectors), projected for the settings UI. */
+/** The built-in tool catalogue projected for the settings UI. */
 export const listAssistantToolsFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('list assistant tools')
   try {
     await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
     const { resolveToolSpecs } = await import('@/lib/server/domains/assistant/assistant.toolspec')
     const specs = await resolveToolSpecs()
-    return specs.map(
-      (spec): AssistantToolSummary => ({
-        name: spec.name,
-        label: spec.label,
-        description: spec.description,
-        risk: spec.risk,
-        supportedModes: spec.supportedModes,
-        defaultMode: spec.defaultMode,
-      })
-    )
+    // Core control tools (handoff/inability) are protocol primitives, not
+    // workspace-configurable capabilities. They stay in Quinn's catalogue but
+    // do not appear in the admin enable/approval controls.
+    return specs
+      .filter((spec) => spec.risk !== 'control')
+      .map(
+        (spec): AssistantToolSummary => ({
+          name: spec.name,
+          label: spec.label,
+          description: spec.description,
+          // The filter above removes control tools; spell the narrowing here
+          // because Array.filter does not refine an object property union.
+          risk: spec.risk === 'write' ? 'write' : 'read',
+          supportedModes: spec.supportedModes,
+          defaultMode: spec.defaultMode,
+        })
+      )
   } catch (error) {
     log.error({ err: error }, 'list assistant tools failed')
     throw error

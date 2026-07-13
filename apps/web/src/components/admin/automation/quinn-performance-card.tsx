@@ -7,8 +7,10 @@
  * surface.
  */
 import { useQuery } from '@tanstack/react-query'
+import { useIntl } from 'react-intl'
 import { AreaChart, Area, XAxis } from 'recharts'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
+import { Button } from '@/components/ui/button'
 import { ChartContainer, type ChartConfig } from '@/components/ui/chart'
 import { MetricTile, useLast30DaysRange, pct, asRate } from './metric-tile'
 import { quinnPerformanceQuery } from '@/lib/client/queries/assistant-analytics'
@@ -22,10 +24,14 @@ const TREND_CHART_CONFIG: ChartConfig = {
  *  once volume grows, this can move onto a daily rollup like
  *  analyticsDailyStats without changing the card's shape. */
 function TrendSparkline({ data }: { data: Array<{ date: string; involvements: number }> }) {
+  const intl = useIntl()
   if (data.length === 0) {
     return (
       <div className="flex h-20 items-center justify-center text-xs text-muted-foreground">
-        No data for this period
+        {intl.formatMessage({
+          id: 'automation.performance.noData',
+          defaultMessage: 'No data for this period',
+        })}
       </div>
     )
   }
@@ -48,39 +54,104 @@ function TrendSparkline({ data }: { data: Array<{ date: string; involvements: nu
 }
 
 export function QuinnPerformanceCard() {
+  const intl = useIntl()
   const range = useLast30DaysRange()
-  const { data } = useQuery(quinnPerformanceQuery(range.from, range.to))
+  const performanceQuery = useQuery(quinnPerformanceQuery(range.from, range.to))
+  const { data } = performanceQuery
 
   return (
     <SettingsCard
-      title="Quinn performance"
-      description="Involvement, resolution, and escalation over the last 30 days."
+      title={intl.formatMessage({
+        id: 'automation.performance.agent.title',
+        defaultMessage: 'AI agent performance',
+      })}
+      description={intl.formatMessage({
+        id: 'automation.performance.agent.description',
+        defaultMessage: 'Involvement, resolution, and escalation over the last 30 days.',
+      })}
     >
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <MetricTile
-          label="Involvement rate"
-          value={pct(asRate(data?.involvementRate))}
-          sub={data ? `${data.involvements} of ${data.conversations} conversations` : undefined}
-        />
-        <MetricTile
-          label="Resolution rate"
-          value={pct(asRate(data?.resolutionRate))}
-          sub={
-            data
-              ? `${data.resolvedConfirmed} confirmed / ${data.resolvedAssumed} assumed`
-              : undefined
-          }
-        />
-        <MetricTile
-          label="Escalation rate"
-          value={pct(asRate(data?.escalationRate))}
-          sub={data ? `${data.handedOff} handed off` : undefined}
-        />
-        <MetricTile label="Actions taken" value={data ? String(data.actionsTaken) : '—'} />
-      </div>
-      <div className="mt-4">
-        <TrendSparkline data={data?.dailyTrend ?? []} />
-      </div>
+      {performanceQuery.isError ? (
+        <div className="flex items-center justify-between gap-3">
+          <p role="alert" className="text-sm text-destructive">
+            {intl.formatMessage({
+              id: 'automation.performance.agent.error',
+              defaultMessage: 'AI agent performance could not be loaded.',
+            })}
+          </p>
+          <Button variant="outline" size="sm" onClick={() => void performanceQuery.refetch()}>
+            {intl.formatMessage({ id: 'automation.agent.retry', defaultMessage: 'Try again' })}
+          </Button>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <MetricTile
+              label={intl.formatMessage({
+                id: 'automation.performance.agent.involvement',
+                defaultMessage: 'Involvement rate',
+              })}
+              value={pct(asRate(data?.involvementRate))}
+              sub={
+                data
+                  ? intl.formatMessage(
+                      {
+                        id: 'automation.performance.agent.involvementDetail',
+                        defaultMessage: '{involvements} of {conversations} conversations',
+                      },
+                      { involvements: data.involvements, conversations: data.conversations }
+                    )
+                  : undefined
+              }
+            />
+            <MetricTile
+              label={intl.formatMessage({
+                id: 'automation.performance.agent.resolution',
+                defaultMessage: 'Resolution rate',
+              })}
+              value={pct(asRate(data?.resolutionRate))}
+              sub={
+                data
+                  ? intl.formatMessage(
+                      {
+                        id: 'automation.performance.agent.resolutionDetail',
+                        defaultMessage: '{confirmed} confirmed / {assumed} assumed',
+                      },
+                      { confirmed: data.resolvedConfirmed, assumed: data.resolvedAssumed }
+                    )
+                  : undefined
+              }
+            />
+            <MetricTile
+              label={intl.formatMessage({
+                id: 'automation.performance.agent.escalation',
+                defaultMessage: 'Escalation rate',
+              })}
+              value={pct(asRate(data?.escalationRate))}
+              sub={
+                data
+                  ? intl.formatMessage(
+                      {
+                        id: 'automation.performance.agent.escalationDetail',
+                        defaultMessage: '{count} handed off',
+                      },
+                      { count: data.handedOff }
+                    )
+                  : undefined
+              }
+            />
+            <MetricTile
+              label={intl.formatMessage({
+                id: 'automation.performance.agent.actions',
+                defaultMessage: 'Actions completed',
+              })}
+              value={data ? String(data.actionsTaken) : '—'}
+            />
+          </div>
+          <div className="mt-4">
+            <TrendSparkline data={data?.dailyTrend ?? []} />
+          </div>
+        </>
+      )}
     </SettingsCard>
   )
 }

@@ -1,6 +1,6 @@
 /**
- * On-demand item summary (Quinn Copilot P2-C.3, manual half; ticket sibling
- * added by unified inbox §2.9): the inbox Copilot panel's Summarize chip.
+ * On-demand item summary (Copilot P2-C.3, manual half; ticket sibling
+ * added by unified inbox §2.9): the inbox composer's Summarize into note action.
  * Generates a Question/Summary block for the CURRENT (possibly still-open)
  * conversation or ticket, which the panel then writes straight into an
  * internal note, never the customer-facing reply (Fin's pattern,

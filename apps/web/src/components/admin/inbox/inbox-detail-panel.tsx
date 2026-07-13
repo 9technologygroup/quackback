@@ -7,6 +7,7 @@ import {
   BuildingOffice2Icon,
   CalendarIcon,
   CheckBadgeIcon,
+  ChevronDownIcon,
   ClockIcon,
   FaceSmileIcon,
   FlagIcon,
@@ -45,7 +46,7 @@ import { TONE_CLASSES } from '@/components/admin/conversation/sla-chip'
 import { CompanyCard } from '@/components/admin/conversation/company-card'
 import { CopilotPanel } from '@/components/admin/conversation/copilot-panel'
 import { usePersonBlockStatus } from '@/components/admin/users/block-person-control'
-import { TicketTypeBadge, TicketStageChip } from '@/components/admin/inbox/ticket-chips'
+import { TicketStageChip } from '@/components/admin/inbox/ticket-chips'
 import {
   TicketStatusControl,
   TicketAssigneeControl,
@@ -59,6 +60,8 @@ import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { MENU_LABEL } from '@/components/ui/menu'
 import { DetailRow as Row, formatDate } from '@/components/shared/detail-row'
 import { TimeAgo } from '@/components/ui/time-ago'
 import { cn } from '@/lib/shared/utils'
@@ -158,10 +161,6 @@ export interface InboxDetailPanelProps {
   onCreateTicket: () => void
   /** Insert a Copilot answer into the reply composer or an internal note. */
   onInsertFromCopilot: (text: string, mode: 'reply' | 'note') => void
-  /** Current plain text of the reply composer (P2-C.1's Format chip). */
-  getComposerText: () => string
-  /** Replace the reply composer's content with a Format transform's result. */
-  onReplaceComposerText: (text: string) => void
   /** Bumped by the route's Ask Copilot action (the `q` shortcut / command
    *  bar) — a change switches to the Copilot tab and focuses its ask input.
    *  Same bump-a-counter ping as the thread's `createTicketToken`. No-op when
@@ -188,8 +187,6 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
   onTrackAsFeedback,
   onCreateTicket,
   onInsertFromCopilot,
-  getComposerText,
-  onReplaceComposerText,
   openCopilotToken,
 }: InboxDetailPanelProps) {
   const { settings } = useRouteContext({ from: '/admin' }) as {
@@ -208,6 +205,7 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
   // visible. Guarded on `showCopilotTab` so a stray bump with the tab
   // unavailable is a clean no-op.
   const [tab, setTab] = useState('details')
+  const [activityOpen, setActivityOpen] = useState(false)
   const askInputRef = useRef<HTMLTextAreaElement>(null)
   // Baseline 0 (NOT the mount-time prop): the route resets the token to 0
   // whenever the selected item changes, so a nonzero token at mount can only
@@ -298,7 +296,7 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
       {/* Force Radix's inner viewport wrapper (display:table by default, which
           grows to content width and defeats truncate) to block so children are
           constrained to the panel width and long text clips with an ellipsis. */}
-      <div className="m-3 space-y-5 rounded-xl border border-border/20 bg-card p-4 shadow-sm">
+      <div className="space-y-5 px-3 pb-5 pt-3">
         {/* 1. Contact — the requester principal. Hidden entirely for
               back_office/tracker tickets (no requester concept). */}
         {!isBackOfficeOrTracker && (
@@ -432,20 +430,33 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
         {ticket ? (
           <div className="space-y-3 border-t border-border/30 pt-4">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Ticket</span>
-              <TicketTypeBadge type={ticket.type} />
-            </div>
-            <div className="border-t border-border/30" />
-            <Row label="Status">
-              <TicketStatusControl ticket={ticket} onChanged={onChanged} />
-            </Row>
-            <Row label="Stage">
-              {ticket.stage.slot ? (
-                <TicketStageChip stage={ticket.stage} />
-              ) : (
-                <span className="text-xs text-muted-foreground">Internal only</span>
+              <span className={MENU_LABEL}>
+                {isTicketItem ? 'Ticket details' : 'Linked ticket'}
+              </span>
+              {!isTicketItem && (
+                <button
+                  type="button"
+                  onClick={() => onSelectItem(ticket.id)}
+                  className="font-mono text-xs font-medium text-primary hover:underline"
+                >
+                  {ticket.reference}
+                </button>
               )}
-            </Row>
+            </div>
+            {!isTicketItem && (
+              <>
+                <Row label="Status">
+                  <TicketStatusControl ticket={ticket} onChanged={onChanged} />
+                </Row>
+                <Row label="Stage">
+                  {ticket.stage.slot ? (
+                    <TicketStageChip stage={ticket.stage} />
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Internal only</span>
+                  )}
+                </Row>
+              </>
+            )}
             {ticket.dueAt && !ticket.resolvedAt && (
               <Row icon={ClockIcon} label="Due">
                 <TicketDueChip dueAt={ticket.dueAt} resolvedAt={ticket.resolvedAt} />
@@ -468,14 +479,6 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
                 </span>
               </Row>
             )}
-            {/* Ticket custom attributes — the same registry as conversations,
-                  targeted at this ticket. */}
-            <ConversationAttributesEditor
-              target={{ ticketId: ticket.id }}
-              customAttributes={ticket.customAttributes}
-              onChanged={onChanged}
-              enabled={isVisible}
-            />
           </div>
         ) : (
           showCreateTicketSlot && (
@@ -492,8 +495,7 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
               ticket's own status lives in the Ticket card above, so it is not
               repeated here. */}
         <div className="space-y-4 border-t border-border/30 pt-4">
-          <span className="text-sm text-muted-foreground">Properties</span>
-          <div className="border-t border-border/30" />
+          <span className={MENU_LABEL}>Properties</span>
           {!isTicketItem && conversation && (
             <>
               {isClosedConversation && endReasonLabel && (
@@ -545,7 +547,7 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
             </Row>
           )}
           {ticket && (
-            <Row icon={BuildingOffice2Icon} label="Company">
+            <Row icon={BuildingOffice2Icon} label="Ticket company">
               <span className="truncate text-sm font-medium text-foreground">
                 {ticket.company?.name ?? 'None'}
               </span>
@@ -558,15 +560,10 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
               </span>
             </Row>
           )}
-          <Row icon={CalendarIcon} label="Created">
-            <span className="text-sm font-medium text-foreground">
-              {formatDate(isTicketItem ? ticket!.createdAt : conversation!.createdAt)}
-            </span>
-          </Row>
-          {ticket && (
-            <Row label="Reference">
-              <span className="font-mono text-sm font-medium text-foreground">
-                {ticket.reference}
+          {!isTicketItem && conversation && (
+            <Row icon={CalendarIcon} label="Created">
+              <span className="text-sm font-medium text-foreground">
+                {formatDate(conversation.createdAt)}
               </span>
             </Row>
           )}
@@ -582,12 +579,13 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
           )}
         </div>
 
-        {/* 4. Attributes (conversation-only; a ticket's attributes live in
-              the Ticket card above, targeted at the ticket instead). */}
-        {!isTicketItem && conversation && (
+        {/* 4. Attributes use one consistent section for either item kind. */}
+        {(isTicketItem ? ticket : conversation) && (
           <ConversationAttributesEditor
-            target={{ conversationId: conversation.id }}
-            customAttributes={conversation.customAttributes}
+            target={isTicketItem ? { ticketId: ticket!.id } : { conversationId: conversation!.id }}
+            customAttributes={
+              isTicketItem ? ticket!.customAttributes : conversation!.customAttributes
+            }
             onChanged={onChanged}
             enabled={isVisible}
           />
@@ -602,18 +600,6 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
         )}
         {!isTicketItem && conversation && (
           <div className="space-y-2 border-t border-border/30 pt-4">
-            {ticket && (
-              <Row label="Ticket">
-                <button
-                  type="button"
-                  onClick={() => onSelectItem(ticket.id)}
-                  className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-primary hover:underline"
-                >
-                  <span className="font-mono text-xs">{ticket.reference}</span>
-                  <span className="truncate">{ticket.status.name}</span>
-                </button>
-              </Row>
-            )}
             {/* Track as feedback — conversation-level (kept here per §2.7's
                   Links section). */}
             <Button type="button" variant="outline" className="w-full" onClick={onTrackAsFeedback}>
@@ -627,13 +613,33 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
               Shown whenever a ticket is in scope: a ticket item, or a
               conversation's linked customer ticket. */}
         {ticket && (
-          <div className="space-y-3 border-t border-border/30 pt-4">
-            <span className="text-sm text-muted-foreground">
-              <FormattedMessage id="admin.ticketActivity.title" defaultMessage="Activity" />
-            </span>
-            <div className="border-t border-border/30" />
-            <TicketActivityTimeline ticketId={ticket.id} enabled={isVisible} />
-          </div>
+          <Collapsible
+            open={activityOpen}
+            onOpenChange={setActivityOpen}
+            className="border-t border-border/30 pt-3"
+          >
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                className="flex w-full items-center justify-between py-1 text-left"
+              >
+                <span className={MENU_LABEL}>
+                  <FormattedMessage id="admin.ticketActivity.title" defaultMessage="Activity" />
+                </span>
+                <ChevronDownIcon
+                  className={cn(
+                    'size-3.5 text-muted-foreground transition-transform',
+                    activityOpen && 'rotate-180'
+                  )}
+                />
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="pt-3">
+                <TicketActivityTimeline ticketId={ticket.id} enabled={isVisible && activityOpen} />
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         )}
 
         {/* 7. Quinn AI activity — conversation-only. */}
@@ -682,12 +688,27 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
   // Flag off (or no permission): no Tabs wrapper at all — byte-identical to
   // the pre-Copilot panel.
   if (!showCopilotTab) {
-    return <aside className="hidden w-72 shrink-0 flex-col xl:flex">{detailsBody}</aside>
+    return (
+      <aside
+        aria-label="Item details"
+        className="hidden h-full min-h-0 w-72 shrink-0 flex-col overflow-hidden border-l border-border/50 bg-card/20 xl:flex 2xl:w-80"
+      >
+        {detailsBody}
+      </aside>
+    )
   }
 
   return (
-    <aside className="hidden w-72 shrink-0 flex-col xl:flex">
-      <Tabs value={tab} onValueChange={setTab} variant="line" className="min-h-0 flex-1 gap-0">
+    <aside
+      aria-label="Item details"
+      className="hidden h-full min-h-0 w-72 shrink-0 flex-col overflow-hidden border-l border-border/50 bg-card/20 xl:flex 2xl:w-80"
+    >
+      <Tabs
+        value={tab}
+        onValueChange={setTab}
+        variant="line"
+        className="h-full min-h-0 flex-1 gap-0 overflow-hidden"
+      >
         <TabsList className="m-3 mb-0 self-start">
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="copilot">
@@ -703,21 +724,19 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
         <TabsContent
           value="details"
           forceMount
-          className="min-h-0 flex-1 data-[state=inactive]:hidden"
+          className="min-h-0 flex-1 flex-col overflow-hidden data-[state=active]:flex data-[state=inactive]:hidden"
         >
           {detailsBody}
         </TabsContent>
         <TabsContent
           value="copilot"
           forceMount
-          className="min-h-0 flex-1 data-[state=inactive]:hidden"
+          className="min-h-0 flex-1 flex-col overflow-hidden data-[state=active]:flex data-[state=inactive]:hidden"
         >
           <CopilotPanel
             item={item}
             flags={flags}
             onInsert={onInsertFromCopilot}
-            getComposerText={getComposerText}
-            onReplaceComposerText={onReplaceComposerText}
             askInputRef={askInputRef}
           />
         </TabsContent>

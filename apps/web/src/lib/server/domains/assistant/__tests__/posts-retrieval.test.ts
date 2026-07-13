@@ -118,7 +118,7 @@ describe('retrievePosts', () => {
     mockGenerateEmbedding.mockResolvedValue([0.1, 0.2, 0.3])
     mockLimit.mockResolvedValue([row('post_1')])
 
-    const result = await retrievePosts('dark mode', 'public')
+    const result = await retrievePosts('dark mode', 'team')
 
     expect(mockGenerateEmbedding).toHaveBeenCalledOnce()
     expect(result).toEqual([
@@ -138,7 +138,7 @@ describe('retrievePosts', () => {
     mockGenerateEmbedding.mockResolvedValue(null)
     mockLimit.mockResolvedValue([row('post_2')])
 
-    const result = await retrievePosts('billing', 'public')
+    const result = await retrievePosts('billing', 'team')
     expect(result).toHaveLength(1)
     expect(result[0].id).toBe('post_2')
   })
@@ -147,13 +147,13 @@ describe('retrievePosts', () => {
     mockGenerateEmbedding.mockResolvedValue([0.5])
     mockLimit.mockResolvedValue([])
 
-    const result = await retrievePosts('unrelated', 'public')
+    const result = await retrievePosts('unrelated', 'team')
     expect(result).toEqual([])
   })
 
   it('trims post content to the context budget in SQL (left())', async () => {
     mockGenerateEmbedding.mockResolvedValue([0.5])
-    await retrievePosts('long post', 'public')
+    await retrievePosts('long post', 'team')
 
     const trimCall = vi
       .mocked(sql)
@@ -164,7 +164,7 @@ describe('retrievePosts', () => {
 
   it('uses the answer floor as the default semantic minimum score', async () => {
     mockGenerateEmbedding.mockResolvedValue([0.9])
-    await retrievePosts('anything', 'public')
+    await retrievePosts('anything', 'team')
     const floorCall = vi
       .mocked(sql)
       .mock.calls.find((c) => (c as unknown[]).includes(POSTS_SEMANTIC_SIMILARITY_FLOOR))
@@ -179,7 +179,7 @@ describe('postsKnowledgeSource', () => {
       row('post_3', { title: 'Dark mode request', content: 'Y'.repeat(5000) }),
     ])
 
-    const items = await postsKnowledgeSource.retrieve('dark mode', 'public', { topK: 5 })
+    const items = await postsKnowledgeSource.retrieve('dark mode', 'team', { topK: 5 })
 
     expect(items).toHaveLength(1)
     expect(items[0]).toMatchObject({
@@ -209,7 +209,7 @@ describe('postsKnowledgeSource', () => {
     mockGenerateEmbedding.mockResolvedValue(null)
     mockLimit.mockResolvedValue([row('post_5', { isPublic: true })])
 
-    const items = await postsKnowledgeSource.retrieve('policy', 'public', { topK: 5 })
+    const items = await postsKnowledgeSource.retrieve('policy', 'team', { topK: 5 })
     expect(items[0].citation).not.toHaveProperty('internal')
   })
 })

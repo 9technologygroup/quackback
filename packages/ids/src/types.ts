@@ -196,9 +196,6 @@ export type AssistantSnippetId = TypeId<'assistant_snippet'>
 /** Assistant usage-event ID - e.g., assistant_event_01h455vb4pex5vsknk084sn02q */
 export type AssistantEventId = TypeId<'assistant_event'>
 
-/** Data connector ID - e.g., data_connector_01h455vb4pex5vsknk084sn02q */
-export type DataConnectorId = TypeId<'data_connector'>
-
 /** Ticket ID - e.g., ticket_01h455vb4pex5vsknk084sn02q */
 export type TicketId = TypeId<'ticket'>
 
@@ -396,7 +393,6 @@ export interface EntityIdMap {
   assistant_tool_call: AssistantToolCallId
   assistant_snippet: AssistantSnippetId
   assistant_event: AssistantEventId
-  data_connector: DataConnectorId
   ticket: TicketId
   ticket_status: TicketStatusId
   ticket_activity: TicketActivityId

@@ -134,7 +134,6 @@ export const PERMISSIONS = {
 
   // category 'ai'
   ASSISTANT_MANAGE: 'assistant.manage', // manage AI assistant behavior, guidance, and action controls
-  CONNECTOR_MANAGE: 'connector.manage', // manage data connectors for external actions
   COPILOT_USE: 'copilot.use', // use the agent-facing Copilot assistant in the inbox
 
   // category 'status_page' — the Status page product (Status Product Spec §6).
@@ -576,11 +575,6 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
     description: 'Manage AI assistant behavior, guidance, and action controls',
   },
   {
-    key: PERMISSIONS.CONNECTOR_MANAGE,
-    category: 'ai',
-    description: 'Manage data connectors for external actions',
-  },
-  {
     key: PERMISSIONS.COPILOT_USE,
     category: 'ai',
     description: 'Use the agent-facing Copilot assistant in the inbox',
@@ -642,7 +636,6 @@ export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
   // AI infrastructure config (admin-only)
   PERMISSIONS.ASSISTANT_MANAGE,
-  PERMISSIONS.CONNECTOR_MANAGE,
   // Status page structure (components/groups/settings/templates) is
   // admin-only; publishing incidents is a broader operator action (below).
   PERMISSIONS.STATUS_PAGE_MANAGE,

@@ -1,13 +1,14 @@
 /**
  * Unit tests for the Copilot transform module (P2-C.1): the prompt shape
  * (injection guard, grounding rules, one-transform-at-a-time isolation), the
- * `my_tone` style-excerpt mining query and its graceful no-history fallback,
+ * `my_tone` aggregate style-profile query and its graceful no-history fallback,
  * and `runCopilotTransform`'s streaming + salvage behavior via the shared
  * synthesis core (mirrors `synthesis.test.ts`'s mocking of `chat()`).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const styleRows = vi.hoisted(() => ({ current: [] as Array<{ content: string | null }> }))
+const mockDbSelect = vi.hoisted(() => vi.fn())
 
 vi.mock('@/lib/server/db', () => {
   const builder = {
@@ -17,8 +18,9 @@ vi.mock('@/lib/server/db', () => {
     orderBy: () => builder,
     limit: () => Promise.resolve(styleRows.current),
   }
+  mockDbSelect.mockImplementation(() => builder)
   return {
-    db: builder,
+    db: { select: mockDbSelect },
     conversationMessages: {
       content: 'content',
       principalId: 'principal_id',
@@ -68,7 +70,7 @@ vi.mock('@/lib/server/domains/ai/usage-log', () => ({
 
 import {
   buildTransformSystemPrompts,
-  fetchTeammateStyleExcerpts,
+  fetchTeammateStyleProfile,
   runCopilotTransform,
 } from '../copilot-transform'
 import type { PrincipalId } from '@quackback/ids'
@@ -138,50 +140,68 @@ describe('buildTransformSystemPrompts', () => {
     expect(grammar.toLowerCase()).not.toContain('friendly')
   })
 
-  it('includes a style-reference block only for my_tone, framed as reference only', () => {
-    const myTone = buildTransformSystemPrompts('my_tone', 'x', [
-      'Thanks so much for writing in!',
-    ]).join('\n')
-    expect(myTone).toContain('Thanks so much for writing in!')
-    expect(myTone.toLowerCase()).toContain('not content to copy')
+  it('includes only aggregate style values for my_tone, never prior reply or customer content', () => {
+    const myTone = buildTransformSystemPrompts('my_tone', 'x', {
+      replyCount: 3,
+      averageWords: 4.7,
+      averageSentenceWords: 3.5,
+      exclamationRate: 0.3,
+      questionRate: 0.3,
+      multilineRate: 0.3,
+    }).join('\n')
+    expect(myTone).toContain(
+      'Derived style profile from 3 prior replies; no prior reply content is included.'
+    )
+    expect(myTone).toContain('Average reply length: 4.7 words.')
+    expect(myTone).toContain('Average sentence length: 3.5 words.')
+    expect(myTone).toContain(
+      'Exclamation frequency: 0.3. Question frequency: 0.3. Multiline frequency: 0.3.'
+    )
+    expect(myTone).not.toContain('My usual sign-off.')
+    expect(myTone).not.toContain('Customer Jane requested a refund.')
 
-    const other = buildTransformSystemPrompts('more_formal', 'x', [
-      'Thanks so much for writing in!',
-    ])
-    expect(other.join('\n')).not.toContain('Thanks so much for writing in!')
+    const other = buildTransformSystemPrompts('more_formal', 'x', {
+      replyCount: 3,
+      averageWords: 4.7,
+      averageSentenceWords: 3.5,
+      exclamationRate: 0.3,
+      questionRate: 0.3,
+      multilineRate: 0.3,
+    })
+    expect(other.join('\n')).not.toContain('Derived style profile')
   })
 
   it('degrades my_tone to a neutral professional-voice instruction with no prior replies', () => {
-    const joined = buildTransformSystemPrompts('my_tone', 'x', []).join('\n')
+    const joined = buildTransformSystemPrompts('my_tone', 'x', null).join('\n')
+    expect(joined).toContain('No prior replies are on file for this teammate')
     expect(joined.toLowerCase()).toContain('professional, warm support voice')
   })
 })
 
-describe('fetchTeammateStyleExcerpts', () => {
-  it('returns truncated excerpts from the mined rows, newest first, capped at 3', async () => {
+describe('fetchTeammateStyleProfile', () => {
+  it('returns deterministic aggregate metrics over non-empty replies', async () => {
     styleRows.current = [
-      { content: 'a'.repeat(500) },
-      { content: 'Second reply.' },
-      { content: 'Third reply.' },
-      { content: 'Fourth reply (should be dropped by the cap).' },
+      { content: 'Thanks!\nHappy to help.' },
+      { content: 'Can I help?' },
+      { content: '   ' },
+      { content: null },
+      { content: 'All set.' },
     ]
-    const excerpts = await fetchTeammateStyleExcerpts(PRINCIPAL_ID)
-    expect(excerpts).toHaveLength(3)
-    expect(excerpts[0]).toHaveLength(400) // truncated to the excerpt char budget
-    expect(excerpts[1]).toBe('Second reply.')
-    expect(excerpts[2]).toBe('Third reply.')
+    const profile = await fetchTeammateStyleProfile(PRINCIPAL_ID)
+    expect(profile).toEqual({
+      replyCount: 3,
+      averageWords: 3,
+      averageSentenceWords: 2.3,
+      exclamationRate: 0.3,
+      questionRate: 0.3,
+      multilineRate: 0.3,
+    })
   })
 
-  it('skips empty/whitespace-only rows', async () => {
-    styleRows.current = [{ content: '   ' }, { content: null }, { content: 'Real reply.' }]
-    const excerpts = await fetchTeammateStyleExcerpts(PRINCIPAL_ID)
-    expect(excerpts).toEqual(['Real reply.'])
-  })
-
-  it('returns an empty array when the teammate has no prior replies', async () => {
-    styleRows.current = []
-    const excerpts = await fetchTeammateStyleExcerpts(PRINCIPAL_ID)
-    expect(excerpts).toEqual([])
+  it('returns null when the teammate has no non-empty prior replies', async () => {
+    styleRows.current = [{ content: '   ' }, { content: null }]
+    const profile = await fetchTeammateStyleProfile(PRINCIPAL_ID)
+    expect(profile).toBeNull()
   })
 })
 
@@ -202,7 +222,7 @@ describe('runCopilotTransform', () => {
     expect(deltas.join('')).toBe('Warmed-up reply.')
   })
 
-  it('mines style excerpts only for my_tone', async () => {
+  it('queries and supplies aggregate style statistics only for my_tone', async () => {
     styleRows.current = [{ content: 'My usual sign-off.' }]
     const object = { text: 'Rewritten in my voice.' }
     mockChat.mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
@@ -214,10 +234,18 @@ describe('runCopilotTransform', () => {
     })
 
     const call = mockChat.mock.calls[0][0] as { systemPrompts: string[] }
-    expect(call.systemPrompts.join('\n')).toContain('My usual sign-off.')
+    const joined = call.systemPrompts.join('\n')
+    expect(mockDbSelect).toHaveBeenCalledTimes(1)
+    expect(joined).toContain('Derived style profile from 1 prior replies')
+    expect(joined).toContain('Average reply length: 3 words.')
+    expect(joined).toContain('Average sentence length: 3 words.')
+    expect(joined).toContain(
+      'Exclamation frequency: 0. Question frequency: 0. Multiline frequency: 0.'
+    )
+    expect(joined).not.toContain('My usual sign-off.')
   })
 
-  it('does not query style excerpts for a non-my_tone transform', async () => {
+  it('does not query style profiles for a non-my_tone transform', async () => {
     const object = { text: 'Rewritten.' }
     mockChat.mockReturnValueOnce(chunkStream(completeRun(object, JSON.stringify(object))))
 
@@ -228,7 +256,8 @@ describe('runCopilotTransform', () => {
     })
 
     const call = mockChat.mock.calls[0][0] as { systemPrompts: string[] }
-    expect(call.systemPrompts.join('\n').toLowerCase()).not.toContain('style reference')
+    expect(mockDbSelect).not.toHaveBeenCalled()
+    expect(call.systemPrompts.join('\n').toLowerCase()).not.toContain('style profile')
   })
 
   it('salvages a fenced-JSON reply when no structured object arrives', async () => {

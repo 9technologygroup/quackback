@@ -110,7 +110,7 @@ const saveCopilotAnswerAsMacroSchema = z.object({
 })
 
 /**
- * Save a Copilot answer as a reusable macro (Quinn Copilot P2-C.2: the answer
+ * Save a Copilot answer as a reusable macro (Copilot P2-C.2: the answer
  * card's "..." menu "Save as macro" row). Same authoring gate as the manager,
  * since macros are team content, with no bundled actions and a fixed
  * 'support' scope, as Copilot answers surface in the support inbox.

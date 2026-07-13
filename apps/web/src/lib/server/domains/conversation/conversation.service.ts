@@ -1755,11 +1755,25 @@ export async function appendAssistantReply(
  */
 export async function appendAssistantHandoffNote(
   conversationId: ConversationId,
-  reason: string,
+  packet: {
+    reason: string
+    customerNeed: string
+    attempted: string[]
+    recommendedNextStep: string
+  },
   author: ConversationAuthorInput
 ): Promise<void> {
-  const why = HANDOFF_REASON_LABELS[reason] ?? reason.replace(/_/g, ' ')
-  const content = `Handed off to the team — ${why}.`
+  const sentence = (value: string) => value.trim().replace(/[.!?]+$/u, '')
+  const why = HANDOFF_REASON_LABELS[packet.reason] ?? packet.reason.replace(/_/g, ' ')
+  const attempted = packet.attempted.map(sentence).filter(Boolean)
+  const content = [
+    `The customer needs ${sentence(packet.customerNeed)}.`,
+    attempted.length > 0 ? `The AI agent tried: ${attempted.join('; ')}.` : null,
+    `Next step: ${sentence(packet.recommendedNextStep)}.`,
+    `Handoff reason: ${why}.`,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' ')
   const [message] = await db
     .insert(conversationMessages)
     .values({

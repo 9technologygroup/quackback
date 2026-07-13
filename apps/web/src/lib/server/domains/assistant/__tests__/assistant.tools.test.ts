@@ -41,29 +41,9 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
 }))
 
-/**
- * `isFeatureEnabled` gates two independent flags in this pipeline
- * (assistantTools here and inside the real resolveToolSpecs these tests call
- * by default, assistantKnowledge inside resolveKnowledgeSources): a flat
- * `mockResolvedValue(true)` would flip both at once. Discriminate by flag
- * name instead so assistantKnowledge stays off unless a test opts in.
- */
-function mockActionsFlag(enabled: boolean) {
-  mockIsFeatureEnabled.mockImplementation(
-    async (flag: string) => flag === 'assistantTools' && enabled
-  )
-}
-
 const mockGetAssistantToolControls = vi.fn()
 vi.mock('@/lib/server/domains/settings/settings.assistant', () => ({
   getAssistantToolControls: (...args: unknown[]) => mockGetAssistantToolControls(...args),
-}))
-
-// assistantTools also gates the connectors branch inside resolveToolSpecs,
-// so mockActionsFlag(true) DOES take the dynamic-import branch — stub the
-// module so it never reaches the real (DB-backed) connectors domain.
-vi.mock('@/lib/server/domains/connectors/connector.toolspec', () => ({
-  listEnabledConnectorToolSpecs: vi.fn().mockResolvedValue([]),
 }))
 
 const mockClaimToolCall = vi.fn()
@@ -103,24 +83,13 @@ import type { AssistantToolControls } from '@/lib/server/domains/settings/settin
 async function assembleTools(
   c: AssistantToolContext,
   specs?: readonly AssistantToolSpec[],
-  controls?: AssistantToolControls
+  controls: AssistantToolControls = {},
+  actionsEnabled = specs !== undefined
 ) {
-  return (await assembleAssistantToolset(c, specs, controls)).tools
+  return (await assembleAssistantToolset(c, specs, controls, actionsEnabled)).tools
 }
 
 const ctx = makeToolTestContext
-
-/** The asking teammate's Actor for metadata-write ceiling tests: holds exactly
- *  the given permissions (an explicit Set, so `can` never falls back to role). */
-function asker(...permissions: string[]): AssistantToolContext['askerActor'] {
-  return {
-    principalId: 'principal_teammate',
-    role: 'member',
-    principalType: 'user',
-    segmentIds: new Set(),
-    permissions: new Set(permissions),
-  } as never
-}
 
 function toolCtx(c: AssistantToolContext) {
   return { context: c, emitCustomEvent: () => {} }
@@ -129,9 +98,10 @@ function toolCtx(c: AssistantToolContext) {
 async function findTool(
   c: AssistantToolContext,
   name: string,
-  specs?: readonly AssistantToolSpec[]
+  specs?: readonly AssistantToolSpec[],
+  controls: AssistantToolControls = {}
 ): Promise<{ execute: (args: unknown, o: unknown) => Promise<unknown> }> {
-  const tools = specs ? await assembleTools(c, specs) : await assembleTools(c)
+  const tools = await assembleTools(c, specs, controls)
   const tool = tools.find((t) => t.name === name)
   if (!tool?.execute) throw new Error(`tool ${name} not found`)
   return tool as { execute: (args: unknown, o: unknown) => Promise<unknown> }
@@ -302,11 +272,11 @@ describe('search_knowledge', () => {
   })
 
   it("threads the context's customerPrincipalId and conversationId into the past-conversation-summaries source", async () => {
-    mockIsFeatureEnabled.mockImplementation(async (flag: string) => flag === 'assistantKnowledge')
     mockRetrieve.mockResolvedValue([])
     const c = ctx({
       customerPrincipalId: 'principal_customer_1' as never,
       conversationId: 'conversation_current' as never,
+      knowledgeEnabled: true,
     })
     const search = await findTool(c, 'search_knowledge')
 
@@ -323,9 +293,8 @@ describe('search_knowledge', () => {
   })
 
   it('runs the summaries source with an undefined customerPrincipalId when the context has none (sandbox)', async () => {
-    mockIsFeatureEnabled.mockImplementation(async (flag: string) => flag === 'assistantKnowledge')
     mockRetrieve.mockResolvedValue([])
-    const c = ctx({ conversationId: null })
+    const c = ctx({ conversationId: null, knowledgeEnabled: true })
     const search = await findTool(c, 'search_knowledge')
 
     await search.execute({ query: 'billing' }, toolCtx(c))
@@ -339,30 +308,22 @@ describe('search_knowledge', () => {
 })
 
 describe('assembleAssistantToolset: assistant actions flag', () => {
-  it('returns exactly the one read tool with no pipeline wrapping when the flag is off', async () => {
+  it('returns the read tool plus core control tools with no pipeline wrapping when the flag is off', async () => {
     mockIsFeatureEnabled.mockResolvedValue(false)
     const tools = await assembleTools(ctx())
-    expect(tools.map((t) => t.name).sort()).toEqual(['search_knowledge'])
-    // Byte-identical legacy behavior: no settings read beyond the flag itself.
+    expect(tools.map((t) => t.name).sort()).toEqual(['report_inability', 'search_knowledge'])
+    // The turn snapshot owns controls; assembly performs no settings reads.
     expect(mockGetAssistantToolControls).not.toHaveBeenCalled()
   })
 
-  it('reads the flag and controls exactly once per assembly when the flag is on', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({})
-    await assembleTools(ctx())
-    // Twice, not once: assistantTools is read here for actions plus inside
-    // the real resolveToolSpecs this call falls through to (no explicit
-    // specs) for the connectors branch — each site still reads exactly once,
-    // not redundantly per spec.
-    expect(mockIsFeatureEnabled).toHaveBeenCalledTimes(2)
-    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('assistantTools')
-    expect(mockGetAssistantToolControls).toHaveBeenCalledTimes(1)
+  it('uses the caller-provided actions snapshot without reading settings', async () => {
+    await assembleTools(ctx(), undefined, {}, true)
+    expect(mockIsFeatureEnabled).not.toHaveBeenCalled()
+    expect(mockGetAssistantToolControls).not.toHaveBeenCalled()
   })
 
-  it('accepts pre-fetched controls, skipping its own settings read', async () => {
-    mockActionsFlag(true)
-    const tools = await assembleTools(ctx(), undefined, { search_knowledge: 'disabled' })
+  it('applies pre-fetched controls when actions are enabled', async () => {
+    const tools = await assembleTools(ctx(), undefined, { search_knowledge: 'disabled' }, true)
     expect(tools.map((t) => t.name)).not.toContain('search_knowledge')
     expect(mockGetAssistantToolControls).not.toHaveBeenCalled()
   })
@@ -370,36 +331,29 @@ describe('assembleAssistantToolset: assistant actions flag', () => {
 
 describe('assembleAssistantToolset: control-mode gating', () => {
   it('does not register a disabled tool', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'disabled' })
-    const tools = await assembleTools(ctx(), [makeFakeWriteSpec()])
+    const tools = await assembleTools(ctx(), [makeFakeWriteSpec()], {
+      close_conversation: 'disabled',
+    })
     expect(tools).toHaveLength(0)
   })
 
   it('fails closed to disabled (with a warning) when the saved mode is not supported', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     const spec = makeFakeWriteSpec({ supportedModes: ['disabled', 'approval'] })
-    const tools = await assembleTools(ctx(), [spec])
+    const tools = await assembleTools(ctx(), [spec], { close_conversation: 'autonomous' })
     expect(tools).toHaveLength(0)
     expect(mockLoggerWarn).toHaveBeenCalled()
   })
 
   it('read tools still respect disabled mode when actions are on', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ search_knowledge: 'disabled' })
-    const tools = await assembleTools(ctx())
+    const tools = await assembleTools(ctx(), undefined, { search_knowledge: 'disabled' }, true)
     expect(tools.map((t) => t.name)).not.toContain('search_knowledge')
-    // Another default-active tool (autonomous by default) survives untouched.
+    // Another default-active tool survives in approval mode.
     expect(tools.map((t) => t.name)).toContain('set_attribute')
   })
 })
 
 describe('assembleAssistantToolset: parent-kind gating (unified inbox §2.9/§3.3)', () => {
   it('never offers a conversation-only write tool on a ticket-scoped turn', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'approval' })
-
     const c = ctx({ conversationId: null, ticketId: 'ticket_1' as never })
     const tools = await assembleTools(c, [makeFakeWriteSpec()])
 
@@ -407,9 +361,6 @@ describe('assembleAssistantToolset: parent-kind gating (unified inbox §2.9/§3.
   })
 
   it('still offers a conversation-only write tool on a conversation-scoped turn', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'approval' })
-
     const c = ctx({ conversationId: 'conversation_1' as never })
     const tools = await assembleTools(c, [makeFakeWriteSpec()])
 
@@ -417,9 +368,6 @@ describe('assembleAssistantToolset: parent-kind gating (unified inbox §2.9/§3.
   })
 
   it('offers a tool declaring both parents on a ticket-scoped turn too', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({})
-
     const c = ctx({ conversationId: null, ticketId: 'ticket_1' as never })
     const tools = await assembleTools(c, [
       makeFakeReadSpec({ parents: ['conversation', 'ticket'] }),
@@ -429,8 +377,6 @@ describe('assembleAssistantToolset: parent-kind gating (unified inbox §2.9/§3.
   })
 
   it('filters the same way with the assistantTools flag off (legacy read-only branch)', async () => {
-    mockActionsFlag(false)
-
     const c = ctx({ conversationId: null, ticketId: 'ticket_1' as never })
     // A conversation-only read spec (hypothetical: today's only read tool,
     // search_knowledge, declares both) must still be excluded here too.
@@ -440,11 +386,10 @@ describe('assembleAssistantToolset: parent-kind gating (unified inbox §2.9/§3.
   })
 
   it('a null-null context (sandbox) falls back to conversation parent, matching pre-ticket behavior', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
-
     const c = ctx({ conversationId: null, simulate: true })
-    const tools = await assembleTools(c, [makeFakeWriteSpec({ defaultMode: 'autonomous' })])
+    const tools = await assembleTools(c, [makeFakeWriteSpec({ defaultMode: 'autonomous' })], {
+      close_conversation: 'autonomous',
+    })
 
     expect(tools.map((t) => t.name)).toEqual(['close_conversation'])
   })
@@ -452,7 +397,6 @@ describe('assembleAssistantToolset: parent-kind gating (unified inbox §2.9/§3.
 
 describe('assembleAssistantToolset', () => {
   it('pairs each wired tool with the spec that produced it, index-aligned', async () => {
-    mockActionsFlag(false)
     const { tools, activeSpecs } = await assembleAssistantToolset(ctx())
     expect(tools.map((t) => t.name)).toEqual(activeSpecs.map((s) => s.name))
     expect(
@@ -463,8 +407,6 @@ describe('assembleAssistantToolset', () => {
 
 describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => {
   it('proposes a pending action, returns a pending_approval note, records it on ctx.proposedActions, and never executes', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'approval' })
     mockProposePendingAction.mockResolvedValue({ id: 'assistant_action_1' })
 
     const c = ctx({
@@ -483,6 +425,7 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
       toolName: 'close_conversation',
       args: { reason: 'resolved' },
       summary: 'Close conversation: resolved',
+      originRole: 'customer_support',
       // Same-shaped key as the autonomous branch's claim (S1); this context
       // has no latestCustomerMessageId override, so it threads through as
       // the literal "null" segment.
@@ -507,8 +450,6 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
   })
 
   it('computes the same-shaped idempotency key the autonomous branch claims with, so a retry can dedupe (S1)', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'approval' })
     mockProposePendingAction.mockResolvedValue({ id: 'assistant_action_1' })
 
     const c = ctx({
@@ -531,8 +472,6 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
   })
 
   it('reports the SAME proposal id on two invocations for an identical turn+args (S1: propose-retry idempotency)', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'approval' })
     // Stands in for proposePendingAction's real dedup behavior (covered end
     // to end against a real DB in pending-actions.service.test.ts /
     // pending-actions-note.test.ts): a second call with the same
@@ -560,8 +499,6 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
   })
 
   it('proposes against the ticket parent (not conversationId) for a ticket-scoped context (unified inbox §2.9)', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'approval' })
     mockProposePendingAction.mockResolvedValue({ id: 'assistant_action_1' })
 
     const c = ctx({
@@ -584,6 +521,7 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
       toolName: 'close_conversation',
       args: { reason: 'resolved' },
       summary: 'Close conversation: resolved',
+      originRole: 'customer_support',
       // Falls back to ticketId (not the bare "null" a naive conversationId-only
       // key would produce) so two different tickets proposing the same tool
       // with the same args never collide — see resolveIdempotencyKey's doc.
@@ -592,17 +530,18 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
   })
 })
 
-describe('assembleAssistantToolset: write-tool pipeline (writeToolPolicy: propose, P2-C.4)', () => {
-  it('forces approval for a write tool configured autonomous, proposing instead of executing', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
+describe('assembleAssistantToolset: hard propose policy', () => {
+  it('forces a saved autonomous Writer tool to approval instead of executing', async () => {
     mockProposePendingAction.mockResolvedValue({ id: 'assistant_action_1' })
 
     const c = ctx({
       conversationId: 'conversation_1' as never,
+      role: 'customer_support',
       writeToolPolicy: 'propose',
     })
-    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()])
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()], {
+      close_conversation: 'autonomous',
+    })
     const out = (await tool.execute({ reason: 'resolved' }, toolCtx(c))) as {
       status: string
       note: string
@@ -622,21 +561,47 @@ describe('assembleAssistantToolset: write-tool pipeline (writeToolPolicy: propos
     ])
   })
 
-  it('still disables a tool the workspace turned off, propose notwithstanding', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'disabled' })
+  it.each(['customer_support', 'copilot_qa'] as const)(
+    'turns set_attribute into a proposal for %s and records the origin role',
+    async (role) => {
+      mockProposePendingAction.mockResolvedValue({ id: `assistant_action_${role}` })
+      const c = ctx({
+        conversationId: 'conversation_1' as never,
+        role,
+        writeToolPolicy: 'propose',
+      })
+      const tool = await findTool(c, 'set_attribute', [ASSISTANT_TOOL_SPECS.set_attribute], {
+        set_attribute: 'autonomous',
+      })
 
-    const tools = await assembleTools(ctx({ writeToolPolicy: 'propose' }), [makeFakeWriteSpec()])
+      const out = await tool.execute({ key: 'plan_tier', value: 'pro' }, toolCtx(c))
+
+      expect(out).toEqual({
+        status: 'pending_approval',
+        note: expect.any(String),
+      })
+      expect(mockProposePendingAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolName: 'set_attribute',
+          originRole: role,
+        })
+      )
+      expect(mockWriteExecute).not.toHaveBeenCalled()
+    }
+  )
+
+  it('still disables a tool the workspace turned off, propose notwithstanding', async () => {
+    const tools = await assembleTools(ctx({ writeToolPolicy: 'propose' }), [makeFakeWriteSpec()], {
+      close_conversation: 'disabled',
+    })
 
     expect(tools).toHaveLength(0)
   })
 
-  it('flag off still exposes only the read tool, writeToolPolicy notwithstanding', async () => {
-    mockActionsFlag(false)
-
+  it('actions disabled still excludes write tools but keeps core controls', async () => {
     const tools = await assembleTools(ctx({ writeToolPolicy: 'propose' }))
 
-    expect(tools.map((t) => t.name)).toEqual(['search_knowledge'])
+    expect(tools.map((t) => t.name)).toEqual(['search_knowledge', 'report_inability'])
   })
 })
 
@@ -646,12 +611,12 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
   }
 
   it('denies a call missing a required permission, records the denial, and never executes', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     const spec = makeFakeWriteSpec({ permissions: [PERMISSIONS.SETTINGS_MANAGE] })
 
     const c = autonomousCtx()
-    const tool = await findTool(c, 'close_conversation', [spec])
+    const tool = await findTool(c, 'close_conversation', [spec], {
+      close_conversation: 'autonomous',
+    })
     const out = (await tool.execute({ reason: 'resolved' }, toolCtx(c))) as {
       status: string
       note: string
@@ -669,13 +634,13 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
   })
 
   it('claims, executes, and finalizes succeeded with latency on the happy path', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     mockClaimToolCall.mockResolvedValue({ id: 'assistant_tool_call_1', status: 'started' })
     mockWriteExecute.mockResolvedValue({ closed: true })
 
     const c = autonomousCtx({ latestCustomerMessageId: 'conversation_message_1' })
-    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()])
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })], {
+      close_conversation: 'autonomous',
+    })
     const out = await tool.execute({ reason: 'resolved' }, toolCtx(c))
 
     expect(out).toEqual({ closed: true })
@@ -691,15 +656,16 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
       'assistant_tool_call_1',
       expect.objectContaining({ status: 'succeeded', latencyMs: expect.any(Number) })
     )
+    expect(c.toolOutcomes).toEqual([{ name: 'close_conversation', outcome: 'executed' }])
   })
 
   it('skips a duplicate claim and never executes', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     mockClaimToolCall.mockResolvedValue(null)
 
     const c = autonomousCtx()
-    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()])
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })], {
+      close_conversation: 'autonomous',
+    })
     const out = (await tool.execute({ reason: 'resolved' }, toolCtx(c))) as { status: string }
 
     expect(out.status).toBe('skipped_duplicate')
@@ -708,13 +674,13 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
   })
 
   it('finalizes failed and returns a graceful note when execute throws (never crashes the turn)', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
     mockClaimToolCall.mockResolvedValue({ id: 'assistant_tool_call_1', status: 'started' })
     mockWriteExecute.mockRejectedValue(new Error('boom'))
 
     const c = autonomousCtx()
-    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()])
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })], {
+      close_conversation: 'autonomous',
+    })
     const out = (await tool.execute({ reason: 'resolved' }, toolCtx(c))) as { status: string }
 
     expect(out.status).toBe('failed')
@@ -725,8 +691,6 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
   })
 
   it('skips claim and audit entirely for a read-risk tool', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({})
     mockRetrieve.mockResolvedValue([])
 
     const c = autonomousCtx()
@@ -740,13 +704,15 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
 
 describe('assembleAssistantToolset: sandbox simulate mode', () => {
   it('skips claim, execute, and audit for a write tool and returns a simulated summary', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({ close_conversation: 'autonomous' })
-
-    const c = ctx({ conversationId: null, simulate: true })
-    const tool = await findTool(c, 'close_conversation', [
-      makeFakeWriteSpec({ defaultMode: 'autonomous' }),
-    ])
+    const c = ctx({ conversationId: null, simulate: true, writeToolPolicy: 'simulate' })
+    const tool = await findTool(
+      c,
+      'close_conversation',
+      [makeFakeWriteSpec({ defaultMode: 'autonomous' })],
+      {
+        close_conversation: 'autonomous',
+      }
+    )
     const out = await tool.execute({ reason: 'resolved' }, toolCtx(c))
 
     expect(out).toEqual({ simulated: true, summary: 'Close conversation: resolved' })
@@ -756,8 +722,6 @@ describe('assembleAssistantToolset: sandbox simulate mode', () => {
   })
 
   it('still executes a read tool normally in simulate mode', async () => {
-    mockActionsFlag(true)
-    mockGetAssistantToolControls.mockResolvedValue({})
     mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
 
     const c = ctx({ conversationId: null, simulate: true })
@@ -858,66 +822,26 @@ describe('resolveEffectiveToolMode', () => {
     expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('approval')
   })
 
-  it('a metadataWrite tool is EXEMPT from propose-forcing when the asker holds its permissions', () => {
-    // Attribute classification is metadata, not an action: on the copilot
-    // surface it must run under its configured mode like everywhere else,
-    // not be forced to a teammate-approval card — provided the asking
-    // teammate could perform the write themselves. Mirrors set_attribute.
-    const spec = makeFakeWriteSpec({ metadataWrite: true })
-    const c = ctx({
-      simulate: false,
-      writeToolPolicy: 'propose',
-      askerActor: asker(PERMISSIONS.CONVERSATION_SET_STATUS),
-    })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('autonomous')
-    expect(resolveEffectiveToolMode(spec, 'approval', c)).toBe('approval')
-  })
+  it.each(['customer_support', 'copilot_qa'] as const)(
+    'forces every static write, including set_attribute, to approval for %s',
+    (role) => {
+      const c = ctx({ role, simulate: false, writeToolPolicy: 'propose' })
+      const writes = Object.values(ASSISTANT_TOOL_SPECS).filter((spec) => spec.risk === 'write')
 
-  it('the metadataWrite exemption is bounded by the asking teammate: a missing permission proposes', () => {
-    // Tools execute under Quinn's actor, so the exemption alone would let a
-    // teammate holding only copilot.use trigger a write they could not
-    // perform themselves — the asker ceiling forces the proposal path, whose
-    // approval flow re-checks the approver's permissions.
-    const spec = makeFakeWriteSpec({ metadataWrite: true })
-    const c = ctx({ simulate: false, writeToolPolicy: 'propose', askerActor: asker() })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('approval')
-  })
+      expect(writes.map((spec) => spec.name)).toContain('set_attribute')
+      for (const spec of writes) {
+        expect(resolveEffectiveToolMode(spec, 'autonomous', c), spec.name).toBe('approval')
+        expect(resolveEffectiveToolMode(spec, undefined, c), spec.name).toBe('approval')
+      }
+    }
+  )
 
-  it('the metadataWrite exemption fails closed when no asker actor is threaded at all', () => {
-    // No `askerActor` means no known teammate to bound the write by, which
-    // must read as "below the ceiling", never as "unlimited".
-    const spec = makeFakeWriteSpec({ metadataWrite: true })
-    const c = ctx({ simulate: false, writeToolPolicy: 'propose' })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('approval')
-  })
-
-  it('the asker ceiling checks the SPECIFIC permissions the tool declares', () => {
-    const spec = makeFakeWriteSpec({ metadataWrite: true })
-    const holdsIt = ctx({
-      writeToolPolicy: 'propose',
-      askerActor: asker(PERMISSIONS.CONVERSATION_SET_STATUS),
-    })
-    const holdsOther = ctx({
-      writeToolPolicy: 'propose',
-      askerActor: asker(PERMISSIONS.SETTINGS_MANAGE),
-    })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', holdsIt)).toBe('autonomous')
-    expect(resolveEffectiveToolMode(spec, 'autonomous', holdsOther)).toBe('approval')
-  })
-
-  it('a metadataWrite tool still previews under the simulate default (sandbox path)', () => {
-    // The exemption only lifts the propose-forcing; sandbox preview keys on
-    // simulate (policy unset ⇒ 'simulate'), so a metadata write still previews.
-    const spec = makeFakeWriteSpec({ metadataWrite: true })
-    const c = ctx({ simulate: true }) // writeToolPolicy unset ⇒ 'simulate'
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('simulate')
-  })
-
-  it('disabled still wins for a metadataWrite tool', () => {
-    const spec = makeFakeWriteSpec({ metadataWrite: true })
-    expect(resolveEffectiveToolMode(spec, 'disabled', ctx({ writeToolPolicy: 'propose' }))).toBe(
-      'disabled'
-    )
+  it('keeps explicit simulation simulated for every write', () => {
+    const c = ctx({ simulate: true, writeToolPolicy: 'simulate' })
+    const writes = Object.values(ASSISTANT_TOOL_SPECS).filter((spec) => spec.risk === 'write')
+    for (const spec of writes) {
+      expect(resolveEffectiveToolMode(spec, undefined, c), spec.name).toBe('simulate')
+    }
   })
 
   it("QUINN-PROACTIVE-SUGGESTIONS-SPEC.md: writeToolPolicy: 'disabled' drops a write tool no matter its configured mode", () => {
@@ -938,37 +862,11 @@ describe('resolveEffectiveToolMode', () => {
     ).toBe('disabled')
   })
 
-  it("writeToolPolicy: 'disabled' overrides even the metadataWrite exemption (a suggestion turn has zero side effects, not even a proposal)", () => {
-    const spec = makeFakeWriteSpec({ metadataWrite: true })
-    const c = ctx({
-      simulate: false,
-      writeToolPolicy: 'disabled',
-      askerActor: asker(PERMISSIONS.CONVERSATION_SET_STATUS),
-    })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('disabled')
-  })
-
-  it('real catalogue: set_attribute is the metadata write; the action tools are not', () => {
-    // Pinned against the real specs: under the copilot surface's propose
-    // policy, recording an attribute runs autonomously for a teammate who
-    // holds conversation.set_attributes themselves, proposes for one who
-    // does not, and every genuine action always proposes regardless.
-    const askerHoldsIt = ctx({
-      simulate: false,
-      writeToolPolicy: 'propose',
-      askerActor: asker(PERMISSIONS.CONVERSATION_SET_ATTRIBUTES),
-    })
-    const askerLacksIt = ctx({ simulate: false, writeToolPolicy: 'propose', askerActor: asker() })
-
-    const setAttribute = ASSISTANT_TOOL_SPECS['set_attribute']
-    expect(setAttribute.metadataWrite).toBe(true)
-    expect(resolveEffectiveToolMode(setAttribute, undefined, askerHoldsIt)).toBe('autonomous')
-    expect(resolveEffectiveToolMode(setAttribute, undefined, askerLacksIt)).toBe('approval')
-
-    for (const name of ['end_conversation', 'create_ticket', 'capture_feedback']) {
-      const action = ASSISTANT_TOOL_SPECS[name]
-      expect(action.metadataWrite ?? false).toBe(false)
-      expect(resolveEffectiveToolMode(action, undefined, askerHoldsIt)).toBe('approval')
+  it('the suggested-reply policy disables every static write, including set_attribute', () => {
+    const c = ctx({ role: 'suggested_reply', simulate: false, writeToolPolicy: 'disabled' })
+    const writes = Object.values(ASSISTANT_TOOL_SPECS).filter((spec) => spec.risk === 'write')
+    for (const spec of writes) {
+      expect(resolveEffectiveToolMode(spec, undefined, c), spec.name).toBe('disabled')
     }
   })
 
@@ -997,12 +895,12 @@ describe('resolveEffectiveToolMode', () => {
     )
   })
 
-  it("disables a write tool whose saved mode is unsupported, even under writeToolPolicy: 'propose'", () => {
+  it('hard propose converts a stale saved autonomous mode to approval when the tool supports approval', () => {
     const spec = makeFakeWriteSpec({ supportedModes: ['disabled', 'approval'] })
     expect(resolveEffectiveToolMode(spec, 'autonomous', ctx({ writeToolPolicy: 'propose' }))).toBe(
-      'disabled'
+      'approval'
     )
-    expect(mockLoggerWarn).toHaveBeenCalled()
+    expect(mockLoggerWarn).not.toHaveBeenCalled()
   })
 
   it('disables a write tool whose saved mode is unsupported, regardless of simulate or writeToolPolicy', () => {

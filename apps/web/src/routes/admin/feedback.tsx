@@ -1,9 +1,10 @@
-import { createFileRoute, Outlet, useRouteContext } from '@tanstack/react-router'
+import { createFileRoute, Outlet, redirect, useRouteContext } from '@tanstack/react-router'
 import { z } from 'zod'
 import { useQuery } from '@tanstack/react-query'
 import { feedbackQueries } from '@/lib/client/queries/feedback'
 import { TabStrip, type TabStripItem } from '@/components/admin/tab-strip'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
+import { getFirstEnabledAdminProductPath, isProductEnabled } from '@/lib/shared/types/settings'
 
 const searchSchema = z.object({
   board: z.array(z.string()).optional(),
@@ -33,6 +34,11 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute('/admin/feedback')({
   validateSearch: searchSchema,
+  beforeLoad: ({ context }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'feedback')) {
+      throw redirect({ to: getFirstEnabledAdminProductPath(context.settings?.featureFlags) })
+    }
+  },
   component: FeedbackLayout,
 })
 

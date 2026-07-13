@@ -1,25 +1,21 @@
-/**
- * Assistant settings server fns: permission gate + boundary validation.
- * createServerFn is stubbed to a directly-callable fn (mirrors
- * sla-policies.fn.test.ts) so the real zod validator runs on each call.
- */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { AssistantConfig } from '@/lib/shared/assistant/config'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 
 vi.mock('@tanstack/react-start', () => ({
   createServerFn: () => {
-    let _schema: { parse: (v: unknown) => unknown } | null = null
-    let _handler: ((args: { data: unknown }) => Promise<unknown>) | null = null
+    let schema: { parse: (value: unknown) => unknown } | null = null
+    let handler: ((args: { data: never }) => Promise<unknown>) | null = null
     const fn = async (args?: { data: unknown }) => {
-      if (!_handler) throw new Error('handler not registered')
-      return _handler({ data: _schema ? _schema.parse(args?.data) : args?.data })
+      if (!handler) throw new Error('handler not registered')
+      return handler({ data: (schema ? schema.parse(args?.data) : args?.data) as never })
     }
-    fn.validator = (schema: { parse: (v: unknown) => unknown }) => {
-      _schema = schema
+    fn.validator = (nextSchema: { parse: (value: unknown) => unknown }) => {
+      schema = nextSchema
       return fn
     }
-    fn.handler = (h: (args: { data: unknown }) => Promise<unknown>) => {
-      _handler = h
+    fn.handler = (nextHandler: (args: { data: never }) => Promise<unknown>) => {
+      handler = nextHandler
       return fn
     }
     return fn
@@ -28,185 +24,282 @@ vi.mock('@tanstack/react-start', () => ({
 
 const hoisted = vi.hoisted(() => ({
   requireAuth: vi.fn(),
-  getAssistantConfig: vi.fn(),
+  actorFromAuth: vi.fn(),
+  getAssistantSettings: vi.fn(),
+  updateAssistantIdentity: vi.fn(),
+  updateAssistantVoice: vi.fn(),
+  updateAssistantChannels: vi.fn(),
   updateAssistantToolControls: vi.fn(),
-  updateAssistantSurfaces: vi.fn(),
-  updateAssistantBasics: vi.fn(),
-  recordAuditEvent: vi.fn(),
-  actorFromAuth: vi.fn(() => ({ email: 'admin@example.com' })),
+  updateWidgetAssistantDeployment: vi.fn(),
+  requestHeaders: new Headers({
+    'user-agent': 'assistant-settings-test',
+    'x-request-id': 'request_1',
+  }),
 }))
 
-vi.mock('@/lib/server/functions/auth-helpers', () => ({ requireAuth: hoisted.requireAuth }))
-// Keep the real schema exports (the validator boundary tests exercise them);
-// only the DB-touching get/update fns are replaced.
+vi.mock('@/lib/server/functions/auth-helpers', () => ({
+  requireAuth: hoisted.requireAuth,
+}))
+
 vi.mock('@/lib/server/domains/settings/settings.assistant', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/domains/settings/settings.assistant')>()),
-  getAssistantConfig: hoisted.getAssistantConfig,
+  getAssistantSettings: hoisted.getAssistantSettings,
+  updateAssistantIdentity: hoisted.updateAssistantIdentity,
+  updateAssistantVoice: hoisted.updateAssistantVoice,
+  updateAssistantChannels: hoisted.updateAssistantChannels,
   updateAssistantToolControls: hoisted.updateAssistantToolControls,
-  updateAssistantSurfaces: hoisted.updateAssistantSurfaces,
-  updateAssistantBasics: hoisted.updateAssistantBasics,
 }))
+
+vi.mock('@/lib/server/domains/settings/settings.widget', () => ({
+  updateWidgetAssistantDeployment: hoisted.updateWidgetAssistantDeployment,
+}))
+
 vi.mock('@/lib/server/audit/log', () => ({
-  recordAuditEvent: hoisted.recordAuditEvent,
   actorFromAuth: hoisted.actorFromAuth,
 }))
+
 vi.mock('@tanstack/react-start/server', () => ({
-  getRequestHeaders: () => new Headers(),
+  getRequestHeaders: () => hoisted.requestHeaders,
 }))
 
 import {
   getAssistantSettingsFn,
+  updateAssistantChannelsFn,
+  updateAssistantIdentityFn,
   updateAssistantToolControlsFn,
-  updateAssistantSurfacesFn,
-  updateAssistantBasicsFn,
+  updateAssistantVoiceFn,
+  updateWidgetAssistantDeploymentFn,
 } from '../assistant-settings'
+
+const CONFIG: AssistantConfig = {
+  version: 2,
+  identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+  voice: {
+    tone: 'balanced',
+    responseLength: 'balanced',
+    additionalInstructions: '',
+  },
+  channels: {},
+  toolControls: {},
+}
+
+const SETTINGS_RESULT = {
+  config: CONFIG,
+  revision: 41,
+  managedFieldPaths: ['assistant.voice.tone'],
+}
+
+const CONFIG_RESULT = {
+  config: {
+    ...CONFIG,
+    voice: { ...CONFIG.voice, tone: 'professional' as const },
+  },
+  revision: 42,
+}
+
+const AUTH_CONTEXT = {
+  user: { id: 'user_admin', email: 'admin@example.com' },
+  principal: { id: 'principal_admin', role: 'admin', type: 'user' },
+}
+
+const AUDIT_ACTOR = {
+  userId: 'user_admin',
+  email: 'admin@example.com',
+  role: 'admin',
+  type: 'user',
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
-  hoisted.requireAuth.mockResolvedValue({ principal: { id: 'principal_admin' } })
-  hoisted.getAssistantConfig.mockResolvedValue({ toolControls: {}, surfaces: {}, basics: {} })
+  hoisted.requireAuth.mockResolvedValue(AUTH_CONTEXT)
+  hoisted.actorFromAuth.mockReturnValue(AUDIT_ACTOR)
+  hoisted.getAssistantSettings.mockResolvedValue(SETTINGS_RESULT)
+  hoisted.updateAssistantIdentity.mockResolvedValue(CONFIG_RESULT)
+  hoisted.updateAssistantVoice.mockResolvedValue(CONFIG_RESULT)
+  hoisted.updateAssistantChannels.mockResolvedValue(CONFIG_RESULT)
+  hoisted.updateAssistantToolControls.mockResolvedValue(CONFIG_RESULT)
+  hoisted.updateWidgetAssistantDeployment.mockResolvedValue({ enabled: true, respond: true })
 })
 
-describe('permission gates', () => {
-  it('all four fns gate on assistant.manage', async () => {
+describe('assistant settings permission gates', () => {
+  it('requires assistant.manage for the query, every config mutation, and deployment', async () => {
     await getAssistantSettingsFn()
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
+    await updateAssistantIdentityFn({
+      data: {
+        expectedRevision: 41,
+        identity: CONFIG.identity,
+      },
     })
+    await updateAssistantVoiceFn({
+      data: {
+        expectedRevision: 41,
+        voice: CONFIG.voice,
+      },
+    })
+    await updateAssistantChannelsFn({
+      data: {
+        expectedRevision: 41,
+        channels: CONFIG.channels,
+      },
+    })
+    await updateAssistantToolControlsFn({
+      data: {
+        expectedRevision: 41,
+        toolControls: CONFIG.toolControls,
+      },
+    })
+    await updateWidgetAssistantDeploymentFn({ data: { enabled: true, respond: true } })
 
-    hoisted.updateAssistantToolControls.mockResolvedValue({})
-    await updateAssistantToolControlsFn({ data: {} })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
-    hoisted.updateAssistantSurfaces.mockResolvedValue({})
-    await updateAssistantSurfacesFn({ data: {} })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
-    hoisted.updateAssistantBasics.mockResolvedValue({})
-    await updateAssistantBasicsFn({ data: {} })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
+    expect(hoisted.requireAuth).toHaveBeenCalledTimes(6)
+    for (const call of hoisted.requireAuth.mock.calls) {
+      expect(call[0]).toEqual({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    }
   })
 
-  it('propagates an auth rejection without touching the domain layer', async () => {
+  it('propagates auth rejection without reaching a settings domain mutation', async () => {
     hoisted.requireAuth.mockRejectedValue(new Error('Access denied'))
-    await expect(getAssistantSettingsFn()).rejects.toThrow('Access denied')
-    expect(hoisted.getAssistantConfig).not.toHaveBeenCalled()
-  })
-})
 
-describe('getAssistantSettingsFn', () => {
-  it('returns all three namespaces off a single getAssistantConfig call', async () => {
-    hoisted.getAssistantConfig.mockResolvedValue({
-      toolControls: { end_conversation: 'approval' },
-      surfaces: { widget: { instructions: 'Be concise.' } },
-      basics: { tone: 'friendly', length: 'concise' },
-    })
-
-    const result = await getAssistantSettingsFn()
-    expect(result).toEqual({
-      toolControls: { end_conversation: 'approval' },
-      surfaces: { widget: { instructions: 'Be concise.' } },
-      basics: { tone: 'friendly', length: 'concise' },
-    })
-    expect(hoisted.getAssistantConfig).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('updateAssistantToolControlsFn', () => {
-  it('rejects an invalid mode at the boundary before reaching the domain layer', async () => {
     await expect(
-      updateAssistantToolControlsFn({ data: { end_conversation: 'bogus' } as never })
+      updateAssistantVoiceFn({
+        data: { expectedRevision: 41, voice: CONFIG.voice },
+      })
+    ).rejects.toThrow('Access denied')
+    expect(hoisted.updateAssistantVoice).not.toHaveBeenCalled()
+  })
+})
+
+describe('assistant settings V2 boundary', () => {
+  it('returns the complete config, revision, and managed paths from the strict read', async () => {
+    await expect(getAssistantSettingsFn()).resolves.toEqual(SETTINGS_RESULT)
+    expect(hoisted.getAssistantSettings).toHaveBeenCalledOnce()
+  })
+
+  it('rejects invalid identity, voice, channels, controls, revisions, and deployment input', async () => {
+    await expect(
+      updateAssistantIdentityFn({
+        data: {
+          expectedRevision: 41,
+          identity: { name: ' ', avatarUrl: null, showAiLabel: true },
+        },
+      })
     ).rejects.toThrow()
+    await expect(
+      updateAssistantVoiceFn({
+        data: {
+          expectedRevision: 41,
+          voice: {
+            tone: 'balanced',
+            responseLength: 'balanced',
+            additionalInstructions: 'x'.repeat(2_001),
+          },
+        },
+      })
+    ).rejects.toThrow()
+    await expect(
+      updateAssistantChannelsFn({
+        data: {
+          expectedRevision: 41,
+          channels: { email: { additionalInstructions: 'x'.repeat(1_001) } },
+        },
+      })
+    ).rejects.toThrow()
+    await expect(
+      updateAssistantToolControlsFn({
+        data: {
+          expectedRevision: 41,
+          toolControls: { end_conversation: 'sometimes' },
+        } as never,
+      })
+    ).rejects.toThrow()
+    await expect(
+      updateAssistantToolControlsFn({
+        data: { expectedRevision: 0, toolControls: {} },
+      })
+    ).rejects.toThrow()
+    await expect(
+      updateWidgetAssistantDeploymentFn({
+        data: { enabled: true, respond: 'yes' } as never,
+      })
+    ).rejects.toThrow()
+
+    expect(hoisted.updateAssistantIdentity).not.toHaveBeenCalled()
+    expect(hoisted.updateAssistantVoice).not.toHaveBeenCalled()
+    expect(hoisted.updateAssistantChannels).not.toHaveBeenCalled()
     expect(hoisted.updateAssistantToolControls).not.toHaveBeenCalled()
+    expect(hoisted.updateWidgetAssistantDeployment).not.toHaveBeenCalled()
   })
 
-  it('passes a valid map through to the domain layer', async () => {
-    hoisted.updateAssistantToolControls.mockResolvedValue({ end_conversation: 'approval' })
-    const result = await updateAssistantToolControlsFn({
-      data: { end_conversation: 'approval' },
-    })
-    expect(result).toEqual({ end_conversation: 'approval' })
-    expect(hoisted.updateAssistantToolControls).toHaveBeenCalledWith({
-      end_conversation: 'approval',
-    })
-  })
-})
+  it('propagates expectedRevision and returns complete config state for every section mutation', async () => {
+    const identity = {
+      name: 'Avery',
+      avatarUrl: 'https://cdn.example.test/avery.png',
+      showAiLabel: false,
+    }
+    const voice = {
+      tone: 'professional' as const,
+      responseLength: 'detailed' as const,
+      additionalInstructions: 'Explain the next step.',
+    }
+    const channels = {
+      widget: { additionalInstructions: 'Start with a greeting.' },
+      email: { additionalInstructions: 'Use an email sign-off.' },
+    }
+    const toolControls = {
+      end_conversation: 'approval' as const,
+      create_ticket: 'autonomous' as const,
+    }
+    const actor = { ...AUDIT_ACTOR, headers: hoisted.requestHeaders }
 
-describe('updateAssistantSurfacesFn', () => {
-  it('rejects an unknown surface key at the boundary', async () => {
     await expect(
-      updateAssistantSurfacesFn({ data: { sms: { instructions: 'Be concise.' } } as never })
-    ).rejects.toThrow()
-    expect(hoisted.updateAssistantSurfaces).not.toHaveBeenCalled()
-  })
-
-  it('passes a valid partial map through to the domain layer', async () => {
-    hoisted.updateAssistantSurfaces.mockResolvedValue({ widget: { instructions: 'Be concise.' } })
-    const result = await updateAssistantSurfacesFn({
-      data: { widget: { instructions: 'Be concise.' } },
-    })
-    expect(result).toEqual({ widget: { instructions: 'Be concise.' } })
-  })
-})
-
-describe('updateAssistantBasicsFn', () => {
-  it('rejects an invalid tone at the boundary before reaching the domain layer', async () => {
+      updateAssistantIdentityFn({ data: { expectedRevision: 41, identity } })
+    ).resolves.toEqual(CONFIG_RESULT)
     await expect(
-      updateAssistantBasicsFn({ data: { tone: 'sarcastic' } as never })
-    ).rejects.toThrow()
-    expect(hoisted.updateAssistantBasics).not.toHaveBeenCalled()
+      updateAssistantVoiceFn({ data: { expectedRevision: 41, voice } })
+    ).resolves.toEqual(CONFIG_RESULT)
+    await expect(
+      updateAssistantChannelsFn({ data: { expectedRevision: 41, channels } })
+    ).resolves.toEqual(CONFIG_RESULT)
+    await expect(
+      updateAssistantToolControlsFn({ data: { expectedRevision: 41, toolControls } })
+    ).resolves.toEqual(CONFIG_RESULT)
+
+    expect(hoisted.updateAssistantIdentity).toHaveBeenCalledWith(41, identity, actor)
+    expect(hoisted.updateAssistantVoice).toHaveBeenCalledWith(41, voice, actor)
+    expect(hoisted.updateAssistantChannels).toHaveBeenCalledWith(41, channels, actor)
+    expect(hoisted.updateAssistantToolControls).toHaveBeenCalledWith(41, toolControls, actor)
   })
 
-  it('passes a valid preset through to the domain layer', async () => {
-    hoisted.updateAssistantBasics.mockResolvedValue({ tone: 'friendly', length: 'concise' })
-    const result = await updateAssistantBasicsFn({
-      data: { tone: 'friendly', length: 'concise' },
+  it('normalizes identity input at the server boundary before delegation', async () => {
+    await updateAssistantIdentityFn({
+      data: {
+        expectedRevision: 41,
+        identity: {
+          name: '  Avery  ',
+          avatarUrl: '  https://cdn.example.test/avery.png  ',
+          showAiLabel: true,
+        },
+      },
     })
-    expect(result).toEqual({ tone: 'friendly', length: 'concise' })
-    expect(hoisted.updateAssistantBasics).toHaveBeenCalledWith({
-      tone: 'friendly',
-      length: 'concise',
-    })
-  })
-})
 
-describe('audit logging', () => {
-  it('updateAssistantToolControlsFn records assistant.tool_controls.changed with the submitted map', async () => {
-    hoisted.updateAssistantToolControls.mockResolvedValue({ end_conversation: 'approval' })
-    await updateAssistantToolControlsFn({ data: { end_conversation: 'approval' } })
-    expect(hoisted.recordAuditEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'assistant.tool_controls.changed',
-        after: { end_conversation: 'approval' },
-      })
+    expect(hoisted.updateAssistantIdentity).toHaveBeenCalledWith(
+      41,
+      {
+        name: 'Avery',
+        avatarUrl: 'https://cdn.example.test/avery.png',
+        showAiLabel: true,
+      },
+      expect.objectContaining(AUDIT_ACTOR)
     )
   })
 
-  it('updateAssistantSurfacesFn records assistant.surfaces.changed with the submitted map', async () => {
-    hoisted.updateAssistantSurfaces.mockResolvedValue({ widget: { instructions: 'Be concise.' } })
-    await updateAssistantSurfacesFn({ data: { widget: { instructions: 'Be concise.' } } })
-    expect(hoisted.recordAuditEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'assistant.surfaces.changed',
-        after: { widget: { instructions: 'Be concise.' } },
-      })
-    )
-  })
+  it('keeps widget deployment separate and forwards the authenticated audit actor', async () => {
+    await expect(
+      updateWidgetAssistantDeploymentFn({ data: { enabled: true, respond: true } })
+    ).resolves.toEqual({ enabled: true, respond: true })
 
-  it('updateAssistantBasicsFn records assistant.basics.changed with the submitted preset', async () => {
-    hoisted.updateAssistantBasics.mockResolvedValue({ tone: 'friendly', length: 'concise' })
-    await updateAssistantBasicsFn({ data: { tone: 'friendly', length: 'concise' } })
-    expect(hoisted.recordAuditEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'assistant.basics.changed',
-        after: { tone: 'friendly', length: 'concise' },
-      })
+    expect(hoisted.updateWidgetAssistantDeployment).toHaveBeenCalledWith(
+      { enabled: true, respond: true },
+      { ...AUDIT_ACTOR, headers: hoisted.requestHeaders }
     )
   })
 })

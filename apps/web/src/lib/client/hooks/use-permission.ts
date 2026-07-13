@@ -28,8 +28,10 @@ export function resolvePermission(role: string | null | undefined, key: Permissi
  * mapping and why this is UX-only.
  */
 export function usePermission(key: PermissionKey): boolean {
-  const { principal } = useRouteContext({ from: '/admin' }) as {
+  const { principal, permissions } = useRouteContext({ from: '/admin' }) as {
     principal?: { role: string } | null
+    permissions?: PermissionKey[]
   }
+  if (permissions) return permissions.includes(key)
   return resolvePermission(principal?.role, key)
 }

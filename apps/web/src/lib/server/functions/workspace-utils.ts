@@ -14,6 +14,8 @@ import { db, principal, eq } from '@/lib/server/db'
 import { isTeamMember } from '@/lib/shared/roles'
 import { logger } from '@/lib/server/logger'
 import { buildSigninRedirect } from '@/lib/shared/auth-prompt'
+import { permissionsForPrincipal } from '@/lib/server/policy/permissions'
+import type { Role } from '@/lib/shared/roles'
 
 const log = logger.child({ component: 'workspace-utils' })
 
@@ -69,10 +71,16 @@ export const requireWorkspaceRole = createServerFn({ method: 'GET' })
         throw redirect(buildSigninRedirect('/admin', { error: 'not_team_member' }))
       }
 
+      const resolvedPermissions = await permissionsForPrincipal(
+        principalRecord.id,
+        principalRecord.role as Role
+      )
+
       return {
         settings: appSettings,
         principal: principalRecord,
         user: session.user,
+        permissions: [...resolvedPermissions],
       }
     } catch (error) {
       log.error({ err: error }, 'require workspace role failed')

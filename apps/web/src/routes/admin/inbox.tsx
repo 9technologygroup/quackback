@@ -1,4 +1,4 @@
-import { createFileRoute, Navigate } from '@tanstack/react-router'
+import { createFileRoute, Navigate, redirect } from '@tanstack/react-router'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -106,7 +106,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/shared/utils'
-import type { FeatureFlags } from '@/lib/shared/types/settings'
+import {
+  getFirstEnabledAdminProductPath,
+  isProductEnabled,
+  type FeatureFlags,
+} from '@/lib/shared/types/settings'
 
 /** Quinn-view outcome sub-filter (Fin's All / Pending / Escalated / Resolved). */
 const QUINN_BUCKETS: {
@@ -235,6 +239,11 @@ export const Route = createFileRoute('/admin/inbox')({
           : undefined,
     }
   },
+  beforeLoad: ({ context }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'support')) {
+      throw redirect({ to: getFirstEnabledAdminProductPath(context.settings?.featureFlags) })
+    }
+  },
   // Re-run the prefetch when the scope / filters / open item change, so
   // a client-side navigation re-warms the cache too. ensureQueryData is a no-op
   // when the data is still fresh, so this doesn't double-fetch.
@@ -335,7 +344,7 @@ function InboxRoute() {
   const { settings } = Route.useRouteContext()
   const flags = settings?.featureFlags as FeatureFlags | undefined
   if (!flags?.supportInbox && !flags?.supportTickets) {
-    return <Navigate to="/admin/feedback" />
+    return <Navigate to={getFirstEnabledAdminProductPath(flags)} />
   }
   return <InboxPage />
 }

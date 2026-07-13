@@ -19,9 +19,6 @@ import {
   DEFAULT_INACTIVITY_MINUTES,
   MAX_BREACH_LEAD_MINUTES,
   DEFAULT_BREACH_LEAD_MINUTES,
-  MIN_CALL_CONNECTOR_TIMEOUT_MS,
-  MAX_CALL_CONNECTOR_TIMEOUT_MS,
-  CALL_CONNECTOR_FAILED_KEY,
   PARKING_BLOCK_KINDS,
   classRestrictedNodeIssue,
   duplicateStepIdMessage,
@@ -34,9 +31,9 @@ import type {
   FrequencyCap,
   ValidatedWorkflowGraph,
 } from '@/lib/server/domains/workflows/workflow.schemas'
-// Re-exported so every other cap symbol (and now these two bounds) flows
-// through this module: the one client-side boundary onto workflow.schemas.ts
-// for the feature, instead of individual editors reaching past it.
+// Re-exported so every cap symbol flows through this module: the one
+// client-side boundary onto workflow.schemas.ts for the feature, instead of
+// individual editors reaching past it.
 export {
   MAX_FREQUENCY_CAP_COUNT,
   MAX_FREQUENCY_CAP_DAYS,
@@ -45,9 +42,6 @@ export {
   DEFAULT_INACTIVITY_MINUTES,
   MAX_BREACH_LEAD_MINUTES,
   DEFAULT_BREACH_LEAD_MINUTES,
-  MIN_CALL_CONNECTOR_TIMEOUT_MS,
-  MAX_CALL_CONNECTOR_TIMEOUT_MS,
-  CALL_CONNECTOR_FAILED_KEY,
 }
 import type {
   ATTRIBUTE_FIELD_PREFIX as ServerAttributeFieldPrefix,
@@ -232,22 +226,6 @@ export const RATING_LABELS: Record<RatingKey, string> = Object.fromEntries(
  *  still authors it: the edge is schema-valid and forward-compatible today). */
 export const LET_ASSISTANT_DEFAULT_KEY = 'continue'
 export const LET_ASSISTANT_ESCALATED_KEY = 'escalated'
-
-/** Fixed path keys for call_connector's two edges, mirroring
- *  LET_ASSISTANT_DEFAULT_KEY/ESCALATED_KEY exactly: the default (unlabeled)
- *  success path and the labeled 'failed' path. `CALL_CONNECTOR_FAILED_KEY` is
- *  imported from workflow.schemas.ts (it's a real edge branch value the
- *  server's R-8 check validates); `CALL_CONNECTOR_SUCCESS_KEY` is a
- *  client-only bookkeeping key (never serialized as an edge branch — the
- *  success path is the unlabeled default edge, same as LET_ASSISTANT_DEFAULT_
- *  KEY's 'continue'), so it's declared here rather than imported. */
-export const CALL_CONNECTOR_SUCCESS_KEY = 'success'
-
-/** The palette/inspector display label for the call_connector node kind —
- *  not part of BLOCK_STEP_LABELS (call_connector isn't a conversational
- *  block: it never posts a message, and it's legal in BOTH workflow classes,
- *  unlike every PARKING_BLOCK_KINDS member). */
-export const CALL_CONNECTOR_LABEL = 'Call connector'
 
 /** Attribute field types collect_data supports (a subset of the full
  *  registry — mirrors workflow.schemas.ts's collect_data.fieldType enum;
@@ -1112,24 +1090,6 @@ export type TreeStep =
        *  resume case — no matching branch edge is a valid, terminal outcome). */
       paths: KeyedPath[]
     }
-  /** Calls an existing data connector mid-workflow. `params` maps the
-   *  connector's declared input names to `{key|fallback}` template strings
-   *  (interpolated at execution — see action.executor.ts's
-   *  executeCallConnectorNode); this shape doesn't itself know the
-   *  connector's declared inputs (that's live data, looked up by id via
-   *  connectorsQuery in the inspector editor). paths: exactly
-   *  CALL_CONNECTOR_SUCCESS_KEY (unlabeled default edge) +
-   *  CALL_CONNECTOR_FAILED_KEY ('failed', labeled), always both present —
-   *  mirrors let_assistant_answer's fixed pair exactly (not user add/remove/
-   *  reorderable). */
-  | {
-      id: string
-      kind: 'call_connector'
-      connectorId: string
-      params: Record<string, string>
-      timeoutMs?: number
-      paths: KeyedPath[]
-    }
 
 export interface WorkflowTree {
   triggerId: string
@@ -1153,7 +1113,6 @@ export function stepPaths(step: TreeStep): KeyedPath[] | null {
     case 'reply_buttons':
     case 'request_csat':
     case 'let_assistant_answer':
-    case 'call_connector':
       return step.paths
     default:
       return null
@@ -1170,7 +1129,6 @@ function withPathSteps(step: TreeStep, key: string, steps: TreeStep[]): TreeStep
     case 'reply_buttons':
     case 'request_csat':
     case 'let_assistant_answer':
-    case 'call_connector':
       return { ...step, paths: step.paths.map((p) => (p.key === key ? { ...p, steps } : p)) }
     default:
       return step
@@ -1277,17 +1235,6 @@ export function createStep(
         body: EMPTY_BLOCK_BODY,
         allowTypingInterrupt: true,
         paths: [],
-      }
-    case 'call_connector':
-      return {
-        id,
-        kind,
-        connectorId: '',
-        params: {},
-        paths: [
-          { key: CALL_CONNECTOR_SUCCESS_KEY, label: 'On success', steps: [] },
-          { key: CALL_CONNECTOR_FAILED_KEY, label: 'On failure', steps: [] },
-        ],
       }
   }
 }
@@ -1573,34 +1520,6 @@ export function validateGraph(input: unknown): Result<WorkflowGraphJson> {
         }
         break
       }
-      case 'call_connector': {
-        // The failed edge (if present) is validated below like a branch's
-        // labeled edges: only CALL_CONNECTOR_FAILED_KEY is a declared path
-        // off this node — mirrors let_assistant_answer's escalated-key
-        // declaration just above.
-        branchKeysByNodeId.set(node.id, new Set([CALL_CONNECTOR_FAILED_KEY]))
-        if (!nonEmptyString(node.connectorId)) return fail(`${where}: choose a connector`)
-        if (
-          !isRecord(node.params) ||
-          Object.values(node.params).some((v) => typeof v !== 'string')
-        ) {
-          return fail(`${where}: "params" must be an object of string values`)
-        }
-        if (node.timeoutMs !== undefined) {
-          if (typeof node.timeoutMs !== 'number' || !Number.isInteger(node.timeoutMs)) {
-            return fail(`${where}: "timeoutMs" must be a whole number when present`)
-          }
-          if (
-            node.timeoutMs < MIN_CALL_CONNECTOR_TIMEOUT_MS ||
-            node.timeoutMs > MAX_CALL_CONNECTOR_TIMEOUT_MS
-          ) {
-            return fail(
-              `${where}: "timeoutMs" must be between ${MIN_CALL_CONNECTOR_TIMEOUT_MS} and ${MAX_CALL_CONNECTOR_TIMEOUT_MS}`
-            )
-          }
-        }
-        break
-      }
       default:
         return fail(`nodes[${i}]: unknown step type "${String(node.type)}"`)
     }
@@ -1651,14 +1570,8 @@ export function parseWorkflowGraphText(text: string): Result<WorkflowGraphJson> 
 // stay editable as JSON; nothing is silently dropped.
 // ---------------------------------------------------------------------------
 
-/** Shared fixed-two-path edge resolution for let_assistant_answer and
- *  call_connector (graphToTree side): both have exactly one unlabeled
- *  "default" successor plus an optional single successor labeled with the
- *  kind's own fixed key, and no other labeled edges are legal. The three
- *  validation failures below (an unknown labeled path, more than one default
- *  connection, more than one labeled connection) are identical in shape
- *  across both kinds — only the display name and the labeled key/word
- *  differ, so callers pass those in rather than duplicating this walk. */
+/** Resolve a fixed pair with one unlabeled default successor and one optional
+ *  labeled successor. */
 function resolveFixedTwoPathEdges(
   node: GraphNode,
   outs: GraphEdge[],
@@ -1688,7 +1601,7 @@ function resolveFixedTwoPathEdges(
   return { ok: true, value: { defaultSteps: defaultSub.value, labeledSteps: labeledSub.value } }
 }
 
-/** Shared emit for the same fixed-two-path pair, treeToGraph side: emits the
+/** Emit the same fixed-two-path pair, treeToGraph side: emits the
  *  default (unlabeled) edge for the default-keyed path and the labeled edge
  *  for the labeled-keyed path, when each is present — the reverse of
  *  resolveFixedTwoPathEdges above, kept next to it for the same reason. */
@@ -1892,40 +1805,6 @@ export function graphToTree(graph: WorkflowGraphJson): Result<WorkflowTree> {
         return { ok: true, value: steps }
       }
 
-      // ── call_connector: default (unlabeled) success + labeled 'failed' ───
-      if (node.type === 'call_connector') {
-        const outs = outgoing.get(node.id) ?? []
-        const resolved = resolveFixedTwoPathEdges(
-          node,
-          outs,
-          CALL_CONNECTOR_FAILED_KEY,
-          'failed',
-          'Call connector',
-          walkFrom
-        )
-        if (!resolved.ok) return resolved
-        steps.push({
-          id: node.id,
-          kind: 'call_connector',
-          connectorId: node.connectorId,
-          params: node.params,
-          timeoutMs: node.timeoutMs,
-          paths: [
-            {
-              key: CALL_CONNECTOR_SUCCESS_KEY,
-              label: 'On success',
-              steps: resolved.value.defaultSteps,
-            },
-            {
-              key: CALL_CONNECTOR_FAILED_KEY,
-              label: 'On failure',
-              steps: resolved.value.labeledSteps,
-            },
-          ],
-        })
-        return { ok: true, value: steps }
-      }
-
       const next = singleSuccessor(node)
       if (!next.ok) return next
       switch (node.type) {
@@ -2073,17 +1952,6 @@ export function treeToGraph(tree: WorkflowTree): WorkflowGraphJson {
             autoCloseOverride: step.autoCloseOverride,
           })
           emitFixedTwoPathEdges(step, LET_ASSISTANT_DEFAULT_KEY, LET_ASSISTANT_ESCALATED_KEY, emit)
-          break
-        }
-        case 'call_connector': {
-          nodes.push({
-            id: step.id,
-            type: 'call_connector',
-            connectorId: step.connectorId,
-            params: step.params,
-            timeoutMs: step.timeoutMs,
-          })
-          emitFixedTwoPathEdges(step, CALL_CONNECTOR_SUCCESS_KEY, CALL_CONNECTOR_FAILED_KEY, emit)
           break
         }
       }
@@ -2461,10 +2329,6 @@ export interface EntityLabels {
    *  registry since the three attribute stores are keyed independently. */
   personAttributes?: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
   companyAttributes?: ReadonlyMap<string, PersonCompanyAttributeFieldDef>
-  /** Connector id -> display name, for call_connector step summaries — same
-   *  "id -> live name, tolerant of unset/needs-setup" role as members/teams/
-   *  tags/slaPolicies above. */
-  connectors?: ReadonlyMap<string, string>
   /** Ticket status id -> display name, for set_ticket_status step summaries —
    *  same role as `tags`/`slaPolicies` above. */
   ticketStatuses?: ReadonlyMap<string, string>
@@ -2853,16 +2717,6 @@ export function csatSummary(step: Extract<TreeStep, { kind: 'request_csat' }>): 
     : `Ask for a rating · branches on ${n} rating${n === 1 ? '' : 's'}`
 }
 
-/** "Call <connector name>", or "Call … not chosen yet" when unset/needs-setup
- *  — same `named()` id -> display-name treatment every other workspace ref
- *  (team/tag/SLA policy) already gets in actionSummary. */
-export function callConnectorSummary(
-  step: Extract<TreeStep, { kind: 'call_connector' }>,
-  connectors: ReadonlyMap<string, string> = new Map()
-): string {
-  return `Call ${named(step.connectorId, connectors, '… not chosen yet')}`
-}
-
 /** Kinds SEND_BLOCK_KINDS/COLLECT_BLOCK_KINDS both cover — every
  *  conversational block, for the standalone-disable_composer adjacency
  *  check below (only the two interactive/interrupt-relevant kinds count as
@@ -2894,37 +2748,6 @@ function blockStepIssue(step: TreeStep): string | null {
     default:
       return null
   }
-}
-
-/** Live connector metadata the call_connector "Set live" check needs —
- *  deliberately its OWN narrow map rather than folded into EntityLabels
- *  (which exists for DISPLAY names used across many functions; this is
- *  validation-only and only collectStepIssues/callConnectorIssue read it).
- *  Optional everywhere it's threaded, defaulting to an empty map, so every
- *  pre-existing caller of collectStepIssues/draftIssues keeps working
- *  unchanged — a caller that never supplies connector data simply never
- *  sees the "Map the required inputs" issue, degrading gracefully rather
- *  than forcing every call site to learn about connectors on this change. */
-export interface ConnectorMeta {
-  /** Declared input names this connector requires a param mapping for. */
-  requiredInputNames: string[]
-}
-
-/** Per-call_connector-step "Set live" issue, mirroring actionIssue's shape:
- *  an unset/needs-setup connectorId blocks first ("Choose a connector"); once
- *  chosen, a declared required input with no (non-blank) param mapping blocks
- *  next ("Map the required inputs"). A connector id absent from `connectors`
- *  (deleted, or metadata simply not supplied by the caller) has nothing more
- *  to check — same defensive-read stance as `named()`'s unknown-id fallback. */
-function callConnectorIssue(
-  step: Extract<TreeStep, { kind: 'call_connector' }>,
-  connectors: ReadonlyMap<string, ConnectorMeta>
-): string | null {
-  if (!isSetRef(step.connectorId)) return 'Choose a connector'
-  const meta = connectors.get(step.connectorId)
-  if (!meta) return null
-  const unmapped = meta.requiredInputNames.some((name) => !step.params[name]?.trim())
-  return unmapped ? 'Map the required inputs' : null
 }
 
 export function actionIssue(action: GraphAction): string | null {
@@ -2986,8 +2809,7 @@ const CLASS_RESTRICTED_STEP_MESSAGE =
  *  parameter keeps behaving exactly as before. */
 export function collectStepIssues(
   tree: WorkflowTree,
-  workflowClass: WorkflowClassValue = 'customer_facing',
-  connectors: ReadonlyMap<string, ConnectorMeta> = new Map()
+  workflowClass: WorkflowClassValue = 'customer_facing'
 ): Map<string, string> {
   const issues = new Map<string, string>()
   const walk = (steps: TreeStep[]) => {
@@ -2997,9 +2819,6 @@ export function collectStepIssues(
         issues.set(step.id, CLASS_RESTRICTED_STEP_MESSAGE)
       } else if (step.kind === 'action') {
         const message = actionIssue(step.action)
-        if (message) issues.set(step.id, message)
-      } else if (step.kind === 'call_connector') {
-        const message = callConnectorIssue(step, connectors)
         if (message) issues.set(step.id, message)
       } else if (step.kind === 'disable_composer') {
         const adjacent = (s: TreeStep | undefined) => !!s && INTERRUPT_RELEVANT_KINDS.has(s.kind)
@@ -3033,19 +2852,10 @@ export interface DraftIssues {
  *  server-side, so a parking-kind node saved into a non-customer_facing
  *  workflow via JSON mode is surfaced here as a blocking error too, instead
  *  of only failing as a server 400 after Save is clicked.
- *
- *  `connectors` (default empty map, same graceful-degradation contract as
- *  collectStepIssues' own param) threads live connector metadata through to
- *  the call_connector check: without it, the Set-live gate (canGoLive)
- *  would pass a call_connector step with an unmapped required input even
- *  though the inline inspector chip already flags it — see the caller in
- *  use-workflow-builder.ts, which supplies the real map; workflows-
- *  manager.tsx's 2-arg calls stay as they are (no connector meta available
- *  there, so this degrades to showing only the badge, same as before). */
+ */
 export function draftIssues(
   draft: GraphDraft,
-  workflowClass: WorkflowClassValue = 'customer_facing',
-  connectors: ReadonlyMap<string, ConnectorMeta> = new Map()
+  workflowClass: WorkflowClassValue = 'customer_facing'
 ): DraftIssues {
   if (draft.mode === 'json') {
     const parsed = parseWorkflowGraphText(draft.text)
@@ -3054,7 +2864,7 @@ export function draftIssues(
     if (classIssue) return { count: 1, ids: new Set(), firstId: null, blocking: classIssue }
     return { count: 0, ids: new Set(), firstId: null, blocking: null }
   }
-  const stepIssues = collectStepIssues(draft.tree, workflowClass, connectors)
+  const stepIssues = collectStepIssues(draft.tree, workflowClass)
   const ids = new Set(stepIssues.keys())
   const [firstId = null] = ids
   return { count: ids.size, ids, firstId, blocking: null }
@@ -3106,8 +2916,6 @@ function stepLabel(step: TreeStep, labels: EntityLabels): string {
       return collectReplySummary(step, labels.attributes)
     case 'request_csat':
       return csatSummary(step)
-    case 'call_connector':
-      return callConnectorSummary(step, labels.connectors)
   }
 }
 
