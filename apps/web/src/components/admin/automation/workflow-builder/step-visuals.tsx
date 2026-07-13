@@ -18,6 +18,7 @@ import {
   FlagIcon,
   MoonIcon,
   NoSymbolIcon,
+  PaperAirplaneIcon,
   PuzzlePieceIcon,
   RectangleStackIcon,
   ShieldCheckIcon,
@@ -55,6 +56,7 @@ export const ACTION_ICONS: Record<ActionType, typeof BoltIcon> = {
   add_note: DocumentTextIcon,
   set_ticket_status: TicketIcon,
   convert_to_ticket: TicketIcon,
+  send_webhook: PaperAirplaneIcon,
 }
 
 /** Icons for the 8 conversational block kinds (Phase C, slice C-5) — every

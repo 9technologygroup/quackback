@@ -701,6 +701,9 @@ export const ACTION_LABELS: Record<ActionType, string> = {
   // module doc for the resolve-the-linked-ticket policy both share.
   set_ticket_status: 'Set ticket status',
   convert_to_ticket: 'Convert to ticket',
+  // Outbound POST of the event payload to a URL — see action.executor.ts's
+  // `send_webhook` doc for the delivery + SSRF-guard policy.
+  send_webhook: 'Send webhook',
 }
 export const ACTION_TYPES = Object.keys(ACTION_LABELS) as ActionType[]
 
@@ -1012,6 +1015,8 @@ export function defaultAction(type: ActionType): GraphAction {
       return { type, statusId: '' }
     case 'convert_to_ticket':
       return { type }
+    case 'send_webhook':
+      return { type, url: '' }
   }
 }
 
@@ -1331,6 +1336,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 const nonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0
 
+/** Lenient URL check for builder-side messages; the server's send_webhook
+ *  schema enforces the strict `.url()` on save. */
+const isLikelyUrl = (v: unknown): v is string => {
+  if (typeof v !== 'string' || v.length === 0) return false
+  try {
+    new URL(v)
+    return true
+  } catch {
+    return false
+  }
+}
+
 // Mirrors z.string().datetime(): UTC, seconds required, optional fraction.
 const isUtcTimestamp = (v: unknown): v is string =>
   typeof v === 'string' &&
@@ -1408,6 +1425,8 @@ function validateAction(v: unknown, where: string): string | null {
       return nonEmptyString(v.statusId) ? null : `${where}: choose a ticket status`
     case 'convert_to_ticket':
       return null
+    case 'send_webhook':
+      return isLikelyUrl(v.url) ? null : `${where}: enter a valid webhook URL (https://…)`
   }
 }
 
@@ -2486,6 +2505,8 @@ export function actionSummary(action: GraphAction, labels: EntityLabels = {}): s
       return `Set ticket status to ${named(action.statusId, labels.ticketStatuses, 'a status…')}`
     case 'convert_to_ticket':
       return 'Convert to a ticket'
+    case 'send_webhook':
+      return action.url ? `Send webhook to ${truncate(action.url, 40)}` : 'Send a webhook…'
   }
 }
 
@@ -2927,6 +2948,8 @@ export function actionIssue(action: GraphAction): string | null {
       return action.body.trim() ? null : 'Write the note'
     case 'set_ticket_status':
       return isSetRef(action.statusId) ? null : 'Choose a ticket status'
+    case 'send_webhook':
+      return isLikelyUrl(action.url) ? null : 'Enter a valid webhook URL (https://…)'
     case 'set_priority':
     case 'close':
     case 'reopen':

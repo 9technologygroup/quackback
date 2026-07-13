@@ -48,6 +48,7 @@ import {
   FunnelIcon,
   MapIcon,
   MoonIcon,
+  PaperAirplaneIcon,
   PlusIcon,
   ShareIcon,
   XMarkIcon,
@@ -109,6 +110,7 @@ const ICONS: Record<IconKey, ComponentType<{ className?: string }>> = {
   add_note: DocumentTextIcon,
   set_ticket_status: TicketIcon,
   convert_to_ticket: TicketIcon,
+  send_webhook: PaperAirplaneIcon,
   call_connector: CALL_CONNECTOR_ICON,
   ...BLOCK_ICONS,
 }

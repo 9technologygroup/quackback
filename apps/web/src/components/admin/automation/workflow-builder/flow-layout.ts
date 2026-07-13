@@ -286,6 +286,7 @@ export const ACTION_TONE: Record<ActionType, Tone> = {
   add_note: 'green',
   set_ticket_status: 'green',
   convert_to_ticket: 'blue',
+  send_webhook: 'green',
 }
 
 /** Ref -> display name, tolerant of an unset or needs-setup-template ref. */
@@ -336,6 +337,8 @@ function actionChips(action: GraphAction, labels: EntityLabels): ChipData[] {
       return [{ label: action.body.trim() ? truncate(action.body.trim(), 40) : 'Write a note…' }]
     case 'set_ticket_status':
       return [{ label: named(action.statusId, labels.ticketStatuses, 'Choose a status…') }]
+    case 'send_webhook':
+      return [{ label: action.url ? truncate(action.url, 40) : 'Set a URL…' }]
     case 'close':
     case 'reopen':
     case 'convert_to_ticket':

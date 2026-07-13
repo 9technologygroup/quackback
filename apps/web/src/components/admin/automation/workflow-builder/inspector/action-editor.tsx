@@ -302,6 +302,21 @@ export function ActionEditor({
           Does nothing.
         </p>
       )}
+
+      {action.type === 'send_webhook' && (
+        <Field label="Webhook URL">
+          <Input
+            type="url"
+            inputMode="url"
+            value={action.url}
+            onChange={(e) => onChange({ ...action, url: e.target.value })}
+            placeholder="https://example.com/hooks/quackback"
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Sends a POST with the event payload to this URL when the step runs.
+          </p>
+        </Field>
+      )}
     </div>
   )
 }
