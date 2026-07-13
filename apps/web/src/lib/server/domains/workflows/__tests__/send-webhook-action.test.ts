@@ -21,7 +21,7 @@ describe('send_webhook action (WO-10)', () => {
   it('rejects non-HTTPS URLs', () => {
     expect(() =>
       actionSchema.parse({ type: 'send_webhook', url: 'http://example.test/hook' })
-    ).toThrow('Webhook URL must use HTTPS')
+    ).toThrow('must be an https:// URL')
   })
 
   it('rejects unknown extra fields (strict)', () => {

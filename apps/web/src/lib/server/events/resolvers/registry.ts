@@ -46,31 +46,24 @@ export async function resolveTargets(
   opts: { bestEffort?: boolean } = {}
 ): Promise<HookTarget[]> {
   const interested = resolvers.filter((r) => r.interestedIn(event.type))
-  if (opts.bestEffort) {
-    const settled = await Promise.allSettled(interested.map((r) => r.resolve(event)))
-    const targets: HookTarget[] = []
-    settled.forEach((s, i) => {
-      if (s.status === 'fulfilled') {
-        targets.push(...s.value)
-      } else {
-        log.error(
-          { err: s.reason, sink: interested[i].sink, type: event.type },
-          'resolver failed in best-effort fan-out — its targets are dropped for this event'
-        )
-      }
-    })
-    return targets
+  // One fan-out for both modes; only the rejection handling differs. allSettled
+  // is equivalent to Promise.all here (all doesn't cancel siblings either) and
+  // lets the strict throw name the failing sink.
+  const settled = await Promise.allSettled(interested.map((r) => r.resolve(event)))
+  const targets: HookTarget[] = []
+  for (const [i, s] of settled.entries()) {
+    if (s.status === 'fulfilled') {
+      targets.push(...s.value)
+    } else if (opts.bestEffort) {
+      log.error(
+        { err: s.reason, sink: interested[i].sink, type: event.type },
+        'resolver failed in best-effort fan-out — its targets are dropped for this event'
+      )
+    } else {
+      throw new Error(`Failed to resolve ${interested[i].sink} targets`, { cause: s.reason })
+    }
   }
-  const resolved = await Promise.all(
-    interested.map(async (resolver) => {
-      try {
-        return await resolver.resolve(event)
-      } catch (cause) {
-        throw new Error(`Failed to resolve ${resolver.sink} targets`, { cause })
-      }
-    })
-  )
-  return resolved.flat()
+  return targets
 }
 
 /** Introspection for tests + the "did it fire?" surface. */

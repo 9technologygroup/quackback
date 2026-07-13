@@ -235,7 +235,7 @@ export type WorkflowAction =
   // `src` overrides the actor-derived default provenance (see the module doc);
   // omitted for every pre-existing caller (macros, plain workflow actions).
   | { type: 'set_attribute'; key: string; value: unknown; src?: ConversationAttributeSource }
-  | { type: 'send_webhook'; url: string; deliveryId?: string }
+  | { type: 'send_webhook'; url: string; nodeId?: string }
   // Phase C conversational block layer — engine-only (the graph walker is the
   // only producer of these three; macros never emit them).
   | { type: 'send_block'; nodeId: string; block: BlockSendSpec }
@@ -472,10 +472,10 @@ export async function applyAction(
       // (SSRF chokepoint, no redirects, IP-pinned); dynamic import keeps the
       // executor's static graph unchanged. A non-2xx / network error throws so
       // the engine's retry handles it, same as any other failing action.
-      if (!ctx.runId || !ctx.workflowId || !action.deliveryId) {
+      if (!ctx.runId || !ctx.workflowId || !action.nodeId) {
         throw new Error('send_webhook requires workflow run and action identity')
       }
-      const deliveryId = `workflow:${ctx.runId}:${action.deliveryId}`
+      const deliveryId = `workflow:${ctx.runId}:${action.nodeId}`
       const createdAt = new Date().toISOString()
       const { safeFetch } = await import('@/lib/server/content/ssrf-guard')
       const res = await safeFetch(action.url, {
@@ -494,7 +494,7 @@ export async function applyAction(
             conversationId,
             workflowId: ctx.workflowId,
             runId: ctx.runId,
-            actionId: action.deliveryId,
+            actionId: action.nodeId,
           },
         }),
         timeoutMs: 5000,

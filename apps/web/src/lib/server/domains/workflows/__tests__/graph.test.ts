@@ -204,7 +204,7 @@ describe('walkWorkflow — conversational block kinds (Phase C, slice C-1)', () 
         {
           type: 'send_webhook',
           url: 'https://example.test/hook',
-          deliveryId: 'webhook_action',
+          nodeId: 'webhook_action',
         },
       ],
     })

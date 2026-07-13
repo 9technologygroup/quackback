@@ -106,6 +106,9 @@ export async function drainOnce(
   const batchSize = opts.batchSize ?? 100
   const enqueue = opts.enqueue ?? enqueueHookJobsWithIds
   const resolve = opts.resolve ?? resolveTargets
+  // Best-effort degradation only means something against the real multi-sink
+  // registry; an injected resolver (tests) always runs strict.
+  const usingRegistryResolver = opts.resolve === undefined
   const maxAttempts = opts.maxStrictResolveAttempts ?? MAX_STRICT_RESOLVE_ATTEMPTS
 
   const rows = await db
@@ -114,6 +117,17 @@ export async function drainOnce(
     .where(isNull(events.publishedAt))
     .orderBy(asc(events.id))
     .limit(batchSize)
+
+  // Rows drain in ascending id order, so every retry-ledger key below the
+  // smallest still-unpublished id belongs to a row some leader already
+  // published — prune them so leadership churn can't leak entries.
+  if (rows.length > 0) {
+    for (const key of strictAttempts.keys()) {
+      if (key < rows[0].id) strictAttempts.delete(key)
+    }
+  } else {
+    strictAttempts.clear()
+  }
 
   let enqueued = 0
   let skipped = 0
@@ -142,10 +156,9 @@ export async function drainOnce(
       const degraded = attempts >= maxAttempts
       // Past the strict budget the failure is deterministic, not transient:
       // fall back to best-effort so healthy sinks still deliver instead of the
-      // row wedging in place. (Injected resolvers don't carry the bestEffort
-      // mode — tests drive the strict path explicitly.)
+      // row wedging in place.
       const targets =
-        degraded && opts.resolve === undefined
+        degraded && usingRegistryResolver
           ? await resolveTargets(event, { bestEffort: true })
           : await resolve(event)
       if (targets.length > 0) {

@@ -258,9 +258,7 @@ export function walkWorkflow(
         break
       case 'action':
         actions.push(
-          node.action.type === 'send_webhook'
-            ? { ...node.action, deliveryId: node.id }
-            : node.action
+          node.action.type === 'send_webhook' ? { ...node.action, nodeId: node.id } : node.action
         )
         nextId = successorId(graph, node.id)
         break

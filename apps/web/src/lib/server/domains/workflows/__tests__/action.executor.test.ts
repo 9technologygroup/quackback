@@ -237,7 +237,7 @@ describe('applyAction', () => {
         {
           type: 'send_webhook',
           url: 'https://example.test/hook',
-          deliveryId: 'action_webhook',
+          nodeId: 'action_webhook',
         },
         ctx
       )

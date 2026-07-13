@@ -21,14 +21,12 @@ import { db, apps, oauthClient, and, eq } from '@/lib/server/db'
 import { decryptSecrets } from '@/lib/server/integrations/encryption'
 import { logger } from '@/lib/server/logger'
 import { getEventDefinition } from '../catalogue'
+import { appMatches } from '../resolvers/app-webhook.resolver'
 
 const log = logger.child({ component: 'app-webhook' })
 const TIMEOUT_MS = 5_000
 const USER_AGENT = 'Quackback-Webhook/1.0 (+https://quackback.io)'
 
-interface AppWebhookTarget {
-  url: string
-}
 interface AppWebhookConfig {
   appId: string
 }
@@ -36,16 +34,20 @@ interface AppWebhookConfig {
 export const appWebhookHook: HookHandler = {
   async run(
     event: EventData,
-    target: unknown,
+    _target: unknown,
     config: unknown,
     ctx?: HookRunContext
   ): Promise<HookResult> {
-    const { url: queuedUrl } = target as AppWebhookTarget
     const { appId } = config as AppWebhookConfig
 
     const claimed = await claimHookDelivery(ctx?.jobId, 'app_webhook')
     if (!claimed) return { success: true }
 
+    // Delivery-time re-validation: the enqueue-time snapshot (including the
+    // queued target URL) is superseded by the live row, so a revocation,
+    // subscription change, or endpoint change between enqueue and delivery is
+    // honored. The WHERE excludes disabled OAuth clients; appMatches is the
+    // same subscription+scope gate the resolver applies.
     let secret: string
     let url: string
     try {
@@ -55,32 +57,19 @@ export const appWebhookHook: HookHandler = {
           webhookEndpoint: apps.webhookEndpoint,
           subscribedEventTypes: apps.subscribedEventTypes,
           grantedScopes: apps.grantedScopes,
-          appStatus: apps.status,
-          clientDisabled: oauthClient.disabled,
+          status: apps.status,
         })
         .from(apps)
         .innerJoin(oauthClient, eq(apps.oauthClientId, oauthClient.clientId))
         .where(and(eq(apps.id, appId), eq(oauthClient.disabled, false)))
         .limit(1)
       const requiredScope = getEventDefinition(event.type)?.requiredScope
-      if (
-        !row ||
-        row.appStatus !== 'active' ||
-        row.clientDisabled ||
-        !row.webhookSecretEnc ||
-        !row.webhookEndpoint ||
-        !requiredScope ||
-        !row.subscribedEventTypes.includes(event.type) ||
-        !row.grantedScopes.includes(requiredScope)
-      ) {
+      if (!row || !row.webhookSecretEnc || !appMatches(row, event.type, requiredScope)) {
         await failHookDelivery(ctx?.jobId)
         return { success: false, error: 'App not deliverable', shouldRetry: false }
       }
       secret = decryptSecrets<{ secret: string }>(row.webhookSecretEnc).secret
-      url = row.webhookEndpoint
-      if (url !== queuedUrl) {
-        log.info({ app_id: appId }, 'using current app webhook endpoint for queued delivery')
-      }
+      url = row.webhookEndpoint!
     } catch (error) {
       log.error({ err: error, app_id: appId }, 'failed to load app webhook secret')
       await releaseHookDelivery(ctx?.jobId)

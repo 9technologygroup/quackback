@@ -57,8 +57,7 @@ function deliverableRow(overrides: Record<string, unknown> = {}) {
     webhookEndpoint: 'https://current.example/hook',
     subscribedEventTypes: ['post.created'],
     grantedScopes: ['read:feedback'],
-    appStatus: 'active',
-    clientDisabled: false,
+    status: 'active',
     ...overrides,
   }
 }
@@ -84,7 +83,7 @@ describe('app webhook handler authorization', () => {
   it.each([
     ['subscription', { subscribedEventTypes: [] }],
     ['scope', { grantedScopes: [] }],
-    ['app status', { appStatus: 'disabled' }],
+    ['app status', { status: 'disabled' }],
   ])('fails permanently when the current %s no longer authorizes delivery', async (_, change) => {
     h.rows = [deliverableRow(change)]
 
