@@ -23,6 +23,8 @@ import {
   getTicketAssignedTargets,
   getAssistantHandedOffTargets,
   getConversationNoteMentionedTargets,
+  getTicketStatusChangedTargets,
+  getMessageCreatedTargets,
 } from '../targets'
 import { logger } from '@/lib/server/logger'
 import type { SinkResolver } from './registry'
@@ -38,12 +40,16 @@ const STATUS_NOTIFY_SET = new Set<string>([
   'status.incident_created',
   'status.maintenance_scheduled',
 ])
-/** Support-inbox "bell" events, each resolving to at most one notification target. */
+/** Support-inbox "bell" events, each resolving to at most one notification target.
+ *  ticket.status_changed (requester bell) and message.created (new-message team
+ *  bell) were relocated onto these events on `next`; they route here too. */
 const BELL_SET = new Set<string>([
   'conversation.assigned',
   'ticket.assigned',
   'assistant.handed_off',
   'conversation.note_mentioned',
+  'ticket.status_changed',
+  'message.created',
 ])
 
 export const notificationResolver: SinkResolver = {
@@ -99,6 +105,15 @@ export const notificationResolver: SinkResolver = {
         if (t) out.push(t)
       } else if (event.type === 'conversation.note_mentioned') {
         const t = getConversationNoteMentionedTargets(legacy)
+        if (t) out.push(t)
+      } else if (event.type === 'ticket.status_changed') {
+        // Requester bell — fires only on a real public_stage crossing.
+        const t = await getTicketStatusChangedTargets(legacy)
+        if (t) out.push(t)
+      } else if (event.type === 'message.created') {
+        // New-message team bell — visitor messages only; the anti-spam presence
+        // gate runs in the notification hook's worker, not here.
+        const t = await getMessageCreatedTargets(legacy)
         if (t) out.push(t)
       }
 

@@ -85,10 +85,16 @@ describe('conversation/message dispatch', () => {
   })
 
   it('dispatchMessageCreated and dispatchMessageNoteCreated use distinct types', async () => {
-    await dispatchMessageCreated(actor, msg, convRef)
+    await dispatchMessageCreated(actor, msg, convRef, true)
     await dispatchMessageNoteCreated(actor, { ...msg, senderType: 'agent' }, convRef)
     expect(processEvent.mock.calls[0][0].type).toBe('message.created')
     expect(processEvent.mock.calls[1][0].type).toBe('message.note_created')
+  })
+
+  it('dispatchMessageCreated carries isFirstMessage (WO-3 slice 5)', async () => {
+    await dispatchMessageCreated(actor, msg, convRef, false)
+    const event = processEvent.mock.calls[0][0]
+    expect(event.data).toEqual({ message: msg, conversation: convRef, isFirstMessage: false })
   })
 
   it('dispatchConversationCsatSubmitted carries rating + comment', async () => {

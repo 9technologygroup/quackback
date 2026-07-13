@@ -55,6 +55,15 @@ export interface NotificationConfig {
   conversationMessageId?: string
   authorName?: string
   preview?: string
+  // ticket.status_changed (WO-3 slice 4) — labels resolved by the target
+  // resolver (getTicketStatusChangedTargets), never carried on the event
+  // payload itself.
+  title?: string
+  stageLabel?: string
+  previousStageLabel?: string | null
+  // message.created (WO-3 slice 5) — read back out by the anti-spam presence
+  // gate in run(), below.
+  isFirstMessage?: boolean
 }
 
 export const notificationHook: HookHandler = {
@@ -64,6 +73,20 @@ export const notificationHook: HookHandler = {
 
     if (!principalIds || principalIds.length === 0) {
       return { success: true }
+    }
+
+    // Anti-spam gate for the new-message team bell (WO-3 slice 5), moved
+    // here from notifyVisitorMessage's request-time check: only ping the
+    // team on the first message of a conversation, or when nobody is around
+    // to see it live. isAnyAgentOnline is a single GLOBAL Redis check, not
+    // per-recipient, so it's evaluated once for the whole target. This is a
+    // deliberate skew from notifyVisitorMessage's own (still request-time)
+    // presence check for the offline email — the two are never unified.
+    if (event.type === 'message.created' && !cfg.isFirstMessage) {
+      const { isAnyAgentOnline } = await import('@/lib/server/realtime/presence')
+      if (await isAnyAgentOnline()) {
+        return { success: true }
+      }
     }
 
     log.debug(
@@ -93,16 +116,28 @@ export const notificationHook: HookHandler = {
 
       // The notifiedAt watermark for an internal-note @-mention lives on the
       // conversation domain's own mention rows, not on the notification row
-      // itself — stamp it only AFTER the batch above actually landed, so a
-      // hook failure (and the BullMQ retry that follows) leaves the rows
-      // un-watermarked rather than claiming an alert that didn't happen.
+      // itself — stamp it only AFTER the batch above actually landed. It is
+      // deliberately best-effort: the notification hook is NOT idempotency-
+      // claimed (process.ts calls run() without claiming; only per-hook claims
+      // exist, e.g. webhook.ts), and createNotificationsBatch has no dedup key,
+      // so if this stamp threw a retryable error the whole hook would retry and
+      // re-insert duplicate chat_mention rows. Swallowing a stamp failure keeps
+      // the same end-state the original synchronous code had on failure (rows
+      // inserted, left un-watermarked) without the double-insert.
       if (event.type === 'conversation.note_mentioned') {
-        const { markConversationMentionsNotified } =
-          await import('@/lib/server/domains/conversation/sync-conversation-mentions')
-        await markConversationMentionsNotified(
-          event.data.conversationMessageId as ConversationMessageId,
-          filtered.map((n) => n.principalId)
-        )
+        try {
+          const { markConversationMentionsNotified } =
+            await import('@/lib/server/domains/conversation/sync-conversation-mentions')
+          await markConversationMentionsNotified(
+            event.data.conversationMessageId as ConversationMessageId,
+            filtered.map((n) => n.principalId)
+          )
+        } catch (err) {
+          log.warn(
+            { err, conversation_message_id: event.data.conversationMessageId },
+            'failed to stamp note-mention notifiedAt watermark (notifications already sent)'
+          )
+        }
       }
 
       log.info({ event_type: event.type, count: ids.length }, 'notifications created')
@@ -250,6 +285,31 @@ function buildNotifications(
       principalId,
       type: 'chat_mention' as NotificationType,
       title: `${authorName} mentioned you in a conversation`,
+      body: preview,
+      metadata: { conversationId, actorName: authorName },
+    }))
+  }
+
+  if (event.type === 'ticket.status_changed') {
+    const { ticketId, title, stageLabel, previousStageLabel } = config
+    const body = previousStageLabel
+      ? `Moved from ${previousStageLabel} to ${stageLabel}`
+      : 'Open the ticket to see the latest update.'
+    return principalIds.map((principalId) => ({
+      principalId,
+      type: 'ticket_status_changed' as NotificationType,
+      title: `${title} is now ${stageLabel}`,
+      body,
+      metadata: { ticketId },
+    }))
+  }
+
+  if (event.type === 'message.created') {
+    const { conversationId, authorName, preview } = config
+    return principalIds.map((principalId) => ({
+      principalId,
+      type: 'chat_message' as NotificationType,
+      title: `New message from ${authorName}`,
       body: preview,
       metadata: { conversationId, actorName: authorName },
     }))

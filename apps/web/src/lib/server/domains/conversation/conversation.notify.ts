@@ -2,8 +2,10 @@
  * Offline notifications for support-inbox conversations. Fire-and-forget from the service after a
  * write commits — a delivery failure must never break sending a message.
  *
- *  - Visitor message  -> in-app notification for the team; email the team only
- *    when no agent currently has a live stream (offline coverage).
+ *  - Visitor message  -> email the team only when no agent currently has a
+ *    live stream (offline coverage). The in-app team bell for the same
+ *    event rides the message.created event/hook pipeline instead (WO-3
+ *    slice 5) — see notifyVisitorMessage's own doc.
  *  - Agent reply      -> email the visitor only when they're offline AND
  *    identified (anonymous visitors have no deliverable address; the widget's
  *    unread badge covers the online case).
@@ -16,7 +18,6 @@ import type { JSONContent } from '@tiptap/core'
 import { config } from '@/lib/server/config'
 import { generateContentHTML } from '@/lib/shared/content-html'
 import { isAnyAgentOnline, isPrincipalOnline } from '@/lib/server/realtime/presence'
-import { createNotificationsBatch } from '@/lib/server/domains/notifications/notification.service'
 import { buildHookContext } from '@/lib/server/events/hook-context'
 import { truncate } from '@/lib/shared/utils/string'
 import { resolveReplyRecipient } from './conversation.recipient'
@@ -147,7 +148,12 @@ async function resolveVisitorConversationLink(
   return visitorConversationLink(portalBaseUrl, conversationId, await isPortalSupportEnabled())
 }
 
-/** Notify the team of a new visitor message. */
+/**
+ * Email the team of a new visitor message when no agent is online to see it
+ * live. The in-app team bell for the same event moved to the
+ * `message.created` event/hook pipeline (WO-3 slice 5, notificationHook in
+ * events/handlers/notification.ts) — this function is now email-only.
+ */
 export async function notifyVisitorMessage(opts: {
   conversation: Conversation
   content: string
@@ -158,8 +164,17 @@ export async function notifyVisitorMessage(opts: {
 }): Promise<void> {
   try {
     const agentsOnline = await isAnyAgentOnline()
-    // Avoid notification spam: only ping the team on the first message of a
-    // conversation, or when nobody is around to see it live.
+    // Avoid email spam: only email the team on the first message of a
+    // conversation, or when nobody is around to see it live. This gate is
+    // redundant with the `!agentsOnline` check below for every case except
+    // the fast escape it buys (skip the team query entirely) — kept exactly
+    // as it was before the bell moved out, to not perturb email behavior.
+    //
+    // Deliberate small skew: presence is now checked at TWO different
+    // moments — here, at request time, for the email; and again inside the
+    // notification hook, at worker time, for the bell (its own anti-spam
+    // gate: `!cfg.isFirstMessage && isAnyAgentOnline()`). Never try to unify
+    // them — the bell's check intentionally runs later, off the request path.
     if (!opts.isFirstMessage && agentsOnline) return
 
     const team = await db
@@ -170,18 +185,7 @@ export async function notifyVisitorMessage(opts: {
 
     if (team.length === 0) return
 
-    const title = `New message from ${opts.authorName}`
     const body = previewOf(opts.content)
-
-    await createNotificationsBatch(
-      team.map((t) => ({
-        principalId: t.principalId,
-        type: 'chat_message' as const,
-        title,
-        body,
-        metadata: { conversationId: opts.conversation.id, actorName: opts.authorName },
-      }))
-    )
 
     // Email the team only when no agent is online to handle it live.
     if (!agentsOnline) {

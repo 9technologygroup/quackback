@@ -443,12 +443,13 @@ export async function dispatchConversationNoteMentioned(
 export async function dispatchMessageCreated(
   actor: EventActor,
   message: EventMessageData,
-  conversation: EventConversationRef
+  conversation: EventConversationRef,
+  isFirstMessage: boolean
 ): Promise<void> {
   await dispatchEvent({
     ...eventEnvelope(actor),
     type: 'message.created',
-    data: { message, conversation },
+    data: { message, conversation, isFirstMessage },
   })
 }
 
@@ -492,12 +493,15 @@ export async function dispatchTicketStatusChanged(
   ticket: EventTicketRef,
   previousStatus: string,
   newStatus: string,
-  stage: string | null
+  stage: string | null,
+  previousStage: string | null,
+  requesterPrincipalId: string | null,
+  title: string
 ): Promise<void> {
   await dispatchEvent({
     ...eventEnvelope(actor),
     type: 'ticket.status_changed',
-    data: { ticket, previousStatus, newStatus, stage },
+    data: { ticket, previousStatus, newStatus, stage, previousStage, requesterPrincipalId, title },
   })
 }
 

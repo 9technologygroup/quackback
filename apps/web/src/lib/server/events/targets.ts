@@ -183,6 +183,10 @@ export async function getHookTargets(event: EventData): Promise<HookTarget[]> {
       occurredAt: new Date(event.timestamp),
     } as unknown as import('./envelope').DomainEvent
 
+    // WO-18: the resolver registry is the single resolution path. next's
+    // "move bell onto message.created / ticket.status_changed" work
+    // (getMessageCreatedTargets / getTicketStatusChangedTargets) is wired into
+    // the notification resolver's BELL routing, so it lands here too.
     const targets = await resolveTargets(domainEvent)
     return targets.filter((t) => t.type !== 'workflow')
   } catch (error) {
@@ -295,6 +299,7 @@ async function buildEmailTargets(
     config: {
       workspaceName: context.workspaceName,
       logoUrl: context.logoUrl ?? undefined,
+      preferencesUrl: `${context.portalBaseUrl}/settings/preferences`,
       ...eventConfig,
     },
   }))
@@ -585,6 +590,7 @@ export async function getMentionTargets(
           postUrl,
           workspaceName: context.workspaceName,
           logoUrl: context.logoUrl ?? undefined,
+          preferencesUrl: `${context.portalBaseUrl}/settings/preferences`,
           eventType: 'post.mentioned',
         },
       })
@@ -745,6 +751,72 @@ export function getConversationNoteMentionedTargets(event: EventData): HookTarge
   }
 }
 
+/**
+ * Notification target for `ticket.status_changed` (WO-3 slice 4): the
+ * requester's bell, reproducing ticket.service.ts's deleted inline block
+ * EXACTLY — fires only when the new stage is non-null, differs from the
+ * previous stage (a same-stage or null-stage move stays silent, mirroring the
+ * thread-event gate right above it in the service), AND a requester exists
+ * (a back-office ticket or a tracker — which carries no requester of its
+ * own — never self-bells). Stage labels are resolved HERE, not carried in the
+ * payload, so a later workspace label edit doesn't retroactively change
+ * historical event data.
+ */
+export async function getTicketStatusChangedTargets(event: EventData): Promise<HookTarget | null> {
+  if (event.type !== 'ticket.status_changed') return null
+  const { ticket, stage, previousStage, requesterPrincipalId, title } = event.data
+  if (!stage || stage === previousStage) return null
+  if (!requesterPrincipalId) return null
+
+  const { getStageLabels } = await import('@/lib/server/domains/settings/settings.tickets')
+  const stageLabels = await getStageLabels()
+  const stageLabel = stageLabels[stage as keyof typeof stageLabels] ?? stage
+  const previousStageLabel = previousStage
+    ? (stageLabels[previousStage as keyof typeof stageLabels] ?? previousStage)
+    : null
+
+  return {
+    type: 'notification',
+    target: { principalIds: [requesterPrincipalId as PrincipalId] },
+    config: { ticketId: ticket.id, title, stageLabel, previousStageLabel },
+  }
+}
+
+/**
+ * Notification target for `message.created` (WO-3 slice 5, the riskiest
+ * move — reproduces `notifyVisitorMessage`'s deleted team-bell block
+ * EXACTLY): only a VISITOR-sent message bells the team. Recipients are every
+ * admin/member principal — the SAME raw query notifyVisitorMessage used
+ * (role-only, no `principal.type` filter), not `listAssignableTeammates`,
+ * which additionally requires `type: 'user'` and would silently narrow the
+ * recipient set. The anti-spam presence gate is NOT applied here — it runs
+ * in the notification hook itself (events/handlers/notification.ts), since
+ * `isAnyAgentOnline` is a single global Redis check, not a per-recipient one,
+ * and the hook is where the config's `isFirstMessage` flag is read back out.
+ */
+export async function getMessageCreatedTargets(event: EventData): Promise<HookTarget | null> {
+  if (event.type !== 'message.created') return null
+  if (event.data.message.senderType !== 'visitor') return null
+
+  const team = await db
+    .select({ principalId: principal.id })
+    .from(principal)
+    .where(inArray(principal.role, ['admin', 'member']))
+  if (team.length === 0) return null
+
+  const authorName = event.data.message.authorName ?? 'A visitor'
+  return {
+    type: 'notification',
+    target: { principalIds: team.map((t) => t.principalId as PrincipalId) },
+    config: {
+      conversationId: event.data.conversation.id,
+      authorName,
+      preview: truncate(event.data.message.content, 140),
+      isFirstMessage: event.data.isFirstMessage,
+    },
+  }
+}
+
 // ============================================================================
 // Changelog Subscriber Targets
 // ============================================================================
@@ -891,6 +963,7 @@ export async function getChangelogSubscriberTargets(
         config: {
           workspaceName: context.workspaceName,
           logoUrl: context.logoUrl ?? undefined,
+          preferencesUrl: `${context.portalBaseUrl}/settings/preferences`,
           changelogTitle: event.data.changelog.title,
           changelogUrl,
           contentPreview: event.data.changelog.contentPreview,
@@ -1105,6 +1178,7 @@ export async function getStatusSubscriberTargets(
               eventType: event.type,
               workspaceName: context.workspaceName,
               logoUrl: context.logoUrl ?? undefined,
+              preferencesUrl: `${context.portalBaseUrl}/settings/preferences`,
               incidentTitle: incident.title,
               incidentUrl,
               impact: incident.impact,

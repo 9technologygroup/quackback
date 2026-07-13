@@ -23,7 +23,6 @@ let limitQueue: Array<Record<string, unknown>[]> = []
 
 const isAnyAgentOnline = vi.fn<() => Promise<boolean>>()
 const isPrincipalOnline = vi.fn<(p: PrincipalId) => Promise<boolean>>()
-const createNotificationsBatch = vi.fn<(input: unknown) => Promise<unknown>>()
 const buildHookContext =
   vi.fn<
     () => Promise<{ workspaceName: string; portalBaseUrl: string; logoUrl: string | null } | null>
@@ -41,10 +40,6 @@ vi.mock('@/lib/server/config', () => ({
 vi.mock('@/lib/server/realtime/presence', () => ({
   isAnyAgentOnline: (...a: []) => isAnyAgentOnline(...a),
   isPrincipalOnline: (...a: [PrincipalId]) => isPrincipalOnline(...a),
-}))
-
-vi.mock('@/lib/server/domains/notifications/notification.service', () => ({
-  createNotificationsBatch: (...a: [unknown]) => createNotificationsBatch(...a),
 }))
 
 vi.mock('@/lib/server/events/hook-context', () => ({
@@ -128,12 +123,17 @@ beforeEach(() => {
   // Silence the fire-and-forget warning logs.
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   buildHookContext.mockResolvedValue(ctx)
-  createNotificationsBatch.mockResolvedValue(undefined)
   sendConversationMessageEmail.mockResolvedValue(undefined)
 })
 
 describe('notifyVisitorMessage', () => {
-  it('skips entirely (no in-app, no email) when an agent is online and it is not the first message', async () => {
+  // WO-3 slice 5: notifyVisitorMessage is now EMAIL-ONLY — the in-app team
+  // bell for the same event moved to the message.created event/hook
+  // pipeline (events/__tests__/targets-message-created.test.ts +
+  // events/__tests__/notification-handler.test.ts carry the ported
+  // recipient/title/body assertions, plus the bell's own anti-spam presence
+  // gate, which now runs in the notification hook's worker instead of here).
+  it('sends no email when an agent is online and it is not the first message', async () => {
     isAnyAgentOnline.mockResolvedValue(true)
     teamRows = [{ principalId: 'principal_admin', email: 'a@x.com', name: 'A' }]
 
@@ -144,11 +144,10 @@ describe('notifyVisitorMessage', () => {
       isFirstMessage: false,
     })
 
-    expect(createNotificationsBatch).not.toHaveBeenCalled()
     expect(sendConversationMessageEmail).not.toHaveBeenCalled()
   })
 
-  it('creates an in-app batch but sends NO email on the first message while an agent is online', async () => {
+  it('sends no email on the first message while an agent is online', async () => {
     isAnyAgentOnline.mockResolvedValue(true)
     teamRows = [
       { principalId: 'principal_admin', email: 'a@x.com', name: 'A' },
@@ -162,15 +161,6 @@ describe('notifyVisitorMessage', () => {
       isFirstMessage: true,
     })
 
-    expect(createNotificationsBatch).toHaveBeenCalledTimes(1)
-    const batch = createNotificationsBatch.mock.calls[0][0] as Array<Record<string, unknown>>
-    expect(batch).toHaveLength(2)
-    expect(batch[0]).toMatchObject({
-      principalId: 'principal_admin',
-      type: 'chat_message',
-      title: 'New message from Visitor',
-      metadata: { conversationId },
-    })
     expect(sendConversationMessageEmail).not.toHaveBeenCalled()
   })
 
@@ -189,7 +179,6 @@ describe('notifyVisitorMessage', () => {
       isFirstMessage: false,
     })
 
-    expect(createNotificationsBatch).toHaveBeenCalledTimes(1)
     // The null-email teammate is filtered out of the email fan-out.
     expect(sendConversationMessageEmail).toHaveBeenCalledTimes(2)
     const firstEmail = sendConversationMessageEmail.mock.calls[0][0]
@@ -213,7 +202,6 @@ describe('notifyVisitorMessage', () => {
       isFirstMessage: true,
     })
 
-    expect(createNotificationsBatch).not.toHaveBeenCalled()
     expect(sendConversationMessageEmail).not.toHaveBeenCalled()
   })
 
@@ -228,7 +216,7 @@ describe('notifyVisitorMessage', () => {
         isFirstMessage: true,
       })
     ).resolves.toBeUndefined()
-    expect(createNotificationsBatch).not.toHaveBeenCalled()
+    expect(sendConversationMessageEmail).not.toHaveBeenCalled()
   })
 })
 

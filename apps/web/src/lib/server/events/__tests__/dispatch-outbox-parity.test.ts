@@ -241,7 +241,7 @@ const cases: Array<{ type: string; run: () => Promise<void> }> = [
     type: 'message.created',
     run: () => {
       const c = convRef()
-      return d.dispatchMessageCreated(actor(), msgData(c.id), c)
+      return d.dispatchMessageCreated(actor(), msgData(c.id), c, true)
     },
   },
   {
@@ -265,7 +265,17 @@ const cases: Array<{ type: string; run: () => Promise<void> }> = [
   { type: 'ticket.created', run: () => d.dispatchTicketCreated(actor(), ticketData()) },
   {
     type: 'ticket.status_changed',
-    run: () => d.dispatchTicketStatusChanged(actor(), ticketRef(), 'open', 'closed', null),
+    run: () =>
+      d.dispatchTicketStatusChanged(
+        actor(),
+        ticketRef(),
+        'open',
+        'closed',
+        null,
+        null,
+        createId('principal'),
+        'A ticket'
+      ),
   },
   {
     type: 'ticket.assigned',

@@ -114,13 +114,19 @@ export async function emitMessageCreated(
   actor: Actor,
   author: ConversationAuthorInput,
   message: ConversationMessage,
-  conversation: Conversation
+  conversation: Conversation,
+  // Whether this is the conversation's first message — meaningful only for a
+  // visitor-sent message (drives the team bell's anti-spam gate, WO-3 slice
+  // 5); the caller knows it at send time, so it's threaded through rather
+  // than re-derived here.
+  isFirstMessage: boolean
 ): Promise<void> {
   await safe('message.created', () =>
     dispatchMessageCreated(
       toEventActor(actor, author),
       messageData(message, author, conversation),
-      conversationRef(conversation)
+      conversationRef(conversation),
+      isFirstMessage
     )
   )
 }
