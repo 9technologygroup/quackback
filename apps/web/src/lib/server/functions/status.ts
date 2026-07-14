@@ -48,6 +48,7 @@ import {
   deleteStatusIncidentTemplate,
   listStatusSubscriptions,
   getStatusSubscriptionCounts,
+  getActiveSubscribersForComponents,
   isStatusAudienceGranted,
   getStatusPageSnapshot,
   getPublicStatusIncident,
@@ -492,7 +493,20 @@ export const getStatusIncidentAdminFn = createServerFn({ method: 'GET' })
     try {
       await requireAuth({ permission: PERMISSIONS.STATUS_PAGE_PUBLISH })
       const incident = await getStatusIncidentById(data.id as StatusIncidentId)
-      return serializeIncident(incident)
+
+      // Approximate "emailed N subscribers" for the editor's publish marker.
+      // The recipient count is not persisted at publish time (the claim only
+      // writes notified_at), so this is the CURRENT active pool for the
+      // affected components — the editor copy hedges accordingly ("~N").
+      let notifiedSubscriberCount: number | null = null
+      if (incident.notifiedAt && !incident.backfilled) {
+        const pool = await getActiveSubscribersForComponents(
+          incident.affectedComponents.map((c) => c.componentId)
+        )
+        notifiedSubscriberCount = pool.length
+      }
+
+      return { ...serializeIncident(incident), notifiedSubscriberCount }
     } catch (error) {
       log.error({ err: error }, 'get status incident admin failed')
       throw error

@@ -13,7 +13,7 @@ import {
   statusSubscriberQueries,
 } from '@/lib/client/queries/status'
 import { StatusIncidentList } from './status-incident-list'
-import { StatusIncidentModal } from './status-incident-modal'
+import { StatusIncidentModal } from './status-incident-editor'
 import { StatusOverviewView } from './status-overview-view'
 import { StatusComponentsView } from './status-components-view'
 import { StatusTemplatesView } from './status-templates-view'

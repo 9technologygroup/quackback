@@ -279,11 +279,41 @@ export async function postIncidentUpdate(
   })
 
   const becomesTerminal = input.status === TERMINAL_STATUS[existing.kind]
+  // Posting 'in_progress' on a still-'scheduled' window is a real start:
+  // pull the start bound to now (job guards + uptime derivation read it),
+  // apply component statuses, and reschedule the auto-complete job — same
+  // effects as handleMaintenanceStart, but with the admin's own words as
+  // the single timeline row instead of the scheduler's canned copy.
+  const startsMaintenance =
+    existing.kind === 'maintenance' &&
+    existing.status === 'scheduled' &&
+    input.status === 'in_progress'
+
   const updateData: Record<string, unknown> = { status: input.status, updatedAt: new Date() }
   if (becomesTerminal && !existing.resolvedAt) {
     updateData.resolvedAt = new Date()
   }
+  if (startsMaintenance) {
+    await cancelMaintenanceJobs(existing).catch((err) =>
+      log.error({ err, incident_id: id }, 'failed to cancel maintenance jobs on manual start')
+    )
+    updateData.scheduledStartAt = new Date()
+  }
   await db.update(statusIncidents).set(updateData).where(eq(statusIncidents.id, id))
+
+  if (startsMaintenance) {
+    const links = await db.query.statusIncidentComponents.findMany({
+      where: eq(statusIncidentComponents.incidentId, id),
+    })
+    for (const link of links) {
+      await reconcileComponentStatus(link.componentId, 'maintenance', id)
+    }
+    await enqueueMaintenanceJobs({
+      ...existing,
+      status: 'in_progress',
+      scheduledStartAt: updateData.scheduledStartAt as Date,
+    })
+  }
 
   if (becomesTerminal && !input.skipRestore) {
     const links = await db.query.statusIncidentComponents.findMany({

@@ -30,7 +30,10 @@ export type StatusComponentsAdmin = Awaited<ReturnType<typeof listStatusComponen
 export type StatusComponentGroupAdmin = StatusComponentsAdmin['groups'][number]
 export type StatusComponentAdmin = StatusComponentGroupAdmin['components'][number]
 
-export type StatusIncidentAdmin = Awaited<ReturnType<typeof getStatusIncidentAdminFn>>
+/** List-item shape (the detail fn adds `notifiedSubscriberCount` on top). */
+export type StatusIncidentAdmin = Awaited<
+  ReturnType<typeof listStatusIncidentsAdminFn>
+>['items'][number]
 export type StatusIncidentListResult = Awaited<ReturnType<typeof listStatusIncidentsAdminFn>>
 export type StatusIncidentAffectedComponent = StatusIncidentAdmin['affectedComponents'][number]
 export type StatusIncidentUpdateRow = StatusIncidentAdmin['updates'][number]
@@ -85,6 +88,7 @@ export const statusComponentQueries = {
 }
 
 export type StatusOverview = Awaited<ReturnType<typeof getStatusOverviewAdminFn>>
+export type StatusIncidentAdminDetail = Awaited<ReturnType<typeof getStatusIncidentAdminFn>>
 
 export const statusOverviewQueries = {
   get: () =>
