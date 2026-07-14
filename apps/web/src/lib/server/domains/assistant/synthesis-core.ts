@@ -16,12 +16,19 @@
  * teammate-facing copilot with tools optionally on) is meant to be a new set
  * of options here, not a fork of this file.
  */
-import { chat, parsePartialJSON, type AgentLoopStrategy, type AnyTool } from '@tanstack/ai'
+import {
+  chat,
+  parsePartialJSON,
+  type AgentLoopStrategy,
+  type AnyChatMiddleware,
+  type AnyTool,
+} from '@tanstack/ai'
 import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
 import { jsonrepair } from 'jsonrepair'
 import type { z } from 'zod'
 import { config } from '@/lib/server/config'
 import { stripCodeFences, structuredOutputProviderOptions } from '@/lib/server/domains/ai/config'
+import { withRetry } from '@/lib/server/domains/ai/retry'
 import { withUsageLogging, type AiAnswerKind } from '@/lib/server/domains/ai/usage-log'
 
 /** Output budget default: constrained decoding on small models needs headroom. */
@@ -94,6 +101,12 @@ interface RunAttemptOptions<TContext> {
   signal?: AbortSignal
   onTextDelta?: (delta: string) => void
   onActivity?: (activity: SynthesisActivity) => void
+  /**
+   * Observability-only chat middleware passed straight through to chat() (e.g.
+   * the assistant OTel tracing middleware). Purely additive: with none supplied
+   * the call is byte-for-byte unchanged.
+   */
+  middleware?: AnyChatMiddleware[]
 }
 
 /** jsonrepair throws on hopeless input; treat that as "no repair available". */
@@ -134,17 +147,51 @@ export function salvageJsonWithSchema(
   return null
 }
 
-/** One model call: stream consumption, delta-diffing, tools (if any), and salvage. */
-async function runOneAttempt<TContext>(opts: RunAttemptOptions<TContext>): Promise<AttemptOutcome> {
-  opts.onActivity?.({ kind: 'thinking' })
+/**
+ * Transport re-dial budget for a pristine, pre-commit dial failure (see
+ * streamOnce). Bounded tighter than the summary path's default (3) because this
+ * runs on the user-interactive turn. Orthogonal to — and stacked under — the
+ * semantic-salvage retry (runSynthesis' DEFAULT_RETRIES), which is unchanged.
+ */
+const TRANSPORT_RETRIES = 2
 
-  const controller = new AbortController()
-  const forwardAbort = () => controller.abort()
-  if (opts.signal) {
-    if (opts.signal.aborted) controller.abort()
-    else opts.signal.addEventListener('abort', forwardAbort, { once: true })
+/**
+ * Marks a stream failure that must NOT be re-dialed: a chunk was already
+ * consumed (text streamed to the caller / a side-effecting tool ran) or the
+ * turn was aborted. withRetry classifies retryability on `.message`, so this
+ * neutral, non-retryable message stops the transport-retry loop; runOneAttempt
+ * unwraps `cause` to surface the original error to the semantic-salvage layer
+ * and usage logging unchanged.
+ */
+class CommittedStreamError extends Error {
+  constructor(readonly cause: Error) {
+    super('assistant stream already committed; transport retry unsafe')
+    this.name = 'CommittedStreamError'
   }
+}
 
+/**
+ * One dial of chat(): open the stream, consume it (delta-diffing, tools,
+ * salvage) and return an AttemptOutcome, or throw.
+ *
+ * TRANSPORT-RETRY BOUNDARY. A 429/5xx/network failure at dial time throws out
+ * of `for await` BEFORE any chunk is consumed — @tanstack/ai's run loop
+ * re-throws adapter errors rather than converting them to RUN_ERROR chunks
+ * (verified against activities/chat/index.js, whose top-level catch re-throws
+ * every non-abort error). Only that pristine pre-commit failure is safe to
+ * re-dial. The instant the first chunk is observed the stream is "committed":
+ * text may have reached the caller via onTextDelta and a tool may have executed
+ * with persisted side effects, so re-dialing could double-emit or
+ * double-persist. A committed failure and any abort are therefore wrapped as
+ * CommittedStreamError so the caller's withRetry stops immediately. A RUN_ERROR
+ * *chunk* (an in-stream provider error, always post-commit) is likewise never
+ * transport-retried here — recovering an answer from it is the semantic-salvage
+ * path's job (runSynthesis).
+ */
+async function streamOnce<TContext>(
+  opts: RunAttemptOptions<TContext>,
+  controller: AbortController
+): Promise<AttemptOutcome> {
   const adapter = openaiCompatibleText(opts.model, {
     baseURL: config.openaiBaseUrl!,
     apiKey: config.openaiApiKey!,
@@ -173,6 +220,7 @@ async function runOneAttempt<TContext>(opts: RunAttemptOptions<TContext>): Promi
         stream: true,
         abortController: controller,
         modelOptions,
+        ...(opts.middleware ? { middleware: opts.middleware } : {}),
       })
     : chat({
         adapter,
@@ -182,8 +230,10 @@ async function runOneAttempt<TContext>(opts: RunAttemptOptions<TContext>): Promi
         stream: true,
         abortController: controller,
         modelOptions,
+        ...(opts.middleware ? { middleware: opts.middleware } : {}),
       })
 
+  let committed = false
   let raw = ''
   let emitted = ''
   let final: unknown | null = null
@@ -192,6 +242,11 @@ async function runOneAttempt<TContext>(opts: RunAttemptOptions<TContext>): Promi
 
   try {
     for await (const chunk of stream) {
+      // First chunk observed => the dial succeeded and output may now reach the
+      // caller (streamed text) or a tool may execute (persisted side effects).
+      // Commit before processing so any subsequent throw is treated as
+      // post-commit and never re-dialed.
+      committed = true
       switch (chunk.type) {
         case 'TEXT_MESSAGE_CONTENT': {
           // Deltas are raw JSON; surface only the growth of the target field
@@ -243,8 +298,14 @@ async function runOneAttempt<TContext>(opts: RunAttemptOptions<TContext>): Promi
         }
       }
     }
-  } finally {
-    opts.signal?.removeEventListener('abort', forwardAbort)
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err))
+    // Post-commit or aborted: never re-dial (see the boundary note above).
+    // Pristine pre-commit failure: rethrow as-is so withRetry can classify it.
+    if (committed || opts.signal?.aborted || controller.signal.aborted) {
+      throw new CommittedStreamError(error)
+    }
+    throw error
   }
 
   // Strict decoding can fail on providers that accept the schema without
@@ -261,6 +322,41 @@ async function runOneAttempt<TContext>(opts: RunAttemptOptions<TContext>): Promi
   }
 
   return { final, usage }
+}
+
+/**
+ * One model call: a bounded transport re-dial (withRetry) wrapped around a
+ * single stream dial (streamOnce). Only a pristine pre-commit transport failure
+ * is retried; see streamOnce's boundary note. Aborts bypass retry entirely.
+ */
+async function runOneAttempt<TContext>(opts: RunAttemptOptions<TContext>): Promise<AttemptOutcome> {
+  opts.onActivity?.({ kind: 'thinking' })
+
+  // One controller for the whole attempt: it forwards the caller's abort and is
+  // reused across transport re-dials. If it has already aborted, the next dial
+  // fails pre-commit and streamOnce wraps it as CommittedStreamError, so an
+  // aborted turn never re-dials.
+  const controller = new AbortController()
+  const forwardAbort = () => controller.abort()
+  if (opts.signal) {
+    if (opts.signal.aborted) controller.abort()
+    else opts.signal.addEventListener('abort', forwardAbort, { once: true })
+  }
+
+  try {
+    const { result } = await withRetry(() => streamOnce(opts, controller), {
+      maxRetries: TRANSPORT_RETRIES,
+    })
+    return result
+  } catch (err) {
+    // Unwrap a committed/aborted failure back to the original error so the
+    // semantic-salvage layer, usage logging, and abort propagation all see it
+    // exactly as before this transport layer existed.
+    if (err instanceof CommittedStreamError) throw err.cause
+    throw err
+  } finally {
+    opts.signal?.removeEventListener('abort', forwardAbort)
+  }
 }
 
 export interface RunSynthesisOptions<

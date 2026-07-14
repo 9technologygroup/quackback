@@ -18,6 +18,7 @@ import { db, conversations, principal, eq } from '@/lib/server/db'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
 import { isAiClientConfigured, stripCodeFences } from '@/lib/server/domains/ai/config'
 import { getChatModel } from '@/lib/server/domains/ai/models'
+import { createAssistantTracingMiddleware } from '@/lib/server/domains/ai/tracing-middleware'
 import type { AiAnswerKind } from '@/lib/server/domains/ai/usage-log'
 import { getAssistantRuntimeConfig } from '@/lib/server/domains/settings/settings.assistant'
 import { logger } from '@/lib/server/logger'
@@ -1139,11 +1140,24 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   const completionEvaluatorModel = getChatModel('qualityGate') ?? model
   let zeroToolEvaluation: ZeroToolCompletionEvaluation | null = null
 
+  // Instrumentation-only OTel tracing (one span per turn, child spans per tool
+  // call). Attributes stay privacy-minimal — the same non-textual vocabulary as
+  // the ai_usage_log metadata below (role, surface, versions, finish reason,
+  // token usage, tool names/counts), never tool args/results or customer text.
+  // No-op unless an exporter is registered at process start (gh #313).
+  const tracingMiddleware = createAssistantTracingMiddleware({
+    role,
+    surface,
+    promptVersion: ASSISTANT_PROMPT_VERSION,
+    configRevision: runtimeConfig.revision,
+  })
+
   const outcome = await runSynthesis<never, AssistantToolContext>({
     model,
     systemPrompts,
     messages: modelMessages,
     outputSchema: assistantOutputSchema,
+    middleware: [tracingMiddleware],
     tools: {
       specs: tools,
       context: toolContext,
