@@ -9,7 +9,7 @@ import {
   postCommentReactions,
 } from '../schema/posts'
 import { REACTION_EMOJIS, MODERATION_STATES } from '../types'
-import { boards, roadmaps, postTags } from '../schema/boards'
+import { boards, roadmaps, roadmapColumns, postTags } from '../schema/boards'
 import { integrations } from '../schema/integrations'
 import { changelogEntries } from '../schema/changelog'
 import { user, session, settings, principal, invitation } from '../schema/auth'
@@ -60,8 +60,29 @@ describe('Schema definitions', () => {
       expect(columns).toContain('name')
       expect(columns).toContain('description')
       expect(columns).toContain('isPublic')
+      expect(columns).toContain('type')
+      expect(columns).toContain('baseFilter')
+      expect(columns).toContain('dateSource')
+      expect(columns).toContain('frequency')
+      expect(columns).toContain('visibility')
+      expect(columns).toContain('visibleSegmentIds')
       expect(columns).toContain('createdAt')
       expect(columns).toContain('updatedAt')
+    })
+
+    it('defines status-backed roadmap columns', () => {
+      expect(getTableName(roadmapColumns)).toBe('roadmap_columns')
+      expect(Object.keys(getTableColumns(roadmapColumns))).toEqual([
+        'id',
+        'roadmapId',
+        'statusId',
+        'name',
+        'icon',
+        'color',
+        'position',
+        'createdAt',
+        'updatedAt',
+      ])
     })
   })
 

@@ -24,7 +24,9 @@
  *  10  fetchSubscriptionStatus
  *  11  fetchPublicRoadmaps
  *  12  fetchPublicRoadmapPosts
- *  13  getCommentsSectionDataFn
+ *  13  fetchPublicRoadmapDateBuckets
+ *  14  getCommentsSectionDataFn
+ *  15  fetchBoardCapabilitiesFn
  *
  * Handler registration order (changelog.ts):
  *   0  createChangelogFn
@@ -45,6 +47,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 type AnyHandler = (args: { data: Record<string, unknown> }) => Promise<unknown>
 
 const handlersByModule = new Map<string, AnyHandler[]>()
+const handlersByExport = new WeakMap<object, AnyHandler>()
 let _currentModule = ''
 
 vi.mock('@tanstack/react-start', () => ({
@@ -58,6 +61,7 @@ vi.mock('@tanstack/react-start', () => ({
         const arr = handlersByModule.get(key) ?? []
         arr.push(fn)
         handlersByModule.set(key, arr)
+        handlersByExport.set(chain, fn)
         return chain
       },
     }
@@ -254,6 +258,18 @@ async function loadModule(modulePath: string): Promise<AnyHandler[]> {
   return handlersByModule.get(modulePath) ?? []
 }
 
+async function loadExportedHandler(modulePath: string, exportName: string): Promise<AnyHandler> {
+  await loadModule(modulePath)
+  const module = (await import(modulePath)) as Record<string, unknown>
+  const exported = module[exportName]
+  if ((typeof exported !== 'object' && typeof exported !== 'function') || exported === null) {
+    throw new Error(`Missing server function export ${exportName}`)
+  }
+  const handler = handlersByExport.get(exported as object)
+  if (!handler) throw new Error(`Missing handler for server function export ${exportName}`)
+  return handler
+}
+
 // Portal handler indices (see file header comment)
 const PORTAL = '@/lib/server/functions/portal' as const
 const FETCH_PORTAL_DATA = 1
@@ -265,8 +281,6 @@ const FETCH_PUBLIC_STATUSES = 6
 const FETCH_PUBLIC_TAGS = 7
 const FETCH_PUBLIC_ROADMAPS = 11
 const FETCH_PUBLIC_ROADMAP_POSTS = 12
-// Declared last in portal.ts (appended to preserve the indices above).
-const FETCH_BOARD_CAPABILITIES = 14
 
 // Changelog handler indices
 const CHANGELOG = '@/lib/server/functions/changelog' as const
@@ -337,8 +351,8 @@ describe('portal.ts fetchBoardCapabilitiesFn — per-board capability map', () =
 
   it('returns an empty map when the private portal blocks the caller', async () => {
     mockResolvePortalAccess.mockResolvedValue({ granted: false, reason: 'unauthorized' })
-    const h = await loadModule(PORTAL)
-    const result = await h[FETCH_BOARD_CAPABILITIES]({ data: {} })
+    const handler = await loadExportedHandler(PORTAL, 'fetchBoardCapabilitiesFn')
+    const result = await handler({ data: {} })
     expect(result).toEqual({})
     expect(mockListPublicBoardsWithStats).not.toHaveBeenCalled()
   })
@@ -349,8 +363,8 @@ describe('portal.ts fetchBoardCapabilitiesFn — per-board capability map', () =
       { id: 'board_pub', access: anonAccess },
       { id: 'board_auth', access: authAccess },
     ])
-    const h = await loadModule(PORTAL)
-    const result = (await h[FETCH_BOARD_CAPABILITIES]({ data: {} })) as Record<
+    const handler = await loadExportedHandler(PORTAL, 'fetchBoardCapabilitiesFn')
+    const result = (await handler({ data: {} })) as Record<
       string,
       { canSubmit: boolean; canVote: boolean }
     >
@@ -590,8 +604,14 @@ describe('portal.ts fetchPublicRoadmaps — portal-visibility gate', () => {
         name: 'Q1',
         slug: 'q1',
         description: null,
-        isPublic: true,
+        type: 'column',
+        baseFilter: {},
+        dateSource: null,
+        frequency: null,
+        visibility: 'public',
+        visibleSegmentIds: null,
         position: 0,
+        columns: [],
         createdAt: now,
         updatedAt: now,
       },
@@ -611,8 +631,14 @@ describe('portal.ts fetchPublicRoadmaps — portal-visibility gate', () => {
         name: 'Q2',
         slug: 'q2',
         description: null,
-        isPublic: true,
+        type: 'column',
+        baseFilter: {},
+        dateSource: null,
+        frequency: null,
+        visibility: 'public',
+        visibleSegmentIds: null,
         position: 1,
+        columns: [],
         createdAt: now,
         updatedAt: now,
       },
@@ -649,6 +675,7 @@ describe('portal.ts fetchPublicRoadmapPosts — portal-visibility gate', () => {
           title: 'Ship it',
           voteCount: 5,
           statusId: 'st_1',
+          eta: null,
           board: { id: 'b1', name: 'Ideas', slug: 'ideas' },
           roadmapEntry: { postId: 'post_1', roadmapId: 'rm_1', position: 0 },
         },

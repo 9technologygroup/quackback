@@ -46,6 +46,9 @@ export type PostCommentReactionId = TypeId<'post_comment_reaction'>
 /** Roadmap ID - e.g., roadmap_01h455vb4pex5vsknk084sn02q */
 export type RoadmapId = TypeId<'roadmap'>
 
+/** Roadmap column ID - e.g., roadmap_col_01h455vb4pex5vsknk084sn02q */
+export type RoadmapColumnId = TypeId<'roadmap_col'>
+
 /** Changelog entry ID - e.g., changelog_01h455vb4pex5vsknk084sn02q */
 export type ChangelogId = TypeId<'changelog'>
 
@@ -418,6 +421,7 @@ export interface EntityIdMap {
   user_mapping: ExternalUserMappingId
   post_merge_suggestion: PostMergeSuggestionId
   roadmap: RoadmapId
+  roadmap_column: RoadmapColumnId
   changelog: ChangelogId
   changelog_category: ChangelogCategoryId
   changelog_sub: ChangelogSubscriptionId

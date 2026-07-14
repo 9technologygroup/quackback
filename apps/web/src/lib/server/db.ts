@@ -140,6 +140,8 @@ export {
   boardsRelations,
   roadmaps,
   roadmapsRelations,
+  roadmapColumns,
+  roadmapColumnsRelations,
   postTags,
   postTagsRelations,
   // Schema tables - statuses

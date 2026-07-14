@@ -44,6 +44,10 @@ import { resolvePortalAccessForRequest } from './portal-access'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { logger } from '@/lib/server/logger'
+import { getPortalConfig } from '@/lib/server/domains/settings/settings.service'
+import { isTeamMember } from '@/lib/shared/roles'
+import { toIsoStringOrNull } from '@/lib/shared/utils'
+import { roadmapIdSchema, postStatusIdSchema } from '@quackback/ids/zod'
 
 const log = logger.child({ component: 'public-posts' })
 
@@ -103,8 +107,9 @@ const createPublicPostSchema = z.object({
 })
 
 const getPublicRoadmapPostsSchema = z.object({
-  roadmapId: z.string(),
-  statusId: z.string().optional(),
+  roadmapId: roadmapIdSchema,
+  statusId: postStatusIdSchema.optional(),
+  bucketId: z.string().max(20).optional(),
   limit: z.number().int().min(1).max(100).optional().default(20),
   offset: z.number().int().min(0).optional().default(0),
 })
@@ -577,8 +582,9 @@ export const listPublicRoadmapsFn = createServerFn({ method: 'GET' }).handler(as
       return []
     }
 
-    // No auth needed - this is public data
-    const result = await listPublicRoadmaps()
+    const auth = hasAuthCredentials() ? await getOptionalAuth() : null
+    const actor = await policyActorFromAuth(auth)
+    const result = await listPublicRoadmaps(actor)
 
     log.debug({ count: result.length }, 'list public roadmaps results')
     // Serialize branded types to plain strings for turbo-stream
@@ -587,8 +593,23 @@ export const listPublicRoadmapsFn = createServerFn({ method: 'GET' }).handler(as
       name: roadmap.name,
       slug: roadmap.slug,
       description: roadmap.description,
-      isPublic: roadmap.isPublic,
+      type: roadmap.type,
+      baseFilter: roadmap.baseFilter,
+      dateSource: roadmap.dateSource,
+      frequency: roadmap.frequency,
+      visibility: roadmap.visibility,
+      visibleSegmentIds: roadmap.visibleSegmentIds as SegmentId[] | null,
+      isPublic: roadmap.visibility === 'public',
       position: roadmap.position,
+      columns: roadmap.columns.map((column) => ({
+        id: String(column.id),
+        roadmapId: String(column.roadmapId),
+        statusId: String(column.statusId),
+        name: column.name,
+        icon: column.icon,
+        color: column.color,
+        position: column.position,
+      })),
       createdAt: roadmap.createdAt.toISOString(),
       updatedAt: roadmap.updatedAt.toISOString(),
     }))
@@ -623,17 +644,23 @@ export const getPublicRoadmapPostsFn = createServerFn({ method: 'GET' })
       const auth = await getOptionalAuth()
       const actor = await policyActorFromAuth(auth)
 
-      const { roadmapId, statusId, limit, offset } = data
+      const { roadmapId, statusId, bucketId, limit, offset } = data
 
-      const result = await getPublicRoadmapPosts(
-        roadmapId as RoadmapId,
-        {
-          statusId: statusId as PostStatusId | undefined,
-          limit,
-          offset,
-        },
-        actor
-      )
+      const [result, portalConfig] = await Promise.all([
+        getPublicRoadmapPosts(
+          roadmapId as RoadmapId,
+          {
+            statusId: statusId as PostStatusId | undefined,
+            bucketId,
+            limit,
+            offset,
+          },
+          actor
+        ),
+        getPortalConfig(),
+      ])
+      const exposeEta =
+        !portalConfig.privacy?.privateEtas || isTeamMember(auth?.principal.role ?? null)
       log.debug({ count: result.items.length }, 'get public roadmap posts results')
 
       // Serialize branded types to plain strings for turbo-stream
@@ -644,6 +671,7 @@ export const getPublicRoadmapPostsFn = createServerFn({ method: 'GET' })
           title: item.title,
           voteCount: item.voteCount,
           statusId: item.statusId ? String(item.statusId) : null,
+          eta: exposeEta ? toIsoStringOrNull(item.eta) : null,
           board: {
             id: String(item.board.id),
             name: item.board.name,

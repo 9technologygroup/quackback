@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://acme.localhost:3000'
+
 /**
  * Playwright configuration for Quackback E2E tests
  * @see https://playwright.dev/docs/test-configuration
@@ -27,7 +29,7 @@ export default defineConfig({
   /* Shared settings for all the projects below */
   use: {
     /* Base URL for tenant subdomain (acme workspace from seed data) */
-    baseURL: 'http://acme.localhost:3000',
+    baseURL,
 
     /* Collect trace when retrying the failed test */
     trace: 'on-first-retry',
@@ -97,7 +99,7 @@ export default defineConfig({
   /* Run local dev server before starting the tests */
   webServer: {
     command: 'bun run dev',
-    url: 'http://acme.localhost:3000',
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120 * 1000,
   },

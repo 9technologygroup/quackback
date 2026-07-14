@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   PlusIcon,
@@ -10,9 +11,6 @@ import {
   LockClosedIcon,
 } from '@heroicons/react/24/solid'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { PageHeader } from '@/components/shared/page-header'
 import { FilterSection } from '@/components/shared/filter-section'
@@ -36,7 +34,10 @@ import { EmptyState } from '@/components/shared/empty-state'
 import { cn, slugify } from '@/lib/shared/utils'
 import { useRoadmaps } from '@/lib/client/hooks/use-roadmaps-query'
 import { useCreateRoadmap, useUpdateRoadmap, useDeleteRoadmap } from '@/lib/client/mutations'
-import type { Roadmap } from '@/lib/shared/db-types'
+import type { RoadmapView } from '@/lib/client/hooks/use-roadmaps-query'
+import { adminQueries } from '@/lib/client/queries/admin'
+import { useSegments } from '@/lib/client/hooks/use-segments-queries'
+import { RoadmapBuilderForm, type RoadmapBuilderValue } from './roadmap-builder-form'
 
 interface RoadmapSidebarProps {
   selectedRoadmapId: string | null
@@ -47,27 +48,23 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
-  const [editingRoadmap, setEditingRoadmap] = useState<Roadmap | null>(null)
-  const [deletingRoadmap, setDeletingRoadmap] = useState<Roadmap | null>(null)
+  const [editingRoadmap, setEditingRoadmap] = useState<RoadmapView | null>(null)
+  const [deletingRoadmap, setDeletingRoadmap] = useState<RoadmapView | null>(null)
 
   const { data: roadmaps, isLoading } = useRoadmaps()
+  const { data: statuses = [] } = useQuery(adminQueries.statuses())
+  const { data: boards = [] } = useQuery(adminQueries.boards())
+  const { data: tags = [] } = useQuery(adminQueries.tags())
+  const { data: segments = [] } = useSegments()
   const createRoadmap = useCreateRoadmap()
   const updateRoadmap = useUpdateRoadmap()
   const deleteRoadmap = useDeleteRoadmap()
 
-  const handleCreateSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const formData = new FormData(e.currentTarget)
-    const name = formData.get('name') as string
-    const description = formData.get('description') as string
-    const isPublic = formData.get('isPublic') === 'on'
-
+  const handleCreateSubmit = async (value: RoadmapBuilderValue) => {
     try {
       const newRoadmap = await createRoadmap.mutateAsync({
-        name,
-        slug: slugify(name),
-        description: description || undefined,
-        isPublic,
+        ...value,
+        slug: slugify(value.name),
       })
       setIsCreateDialogOpen(false)
       onSelectRoadmap(newRoadmap.id)
@@ -76,23 +73,13 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
     }
   }
 
-  const handleEditSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
+  const handleEditSubmit = async (value: RoadmapBuilderValue) => {
     if (!editingRoadmap) return
-
-    const formData = new FormData(e.currentTarget)
-    const name = formData.get('name') as string
-    const description = formData.get('description') as string
-    const isPublic = formData.get('isPublic') === 'on'
 
     try {
       await updateRoadmap.mutateAsync({
         roadmapId: editingRoadmap.id,
-        input: {
-          name,
-          description,
-          isPublic,
-        },
+        input: value,
       })
       setIsEditDialogOpen(false)
       setEditingRoadmap(null)
@@ -116,12 +103,12 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
     }
   }
 
-  const openEditDialog = (roadmap: Roadmap) => {
+  const openEditDialog = (roadmap: RoadmapView) => {
     setEditingRoadmap(roadmap)
     setIsEditDialogOpen(true)
   }
 
-  const openDeleteDialog = (roadmap: Roadmap) => {
+  const openDeleteDialog = (roadmap: RoadmapView) => {
     setDeletingRoadmap(roadmap)
     setIsDeleteDialogOpen(true)
   }
@@ -150,46 +137,23 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
                     <PlusIcon className="h-3 w-3" />
                   </button>
                 </DialogTrigger>
-                <DialogContent className="sm:max-w-lg">
+                <DialogContent className="sm:max-w-3xl">
                   <DialogHeader>
                     <DialogTitle>Create Roadmap</DialogTitle>
                     <DialogDescription>
-                      Create a new roadmap to organize your posts into a public timeline.
+                      Define a saved view over posts using statuses or ETA periods.
                     </DialogDescription>
                   </DialogHeader>
-                  <form onSubmit={handleCreateSubmit} className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="name">Name</Label>
-                      <Input id="name" name="name" placeholder="Product Roadmap" required />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="description">Description (optional)</Label>
-                      <Input
-                        id="description"
-                        name="description"
-                        placeholder="Our upcoming features and improvements"
-                      />
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Switch id="isPublic" name="isPublic" defaultChecked />
-                      <Label htmlFor="isPublic">Public</Label>
-                    </div>
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => setIsCreateDialogOpen(false)}
-                      >
-                        Cancel
-                      </Button>
-                      <Button type="submit" disabled={createRoadmap.isPending}>
-                        {createRoadmap.isPending && (
-                          <ArrowPathIcon className="h-4 w-4 mr-2 animate-spin" />
-                        )}
-                        Create
-                      </Button>
-                    </div>
-                  </form>
+                  <RoadmapBuilderForm
+                    statuses={statuses}
+                    boards={boards}
+                    tags={tags}
+                    segments={segments}
+                    isPending={createRoadmap.isPending}
+                    submitLabel="Create"
+                    onCancel={() => setIsCreateDialogOpen(false)}
+                    onSubmit={handleCreateSubmit}
+                  />
                 </DialogContent>
               </Dialog>
             }
@@ -225,7 +189,7 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
                       )}
                     />
                     <span className="flex-1 text-[13px] truncate">{roadmap.name}</span>
-                    {!roadmap.isPublic && (
+                    {roadmap.visibility !== 'public' && (
                       <LockClosedIcon className="h-3 w-3 text-muted-foreground/60 shrink-0" />
                     )}
                     <DropdownMenu>
@@ -264,45 +228,24 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
 
       {/* Edit Dialog */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Edit Roadmap</DialogTitle>
             <DialogDescription>Update your roadmap settings.</DialogDescription>
           </DialogHeader>
           {editingRoadmap && (
-            <form onSubmit={handleEditSubmit} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="edit-name">Name</Label>
-                <Input id="edit-name" name="name" defaultValue={editingRoadmap.name} required />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-description">Description (optional)</Label>
-                <Input
-                  id="edit-description"
-                  name="description"
-                  defaultValue={editingRoadmap.description || ''}
-                />
-              </div>
-              <div className="flex items-center space-x-2">
-                <Switch
-                  id="edit-isPublic"
-                  name="isPublic"
-                  defaultChecked={editingRoadmap.isPublic}
-                />
-                <Label htmlFor="edit-isPublic">Public</Label>
-              </div>
-              <div className="flex justify-end gap-2">
-                <Button type="button" variant="outline" onClick={() => setIsEditDialogOpen(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={updateRoadmap.isPending}>
-                  {updateRoadmap.isPending && (
-                    <ArrowPathIcon className="h-4 w-4 mr-2 animate-spin" />
-                  )}
-                  Save
-                </Button>
-              </div>
-            </form>
+            <RoadmapBuilderForm
+              key={editingRoadmap.id}
+              roadmap={editingRoadmap}
+              statuses={statuses}
+              boards={boards}
+              tags={tags}
+              segments={segments}
+              isPending={updateRoadmap.isPending}
+              submitLabel="Save"
+              onCancel={() => setIsEditDialogOpen(false)}
+              onSubmit={handleEditSubmit}
+            />
           )}
         </DialogContent>
       </Dialog>
@@ -312,7 +255,7 @@ export function RoadmapSidebar({ selectedRoadmapId, onSelectRoadmap }: RoadmapSi
         open={isDeleteDialogOpen}
         onOpenChange={setIsDeleteDialogOpen}
         title="Delete Roadmap"
-        description={`Are you sure you want to delete "${deletingRoadmap?.name}"? This will remove all posts from this roadmap. The posts themselves will not be deleted.`}
+        description={`Are you sure you want to delete "${deletingRoadmap?.name}"? Posts are not changed because roadmap placement is derived from their fields.`}
         confirmLabel="Delete"
         variant="destructive"
         isPending={deleteRoadmap.isPending}

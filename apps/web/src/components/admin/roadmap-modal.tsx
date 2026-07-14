@@ -1,12 +1,11 @@
 'use client'
 
 import { Suspense, useState } from 'react'
-import { useSuspenseQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSuspenseQuery, useQuery } from '@tanstack/react-query'
 import { ModalHeader } from '@/components/shared/modal-header'
 import { UrlModalShell } from '@/components/shared/url-modal-shell'
 import { useUrlModal } from '@/lib/client/hooks/use-url-modal'
 import { adminQueries } from '@/lib/client/queries/admin'
-import { inboxKeys } from '@/lib/client/hooks/use-inbox-query'
 import { VoteButton } from '@/components/public/vote-button'
 import { PostContentSection } from '@/components/public/post-detail/post-content-section'
 import {
@@ -23,10 +22,10 @@ import {
   useUpdatePostTags,
   usePinComment,
   useUnpinComment,
+  useSetPostEta,
 } from '@/lib/client/mutations'
-import { addPostToRoadmapFn, removePostFromRoadmapFn } from '@/lib/server/functions/roadmaps'
 import { Route } from '@/routes/admin/roadmap'
-import { type PostId, type PostStatusId, type PostTagId, type RoadmapId } from '@quackback/ids'
+import { type PostId, type PostStatusId, type PostTagId } from '@quackback/ids'
 import type { PostDetails, CurrentUser } from '@/lib/shared/types'
 import type { PublicPostDetailView } from '@/lib/client/queries/portal-detail'
 import { toPortalComments } from '@/components/admin/feedback/detail/post-utils'
@@ -50,6 +49,7 @@ function toPortalPostView(post: PostDetails): PublicPostDetailView {
     content: post.content,
     contentJson: post.contentJson ?? { type: 'doc' },
     statusId: post.statusId,
+    eta: post.eta ?? null,
     voteCount: post.voteCount,
     authorName: post.authorName,
     principalId: post.principalId as `principal_${string}` | null,
@@ -65,23 +65,20 @@ function toPortalPostView(post: PostDetails): PublicPostDetailView {
 }
 
 function RoadmapModalContent({ postId, currentUser, onClose }: RoadmapModalContentProps) {
-  const queryClient = useQueryClient()
-
   // Queries
   const postQuery = useSuspenseQuery(adminQueries.postDetail(postId))
   const { data: tags = [] } = useQuery(adminQueries.tags())
   const { data: statuses = [] } = useQuery(adminQueries.statuses())
-  const { data: roadmaps = [] } = useQuery(adminQueries.roadmaps())
 
   const post = postQuery.data as PostDetails
 
   // UI state
   const [isUpdating, setIsUpdating] = useState(false)
-  const [pendingRoadmapId, setPendingRoadmapId] = useState<string | null>(null)
 
   // Mutations
   const updateStatus = useChangePostStatusId()
   const updateTags = useUpdatePostTags()
+  const updateEta = useSetPostEta()
   const pinComment = usePinComment({ postId: post.id as PostId })
   const unpinComment = useUnpinComment({ postId: post.id as PostId })
 
@@ -104,34 +101,8 @@ function RoadmapModalContent({ postId, currentUser, onClose }: RoadmapModalConte
     }
   }
 
-  const handleRoadmapAdd = async (roadmapId: RoadmapId) => {
-    setPendingRoadmapId(roadmapId)
-    try {
-      await addPostToRoadmapFn({ data: { roadmapId, postId: post.id } })
-      queryClient.invalidateQueries({ queryKey: inboxKeys.detail(post.id as PostId) })
-    } finally {
-      setPendingRoadmapId(null)
-    }
-  }
-
-  const handleRoadmapRemove = async (roadmapId: RoadmapId) => {
-    setPendingRoadmapId(roadmapId)
-    try {
-      await removePostFromRoadmapFn({ data: { roadmapId, postId: post.id } })
-      queryClient.invalidateQueries({ queryKey: inboxKeys.detail(post.id as PostId) })
-    } finally {
-      setPendingRoadmapId(null)
-    }
-  }
-
   // Convert post to portal-compatible view
   const portalPost = toPortalPostView(post)
-  const postRoadmaps = (post.roadmapIds || [])
-    .map((id) => roadmaps.find((r) => r.id === id))
-    .filter(Boolean) as Array<{ id: string; name: string; slug: string }>
-
-  portalPost.roadmaps = postRoadmaps
-
   const currentStatus = statuses.find((s) => s.id === post.statusId)
 
   return (
@@ -172,16 +143,14 @@ function RoadmapModalContent({ postId, currentUser, onClose }: RoadmapModalConte
               authorPrincipalId={post.principalId}
               createdAt={new Date(post.createdAt)}
               tags={post.tags}
-              roadmaps={postRoadmaps}
+              eta={post.eta ?? null}
               canEdit
               allStatuses={statuses}
               allTags={tags}
-              allRoadmaps={roadmaps}
               onStatusChange={handleStatusChange}
+              onEtaChange={(eta) => updateEta.mutateAsync({ postId, eta }).then(() => undefined)}
               onTagsChange={handleTagsChange}
-              onRoadmapAdd={handleRoadmapAdd}
-              onRoadmapRemove={handleRoadmapRemove}
-              isUpdating={isUpdating || !!pendingRoadmapId}
+              isUpdating={isUpdating || updateEta.isPending}
               hideSubscribe
               hideVote
             />

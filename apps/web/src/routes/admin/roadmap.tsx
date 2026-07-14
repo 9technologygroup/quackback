@@ -1,5 +1,4 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
-import { useSuspenseQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import { adminQueries } from '@/lib/client/queries/admin'
 import { RoadmapAdmin } from '@/components/admin/roadmap-admin'
@@ -33,7 +32,7 @@ export const Route = createFileRoute('/admin/roadmap')({
     }
 
     await Promise.all([
-      queryClient.ensureQueryData(adminQueries.roadmapStatuses()),
+      queryClient.ensureQueryData(adminQueries.statuses()),
       queryClient.ensureQueryData(adminQueries.boards()),
       queryClient.ensureQueryData(adminQueries.tags()),
       queryClient.ensureQueryData(adminQueries.segments()),
@@ -54,11 +53,9 @@ function RoadmapPage() {
   const { currentUser } = Route.useLoaderData()
   const search = Route.useSearch()
 
-  const roadmapStatusesQuery = useSuspenseQuery(adminQueries.roadmapStatuses())
-
   return (
     <main className="h-full">
-      <RoadmapAdmin statuses={roadmapStatusesQuery.data} />
+      <RoadmapAdmin />
       <RoadmapModal postId={search.post} currentUser={currentUser} />
     </main>
   )

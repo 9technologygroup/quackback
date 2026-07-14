@@ -309,6 +309,11 @@ const updatePortalConfigSchema = z.object({
       enabled: z.boolean().optional(),
     })
     .optional(),
+  privacy: z
+    .object({
+      privateEtas: z.boolean().optional(),
+    })
+    .optional(),
 })
 
 const saveLogoKeySchema = z.object({

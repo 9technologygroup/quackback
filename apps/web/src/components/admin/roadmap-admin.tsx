@@ -18,21 +18,17 @@ import { RoadmapCardOverlay } from './roadmap-card'
 import { RoadmapFiltersBar } from './roadmap/roadmap-filters-bar'
 import { EmptyState } from '@/components/shared/empty-state'
 import { useRoadmaps } from '@/lib/client/hooks/use-roadmaps-query'
+import { useRoadmapDateBuckets } from '@/lib/client/hooks/use-roadmaps-query'
 import { useRoadmapSelection } from './use-roadmap-selection'
 import { useRoadmapFilters } from './roadmap/use-roadmap-filters'
-import { useChangePostStatusId } from '@/lib/client/mutations/posts'
+import { useChangePostStatusId, useSetPostEta } from '@/lib/client/mutations/posts'
 import { useSegments } from '@/lib/client/hooks/use-segments-queries'
 import { adminQueries } from '@/lib/client/queries/admin'
 import { Route } from '@/routes/admin/roadmap'
-import type { PostStatusEntity } from '@/lib/shared/db-types'
 import type { RoadmapPostEntry } from '@/lib/shared/types'
 import type { PostStatusId, PostId, RoadmapId } from '@quackback/ids'
 
-interface RoadmapAdminProps {
-  statuses: PostStatusEntity[]
-}
-
-export function RoadmapAdmin({ statuses }: RoadmapAdminProps) {
+export function RoadmapAdmin() {
   const navigate = useNavigate({ from: Route.fullPath })
   const search = Route.useSearch()
 
@@ -47,6 +43,7 @@ export function RoadmapAdmin({ statuses }: RoadmapAdminProps) {
   const { selectedRoadmapId, setSelectedRoadmap } = useRoadmapSelection()
   const { data: roadmaps } = useRoadmaps()
   const changeStatus = useChangePostStatusId()
+  const setEta = useSetPostEta()
 
   const handleCardClick = (postId: string) => {
     navigate({ search: { ...search, post: postId } })
@@ -60,6 +57,10 @@ export function RoadmapAdmin({ statuses }: RoadmapAdminProps) {
   }, [roadmaps, selectedRoadmapId, setSelectedRoadmap])
 
   const selectedRoadmap = roadmaps?.find((r) => r.id === selectedRoadmapId)
+  const { data: dateBuckets = [] } = useRoadmapDateBuckets(
+    (selectedRoadmapId ?? 'roadmap_00000000000000000000000000') as RoadmapId,
+    { enabled: selectedRoadmap?.type === 'date' }
+  )
 
   // Track dragged post for overlay
   const [activePost, setActivePost] = useState<RoadmapPostEntry | null>(null)
@@ -87,14 +88,25 @@ export function RoadmapAdmin({ statuses }: RoadmapAdminProps) {
     const { active, over } = event
     if (!over || over.data.current?.type !== 'Column') return
 
-    const sourceStatusId = active.data.current?.statusId as PostStatusId
-    const targetStatusId = over.data.current.statusId as PostStatusId
+    const draggedPost = active.data.current?.post as RoadmapPostEntry | undefined
+    const targetStatusId = over.data.current.statusId as PostStatusId | undefined
+    const targetBucketId = over.data.current.bucketId as string | undefined
 
-    if (sourceStatusId !== targetStatusId) {
+    if (
+      selectedRoadmap?.type === 'column' &&
+      targetStatusId &&
+      draggedPost?.statusId !== targetStatusId
+    ) {
       await changeStatus.mutateAsync({
         postId: active.id as PostId,
         statusId: targetStatusId,
       })
+    } else if (selectedRoadmap?.type === 'date' && targetBucketId) {
+      const bucket = dateBuckets.find((item) => item.id === targetBucketId)
+      const currentEta = draggedPost?.eta ? new Date(draggedPost.eta).toISOString() : null
+      if (bucket && (bucket.targetMonth ?? null) !== currentEta) {
+        await setEta.mutateAsync({ postId: active.id as PostId, eta: bucket.targetMonth })
+      }
     }
   }
 
@@ -135,17 +147,42 @@ export function RoadmapAdmin({ statuses }: RoadmapAdminProps) {
             >
               <div className="flex-1 overflow-auto p-4 sm:p-6">
                 <div className="flex items-stretch gap-4 sm:gap-5">
-                  {statuses.map((status) => (
-                    <RoadmapColumn
-                      key={status.id}
-                      roadmapId={selectedRoadmapId as RoadmapId}
-                      statusId={status.id}
-                      title={status.name}
-                      color={status.color}
-                      filters={filters}
-                      onCardClick={handleCardClick}
-                    />
-                  ))}
+                  {selectedRoadmap.type === 'column' &&
+                    selectedRoadmap.columns.map((column) => (
+                      <RoadmapColumn
+                        key={column.id}
+                        roadmapId={selectedRoadmapId as RoadmapId}
+                        columnId={column.id}
+                        statusId={column.statusId}
+                        title={column.name}
+                        icon={column.icon}
+                        color={column.color}
+                        filters={filters}
+                        onCardClick={handleCardClick}
+                      />
+                    ))}
+                  {selectedRoadmap.type === 'date' &&
+                    dateBuckets.map((bucket) => (
+                      <RoadmapColumn
+                        key={bucket.id}
+                        roadmapId={selectedRoadmapId as RoadmapId}
+                        columnId={bucket.id}
+                        bucketId={bucket.id}
+                        title={bucket.label}
+                        subtitle={
+                          bucket.targetMonth
+                            ? `Sets ETA to ${new Intl.DateTimeFormat('en-US', {
+                                month: 'short',
+                                year: 'numeric',
+                                timeZone: 'UTC',
+                              }).format(new Date(bucket.targetMonth))}`
+                            : 'Clears ETA'
+                        }
+                        color={bucket.noEta ? '#6b7280' : '#3b82f6'}
+                        filters={filters}
+                        onCardClick={handleCardClick}
+                      />
+                    ))}
                 </div>
               </div>
 

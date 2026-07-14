@@ -103,6 +103,9 @@ vi.mock('@/lib/server/functions/auth-helpers', () => ({
 }))
 
 vi.mock('@/lib/server/functions/workspace', () => ({ getSettings: vi.fn() }))
+vi.mock('@/lib/server/domains/settings/settings.service', () => ({
+  getPortalConfig: vi.fn().mockResolvedValue({ privacy: { privateEtas: false } }),
+}))
 const mockCanVotePost = vi.fn(() => ({ allowed: true }) as { allowed: boolean; reason?: string })
 vi.mock('@/lib/server/policy', () => ({
   canViewBoard: vi.fn(),
@@ -234,8 +237,14 @@ describe('listPublicRoadmapsFn — portal-visibility gate', () => {
         name: 'Q1',
         slug: 'q1',
         description: null,
-        isPublic: true,
+        type: 'column',
+        baseFilter: {},
+        dateSource: null,
+        frequency: null,
+        visibility: 'public',
+        visibleSegmentIds: null,
         position: 0,
+        columns: [],
         createdAt: now,
         updatedAt: now,
       },
@@ -259,8 +268,14 @@ describe('listPublicRoadmapsFn — portal-visibility gate', () => {
         name: 'Q2',
         slug: 'q2',
         description: null,
-        isPublic: true,
+        type: 'column',
+        baseFilter: {},
+        dateSource: null,
+        frequency: null,
+        visibility: 'public',
+        visibleSegmentIds: null,
         position: 1,
+        columns: [],
         createdAt: now,
         updatedAt: now,
       },
@@ -313,6 +328,7 @@ describe('getPublicRoadmapPostsFn — portal-visibility gate', () => {
           title: 'Ship it',
           voteCount: 3,
           statusId: 'st_1',
+          eta: null,
           board: { id: 'b1', name: 'Ideas', slug: 'ideas' },
           roadmapEntry: { postId: 'post_1', roadmapId: 'rm_1', position: 0 },
         },

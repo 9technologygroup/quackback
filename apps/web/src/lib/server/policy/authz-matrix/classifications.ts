@@ -303,6 +303,7 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'routes/api/v1/help-center/articles/index.ts::GET': PUBLIC_DATA('public help article list'),
   'routes/api/v1/help-center/categories/$categoryId.ts::GET': PUBLIC_DATA('public help category'),
   'routes/api/v1/help-center/categories/index.ts::GET': PUBLIC_DATA('public help category list'),
+  'routes/api/v1/roadmaps/$roadmapId.columns.ts::GET': PUBLIC_DATA('public roadmap columns'),
   'routes/api/v1/roadmaps/$roadmapId.posts.ts::GET': PUBLIC_DATA('public roadmap posts'),
   'routes/api/v1/roadmaps/$roadmapId.ts::GET': PUBLIC_DATA('public roadmap'),
   'routes/api/v1/roadmaps/index.ts::GET': PUBLIC_DATA('public roadmap list'),
@@ -386,8 +387,14 @@ export const INLINE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/link-preview.ts::unfurlLinkFn::isTeamMember': NOT_A_GATE(
     'team bypasses the portal-access check; entry is the bare requireAuth'
   ),
+  'lib/server/functions/portal.ts::fetchPublicPostDetail::isTeamMember': NOT_A_GATE(
+    'private ETA is redacted for non-team callers after portal and board visibility checks'
+  ),
   'lib/server/functions/portal.ts::fetchPublicRoadmapPosts::isTeamMember': NOT_A_GATE(
-    'only team may narrow by segment; non-team callers silently ignore segmentIds'
+    'team may narrow by segment and view private ETAs; non-team callers get the public result shape'
+  ),
+  'lib/server/functions/public-posts.ts::getPublicRoadmapPostsFn::isTeamMember': NOT_A_GATE(
+    'private ETA is redacted for non-team callers after portal and board visibility checks'
   ),
   'routes/api/v1/principals/$principalId.ts::fetchTeamMemberWithUser::isTeamMember': NOT_A_GATE(
     'route is already key-gated (member.view/manage); this returns 404 for non-team principals'

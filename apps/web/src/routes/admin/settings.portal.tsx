@@ -49,6 +49,8 @@ function PortalSettingsPage() {
   const [enabled, setEnabled] = useState(config.welcomeCard?.enabled ?? false)
   const [publicProfiles, setPublicProfiles] = useState(config.features?.publicProfiles ?? true)
   const [savingProfiles, setSavingProfiles] = useState(false)
+  const [privateEtas, setPrivateEtas] = useState(config.privacy?.privateEtas ?? false)
+  const [savingPrivateEtas, setSavingPrivateEtas] = useState(false)
   const [title, setTitle] = useState(
     config.welcomeCard?.title ?? DEFAULT_PORTAL_CONFIG.welcomeCard!.title
   )
@@ -81,6 +83,19 @@ function PortalSettingsPage() {
       setPublicProfiles(!checked)
     } finally {
       setSavingProfiles(false)
+    }
+  }
+
+  async function handleTogglePrivateEtas(checked: boolean) {
+    setPrivateEtas(checked)
+    setSavingPrivateEtas(true)
+    try {
+      await updatePortalConfig.mutateAsync({ privacy: { privateEtas: checked } })
+      startTransition(() => router.invalidate())
+    } catch {
+      setPrivateEtas(!checked)
+    } finally {
+      setSavingPrivateEtas(false)
     }
   }
 
@@ -123,6 +138,32 @@ function PortalSettingsPage() {
               onCheckedChange={handleTogglePublicProfiles}
               disabled={savingProfiles}
               aria-label="Enable public profiles"
+            />
+          </div>
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        title="Roadmap privacy"
+        description="Control which planning details portal visitors can see"
+      >
+        <div className="flex items-center justify-between rounded-lg border border-border/50 p-4">
+          <div>
+            <Label htmlFor="private-etas" className="text-sm font-medium cursor-pointer">
+              Private ETAs
+            </Label>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Hide post ETA values from non-team visitors on post details and roadmaps.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <InlineSpinner visible={savingPrivateEtas} />
+            <Switch
+              id="private-etas"
+              checked={privateEtas}
+              onCheckedChange={handleTogglePrivateEtas}
+              disabled={savingPrivateEtas}
+              aria-label="Private ETAs"
             />
           </div>
         </div>

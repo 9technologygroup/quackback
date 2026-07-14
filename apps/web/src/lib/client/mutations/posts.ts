@@ -10,6 +10,7 @@ import {
   changePostBoardFn,
   updatePostFn,
   setPostOwnerFn,
+  setPostEtaFn,
   updatePostTagsFn,
   createPostFn,
   toggleCommentsLockFn,
@@ -121,6 +122,19 @@ export function useChangePostStatusId() {
   return useMutation({
     mutationFn: ({ postId, statusId }: { postId: PostId; statusId: PostStatusId }) =>
       changePostStatusFn({ data: { id: postId, statusId } }),
+    onSuccess: (_data, { postId }) => {
+      queryClient.invalidateQueries({ queryKey: inboxKeys.detail(postId) })
+      queryClient.invalidateQueries({ queryKey: inboxKeys.lists() })
+      queryClient.invalidateQueries({ queryKey: roadmapPostsKeys.all })
+    },
+  })
+}
+
+export function useSetPostEta() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ postId, eta }: { postId: PostId; eta: string | null }) =>
+      setPostEtaFn({ data: { id: postId, eta } }),
     onSuccess: (_data, { postId }) => {
       queryClient.invalidateQueries({ queryKey: inboxKeys.detail(postId) })
       queryClient.invalidateQueries({ queryKey: inboxKeys.lists() })

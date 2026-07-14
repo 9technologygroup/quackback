@@ -62,9 +62,6 @@ function RoadmapPage() {
   const { roadmap: selectedRoadmapFromUrl } = Route.useSearch()
 
   const { data: roadmaps } = useSuspenseQuery(portalQueries.roadmaps())
-  const { data: statuses } = useSuspenseQuery(portalQueries.statuses())
-
-  const roadmapStatuses = statuses.filter((s) => s.showOnRoadmap)
 
   // Use URL param if present, otherwise fall back to first roadmap
   const initialSelectedId = selectedRoadmapFromUrl ?? firstRoadmapId
@@ -92,7 +89,6 @@ function RoadmapPage() {
         style={{ animationDelay: '100ms' }}
       >
         <RoadmapBoard
-          statuses={roadmapStatuses}
           initialRoadmaps={roadmaps}
           initialSelectedRoadmapId={initialSelectedId}
           isTeamMember={isTeamMember}

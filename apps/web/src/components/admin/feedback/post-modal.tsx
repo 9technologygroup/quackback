@@ -56,14 +56,12 @@ import {
 } from '@/components/public/post-detail/delete-post-dialog'
 import { usePostExternalLinks } from '@/lib/client/hooks/use-post-external-links-query'
 import { usePostDetailKeyboard } from '@/lib/client/hooks/use-post-detail-keyboard'
-import { addPostToRoadmapFn, removePostFromRoadmapFn } from '@/lib/server/functions/roadmaps'
 import { setPostEtaFn } from '@/lib/server/functions/posts'
 import { useRouterState } from '@tanstack/react-router'
 import {
   type PostId,
   type PostStatusId,
   type PostTagId,
-  type RoadmapId,
   type PostCommentId,
   type BoardId,
   type PrincipalId,
@@ -99,7 +97,6 @@ function PostModalContent({
   const postQuery = useSuspenseQuery(adminQueries.postDetail(postId))
   const { data: tags = [] } = useQuery(adminQueries.tags())
   const { data: statuses = [] } = useQuery(adminQueries.statuses())
-  const { data: roadmaps = [] } = useQuery(adminQueries.roadmaps())
   const { data: boards = [] } = useQuery(adminQueries.boards())
   const { data: feedbackSource } = useQuery(adminQueries.postFeedbackSource(postId))
 
@@ -125,7 +122,6 @@ function PostModalContent({
 
   // UI state
   const [isUpdating, setIsUpdating] = useState(false)
-  const [pendingRoadmapId, setPendingRoadmapId] = useState<string | null>(null)
   const [showMergeDialog, setShowMergeDialog] = useState(false)
   const [showMergeOthersDialog, setShowMergeOthersDialog] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -225,26 +221,6 @@ function PostModalContent({
     }
   }
 
-  const handleRoadmapAdd = async (roadmapId: RoadmapId) => {
-    setPendingRoadmapId(roadmapId)
-    try {
-      await addPostToRoadmapFn({ data: { roadmapId, postId: post.id } })
-      queryClient.invalidateQueries({ queryKey: inboxKeys.detail(post.id as PostId) })
-    } finally {
-      setPendingRoadmapId(null)
-    }
-  }
-
-  const handleRoadmapRemove = async (roadmapId: RoadmapId) => {
-    setPendingRoadmapId(roadmapId)
-    try {
-      await removePostFromRoadmapFn({ data: { roadmapId, postId: post.id } })
-      queryClient.invalidateQueries({ queryKey: inboxKeys.detail(post.id as PostId) })
-    } finally {
-      setPendingRoadmapId(null)
-    }
-  }
-
   const handleOwnerChange = async (ownerId: PrincipalId | null) => {
     try {
       // The mutation applies the change optimistically and invalidates the
@@ -304,9 +280,6 @@ function PostModalContent({
     (post.ownerPrincipalId &&
       (ownerCandidates ?? []).find((m) => m.principalId === post.ownerPrincipalId)) ||
     null
-  const postRoadmaps = (post.roadmapIds || [])
-    .map((id) => roadmaps.find((r) => r.id === id))
-    .filter(Boolean) as Array<{ id: string; name: string; slug: string }>
   const manageActions = {
     onMergeOthers: () => setShowMergeOthersDialog(true),
     onMergeInto: () => setShowMergeDialog(true),
@@ -527,23 +500,19 @@ function PostModalContent({
               createdAt={new Date(post.createdAt)}
               eta={post.eta ?? null}
               tags={post.tags}
-              roadmaps={postRoadmaps}
               canEdit
               showVoters
               allStatuses={statuses}
               allTags={tags}
-              allRoadmaps={roadmaps}
               allBoards={boards}
               onStatusChange={handleStatusChange}
               onEtaChange={handleEtaChange}
               onTagsChange={handleTagsChange}
-              onRoadmapAdd={handleRoadmapAdd}
-              onRoadmapRemove={handleRoadmapRemove}
               onBoardChange={handleBoardChange}
               owner={currentOwner}
               ownerCandidates={canSetOwner ? ownerCandidates : undefined}
               onOwnerChange={canSetOwner ? handleOwnerChange : undefined}
-              isUpdating={isUpdating || !!pendingRoadmapId}
+              isUpdating={isUpdating}
               hideSubscribe
               variant="card"
               manageActions={manageActions}

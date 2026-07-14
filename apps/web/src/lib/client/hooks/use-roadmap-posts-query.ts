@@ -22,6 +22,7 @@ interface UseRoadmapPostsOptions {
 interface UseRoadmapPostsByRoadmapOptions {
   roadmapId: RoadmapId
   statusId?: PostStatusId
+  bucketId?: string
   filters?: RoadmapFilters
   enabled?: boolean
 }
@@ -29,6 +30,7 @@ interface UseRoadmapPostsByRoadmapOptions {
 interface UsePublicRoadmapPostsOptions {
   roadmapId: RoadmapId
   statusId?: PostStatusId
+  bucketId?: string
   filters?: RoadmapFilters
   enabled?: boolean
 }
@@ -41,10 +43,25 @@ export const roadmapPostsKeys = {
   all: ['roadmapPosts'] as const,
   lists: () => [...roadmapPostsKeys.all, 'list'] as const,
   list: (statusId: PostStatusId) => [...roadmapPostsKeys.lists(), statusId] as const,
-  byRoadmap: (roadmapId: RoadmapId, statusId?: PostStatusId, filters?: RoadmapFilters) =>
-    [...roadmapPostsKeys.all, 'roadmap', roadmapId, statusId ?? 'all', filters ?? {}] as const,
-  portal: (roadmapId: RoadmapId, statusId?: PostStatusId, filters?: RoadmapFilters) =>
-    ['portal', 'roadmapPosts', roadmapId, statusId, filters ?? {}] as const,
+  byRoadmap: (
+    roadmapId: RoadmapId,
+    statusId?: PostStatusId,
+    bucketId?: string,
+    filters?: RoadmapFilters
+  ) =>
+    [
+      ...roadmapPostsKeys.all,
+      'roadmap',
+      roadmapId,
+      statusId ?? bucketId ?? 'all',
+      filters ?? {},
+    ] as const,
+  portal: (
+    roadmapId: RoadmapId,
+    statusId?: PostStatusId,
+    bucketId?: string,
+    filters?: RoadmapFilters
+  ) => ['portal', 'roadmapPosts', roadmapId, statusId ?? bucketId, filters ?? {}] as const,
 }
 
 // ============================================================================
@@ -68,16 +85,18 @@ export function useRoadmapPosts({ statusId, initialData }: UseRoadmapPostsOption
 export function useRoadmapPostsByRoadmap({
   roadmapId,
   statusId,
+  bucketId,
   filters,
   enabled = true,
 }: UseRoadmapPostsByRoadmapOptions) {
   return useInfiniteQuery({
-    queryKey: roadmapPostsKeys.byRoadmap(roadmapId, statusId, filters),
+    queryKey: roadmapPostsKeys.byRoadmap(roadmapId, statusId, bucketId, filters),
     queryFn: ({ pageParam }) =>
       getRoadmapPostsFn({
         data: {
           roadmapId,
           statusId,
+          bucketId,
           limit: 20,
           offset: pageParam,
           search: filters?.search,
@@ -96,17 +115,19 @@ export function useRoadmapPostsByRoadmap({
 export function usePublicRoadmapPosts({
   roadmapId,
   statusId,
+  bucketId,
   filters,
   enabled = true,
 }: UsePublicRoadmapPostsOptions) {
   return useInfiniteQuery({
-    queryKey: roadmapPostsKeys.portal(roadmapId, statusId, filters),
+    queryKey: roadmapPostsKeys.portal(roadmapId, statusId, bucketId, filters),
     queryFn: async ({ pageParam = 0 }) => {
       const { fetchPublicRoadmapPosts } = await import('@/lib/server/functions/portal')
       return fetchPublicRoadmapPosts({
         data: {
           roadmapId,
           statusId,
+          bucketId,
           limit: 20,
           offset: pageParam,
           search: filters?.search,

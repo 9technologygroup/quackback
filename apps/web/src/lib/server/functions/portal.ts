@@ -40,8 +40,17 @@ import { listPublicPostTags } from '@/lib/server/domains/post-tags/post-tag.serv
 import { getSubscriptionStatus } from '@/lib/server/domains/subscriptions/subscription.service'
 import { listPublicRoadmaps } from '@/lib/server/domains/roadmaps/roadmap.service'
 import { getPublicRoadmapPosts } from '@/lib/server/domains/roadmaps/roadmap.query'
+import { getPublicRoadmapDateBuckets } from '@/lib/server/domains/roadmaps/roadmap.query'
+import { getPortalConfig } from '@/lib/server/domains/settings/settings.service'
+import { roadmapIdSchema, postStatusIdSchema } from '@quackback/ids/zod'
+import {
+  boardIdInputSchema,
+  segmentIdInputSchema,
+  tagIdInputSchema,
+} from '@/lib/shared/roadmap-config'
 import { resolvePortalAccessForRequest } from './portal-access'
 import { logger } from '@/lib/server/logger'
+import { toIsoStringOrNull } from '@/lib/shared/utils'
 
 const log = logger.child({ component: 'portal' })
 
@@ -331,7 +340,10 @@ export const fetchPublicPostDetail = createServerFn({ method: 'GET' })
     // isTeamActor). Same resolution path as list reads.
     const auth = hasAuthCredentials() ? await getOptionalAuth() : null
     const actor = await policyActorFromAuth(auth)
-    const result = await getPublicPostDetail(data.postId as PostId, actor)
+    const [result, portalConfig] = await Promise.all([
+      getPublicPostDetail(data.postId as PostId, actor),
+      getPortalConfig(),
+    ])
 
     if (!result) return null
 
@@ -390,7 +402,12 @@ export const fetchPublicPostDetail = createServerFn({ method: 'GET' })
       ...serializable,
       contentJson: result.contentJson ?? {},
       createdAt: toISOString(result.createdAt),
-      eta: result.eta ? toISOString(result.eta) : null,
+      eta:
+        !portalConfig.privacy?.privateEtas || isTeamMember(auth?.principal.role ?? null)
+          ? result.eta
+            ? toISOString(result.eta)
+            : null
+          : null,
       comments: result.comments.map(serializeComment),
       mergeInfo,
       mergedPostCount: mergedPostsList.length > 0 ? mergedPostsList.length : undefined,
@@ -561,14 +578,31 @@ export const fetchPublicRoadmaps = createServerFn({ method: 'GET' }).handler(asy
       return []
     }
 
-    const roadmaps = await listPublicRoadmaps()
+    const auth = hasAuthCredentials() ? await getOptionalAuth() : null
+    const actor = await policyActorFromAuth(auth)
+    const roadmaps = await listPublicRoadmaps(actor)
     return roadmaps.map((r) => ({
       id: r.id,
       name: r.name,
       slug: r.slug,
       description: r.description,
-      isPublic: r.isPublic,
+      type: r.type,
+      baseFilter: r.baseFilter,
+      dateSource: r.dateSource,
+      frequency: r.frequency,
+      visibility: r.visibility,
+      visibleSegmentIds: r.visibleSegmentIds as SegmentId[] | null,
+      isPublic: r.visibility === 'public',
       position: r.position,
+      columns: r.columns.map((column) => ({
+        id: column.id,
+        roadmapId: column.roadmapId,
+        statusId: column.statusId,
+        name: column.name,
+        icon: column.icon,
+        color: column.color,
+        position: column.position,
+      })),
       createdAt: r.createdAt.toISOString(),
       updatedAt: r.updatedAt.toISOString(),
     }))
@@ -581,14 +615,15 @@ export const fetchPublicRoadmaps = createServerFn({ method: 'GET' }).handler(asy
 export const fetchPublicRoadmapPosts = createServerFn({ method: 'GET' })
   .validator(
     z.object({
-      roadmapId: z.string(),
-      statusId: z.string().optional(),
+      roadmapId: roadmapIdSchema,
+      statusId: postStatusIdSchema.optional(),
+      bucketId: z.string().max(20).optional(),
       limit: z.number().int().min(1).max(100).optional(),
       offset: z.number().int().min(0).optional(),
       search: z.string().optional(),
-      boardIds: z.array(z.string()).optional(),
-      tagIds: z.array(z.string()).optional(),
-      segmentIds: z.array(z.string()).optional(),
+      boardIds: z.array(boardIdInputSchema).optional(),
+      tagIds: z.array(tagIdInputSchema).optional(),
+      segmentIds: z.array(segmentIdInputSchema).optional(),
       sort: z.enum(['votes', 'newest', 'oldest']).optional(),
     })
   )
@@ -618,20 +653,26 @@ export const fetchPublicRoadmapPosts = createServerFn({ method: 'GET' })
 
       const actor = await policyActorFromAuth(auth)
 
-      const result = await getPublicRoadmapPosts(
-        data.roadmapId as RoadmapId,
-        {
-          statusId: data.statusId as PostStatusId | undefined,
-          limit: data.limit ?? 20,
-          offset: data.offset ?? 0,
-          search: data.search,
-          boardIds: data.boardIds as BoardId[] | undefined,
-          tagIds: data.tagIds as PostTagId[] | undefined,
-          segmentIds,
-          sort: data.sort,
-        },
-        actor
-      )
+      const [result, portalConfig] = await Promise.all([
+        getPublicRoadmapPosts(
+          data.roadmapId as RoadmapId,
+          {
+            statusId: data.statusId as PostStatusId | undefined,
+            bucketId: data.bucketId,
+            limit: data.limit ?? 20,
+            offset: data.offset ?? 0,
+            search: data.search,
+            boardIds: data.boardIds as BoardId[] | undefined,
+            tagIds: data.tagIds as PostTagId[] | undefined,
+            segmentIds,
+            sort: data.sort,
+          },
+          actor
+        ),
+        getPortalConfig(),
+      ])
+      const exposeEta =
+        !portalConfig.privacy?.privateEtas || isTeamMember(auth?.principal.role ?? null)
 
       return {
         ...result,
@@ -640,6 +681,7 @@ export const fetchPublicRoadmapPosts = createServerFn({ method: 'GET' })
           title: item.title,
           voteCount: item.voteCount,
           statusId: item.statusId ? String(item.statusId) : null,
+          eta: exposeEta ? toIsoStringOrNull(item.eta) : null,
           board: { id: String(item.board.id), name: item.board.name, slug: item.board.slug },
           roadmapEntry: {
             postId: String(item.roadmapEntry.postId),
@@ -652,6 +694,16 @@ export const fetchPublicRoadmapPosts = createServerFn({ method: 'GET' })
       log.error({ err: error }, 'fetch public roadmap posts failed')
       throw error
     }
+  })
+
+export const fetchPublicRoadmapDateBuckets = createServerFn({ method: 'GET' })
+  .validator(z.object({ roadmapId: roadmapIdSchema }))
+  .handler(async ({ data }) => {
+    const access = await resolvePortalAccessForRequest()
+    if (!access.granted) return []
+    const auth = hasAuthCredentials() ? await getOptionalAuth() : null
+    const actor = await policyActorFromAuth(auth)
+    return getPublicRoadmapDateBuckets(data.roadmapId as RoadmapId, actor)
   })
 
 const getCommentsSectionDataSchema = z.object({ postId: z.string() })

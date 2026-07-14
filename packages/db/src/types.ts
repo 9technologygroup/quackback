@@ -1,6 +1,6 @@
 import type { InferSelectModel, InferInsertModel } from 'drizzle-orm'
-import type { PostStatusId } from '@quackback/ids'
-import type { boards, roadmaps, postTags } from './schema/boards'
+import type { BoardId, PostStatusId, PostTagId, SegmentId } from '@quackback/ids'
+import type { boards, roadmaps, roadmapColumns, postTags } from './schema/boards'
 import type { postStatuses } from './schema/statuses'
 import type {
   posts,
@@ -30,6 +30,25 @@ import type { principal } from './schema/auth'
 // Status categories (defined here to avoid circular imports in tests)
 export const STATUS_CATEGORIES = ['active', 'complete', 'closed'] as const
 export type StatusCategory = (typeof STATUS_CATEGORIES)[number]
+
+export const ROADMAP_TYPES = ['column', 'date'] as const
+export type RoadmapType = (typeof ROADMAP_TYPES)[number]
+
+export const ROADMAP_DATE_SOURCES = ['eta'] as const
+export type RoadmapDateSource = (typeof ROADMAP_DATE_SOURCES)[number]
+
+export const ROADMAP_FREQUENCIES = ['monthly', 'quarterly', 'semiannual'] as const
+export type RoadmapFrequency = (typeof ROADMAP_FREQUENCIES)[number]
+
+export const ROADMAP_VISIBILITIES = ['public', 'team', 'segment'] as const
+export type RoadmapVisibility = (typeof ROADMAP_VISIBILITIES)[number]
+
+export interface RoadmapBaseFilter {
+  statusIds?: PostStatusId[]
+  boardIds?: BoardId[]
+  tagIds?: PostTagId[]
+  segmentIds?: SegmentId[]
+}
 
 // Moderation states for posts — single source of truth, kept in sync with
 // the posts.moderation_state column enum (schema.test.ts pins the match).
@@ -495,6 +514,8 @@ export function getBoardSettings(board: Board): BoardSettings {
 // Roadmap types (filtered views of posts within a board)
 export type Roadmap = InferSelectModel<typeof roadmaps>
 export type NewRoadmap = InferInsertModel<typeof roadmaps>
+export type RoadmapColumn = InferSelectModel<typeof roadmapColumns>
+export type NewRoadmapColumn = InferInsertModel<typeof roadmapColumns>
 
 // Post tag types (catalog + assignment junction)
 export type PostTag = InferSelectModel<typeof postTags>

@@ -16,6 +16,7 @@ export {
   useRestorePost,
   useToggleCommentsLock,
   useChangePostBoard,
+  useSetPostEta,
 } from './posts'
 
 // Admin comment mutations

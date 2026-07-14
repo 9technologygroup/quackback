@@ -7,18 +7,18 @@ import type { RoadmapPostEntry } from '@/lib/shared/types'
 
 interface RoadmapCardProps {
   post: RoadmapPostEntry
-  statusId: string
+  placementId: string
   onClick?: () => void
 }
 
 export const RoadmapCard = memo(function RoadmapCard({
   post,
-  statusId,
+  placementId,
   onClick,
 }: RoadmapCardProps) {
   const { setNodeRef, attributes, listeners, isDragging } = useDraggable({
     id: post.id,
-    data: { type: 'Task', post, statusId },
+    data: { type: 'Task', post, placementId },
   })
 
   return (

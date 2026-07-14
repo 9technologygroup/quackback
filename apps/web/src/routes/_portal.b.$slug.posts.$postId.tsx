@@ -318,9 +318,6 @@ function PostDetailPage() {
               owner={team.owner}
               ownerCandidates={team.ownerCandidates}
               onOwnerChange={team.onOwnerChange}
-              allRoadmaps={team.allRoadmaps}
-              onRoadmapAdd={team.onRoadmapAdd}
-              onRoadmapRemove={team.onRoadmapRemove}
               isUpdating={team.isMetaUpdating}
               showVoters={team.canVoteOnBehalf}
               votersQuery={team.votersQuery}

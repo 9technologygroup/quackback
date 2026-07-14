@@ -10,6 +10,7 @@ import {
 import { parseTypeId } from '@/lib/server/domains/api/validation'
 import type { RoadmapId, PostId, PostStatusId } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
+import { toIsoStringOrNull } from '@/lib/shared/utils'
 
 // Input validation schema
 const addPostSchema = z.object({
@@ -30,14 +31,19 @@ export const Route = createFileRoute('/api/v1/roadmaps/$roadmapId/posts')({
           const roadmapId = parseTypeId<RoadmapId>(params.roadmapId, 'roadmap', 'roadmap ID')
 
           const url = new URL(request.url)
-          const statusId = url.searchParams.get('statusId') as PostStatusId | null
+          const rawStatusId = url.searchParams.get('statusId')
+          const statusId = rawStatusId
+            ? parseTypeId<PostStatusId>(rawStatusId, 'post_status', 'status ID')
+            : undefined
+          const bucketId = url.searchParams.get('bucketId') ?? undefined
           const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10), 100)
           const offset = parseInt(url.searchParams.get('offset') || '0', 10)
 
           const { getRoadmapPosts } = await import('@/lib/server/domains/roadmaps/roadmap.query')
 
           const result = await getRoadmapPosts(roadmapId, {
-            statusId: statusId || undefined,
+            statusId,
+            bucketId,
             limit,
             offset,
           })
@@ -48,6 +54,7 @@ export const Route = createFileRoute('/api/v1/roadmaps/$roadmapId/posts')({
               title: item.title,
               voteCount: item.voteCount,
               statusId: item.statusId,
+              eta: toIsoStringOrNull(item.eta),
               board: {
                 id: item.board.id,
                 name: item.board.name,

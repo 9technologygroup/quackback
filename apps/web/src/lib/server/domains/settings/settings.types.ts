@@ -266,6 +266,10 @@ export interface PortalConfig {
   moderationDefault: ModerationDefault
   /** Portal-level access control (visibility gate). */
   access?: PortalAccessConfig
+  /** Portal privacy controls. Private ETAs remain available to team members. */
+  privacy?: {
+    privateEtas: boolean
+  }
   /** Support tab (conversations on the portal). Optional — absent = disabled. */
   support?: PortalSupportConfig
 }
@@ -296,6 +300,7 @@ export const DEFAULT_PORTAL_CONFIG: PortalConfig = {
   },
   moderationDefault: { requireApproval: 'none' },
   access: { visibility: 'public', allowedDomains: [], widgetSignIn: false, allowedSegmentIds: [] },
+  privacy: { privateEtas: false },
   support: { enabled: false },
 }
 
@@ -815,6 +820,7 @@ export interface UpdatePortalConfigInput {
   welcomeCard?: Partial<PortalWelcomeCard>
   moderationDefault?: ModerationDefault
   access?: Partial<PortalAccessConfig>
+  privacy?: Partial<NonNullable<PortalConfig['privacy']>>
   support?: Partial<PortalSupportConfig>
 }
 

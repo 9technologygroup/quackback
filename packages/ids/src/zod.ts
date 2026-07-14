@@ -179,6 +179,7 @@ export const conversationMessageReactionIdSchema = typeIdSchema(
   ID_PREFIXES.conversation_message_reaction
 )
 export const roadmapIdSchema = typeIdSchema(ID_PREFIXES.roadmap)
+export const roadmapColumnIdSchema = typeIdSchema(ID_PREFIXES.roadmap_column)
 export const changelogIdSchema = typeIdSchema(ID_PREFIXES.changelog)
 export const conversationIdSchema = typeIdSchema(ID_PREFIXES.conversation)
 export const conversationMessageIdSchema = typeIdSchema(ID_PREFIXES.conversation_message)
@@ -213,6 +214,7 @@ export const flexibleConversationMessageReactionIdSchema = flexibleIdSchema(
   ID_PREFIXES.conversation_message_reaction
 )
 export const flexibleRoadmapIdSchema = flexibleIdSchema(ID_PREFIXES.roadmap)
+export const flexibleRoadmapColumnIdSchema = flexibleIdSchema(ID_PREFIXES.roadmap_column)
 export const flexibleChangelogIdSchema = flexibleIdSchema(ID_PREFIXES.changelog)
 export const flexibleIntegrationIdSchema = flexibleIdSchema(ID_PREFIXES.integration)
 export const flexibleWorkspaceIdSchema = flexibleIdSchema(ID_PREFIXES.workspace)

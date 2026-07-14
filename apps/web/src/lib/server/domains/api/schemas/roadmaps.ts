@@ -18,14 +18,38 @@ import {
   ValidationErrorSchema,
 } from './common'
 
+const RoadmapBaseFilterSchema = z.object({
+  statusIds: z.array(TypeIdSchema).optional(),
+  boardIds: z.array(TypeIdSchema).optional(),
+  tagIds: z.array(TypeIdSchema).optional(),
+  segmentIds: z.array(TypeIdSchema).optional(),
+})
+
+const RoadmapColumnSchema = z.object({
+  id: TypeIdSchema,
+  roadmapId: TypeIdSchema,
+  statusId: TypeIdSchema,
+  name: z.string(),
+  icon: z.string().nullable(),
+  color: z.string(),
+  position: z.number(),
+})
+
 // Roadmap schema
 const RoadmapSchema = z.object({
   id: TypeIdSchema.meta({ example: 'roadmap_01h455vb4pex5vsknk084sn02q' }),
   name: z.string().meta({ example: 'Product Roadmap' }),
   slug: SlugSchema.meta({ example: 'product-roadmap' }),
   description: z.string().nullable().meta({ example: 'Our product development roadmap' }),
-  isPublic: z.boolean().meta({ description: 'Whether the roadmap is publicly visible' }),
+  type: z.enum(['column', 'date']),
+  baseFilter: RoadmapBaseFilterSchema,
+  dateSource: z.literal('eta').nullable(),
+  frequency: z.enum(['monthly', 'quarterly', 'semiannual']).nullable(),
+  visibility: z.enum(['public', 'team', 'segment']),
+  visibleSegmentIds: z.array(TypeIdSchema).nullable(),
+  isPublic: z.boolean().meta({ description: 'Deprecated compatibility projection of visibility' }),
   position: z.number().meta({ description: 'Display order' }),
+  columns: z.array(RoadmapColumnSchema),
   createdAt: TimestampSchema,
 })
 
@@ -35,6 +59,7 @@ const RoadmapPostSchema = z.object({
   title: z.string(),
   voteCount: z.number(),
   statusId: TypeIdSchema.nullable(),
+  eta: TimestampSchema.nullable(),
   board: z.object({
     id: TypeIdSchema,
     name: z.string(),
@@ -59,6 +84,13 @@ const CreateRoadmapSchema = z
       .meta({ description: 'URL-friendly slug', example: 'product-roadmap' }),
     description: z.string().max(500).optional().meta({ description: 'Roadmap description' }),
     isPublic: z.boolean().optional().meta({ description: 'Make roadmap public', default: true }),
+    type: z.enum(['column', 'date']).optional(),
+    baseFilter: RoadmapBaseFilterSchema.optional(),
+    dateSource: z.literal('eta').nullable().optional(),
+    frequency: z.enum(['monthly', 'quarterly', 'semiannual']).nullable().optional(),
+    visibility: z.enum(['public', 'team', 'segment']).optional(),
+    visibleSegmentIds: z.array(TypeIdSchema).nullable().optional(),
+    columns: z.array(RoadmapColumnSchema.omit({ id: true, roadmapId: true })).optional(),
   })
   .meta({ description: 'Create roadmap request body' })
 
@@ -67,6 +99,13 @@ const UpdateRoadmapSchema = z
     name: z.string().min(1).max(100).optional(),
     description: z.string().max(500).nullable().optional(),
     isPublic: z.boolean().optional(),
+    type: z.enum(['column', 'date']).optional(),
+    baseFilter: RoadmapBaseFilterSchema.optional(),
+    dateSource: z.literal('eta').nullable().optional(),
+    frequency: z.enum(['monthly', 'quarterly', 'semiannual']).nullable().optional(),
+    visibility: z.enum(['public', 'team', 'segment']).optional(),
+    visibleSegmentIds: z.array(TypeIdSchema).nullable().optional(),
+    columns: z.array(RoadmapColumnSchema).optional(),
   })
   .meta({ description: 'Update roadmap request body' })
 
@@ -417,6 +456,104 @@ registerPath('/roadmaps/{roadmapId}/posts/{postId}', {
         description: 'Roadmap or post not found in roadmap',
         content: { 'application/json': { schema: NotFoundErrorSchema } },
       },
+    },
+  },
+})
+
+registerPath('/roadmaps/{roadmapId}/columns', {
+  get: {
+    tags: ['Roadmaps'],
+    summary: 'List roadmap columns',
+    parameters: [{ name: 'roadmapId', in: 'path', required: true, schema: { type: 'string' } }],
+    responses: {
+      200: {
+        description: 'Roadmap columns',
+        content: {
+          'application/json': {
+            schema: createPaginatedResponseSchema(RoadmapColumnSchema, 'Roadmap columns'),
+          },
+        },
+      },
+      401: { description: 'Unauthorized' },
+      404: { description: 'Roadmap not found' },
+    },
+  },
+  post: {
+    tags: ['Roadmaps'],
+    summary: 'Create a roadmap column',
+    parameters: [{ name: 'roadmapId', in: 'path', required: true, schema: { type: 'string' } }],
+    requestBody: {
+      required: true,
+      content: {
+        'application/json': {
+          schema: asSchema(RoadmapColumnSchema.omit({ id: true, roadmapId: true })),
+        },
+      },
+    },
+    responses: {
+      201: {
+        description: 'Roadmap column created',
+        content: {
+          'application/json': {
+            schema: createItemResponseSchema(RoadmapColumnSchema, 'Created roadmap column'),
+          },
+        },
+      },
+      400: { description: 'Validation error' },
+      401: { description: 'Unauthorized' },
+      404: { description: 'Roadmap not found' },
+    },
+  },
+})
+
+registerPath('/roadmaps/{roadmapId}/columns/{columnId}', {
+  patch: {
+    tags: ['Roadmaps'],
+    summary: 'Update a roadmap column',
+    parameters: [
+      { name: 'roadmapId', in: 'path', required: true, schema: { type: 'string' } },
+      { name: 'columnId', in: 'path', required: true, schema: { type: 'string' } },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        'application/json': {
+          schema: asSchema(
+            RoadmapColumnSchema.pick({
+              name: true,
+              icon: true,
+              color: true,
+              position: true,
+            }).partial()
+          ),
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: 'Roadmap column updated',
+        content: {
+          'application/json': {
+            schema: createItemResponseSchema(RoadmapColumnSchema, 'Updated roadmap column'),
+          },
+        },
+      },
+      400: { description: 'Validation error' },
+      401: { description: 'Unauthorized' },
+      404: { description: 'Roadmap column not found' },
+    },
+  },
+  delete: {
+    tags: ['Roadmaps'],
+    summary: 'Delete a roadmap column',
+    parameters: [
+      { name: 'roadmapId', in: 'path', required: true, schema: { type: 'string' } },
+      { name: 'columnId', in: 'path', required: true, schema: { type: 'string' } },
+    ],
+    responses: {
+      204: { description: 'Roadmap column deleted' },
+      401: { description: 'Unauthorized' },
+      404: { description: 'Roadmap column not found' },
     },
   },
 })

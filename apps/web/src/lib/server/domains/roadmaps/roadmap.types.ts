@@ -2,8 +2,33 @@
  * Input/Output types for RoadmapService operations
  */
 
-import type { PostRoadmap } from '@/lib/server/db'
-import type { PostId, RoadmapId, PostStatusId, BoardId, PostTagId, SegmentId } from '@quackback/ids'
+import type { PostRoadmap, Roadmap, RoadmapColumn } from '@/lib/server/db'
+import type {
+  PostId,
+  RoadmapId,
+  RoadmapColumnId,
+  PostStatusId,
+  BoardId,
+  PostTagId,
+  SegmentId,
+} from '@quackback/ids'
+import type {
+  RoadmapBaseFilter,
+  RoadmapFrequency,
+  RoadmapType,
+  RoadmapVisibility,
+} from '@/lib/shared/roadmap-config'
+
+export interface RoadmapColumnInput {
+  id?: RoadmapColumnId
+  statusId: PostStatusId
+  name: string
+  icon?: string | null
+  color: string
+  position: number
+}
+
+export type RoadmapWithColumns = Roadmap & { columns: RoadmapColumn[] }
 
 /**
  * Input for creating a new roadmap
@@ -12,7 +37,13 @@ export interface CreateRoadmapInput {
   name: string
   slug: string
   description?: string
-  isPublic?: boolean
+  type?: RoadmapType
+  baseFilter?: RoadmapBaseFilter
+  dateSource?: 'eta' | null
+  frequency?: RoadmapFrequency | null
+  visibility?: RoadmapVisibility
+  visibleSegmentIds?: SegmentId[] | null
+  columns?: RoadmapColumnInput[]
 }
 
 /**
@@ -20,8 +51,14 @@ export interface CreateRoadmapInput {
  */
 export interface UpdateRoadmapInput {
   name?: string
-  description?: string
-  isPublic?: boolean
+  description?: string | null
+  type?: RoadmapType
+  baseFilter?: RoadmapBaseFilter
+  dateSource?: 'eta' | null
+  frequency?: RoadmapFrequency | null
+  visibility?: RoadmapVisibility
+  visibleSegmentIds?: SegmentId[] | null
+  columns?: RoadmapColumnInput[]
 }
 
 /**
@@ -78,5 +115,22 @@ export interface RoadmapPostsQueryOptions {
   boardIds?: BoardId[]
   tagIds?: PostTagId[]
   segmentIds?: SegmentId[]
+  bucketId?: string
   sort?: 'votes' | 'newest' | 'oldest'
+}
+
+export interface CreateRoadmapColumnInput {
+  roadmapId: RoadmapId
+  statusId: PostStatusId
+  name: string
+  icon?: string | null
+  color: string
+  position?: number
+}
+
+export interface UpdateRoadmapColumnInput {
+  name?: string
+  icon?: string | null
+  color?: string
+  position?: number
 }
