@@ -183,6 +183,8 @@ export interface ListStatusIncidentsParams {
   kind?: StatusIncidentKind
   /** 'active' = not resolved/completed; 'resolved' = resolved/completed. */
   state?: 'active' | 'resolved' | 'all'
+  /** Case-insensitive title match. */
+  search?: string
   cursor?: string
   limit?: number
 }

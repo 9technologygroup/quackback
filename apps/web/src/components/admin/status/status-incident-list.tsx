@@ -53,13 +53,14 @@ export function StatusIncidentList({ kind, state, emptyMessage }: StatusIncident
   const [deleteTarget, setDeleteTarget] = useState<StatusIncidentAdmin | null>(null)
   const deleteMutation = useDeleteStatusIncident()
 
+  const [debouncedSearch, setDebouncedSearch] = useState<string | undefined>(undefined)
   const { value: searchValue, setValue: setSearchValue } = useDebouncedSearch({
-    externalValue: undefined,
-    onChange: () => {},
+    externalValue: debouncedSearch,
+    onChange: setDebouncedSearch,
   })
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery(
-    statusIncidentQueries.list({ kind, state })
+    statusIncidentQueries.list({ kind, state, search: debouncedSearch })
   )
 
   const loadMoreRef = useInfiniteScroll({
@@ -72,21 +73,11 @@ export function StatusIncidentList({ kind, state, emptyMessage }: StatusIncident
 
   const allItems = useMemo(() => data?.pages.flatMap((page) => page.items) ?? [], [data])
 
+  // Search filters server-side (query param); only the impact sort is local.
   const items = useMemo(() => {
-    let list = allItems
-    if (searchValue) {
-      const q = searchValue.toLowerCase()
-      list = list.filter(
-        (i) =>
-          i.title.toLowerCase().includes(q) ||
-          i.updates.some((u) => u.body.toLowerCase().includes(q))
-      )
-    }
-    if (sort === 'impact') {
-      list = [...list].sort((a, b) => (IMPACT_RANK[b.impact] ?? 0) - (IMPACT_RANK[a.impact] ?? 0))
-    }
-    return list
-  }, [allItems, searchValue, sort])
+    if (sort !== 'impact') return allItems
+    return [...allItems].sort((a, b) => (IMPACT_RANK[b.impact] ?? 0) - (IMPACT_RANK[a.impact] ?? 0))
+  }, [allItems, sort])
 
   const handleOpen = useCallback(
     (id: string) => {

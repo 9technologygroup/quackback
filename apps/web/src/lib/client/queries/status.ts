@@ -47,6 +47,7 @@ export type StatusSubscriptionCounts = Awaited<ReturnType<typeof getStatusSubscr
 export interface StatusIncidentListParams {
   kind?: 'incident' | 'maintenance'
   state?: 'active' | 'resolved' | 'all'
+  search?: string
 }
 
 export const statusKeys = {
@@ -87,7 +88,13 @@ export const statusIncidentQueries = {
       queryKey: statusKeys.incidentList(params),
       queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
         listStatusIncidentsAdminFn({
-          data: { kind: params.kind, state: params.state, cursor: pageParam, limit: 20 },
+          data: {
+            kind: params.kind,
+            state: params.state,
+            search: params.search,
+            cursor: pageParam,
+            limit: 20,
+          },
         }),
       initialPageParam: undefined as string | undefined,
       getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,

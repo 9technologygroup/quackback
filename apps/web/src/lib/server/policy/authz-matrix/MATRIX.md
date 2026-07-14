@@ -521,7 +521,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/status.ts`::clearStatusHistoryFn | status_page.manage |
 | `lib/server/functions/status.ts`::getStatusIncidentAdminFn | status_page.publish |
 | `lib/server/functions/status.ts`::listStatusIncidentsAdminFn | status_page.publish |
-| `lib/server/functions/status.ts`::listStatusIncidentTemplatesFn | status_page.manage |
+| `lib/server/functions/status.ts`::listStatusIncidentTemplatesFn | status_page.publish |
 | `lib/server/functions/status.ts`::createStatusIncidentTemplateFn | status_page.manage |
 | `lib/server/functions/status.ts`::updateStatusIncidentTemplateFn | status_page.manage |
 | `lib/server/functions/status.ts`::deleteStatusIncidentTemplateFn | status_page.manage |

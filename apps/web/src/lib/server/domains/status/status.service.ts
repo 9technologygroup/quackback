@@ -11,6 +11,7 @@ import {
   isNotNull,
   desc,
   asc,
+  ilike,
   lt,
   or,
   statusIncidents,
@@ -414,11 +415,13 @@ export async function getStatusIncidentById(
 export async function listStatusIncidents(
   params: ListStatusIncidentsParams
 ): Promise<StatusIncidentListResult> {
-  const { kind, state = 'all', cursor, limit = 20 } = params
+  const { kind, state = 'all', search, cursor, limit = 20 } = params
   const conditions = [isNull(statusIncidents.deletedAt)]
   if (kind) conditions.push(eq(statusIncidents.kind, kind))
   if (state === 'active') conditions.push(isNull(statusIncidents.resolvedAt))
   if (state === 'resolved') conditions.push(isNotNull(statusIncidents.resolvedAt))
+  const term = search?.trim()
+  if (term) conditions.push(ilike(statusIncidents.title, `%${term}%`))
 
   if (cursor) {
     const cursorRow = await db.query.statusIncidents.findFirst({

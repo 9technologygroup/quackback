@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { SignalIcon } from '@heroicons/react/24/solid'
@@ -33,17 +33,45 @@ function StatusSettingsPage() {
   const { data } = useSuspenseQuery(statusSettingsQueries.get())
   const [settings, setSettings] = useState<StatusSettings>(data ?? DEFAULT_STATUS_SETTINGS)
 
+  // Text fields save debounced (a save per keystroke hammers the server);
+  // switches/radios save immediately. Pending text is preserved across a
+  // save response so an in-flight result can't clobber newer keystrokes.
+  const pendingText = useRef<Partial<StatusSettings> | null>(null)
+  const textTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const mutation = useMutation({
     mutationFn: (patch: Partial<StatusSettings>) => updateStatusSettingsFn({ data: patch }),
     onSuccess: (saved) => {
-      setSettings(saved)
+      setSettings((prev) =>
+        pendingText.current ? { ...saved, pageDescription: prev.pageDescription } : saved
+      )
       queryClient.setQueryData(statusSettingsQueries.get().queryKey, saved)
     },
   })
 
+  const { mutate } = mutation
+  const flushText = useCallback(() => {
+    if (textTimer.current) {
+      clearTimeout(textTimer.current)
+      textTimer.current = null
+    }
+    const patch = pendingText.current
+    pendingText.current = null
+    if (patch) mutate(patch)
+  }, [mutate])
+
+  // Flush on unmount so navigating away never drops typed text.
+  useEffect(() => flushText, [flushText])
+
   function onChange(patch: Partial<StatusSettings>) {
     setSettings((prev) => ({ ...prev, ...patch }))
-    mutation.mutate(patch)
+    if ('pageDescription' in patch) {
+      pendingText.current = { ...pendingText.current, ...patch }
+      if (textTimer.current) clearTimeout(textTimer.current)
+      textTimer.current = setTimeout(flushText, 600)
+    } else {
+      mutation.mutate(patch)
+    }
   }
 
   return (
@@ -57,7 +85,12 @@ function StatusSettingsPage() {
         description="Public status page for your services — incidents, maintenance, and uptime history."
       />
 
-      <StatusGeneralCard settings={settings} onChange={onChange} disabled={mutation.isPending} />
+      <StatusGeneralCard
+        settings={settings}
+        onChange={onChange}
+        onFlushText={flushText}
+        disabled={mutation.isPending}
+      />
       <StatusVisibilityCard settings={settings} onChange={onChange} disabled={mutation.isPending} />
       <StatusNotificationsCard
         settings={settings}

@@ -498,6 +498,7 @@ export const getStatusIncidentAdminFn = createServerFn({ method: 'GET' })
 const listStatusIncidentsAdminSchema = z.object({
   kind: incidentKindEnum.optional(),
   state: z.enum(['active', 'resolved', 'all']).optional(),
+  search: z.string().trim().max(200).optional(),
   cursor: z.string().optional(),
   limit: z.number().int().positive().max(100).optional(),
 })
@@ -511,6 +512,7 @@ export const listStatusIncidentsAdminFn = createServerFn({ method: 'GET' })
       const result = await listStatusIncidents({
         kind: data.kind,
         state: data.state,
+        search: data.search,
         cursor: data.cursor,
         limit: data.limit,
       })
@@ -522,12 +524,13 @@ export const listStatusIncidentsAdminFn = createServerFn({ method: 'GET' })
   })
 
 // ============================================================================
-// Admin: Templates (gate: STATUS_PAGE_MANAGE)
+// Admin: Templates (list gate: STATUS_PAGE_PUBLISH — the incident composer's
+// template picker is contributor territory; CRUD stays STATUS_PAGE_MANAGE)
 // ============================================================================
 
 export const listStatusIncidentTemplatesFn = createServerFn({ method: 'GET' }).handler(async () => {
   try {
-    await requireAuth({ permission: PERMISSIONS.STATUS_PAGE_MANAGE })
+    await requireAuth({ permission: PERMISSIONS.STATUS_PAGE_PUBLISH })
     return await listStatusIncidentTemplates()
   } catch (error) {
     log.error({ err: error }, 'list status incident templates failed')
