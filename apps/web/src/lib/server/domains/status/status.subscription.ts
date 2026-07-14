@@ -8,6 +8,7 @@ import {
   db,
   eq,
   and,
+  gte,
   isNull,
   desc,
   lt,
@@ -157,6 +158,18 @@ export async function getStatusSubscriptionCounts(): Promise<StatusSubscriptionC
   const total = rows.length
   const active = rows.filter((r) => r.unsubscribedAt === null).length
   return { total, active, unsubscribed: total - active }
+}
+
+/** Still-active subscriptions created since `date` (the overview's weekly delta). */
+export async function countStatusSubscriptionsSince(date: Date): Promise<number> {
+  const rows = await db.query.statusSubscriptions.findMany({
+    where: and(
+      gte(statusSubscriptions.createdAt, date),
+      isNull(statusSubscriptions.unsubscribedAt)
+    ),
+    columns: { id: true },
+  })
+  return rows.length
 }
 
 /** Principals actively subscribed to the whole page or to at least one of

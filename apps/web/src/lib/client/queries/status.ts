@@ -11,6 +11,7 @@ import {
   listStatusComponentsAdminFn,
   listStatusIncidentsAdminFn,
   getStatusIncidentAdminFn,
+  getStatusOverviewAdminFn,
   listStatusIncidentTemplatesFn,
   listStatusSubscriptionsAdminFn,
   getStatusSubscriptionCountsFn,
@@ -52,6 +53,7 @@ export interface StatusIncidentListParams {
 
 export const statusKeys = {
   all: ['status'] as const,
+  overview: () => [...statusKeys.all, 'overview'] as const,
   components: () => [...statusKeys.all, 'components'] as const,
   incidents: () => [...statusKeys.all, 'incidents'] as const,
   incidentList: (params: StatusIncidentListParams) =>
@@ -79,6 +81,19 @@ export const statusComponentQueries = {
       queryKey: statusKeys.components(),
       queryFn: () => listStatusComponentsAdminFn(),
       staleTime: STALE_TIME_SHORT,
+    }),
+}
+
+export type StatusOverview = Awaited<ReturnType<typeof getStatusOverviewAdminFn>>
+
+export const statusOverviewQueries = {
+  get: () =>
+    queryOptions({
+      queryKey: statusKeys.overview(),
+      queryFn: () => getStatusOverviewAdminFn(),
+      // The on-call landing view: keep it fresh enough that returning to the
+      // tab after an incident-state change shows current truth.
+      staleTime: 15 * 1000,
     }),
 }
 

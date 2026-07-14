@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { SignalIcon } from '@heroicons/react/24/solid'
+import { ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline'
 import { AdminFilterLayout } from '@/components/admin/admin-filter-layout'
 import { FilterSection } from '@/components/shared/filter-section'
 import { cn } from '@/lib/shared/utils'
@@ -13,11 +14,13 @@ import {
 } from '@/lib/client/queries/status'
 import { StatusIncidentList } from './status-incident-list'
 import { StatusIncidentModal } from './status-incident-modal'
+import { StatusOverviewView } from './status-overview-view'
 import { StatusComponentsView } from './status-components-view'
 import { StatusTemplatesView } from './status-templates-view'
 import { StatusSubscribersView } from './status-subscribers-view'
 
 export type StatusAdminView =
+  | 'overview'
   | 'open'
   | 'maintenance'
   | 'all'
@@ -89,7 +92,12 @@ function StatusFilterNav({ view }: { view: StatusAdminView }) {
   }
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-1 flex flex-col h-full">
+      <div className="space-y-0.5 pb-1">
+        <SideItem active={view === 'overview'} onClick={() => go('overview')}>
+          Overview
+        </SideItem>
+      </div>
       <FilterSection title="Incidents" collapsible={false}>
         <div className="space-y-0.5">
           <SideItem active={view === 'open'} onClick={() => go('open')} count={openCount}>
@@ -129,13 +137,33 @@ function StatusFilterNav({ view }: { view: StatusAdminView }) {
           </SideItem>
         </div>
       </FilterSection>
+
+      {/* The status page's two other surfaces, one click away: the page
+          visitors see, and its settings (which live under /admin/settings). */}
+      <div className="mt-2 pt-2 border-t border-border/40 space-y-0.5">
+        <a
+          href="/status"
+          target="_blank"
+          rel="noreferrer"
+          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+        >
+          View public page
+          <ArrowTopRightOnSquareIcon className="h-3 w-3" />
+        </a>
+        <Link
+          to="/admin/settings/status"
+          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+        >
+          Page settings
+        </Link>
+      </div>
     </div>
   )
 }
 
 export function StatusAdmin() {
   const search = Route.useSearch()
-  const view: StatusAdminView = search.view ?? 'open'
+  const view: StatusAdminView = search.view ?? 'overview'
 
   return (
     <>
@@ -144,6 +172,7 @@ export function StatusAdmin() {
         headerTitle="Status"
         filters={<StatusFilterNav view={view} />}
       >
+        {view === 'overview' && <StatusOverviewView />}
         {view === 'open' && (
           <StatusIncidentList
             kind="incident"

@@ -4,7 +4,9 @@ import { StatusAdmin } from '@/components/admin/status'
 import { getFirstEnabledAdminProductPath, isProductEnabled } from '@/lib/shared/types/settings'
 
 const searchSchema = z.object({
-  view: z.enum(['open', 'maintenance', 'all', 'components', 'templates', 'subscribers']).optional(),
+  view: z
+    .enum(['overview', 'open', 'maintenance', 'all', 'components', 'templates', 'subscribers'])
+    .optional(),
   incident: z.string().optional(), // Incident ID for the composer modal view
 })
 

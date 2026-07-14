@@ -38,6 +38,10 @@ import {
   clearStatusHistory,
   getStatusIncidentById,
   listStatusIncidents,
+  countStatusIncidentsSince,
+  countStatusSubscriptionsSince,
+  startMaintenanceNow,
+  deriveTopLevelStatus,
   listStatusIncidentTemplates,
   createStatusIncidentTemplate,
   updateStatusIncidentTemplate,
@@ -519,6 +523,113 @@ export const listStatusIncidentsAdminFn = createServerFn({ method: 'GET' })
       return { ...result, items: result.items.map(serializeIncident) }
     } catch (error) {
       log.error({ err: error }, 'list status incidents admin failed')
+      throw error
+    }
+  })
+
+// ============================================================================
+// Admin: Overview + maintenance start-now (gate: STATUS_PAGE_PUBLISH — the
+// on-call landing surfaces; the floor permission of anyone running incidents)
+// ============================================================================
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Everything the admin Overview needs in one round trip: the derived
+ * public-banner state, service health, active incidents, upcoming
+ * maintenance, and the stat tiles. Deliberately NOT the viewer-scoped
+ * `getStatusPageSnapshot`/`getStatusUptimeFn` path — those 404/empty when
+ * `statusSettings.enabled` is false, and admins need the overview precisely
+ * to see and fix a disabled page.
+ */
+export const getStatusOverviewAdminFn = createServerFn({ method: 'GET' }).handler(async () => {
+  try {
+    await requireAuth({ permission: PERMISSIONS.STATUS_PAGE_PUBLISH })
+    const now = new Date()
+
+    const [
+      groups,
+      ungrouped,
+      incidents,
+      maintenance,
+      counts,
+      newLast7d,
+      incidentsLast30d,
+      settings,
+    ] = await Promise.all([
+      listStatusComponentGroupsWithComponents(),
+      listUngroupedStatusComponents(),
+      listStatusIncidents({ kind: 'incident', state: 'active', limit: 20 }),
+      listStatusIncidents({ kind: 'maintenance', state: 'active', limit: 20 }),
+      getStatusSubscriptionCounts(),
+      countStatusSubscriptionsSince(new Date(now.getTime() - 7 * DAY_MS)),
+      countStatusIncidentsSince(new Date(now.getTime() - 30 * DAY_MS)),
+      getStatusSettings(),
+    ])
+
+    const leanComponent = (c: { id: string; name: string; status: string }) => ({
+      id: c.id,
+      name: c.name,
+      status: c.status,
+    })
+    const allComponents = [...ungrouped, ...groups.flatMap((g) => g.components)]
+
+    // Uptime via a policy actor for the authed admin (team actors bypass
+    // segment gates, so this sees every component).
+    const actor = await policyActorFromAuth(await getOptionalAuth())
+    const uptime =
+      allComponents.length > 0
+        ? await getUptimeSeries(
+            actor,
+            allComponents.map((c) => c.id),
+            90
+          )
+        : []
+    const allDays = uptime.flatMap((s) => s.days)
+    const uptime90d =
+      allDays.length > 0 ? allDays.reduce((sum, d) => sum + d.uptimePct, 0) / allDays.length : null
+
+    return {
+      enabled: settings.enabled,
+      topLevelStatus: deriveTopLevelStatus(allComponents.map((c) => c.status)),
+      ungroupedComponents: ungrouped.map(leanComponent),
+      groups: groups.map((g) => ({
+        id: g.id,
+        name: g.name,
+        components: g.components.map(leanComponent),
+      })),
+      activeIncidents: incidents.items.map(serializeIncident),
+      upcomingMaintenance: maintenance.items
+        .slice()
+        .sort(
+          (a, b) =>
+            (a.scheduledStartAt?.getTime() ?? Infinity) -
+            (b.scheduledStartAt?.getTime() ?? Infinity)
+        )
+        .map(serializeIncident),
+      uptime90d,
+      subscribers: { ...counts, newLast7d },
+      incidentsLast30d,
+    }
+  } catch (error) {
+    log.error({ err: error }, 'get status overview admin failed')
+    throw error
+  }
+})
+
+/** Start a scheduled maintenance window immediately (pulls the start bound to
+ *  now so component statuses apply and the auto-complete job reschedules). */
+export const startStatusMaintenanceNowFn = createServerFn({ method: 'POST' })
+  .validator(idSchema)
+  .handler(async ({ data }) => {
+    log.debug({ incident_id: data.id }, 'start status maintenance now')
+    try {
+      await requireAuth({ permission: PERMISSIONS.STATUS_PAGE_PUBLISH })
+      await startMaintenanceNow(data.id as StatusIncidentId)
+      const incident = await getStatusIncidentById(data.id as StatusIncidentId)
+      return serializeIncident(incident)
+    } catch (error) {
+      log.error({ err: error }, 'start status maintenance now failed')
       throw error
     }
   })

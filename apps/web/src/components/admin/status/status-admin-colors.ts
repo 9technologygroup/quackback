@@ -17,6 +17,7 @@ import type {
 import {
   COMPONENT_STATUS_STYLE,
   COMPONENT_STATUS_LABEL,
+  HERO_HEADLINE,
   IMPACT_STYLE,
   IMPACT_LABEL,
   LIFECYCLE_STYLE,
@@ -56,6 +57,16 @@ export const COMPONENT_STATUS_OPTIONS = COMPONENT_STATUS_VALUES.map((value) => (
   label: COMPONENT_STATUS_LABELS[value],
   color: COMPONENT_STATUS_COLORS[value],
 }))
+
+/** The public hero's headline copy, keyed by derived top-level status — the
+ *  admin Overview banner shows exactly what visitors currently see. */
+export const TOP_LEVEL_HEADLINES: Record<StatusComponentStatus, string> = {
+  operational: HERO_HEADLINE.operational.defaultMessage,
+  degraded_performance: HERO_HEADLINE.degraded_performance.defaultMessage,
+  partial_outage: HERO_HEADLINE.partial_outage.defaultMessage,
+  major_outage: HERO_HEADLINE.major_outage.defaultMessage,
+  under_maintenance: HERO_HEADLINE.under_maintenance.defaultMessage,
+}
 
 export const IMPACT_COLORS: Record<StatusIncidentImpact, string> = {
   none: IMPACT_STYLE.none.hex,

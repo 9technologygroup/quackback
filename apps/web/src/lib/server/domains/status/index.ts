@@ -86,6 +86,7 @@ export {
   clearStatusHistory,
   getStatusIncidentById,
   listStatusIncidents,
+  countStatusIncidentsSince,
   notifyStatusIncidentPublished,
   reconcileStatusNotifications,
   listStatusIncidentTemplates,
@@ -99,6 +100,7 @@ export {
   cancelMaintenanceJobs,
   handleMaintenanceStart,
   handleMaintenanceComplete,
+  startMaintenanceNow,
   reconcileMaintenanceWindows,
 } from './status.maintenance'
 
@@ -118,5 +120,6 @@ export {
   getMySubscription,
   listStatusSubscriptions,
   getStatusSubscriptionCounts,
+  countStatusSubscriptionsSince,
   getActiveSubscribersForComponents,
 } from './status.subscription'

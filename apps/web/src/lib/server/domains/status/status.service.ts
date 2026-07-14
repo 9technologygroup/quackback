@@ -11,6 +11,7 @@ import {
   isNotNull,
   desc,
   asc,
+  gte,
   ilike,
   lt,
   or,
@@ -456,6 +457,20 @@ export async function listStatusIncidents(
     nextCursor: hasMore && items.length > 0 ? items[items.length - 1].id : null,
     hasMore,
   }
+}
+
+/** Incidents (not maintenance) whose clock started since `date` — the
+ *  overview's "incidents in the last 30 days" tile. */
+export async function countStatusIncidentsSince(date: Date): Promise<number> {
+  const rows = await db.query.statusIncidents.findMany({
+    where: and(
+      eq(statusIncidents.kind, 'incident'),
+      isNull(statusIncidents.deletedAt),
+      gte(statusIncidents.startedAt, date)
+    ),
+    columns: { id: true },
+  })
+  return rows.length
 }
 
 // ============================================================================

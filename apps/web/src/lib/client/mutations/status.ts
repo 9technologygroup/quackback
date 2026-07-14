@@ -20,6 +20,7 @@ import {
   updateStatusIncidentFn,
   postStatusIncidentUpdateFn,
   deleteStatusIncidentFn,
+  startStatusMaintenanceNowFn,
   clearStatusHistoryFn,
   createStatusIncidentTemplateFn,
   updateStatusIncidentTemplateFn,
@@ -70,7 +71,10 @@ export function useSetStatusComponentStatus() {
   return useMutation({
     mutationFn: (input: Parameters<typeof setStatusComponentStatusFn>[0]['data']) =>
       setStatusComponentStatusFn({ data: input }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: statusKeys.components() }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: statusKeys.components() })
+      queryClient.invalidateQueries({ queryKey: statusKeys.overview() })
+    },
   })
 }
 
@@ -115,7 +119,25 @@ export function useCreateStatusIncident() {
   return useMutation({
     mutationFn: (input: Parameters<typeof createStatusIncidentFn>[0]['data']) =>
       createStatusIncidentFn({ data: input }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: statusKeys.incidents() }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: statusKeys.incidents() })
+      queryClient.invalidateQueries({ queryKey: statusKeys.overview() })
+    },
+  })
+}
+
+/** Start a scheduled maintenance window immediately. Applies component
+ *  statuses server-side, so component + overview caches invalidate too. */
+export function useStartStatusMaintenanceNow() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => startStatusMaintenanceNowFn({ data: { id } }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(statusKeys.incidentDetail(data.id), data)
+      queryClient.invalidateQueries({ queryKey: statusKeys.incidents() })
+      queryClient.invalidateQueries({ queryKey: statusKeys.components() })
+      queryClient.invalidateQueries({ queryKey: statusKeys.overview() })
+    },
   })
 }
 
@@ -139,6 +161,8 @@ export function usePostStatusIncidentUpdate() {
     onSuccess: (data) => {
       queryClient.setQueryData(statusKeys.incidentDetail(data.id), data)
       queryClient.invalidateQueries({ queryKey: statusKeys.incidents() })
+      queryClient.invalidateQueries({ queryKey: statusKeys.components() })
+      queryClient.invalidateQueries({ queryKey: statusKeys.overview() })
     },
   })
 }
@@ -150,6 +174,7 @@ export function useDeleteStatusIncident() {
     onSuccess: (_data, id) => {
       queryClient.removeQueries({ queryKey: statusKeys.incidentDetail(id) })
       queryClient.invalidateQueries({ queryKey: statusKeys.incidents() })
+      queryClient.invalidateQueries({ queryKey: statusKeys.overview() })
     },
   })
 }

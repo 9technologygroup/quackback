@@ -43,6 +43,10 @@ describe('status incident permissions', () => {
     ['updateStatusIncidentFn'],
     ['postStatusIncidentUpdateFn'],
     ['listStatusIncidentsAdminFn'],
+    // The overview + start-now are on-call surfaces: the floor permission of
+    // anyone who can already run incidents, not workspace-admin manage.
+    ['getStatusOverviewAdminFn'],
+    ['startStatusMaintenanceNowFn'],
   ])('%s gates on status_page.publish', (fnName) => {
     expect(fnPermissionFor(fnName)).toBe('STATUS_PAGE_PUBLISH')
   })

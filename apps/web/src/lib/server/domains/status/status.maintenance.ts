@@ -21,6 +21,7 @@ import {
   statusIncidentUpdates,
 } from '@/lib/server/db'
 import type { StatusIncidentId } from '@quackback/ids'
+import { NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { logger } from '@/lib/server/logger'
 import { scheduleDispatch, cancelScheduledDispatch } from '@/lib/server/events/scheduler'
 import type { EventActor } from '@/lib/server/events/dispatch'
@@ -187,6 +188,47 @@ export async function handleMaintenanceComplete(incidentId: StatusIncidentId): P
   }).catch((err) =>
     log.error({ err, incident_id: incidentId }, 'failed to dispatch status.maintenance_completed')
   )
+}
+
+/**
+ * Admin "Start now" for a scheduled window. `handleMaintenanceStart` guards
+ * on `scheduledStartAt <= now`, so an early start must pull the start bound
+ * to now first — calling the handler directly would silently no-op, and a
+ * bare postIncidentUpdate('in_progress') would skip component-status
+ * application. Cancels the old schedule's jobs before the rewrite and
+ * re-enqueues afterward (same cancel + re-enqueue shape as updateIncident)
+ * so the auto-complete job survives under the new schedule hash.
+ *
+ * A window whose end bound has already passed can still be started (it will
+ * simply never auto-complete; the admin completes it from the editor).
+ */
+export async function startMaintenanceNow(incidentId: StatusIncidentId): Promise<void> {
+  const incident = await db.query.statusIncidents.findFirst({
+    where: and(eq(statusIncidents.id, incidentId), isNull(statusIncidents.deletedAt)),
+  })
+  if (!incident) throw new NotFoundError('STATUS_INCIDENT_NOT_FOUND', 'Maintenance not found')
+  if (incident.kind !== 'maintenance' || incident.status !== 'scheduled') {
+    throw new ValidationError(
+      'STATUS_MAINTENANCE_NOT_STARTABLE',
+      'Only a scheduled maintenance window can be started now'
+    )
+  }
+
+  await cancelMaintenanceJobs(incident)
+
+  const now = new Date()
+  await db
+    .update(statusIncidents)
+    .set({ scheduledStartAt: now, updatedAt: now })
+    .where(eq(statusIncidents.id, incidentId))
+
+  await handleMaintenanceStart(incidentId)
+
+  await enqueueMaintenanceJobs({
+    ...incident,
+    scheduledStartAt: now,
+    status: 'in_progress',
+  })
 }
 
 /**
