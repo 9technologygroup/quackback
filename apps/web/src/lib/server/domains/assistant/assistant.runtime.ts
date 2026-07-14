@@ -19,10 +19,7 @@ import type { Executor } from '@/lib/server/domains/principals/principal.factory
 import { isAiClientConfigured, stripCodeFences } from '@/lib/server/domains/ai/config'
 import { getChatModel } from '@/lib/server/domains/ai/models'
 import type { AiAnswerKind } from '@/lib/server/domains/ai/usage-log'
-import {
-  getAssistantRuntimeConfig,
-  type AssistantToolControls,
-} from '@/lib/server/domains/settings/settings.assistant'
+import { getAssistantRuntimeConfig } from '@/lib/server/domains/settings/settings.assistant'
 import { logger } from '@/lib/server/logger'
 import type { AssistantHandoffReason } from '@/lib/server/db'
 import type { PrincipalId, ConversationId, TicketId, AssistantInvolvementId } from '@quackback/ids'
@@ -39,7 +36,7 @@ import { applyGuidanceBudget } from '@/lib/shared/assistant/guidance'
 import type { AssistantActivityStatus } from '@/lib/shared/conversation/types'
 import { resolveContentAudience } from './audience'
 import { assembleAssistantToolset } from './assistant.tools'
-import { makeAssistantToolContext } from './assistant.toolspec'
+import { makeAssistantToolContext, makeAssistantToolLedger } from './assistant.toolspec'
 import { listConversationAttributes } from '@/lib/server/domains/conversation-attributes/conversation-attribute.service'
 import type {
   AssistantCitation,
@@ -143,7 +140,7 @@ interface AssistantDeliveredFields {
   internalSourced: boolean
   /**
    * Write-tool calls this turn turned into pending-approval rows (P2-C.4),
-   * lifted verbatim off `toolContext.proposedActions`: unlike citations
+   * lifted verbatim off `toolContext.ledger.proposedActions`: unlike citations
    * these are never model-curated, so every proposal this run made is
    * reported. Empty outside `writeToolPolicy: 'propose'` (or any other
    * caller that never resolves a write tool to 'approval').
@@ -656,8 +653,8 @@ const SUGGEST_TURN_MESSAGES: AssistantThreadMessage[] = [
  * - `writeToolPolicy`: when set, OVERRIDES the caller's own
  *   `input.writeToolPolicy` at the tool-context seam. 'suggest' forces
  *   'disabled' (a suggestion drafts, it never acts and never proposes — see
- *   `resolveEffectiveToolMode`'s fold 5, assistant.tools.ts): the invariant
- *   belongs to the intent itself, not to every caller remembering to pass it.
+ *   `resolveEffectiveToolMode`'s write-policy branch, assistant.tools.ts): the
+ *   invariant belongs to the intent itself, not to every caller passing it.
  * - `inabilityMeansSkip`: whether a report_inability tool call maps to the
  *   suggestion UI's server-derived skip result. True only for 'suggest'.
  * - `turnMessages`: when set, the intent owns the turn's messages outright,
@@ -857,11 +854,13 @@ function deriveAnswerKind(
   toolContext: AssistantToolContext
 ): AiAnswerKind {
   if (attempt.validationError) return 'invalid_output'
-  if (toolContext.handoffRequest) return 'escalated'
-  if (toolContext.inabilityReport) {
-    return toolContext.inabilityReport.reason === 'no_relevant_sources' ? 'no_sources' : 'no_answer'
+  if (toolContext.ledger.handoffRequest) return 'escalated'
+  if (toolContext.ledger.inabilityReport) {
+    return toolContext.ledger.inabilityReport.reason === 'no_relevant_sources'
+      ? 'no_sources'
+      : 'no_answer'
   }
-  if (toolContext.sources.size === 0) return 'no_sources'
+  if (toolContext.ledger.sources.size === 0) return 'no_sources'
   return 'answered'
 }
 
@@ -1014,7 +1013,6 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     // suggestion turn is read-only whatever the route passed).
     writeToolPolicy: input.simulate === true ? 'simulate' : rolePolicy.writeToolPolicy,
   })
-  const toolControls: AssistantToolControls = runtimeConfig.config.toolControls
   const promptChannel =
     role === 'suggested_reply'
       ? (input.destinationChannel ??
@@ -1025,10 +1023,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   const guidanceChannel = role === 'suggested_reply' ? promptChannel : surface
   let guidanceCandidates: AssistantGuidanceRule[] = []
   try {
-    guidanceCandidates = await listEnabledGuidanceCandidates({
-      role,
-      channel: guidanceChannel,
-    })
+    guidanceCandidates = await listEnabledGuidanceCandidates({ role })
   } catch (error) {
     log.warn({ err: error }, 'guidance candidate loading failed; continuing without guidance')
   }
@@ -1064,16 +1059,14 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     )
   )
 
-  // Tool wiring (flag + control modes) is turn-scoped config, not per-attempt
-  // state — assembled once so a retry can't re-read settings and flip gating
-  // mid-turn, and shares the same tool set across every attempt. `toolControls`
-  // is already in hand when actions are on, so this never re-reads the row.
+  // Tool wiring (flag + role-derived write policy) is turn-scoped config, not
+  // per-attempt state — assembled once so a retry can't re-read settings and
+  // flip gating mid-turn, and shares the same tool set across every attempt.
   // `activeSpecs` (the specs behind `tools`, index-aligned) is what the
   // system prompt's per-tool guidance composes from below.
   let { tools, activeSpecs } = await assembleAssistantToolset(
     toolContext,
     undefined,
-    toolControls,
     runtimeConfig.actionsEnabled
   )
   let toolNames = new Set(tools.map((t) => t.name))
@@ -1205,20 +1198,22 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     deriveAttemptMetadata: (attempt) => ({
       // Durable, privacy-minimal agent trace: names and counts only. Tool args,
       // results, and customer text stay out of ai_usage_log metadata.
-      toolCalls: [...toolContext.toolCalls],
-      toolOutcomes: [...toolContext.toolOutcomes],
-      searchCalls: toolContext.searchCalls,
-      citationCandidates: toolContext.sources.size,
+      toolCalls: [...toolContext.ledger.toolCalls],
+      toolOutcomes: [...toolContext.ledger.toolOutcomes],
+      searchCalls: toolContext.ledger.searchCalls,
+      citationCandidates: toolContext.ledger.sources.size,
       completionDisposition: attempt.validationError
         ? 'invalid'
-        : toolContext.handoffRequest
+        : toolContext.ledger.handoffRequest
           ? 'handoff'
-          : toolContext.inabilityReport
+          : toolContext.ledger.inabilityReport
             ? 'inability'
             : 'answer',
-      ...(toolContext.handoffRequest ? { handoffReason: toolContext.handoffRequest.reason } : {}),
-      ...(toolContext.inabilityReport
-        ? { inabilityReason: toolContext.inabilityReport.reason }
+      ...(toolContext.ledger.handoffRequest
+        ? { handoffReason: toolContext.ledger.handoffRequest.reason }
+        : {}),
+      ...(toolContext.ledger.inabilityReport
+        ? { inabilityReason: toolContext.ledger.inabilityReport.reason }
         : {}),
       ...(zeroToolEvaluation
         ? {
@@ -1229,14 +1224,18 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     }),
     validateFinal: async (final) => {
       validateAssistantCompletion(final, {
-        searchCalls: toolContext.searchCalls,
-        sources: toolContext.sources,
-        toolCalls: toolContext.toolCalls,
-        inabilityReported: toolContext.inabilityReport !== null,
-        handoffRequested: toolContext.handoffRequest !== null,
+        searchCalls: toolContext.ledger.searchCalls,
+        sources: toolContext.ledger.sources,
+        toolCalls: toolContext.ledger.toolCalls,
+        inabilityReported: toolContext.ledger.inabilityReport !== null,
+        handoffRequested: toolContext.ledger.handoffRequest !== null,
       })
 
-      if (audience !== 'public' || conversationId === null || toolContext.toolCalls.length > 0) {
+      if (
+        audience !== 'public' ||
+        conversationId === null ||
+        toolContext.ledger.toolCalls.length > 0
+      ) {
         return
       }
 
@@ -1267,17 +1266,12 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
       }
     },
     onAttemptStart: () => {
-      // Fresh ledgers + search budget per attempt so a retry starts clean.
-      // A plain reassignment (not a truncate-in-place): nothing holds a live
-      // reference to the old array across attempts anymore (both return
-      // sites below snapshot via spread at return time instead).
-      toolContext.sources.clear()
-      toolContext.searchCalls = 0
-      toolContext.toolCalls = []
-      toolContext.toolOutcomes = []
-      toolContext.handoffRequest = null
-      toolContext.inabilityReport = null
-      toolContext.proposedActions = []
+      // Fresh ledger per attempt so a retry starts clean. A whole-object swap,
+      // not a per-field reset: a newly added ledger field cannot be forgotten
+      // here, and nothing holds a live reference to the old ledger across
+      // attempts anyway (both return sites below snapshot via spread at return
+      // time instead).
+      toolContext.ledger = makeAssistantToolLedger()
       zeroToolEvaluation = null
     },
     onRetry: (_attempt, error) => {
@@ -1301,13 +1295,14 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   // A proactive suggestion's honest miss comes only from the observed
   // report_inability tool call. Keep the existing server result shape for the
   // suggestion UI, but never let a model-authored custom field drive it.
-  const skip = rolePolicy.inabilitySemantics === 'skip' && toolContext.inabilityReport !== null
-  const citations = skip ? [] : assembleCitations(parsed.citations, toolContext.sources)
+  const skip =
+    rolePolicy.inabilitySemantics === 'skip' && toolContext.ledger.inabilityReport !== null
+  const citations = skip ? [] : assembleCitations(parsed.citations, toolContext.ledger.sources)
   // Operational decisions come exclusively from tool calls. This compatibility
   // projection lets existing consumers render the handoff state; the model's
   // final object contains no action field.
-  const escalation = toolContext.handoffRequest
-    ? ({ ...toolContext.handoffRequest, mode: 'handoff' } as const)
+  const escalation = toolContext.ledger.handoffRequest
+    ? ({ ...toolContext.ledger.handoffRequest, mode: 'handoff' } as const)
     : undefined
   const trace: AssistantTurnTrace = {
     promptVersion: ASSISTANT_PROMPT_VERSION,
@@ -1320,7 +1315,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
         }
       : {}),
     appliedGuidance,
-    toolCalls: [...toolContext.toolOutcomes],
+    toolCalls: [...toolContext.ledger.toolOutcomes],
     ...(runtimeConfig.configFallbackReason
       ? { configFallbackReason: runtimeConfig.configFallbackReason }
       : {}),
@@ -1335,17 +1330,17 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     internalSourced:
       !skip &&
       (contextInternallySourced ||
-        [...toolContext.sources.values()].some((source) => source.internal === true)),
-    proposedActions: [...toolContext.proposedActions],
+        [...toolContext.ledger.sources.values()].some((source) => source.internal === true)),
+    proposedActions: [...toolContext.ledger.proposedActions],
     skip,
     identity: runtimeConfig.config.identity,
     trace,
     ...(escalation && { escalation }),
   }
-  if (toolContext.inabilityReport) {
+  if (toolContext.ledger.inabilityReport) {
     return {
       status: 'cannot_answer',
-      cannotAnswerReason: toolContext.inabilityReport.reason,
+      cannotAnswerReason: toolContext.ledger.inabilityReport.reason,
       ...delivered,
     }
   }

@@ -39,25 +39,17 @@ describe('guidance shared contract', () => {
       appliesWhen: null,
       instruction: 'مرحبا\nExplain it.',
       roles: ['customer_support', 'suggested_reply'],
-      channels: null,
       enabled: true,
       priority: 0,
     })
   })
 
-  it('validates role and channel values', () => {
+  it('validates role values', () => {
     expect(() =>
       assistantGuidanceRuleInputSchema.parse({
         name: 'Bad role',
         instruction: 'Do something.',
         roles: ['administrator'],
-      })
-    ).toThrow()
-    expect(() =>
-      assistantGuidanceRuleInputSchema.parse({
-        name: 'Bad channel',
-        instruction: 'Do something.',
-        channels: ['sms'],
       })
     ).toThrow()
   })
@@ -98,38 +90,29 @@ describe.skipIf(!fixture.available)('guidance.service (real DB, rolled back)', (
       appliesWhen: null,
       instruction: 'Always mention it.',
       roles: ['customer_support', 'suggested_reply'],
-      channels: null,
       enabled: true,
       priority: 2,
     })
     expect((await listGuidanceRules()).map((rule) => rule.id)).toEqual([higher.id, lower.id])
   })
 
-  it('prefilters enabled candidates by resolved role/channel', async () => {
+  it('prefilters enabled candidates by resolved role', async () => {
     const everywhere = await createGuidanceRule({
       name: 'Everywhere',
       instruction: 'Always applies.',
       roles: ['customer_support'],
       priority: 1,
     })
-    const widget = await createGuidanceRule({
-      name: 'Widget',
-      instruction: 'Widget only.',
+    const alsoScoped = await createGuidanceRule({
+      name: 'Also scoped',
+      instruction: 'Also applies.',
       roles: ['customer_support'],
-      channels: ['widget'],
       priority: 2,
-    })
-    await createGuidanceRule({
-      name: 'Email',
-      instruction: 'Email only.',
-      roles: ['customer_support'],
-      channels: ['email'],
     })
     await createGuidanceRule({
       name: 'Copilot role',
       instruction: 'Copilot only.',
       roles: ['copilot_qa'],
-      channels: null,
     })
     await createGuidanceRule({
       name: 'Disabled',
@@ -140,9 +123,8 @@ describe.skipIf(!fixture.available)('guidance.service (real DB, rolled back)', (
 
     const candidates = await listEnabledGuidanceCandidates({
       role: 'customer_support',
-      channel: 'widget',
     })
-    expect(candidates.map((rule) => rule.id)).toEqual([everywhere.id, widget.id])
+    expect(candidates.map((rule) => rule.id)).toEqual([everywhere.id, alsoScoped.id])
   })
 
   it('orders candidate ties by createdAt and caps the list at 25', async () => {
@@ -158,7 +140,6 @@ describe.skipIf(!fixture.available)('guidance.service (real DB, rolled back)', (
 
     const candidates = await listEnabledGuidanceCandidates({
       role: 'customer_support',
-      channel: 'email',
     })
     expect(candidates).toHaveLength(25)
     expect(candidates.map((rule) => rule.name)).toEqual(
@@ -173,7 +154,6 @@ describe.skipIf(!fixture.available)('guidance.service (real DB, rolled back)', (
       appliesWhen: '\u0000 ',
       instruction: ' Updated instruction ',
       roles: ['copilot_qa'],
-      channels: ['copilot'],
       enabled: false,
       priority: 7,
     })
@@ -183,7 +163,6 @@ describe.skipIf(!fixture.available)('guidance.service (real DB, rolled back)', (
       appliesWhen: null,
       instruction: 'Updated instruction',
       roles: ['copilot_qa'],
-      channels: ['copilot'],
       enabled: false,
       priority: 7,
     })

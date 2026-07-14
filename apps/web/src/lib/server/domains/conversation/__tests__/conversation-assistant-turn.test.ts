@@ -208,7 +208,6 @@ type DeliveredFields = Omit<AnsweredTurn, 'status'>
 const V2_IDENTITY: DeliveredFields['identity'] = {
   name: 'Nova',
   avatarUrl: 'https://cdn.example.com/nova.png',
-  showAiLabel: true,
 }
 
 // Durable trace fixtures contain only bounded config metadata and tool names/outcomes,

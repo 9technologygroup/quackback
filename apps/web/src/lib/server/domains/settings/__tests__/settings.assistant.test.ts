@@ -62,9 +62,7 @@ import {
   getAssistantConfig,
   getAssistantRuntimeConfig,
   getAssistantSettings,
-  updateAssistantChannels,
   updateAssistantIdentity,
-  updateAssistantToolControls,
   updateAssistantVoice,
 } from '../settings.assistant'
 
@@ -73,17 +71,12 @@ const CONFIG: AssistantConfig = {
   identity: {
     name: 'Avery',
     avatarUrl: 'https://cdn.example.test/avery.png',
-    showAiLabel: true,
   },
   voice: {
     tone: 'balanced',
     responseLength: 'balanced',
     additionalInstructions: 'Use short replies.',
   },
-  channels: {
-    widget: { additionalInstructions: 'Open with a greeting.' },
-  },
-  toolControls: { end_conversation: 'approval' },
 }
 
 const REQUEST_HEADERS = new Headers({
@@ -204,7 +197,6 @@ describe('V2 assistant configuration reads', () => {
   it('strictly returns the complete persisted config and revision without inventing defaults', async () => {
     const persisted = structuredClone(CONFIG)
     persisted.identity.name = 'Persisted Agent'
-    persisted.channels.email = { additionalInstructions: 'Use an email sign-off.' }
     hoisted.requireSettings.mockResolvedValue(
       settingsRow({
         assistantConfig: persisted,
@@ -263,7 +255,7 @@ describe('V2 assistant configuration reads', () => {
 describe('V2 assistant configuration writes', () => {
   it('validates every complete section before writing', async () => {
     await expect(
-      updateAssistantIdentity(7, { name: '   ', avatarUrl: null, showAiLabel: true }, ACTOR)
+      updateAssistantIdentity(7, { name: '   ', avatarUrl: null }, ACTOR)
     ).rejects.toThrow()
     await expect(
       updateAssistantVoice(
@@ -275,12 +267,6 @@ describe('V2 assistant configuration writes', () => {
         } as never,
         ACTOR
       )
-    ).rejects.toThrow()
-    await expect(
-      updateAssistantChannels(7, { widget: { additionalInstructions: 'x'.repeat(1_001) } }, ACTOR)
-    ).rejects.toThrow()
-    await expect(
-      updateAssistantToolControls(7, { end_conversation: 'invalid' } as never, ACTOR)
     ).rejects.toThrow()
 
     expect(hoisted.txSet).not.toHaveBeenCalled()
@@ -336,20 +322,17 @@ describe('V2 assistant configuration writes', () => {
       { ...CONFIG.voice, tone: 'professional' },
       ACTOR
     )
-    const toolsResult = await updateAssistantToolControls(
+    const identityResult = await updateAssistantIdentity(
       voiceResult.revision,
-      { end_conversation: 'autonomous', create_ticket: 'approval' },
+      { name: 'Robin', avatarUrl: null },
       ACTOR
     )
 
-    expect(toolsResult).toEqual({
+    expect(identityResult).toEqual({
       config: {
         ...CONFIG,
         voice: { ...CONFIG.voice, tone: 'professional' },
-        toolControls: {
-          end_conversation: 'autonomous',
-          create_ticket: 'approval',
-        },
+        identity: { name: 'Robin', avatarUrl: null },
       },
       revision: 9,
     })
@@ -414,7 +397,6 @@ describe('V2 assistant configuration writes', () => {
     const identity = {
       name: 'Customer Care Agent',
       avatarUrl: 'https://cdn.example.test/customer-care.png',
-      showAiLabel: false,
     }
     await updateAssistantIdentity(7, identity, ACTOR)
 
@@ -432,14 +414,8 @@ describe('V2 assistant configuration writes', () => {
       metadata: { changedPaths: string[]; transitions: unknown[] }
     }
     expect(auditPayload.event).toBe('assistant.identity.changed')
-    expect(auditPayload.metadata.changedPaths).toEqual([
-      'identity.avatarUrl',
-      'identity.name',
-      'identity.showAiLabel',
-    ])
-    expect(auditPayload.metadata.transitions).toEqual([
-      { path: 'identity.showAiLabel', from: true, to: false },
-    ])
+    expect(auditPayload.metadata.changedPaths).toEqual(['identity.avatarUrl', 'identity.name'])
+    expect(auditPayload.metadata.transitions).toEqual([])
     expect(JSON.stringify(auditPayload)).not.toContain(CONFIG.identity.name)
     expect(JSON.stringify(auditPayload)).not.toContain(identity.name)
   })

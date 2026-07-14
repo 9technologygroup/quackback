@@ -4,19 +4,15 @@ export const ASSISTANT_CONFIG_VERSION = 2 as const
 export const ASSISTANT_NAME_MAX_LENGTH = 80
 export const ASSISTANT_AVATAR_URL_MAX_LENGTH = 2_000
 export const ASSISTANT_ADDITIONAL_INSTRUCTIONS_MAX_LENGTH = 2_000
-export const ASSISTANT_CHANNEL_INSTRUCTIONS_MAX_LENGTH = 1_000
 
 export const ASSISTANT_TONES = ['warm', 'balanced', 'professional'] as const
 export const ASSISTANT_RESPONSE_LENGTHS = ['brief', 'balanced', 'detailed'] as const
-export const ASSISTANT_TOOL_CONTROLS = ['disabled', 'approval', 'autonomous'] as const
 
 export const assistantToneSchema = z.enum(ASSISTANT_TONES)
 export const assistantResponseLengthSchema = z.enum(ASSISTANT_RESPONSE_LENGTHS)
-export const assistantToolControlSchema = z.enum(ASSISTANT_TOOL_CONTROLS)
 
 export type AssistantTone = z.infer<typeof assistantToneSchema>
 export type AssistantResponseLength = z.infer<typeof assistantResponseLengthSchema>
-export type AssistantToolControl = z.infer<typeof assistantToolControlSchema>
 
 function isHttpUrl(value: string): boolean {
   for (const character of value) {
@@ -42,7 +38,6 @@ export const assistantAvatarUrlSchema = z
 export const assistantIdentitySchema = z.object({
   name: z.string().trim().min(1).max(ASSISTANT_NAME_MAX_LENGTH),
   avatarUrl: assistantAvatarUrlSchema.nullable(),
-  showAiLabel: z.boolean(),
 })
 
 export const assistantVoiceSchema = z.object({
@@ -51,27 +46,14 @@ export const assistantVoiceSchema = z.object({
   additionalInstructions: z.string().max(ASSISTANT_ADDITIONAL_INSTRUCTIONS_MAX_LENGTH),
 })
 
-export const assistantChannelOverrideSchema = z.object({
-  additionalInstructions: z.string().max(ASSISTANT_CHANNEL_INSTRUCTIONS_MAX_LENGTH),
-})
-
-export const assistantChannelsSchema = z.object({
-  widget: assistantChannelOverrideSchema.optional(),
-  email: assistantChannelOverrideSchema.optional(),
-})
-
 export const assistantConfigSchema = z.object({
   version: z.literal(ASSISTANT_CONFIG_VERSION),
   identity: assistantIdentitySchema,
   voice: assistantVoiceSchema,
-  channels: assistantChannelsSchema,
-  toolControls: z.record(z.string(), assistantToolControlSchema),
 })
 
 export type AssistantIdentity = z.infer<typeof assistantIdentitySchema>
 export type AssistantVoice = z.infer<typeof assistantVoiceSchema>
-export type AssistantChannelOverride = z.infer<typeof assistantChannelOverrideSchema>
-export type AssistantChannels = z.infer<typeof assistantChannelsSchema>
 export type AssistantConfig = z.infer<typeof assistantConfigSchema>
 
 export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
@@ -79,15 +61,12 @@ export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
   identity: {
     name: 'Quinn',
     avatarUrl: null,
-    showAiLabel: true,
   },
   voice: {
     tone: 'balanced',
     responseLength: 'balanced',
     additionalInstructions: '',
   },
-  channels: {},
-  toolControls: {},
 }
 
 export interface AssistantPresetDefinition<Value extends string> {
@@ -213,29 +192,17 @@ const assistantConfigInputSchema = z.object({
   identity: z.object({
     name: z.string(),
     avatarUrl: z.string().nullable(),
-    showAiLabel: z.boolean(),
   }),
   voice: z.object({
     tone: assistantToneSchema,
     responseLength: assistantResponseLengthSchema,
     additionalInstructions: z.string(),
   }),
-  channels: z.object({
-    widget: z.object({ additionalInstructions: z.string() }).optional(),
-    email: z.object({ additionalInstructions: z.string() }).optional(),
-  }),
-  toolControls: z.record(z.string(), assistantToolControlSchema),
 })
 
 /** Normalizes a complete V2 input, then validates every persisted boundary. */
 export function normalizeAssistantConfig(input: unknown): AssistantConfig {
   const parsed = assistantConfigInputSchema.parse(input)
-  const widgetInstructions = parsed.channels.widget
-    ? normalizeAssistantText(parsed.channels.widget.additionalInstructions)
-    : ''
-  const emailInstructions = parsed.channels.email
-    ? normalizeAssistantText(parsed.channels.email.additionalInstructions)
-    : ''
 
   return assistantConfigSchema.parse({
     ...parsed,
@@ -246,10 +213,6 @@ export function normalizeAssistantConfig(input: unknown): AssistantConfig {
     voice: {
       ...parsed.voice,
       additionalInstructions: normalizeAssistantText(parsed.voice.additionalInstructions),
-    },
-    channels: {
-      ...(widgetInstructions ? { widget: { additionalInstructions: widgetInstructions } } : {}),
-      ...(emailInstructions ? { email: { additionalInstructions: emailInstructions } } : {}),
     },
   })
 }

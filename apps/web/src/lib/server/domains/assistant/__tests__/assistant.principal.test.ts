@@ -78,7 +78,7 @@ describe('ensureAssistantPrincipal', () => {
     mockLimit.mockResolvedValue([])
     mockGetAssistantConfig.mockResolvedValue({
       revision: 4,
-      config: { identity: { name: 'Avery', avatarUrl: null, showAiLabel: true } },
+      config: { identity: { name: 'Avery', avatarUrl: null } },
     })
     mockCreate.mockResolvedValue({ id: 'principal_new' })
 

@@ -13,8 +13,6 @@ export const assistantGuidanceRules = pgTable(
     instruction: text('instruction').notNull(),
     roles: text('roles').array().notNull().default(['customer_support', 'suggested_reply']),
     enabled: boolean('enabled').notNull().default(true),
-    // NULL = every eligible channel; otherwise an allowlist of assistant surfaces.
-    channels: text('channels').array(),
     // Lower values run first. This preserves the V1 position ordering.
     priority: integer('priority').notNull().default(0),
     // Nulled on the author's deletion — the rule outlives them.

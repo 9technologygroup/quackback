@@ -485,7 +485,6 @@ export const getMyConversationFn = createServerFn({ method: 'GET' })
           ? {
               name: assistantIdentity.name,
               avatarUrl: assistantIdentity.avatarUrl,
-              showAiLabel: assistantIdentity.showAiLabel,
             }
           : null,
         // Whether we already have a contact email for this visitor.

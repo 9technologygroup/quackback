@@ -26,14 +26,12 @@ import { companies } from './companies'
 
 interface StoredAssistantConfig {
   version: number
-  identity: { name: string; avatarUrl: string | null; showAiLabel: boolean }
+  identity: { name: string; avatarUrl: string | null }
   voice: {
     tone: string
     responseLength: string
     additionalInstructions: string
   }
-  channels: Record<string, { additionalInstructions: string }>
-  toolControls: Record<string, string>
 }
 
 /**
@@ -307,10 +305,8 @@ export const settings = pgTable('settings', {
     .notNull()
     .default({
       version: 2,
-      identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+      identity: { name: 'Quinn', avatarUrl: null },
       voice: { tone: 'balanced', responseLength: 'balanced', additionalInstructions: '' },
-      channels: {},
-      toolControls: {},
     }),
   /** Optimistic-concurrency token incremented with every assistant config write. */
   assistantConfigRevision: integer('assistant_config_revision').notNull().default(1),

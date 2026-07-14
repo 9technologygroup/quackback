@@ -125,7 +125,6 @@ export function publicMessengerConfig(
           respond: messenger.assistant.respond,
           name: identity.name,
           avatarUrl: identity.avatarUrl,
-          showAiLabel: identity.showAiLabel,
         }
       : undefined,
   }

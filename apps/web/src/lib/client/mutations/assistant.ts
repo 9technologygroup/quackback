@@ -2,7 +2,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { AssistantGuidanceRuleId } from '@quackback/ids'
 import type { AssistantRole } from '@/lib/shared/assistant/config'
-import type { AssistantSurface } from '@/lib/shared/assistant/surfaces'
 import {
   createGuidanceRuleFn,
   updateGuidanceRuleFn,
@@ -13,8 +12,6 @@ import {
   getAssistantSettingsFn,
   updateAssistantIdentityFn,
   updateAssistantVoiceFn,
-  updateAssistantChannelsFn,
-  updateAssistantToolControlsFn,
   updateWidgetAssistantDeploymentFn,
 } from '@/lib/server/functions/assistant-settings'
 import { assistantKeys } from '@/lib/client/queries/assistant'
@@ -25,8 +22,6 @@ export interface GuidanceRuleInput {
   appliesWhen: string | null
   instruction: string
   roles: AssistantRole[]
-  /** Null means every eligible channel. */
-  channels: AssistantSurface[] | null
   enabled: boolean
   priority: number
 }
@@ -103,24 +98,6 @@ export function useUpdateAssistantVoice() {
   return useMutation({
     mutationFn: (data: Parameters<typeof updateAssistantVoiceFn>[0]['data']) =>
       updateAssistantVoiceFn({ data }),
-    onSuccess: (result) => setAssistantConfig(queryClient, result),
-  })
-}
-
-export function useUpdateAssistantChannels() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (data: Parameters<typeof updateAssistantChannelsFn>[0]['data']) =>
-      updateAssistantChannelsFn({ data }),
-    onSuccess: (result) => setAssistantConfig(queryClient, result),
-  })
-}
-
-export function useUpdateAssistantToolControls() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (data: Parameters<typeof updateAssistantToolControlsFn>[0]['data']) =>
-      updateAssistantToolControlsFn({ data }),
     onSuccess: (result) => setAssistantConfig(queryClient, result),
   })
 }

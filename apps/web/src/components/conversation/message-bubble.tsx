@@ -16,7 +16,6 @@
  * and fill live in one place so the two idioms cannot drift apart.
  */
 import { memo, useState } from 'react'
-import { FormattedMessage } from 'react-intl'
 import {
   EllipsisVerticalIcon,
   TrashIcon,
@@ -262,8 +261,6 @@ interface VisitorMessageBubbleProps {
   authorName?: string
   /** Marks the author as the AI assistant in the attribution line. */
   isAssistant?: boolean
-  /** Show an "AI" label badge after the assistant name. */
-  showAiLabel?: boolean
   attachments?: ConversationAttachment[]
   /** KB sources for an AI reply. When present, a collapsed sources trace renders
    *  above the bubble and inline [n] markers in `content` become citation dots. */
@@ -647,7 +644,6 @@ export function VisitorMessageBubble({
   side = 'peer',
   authorName,
   isAssistant = false,
-  showAiLabel = false,
   attachments,
   citations,
   time,
@@ -703,12 +699,6 @@ export function VisitorMessageBubble({
         <div className="mt-1 px-1 flex items-center gap-1">
           <p className="text-[11px] text-muted-foreground/70">
             {authorName}
-            {isAssistant && !showAiLabel && (
-              <>
-                {' · '}
-                <FormattedMessage id="widget.messenger.aiAgent" defaultMessage="AI Agent" />
-              </>
-            )}
             {time && (
               <>
                 {' · '}
@@ -716,7 +706,7 @@ export function VisitorMessageBubble({
               </>
             )}
           </p>
-          {isAssistant && showAiLabel && (
+          {isAssistant && (
             <span className="inline-flex items-center gap-0.5 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
               AI
             </span>

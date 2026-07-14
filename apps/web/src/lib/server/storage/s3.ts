@@ -181,6 +181,7 @@ async function getS3Client(): Promise<S3ClientInstance> {
  * Users who want direct endpoint URLs can set S3_PUBLIC_URL to their endpoint.
  */
 const PUBLIC_STORAGE_PREFIXES = new Set([
+  'assistant-avatars',
   'avatars',
   'changelog-images',
   'favicons',

@@ -22,6 +22,7 @@ import { toHelpCenterAudience } from './audience'
 import { retrieveKbArticles } from './retrieval'
 import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service'
 import type { AssistantCitation } from './assistant.toolspec'
+import type { AssistantCitationType } from './citation-types'
 
 /** Per-item snippet budget handed to the model (full content stays server-side). */
 export const KNOWLEDGE_SNIPPET_CHARS = 1200
@@ -37,7 +38,7 @@ export const KNOWLEDGE_TOP_K = 5
  */
 export interface RetrievedItem {
   id: string
-  sourceType: 'article' | 'post' | 'snippet' | 'summary'
+  sourceType: AssistantCitationType
   title: string
   excerpt: string
   score: number

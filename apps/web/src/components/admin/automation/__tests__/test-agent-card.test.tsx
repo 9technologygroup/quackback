@@ -6,22 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const config = {
   version: 2 as const,
-  identity: { name: 'Ada', avatarUrl: null, showAiLabel: true },
+  identity: { name: 'Ada', avatarUrl: null },
   voice: {
     tone: 'balanced' as const,
     responseLength: 'brief' as const,
     additionalInstructions: '',
   },
-  channels: {},
-  toolControls: {},
 }
 
 vi.mock('@/lib/server/functions/assistant-settings', () => ({
   getAssistantSettingsFn: vi.fn(async () => ({ config, revision: 9, managedFieldPaths: [] })),
   updateAssistantIdentityFn: vi.fn(),
   updateAssistantVoiceFn: vi.fn(),
-  updateAssistantChannelsFn: vi.fn(),
-  updateAssistantToolControlsFn: vi.fn(),
   updateWidgetAssistantDeploymentFn: vi.fn(),
 }))
 

@@ -4,17 +4,13 @@ import { and, db, eq, principal, settings, sql } from '@/lib/server/db'
 import { isPathManaged } from '@/lib/server/config-file/managed-paths'
 import { logger } from '@/lib/server/logger'
 import {
-  assistantChannelsSchema,
   assistantConfigSchema,
   assistantIdentitySchema,
   assistantVoiceSchema,
-  assistantToolControlSchema,
   DEFAULT_ASSISTANT_CONFIG,
   normalizeAssistantConfig,
-  type AssistantChannels,
   type AssistantConfig,
   type AssistantIdentity,
-  type AssistantToolControl,
   type AssistantVoice,
 } from '@/lib/shared/assistant/config'
 import { ConflictError, ForbiddenError, InternalError, NotFoundError } from '@/lib/shared/errors'
@@ -24,9 +20,6 @@ import { resolveFeatureFlags } from './settings.types'
 
 const log = logger.child({ component: 'settings-assistant' })
 
-export const assistantToolControlsSchema = z.record(z.string(), assistantToolControlSchema)
-export type AssistantToolControls = Record<string, AssistantToolControl>
-
 export const assistantIdentityUpdateSchema = z.object({
   expectedRevision: z.number().int().positive(),
   identity: assistantIdentitySchema,
@@ -35,16 +28,6 @@ export const assistantIdentityUpdateSchema = z.object({
 export const assistantVoiceUpdateSchema = z.object({
   expectedRevision: z.number().int().positive(),
   voice: assistantVoiceSchema,
-})
-
-export const assistantChannelsUpdateSchema = z.object({
-  expectedRevision: z.number().int().positive(),
-  channels: assistantChannelsSchema,
-})
-
-export const assistantToolControlsUpdateSchema = z.object({
-  expectedRevision: z.number().int().positive(),
-  toolControls: assistantToolControlsSchema,
 })
 
 export interface AssistantConfigState {
@@ -139,19 +122,13 @@ function changedLeafPaths(before: unknown, after: unknown, prefix = ''): string[
 function auditEventForPaths(paths: string[]): AuditEventType {
   const root = paths[0]?.split('.')[0]
   if (root === 'identity') return 'assistant.identity.changed'
-  if (root === 'channels') return 'assistant.channels.changed'
-  if (root === 'toolControls') return 'assistant.tool_controls.changed'
   if (paths.every((path) => path === 'voice.additionalInstructions')) {
     return 'assistant.instructions.changed'
   }
   return 'assistant.voice.changed'
 }
 
-const SAFE_TRANSITION_PATHS = new Set([
-  'identity.showAiLabel',
-  'voice.tone',
-  'voice.responseLength',
-])
+const SAFE_TRANSITION_PATHS = new Set(['voice.tone', 'voice.responseLength'])
 
 function valueAtPath(config: AssistantConfig, path: string): unknown {
   return path
@@ -167,7 +144,7 @@ function valueAtPath(config: AssistantConfig, path: string): unknown {
 
 function safeTransitions(before: AssistantConfig, after: AssistantConfig, paths: string[]) {
   return paths.flatMap((path) => {
-    if (!SAFE_TRANSITION_PATHS.has(path) && !path.startsWith('toolControls.')) return []
+    if (!SAFE_TRANSITION_PATHS.has(path)) return []
     return [{ path, from: valueAtPath(before, path) ?? null, to: valueAtPath(after, path) ?? null }]
   })
 }
@@ -281,20 +258,4 @@ export function updateAssistantVoice(
   actor: AssistantConfigAuditActor
 ): Promise<AssistantConfigState> {
   return updateAssistantConfig(expectedRevision, (current) => ({ ...current, voice }), actor)
-}
-
-export function updateAssistantChannels(
-  expectedRevision: number,
-  channels: AssistantChannels,
-  actor: AssistantConfigAuditActor
-): Promise<AssistantConfigState> {
-  return updateAssistantConfig(expectedRevision, (current) => ({ ...current, channels }), actor)
-}
-
-export function updateAssistantToolControls(
-  expectedRevision: number,
-  toolControls: AssistantToolControls,
-  actor: AssistantConfigAuditActor
-): Promise<AssistantConfigState> {
-  return updateAssistantConfig(expectedRevision, (current) => ({ ...current, toolControls }), actor)
 }

@@ -42,7 +42,6 @@ import {
   ASSISTANT_GUIDANCE_NAME_MAX_LENGTH,
   DEFAULT_ASSISTANT_GUIDANCE_ROLES,
 } from '@/lib/shared/assistant/guidance'
-import { ASSISTANT_SURFACES, type AssistantSurface } from '@/lib/shared/assistant/surfaces'
 import type { AssistantGuidanceRule } from '@/lib/server/domains/assistant/guidance.service'
 import { useUnsavedChanges } from './assistant-form'
 
@@ -64,7 +63,6 @@ function ruleInput(rule: AssistantGuidanceRule): GuidanceRuleInput {
     appliesWhen: rule.appliesWhen,
     instruction: rule.instruction,
     roles: rule.roles as AssistantRole[],
-    channels: rule.channels as AssistantSurface[] | null,
     enabled: rule.enabled,
     priority: rule.priority,
   }
@@ -145,19 +143,6 @@ export function GuidanceRulesCard() {
           : role === 'suggested_reply'
             ? 'Suggested replies'
             : 'Copilot answers',
-    })
-
-  const channelLabel = (channel: AssistantSurface) =>
-    intl.formatMessage({
-      id: `automation.agent.guidance.channel.${channel}`,
-      defaultMessage:
-        channel === 'widget'
-          ? 'Web widget'
-          : channel === 'email'
-            ? 'Email'
-            : channel === 'workflow_step'
-              ? 'Workflow'
-              : 'Copilot',
     })
 
   async function toggleEnabled(rule: AssistantGuidanceRule) {
@@ -371,16 +356,6 @@ export function GuidanceRulesCard() {
                         <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                           <span>
                             {rule.roles.map((role) => roleLabel(role as AssistantRole)).join(', ')}
-                          </span>
-                          <span>
-                            {rule.channels?.length
-                              ? rule.channels
-                                  .map((channel) => channelLabel(channel as AssistantSurface))
-                                  .join(', ')
-                              : intl.formatMessage({
-                                  id: 'automation.agent.guidance.allChannels',
-                                  defaultMessage: 'All eligible channels',
-                                })}
                           </span>
                           <span>
                             {intl.formatMessage(
@@ -602,7 +577,6 @@ function GuidanceRuleDialog({
   const [appliesWhen, setAppliesWhen] = useState('')
   const [instruction, setInstruction] = useState('')
   const [roles, setRoles] = useState<AssistantRole[]>([...DEFAULT_ASSISTANT_GUIDANCE_ROLES])
-  const [channels, setChannels] = useState<AssistantSurface[]>([])
   const [enabled, setEnabled] = useState(true)
   const [priority, setPriority] = useState(0)
   const [error, setError] = useState('')
@@ -616,7 +590,6 @@ function GuidanceRuleDialog({
     setAppliesWhen(rule?.appliesWhen ?? '')
     setInstruction(rule?.instruction ?? '')
     setRoles((rule?.roles as AssistantRole[] | undefined) ?? [...DEFAULT_ASSISTANT_GUIDANCE_ROLES])
-    setChannels((rule?.channels as AssistantSurface[] | null) ?? [])
     setEnabled(rule?.enabled ?? true)
     setPriority(rule?.priority ?? defaultPriority)
     setError('')
@@ -630,7 +603,6 @@ function GuidanceRuleDialog({
         appliesWhen: null,
         instruction: '',
         roles: [...DEFAULT_ASSISTANT_GUIDANCE_ROLES],
-        channels: null,
         enabled: true,
         priority: defaultPriority,
       }
@@ -639,7 +611,6 @@ function GuidanceRuleDialog({
     appliesWhen: conditionMode === 'conditional' ? appliesWhen : null,
     instruction,
     roles,
-    channels: channels.length ? channels : null,
     enabled,
     priority,
   }
@@ -736,21 +707,6 @@ function GuidanceRuleDialog({
             : 'Copilot answers',
     }),
   }))
-  const channelItems = ASSISTANT_SURFACES.map((channel) => ({
-    value: channel,
-    label: intl.formatMessage({
-      id: `automation.agent.guidance.channel.${channel}`,
-      defaultMessage:
-        channel === 'widget'
-          ? 'Web widget'
-          : channel === 'email'
-            ? 'Email'
-            : channel === 'workflow_step'
-              ? 'Workflow'
-              : 'Copilot',
-    }),
-  }))
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl">
@@ -946,35 +902,6 @@ function GuidanceRuleDialog({
               className="space-y-2"
             />
             {errors.roles && <p className="text-xs text-destructive">{errors.roles}</p>}
-          </div>
-
-          <div className="space-y-2">
-            <Label>
-              {intl.formatMessage({
-                id: 'automation.agent.guidance.channelsLabel',
-                defaultMessage: 'Customer channels',
-              })}
-            </Label>
-            <p className="text-xs text-muted-foreground">
-              {intl.formatMessage({
-                id: 'automation.agent.guidance.channelsHelp',
-                defaultMessage:
-                  'Leave every channel unchecked to use this guidance on all eligible channels.',
-              })}
-            </p>
-            <CheckboxGroup
-              items={channelItems}
-              selected={channels}
-              onToggle={(value) => {
-                const channel = value as AssistantSurface
-                setChannels((currentChannels) =>
-                  currentChannels.includes(channel)
-                    ? currentChannels.filter((candidate) => candidate !== channel)
-                    : [...currentChannels, channel]
-                )
-              }}
-              className="space-y-2"
-            />
           </div>
 
           <div className="flex min-h-11 items-center justify-between gap-3 rounded-lg border p-3">

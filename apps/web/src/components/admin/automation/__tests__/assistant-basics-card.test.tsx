@@ -7,22 +7,18 @@ import { IntlProvider } from 'react-intl'
 const updateVoice = vi.fn()
 const config = {
   version: 2 as const,
-  identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+  identity: { name: 'Quinn', avatarUrl: null },
   voice: {
     tone: 'warm' as const,
     responseLength: 'brief' as const,
     additionalInstructions: 'Use UK English.',
   },
-  channels: {},
-  toolControls: {},
 }
 
 vi.mock('@/lib/server/functions/assistant-settings', () => ({
   getAssistantSettingsFn: vi.fn(async () => ({ config, revision: 2, managedFieldPaths: [] })),
   updateAssistantIdentityFn: vi.fn(),
   updateAssistantVoiceFn: (input: { data: unknown }) => updateVoice(input),
-  updateAssistantChannelsFn: vi.fn(),
-  updateAssistantToolControlsFn: vi.fn(),
   updateWidgetAssistantDeploymentFn: vi.fn(),
 }))
 

@@ -4,13 +4,11 @@ import {
   getToolSpecByName,
   makeAssistantToolContext,
   resolveToolSpecs,
-  type ToolControlMode,
   type AssistantToolSpec,
 } from '../assistant.toolspec'
 
 const SNAKE_CASE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/
 const VALID_RISKS = ['read', 'write', 'control']
-const VALID_MODES: ToolControlMode[] = ['disabled', 'approval', 'autonomous']
 
 describe('assistant.toolspec registry completeness', () => {
   let specs: AssistantToolSpec[]
@@ -37,41 +35,8 @@ describe('assistant.toolspec registry completeness', () => {
     }
   })
 
-  it('every spec supportedModes only contains valid control modes', () => {
-    for (const spec of specs) {
-      for (const mode of spec.supportedModes) {
-        expect(VALID_MODES).toContain(mode)
-      }
-    }
-  })
-
-  it('every spec supportedModes includes its own defaultMode', () => {
-    for (const spec of specs) {
-      expect(spec.supportedModes).toContain(spec.defaultMode)
-    }
-  })
-
-  it('read-risk tools never support approval (approval is a write concept)', () => {
-    for (const spec of specs) {
-      if (spec.risk === 'read') {
-        expect(spec.supportedModes).not.toContain('approval')
-      }
-    }
-  })
-
-  it('static write tools support only disabled and approval, and default to approval', () => {
-    const writes = specs.filter((spec) => spec.risk === 'write')
-    expect(writes.length).toBeGreaterThan(0)
-    for (const spec of writes) {
-      expect(spec.supportedModes, spec.name).toEqual(['disabled', 'approval'])
-      expect(spec.defaultMode, spec.name).toBe('approval')
-    }
-  })
-
-  it('control tools are autonomous protocol primitives, never configurable actions', () => {
-    for (const spec of specs) {
-      if (spec.risk === 'control') expect(spec.supportedModes).toEqual(['autonomous'])
-    }
+  it('there is at least one write tool in the catalogue', () => {
+    expect(specs.filter((spec) => spec.risk === 'write').length).toBeGreaterThan(0)
   })
 
   it('every spec declares a non-empty parents array of only conversation/ticket', () => {
@@ -133,8 +98,6 @@ describe('search_knowledge spec', () => {
   it('exists with the expected shape', () => {
     expect(spec).toBeDefined()
     expect(spec.risk).toBe('read')
-    expect(spec.defaultMode).toBe('autonomous')
-    expect(spec.supportedModes).toEqual(['disabled', 'autonomous'])
   })
 
   it('requires no conversation permission (audience scoping is the access control)', () => {
@@ -196,7 +159,7 @@ describe('handoff_to_human spec', () => {
       accepted: true,
       reason: 'low_confidence',
     })
-    expect(context.handoffRequest).toEqual(packet)
+    expect(context.ledger.handoffRequest).toEqual(packet)
   })
 })
 

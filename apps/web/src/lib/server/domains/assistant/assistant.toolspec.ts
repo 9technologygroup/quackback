@@ -1,15 +1,22 @@
 /**
  * Quinn's tool catalogue: one spec per tool, describing what it does, who can
- * enable it, and how it runs, alongside the model-facing definition and its
+ * use it, and how it runs, alongside the model-facing definition and its
  * server implementation. `assistant.tools.ts` assembles the catalogue into
  * TanStack AI server tools; nothing here talks to the model runtime directly.
  *
- * Every spec carries a control-mode contract even though only 'autonomous' is
- * reachable today — checking `permissions` and enforcing `defaultMode` /
- * approval both land in a later task. Read tools never support 'approval':
- * approval gates a change before it happens, and reads don't change anything.
+ * A tool's execution branch is decided per turn by `resolveEffectiveToolMode`
+ * (assistant.tools.ts) from the turn's role policy, not from any saved
+ * per-tool configuration: a real customer-support turn executes write tools
+ * autonomously, a Copilot Q&A turn proposes them as approval cards, and the
+ * admin sandbox previews them. `permissions` is still enforced (via `can`)
+ * before a write executes.
  */
-import { toolDefinition, type ToolDefinition } from '@tanstack/ai'
+import {
+  toolDefinition,
+  type ToolDefinition,
+  type InferToolInput,
+  type InferToolOutput,
+} from '@tanstack/ai'
 import { z } from 'zod'
 import {
   conversations,
@@ -18,23 +25,20 @@ import {
   type AssistantHandoffReason,
 } from '@/lib/server/db'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
-import type {
-  PrincipalId,
-  ConversationId,
-  TicketId,
-  AssistantInvolvementId,
-  BoardId,
+import {
+  isTypeId,
+  type PrincipalId,
+  type ConversationId,
+  type TicketId,
+  type AssistantInvolvementId,
 } from '@quackback/ids'
 import { type ContentAudience } from './audience'
 import { retrieveKnowledge, type RetrievedItem } from './retrieval-sources'
+import type { AssistantCitationType } from './citation-types'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
-import {
-  TICKET_TYPES,
-  CONVERSATION_PRIORITIES,
-  type TicketType,
-  type ConversationPriority,
-} from '@/lib/shared/db-types'
+import { TICKET_TYPES, CONVERSATION_PRIORITIES } from '@/lib/shared/db-types'
 import type { Actor } from '@/lib/server/policy/types'
+import { DEFAULT_ASSISTANT_CONFIG, type AssistantRole } from '@/lib/shared/assistant/config'
 import { setConversationAttribute } from '@/lib/server/domains/conversation-attributes/set-attribute.service'
 import { classifyConversationAttributes } from '@/lib/server/domains/conversation-attributes/ai-classification.service'
 import { readAttributeValue } from '@/lib/shared/conversation/attribute-values'
@@ -44,13 +48,12 @@ import { createPostFromConversation } from '@/lib/server/domains/conversation/co
 import { quinnActor } from './assistant.actor'
 import { RETRIEVED_CONTENT_NOTE } from './injection-guard'
 import { logger } from '@/lib/server/logger'
-import type { AssistantRole } from '@/lib/shared/assistant/config'
 
 const log = logger.child({ component: 'assistant-toolspec' })
 
 /** A structured citation — the only citation contract; never free-form markdown. */
 export interface AssistantCitation {
-  type: 'article' | 'post' | 'snippet' | 'summary'
+  type: AssistantCitationType
   id: string
   title: string
   url: string
@@ -75,8 +78,8 @@ export interface AssistantCitation {
 
 /**
  * One write-tool call the pipeline turned into a pending action this run
- * (P2-C.4). Recorded on `ctx.proposedActions` by the approval branch of
- * `runWithPipeline`, mirroring how `ctx.sources` collects citations: the
+ * (P2-C.4). Recorded on `ctx.ledger.proposedActions` by the approval branch of
+ * `runWithPipeline`, mirroring how `ctx.ledger.sources` collects citations: the
  * runtime surfaces the ledger on `AssistantTurnResult` unfiltered (unlike
  * citations, a proposal is never model-curated: every approval-mode call this
  * run created a real row, so every one of them is reported).
@@ -114,11 +117,73 @@ export const ASSISTANT_INABILITY_REASONS = [
 export type AssistantInabilityReason = (typeof ASSISTANT_INABILITY_REASONS)[number]
 
 /**
+ * How a write-risk tool's outcome resolves this turn (see the field's own doc
+ * on `AssistantToolContext.writeToolPolicy` for the full contract of each
+ * member). Named once here so the context field and `makeAssistantToolContext`
+ * cannot drift on the union.
+ */
+export type AssistantWriteToolPolicy = 'simulate' | 'execute' | 'propose' | 'disabled'
+
+/**
+ * The per-attempt MUTABLE state a turn's tools accumulate: the citations they
+ * surfaced, the calls and outcomes they recorded, and the orchestration
+ * decisions (handoff / inability / proposed actions) they emitted. Split out
+ * of the otherwise-immutable `AssistantToolContext` so the runtime's
+ * per-attempt reset is a single `ctx.ledger = makeAssistantToolLedger()`
+ * assignment and a newly added ledger field can never be forgotten in that
+ * reset. Minted only by `makeAssistantToolLedger`.
+ */
+export interface AssistantToolLedger {
+  /** Sources surfaced by search_knowledge this run, keyed by id, for citation assembly. */
+  sources: Map<string, AssistantCitation>
+  /**
+   * Tool names actually invoked this attempt, in call order. Completion
+   * validation and durable tracing use this observed ledger instead of
+   * trying to infer actions from customer-facing prose.
+   */
+  toolCalls: string[]
+  /** Privacy-safe outcomes for Test agent and operational traces. */
+  toolOutcomes: AssistantToolOutcome[]
+  /** Set only by the handoff_to_human control tool. */
+  handoffRequest: AssistantHandoffRequest | null
+  /** Set only by the report_inability control tool. */
+  inabilityReport: { reason: AssistantInabilityReason } | null
+  /**
+   * Pending actions this run's write-tool calls turned into approval-queue
+   * rows (P2-C.4), in call order. Populated by the approval branch of
+   * `runWithPipeline` (assistant.tools.ts); cleared per attempt alongside
+   * `sources`/`searchCalls` so a retry doesn't double-report an earlier
+   * attempt's proposals. See `AssistantProposedAction`.
+   */
+  proposedActions: AssistantProposedAction[]
+  /** search_knowledge calls made this attempt, for the server-side search budget. */
+  searchCalls: number
+}
+
+/**
+ * A fresh per-attempt ledger: empty source map, empty call/outcome/proposal
+ * ledgers, no orchestration decision yet, zeroed search budget. The single
+ * construction point, so the turn runtime's per-attempt reset and the initial
+ * context both start from the identical clean state.
+ */
+export function makeAssistantToolLedger(): AssistantToolLedger {
+  return {
+    sources: new Map<string, AssistantCitation>(),
+    toolCalls: [],
+    toolOutcomes: [],
+    handoffRequest: null,
+    inabilityReport: null,
+    proposedActions: [],
+    searchCalls: 0,
+  }
+}
+
+/**
  * Request-local context threaded to server tools (and middleware). Carries the
  * tenant db handle, Quinn's service principal, the viewer audience for
  * retrieval scoping, the linked conversation (null in the sandbox), and a
- * mutable ledger of sources surfaced this run. It is passed to `chat({ context })`
- * and NEVER serialized into the model prompt.
+ * mutable `ledger` of sources surfaced and decisions emitted this run. It is
+ * passed to `chat({ context })` and NEVER serialized into the model prompt.
  */
 export interface AssistantToolContext {
   db: Executor
@@ -163,59 +228,40 @@ export interface AssistantToolContext {
   sourceTypes?: RetrievedItem['sourceType'][]
   /** Turn-scoped feature snapshot used by search without re-reading settings. */
   knowledgeEnabled?: boolean
-  /** Sources surfaced by search_knowledge this run, keyed by id, for citation assembly. */
-  sources: Map<string, AssistantCitation>
   /**
-   * Tool names actually invoked this attempt, in call order. Completion
-   * validation and durable tracing use this observed ledger instead of
-   * trying to infer actions from customer-facing prose.
+   * The per-attempt mutable ledger: sources surfaced, calls/outcomes recorded,
+   * and orchestration decisions (handoff/inability/proposals) emitted this
+   * attempt. Reset as a whole between attempts by the runtime
+   * (`ctx.ledger = makeAssistantToolLedger()`). See `AssistantToolLedger`.
    */
-  toolCalls: string[]
-  /** Privacy-safe outcomes for Test agent and operational traces. */
-  toolOutcomes: AssistantToolOutcome[]
-  /** Set only by the handoff_to_human control tool. */
-  handoffRequest: AssistantHandoffRequest | null
-  /** Set only by the report_inability control tool. */
-  inabilityReport: { reason: AssistantInabilityReason } | null
-  /**
-   * Pending actions this run's write-tool calls turned into approval-queue
-   * rows (P2-C.4), in call order. Populated by the approval branch of
-   * `runWithPipeline` (assistant.tools.ts); cleared per attempt alongside
-   * `sources`/`searchCalls` so a retry doesn't double-report an earlier
-   * attempt's proposals. See `AssistantProposedAction`.
-   */
-  proposedActions: AssistantProposedAction[]
-  /** search_knowledge calls made this attempt, for the server-side search budget. */
-  searchCalls: number
+  ledger: AssistantToolLedger
   /** True in the admin sandbox: write tools report what they would do instead of running. */
   simulate: boolean
   /**
-   * How a write-risk tool's outcome resolves when `simulate` is true (never
-   * consulted for a read-risk tool, or when `simulate` is false). 'simulate',
-   * the default when unset, always previews instead of running, matching
-   * every caller today: the sandbox (no conversation to attach a claim,
-   * approval, or denial to). 'controls' instead defers to the tool's
-   * configured mode, letting approval propose a pending action and
-   * autonomous execute as usual even while `simulate` is set: the seam a
-   * future surface uses to preview writes as approval cards rather than as a
-   * blanket simulated summary, without the pipeline itself changing.
-   * 'propose' (P2-C.4, the copilot surface) is stronger still: a write tool
-   * ALWAYS resolves to approval, even one configured autonomous, regardless
-   * of `simulate`. From a Copilot chat the proposal card itself is the
-   * confirmation UX, so an autonomous-configured tool proposes rather than
-   * fires. Quinn must never act in the conversation from a teammate's Q&A
-   * about it, only ever suggest an action for a human to approve.
+   * How a write-risk tool's outcome resolves this turn (never consulted for a
+   * read-risk or control tool). Selected from the turn's role policy
+   * (`ASSISTANT_ROLE_POLICIES`, assistant.system-prompt.ts), or forced to
+   * 'simulate' when `simulate` is true.
+   * 'simulate' (the sandbox, and the default when unset while `simulate` is
+   * true) always previews instead of running: there is no conversation to
+   * attach a claim, approval, or denial to.
+   * 'execute' (customer_support real turns) runs the write autonomously,
+   * after its permission check — Featurebase-style autonomous execution, no
+   * teammate approval in the loop.
+   * 'propose' (P2-C.4, the copilot Q&A surface) resolves every write to a
+   * pending-action proposal. From a Copilot chat the proposal card itself is
+   * the confirmation UX, so nothing fires without a human decision. Quinn must
+   * never act in the conversation from a teammate's Q&A about it, only ever
+   * suggest an action for a human to approve.
    * 'disabled' (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md, the proactive-suggestions
-   * turn) is stronger still: a write-risk tool is dropped from the turn's
-   * tool set entirely — no simulate preview, no proposal, not even the
-   * metadataWrite exemption — because a suggestion drafts a reply and must
-   * have zero side effects, not even a pending-approval row. Only ever set
+   * turn) drops the write-risk tool from the turn's tool set entirely — no
+   * simulate preview, no proposal, not even a pending-approval row — because a
+   * suggestion drafts a reply and must have zero side effects. Only ever set
    * by the runtime's own suggest-intent profile (`COPILOT_INTENT_PROFILES`,
    * assistant.runtime.ts), never passed in by a route: the invariant is the
-   * intent's, and `AssistantTurnInput.writeToolPolicy` deliberately excludes
-   * it. See `resolveEffectiveToolMode` in assistant.tools.ts.
+   * intent's. See `resolveEffectiveToolMode` in assistant.tools.ts.
    */
-  writeToolPolicy?: 'simulate' | 'controls' | 'propose' | 'disabled'
+  writeToolPolicy?: AssistantWriteToolPolicy
   /** The involvement this turn belongs to, for audit rows and pending actions. Null before the first involvement opens. */
   involvementId: AssistantInvolvementId | null
   /** The customer message this turn answers, keying the write-tool idempotency key. Null in the sandbox. */
@@ -248,13 +294,13 @@ export function makeAssistantToolContext(init: {
   involvementId?: AssistantInvolvementId | null
   latestCustomerMessageId?: string | null
   simulate?: boolean
-  writeToolPolicy?: 'simulate' | 'controls' | 'propose' | 'disabled'
+  writeToolPolicy?: AssistantWriteToolPolicy
   actor?: Actor
 }): AssistantToolContext {
   return {
     db: init.db,
     assistantPrincipalId: init.assistantPrincipalId,
-    assistantName: init.assistantName ?? 'Quinn',
+    assistantName: init.assistantName ?? DEFAULT_ASSISTANT_CONFIG.identity.name,
     role: init.role ?? 'customer_support',
     audience: init.audience,
     conversationId: init.conversationId,
@@ -262,13 +308,7 @@ export function makeAssistantToolContext(init: {
     customerPrincipalId: init.customerPrincipalId ?? undefined,
     sourceTypes: init.sourceTypes,
     knowledgeEnabled: init.knowledgeEnabled ?? false,
-    sources: new Map<string, AssistantCitation>(),
-    toolCalls: [],
-    toolOutcomes: [],
-    handoffRequest: null,
-    inabilityReport: null,
-    proposedActions: [],
-    searchCalls: 0,
+    ledger: makeAssistantToolLedger(),
     simulate: init.simulate ?? init.conversationId === null,
     writeToolPolicy: init.writeToolPolicy,
     involvementId: init.involvementId ?? null,
@@ -293,9 +333,6 @@ export const SEARCH_BUDGET_PER_TURN = 3
  */
 export type ToolRiskClass = 'read' | 'write' | 'control'
 
-// Shared by persisted V2 configuration and the registry's supported modes.
-export type ToolControlMode = import('@/lib/shared/assistant/config').AssistantToolControl
-
 /**
  * The pipeline's gate results. Every tool's declared output must also admit
  * these: the model runtime validates execute results against outputSchema
@@ -315,16 +352,34 @@ export const assistantGateEnvelopeSchema = z.union([
 /**
  * Compose a tool's outputSchema so it also admits the pipeline's gate
  * envelopes (pending-approval/denied/duplicate/failed/simulated).
+ *
+ * This deliberately does NOT use TanStack's `needsApproval` tool option.
+ * Approval here is a PERSISTED queue — a pending-action row with a TTL, a
+ * summary card a teammate reviews, and later execution as a bounded
+ * teammate-actor (see `proposePendingAction` / `executeApprovedPendingAction`)
+ * — not the in-stream client-side approval prompt `needsApproval` triggers. The
+ * gate result is a normal tool output the model must be able to relay to the
+ * customer, so it rides the outputSchema; do not migrate this to `needsApproval`.
  */
 export function withGateEnvelope<T extends z.ZodTypeAny>(schema: T) {
   return z.union([schema, assistantGateEnvelopeSchema])
 }
 
 /**
+ * A tool's own SUCCESS output — everything its declared outputSchema admits
+ * that is NOT a pipeline gate envelope. This is exactly what a spec's
+ * `execute` returns (the pipeline wraps the gate envelopes on afterward), so
+ * `defineToolSpec` derives `execute`'s return type from the model-facing
+ * definition itself and it can never drift from the schema the model sees.
+ */
+type AssistantGateEnvelope = z.infer<typeof assistantGateEnvelopeSchema>
+type ToolSuccessOutput<TDef> = Exclude<InferToolOutput<TDef>, AssistantGateEnvelope>
+
+/**
  * One entry in Quinn's tool catalogue. Bundles the model-facing `definition`
- * with the admin-facing metadata (label/description/risk/modes/permissions)
- * needed to list, control, and audit the tool, plus the actual `execute` body
- * kept separate from `definition` so a control-mode gate can wrap it without
+ * with the admin-facing metadata (label/description/risk/permissions) needed
+ * to list, gate, and audit the tool, plus the actual `execute` body kept
+ * separate from `definition` so the execution pipeline can wrap it without
  * touching the model-facing schema.
  */
 export interface AssistantToolSpec<In = unknown, Out = unknown> {
@@ -344,9 +399,7 @@ export interface AssistantToolSpec<In = unknown, Out = unknown> {
    */
   promptGuidance: string
   risk: ToolRiskClass
-  supportedModes: readonly ToolControlMode[]
-  defaultMode: ToolControlMode
-  /** Checked via can(quinnActor, p) before execute (wiring lands in a later task). */
+  /** Checked via can(actor, p) before a write-risk tool executes autonomously. */
   permissions: readonly PermissionKey[]
   /**
    * Which kind(s) of item this tool can act on (unified inbox §2.9/§3.3): a
@@ -372,6 +425,17 @@ export interface AssistantToolSpec<In = unknown, Out = unknown> {
   idempotencyKey?(args: In, ctx: AssistantToolContext): string
 }
 
+const searchKnowledgeOutputSchema = z.object({
+  articles: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      snippet: z.string(),
+    })
+  ),
+  note: z.string().optional(),
+})
+
 export const searchKnowledgeTool = toolDefinition({
   name: 'search_knowledge',
   description:
@@ -379,28 +443,11 @@ export const searchKnowledgeTool = toolDefinition({
   inputSchema: z.object({
     query: z.string().min(1).max(500).describe('A focused search query derived from the question.'),
   }),
-  outputSchema: withGateEnvelope(
-    z.object({
-      articles: z.array(
-        z.object({
-          id: z.string(),
-          title: z.string(),
-          snippet: z.string(),
-        })
-      ),
-      note: z.string().optional(),
-    })
-  ),
+  outputSchema: withGateEnvelope(searchKnowledgeOutputSchema),
 })
 
-interface SearchKnowledgeArgs {
-  query: string
-}
-
-interface SearchKnowledgeOutput {
-  articles: Array<{ id: string; title: string; snippet: string }>
-  note?: string
-}
+type SearchKnowledgeArgs = InferToolInput<typeof searchKnowledgeTool>
+type SearchKnowledgeOutput = z.infer<typeof searchKnowledgeOutputSchema>
 
 async function executeSearchKnowledge(
   args: SearchKnowledgeArgs,
@@ -408,8 +455,8 @@ async function executeSearchKnowledge(
 ): Promise<SearchKnowledgeOutput> {
   // Server-side search budget: end the exploration deterministically rather
   // than letting reformulation loops exhaust the iteration cap.
-  ctx.searchCalls += 1
-  if (ctx.searchCalls > SEARCH_BUDGET_PER_TURN) {
+  ctx.ledger.searchCalls += 1
+  if (ctx.ledger.searchCalls > SEARCH_BUDGET_PER_TURN) {
     return {
       articles: [],
       note: 'Search limit reached for this turn. Answer the customer now using only the articles already retrieved; if none were relevant, say you do not know and offer to connect a human.',
@@ -432,7 +479,7 @@ async function executeSearchKnowledge(
     // `updatedAt` rides the ledgered citation itself (see its doc on
     // AssistantCitation): the orchestrator's persistence strip is the one
     // owner of "ephemeral vs persisted citation fields", same as `internal`.
-    ctx.sources.set(
+    ctx.ledger.sources.set(
       item.id,
       item.updatedAt ? { ...item.citation, updatedAt: item.updatedAt } : item.citation
     )
@@ -450,6 +497,12 @@ async function executeSearchKnowledge(
     ...(items.length > 0 ? { note: RETRIEVED_CONTENT_NOTE } : {}),
   }
 }
+
+const handoffToHumanOutputSchema = z.object({
+  accepted: z.boolean(),
+  reason: z.enum(ASSISTANT_HANDOFF_REASONS).optional(),
+  note: z.string().optional(),
+})
 
 export const handoffToHumanTool = toolDefinition({
   name: 'handoff_to_human',
@@ -478,34 +531,18 @@ export const handoffToHumanTool = toolDefinition({
       .max(300)
       .describe('The most useful next step for the teammate receiving the handoff.'),
   }),
-  outputSchema: withGateEnvelope(
-    z.object({
-      accepted: z.boolean(),
-      reason: z.enum(ASSISTANT_HANDOFF_REASONS).optional(),
-      note: z.string().optional(),
-    })
-  ),
+  outputSchema: withGateEnvelope(handoffToHumanOutputSchema),
 })
 
-interface HandoffToHumanArgs {
-  reason: AssistantHandoffReason
-  customerNeed: string
-  attempted: string[]
-  recommendedNextStep: string
-}
-
-interface HandoffToHumanOutput {
-  accepted: boolean
-  reason?: AssistantHandoffReason
-  note?: string
-}
+type HandoffToHumanArgs = InferToolInput<typeof handoffToHumanTool>
+type HandoffToHumanOutput = z.infer<typeof handoffToHumanOutputSchema>
 
 async function executeHandoffToHuman(
   args: HandoffToHumanArgs,
   ctx: AssistantToolContext
 ): Promise<HandoffToHumanOutput> {
   if (!ctx.conversationId && !ctx.simulate) return { accepted: false, note: NO_CONVERSATION_NOTE }
-  ctx.handoffRequest = {
+  ctx.ledger.handoffRequest = {
     reason: args.reason,
     customerNeed: args.customerNeed,
     attempted: args.attempted,
@@ -513,6 +550,11 @@ async function executeHandoffToHuman(
   }
   return { accepted: true, reason: args.reason }
 }
+
+const reportInabilityOutputSchema = z.object({
+  accepted: z.boolean(),
+  reason: z.enum(ASSISTANT_INABILITY_REASONS),
+})
 
 export const reportInabilityTool = toolDefinition({
   name: 'report_inability',
@@ -523,22 +565,23 @@ export const reportInabilityTool = toolDefinition({
       .enum(ASSISTANT_INABILITY_REASONS)
       .describe('Why the request cannot be completed in this turn.'),
   }),
-  outputSchema: withGateEnvelope(
-    z.object({ accepted: z.boolean(), reason: z.enum(ASSISTANT_INABILITY_REASONS) })
-  ),
+  outputSchema: withGateEnvelope(reportInabilityOutputSchema),
 })
 
-interface ReportInabilityArgs {
-  reason: AssistantInabilityReason
-}
+type ReportInabilityArgs = InferToolInput<typeof reportInabilityTool>
 
 async function executeReportInability(
   args: ReportInabilityArgs,
   ctx: AssistantToolContext
 ): Promise<{ accepted: true; reason: AssistantInabilityReason }> {
-  ctx.inabilityReport = { reason: args.reason }
+  ctx.ledger.inabilityReport = { reason: args.reason }
   return { accepted: true, reason: args.reason }
 }
+
+const setAttributeOutputSchema = z.object({
+  applied: z.boolean(),
+  note: z.string().optional(),
+})
 
 export const setAttributeTool = toolDefinition({
   name: 'set_attribute',
@@ -556,12 +599,12 @@ export const setAttributeTool = toolDefinition({
         'The value to store. Use an array of option ids for a multi_select attribute, null to clear the attribute, otherwise the single value.'
       ),
   }),
-  outputSchema: withGateEnvelope(
-    z.object({
-      applied: z.boolean(),
-      note: z.string().optional(),
-    })
-  ),
+  outputSchema: withGateEnvelope(setAttributeOutputSchema),
+})
+
+const endConversationOutputSchema = z.object({
+  closed: z.boolean(),
+  note: z.string().optional(),
 })
 
 export const endConversationTool = toolDefinition({
@@ -575,12 +618,15 @@ export const endConversationTool = toolDefinition({
       .optional()
       .describe('A short note on why the conversation is being closed.'),
   }),
-  outputSchema: withGateEnvelope(
-    z.object({
-      closed: z.boolean(),
-      note: z.string().optional(),
-    })
-  ),
+  outputSchema: withGateEnvelope(endConversationOutputSchema),
+})
+
+const createTicketOutputSchema = z.object({
+  created: z.boolean(),
+  ticketId: z.string().optional(),
+  reference: z.string().optional(),
+  title: z.string().optional(),
+  note: z.string().optional(),
 })
 
 export const createTicketTool = toolDefinition({
@@ -597,33 +643,25 @@ export const createTicketTool = toolDefinition({
       .describe('Additional detail from the conversation to seed the ticket.'),
     priority: z.enum(CONVERSATION_PRIORITIES).optional().describe('How urgent the ticket is.'),
   }),
-  outputSchema: withGateEnvelope(
-    z.object({
-      created: z.boolean(),
-      ticketId: z.string().optional(),
-      reference: z.string().optional(),
-      title: z.string().optional(),
-      note: z.string().optional(),
-    })
-  ),
+  outputSchema: withGateEnvelope(createTicketOutputSchema),
+})
+
+const captureFeedbackOutputSchema = z.object({
+  created: z.boolean(),
+  postId: z.string().optional(),
+  note: z.string().optional(),
 })
 
 export const captureFeedbackTool = toolDefinition({
   name: 'capture_feedback',
   description:
-    'Turn a feature request or product suggestion from this conversation into a public feedback post attributed to the customer, so it joins the roadmap the team tracks. Use this for ideas and suggestions, not for problems that need a fix; use create_ticket for those. A teammate must approve before anything posts, since this publishes content under the customer identity.',
+    "Turn a feature request or product suggestion from this conversation into a public feedback post attributed to the customer, so it joins the roadmap the team tracks. Use this for ideas and suggestions, not for problems that need a fix; use create_ticket for those. This posts publicly under the customer's identity, so only use it to capture a request the customer actually made.",
   inputSchema: z.object({
     boardId: z.string().min(1).describe('The board TypeID to post the feedback to.'),
     title: z.string().min(1).max(200).describe('A short, specific title for the feedback post.'),
     content: z.string().max(2000).optional().describe('Additional detail from the conversation.'),
   }),
-  outputSchema: withGateEnvelope(
-    z.object({
-      created: z.boolean(),
-      postId: z.string().optional(),
-      note: z.string().optional(),
-    })
-  ),
+  outputSchema: withGateEnvelope(captureFeedbackOutputSchema),
 })
 
 /**
@@ -674,15 +712,8 @@ async function getConversationSnapshot(
   return row ?? null
 }
 
-interface SetAttributeArgs {
-  key: string
-  value: string | number | boolean | null | string[]
-}
-
-interface SetAttributeOutput {
-  applied: boolean
-  note?: string
-}
+type SetAttributeArgs = InferToolInput<typeof setAttributeTool>
+type SetAttributeOutput = z.infer<typeof setAttributeOutputSchema>
 
 /**
  * Whether the stored value matches what this call asked to write. Arrays
@@ -722,14 +753,8 @@ async function executeSetAttribute(
     : { applied: false, note: 'Attribute already set by another source.' }
 }
 
-interface EndConversationArgs {
-  reason?: string
-}
-
-interface EndConversationOutput {
-  closed: boolean
-  note?: string
-}
+type EndConversationArgs = InferToolInput<typeof endConversationTool>
+type EndConversationOutput = z.infer<typeof endConversationOutputSchema>
 
 async function executeEndConversation(
   _args: EndConversationArgs,
@@ -760,20 +785,8 @@ async function executeEndConversation(
   return { closed: true }
 }
 
-interface CreateTicketArgs {
-  type: TicketType
-  title: string
-  description?: string
-  priority?: ConversationPriority
-}
-
-interface CreateTicketOutput {
-  created: boolean
-  ticketId?: string
-  reference?: string
-  title?: string
-  note?: string
-}
+type CreateTicketArgs = InferToolInput<typeof createTicketTool>
+type CreateTicketOutput = z.infer<typeof createTicketOutputSchema>
 
 async function executeCreateTicket(
   args: CreateTicketArgs,
@@ -800,17 +813,8 @@ async function executeCreateTicket(
   return { created: true, ticketId: ticket.id, reference: ticket.reference, title: ticket.title }
 }
 
-interface CaptureFeedbackArgs {
-  boardId: string
-  title: string
-  content?: string
-}
-
-interface CaptureFeedbackOutput {
-  created: boolean
-  postId?: string
-  note?: string
-}
+type CaptureFeedbackArgs = InferToolInput<typeof captureFeedbackTool>
+type CaptureFeedbackOutput = z.infer<typeof captureFeedbackOutputSchema>
 
 async function executeCaptureFeedback(
   args: CaptureFeedbackArgs,
@@ -820,10 +824,17 @@ async function executeCaptureFeedback(
   if (!conversationId) {
     return { created: false, note: NO_CONVERSATION_NOTE }
   }
+  // The model sends the board id as a free string (inputSchema is z.string()),
+  // so validate the TypeID format before handing it to the service rather than
+  // casting an unchecked string into a branded BoardId. A malformed id fails
+  // gracefully with the tool's own note instead of surfacing a service throw.
+  if (!isTypeId(args.boardId, 'board')) {
+    return { created: false, note: 'Unknown or invalid board id.' }
+  }
   const result = await createPostFromConversation(
     {
       conversationId,
-      boardId: args.boardId as BoardId,
+      boardId: args.boardId,
       title: args.title,
       content: args.content,
     },
@@ -841,23 +852,36 @@ async function executeCaptureFeedback(
  * `name` derives from the definition so the model-facing id and the registry
  * id can never drift, and the erasure to the registry's unknown-typed shape
  * lives here, in exactly one place, instead of a cast per entry.
+ *
+ * Generic over the concrete `definition` (`TDef`), so the compiler ties
+ * `execute`/`summarize`/`idempotencyKey` straight to that definition's OWN
+ * schemas: `args` is the definition's inferred input (`InferToolInput<TDef>`)
+ * and `execute`'s return is the definition's success output
+ * (`ToolSuccessOutput<TDef>` — the outputSchema minus the gate envelopes the
+ * pipeline adds later). A tool whose execute reads a field the input schema
+ * doesn't declare, or returns a shape the output schema doesn't admit, no
+ * longer compiles — no per-tool `<In, Out>` to hand-align. The single erasure
+ * to the heterogeneous registry type (`AssistantToolSpec` with unknown args)
+ * stays here at the return, so the registry can still hold every tool in one
+ * `Record` while each entry was checked against its real schemas above.
  */
-function defineToolSpec<In, Out>(spec: {
+function defineToolSpec<TDef extends ToolDefinition<any, any, string>>(spec: {
   label: string
   description: string
   promptGuidance: string
   risk: ToolRiskClass
-  supportedModes: readonly ToolControlMode[]
-  defaultMode: ToolControlMode
   permissions: readonly PermissionKey[]
   /** Defaults to `['conversation']` — every write tool defined below predates
    *  ticket-scoped turns; see the field's doc on `AssistantToolSpec`. */
   parents?: readonly ('conversation' | 'ticket')[]
   availableWhen?: (ctx: AssistantToolContext) => boolean
-  definition: ToolDefinition<any, any, string>
-  execute: (args: In, ctx: AssistantToolContext) => Promise<Out>
-  summarize: (args: In) => string
-  idempotencyKey?: (args: In, ctx: AssistantToolContext) => string
+  definition: TDef
+  execute: (
+    args: InferToolInput<TDef>,
+    ctx: AssistantToolContext
+  ) => Promise<ToolSuccessOutput<TDef>>
+  summarize: (args: InferToolInput<TDef>) => string
+  idempotencyKey?: (args: InferToolInput<TDef>, ctx: AssistantToolContext) => string
 }): AssistantToolSpec {
   return {
     name: spec.definition.name,
@@ -873,8 +897,6 @@ const SPECS: readonly AssistantToolSpec[] = [
     promptGuidance:
       'Call before answering anything factual or product-related; refine the query once more if the first search misses, then answer with what you have. Cite only the article ids it returns.',
     risk: 'read',
-    supportedModes: ['disabled', 'autonomous'],
-    defaultMode: 'autonomous',
     // Knowledge base reads are already scoped by viewer audience; there is no
     // separate conversation- or ticket-shaped permission to check here.
     permissions: [],
@@ -894,8 +916,6 @@ const SPECS: readonly AssistantToolSpec[] = [
     promptGuidance:
       'Call when a human must take over, especially after an explicit request, for safety, or when the issue cannot be handled autonomously. After the tool result, write the handoff reply yourself.',
     risk: 'control',
-    supportedModes: ['autonomous'],
-    defaultMode: 'autonomous',
     permissions: [],
     definition: handoffToHumanTool,
     execute: executeHandoffToHuman,
@@ -910,8 +930,6 @@ const SPECS: readonly AssistantToolSpec[] = [
     promptGuidance:
       'Call only after you determine the request cannot be completed with the available tools or context. Then write the honest explanation yourself; this tool never supplies customer-facing wording.',
     risk: 'control',
-    supportedModes: ['autonomous'],
-    defaultMode: 'autonomous',
     permissions: [],
     parents: ['conversation', 'ticket'],
     definition: reportInabilityTool,
@@ -925,8 +943,6 @@ const SPECS: readonly AssistantToolSpec[] = [
     promptGuidance:
       'Use to record a fact you learned for reporting only; never to reply to the customer or to change conversation status.',
     risk: 'write',
-    supportedModes: ['disabled', 'approval'],
-    defaultMode: 'approval',
     permissions: [PERMISSIONS.CONVERSATION_SET_ATTRIBUTES],
     definition: setAttributeTool,
     execute: executeSetAttribute,
@@ -942,8 +958,6 @@ const SPECS: readonly AssistantToolSpec[] = [
     promptGuidance:
       'Only call once the customer has clearly confirmed the issue is resolved or said they need nothing else; never close on your own judgement that the answer seems to solve it.',
     risk: 'write',
-    supportedModes: ['disabled', 'approval'],
-    defaultMode: 'approval',
     permissions: [PERMISSIONS.CONVERSATION_SET_STATUS],
     definition: endConversationTool,
     execute: executeEndConversation,
@@ -956,8 +970,6 @@ const SPECS: readonly AssistantToolSpec[] = [
     promptGuidance:
       'Use for a bug or an account problem that needs a teammate to investigate beyond this conversation, not for a feature request.',
     risk: 'write',
-    supportedModes: ['disabled', 'approval'],
-    defaultMode: 'approval',
     permissions: [PERMISSIONS.TICKET_CREATE],
     definition: createTicketTool,
     execute: executeCreateTicket,
@@ -970,10 +982,6 @@ const SPECS: readonly AssistantToolSpec[] = [
     promptGuidance:
       'Use for a feature request or suggestion the customer raises, not for a problem that needs a fix.',
     risk: 'write',
-    // Approval-only v0: a live post attributed to the visitor is public in a
-    // way the other write tools are not, so there is no autonomous mode yet.
-    supportedModes: ['disabled', 'approval'],
-    defaultMode: 'approval',
     permissions: [PERMISSIONS.POST_CREATE, PERMISSIONS.POST_VOTE_ON_BEHALF],
     definition: captureFeedbackTool,
     execute: executeCaptureFeedback,

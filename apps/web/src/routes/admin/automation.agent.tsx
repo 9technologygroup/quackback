@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, useBlocker } from '@tanstack/react-router'
 import { useIntl } from 'react-intl'
@@ -17,8 +17,6 @@ import {
 import { AssistantIdentityCard } from '@/components/admin/automation/assistant-identity-card'
 import { AssistantVoiceCard } from '@/components/admin/automation/assistant-basics-card'
 import { GuidanceRulesCard } from '@/components/admin/automation/guidance-rules-card'
-import { ChannelInstructionsCard } from '@/components/admin/automation/surface-instructions-card'
-import { ToolControlsCard } from '@/components/admin/automation/tool-controls-card'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { DefaultErrorPage } from '@/components/shared/error-page'
 import { BackLink } from '@/components/ui/back-link'
@@ -28,7 +26,7 @@ import { assistantQueries } from '@/lib/client/queries/assistant'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
-const AGENT_TABS = ['basics', 'guidance', 'actions', 'history'] as const
+const AGENT_TABS = ['basics', 'guidance', 'history'] as const
 type AgentTab = (typeof AGENT_TABS)[number]
 
 const searchSchema = z.object({
@@ -68,8 +66,7 @@ function AssistantAgentSettings() {
   const navigate = Route.useNavigate()
   const { dirtyTabs, hasUnsavedChanges } = useAssistantDirtyState()
   const flags = settings?.featureFlags as FeatureFlags | undefined
-  const actionsAvailable = Boolean(flags?.assistantTools)
-  const tab: AgentTab = requestedTab === 'actions' && !actionsAvailable ? 'basics' : requestedTab
+  const tab: AgentTab = requestedTab
   const initialDeployment = settings?.publicWidgetConfig?.messenger?.assistant
   const [deployment, setDeployment] = useState<WidgetAssistantDeployment>({
     enabled: initialDeployment?.enabled ?? true,
@@ -84,11 +81,6 @@ function AssistantAgentSettings() {
     enableBeforeUnload: false,
     withResolver: true,
   })
-
-  useEffect(() => {
-    if (requestedTab !== 'actions' || actionsAvailable) return
-    void navigate({ search: (previous) => ({ ...previous, tab: undefined }), replace: true })
-  }, [actionsAvailable, navigate, requestedTab])
 
   function setTab(value: string) {
     const next = value as AgentTab
@@ -192,15 +184,6 @@ function AssistantAgentSettings() {
                     })}
                     {dirtyTabs.has('guidance') && <UnsavedChangesIndicator label={unsavedLabel} />}
                   </TabsTrigger>
-                  {actionsAvailable && (
-                    <TabsTrigger value="actions">
-                      {intl.formatMessage({
-                        id: 'automation.agent.tabs.actions',
-                        defaultMessage: 'Actions',
-                      })}
-                      {dirtyTabs.has('actions') && <UnsavedChangesIndicator label={unsavedLabel} />}
-                    </TabsTrigger>
-                  )}
                   <TabsTrigger value="history">
                     {intl.formatMessage({
                       id: 'automation.agent.tabs.history',
@@ -236,23 +219,12 @@ function AssistantAgentSettings() {
                     {intl.formatMessage({
                       id: 'automation.agent.guidanceLayers.description',
                       defaultMessage:
-                        "Writing guidelines set the baseline. Channel guidance applies in a particular channel. Situational guidance follows each rule's conditions and scope.",
+                        "Writing guidelines set the baseline. Situational guidance follows each rule's conditions and scope.",
                     })}
                   </p>
                 </div>
-                <ChannelInstructionsCard />
                 <GuidanceRulesCard />
               </TabsContent>
-
-              {actionsAvailable && (
-                <TabsContent
-                  value="actions"
-                  forceMount
-                  className="space-y-6 data-[state=inactive]:hidden"
-                >
-                  <ToolControlsCard />
-                </TabsContent>
-              )}
 
               <TabsContent
                 value="history"

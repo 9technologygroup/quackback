@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import { assistantRoleSchema, type AssistantRole } from './config'
-import { ASSISTANT_SURFACES, type AssistantSurface } from './surfaces'
 
 export const ASSISTANT_GUIDANCE_NAME_MAX_LENGTH = 80
 export const ASSISTANT_GUIDANCE_APPLIES_WHEN_MAX_LENGTH = 500
@@ -64,7 +63,6 @@ export const assistantGuidanceAppliesWhenSchema = normalizedGuidanceAppliesWhenS
   .transform((value) => value ?? null)
 
 export const assistantGuidanceRoleSchema = assistantRoleSchema
-export const assistantGuidanceChannelSchema = z.enum(ASSISTANT_SURFACES)
 
 function hasUniqueValues(values: readonly string[]): boolean {
   return new Set(values).size === values.length
@@ -76,17 +74,11 @@ export const assistantGuidanceRolesSchema = z
   .max(3)
   .refine(hasUniqueValues, 'Roles must be unique')
 
-export const assistantGuidanceChannelsSchema = z
-  .array(assistantGuidanceChannelSchema)
-  .refine(hasUniqueValues, 'Channels must be unique')
-  .nullable()
-
 export const assistantGuidanceRuleInputSchema = z.object({
   name: assistantGuidanceNameSchema,
   appliesWhen: assistantGuidanceAppliesWhenSchema,
   instruction: assistantGuidanceInstructionSchema,
   roles: assistantGuidanceRolesSchema.default(() => [...DEFAULT_ASSISTANT_GUIDANCE_ROLES]),
-  channels: assistantGuidanceChannelsSchema.default(null),
   enabled: z.boolean().default(true),
   priority: z.number().int().default(0),
 })
@@ -96,7 +88,6 @@ export const assistantGuidanceRulePatchSchema = z.object({
   appliesWhen: normalizedGuidanceAppliesWhenSchema.optional(),
   instruction: assistantGuidanceInstructionSchema.optional(),
   roles: assistantGuidanceRolesSchema.optional(),
-  channels: assistantGuidanceChannelsSchema.optional(),
   enabled: z.boolean().optional(),
   priority: z.number().int().optional(),
 })
@@ -108,7 +99,6 @@ export const assistantGuidanceRuleSchema = z.object({
   appliesWhen: normalizedGuidanceAppliesWhenSchema,
   instruction: assistantGuidanceInstructionSchema,
   roles: assistantGuidanceRolesSchema,
-  channels: assistantGuidanceChannelsSchema,
   enabled: z.boolean(),
   priority: z.number().int(),
   createdById: z.string().nullable(),
@@ -120,7 +110,6 @@ export type AssistantGuidanceRuleInput = z.input<typeof assistantGuidanceRuleInp
 export type NormalizedAssistantGuidanceRuleInput = z.output<typeof assistantGuidanceRuleInputSchema>
 export type AssistantGuidanceRulePatch = z.input<typeof assistantGuidanceRulePatchSchema>
 export type AssistantGuidanceRole = AssistantRole
-export type AssistantGuidanceChannel = AssistantSurface
 
 export interface GuidanceInstruction {
   instruction: string

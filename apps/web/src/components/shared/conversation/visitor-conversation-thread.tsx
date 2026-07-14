@@ -201,7 +201,6 @@ export function VisitorConversationThread({
   const [assistant, setAssistant] = useState<{
     name: string
     avatarUrl: string | null
-    showAiLabel?: boolean
   } | null>(null)
   // Pre-chat email capture (anonymous visitors). Data-driven: identified
   // visitors come back with visitorHasEmail=true, so the prompt never shows.
@@ -903,7 +902,6 @@ export function VisitorConversationThread({
             side="peer"
             authorName={assistant?.name ?? teamName ?? undefined}
             isAssistant={!!assistant}
-            showAiLabel={assistant?.showAiLabel}
             content={personalizeMessage(welcomeMessage ?? '', firstName)}
             embedOpenMode={embedOpenMode}
           />
@@ -923,7 +921,6 @@ export function VisitorConversationThread({
             side={isVisitor ? 'self' : 'peer'}
             authorName={isVisitor ? undefined : (m.author?.displayName ?? teamName ?? undefined)}
             isAssistant={m.isAssistant}
-            showAiLabel={m.isAssistant ? assistant?.showAiLabel : undefined}
             content={m.content}
             contentJson={m.contentJson}
             attachments={m.attachments}

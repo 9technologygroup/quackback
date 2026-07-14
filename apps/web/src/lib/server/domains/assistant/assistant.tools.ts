@@ -1,25 +1,25 @@
 /**
  * Quinn's tool-execution pipeline: assembles the tool catalogue
  * (assistant.toolspec.ts) into TanStack AI server tools bound to a runtime
- * context, gated by the workspace's tool controls.
+ * context, with each write tool's execution branch resolved from the turn's
+ * role policy.
  *
  * Assembly runs once per turn — assistant.runtime.ts calls it before the
- * retry loop, since the feature flag and control-mode settings are turn-scoped
- * config, not per-attempt state; re-reading them on a retry could flip gating
- * mid-turn.
+ * retry loop, since the feature flag and role-derived write policy are
+ * turn-scoped config, not per-attempt state; re-reading them on a retry could
+ * flip gating mid-turn.
  *
- * Per registered tool the wrapped execute runs: mode gate (resolved at
- * assembly) -> approval short-circuits to a pending action -> permission
- * check -> idempotency claim -> execute -> audit finalize. A tool error never
- * escapes into the model loop; it settles the audit row and returns a
- * graceful note instead.
+ * Per registered tool the wrapped execute runs: mode resolution (at assembly)
+ * -> propose short-circuits to a pending action -> permission check ->
+ * idempotency claim -> execute -> audit finalize. A tool error never escapes
+ * into the model loop; it settles the audit row and returns a graceful note
+ * instead.
  */
 import { createHash } from 'node:crypto'
-import type { AssistantToolControls } from '@/lib/server/domains/settings/settings.assistant'
 import { can } from '@/lib/server/policy/authorize'
 import { logger } from '@/lib/server/logger'
 import type { ConversationId, TicketId } from '@quackback/ids'
-import type { AssistantToolContext, AssistantToolSpec, ToolControlMode } from './assistant.toolspec'
+import type { AssistantToolContext, AssistantToolSpec } from './assistant.toolspec'
 import {
   ASSISTANT_TOOL_SPECS,
   resolveToolSpecs,
@@ -43,90 +43,46 @@ const DUPLICATE_NOTE = 'This action was already performed for this message.'
 const FAILED_NOTE = 'This action could not be completed.'
 
 /**
- * The single resolution the pipeline runs on: `resolveEffectiveToolMode`'s
- * result folds the saved control, the unsupported-mode fail-closed, and the
- * simulate override into ONE value. 'disabled' is only ever consumed by
- * `assembleAssistantToolset`'s filter, which drops the tool before it is
- * registered; `runWithPipeline` itself only ever receives 'approval' |
- * 'autonomous' | 'simulate'.
+ * A tool's resolved execution branch for this turn (see
+ * `resolveEffectiveToolMode`), decoupled from any saved per-tool config.
+ * 'disabled' is only ever consumed by `assembleAssistantToolset`'s filter,
+ * which drops the tool before it is registered; `runWithPipeline` itself only
+ * ever receives 'propose' | 'autonomous' | 'simulate'.
  */
-export type EffectiveToolMode = ToolControlMode | 'simulate'
+export type ToolExecutionMode = 'autonomous' | 'propose' | 'simulate' | 'disabled'
 
 /**
- * Resolve a spec's effective mode for this turn: the saved control (or the
- * spec's default), then three folds on top, applied in order.
+ * Resolve a spec's execution branch for this turn from its risk class and the
+ * turn's write policy (`ctx.writeToolPolicy`, selected from the role policy).
+ * There is no saved per-tool configuration: end-user-triggered write tools
+ * execute autonomously, matching Featurebase.
  *
- * 1. Unsupported mode fails closed. A saved mode the spec no longer supports
- *    (or, for a read tool, 'approval': reads never support it) disables the
- *    tool rather than silently running under some other permissiveness.
- * 2. 'disabled' always wins. A tool the workspace turned off never runs
- *    under any circumstance, `ctx.simulate`/`ctx.writeToolPolicy` included.
- * 3. Write-risk propose override. A write-risk tool under `ctx.writeToolPolicy:
- *    'propose'` (P2-C.4, the copilot surface) ALWAYS resolves to 'approval',
- *    even one configured 'autonomous': the proposal card a teammate sees IS
- *    the confirmation UX for a Copilot chat, so nothing fires without one,
- *    regardless of `ctx.simulate`. This check runs before the simulate fold
- *    below, so 'propose' wins over 'simulate' too if both were ever set. Same
- *    fail-closed rule as fold 1: a spec whose `supportedModes` never lists
- *    'approval' at all cannot honor this override (there is no proposal UX
- *    for it to fall back to), so it disables rather than forcing a mode the
- *    tool never declared it could run under.
- * 4. Write-risk simulate override. A write-risk tool with `ctx.simulate` true
- *    resolves to 'simulate' unless `ctx.writeToolPolicy` is explicitly
- *    'controls' (or 'propose', already handled above), in which case the
- *    configured mode (approval or autonomous) is honored instead.
- *    `ctx.writeToolPolicy` unset behaves as 'simulate', matching today's
- *    behavior for every existing caller (see its doc on
- *    `AssistantToolContext`). Read-risk tools are never affected by
- *    `ctx.simulate` or `ctx.writeToolPolicy`: reads only observe, so there is
- *    nothing to preview or propose.
- * 5. Write-risk disabled override. `ctx.writeToolPolicy: 'disabled'`
- *    (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md, the proactive-suggestions surface)
- *    wins over every other write-risk fold above, metadataWrite exemption
- *    included: a suggestion turn drafts a reply and must never even preview
- *    or propose a write, so the tool is disabled outright rather than routed
- *    through simulate/approval. Checked first in the write-risk block, before
- *    the propose override, so it can't be shadowed by it.
+ * - Control tools are agent-protocol primitives: always autonomous, on every
+ *   deployment (the model must express handoff/inability as tool calls).
+ * - Read tools only observe: always autonomous, never simulated or proposed.
+ * - Write tools branch on `ctx.writeToolPolicy`:
+ *   - 'disabled' (the proactive-suggestions turn): dropped entirely — no
+ *     preview, no proposal, not even a pending-approval row.
+ *   - 'propose' (the copilot Q&A surface): resolves to a pending-action
+ *     proposal; the approval card IS the confirmation UX, so nothing fires
+ *     without a human decision, regardless of `ctx.simulate`.
+ *   - `ctx.simulate` true with policy unset/'simulate' (the admin sandbox):
+ *     previews instead of running — there is no conversation to attach a
+ *     claim, approval, or denial to.
+ *   - otherwise ('execute', a real customer-support turn): autonomous, after
+ *     the permission check `runWithPipeline` runs.
  */
 export function resolveEffectiveToolMode(
   spec: AssistantToolSpec,
-  saved: ToolControlMode | undefined,
   ctx: AssistantToolContext
-): EffectiveToolMode {
-  // Core orchestration controls are part of the agent protocol, not workspace
-  // capabilities. They are always autonomous and never approval/disable
-  // settings: the model must express these decisions as tool calls on every
-  // deployment, including while the broader actions feature is off.
+): ToolExecutionMode {
   if (spec.risk === 'control') return 'autonomous'
-  const mode = saved ?? spec.defaultMode
-  if (mode === 'disabled') return 'disabled'
-  if (spec.risk === 'write') {
-    // Fold 5: a suggestion turn never even considers proposing or simulating
-    // a write — read-only by contract, so this short-circuits before the
-    // propose/simulate folds below.
-    if (ctx.writeToolPolicy === 'disabled') return 'disabled'
-    // Every Writer action from autonomous customer support or Copilot requires
-    // an explicit teammate decision. Classification writes are mutations too.
-    if (ctx.writeToolPolicy === 'propose') {
-      if (!spec.supportedModes.includes('approval')) {
-        log.warn(
-          { tool: spec.name, mode: 'approval' },
-          'assistant tool control mode not supported by this tool; disabling'
-        )
-        return 'disabled'
-      }
-      return 'approval'
-    }
-    if (ctx.simulate && (ctx.writeToolPolicy ?? 'simulate') === 'simulate') return 'simulate'
-  }
-  if (!spec.supportedModes.includes(mode)) {
-    log.warn(
-      { tool: spec.name, mode },
-      'assistant tool control mode not supported by this tool; disabling'
-    )
-    return 'disabled'
-  }
-  return mode
+  if (spec.risk !== 'write') return 'autonomous'
+  // Write-risk from here.
+  if (ctx.writeToolPolicy === 'disabled') return 'disabled'
+  if (ctx.writeToolPolicy === 'propose') return 'propose'
+  if (ctx.simulate && (ctx.writeToolPolicy ?? 'simulate') === 'simulate') return 'simulate'
+  return 'autonomous'
 }
 
 /**
@@ -180,10 +136,10 @@ function resolveIdempotencyKey(
 }
 
 /**
- * Run one tool call through the control-mode pipeline. `mode` arrives already
+ * Run one tool call through the execution pipeline. `mode` arrives already
  * fully resolved (see `resolveEffectiveToolMode`); this function does no
  * further gating of its own, it only carries out what the mode says.
- * Simulate previews instead of running. Approval short-circuits to a pending
+ * Simulate previews instead of running. Propose short-circuits to a pending
  * action (no permission check: the approving human authorizes it).
  * Autonomous checks every declared permission, then (write-risk only) claims
  * an idempotency slot, executes, and finalizes the audit row. Never throws:
@@ -192,11 +148,11 @@ function resolveIdempotencyKey(
  */
 async function runWithPipeline(
   spec: AssistantToolSpec,
-  mode: Exclude<EffectiveToolMode, 'disabled'>,
+  mode: Exclude<ToolExecutionMode, 'disabled'>,
   args: unknown,
   ctx: AssistantToolContext
 ): Promise<unknown> {
-  ctx.toolCalls.push(spec.name)
+  ctx.ledger.toolCalls.push(spec.name)
   if (mode === 'simulate') {
     // A write tool's outcome resolved to a preview instead of a real run.
     // Two distinct reasons land here (see `AssistantToolContext.writeToolPolicy`
@@ -205,11 +161,11 @@ async function runWithPipeline(
     // (nowhere to attach), while copilot has a real conversation but previews
     // anyway because a teammate asking Quinn a question about the
     // conversation must never let Quinn act in it (policy says preview).
-    ctx.toolOutcomes.push({ name: spec.name, outcome: 'simulated' })
+    ctx.ledger.toolOutcomes.push({ name: spec.name, outcome: 'simulated' })
     return { simulated: true, summary: spec.summarize(args) }
   }
 
-  if (mode === 'approval') {
+  if (mode === 'propose') {
     const summary = spec.summarize(args)
     // Polymorphic parent (unified inbox §3.3): whichever item this turn is
     // grounded on. `ctx.conversationId` wins when both happen to be set (never
@@ -234,18 +190,23 @@ async function runWithPipeline(
       // returns a key for a write-risk spec.
       idempotencyKey: resolveIdempotencyKey(spec, args, ctx),
     })
-    // Mirrors how search_knowledge records onto ctx.sources: the caller (the
+    // Mirrors how search_knowledge records onto ctx.ledger.sources: the caller (the
     // copilot route, today) reads this ledger off the tool context after the
     // turn to surface what got proposed, alongside the customer-facing note
     // proposePendingAction already dropped in the thread. `pending` is the
     // EXISTING row on a deduped retry, so this still references the one real
     // proposal rather than a phantom second one.
-    ctx.proposedActions.push({ id: pending.id, toolName: spec.name, summary, label: spec.label })
-    ctx.toolOutcomes.push({ name: spec.name, outcome: 'proposed' })
+    ctx.ledger.proposedActions.push({
+      id: pending.id,
+      toolName: spec.name,
+      summary,
+      label: spec.label,
+    })
+    ctx.ledger.toolOutcomes.push({ name: spec.name, outcome: 'proposed' })
     return { status: 'pending_approval', note: PENDING_APPROVAL_NOTE }
   }
 
-  // mode === 'autonomous' from here: simulate and approval both returned above.
+  // mode === 'autonomous' from here: simulate and propose both returned above.
   for (const permission of spec.permissions) {
     if (can(ctx.actor, permission)) continue
     await recordDeniedToolCall({
@@ -256,7 +217,7 @@ async function runWithPipeline(
       reason: `insufficient_permission:${permission}`,
       principalId: ctx.assistantPrincipalId,
     })
-    ctx.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
+    ctx.ledger.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
     return { status: 'denied', note: DENIED_NOTE }
   }
 
@@ -275,13 +236,13 @@ async function runWithPipeline(
       principalId: ctx.assistantPrincipalId,
     })
     if (!claimed) {
-      ctx.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
+      ctx.ledger.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
       return { status: 'skipped_duplicate', note: DUPLICATE_NOTE }
     }
   }
 
   const settled = await executeAndFinalize(spec, args, claimed, ctx)
-  ctx.toolOutcomes.push({
+  ctx.ledger.toolOutcomes.push({
     name: spec.name,
     outcome: settled.ok ? (spec.risk === 'read' ? 'read' : 'executed') : 'failed',
   })
@@ -385,13 +346,13 @@ export async function executeApprovedPendingAction(
  *  when assistant actions are off, byte-identical to the pre-pipeline tools. */
 function toLegacyServerTool(spec: AssistantToolSpec, ctx: AssistantToolContext) {
   return spec.definition.server<AssistantToolContext>(async (args) => {
-    ctx.toolCalls.push(spec.name)
+    ctx.ledger.toolCalls.push(spec.name)
     try {
       const result = await spec.execute(args, ctx)
-      ctx.toolOutcomes.push({ name: spec.name, outcome: 'read' })
+      ctx.ledger.toolOutcomes.push({ name: spec.name, outcome: 'read' })
       return result
     } catch (error) {
-      ctx.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
+      ctx.ledger.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
       throw error
     }
   })
@@ -402,15 +363,12 @@ function toLegacyServerTool(spec: AssistantToolSpec, ctx: AssistantToolContext) 
  * (`activeSpecs[i]` is the spec behind `tools[i]`). Assistant actions off
  * means every catalogue tool runs exactly as before the pipeline existed,
  * with no settings read beyond the flag. Actions on resolves each built-in
- * spec's fully resolved mode (see
- * `resolveEffectiveToolMode`, saved-or-default plus the simulate override),
- * drops disabled tools, and wraps the rest in the control-mode pipeline.
+ * spec's execution mode from the turn's write policy (see
+ * `resolveEffectiveToolMode`), drops disabled tools, and wraps the rest in
+ * the execution pipeline.
  *
  * `specs` defaults to the live catalogue; tests inject a fixed list to
  * exercise write-risk behavior the current catalogue doesn't ship yet.
- * `controls` defaults to fetching the saved tool-controls map; the runtime
- * passes the one it already read this turn (via `getAssistantConfig`) so
- * assembly never re-reads the settings row on its own.
  *
  * The system prompt builder needs `activeSpecs` (each carries its own
  * promptGuidance line, composed into the "Your tools" section); the agentic
@@ -419,7 +377,6 @@ function toLegacyServerTool(spec: AssistantToolSpec, ctx: AssistantToolContext) 
 export async function assembleAssistantToolset(
   ctx: AssistantToolContext,
   specs?: readonly AssistantToolSpec[],
-  controls: AssistantToolControls = {},
   actionsEnabled = false
 ): Promise<{ tools: ReturnType<typeof toLegacyServerTool>[]; activeSpecs: AssistantToolSpec[] }> {
   // Unified inbox §2.9/§3.3: never even consider a spec whose `parents`
@@ -447,10 +404,10 @@ export async function assembleAssistantToolset(
   const active = resolvedSpecs
     .map((spec) => ({
       spec,
-      mode: resolveEffectiveToolMode(spec, controls[spec.name], ctx),
+      mode: resolveEffectiveToolMode(spec, ctx),
     }))
     .filter(
-      (entry): entry is { spec: AssistantToolSpec; mode: Exclude<EffectiveToolMode, 'disabled'> } =>
+      (entry): entry is { spec: AssistantToolSpec; mode: Exclude<ToolExecutionMode, 'disabled'> } =>
         entry.mode !== 'disabled'
     )
   return {

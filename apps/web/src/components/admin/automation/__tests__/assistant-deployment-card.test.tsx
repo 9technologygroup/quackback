@@ -8,8 +8,6 @@ vi.mock('@/lib/server/functions/assistant-settings', () => ({
   getAssistantSettingsFn: vi.fn(),
   updateAssistantIdentityFn: vi.fn(),
   updateAssistantVoiceFn: vi.fn(),
-  updateAssistantChannelsFn: vi.fn(),
-  updateAssistantToolControlsFn: vi.fn(),
   updateWidgetAssistantDeploymentFn: vi.fn(),
 }))
 

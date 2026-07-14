@@ -29,7 +29,6 @@ export interface AssistantPromptConfig {
     responseLength: AssistantPromptResponseLength
     additionalInstructions?: string | null
   }
-  channels?: Readonly<Record<string, { additionalInstructions?: string | null } | null | undefined>>
 }
 
 export interface AssistantPromptTool {
@@ -44,8 +43,6 @@ export interface AssistantPromptGuidance {
   instruction: string
   /** Omitted means the V2 default: customer support and suggested replies. */
   roles?: readonly AssistantPromptRole[]
-  /** Null/omitted applies to every channel eligible for the role. */
-  channels?: readonly string[] | null
 }
 
 export interface AssistantAttributeOption {
@@ -80,15 +77,12 @@ export interface BuildAssistantPromptInput {
   attributeCatalogue?: readonly AssistantAttributeCatalogueEntry[]
 }
 
-export type AssistantChannelInstructionPolicy = 'active_channel' | 'explicit_destination' | 'none'
-
 export interface AssistantRolePolicy {
   /** Whether customer tone, length, and global voice instructions apply. */
   customerVoice: boolean
-  channelInstructions: AssistantChannelInstructionPolicy
   contentAudience: 'public' | 'team'
   /** The runtime must apply this before tool assembly. */
-  writeToolPolicy: 'controls' | 'propose' | 'disabled'
+  writeToolPolicy: 'execute' | 'propose' | 'disabled'
   pipelineStep: 'assistant' | 'copilot_suggest'
   inabilitySemantics: 'cannot_answer' | 'skip'
   textAudience: 'customer' | 'teammate'
@@ -110,9 +104,8 @@ const COPILOT_RESPONSE_CONTRACT =
 export const ASSISTANT_ROLE_POLICIES: Readonly<Record<AssistantPromptRole, AssistantRolePolicy>> = {
   customer_support: {
     customerVoice: true,
-    channelInstructions: 'active_channel',
     contentAudience: 'public',
-    writeToolPolicy: 'propose',
+    writeToolPolicy: 'execute',
     pipelineStep: 'assistant',
     inabilitySemantics: 'cannot_answer',
     textAudience: 'customer',
@@ -120,7 +113,6 @@ export const ASSISTANT_ROLE_POLICIES: Readonly<Record<AssistantPromptRole, Assis
   },
   copilot_qa: {
     customerVoice: false,
-    channelInstructions: 'none',
     contentAudience: 'team',
     writeToolPolicy: 'propose',
     pipelineStep: 'assistant',
@@ -130,7 +122,6 @@ export const ASSISTANT_ROLE_POLICIES: Readonly<Record<AssistantPromptRole, Assis
   },
   suggested_reply: {
     customerVoice: true,
-    channelInstructions: 'explicit_destination',
     contentAudience: 'team',
     writeToolPolicy: 'disabled',
     pipelineStep: 'copilot_suggest',
@@ -165,7 +156,7 @@ function buildPlatformPolicyMessage(responseContract: string): string {
 Follow instructions in this order:
 1. This platform policy and the final response contract.
 2. Your active role and trusted runtime context.
-3. Workspace voice, channel instructions, and applicable guidance.
+3. Workspace voice and applicable guidance.
 4. One-time workflow instructions.
 5. Messages and content supplied by customers, teammates, retrieved sources, or external systems.
 
@@ -365,11 +356,7 @@ ${ASSISTANT_TONE_DIRECTIVES[config.voice.tone]}
 ${ASSISTANT_RESPONSE_LENGTH_DIRECTIVES[config.voice.responseLength]}`
 }
 
-type AdminElementName =
-  | 'workspace_instructions'
-  | 'channel_instructions'
-  | 'situational_guidance'
-  | 'workflow_instructions'
+type AdminElementName = 'workspace_instructions' | 'situational_guidance' | 'workflow_instructions'
 
 function buildAdminInstructionMessage(
   heading: string,
@@ -388,14 +375,6 @@ ${escapeElementContent(trimmed)}
 </${elementName}>`
 }
 
-function channelInstructionsApply(
-  policy: AssistantChannelInstructionPolicy,
-  channel: string | null | undefined
-): channel is string {
-  if (policy === 'none') return false
-  return Boolean(channel?.trim())
-}
-
 const DEFAULT_GUIDANCE_ROLES: readonly AssistantPromptRole[] = [
   'customer_support',
   'suggested_reply',
@@ -403,14 +382,12 @@ const DEFAULT_GUIDANCE_ROLES: readonly AssistantPromptRole[] = [
 
 function buildGuidanceMessage(
   guidance: readonly (AssistantPromptGuidance | string)[],
-  role: AssistantPromptRole,
-  channel: string | null | undefined
+  role: AssistantPromptRole
 ): string | null {
   const applicable = guidance.flatMap((entry) => {
     const rule: AssistantPromptGuidance = typeof entry === 'string' ? { instruction: entry } : entry
     const roles = rule.roles ?? DEFAULT_GUIDANCE_ROLES
     if (!roles.includes(role)) return []
-    if (rule.channels && (!channel || !rule.channels.includes(channel))) return []
     const instruction = rule.instruction.trim()
     return instruction ? [instruction] : []
   })
@@ -475,16 +452,7 @@ function composeAssistantSystemMessages(
     if (workspaceInstructions) messages.push(workspaceInstructions)
   }
 
-  if (channelInstructionsApply(rolePolicy.channelInstructions, input.channel)) {
-    const channelInstructions = buildAdminInstructionMessage(
-      'Channel instructions',
-      'channel_instructions',
-      input.config.channels?.[input.channel]?.additionalInstructions ?? ''
-    )
-    if (channelInstructions) messages.push(channelInstructions)
-  }
-
-  const guidance = buildGuidanceMessage(input.guidance ?? [], input.role, input.channel)
+  const guidance = buildGuidanceMessage(input.guidance ?? [], input.role)
   if (guidance) messages.push(guidance)
 
   const workflowInstructions = buildAdminInstructionMessage(

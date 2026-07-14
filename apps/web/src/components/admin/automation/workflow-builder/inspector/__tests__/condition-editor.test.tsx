@@ -79,8 +79,8 @@ vi.mock('@/lib/client/queries/conversation-attributes', () => ({
 }))
 
 // Native <select>/<option> stand-in: Radix's Select relies on pointer-capture
-// and scroll APIs happy-dom doesn't implement (see tool-controls-card.test.tsx
-// / import-wizard.test.tsx for the same workaround).
+// and scroll APIs happy-dom doesn't implement (see import-wizard.test.tsx for
+// the same workaround).
 vi.mock('@/components/ui/select', () => ({
   Select: ({
     value,

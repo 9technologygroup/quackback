@@ -165,11 +165,7 @@ async function decideAssistantAction(
   const spec = await getToolSpecByName(pending.toolName)
   if (!spec) throw new ToolSpecGoneError(pending.toolName)
   const parentKind = pending.conversationId ? 'conversation' : 'ticket'
-  if (
-    spec.risk !== 'write' ||
-    !spec.supportedModes.includes('approval') ||
-    !spec.parents.includes(parentKind)
-  ) {
+  if (spec.risk !== 'write' || !spec.parents.includes(parentKind)) {
     throw new ConflictError(
       'ASSISTANT_ACTION_POLICY_CHANGED',
       'This action no longer supports approval for this item'

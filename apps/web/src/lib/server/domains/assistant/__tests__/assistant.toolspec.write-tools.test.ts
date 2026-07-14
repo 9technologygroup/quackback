@@ -76,8 +76,6 @@ describe('set_attribute', () => {
 
   it('has the expected spec shape', () => {
     expect(spec.risk).toBe('write')
-    expect(spec.supportedModes).toEqual(['disabled', 'approval'])
-    expect(spec.defaultMode).toBe('approval')
     expect(spec.permissions).toEqual([PERMISSIONS.CONVERSATION_SET_ATTRIBUTES])
   })
 
@@ -187,8 +185,6 @@ describe('end_conversation', () => {
 
   it('has the expected spec shape', () => {
     expect(spec.risk).toBe('write')
-    expect(spec.supportedModes).toEqual(['disabled', 'approval'])
-    expect(spec.defaultMode).toBe('approval')
     expect(spec.permissions).toEqual([PERMISSIONS.CONVERSATION_SET_STATUS])
   })
 
@@ -276,8 +272,6 @@ describe('create_ticket', () => {
 
   it('has the expected spec shape', () => {
     expect(spec.risk).toBe('write')
-    expect(spec.supportedModes).toEqual(['disabled', 'approval'])
-    expect(spec.defaultMode).toBe('approval')
     expect(spec.permissions).toEqual([PERMISSIONS.TICKET_CREATE])
   })
 
@@ -369,17 +363,11 @@ describe('capture_feedback', () => {
 
   it('has the expected spec shape', () => {
     expect(spec.risk).toBe('write')
-    expect(spec.defaultMode).toBe('approval')
     expect(spec.permissions).toEqual([PERMISSIONS.POST_CREATE, PERMISSIONS.POST_VOTE_ON_BEHALF])
   })
 
   it('is conversation-only (unified inbox §2.9): never offered on a ticket-scoped turn', () => {
     expect(spec.parents).toEqual(['conversation'])
-  })
-
-  it('never supports autonomous mode', () => {
-    expect(spec.supportedModes).toEqual(['disabled', 'approval'])
-    expect(spec.supportedModes).not.toContain('autonomous')
   })
 
   it('summarizes with the post title', () => {
@@ -426,11 +414,12 @@ describe('capture_feedback', () => {
       conversationId: 'conversation_1' as never,
       assistantPrincipalId: 'principal_assistant' as never,
     })
-    const out = await spec.execute({ boardId: 'board_1', title: 'Add dark mode' }, c)
+    const boardId = 'board_01h455vb4pex5vsknk084sn02q'
+    const out = await spec.execute({ boardId, title: 'Add dark mode' }, c)
     expect(mockCreatePostFromConversation).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId: 'conversation_1',
-        boardId: 'board_1',
+        boardId,
         title: 'Add dark mode',
       }),
       expect.objectContaining({
@@ -442,5 +431,15 @@ describe('capture_feedback', () => {
       })
     )
     expect(out).toEqual({ created: true, postId: 'post_1' })
+  })
+
+  it('fails gracefully on a malformed board id instead of calling the service', async () => {
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      assistantPrincipalId: 'principal_assistant' as never,
+    })
+    const out = await spec.execute({ boardId: 'not-a-board-id', title: 'Add dark mode' }, c)
+    expect(out).toEqual({ created: false, note: 'Unknown or invalid board id.' })
+    expect(mockCreatePostFromConversation).not.toHaveBeenCalled()
   })
 })

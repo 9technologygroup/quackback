@@ -109,7 +109,6 @@ describe('V2 guidance boundary', () => {
         appliesWhen: ' When a customer asks for a refund ',
         instruction: ' Explain the policy. ',
         roles: ['customer_support'],
-        channels: ['widget'],
       },
     })
 
@@ -118,7 +117,6 @@ describe('V2 guidance boundary', () => {
       appliesWhen: 'When a customer asks for a refund',
       instruction: 'Explain the policy.',
       roles: ['customer_support'],
-      channels: ['widget'],
       enabled: true,
       priority: 0,
       createdById: 'principal_admin',
@@ -140,7 +138,6 @@ describe('V2 guidance boundary', () => {
     { name: 'Fine', appliesWhen: 'x'.repeat(501), instruction: 'Fine.' },
     { name: 'Fine', instruction: 'x'.repeat(1_001) },
     { name: 'Fine', instruction: 'Fine.', roles: ['unknown'] },
-    { name: 'Fine', instruction: 'Fine.', channels: ['sms'] },
   ])('rejects invalid create input %#', async (data) => {
     await expect(createGuidanceRuleFn({ data: data as never })).rejects.toThrow()
     expect(hoisted.createGuidanceRule).not.toHaveBeenCalled()
@@ -154,7 +151,6 @@ describe('V2 guidance boundary', () => {
       appliesWhen: undefined,
       instruction: undefined,
       roles: undefined,
-      channels: undefined,
       enabled: false,
       priority: undefined,
     })
@@ -184,7 +180,6 @@ describe('privacy-safe audit logging', () => {
     appliesWhen: 'When a customer requests a refund',
     instruction: 'Private instruction body',
     roles: ['customer_support'],
-    channels: ['widget'],
     enabled: true,
     priority: 2,
   }
@@ -197,7 +192,6 @@ describe('privacy-safe audit logging', () => {
         appliesWhen: persistedRule.appliesWhen,
         instruction: persistedRule.instruction,
         roles: ['customer_support'],
-        channels: ['widget'],
         priority: 2,
       },
     })
@@ -211,7 +205,6 @@ describe('privacy-safe audit logging', () => {
         alwaysOn: false,
         enabled: true,
         roles: ['customer_support'],
-        channels: ['widget'],
         priority: 2,
       },
     })
@@ -247,23 +240,19 @@ describe('privacy-safe audit logging', () => {
 })
 
 describe('listAssistantToolsFn', () => {
-  it('projects configurable tools and excludes control primitives', async () => {
+  it('projects read/write tools and excludes control primitives', async () => {
     hoisted.resolveToolSpecs.mockResolvedValue([
       {
         name: 'end_conversation',
         label: 'End conversation',
         description: 'Close the conversation.',
         risk: 'write',
-        supportedModes: ['disabled', 'approval', 'autonomous'],
-        defaultMode: 'approval',
       },
       {
         name: 'handoff_to_human',
         label: 'Hand off',
         description: 'Hand off.',
         risk: 'control',
-        supportedModes: ['autonomous'],
-        defaultMode: 'autonomous',
       },
     ])
     await expect(listAssistantToolsFn()).resolves.toEqual([
@@ -272,8 +261,6 @@ describe('listAssistantToolsFn', () => {
         label: 'End conversation',
         description: 'Close the conversation.',
         risk: 'write',
-        supportedModes: ['disabled', 'approval', 'autonomous'],
-        defaultMode: 'approval',
       },
     ])
   })

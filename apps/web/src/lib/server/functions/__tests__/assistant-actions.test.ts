@@ -137,8 +137,6 @@ const CLOSE_SPEC = {
   label: 'Close conversation',
   description: 'Close the conversation.',
   risk: 'write' as const,
-  supportedModes: ['approval', 'autonomous'] as const,
-  defaultMode: 'approval' as const,
   parents: ['conversation', 'ticket'] as const,
   permissions: [PERMISSIONS.CONVERSATION_SET_STATUS],
   definition: { inputSchema: z.object({ reason: z.string() }) } as never,
@@ -296,16 +294,6 @@ describe('approveAssistantActionFn', () => {
   it('rejects when the current tool spec is read-only', async () => {
     hoisted.getPendingActionById.mockResolvedValue(pendingRow())
     hoisted.resolveToolSpecs.mockReturnValue([{ ...CLOSE_SPEC, risk: 'read' }])
-
-    await expect(approve({ pendingActionId: 'assistant_action_1' })).rejects.toMatchObject({
-      statusCode: 409,
-    })
-    expect(hoisted.decidePendingAction).not.toHaveBeenCalled()
-  })
-
-  it('rejects when the current tool spec no longer supports approval', async () => {
-    hoisted.getPendingActionById.mockResolvedValue(pendingRow())
-    hoisted.resolveToolSpecs.mockReturnValue([{ ...CLOSE_SPEC, supportedModes: ['autonomous'] }])
 
     await expect(approve({ pendingActionId: 'assistant_action_1' })).rejects.toMatchObject({
       statusCode: 409,

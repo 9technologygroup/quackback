@@ -383,3 +383,35 @@ export const getAvatarUploadUrlFn = createServerFn({ method: 'POST' })
       throw error
     }
   })
+
+/**
+ * Get a presigned URL for uploading the AI agent's avatar. Gated on
+ * assistant.manage; the returned publicUrl is stored in identity.avatarUrl.
+ */
+export const getAssistantAvatarUploadUrlFn = createServerFn({ method: 'POST' })
+  .validator(brandingImageSchema)
+  .handler(async ({ data }) => {
+    log.debug(
+      { content_type: data.contentType, file_size: data.fileSize },
+      'assistant avatar upload url requested'
+    )
+    try {
+      await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+
+      if (!isS3Configured()) {
+        throw new Error('File storage is not configured. Contact your administrator.')
+      }
+
+      if (!isAllowedImageType(data.contentType)) {
+        throw new Error(
+          `Invalid image type: ${data.contentType}. Allowed types: JPEG, PNG, GIF, WebP.`
+        )
+      }
+
+      const key = generateStorageKey('assistant-avatars', data.filename)
+      return await generatePresignedUploadUrl(key, data.contentType)
+    } catch (error) {
+      log.error({ err: error }, 'assistant avatar upload url failed')
+      throw error
+    }
+  })

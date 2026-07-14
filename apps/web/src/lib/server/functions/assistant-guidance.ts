@@ -55,7 +55,6 @@ export const createGuidanceRuleFn = createServerFn({ method: 'POST' })
         appliesWhen: data.appliesWhen,
         instruction: data.instruction,
         roles: data.roles,
-        channels: data.channels,
         enabled: data.enabled,
         priority: data.priority,
         createdById: ctx.principal.id,
@@ -70,7 +69,6 @@ export const createGuidanceRuleFn = createServerFn({ method: 'POST' })
           alwaysOn: rule.appliesWhen === null,
           enabled: rule.enabled,
           roles: rule.roles,
-          channels: rule.channels,
           priority: rule.priority,
         },
       })
@@ -93,7 +91,6 @@ export const updateGuidanceRuleFn = createServerFn({ method: 'POST' })
         appliesWhen: data.appliesWhen,
         instruction: data.instruction,
         roles: data.roles,
-        channels: data.channels,
         enabled: data.enabled,
         priority: data.priority,
       })
@@ -108,7 +105,6 @@ export const updateGuidanceRuleFn = createServerFn({ method: 'POST' })
               alwaysOn: rule.appliesWhen === null,
               enabled: rule.enabled,
               roles: rule.roles,
-              channels: rule.channels,
               priority: rule.priority,
             }
           : null,
@@ -163,14 +159,12 @@ export const deleteGuidanceRuleFn = createServerFn({ method: 'POST' })
     }
   })
 
-/** The controllable shape of a tool spec — everything the settings UI needs, nothing model-facing. */
+/** The projected shape of a tool spec — everything the settings UI needs, nothing model-facing. */
 export interface AssistantToolSummary {
   name: string
   label: string
   description: string
   risk: 'read' | 'write'
-  supportedModes: readonly ('disabled' | 'approval' | 'autonomous')[]
-  defaultMode: 'disabled' | 'approval' | 'autonomous'
 }
 
 /** The built-in tool catalogue projected for the settings UI. */
@@ -181,8 +175,8 @@ export const listAssistantToolsFn = createServerFn({ method: 'GET' }).handler(as
     const { resolveToolSpecs } = await import('@/lib/server/domains/assistant/assistant.toolspec')
     const specs = await resolveToolSpecs()
     // Core control tools (handoff/inability) are protocol primitives, not
-    // workspace-configurable capabilities. They stay in Quinn's catalogue but
-    // do not appear in the admin enable/approval controls.
+    // workspace-listed capabilities. They stay in Quinn's catalogue but do not
+    // appear in the admin surface.
     return specs
       .filter((spec) => spec.risk !== 'control')
       .map(
@@ -193,8 +187,6 @@ export const listAssistantToolsFn = createServerFn({ method: 'GET' }).handler(as
           // The filter above removes control tools; spell the narrowing here
           // because Array.filter does not refine an object property union.
           risk: spec.risk === 'write' ? 'write' : 'read',
-          supportedModes: spec.supportedModes,
-          defaultMode: spec.defaultMode,
         })
       )
   } catch (error) {

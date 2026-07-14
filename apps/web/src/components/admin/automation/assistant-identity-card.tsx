@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useIntl } from 'react-intl'
+import { toast } from 'sonner'
+import { ArrowPathIcon, PhotoIcon, TrashIcon } from '@heroicons/react/24/solid'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
+import { ImageCropper } from '@/components/ui/image-cropper'
 import { assistantQueries } from '@/lib/client/queries/assistant'
 import { useUpdateAssistantIdentity } from '@/lib/client/mutations/assistant'
+import { getAssistantAvatarUploadUrlFn } from '@/lib/server/functions/uploads'
 import type { AssistantIdentity } from '@/lib/shared/assistant/config'
 import {
   AssistantSaveFeedback,
@@ -19,10 +22,11 @@ import {
   useUnsavedChanges,
 } from './assistant-form'
 
+const ALLOWED_AVATAR_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024
+
 function identityEquals(a: AssistantIdentity | null, b: AssistantIdentity | null): boolean {
-  return Boolean(
-    a && b && a.name === b.name && a.avatarUrl === b.avatarUrl && a.showAiLabel === b.showAiLabel
-  )
+  return Boolean(a && b && a.name === b.name && a.avatarUrl === b.avatarUrl)
 }
 
 export function AssistantIdentityCard() {
@@ -32,6 +36,10 @@ export function AssistantIdentityCard() {
   const [draft, setDraft] = useState<AssistantIdentity | null>(null)
   const [saved, setSaved] = useState<AssistantIdentity | null>(null)
   const [saveState, setSaveState] = useState<AssistantSaveState>('idle')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [cropImageSrc, setCropImageSrc] = useState<string | null>(null)
+  const [showCropper, setShowCropper] = useState(false)
+  const [uploading, setUploading] = useState(false)
 
   const dirty = Boolean(draft && saved && !identityEquals(draft, saved))
   useUnsavedChanges(dirty, 'basics')
@@ -86,7 +94,6 @@ export function AssistantIdentityCard() {
   const managedPaths = settingsQuery.data.managedFieldPaths
   const nameManaged = isAssistantFieldManaged(managedPaths, 'identity.name')
   const avatarManaged = isAssistantFieldManaged(managedPaths, 'identity.avatarUrl')
-  const labelManaged = isAssistantFieldManaged(managedPaths, 'identity.showAiLabel')
   const nameError = draft.name.trim()
     ? draft.name.length > 80
       ? intl.formatMessage({
@@ -98,22 +105,64 @@ export function AssistantIdentityCard() {
         id: 'automation.agent.identity.nameRequired',
         defaultMessage: 'Enter a name for your AI agent.',
       })
-  let avatarError: string | null = null
-  if (draft.avatarUrl && draft.avatarUrl.length > 2_000) {
-    avatarError = intl.formatMessage({
-      id: 'automation.agent.identity.avatarTooLong',
-      defaultMessage: 'Use 2,000 characters or fewer.',
-    })
-  } else if (draft.avatarUrl) {
-    try {
-      const url = new URL(draft.avatarUrl)
-      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('invalid protocol')
-    } catch {
-      avatarError = intl.formatMessage({
-        id: 'automation.agent.identity.avatarInvalid',
-        defaultMessage: 'Enter a valid HTTP or HTTPS URL.',
-      })
+
+  function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (!ALLOWED_AVATAR_TYPES.includes(file.type)) {
+      toast.error('Invalid file type. Allowed: JPEG, PNG, GIF, WebP')
+      return
     }
+    if (file.size > MAX_AVATAR_BYTES) {
+      toast.error('File too large. Maximum size is 5MB')
+      return
+    }
+    setCropImageSrc(URL.createObjectURL(file))
+    setShowCropper(true)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  async function handleCropComplete(croppedBlob: Blob) {
+    if (cropImageSrc) {
+      URL.revokeObjectURL(cropImageSrc)
+      setCropImageSrc(null)
+    }
+    const contentType = croppedBlob.type || 'image/png'
+    setUploading(true)
+    try {
+      const { uploadUrl, publicUrl } = await getAssistantAvatarUploadUrlFn({
+        data: {
+          filename: 'assistant-avatar.png',
+          contentType,
+          fileSize: croppedBlob.size,
+        },
+      })
+      const response = await fetch(uploadUrl, {
+        method: 'PUT',
+        body: croppedBlob,
+        headers: { 'Content-Type': contentType },
+      })
+      if (!response.ok) throw new Error('Failed to upload image to storage')
+      setDraft((current) => (current ? { ...current, avatarUrl: publicUrl } : current))
+      setSaveState('idle')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to upload image')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  function handleCropperClose(open: boolean) {
+    if (!open && cropImageSrc) {
+      URL.revokeObjectURL(cropImageSrc)
+      setCropImageSrc(null)
+    }
+    setShowCropper(open)
+  }
+
+  function removeAvatar() {
+    setDraft((current) => (current ? { ...current, avatarUrl: null } : current))
+    setSaveState('idle')
   }
 
   async function reloadLatest() {
@@ -125,7 +174,7 @@ export function AssistantIdentityCard() {
   }
 
   async function save() {
-    if (nameError || avatarError || !settingsQuery.data) return
+    if (nameError || !settingsQuery.data) return
     const identity = draft
     if (!identity) return
     setSaveState('saving')
@@ -134,8 +183,7 @@ export function AssistantIdentityCard() {
         expectedRevision: settingsQuery.data.revision,
         identity: {
           name: identity.name.trim(),
-          avatarUrl: identity.avatarUrl?.trim() || null,
-          showAiLabel: identity.showAiLabel,
+          avatarUrl: identity.avatarUrl,
         },
       })
       setDraft(result.config.identity)
@@ -145,6 +193,8 @@ export function AssistantIdentityCard() {
       setSaveState(isAssistantRevisionConflict(error) ? 'conflict' : 'error')
     }
   }
+
+  const avatarActionsDisabled = avatarManaged || uploading || saveState === 'saving'
 
   return (
     <SettingsCard
@@ -158,14 +208,80 @@ export function AssistantIdentityCard() {
       })}
     >
       <div className="space-y-5">
-        <div className="flex items-center gap-3">
-          <Avatar src={draft.avatarUrl} name={draft.name || 'AI'} className="size-10 text-sm" />
-          <p className="max-w-xl text-xs text-muted-foreground">
+        <div className="space-y-2">
+          <Label>
+            {intl.formatMessage({
+              id: 'automation.agent.identity.avatar',
+              defaultMessage: 'Avatar',
+            })}
+          </Label>
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <Avatar src={draft.avatarUrl} name={draft.name || 'AI'} className="size-16 text-lg" />
+              {uploading && (
+                <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50">
+                  <ArrowPathIcon className="size-6 animate-spin text-white" />
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={avatarActionsDisabled}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {uploading ? (
+                  <>
+                    <ArrowPathIcon className="size-4 animate-spin" />
+                    {intl.formatMessage({
+                      id: 'automation.agent.identity.avatarUploading',
+                      defaultMessage: 'Uploading…',
+                    })}
+                  </>
+                ) : (
+                  <>
+                    <PhotoIcon className="size-4" />
+                    {intl.formatMessage({
+                      id: 'automation.agent.identity.avatarUpload',
+                      defaultMessage: 'Upload image',
+                    })}
+                  </>
+                )}
+              </Button>
+              {draft.avatarUrl && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  disabled={avatarActionsDisabled}
+                  onClick={removeAvatar}
+                >
+                  <TrashIcon className="size-4" />
+                  {intl.formatMessage({
+                    id: 'automation.agent.identity.avatarRemove',
+                    defaultMessage: 'Remove image',
+                  })}
+                </Button>
+              )}
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/gif,image/webp"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
             {intl.formatMessage({
               id: 'automation.agent.identity.previewHelp',
               defaultMessage: 'This identity appears in the Web widget and customer conversations.',
             })}
           </p>
+          {avatarManaged && <ManagedSettingHint />}
         </div>
 
         <div className="space-y-2">
@@ -191,77 +307,12 @@ export function AssistantIdentityCard() {
           {nameManaged && <ManagedSettingHint />}
         </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="assistant-avatar">
-            {intl.formatMessage({
-              id: 'automation.agent.identity.avatar',
-              defaultMessage: 'Avatar URL',
-            })}
-          </Label>
-          <Input
-            id="assistant-avatar"
-            type="url"
-            value={draft.avatarUrl ?? ''}
-            placeholder={intl.formatMessage({
-              id: 'automation.agent.identity.avatarPlaceholder',
-              defaultMessage: 'https://example.com/agent.png',
-            })}
-            aria-invalid={Boolean(avatarError)}
-            aria-describedby={avatarError ? 'assistant-avatar-error' : 'assistant-avatar-help'}
-            disabled={avatarManaged || saveState === 'saving'}
-            onChange={(event) => {
-              setDraft({ ...draft, avatarUrl: event.target.value || null })
-              setSaveState('idle')
-            }}
-          />
-          {avatarError ? (
-            <p id="assistant-avatar-error" className="text-xs text-destructive">
-              {avatarError}
-            </p>
-          ) : (
-            <p id="assistant-avatar-help" className="text-xs text-muted-foreground">
-              {intl.formatMessage({
-                id: 'automation.agent.identity.avatarHelp',
-                defaultMessage: 'Leave this empty to use the agent’s initial.',
-              })}
-            </p>
-          )}
-          {avatarManaged && <ManagedSettingHint />}
-        </div>
-
-        <div className="flex min-h-11 items-center justify-between gap-4 rounded-lg border border-border/50 p-3 sm:p-4">
-          <div>
-            <Label htmlFor="assistant-show-ai-label" className="cursor-pointer text-sm font-medium">
-              {intl.formatMessage({
-                id: 'automation.agent.identity.aiLabel',
-                defaultMessage: 'Show AI label',
-              })}
-            </Label>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {intl.formatMessage({
-                id: 'automation.agent.identity.aiLabelHelp',
-                defaultMessage: 'Helps customers understand that they are talking to an AI agent.',
-              })}
-            </p>
-            {labelManaged && <ManagedSettingHint />}
-          </div>
-          <Switch
-            id="assistant-show-ai-label"
-            checked={draft.showAiLabel}
-            disabled={labelManaged || saveState === 'saving'}
-            onCheckedChange={(checked) => {
-              setDraft({ ...draft, showAiLabel: checked })
-              setSaveState('idle')
-            }}
-          />
-        </div>
-
         <AssistantSaveFeedback state={saveState} onReload={reloadLatest} />
         <div className="flex justify-end">
           <Button
             type="button"
             className="min-h-11 sm:min-h-9"
-            disabled={!dirty || Boolean(nameError || avatarError) || saveState === 'saving'}
+            disabled={!dirty || Boolean(nameError) || uploading || saveState === 'saving'}
             onClick={() => void save()}
           >
             {saveState === 'saving'
@@ -276,6 +327,15 @@ export function AssistantIdentityCard() {
           </Button>
         </div>
       </div>
+
+      {cropImageSrc && (
+        <ImageCropper
+          imageSrc={cropImageSrc}
+          open={showCropper}
+          onOpenChange={handleCropperClose}
+          onCropComplete={handleCropComplete}
+        />
+      )}
     </SettingsCard>
   )
 }

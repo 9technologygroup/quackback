@@ -1,16 +1,14 @@
-/** Situational-guidance persistence and deterministic role/channel prefiltering. */
-import { db, eq, and, or, isNull, inArray, asc, sql, assistantGuidanceRules } from '@/lib/server/db'
+/** Situational-guidance persistence and deterministic role prefiltering. */
+import { db, eq, and, inArray, asc, sql, assistantGuidanceRules } from '@/lib/server/db'
 import type { AssistantGuidanceRuleId, PrincipalId } from '@quackback/ids'
 import { positionCaseSql } from '@/lib/server/utils'
 import { ValidationError } from '@/lib/shared/errors'
 import {
   ASSISTANT_GUIDANCE_CHAR_BUDGET,
   ASSISTANT_GUIDANCE_MAX_ENABLED_CANDIDATES,
-  assistantGuidanceChannelSchema,
   assistantGuidanceRoleSchema,
   assistantGuidanceRuleInputSchema,
   assistantGuidanceRulePatchSchema,
-  type AssistantGuidanceChannel,
   type AssistantGuidanceRole,
   type AssistantGuidanceRuleInput,
   type AssistantGuidanceRulePatch,
@@ -57,23 +55,12 @@ export async function listGuidanceRules(
     .orderBy(asc(assistantGuidanceRules.priority), asc(assistantGuidanceRules.createdAt))
 }
 
-/** Enabled candidates eligible for one resolved role/channel, in application priority order. */
+/** Enabled candidates eligible for one resolved role, in application priority order. */
 export async function listEnabledGuidanceCandidates(opts: {
   role: AssistantGuidanceRole
-  channel: AssistantGuidanceChannel | null
 }): Promise<AssistantGuidanceRule[]> {
   const role = assistantGuidanceRoleSchema.safeParse(opts.role)
   if (!role.success) validationError(role.error)
-  const channel =
-    opts.channel === null ? null : assistantGuidanceChannelSchema.safeParse(opts.channel)
-  if (channel && !channel.success) validationError(channel.error)
-  const channelFilter =
-    channel === null
-      ? isNull(assistantGuidanceRules.channels)
-      : or(
-          isNull(assistantGuidanceRules.channels),
-          sql`${channel.data} = ANY(${assistantGuidanceRules.channels})`
-        )
 
   return db
     .select()
@@ -81,8 +68,7 @@ export async function listEnabledGuidanceCandidates(opts: {
     .where(
       and(
         eq(assistantGuidanceRules.enabled, true),
-        sql`${role.data} = ANY(${assistantGuidanceRules.roles})`,
-        channelFilter
+        sql`${role.data} = ANY(${assistantGuidanceRules.roles})`
       )
     )
     .orderBy(asc(assistantGuidanceRules.priority), asc(assistantGuidanceRules.createdAt))
@@ -100,7 +86,6 @@ export async function updateGuidanceRule(
   if (parsed.data.appliesWhen !== undefined) values.appliesWhen = parsed.data.appliesWhen
   if (parsed.data.instruction !== undefined) values.instruction = parsed.data.instruction
   if (parsed.data.roles !== undefined) values.roles = parsed.data.roles
-  if (parsed.data.channels !== undefined) values.channels = parsed.data.channels
   if (parsed.data.enabled !== undefined) values.enabled = parsed.data.enabled
   if (parsed.data.priority !== undefined) values.priority = parsed.data.priority
   const [row] = await db

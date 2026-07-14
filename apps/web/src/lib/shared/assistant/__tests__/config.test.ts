@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   ASSISTANT_ADDITIONAL_INSTRUCTIONS_MAX_LENGTH,
   ASSISTANT_AVATAR_URL_MAX_LENGTH,
-  ASSISTANT_CHANNEL_INSTRUCTIONS_MAX_LENGTH,
   ASSISTANT_NAME_MAX_LENGTH,
   ASSISTANT_RESPONSE_LENGTH_CATALOGUE,
   ASSISTANT_RESPONSE_LENGTH_DIRECTIVES,
@@ -12,7 +11,6 @@ import {
   ASSISTANT_TONE_CATALOGUE,
   ASSISTANT_TONE_DIRECTIVES,
   ASSISTANT_TONES,
-  ASSISTANT_TOOL_CONTROLS,
   DEFAULT_ASSISTANT_CONFIG,
   assistantConfigSchema,
   assistantRoleSchema,
@@ -32,15 +30,12 @@ describe('assistantConfigSchema', () => {
       identity: {
         name: 'Quinn',
         avatarUrl: null,
-        showAiLabel: true,
       },
       voice: {
         tone: 'balanced',
         responseLength: 'balanced',
         additionalInstructions: '',
       },
-      channels: {},
-      toolControls: {},
     })
   })
 
@@ -62,17 +57,9 @@ describe('assistantConfigSchema', () => {
     }
   })
 
-  it('enforces global and channel instruction maxima', () => {
+  it('enforces the global instruction maximum', () => {
     const maximum = validConfig()
     maximum.voice.additionalInstructions = 'a'.repeat(ASSISTANT_ADDITIONAL_INSTRUCTIONS_MAX_LENGTH)
-    maximum.channels = {
-      widget: {
-        additionalInstructions: 'w'.repeat(ASSISTANT_CHANNEL_INSTRUCTIONS_MAX_LENGTH),
-      },
-      email: {
-        additionalInstructions: 'e'.repeat(ASSISTANT_CHANNEL_INSTRUCTIONS_MAX_LENGTH),
-      },
-    }
     expect(assistantConfigSchema.safeParse(maximum).success).toBe(true)
 
     const globalOver = validConfig()
@@ -80,17 +67,9 @@ describe('assistantConfigSchema', () => {
       ASSISTANT_ADDITIONAL_INSTRUCTIONS_MAX_LENGTH + 1
     )
     expect(assistantConfigSchema.safeParse(globalOver).success).toBe(false)
-
-    for (const channel of ['widget', 'email'] as const) {
-      const channelOver = validConfig()
-      channelOver.channels[channel] = {
-        additionalInstructions: 'a'.repeat(ASSISTANT_CHANNEL_INSTRUCTIONS_MAX_LENGTH + 1),
-      }
-      expect(assistantConfigSchema.safeParse(channelOver).success).toBe(false)
-    }
   })
 
-  it('accepts every tone, response length, and tool-control value', () => {
+  it('accepts every tone and response length value', () => {
     for (const tone of ASSISTANT_TONES) {
       const config = validConfig()
       config.voice.tone = tone
@@ -102,15 +81,9 @@ describe('assistantConfigSchema', () => {
       config.voice.responseLength = responseLength
       expect(assistantConfigSchema.safeParse(config).success).toBe(true)
     }
-
-    for (const control of ASSISTANT_TOOL_CONTROLS) {
-      const config = validConfig()
-      config.toolControls.search_knowledge = control
-      expect(assistantConfigSchema.safeParse(config).success).toBe(true)
-    }
   })
 
-  it('rejects unknown versions, presets, and tool-control values', () => {
+  it('rejects unknown versions and presets', () => {
     expect(assistantConfigSchema.safeParse({ ...validConfig(), version: 1 }).success).toBe(false)
     expect(
       assistantConfigSchema.safeParse({
@@ -122,12 +95,6 @@ describe('assistantConfigSchema', () => {
       assistantConfigSchema.safeParse({
         ...validConfig(),
         voice: { ...validConfig().voice, responseLength: 'unlimited' },
-      }).success
-    ).toBe(false)
-    expect(
-      assistantConfigSchema.safeParse({
-        ...validConfig(),
-        toolControls: { search_knowledge: 'enabled' },
       }).success
     ).toBe(false)
   })
@@ -200,34 +167,13 @@ describe('assistant configuration normalization', () => {
     input.identity.name = ' \u0000Quinn وكيل\u007f '
     input.voice.additionalInstructions =
       ' \u0001Use café ☕.\r\nاكتب بالعربية.\nכתוב בעברית.\u001f '
-    input.channels.widget = {
-      additionalInstructions: ' \u000bFirst line\n\t第二行\u007f ',
-    }
 
     expect(normalizeAssistantConfig(input)).toMatchObject({
       identity: { name: 'Quinn وكيل' },
       voice: {
         additionalInstructions: 'Use café ☕.\nاكتب بالعربية.\nכתוב בעברית.',
       },
-      channels: {
-        widget: { additionalInstructions: 'First line\n\t第二行' },
-      },
     })
-  })
-
-  it('removes empty channel overrides but keeps the required global empty string', () => {
-    const input = validConfig()
-    input.voice.additionalInstructions = ' \n\t\u0000 '
-    input.channels = {
-      widget: { additionalInstructions: ' \n\t\u007f ' },
-      email: { additionalInstructions: ' \u0001 Email only \u001f ' },
-    }
-
-    expect(normalizeAssistantConfig(input)).toMatchObject({
-      voice: { additionalInstructions: '' },
-      channels: { email: { additionalInstructions: 'Email only' } },
-    })
-    expect(normalizeAssistantConfig(input).channels).not.toHaveProperty('widget')
   })
 
   it('is pure and also trims an avatar URL', () => {
@@ -267,22 +213,6 @@ describe('assistant configuration normalization', () => {
           config.voice.additionalInstructions = 'g'.repeat(
             ASSISTANT_ADDITIONAL_INSTRUCTIONS_MAX_LENGTH + 1
           )
-        },
-      ],
-      [
-        'widget instructions',
-        (config) => {
-          config.channels.widget = {
-            additionalInstructions: 'w'.repeat(ASSISTANT_CHANNEL_INSTRUCTIONS_MAX_LENGTH + 1),
-          }
-        },
-      ],
-      [
-        'email instructions',
-        (config) => {
-          config.channels.email = {
-            additionalInstructions: 'e'.repeat(ASSISTANT_CHANNEL_INSTRUCTIONS_MAX_LENGTH + 1),
-          }
         },
       ],
     ]

@@ -130,14 +130,12 @@ vi.mock('@/lib/server/domains/conversation-attributes/conversation-attribute.ser
 const DEFAULT_RUNTIME_CONFIG: AssistantRuntimeConfig = {
   config: {
     version: 2 as const,
-    identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+    identity: { name: 'Quinn', avatarUrl: null },
     voice: {
       tone: 'balanced' as const,
       responseLength: 'balanced' as const,
       additionalInstructions: '',
     },
-    channels: {},
-    toolControls: {},
   },
   revision: 1,
   workspaceName: 'Quackback',
@@ -1072,11 +1070,10 @@ describe('runAssistantTurn', () => {
     })
   })
 
-  it('reuses one config revision and tool-control snapshot across a retry', async () => {
+  it('reuses one config revision and tool snapshot across a retry', async () => {
     mockRuntimeConfig({
       revision: 37,
       actionsEnabled: true,
-      config: { toolControls: { search_knowledge: 'autonomous' } },
     })
     const object = { text: 'Second try.', citations: [] }
     mockChat
@@ -1088,12 +1085,7 @@ describe('runAssistantTurn', () => {
     expect(mockChat).toHaveBeenCalledTimes(2)
     expect(mockGetAssistantRuntimeConfig).toHaveBeenCalledTimes(1)
     expect(mockAssembleAssistantToolset).toHaveBeenCalledTimes(1)
-    expect(mockAssembleAssistantToolset).toHaveBeenCalledWith(
-      expect.any(Object),
-      undefined,
-      { search_knowledge: 'autonomous' },
-      true
-    )
+    expect(mockAssembleAssistantToolset).toHaveBeenCalledWith(expect.any(Object), undefined, true)
     expect(result.status !== 'suppressed' && result.trace.configRevision).toBe(37)
     expect(lastLoggedMetadata?.configRevision).toBe(37)
   })
@@ -1222,8 +1214,8 @@ describe('runAssistantTurn', () => {
   it('keeps a real proposal side effect but still throws when final generation fails', async () => {
     mockRetrieve.mockResolvedValue([])
     let callCount = 0
-    let finalContext: { proposedActions: unknown[] } | undefined
-    mockChat.mockImplementation((opts: { context: { proposedActions: unknown[] } }) => {
+    let finalContext: { ledger: { proposedActions: unknown[] } } | undefined
+    mockChat.mockImplementation((opts: { context: { ledger: { proposedActions: unknown[] } } }) => {
       callCount += 1
       if (callCount === 1) {
         // First attempt: a plain hard failure, nothing proposed.
@@ -1233,7 +1225,7 @@ describe('runAssistantTurn', () => {
       // fails to produce a usable answer.
       finalContext = opts.context
       return (async function* () {
-        opts.context.proposedActions.push({
+        opts.context.ledger.proposedActions.push({
           id: 'assistant_action_1',
           toolName: 'end_conversation',
           summary: 'Close the conversation',
@@ -1247,7 +1239,7 @@ describe('runAssistantTurn', () => {
       'provider exploded again'
     )
 
-    expect(finalContext?.proposedActions).toEqual([
+    expect(finalContext?.ledger.proposedActions).toEqual([
       {
         id: 'assistant_action_1',
         toolName: 'end_conversation',
@@ -1441,7 +1433,6 @@ describe('runAssistantTurn', () => {
 
     expect(mockListEnabledGuidanceCandidates).toHaveBeenCalledWith({
       role: 'customer_support',
-      channel: 'widget',
     })
     expect(mockSelectApplicableGuidance).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1726,7 +1717,7 @@ describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
     expect(capturedCtx?.simulate).toBe(false)
   })
 
-  it("forces customer-support writes to approval through the role-owned 'propose' policy", async () => {
+  it("executes customer-support writes autonomously through the role-owned 'execute' policy", async () => {
     mockRetrieve.mockResolvedValue([])
     let capturedCtx: { writeToolPolicy?: unknown } | undefined
     driveSearch((ctx) => {
@@ -1739,7 +1730,7 @@ describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
       conversationId: 'conversation_42' as never,
     })
 
-    expect(capturedCtx?.writeToolPolicy).toBe('propose')
+    expect(capturedCtx?.writeToolPolicy).toBe('execute')
   })
 
   it("forces Copilot Q&A writes to approval through the role-owned 'propose' policy", async () => {
@@ -1772,15 +1763,15 @@ describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
     expect(capturedCtx?.writeToolPolicy).toBe('disabled')
   })
 
-  it('surfaces ctx.proposedActions on the result (P2-C.4), mirroring ctx.sources for citations', async () => {
+  it('surfaces ctx.ledger.proposedActions on the result (P2-C.4), mirroring ctx.ledger.sources for citations', async () => {
     mockRetrieve.mockResolvedValue([])
-    mockChat.mockImplementation((opts: { context: { proposedActions: unknown[] } }) =>
+    mockChat.mockImplementation((opts: { context: { ledger: { proposedActions: unknown[] } } }) =>
       (async function* () {
         // Stands in for what the approval branch of runWithPipeline does
         // (assistant.tools.ts): this file exercises the runtime's plumbing
         // of the ledger onto the result, not the pipeline logic itself
         // (covered end to end in assistant.tools.test.ts).
-        opts.context.proposedActions.push({
+        opts.context.ledger.proposedActions.push({
           id: 'assistant_action_1',
           toolName: 'end_conversation',
           summary: 'Close the conversation',
@@ -2219,7 +2210,6 @@ describe('runAssistantTurn: V2 prompt and config snapshot', () => {
     const identity = {
       name: 'Nova',
       avatarUrl: 'https://cdn.example.com/nova.png',
-      showAiLabel: false,
     }
     mockRuntimeConfig({
       revision: 12,
@@ -2232,8 +2222,6 @@ describe('runAssistantTurn: V2 prompt and config snapshot', () => {
           responseLength: 'brief',
           additionalInstructions: 'Call customers members.',
         },
-        channels: { widget: { additionalInstructions: 'Use widget terminology.' } },
-        toolControls: { search_knowledge: 'disabled' },
       },
     })
     mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
@@ -2245,7 +2233,6 @@ describe('runAssistantTurn: V2 prompt and config snapshot', () => {
     expect(prompt).toContain('Use a warm, approachable tone.')
     expect(prompt).toContain('Prefer the shortest complete answer.')
     expect(prompt).toContain('Call customers members.')
-    expect(prompt).toContain('Use widget terminology.')
     expect(result).toMatchObject({
       identity,
       trace: {
@@ -2267,7 +2254,6 @@ describe('runAssistantTurn: V2 prompt and config snapshot', () => {
     expect(mockAssembleAssistantToolset).toHaveBeenCalledWith(
       expect.objectContaining({ assistantName: 'Nova', knowledgeEnabled: false }),
       undefined,
-      { search_knowledge: 'disabled' },
       false
     )
   })
@@ -2276,13 +2262,12 @@ describe('runAssistantTurn: V2 prompt and config snapshot', () => {
     mockRuntimeConfig({
       workspaceName: 'Acme',
       config: {
-        identity: { name: 'Nova', avatarUrl: null, showAiLabel: true },
+        identity: { name: 'Nova', avatarUrl: null },
         voice: {
           tone: 'warm',
           responseLength: 'brief',
           additionalInstructions: 'Call customers members.',
         },
-        channels: { widget: { additionalInstructions: 'Use widget terminology.' } },
       },
     })
     mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
@@ -2297,7 +2282,6 @@ describe('runAssistantTurn: V2 prompt and config snapshot', () => {
     expect(prompt).not.toContain("Nova, Acme's")
     expect(prompt).not.toContain('# Customer-facing voice')
     expect(prompt).not.toContain('Call customers members.')
-    expect(prompt).not.toContain('Use widget terminology.')
     expect(result.status !== 'suppressed' && result.trace).toMatchObject({
       role: 'copilot_qa',
       appliedGuidance: [],
@@ -2328,19 +2312,17 @@ describe('runAssistantTurn: V2 prompt and config snapshot', () => {
     expect(lastLoggedMetadata?.configFallbackReason).toBe('database_read_failed')
   })
 
-  it('scopes V2 guidance candidates by resolved role and channel', async () => {
+  it('scopes V2 guidance candidates by resolved role', async () => {
     mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
 
     await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
     expect(mockListEnabledGuidanceCandidates).toHaveBeenLastCalledWith({
       role: 'customer_support',
-      channel: 'widget',
     })
 
     await runAssistantTurn({ ...baseInput, messages: customerAsks('hi'), surface: 'email' })
     expect(mockListEnabledGuidanceCandidates).toHaveBeenLastCalledWith({
       role: 'customer_support',
-      channel: 'email',
     })
   })
 })

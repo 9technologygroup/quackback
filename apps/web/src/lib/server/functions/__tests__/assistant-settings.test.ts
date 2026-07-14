@@ -28,8 +28,6 @@ const hoisted = vi.hoisted(() => ({
   getAssistantSettings: vi.fn(),
   updateAssistantIdentity: vi.fn(),
   updateAssistantVoice: vi.fn(),
-  updateAssistantChannels: vi.fn(),
-  updateAssistantToolControls: vi.fn(),
   updateWidgetAssistantDeployment: vi.fn(),
   requestHeaders: new Headers({
     'user-agent': 'assistant-settings-test',
@@ -46,8 +44,6 @@ vi.mock('@/lib/server/domains/settings/settings.assistant', async (importOrigina
   getAssistantSettings: hoisted.getAssistantSettings,
   updateAssistantIdentity: hoisted.updateAssistantIdentity,
   updateAssistantVoice: hoisted.updateAssistantVoice,
-  updateAssistantChannels: hoisted.updateAssistantChannels,
-  updateAssistantToolControls: hoisted.updateAssistantToolControls,
 }))
 
 vi.mock('@/lib/server/domains/settings/settings.widget', () => ({
@@ -64,23 +60,19 @@ vi.mock('@tanstack/react-start/server', () => ({
 
 import {
   getAssistantSettingsFn,
-  updateAssistantChannelsFn,
   updateAssistantIdentityFn,
-  updateAssistantToolControlsFn,
   updateAssistantVoiceFn,
   updateWidgetAssistantDeploymentFn,
 } from '../assistant-settings'
 
 const CONFIG: AssistantConfig = {
   version: 2,
-  identity: { name: 'Quinn', avatarUrl: null, showAiLabel: true },
+  identity: { name: 'Quinn', avatarUrl: null },
   voice: {
     tone: 'balanced',
     responseLength: 'balanced',
     additionalInstructions: '',
   },
-  channels: {},
-  toolControls: {},
 }
 
 const SETTINGS_RESULT = {
@@ -116,8 +108,6 @@ beforeEach(() => {
   hoisted.getAssistantSettings.mockResolvedValue(SETTINGS_RESULT)
   hoisted.updateAssistantIdentity.mockResolvedValue(CONFIG_RESULT)
   hoisted.updateAssistantVoice.mockResolvedValue(CONFIG_RESULT)
-  hoisted.updateAssistantChannels.mockResolvedValue(CONFIG_RESULT)
-  hoisted.updateAssistantToolControls.mockResolvedValue(CONFIG_RESULT)
   hoisted.updateWidgetAssistantDeployment.mockResolvedValue({ enabled: true, respond: true })
 })
 
@@ -136,21 +126,9 @@ describe('assistant settings permission gates', () => {
         voice: CONFIG.voice,
       },
     })
-    await updateAssistantChannelsFn({
-      data: {
-        expectedRevision: 41,
-        channels: CONFIG.channels,
-      },
-    })
-    await updateAssistantToolControlsFn({
-      data: {
-        expectedRevision: 41,
-        toolControls: CONFIG.toolControls,
-      },
-    })
     await updateWidgetAssistantDeploymentFn({ data: { enabled: true, respond: true } })
 
-    expect(hoisted.requireAuth).toHaveBeenCalledTimes(6)
+    expect(hoisted.requireAuth).toHaveBeenCalledTimes(4)
     for (const call of hoisted.requireAuth.mock.calls) {
       expect(call[0]).toEqual({ permission: PERMISSIONS.ASSISTANT_MANAGE })
     }
@@ -174,12 +152,12 @@ describe('assistant settings V2 boundary', () => {
     expect(hoisted.getAssistantSettings).toHaveBeenCalledOnce()
   })
 
-  it('rejects invalid identity, voice, channels, controls, revisions, and deployment input', async () => {
+  it('rejects invalid identity, voice, revisions, and deployment input', async () => {
     await expect(
       updateAssistantIdentityFn({
         data: {
           expectedRevision: 41,
-          identity: { name: ' ', avatarUrl: null, showAiLabel: true },
+          identity: { name: ' ', avatarUrl: null },
         },
       })
     ).rejects.toThrow()
@@ -196,24 +174,15 @@ describe('assistant settings V2 boundary', () => {
       })
     ).rejects.toThrow()
     await expect(
-      updateAssistantChannelsFn({
+      updateAssistantVoiceFn({
         data: {
-          expectedRevision: 41,
-          channels: { email: { additionalInstructions: 'x'.repeat(1_001) } },
+          expectedRevision: 0,
+          voice: {
+            tone: 'balanced',
+            responseLength: 'balanced',
+            additionalInstructions: '',
+          },
         },
-      })
-    ).rejects.toThrow()
-    await expect(
-      updateAssistantToolControlsFn({
-        data: {
-          expectedRevision: 41,
-          toolControls: { end_conversation: 'sometimes' },
-        } as never,
-      })
-    ).rejects.toThrow()
-    await expect(
-      updateAssistantToolControlsFn({
-        data: { expectedRevision: 0, toolControls: {} },
       })
     ).rejects.toThrow()
     await expect(
@@ -224,8 +193,6 @@ describe('assistant settings V2 boundary', () => {
 
     expect(hoisted.updateAssistantIdentity).not.toHaveBeenCalled()
     expect(hoisted.updateAssistantVoice).not.toHaveBeenCalled()
-    expect(hoisted.updateAssistantChannels).not.toHaveBeenCalled()
-    expect(hoisted.updateAssistantToolControls).not.toHaveBeenCalled()
     expect(hoisted.updateWidgetAssistantDeployment).not.toHaveBeenCalled()
   })
 
@@ -233,20 +200,11 @@ describe('assistant settings V2 boundary', () => {
     const identity = {
       name: 'Avery',
       avatarUrl: 'https://cdn.example.test/avery.png',
-      showAiLabel: false,
     }
     const voice = {
       tone: 'professional' as const,
       responseLength: 'detailed' as const,
       additionalInstructions: 'Explain the next step.',
-    }
-    const channels = {
-      widget: { additionalInstructions: 'Start with a greeting.' },
-      email: { additionalInstructions: 'Use an email sign-off.' },
-    }
-    const toolControls = {
-      end_conversation: 'approval' as const,
-      create_ticket: 'autonomous' as const,
     }
     const actor = { ...AUDIT_ACTOR, headers: hoisted.requestHeaders }
 
@@ -256,17 +214,9 @@ describe('assistant settings V2 boundary', () => {
     await expect(
       updateAssistantVoiceFn({ data: { expectedRevision: 41, voice } })
     ).resolves.toEqual(CONFIG_RESULT)
-    await expect(
-      updateAssistantChannelsFn({ data: { expectedRevision: 41, channels } })
-    ).resolves.toEqual(CONFIG_RESULT)
-    await expect(
-      updateAssistantToolControlsFn({ data: { expectedRevision: 41, toolControls } })
-    ).resolves.toEqual(CONFIG_RESULT)
 
     expect(hoisted.updateAssistantIdentity).toHaveBeenCalledWith(41, identity, actor)
     expect(hoisted.updateAssistantVoice).toHaveBeenCalledWith(41, voice, actor)
-    expect(hoisted.updateAssistantChannels).toHaveBeenCalledWith(41, channels, actor)
-    expect(hoisted.updateAssistantToolControls).toHaveBeenCalledWith(41, toolControls, actor)
   })
 
   it('normalizes identity input at the server boundary before delegation', async () => {
@@ -276,7 +226,6 @@ describe('assistant settings V2 boundary', () => {
         identity: {
           name: '  Avery  ',
           avatarUrl: '  https://cdn.example.test/avery.png  ',
-          showAiLabel: true,
         },
       },
     })
@@ -286,7 +235,6 @@ describe('assistant settings V2 boundary', () => {
       {
         name: 'Avery',
         avatarUrl: 'https://cdn.example.test/avery.png',
-        showAiLabel: true,
       },
       expect.objectContaining(AUDIT_ACTOR)
     )

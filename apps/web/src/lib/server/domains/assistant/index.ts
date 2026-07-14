@@ -87,7 +87,6 @@ export {
   withGateEnvelope,
   SEARCH_BUDGET_PER_TURN,
   type ToolRiskClass,
-  type ToolControlMode,
   type AssistantToolSpec,
   type AssistantCitation,
   type AssistantProposedAction,
@@ -162,7 +161,6 @@ export {
   type AssistantAttributeOption,
   type AssistantAttributeCatalogueEntry,
   type BuildAssistantPromptInput,
-  type AssistantChannelInstructionPolicy,
   type AssistantRolePolicy,
   type AssistantPromptBuildResult,
 } from './assistant.system-prompt'

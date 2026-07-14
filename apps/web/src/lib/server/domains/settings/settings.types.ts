@@ -465,7 +465,6 @@ export interface AssistantDeploymentConfig {
 export interface PublicAssistantConfig extends AssistantDeploymentConfig {
   name: string
   avatarUrl: string | null
-  showAiLabel: boolean
 }
 
 export interface MessengerConfig {

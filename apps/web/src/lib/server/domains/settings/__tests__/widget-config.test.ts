@@ -112,14 +112,12 @@ describe('Widget Config Types', () => {
         {
           name: 'Quinn',
           avatarUrl: null,
-          showAiLabel: true,
         }
       )
       expect(projected.assistant).toEqual({
         enabled: true,
         name: 'Quinn',
         avatarUrl: null,
-        showAiLabel: true,
       })
       expect('routing' in projected).toBe(false)
     })

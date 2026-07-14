@@ -41,11 +41,6 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
 }))
 
-const mockGetAssistantToolControls = vi.fn()
-vi.mock('@/lib/server/domains/settings/settings.assistant', () => ({
-  getAssistantToolControls: (...args: unknown[]) => mockGetAssistantToolControls(...args),
-}))
-
 const mockClaimToolCall = vi.fn()
 const mockFinalizeToolCall = vi.fn()
 const mockRecordDeniedToolCall = vi.fn()
@@ -76,17 +71,15 @@ import { makeToolTestContext, fakePendingActionRow } from './assistant-tool-fixt
 import { ASSISTANT_TOOL_SPECS } from '../assistant.toolspec'
 import { RETRIEVED_CONTENT_NOTE } from '../injection-guard'
 import type { AssistantToolContext, AssistantToolSpec } from '../assistant.toolspec'
-import type { AssistantToolControls } from '@/lib/server/domains/settings/settings.assistant'
 
 /** Tools-only view of the assembly, for the many cases here that don't need
  *  the paired specs. */
 async function assembleTools(
   c: AssistantToolContext,
   specs?: readonly AssistantToolSpec[],
-  controls: AssistantToolControls = {},
   actionsEnabled = specs !== undefined
 ) {
-  return (await assembleAssistantToolset(c, specs, controls, actionsEnabled)).tools
+  return (await assembleAssistantToolset(c, specs, actionsEnabled)).tools
 }
 
 const ctx = makeToolTestContext
@@ -98,10 +91,9 @@ function toolCtx(c: AssistantToolContext) {
 async function findTool(
   c: AssistantToolContext,
   name: string,
-  specs?: readonly AssistantToolSpec[],
-  controls: AssistantToolControls = {}
+  specs?: readonly AssistantToolSpec[]
 ): Promise<{ execute: (args: unknown, o: unknown) => Promise<unknown> }> {
-  const tools = await assembleTools(c, specs, controls)
+  const tools = await assembleTools(c, specs)
   const tool = tools.find((t) => t.name === name)
   if (!tool?.execute) throw new Error(`tool ${name} not found`)
   return tool as { execute: (args: unknown, o: unknown) => Promise<unknown> }
@@ -126,8 +118,6 @@ function makeFakeWriteSpec(overrides: Partial<AssistantToolSpec> = {}): Assistan
     description: 'Close the conversation with the given reason.',
     promptGuidance: 'Only call once the customer has confirmed the issue is resolved.',
     risk: 'write',
-    supportedModes: ['disabled', 'approval', 'autonomous'],
-    defaultMode: 'approval',
     permissions: [PERMISSIONS.CONVERSATION_SET_STATUS],
     parents: ['conversation'],
     definition: fakeWriteDefinition,
@@ -139,8 +129,7 @@ function makeFakeWriteSpec(overrides: Partial<AssistantToolSpec> = {}): Assistan
 
 // A fake read-risk spec, for pinning that `ctx.simulate` never touches reads
 // (the fixed catalogue only has search_knowledge, and its behavior is
-// covered end to end above; the resolver test below wants a read spec with
-// a controllable supportedModes/defaultMode too).
+// covered end to end above; the resolver test below wants a second read spec).
 const fakeReadDefinition = toolDefinition({
   name: 'lookup_thing',
   description: 'Look something up.',
@@ -155,8 +144,6 @@ function makeFakeReadSpec(overrides: Partial<AssistantToolSpec> = {}): Assistant
     description: 'Look something up.',
     promptGuidance: 'Use to look something up.',
     risk: 'read',
-    supportedModes: ['disabled', 'autonomous'],
-    defaultMode: 'autonomous',
     permissions: [],
     parents: ['conversation', 'ticket'],
     definition: fakeReadDefinition,
@@ -192,7 +179,7 @@ describe('search_knowledge', () => {
       snippet: expect.any(String),
     })
     expect(out.articles[0].snippet.length).toBeLessThanOrEqual(1200)
-    expect(c.sources.get('kb_article_1')).toEqual({
+    expect(c.ledger.sources.get('kb_article_1')).toEqual({
       type: 'article',
       id: 'kb_article_1',
       title: 'Title kb_article_1',
@@ -207,7 +194,7 @@ describe('search_knowledge', () => {
     const search = await findTool(c, 'search_knowledge')
     const out = (await search.execute({ query: 'nope' }, toolCtx(c))) as { articles: unknown[] }
     expect(out.articles).toEqual([])
-    expect(c.sources.size).toBe(0)
+    expect(c.ledger.sources.size).toBe(0)
   })
 
   it('frames a non-empty result with the shared content-not-instructions note (retrieval is the fourth guard surface)', async () => {
@@ -238,7 +225,7 @@ describe('search_knowledge', () => {
 
     await search.execute({ query: 'billing' }, toolCtx(c))
 
-    expect(c.sources.get('kb_article_1')?.updatedAt).toBe('2026-06-01T00:00:00.000Z')
+    expect(c.ledger.sources.get('kb_article_1')?.updatedAt).toBe('2026-06-01T00:00:00.000Z')
   })
 
   it('ends exploration past the per-turn search budget with an answer-now note', async () => {
@@ -255,7 +242,7 @@ describe('search_knowledge', () => {
     expect(mockRetrieve).toHaveBeenCalledTimes(3)
     expect(out.articles).toEqual([])
     expect(out.note).toMatch(/answer/i)
-    expect(c.sources.has('kb_article_1')).toBe(true)
+    expect(c.ledger.sources.has('kb_article_1')).toBe(true)
   })
 
   it("forwards the context's sourceTypes into retrieveKnowledge, narrowing away the knowledge base", async () => {
@@ -309,46 +296,40 @@ describe('search_knowledge', () => {
 
 describe('assembleAssistantToolset: assistant actions flag', () => {
   it('returns the read tool plus core control tools with no pipeline wrapping when the flag is off', async () => {
-    mockIsFeatureEnabled.mockResolvedValue(false)
     const tools = await assembleTools(ctx())
     expect(tools.map((t) => t.name).sort()).toEqual(['report_inability', 'search_knowledge'])
-    // The turn snapshot owns controls; assembly performs no settings reads.
-    expect(mockGetAssistantToolControls).not.toHaveBeenCalled()
   })
 
-  it('uses the caller-provided actions snapshot without reading settings', async () => {
-    await assembleTools(ctx(), undefined, {}, true)
-    expect(mockIsFeatureEnabled).not.toHaveBeenCalled()
-    expect(mockGetAssistantToolControls).not.toHaveBeenCalled()
+  it('exposes the write tools too when actions are enabled', async () => {
+    const tools = await assembleTools(ctx(), undefined, true)
+    // Read + control tools plus the default-active write tools.
+    expect(tools.map((t) => t.name)).toContain('search_knowledge')
+    expect(tools.map((t) => t.name)).toContain('set_attribute')
   })
 
-  it('applies pre-fetched controls when actions are enabled', async () => {
-    const tools = await assembleTools(ctx(), undefined, { search_knowledge: 'disabled' }, true)
-    expect(tools.map((t) => t.name)).not.toContain('search_knowledge')
-    expect(mockGetAssistantToolControls).not.toHaveBeenCalled()
+  it('read tools always run — there is no per-tool off switch', async () => {
+    const tools = await assembleTools(ctx(), undefined, true)
+    expect(tools.map((t) => t.name)).toContain('search_knowledge')
   })
 })
 
-describe('assembleAssistantToolset: control-mode gating', () => {
-  it('does not register a disabled tool', async () => {
-    const tools = await assembleTools(ctx(), [makeFakeWriteSpec()], {
-      close_conversation: 'disabled',
-    })
+describe('assembleAssistantToolset: write-policy gating', () => {
+  it('does not register a write tool when the turn policy is disabled (proactive-suggestions)', async () => {
+    const tools = await assembleTools(ctx({ writeToolPolicy: 'disabled' }), [makeFakeWriteSpec()])
     expect(tools).toHaveLength(0)
   })
 
-  it('fails closed to disabled (with a warning) when the saved mode is not supported', async () => {
-    const spec = makeFakeWriteSpec({ supportedModes: ['disabled', 'approval'] })
-    const tools = await assembleTools(ctx(), [spec], { close_conversation: 'autonomous' })
-    expect(tools).toHaveLength(0)
-    expect(mockLoggerWarn).toHaveBeenCalled()
+  it('registers a write tool for a real customer-support turn (autonomous execution)', async () => {
+    const tools = await assembleTools(
+      ctx({ conversationId: 'conversation_1' as never, writeToolPolicy: 'execute' }),
+      [makeFakeWriteSpec()]
+    )
+    expect(tools.map((t) => t.name)).toEqual(['close_conversation'])
   })
 
-  it('read tools still respect disabled mode when actions are on', async () => {
-    const tools = await assembleTools(ctx(), undefined, { search_knowledge: 'disabled' }, true)
-    expect(tools.map((t) => t.name)).not.toContain('search_knowledge')
-    // Another default-active tool survives in approval mode.
-    expect(tools.map((t) => t.name)).toContain('set_attribute')
+  it('a read tool is never dropped by the write policy', async () => {
+    const tools = await assembleTools(ctx({ writeToolPolicy: 'disabled' }), undefined, true)
+    expect(tools.map((t) => t.name)).toContain('search_knowledge')
   })
 })
 
@@ -387,9 +368,7 @@ describe('assembleAssistantToolset: parent-kind gating (unified inbox §2.9/§3.
 
   it('a null-null context (sandbox) falls back to conversation parent, matching pre-ticket behavior', async () => {
     const c = ctx({ conversationId: null, simulate: true })
-    const tools = await assembleTools(c, [makeFakeWriteSpec({ defaultMode: 'autonomous' })], {
-      close_conversation: 'autonomous',
-    })
+    const tools = await assembleTools(c, [makeFakeWriteSpec()])
 
     expect(tools.map((t) => t.name)).toEqual(['close_conversation'])
   })
@@ -405,13 +384,14 @@ describe('assembleAssistantToolset', () => {
   })
 })
 
-describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => {
-  it('proposes a pending action, returns a pending_approval note, records it on ctx.proposedActions, and never executes', async () => {
+describe('assembleAssistantToolset: write-tool pipeline (propose mode)', () => {
+  it('proposes a pending action, returns a pending_approval note, records it on ctx.ledger.proposedActions, and never executes', async () => {
     mockProposePendingAction.mockResolvedValue({ id: 'assistant_action_1' })
 
     const c = ctx({
       conversationId: 'conversation_1' as never,
       involvementId: 'assistant_involvement_1' as never,
+      writeToolPolicy: 'propose',
     })
     const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()])
     const out = (await tool.execute({ reason: 'resolved' }, toolCtx(c))) as {
@@ -437,9 +417,9 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
     expect(typeof out.note).toBe('string')
     expect(mockWriteExecute).not.toHaveBeenCalled()
     expect(mockClaimToolCall).not.toHaveBeenCalled()
-    // Mirrors ctx.sources for citations: the pipeline records what it
+    // Mirrors ctx.ledger.sources for citations: the pipeline records what it
     // proposed, keyed off the row proposePendingAction actually created.
-    expect(c.proposedActions).toEqual([
+    expect(c.ledger.proposedActions).toEqual([
       {
         id: 'assistant_action_1',
         toolName: 'close_conversation',
@@ -455,6 +435,7 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
     const c = ctx({
       conversationId: 'conversation_1' as never,
       latestCustomerMessageId: 'conversation_message_1',
+      writeToolPolicy: 'propose',
     })
     const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()])
     await tool.execute({ reason: 'resolved' }, toolCtx(c))
@@ -483,6 +464,7 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
     const c1 = ctx({
       conversationId: 'conversation_1' as never,
       latestCustomerMessageId: 'conversation_message_1',
+      writeToolPolicy: 'propose',
     })
     const tool1 = await findTool(c1, 'close_conversation', [makeFakeWriteSpec()])
     await tool1.execute({ reason: 'resolved' }, toolCtx(c1))
@@ -490,11 +472,12 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
     const c2 = ctx({
       conversationId: 'conversation_1' as never,
       latestCustomerMessageId: 'conversation_message_1',
+      writeToolPolicy: 'propose',
     })
     const tool2 = await findTool(c2, 'close_conversation', [makeFakeWriteSpec()])
     await tool2.execute({ reason: 'resolved' }, toolCtx(c2))
 
-    expect(c1.proposedActions[0].id).toBe(c2.proposedActions[0].id)
+    expect(c1.ledger.proposedActions[0].id).toBe(c2.ledger.proposedActions[0].id)
     expect(mockProposePendingAction).toHaveBeenCalledTimes(2)
   })
 
@@ -505,6 +488,7 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
       conversationId: null,
       ticketId: 'ticket_1' as never,
       involvementId: 'assistant_involvement_1' as never,
+      writeToolPolicy: 'propose',
     })
     // This test is about runWithPipeline's parent-choice logic once a write
     // tool IS on a ticket-scoped turn's catalogue, a separate concern from
@@ -530,18 +514,16 @@ describe('assembleAssistantToolset: write-tool pipeline (approval mode)', () => 
   })
 })
 
-describe('assembleAssistantToolset: hard propose policy', () => {
-  it('forces a saved autonomous Writer tool to approval instead of executing', async () => {
+describe('assembleAssistantToolset: propose policy (copilot Q&A)', () => {
+  it('proposes a write tool instead of executing it', async () => {
     mockProposePendingAction.mockResolvedValue({ id: 'assistant_action_1' })
 
     const c = ctx({
       conversationId: 'conversation_1' as never,
-      role: 'customer_support',
+      role: 'copilot_qa',
       writeToolPolicy: 'propose',
     })
-    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()], {
-      close_conversation: 'autonomous',
-    })
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()])
     const out = (await tool.execute({ reason: 'resolved' }, toolCtx(c))) as {
       status: string
       note: string
@@ -551,7 +533,7 @@ describe('assembleAssistantToolset: hard propose policy', () => {
     expect(mockProposePendingAction).toHaveBeenCalledTimes(1)
     expect(mockWriteExecute).not.toHaveBeenCalled()
     expect(mockClaimToolCall).not.toHaveBeenCalled()
-    expect(c.proposedActions).toEqual([
+    expect(c.ledger.proposedActions).toEqual([
       {
         id: 'assistant_action_1',
         toolName: 'close_conversation',
@@ -570,9 +552,7 @@ describe('assembleAssistantToolset: hard propose policy', () => {
         role,
         writeToolPolicy: 'propose',
       })
-      const tool = await findTool(c, 'set_attribute', [ASSISTANT_TOOL_SPECS.set_attribute], {
-        set_attribute: 'autonomous',
-      })
+      const tool = await findTool(c, 'set_attribute', [ASSISTANT_TOOL_SPECS.set_attribute])
 
       const out = await tool.execute({ key: 'plan_tier', value: 'pro' }, toolCtx(c))
 
@@ -590,14 +570,6 @@ describe('assembleAssistantToolset: hard propose policy', () => {
     }
   )
 
-  it('still disables a tool the workspace turned off, propose notwithstanding', async () => {
-    const tools = await assembleTools(ctx({ writeToolPolicy: 'propose' }), [makeFakeWriteSpec()], {
-      close_conversation: 'disabled',
-    })
-
-    expect(tools).toHaveLength(0)
-  })
-
   it('actions disabled still excludes write tools but keeps core controls', async () => {
     const tools = await assembleTools(ctx({ writeToolPolicy: 'propose' }))
 
@@ -614,9 +586,7 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
     const spec = makeFakeWriteSpec({ permissions: [PERMISSIONS.SETTINGS_MANAGE] })
 
     const c = autonomousCtx()
-    const tool = await findTool(c, 'close_conversation', [spec], {
-      close_conversation: 'autonomous',
-    })
+    const tool = await findTool(c, 'close_conversation', [spec])
     const out = (await tool.execute({ reason: 'resolved' }, toolCtx(c))) as {
       status: string
       note: string
@@ -638,9 +608,7 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
     mockWriteExecute.mockResolvedValue({ closed: true })
 
     const c = autonomousCtx({ latestCustomerMessageId: 'conversation_message_1' })
-    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })], {
-      close_conversation: 'autonomous',
-    })
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })])
     const out = await tool.execute({ reason: 'resolved' }, toolCtx(c))
 
     expect(out).toEqual({ closed: true })
@@ -656,16 +624,14 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
       'assistant_tool_call_1',
       expect.objectContaining({ status: 'succeeded', latencyMs: expect.any(Number) })
     )
-    expect(c.toolOutcomes).toEqual([{ name: 'close_conversation', outcome: 'executed' }])
+    expect(c.ledger.toolOutcomes).toEqual([{ name: 'close_conversation', outcome: 'executed' }])
   })
 
   it('skips a duplicate claim and never executes', async () => {
     mockClaimToolCall.mockResolvedValue(null)
 
     const c = autonomousCtx()
-    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })], {
-      close_conversation: 'autonomous',
-    })
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })])
     const out = (await tool.execute({ reason: 'resolved' }, toolCtx(c))) as { status: string }
 
     expect(out.status).toBe('skipped_duplicate')
@@ -678,9 +644,7 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
     mockWriteExecute.mockRejectedValue(new Error('boom'))
 
     const c = autonomousCtx()
-    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })], {
-      close_conversation: 'autonomous',
-    })
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })])
     const out = (await tool.execute({ reason: 'resolved' }, toolCtx(c))) as { status: string }
 
     expect(out.status).toBe('failed')
@@ -705,14 +669,7 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
 describe('assembleAssistantToolset: sandbox simulate mode', () => {
   it('skips claim, execute, and audit for a write tool and returns a simulated summary', async () => {
     const c = ctx({ conversationId: null, simulate: true, writeToolPolicy: 'simulate' })
-    const tool = await findTool(
-      c,
-      'close_conversation',
-      [makeFakeWriteSpec({ defaultMode: 'autonomous' })],
-      {
-        close_conversation: 'autonomous',
-      }
-    )
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec()])
     const out = await tool.execute({ reason: 'resolved' }, toolCtx(c))
 
     expect(out).toEqual({ simulated: true, summary: 'Close conversation: resolved' })
@@ -734,131 +691,100 @@ describe('assembleAssistantToolset: sandbox simulate mode', () => {
 })
 
 describe('resolveEffectiveToolMode', () => {
-  // The full matrix behind the pipeline's single mode decision: risk x
-  // configured mode x simulate x writeToolPolicy. Every "today" row pins an
-  // observable outcome one of the tests above already exercises end to end
-  // through assembleAssistantToolset/runWithPipeline; this suite is the unit
-  // form of the same precedence, including the writeToolPolicy: 'propose'
-  // rows the P2-C.4 copilot surface actually sets (see copilot.ts) and the
-  // 'controls' rows that remain an unused-today seam for a future surface.
+  // The matrix behind the pipeline's single execution decision: risk x
+  // simulate x writeToolPolicy, decoupled from any saved per-tool config (the
+  // control-mode dial is gone). Every row pins an observable outcome one of
+  // the tests above exercises end to end through
+  // assembleAssistantToolset/runWithPipeline.
 
-  it('resolves a read tool to its configured mode regardless of simulate', () => {
+  it('resolves a read tool to autonomous regardless of simulate or write policy', () => {
     const spec = makeFakeReadSpec()
-    expect(resolveEffectiveToolMode(spec, 'autonomous', ctx({ simulate: false }))).toBe(
-      'autonomous'
-    )
-    expect(resolveEffectiveToolMode(spec, 'autonomous', ctx({ simulate: true }))).toBe('autonomous')
+    expect(resolveEffectiveToolMode(spec, ctx({ simulate: false }))).toBe('autonomous')
+    expect(resolveEffectiveToolMode(spec, ctx({ simulate: true }))).toBe('autonomous')
+    expect(resolveEffectiveToolMode(spec, ctx({ writeToolPolicy: 'propose' }))).toBe('autonomous')
+    expect(resolveEffectiveToolMode(spec, ctx({ writeToolPolicy: 'disabled' }))).toBe('autonomous')
   })
 
-  it('disables a read tool whose saved mode is unsupported, regardless of simulate', () => {
-    const spec = makeFakeReadSpec({ supportedModes: ['disabled', 'autonomous'] })
-    expect(resolveEffectiveToolMode(spec, 'approval' as never, ctx({ simulate: true }))).toBe(
-      'disabled'
-    )
-    expect(mockLoggerWarn).toHaveBeenCalled()
-  })
-
-  it('disabled always wins for a read tool, simulate included', () => {
-    const spec = makeFakeReadSpec()
-    expect(resolveEffectiveToolMode(spec, 'disabled', ctx({ simulate: true }))).toBe('disabled')
-  })
-
-  it('resolves a write tool to its configured mode when simulate is false, any writeToolPolicy', () => {
+  it("resolves a write tool to autonomous for a real customer-support turn ('execute')", () => {
     const spec = makeFakeWriteSpec()
-    expect(resolveEffectiveToolMode(spec, 'approval', ctx({ simulate: false }))).toBe('approval')
-    expect(resolveEffectiveToolMode(spec, 'autonomous', ctx({ simulate: false }))).toBe(
-      'autonomous'
-    )
     expect(
-      resolveEffectiveToolMode(
-        spec,
-        'approval',
-        ctx({ simulate: false, writeToolPolicy: 'controls' })
-      )
-    ).toBe('approval')
+      resolveEffectiveToolMode(spec, ctx({ simulate: false, writeToolPolicy: 'execute' }))
+    ).toBe('autonomous')
   })
 
-  it("today's default: a write tool under simulate resolves to 'simulate' no matter its configured mode", () => {
+  it('resolves a write tool to autonomous when no write policy is set and simulate is false', () => {
     const spec = makeFakeWriteSpec()
-    expect(resolveEffectiveToolMode(spec, 'approval', ctx({ simulate: true }))).toBe('simulate')
-    expect(resolveEffectiveToolMode(spec, 'autonomous', ctx({ simulate: true }))).toBe('simulate')
+    expect(resolveEffectiveToolMode(spec, ctx({ simulate: false }))).toBe('autonomous')
   })
 
-  it("an explicit writeToolPolicy: 'simulate' behaves exactly like the unset default", () => {
+  it("today's sandbox default: a write tool under simulate resolves to 'simulate'", () => {
+    const spec = makeFakeWriteSpec()
+    expect(resolveEffectiveToolMode(spec, ctx({ simulate: true }))).toBe('simulate')
+  })
+
+  it("an explicit writeToolPolicy: 'simulate' behaves exactly like the unset default under simulate", () => {
     const spec = makeFakeWriteSpec()
     const c = ctx({ simulate: true, writeToolPolicy: 'simulate' })
-    expect(resolveEffectiveToolMode(spec, 'approval', c)).toBe('simulate')
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('simulate')
+    expect(resolveEffectiveToolMode(spec, c)).toBe('simulate')
   })
 
-  it("the C.4 seam: writeToolPolicy: 'controls' defers to the configured mode even while simulate is true", () => {
-    const spec = makeFakeWriteSpec()
-    const c = ctx({ simulate: true, writeToolPolicy: 'controls' })
-    expect(resolveEffectiveToolMode(spec, 'approval', c)).toBe('approval')
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('autonomous')
-  })
-
-  it("disabled still wins for a write tool under writeToolPolicy: 'controls'", () => {
+  it("P2-C.4: writeToolPolicy: 'propose' proposes a write tool, simulate notwithstanding", () => {
     const spec = makeFakeWriteSpec()
     expect(
-      resolveEffectiveToolMode(
-        spec,
-        'disabled',
-        ctx({ simulate: true, writeToolPolicy: 'controls' })
-      )
-    ).toBe('disabled')
-  })
-
-  it("P2-C.4: writeToolPolicy: 'propose' forces approval for a write tool no matter its configured mode", () => {
-    const spec = makeFakeWriteSpec()
-    const c = ctx({ simulate: false, writeToolPolicy: 'propose' })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('approval')
-    expect(resolveEffectiveToolMode(spec, 'approval', c)).toBe('approval')
-  })
-
-  it("writeToolPolicy: 'propose' wins over simulate too", () => {
-    const spec = makeFakeWriteSpec()
-    const c = ctx({ simulate: true, writeToolPolicy: 'propose' })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('approval')
+      resolveEffectiveToolMode(spec, ctx({ simulate: false, writeToolPolicy: 'propose' }))
+    ).toBe('propose')
+    expect(
+      resolveEffectiveToolMode(spec, ctx({ simulate: true, writeToolPolicy: 'propose' }))
+    ).toBe('propose')
   })
 
   it.each(['customer_support', 'copilot_qa'] as const)(
-    'forces every static write, including set_attribute, to approval for %s',
+    'proposes every static write, including set_attribute, for %s under the propose policy',
     (role) => {
       const c = ctx({ role, simulate: false, writeToolPolicy: 'propose' })
       const writes = Object.values(ASSISTANT_TOOL_SPECS).filter((spec) => spec.risk === 'write')
 
       expect(writes.map((spec) => spec.name)).toContain('set_attribute')
       for (const spec of writes) {
-        expect(resolveEffectiveToolMode(spec, 'autonomous', c), spec.name).toBe('approval')
-        expect(resolveEffectiveToolMode(spec, undefined, c), spec.name).toBe('approval')
+        expect(resolveEffectiveToolMode(spec, c), spec.name).toBe('propose')
       }
     }
   )
+
+  it('executes every static write autonomously for a real customer-support turn', () => {
+    const c = ctx({
+      role: 'customer_support',
+      conversationId: 'conversation_1' as never,
+      simulate: false,
+      writeToolPolicy: 'execute',
+    })
+    const writes = Object.values(ASSISTANT_TOOL_SPECS).filter((spec) => spec.risk === 'write')
+
+    expect(writes.map((spec) => spec.name)).toContain('set_attribute')
+    for (const spec of writes) {
+      expect(resolveEffectiveToolMode(spec, c), spec.name).toBe('autonomous')
+    }
+  })
 
   it('keeps explicit simulation simulated for every write', () => {
     const c = ctx({ simulate: true, writeToolPolicy: 'simulate' })
     const writes = Object.values(ASSISTANT_TOOL_SPECS).filter((spec) => spec.risk === 'write')
     for (const spec of writes) {
-      expect(resolveEffectiveToolMode(spec, undefined, c), spec.name).toBe('simulate')
+      expect(resolveEffectiveToolMode(spec, c), spec.name).toBe('simulate')
     }
   })
 
-  it("QUINN-PROACTIVE-SUGGESTIONS-SPEC.md: writeToolPolicy: 'disabled' drops a write tool no matter its configured mode", () => {
+  it("QUINN-PROACTIVE-SUGGESTIONS-SPEC.md: writeToolPolicy: 'disabled' drops a write tool", () => {
     const spec = makeFakeWriteSpec()
-    const c = ctx({ simulate: false, writeToolPolicy: 'disabled' })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', c)).toBe('disabled')
-    expect(resolveEffectiveToolMode(spec, 'approval', c)).toBe('disabled')
+    expect(
+      resolveEffectiveToolMode(spec, ctx({ simulate: false, writeToolPolicy: 'disabled' }))
+    ).toBe('disabled')
   })
 
   it("writeToolPolicy: 'disabled' wins over simulate too", () => {
     const spec = makeFakeWriteSpec()
     expect(
-      resolveEffectiveToolMode(
-        spec,
-        'autonomous',
-        ctx({ simulate: true, writeToolPolicy: 'disabled' })
-      )
+      resolveEffectiveToolMode(spec, ctx({ simulate: true, writeToolPolicy: 'disabled' }))
     ).toBe('disabled')
   })
 
@@ -866,58 +792,21 @@ describe('resolveEffectiveToolMode', () => {
     const c = ctx({ role: 'suggested_reply', simulate: false, writeToolPolicy: 'disabled' })
     const writes = Object.values(ASSISTANT_TOOL_SPECS).filter((spec) => spec.risk === 'write')
     for (const spec of writes) {
-      expect(resolveEffectiveToolMode(spec, undefined, c), spec.name).toBe('disabled')
+      expect(resolveEffectiveToolMode(spec, c), spec.name).toBe('disabled')
     }
   })
 
-  it("disabled still wins for a write tool under writeToolPolicy: 'propose'", () => {
-    const spec = makeFakeWriteSpec()
-    expect(resolveEffectiveToolMode(spec, 'disabled', ctx({ writeToolPolicy: 'propose' }))).toBe(
-      'disabled'
-    )
-  })
-
-  it("S3: fails closed to disabled (with a warning) when propose fires for a write tool that never supports 'approval' at all", () => {
-    // Saved mode 'autonomous' IS supported (so fold 1 does not trip), but
-    // 'approval' itself is absent from supportedModes — the propose override
-    // must not force a mode this spec never declared it could run under.
-    const spec = makeFakeWriteSpec({ supportedModes: ['disabled', 'autonomous'] })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', ctx({ writeToolPolicy: 'propose' }))).toBe(
-      'disabled'
-    )
-    expect(mockLoggerWarn).toHaveBeenCalled()
-  })
-
-  it("a read tool is unaffected by writeToolPolicy: 'propose'", () => {
-    const spec = makeFakeReadSpec()
-    expect(resolveEffectiveToolMode(spec, 'autonomous', ctx({ writeToolPolicy: 'propose' }))).toBe(
-      'autonomous'
-    )
-  })
-
-  it('hard propose converts a stale saved autonomous mode to approval when the tool supports approval', () => {
-    const spec = makeFakeWriteSpec({ supportedModes: ['disabled', 'approval'] })
-    expect(resolveEffectiveToolMode(spec, 'autonomous', ctx({ writeToolPolicy: 'propose' }))).toBe(
-      'approval'
-    )
-    expect(mockLoggerWarn).not.toHaveBeenCalled()
-  })
-
-  it('disables a write tool whose saved mode is unsupported, regardless of simulate or writeToolPolicy', () => {
-    const spec = makeFakeWriteSpec({ supportedModes: ['disabled', 'approval'] })
-    expect(
-      resolveEffectiveToolMode(
-        spec,
-        'autonomous',
-        ctx({ simulate: true, writeToolPolicy: 'controls' })
+  it('control tools are always autonomous, whatever the write policy', () => {
+    const controls = Object.values(ASSISTANT_TOOL_SPECS).filter((spec) => spec.risk === 'control')
+    expect(controls.length).toBeGreaterThan(0)
+    for (const spec of controls) {
+      expect(resolveEffectiveToolMode(spec, ctx({ writeToolPolicy: 'disabled' })), spec.name).toBe(
+        'autonomous'
       )
-    ).toBe('disabled')
-    expect(mockLoggerWarn).toHaveBeenCalled()
-  })
-
-  it('falls back to the spec default mode when no control is saved', () => {
-    const spec = makeFakeWriteSpec({ defaultMode: 'autonomous' })
-    expect(resolveEffectiveToolMode(spec, undefined, ctx({ simulate: false }))).toBe('autonomous')
+      expect(resolveEffectiveToolMode(spec, ctx({ writeToolPolicy: 'propose' })), spec.name).toBe(
+        'autonomous'
+      )
+    }
   })
 })
 
