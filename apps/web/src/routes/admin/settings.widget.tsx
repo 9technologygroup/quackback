@@ -26,10 +26,7 @@ import { BackLink } from '@/components/ui/back-link'
 import { PageHeader } from '@/components/shared/page-header'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
 import { WarningBox } from '@/components/shared/warning-box'
-import {
-  WidgetPreview,
-  type WidgetPreviewTabs,
-} from '@/components/admin/settings/widget/widget-preview'
+import { WidgetPreview } from '@/components/admin/settings/widget/widget-preview'
 import { InlineSpinner } from '@/components/admin/settings/inline-spinner'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -95,19 +92,17 @@ function WidgetSettingsPage() {
   const supportInboxFlagEnabled = flags?.supportInbox ?? false
   const messengerEnabled = config.messenger?.enabled ?? false
 
-  // Lifted editor state so the live preview reacts to every control.
+  // Lifted editor state: position drives the preview's launcher chrome.
   const [position, setPosition] = useState<'bottom-right' | 'bottom-left'>(
     (config.position as 'bottom-right' | 'bottom-left') ?? 'bottom-right'
   )
-  const [previewTabs, setPreviewTabs] = useState<WidgetPreviewTabs>({
-    home: config.tabs?.home ?? true,
-    messenger: (config.tabs?.messenger ?? false) && supportInboxFlagEnabled && messengerEnabled,
-    feedback: config.tabs?.feedback ?? true,
-    changelog: config.tabs?.changelog ?? false,
-    help: (config.tabs?.help ?? false) && helpCenterFlagEnabled && helpCenterEnabled,
-  })
   const [homeDraft, setHomeDraft] = useState<WidgetHomeConfig>(config.home ?? {})
   const [previewTheme, setPreviewTheme] = useState<'light' | 'dark'>('light')
+
+  // The preview iframe shows the persisted config; remount it whenever a save
+  // lands. Keyed on content (not dataUpdatedAt) so refetches that return
+  // identical data don't cause gratuitous reloads.
+  const previewRefreshKey = useMemo(() => JSON.stringify(config), [config])
 
   return (
     <div className="space-y-6">
@@ -130,8 +125,6 @@ function WidgetSettingsPage() {
             boards={boardsQuery.data}
             position={position}
             onPositionChange={setPosition}
-            previewTabs={previewTabs}
-            onPreviewTabsChange={setPreviewTabs}
             helpCenterFlagEnabled={helpCenterFlagEnabled}
             helpCenterEnabled={helpCenterEnabled}
             supportInboxFlagEnabled={supportInboxFlagEnabled}
@@ -184,14 +177,13 @@ function WidgetSettingsPage() {
           <div className="flex-1 min-h-0">
             <WidgetPreview
               position={position}
-              tabs={previewTabs}
-              home={{ ...homeDraft, heroImageUrl: config.home?.heroImageUrl ?? null }}
-              assistant={config.messenger?.assistant}
-              teamName={config.messenger?.teamName || settings?.name || null}
-              logoUrl={settings?.brandingData?.logoUrl ?? null}
               theme={previewTheme}
+              refreshKey={previewRefreshKey}
             />
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            This is your live widget. It shows real content, and actions in it are real.
+          </p>
         </div>
       </div>
 
@@ -252,8 +244,6 @@ function ModulesCard({
   boards,
   position,
   onPositionChange,
-  previewTabs,
-  onPreviewTabsChange,
   helpCenterFlagEnabled,
   helpCenterEnabled,
   supportInboxFlagEnabled,
@@ -273,8 +263,6 @@ function ModulesCard({
   boards: { id: string; name: string; slug: string }[]
   position: 'bottom-right' | 'bottom-left'
   onPositionChange: (val: 'bottom-right' | 'bottom-left') => void
-  previewTabs: WidgetPreviewTabs
-  onPreviewTabsChange: (tabs: WidgetPreviewTabs) => void
   helpCenterFlagEnabled: boolean
   helpCenterEnabled: boolean
   supportInboxFlagEnabled: boolean
@@ -309,19 +297,16 @@ function ModulesCard({
     }
   }
 
-  /** Persist one tab flag; keeps local + preview state in sync, reverts on error. */
-  async function saveTab(key: keyof typeof tabs, checked: boolean, previewValue = checked) {
+  /** Persist one tab flag, reverting local state on error. */
+  async function saveTab(key: keyof typeof tabs, checked: boolean) {
     const prev = tabs[key]
-    const prevPreview = previewTabs[key]
     setTabs({ ...tabs, [key]: checked })
-    onPreviewTabsChange({ ...previewTabs, [key]: previewValue })
     setSaving(true)
     try {
       await updateWidgetConfig.mutateAsync({ tabs: { [key]: checked } })
       startTransition(() => router.invalidate())
     } catch {
       setTabs({ ...tabs, [key]: prev })
-      onPreviewTabsChange({ ...previewTabs, [key]: prevPreview })
     } finally {
       setSaving(false)
     }

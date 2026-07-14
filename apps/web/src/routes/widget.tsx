@@ -42,8 +42,14 @@ export const Route = createFileRoute('/widget')({
   // setIframeHeaders() can set frame-ancestors/X-Frame-Options on the
   // document response, and the locale is resolved from Accept-Language.
   ssr: 'data-only',
-  validateSearch: (search: Record<string, unknown>): { locale?: string } => ({
+  validateSearch: (
+    search: Record<string, unknown>
+  ): { locale?: string; theme?: 'light' | 'dark' } => ({
     locale: typeof search.locale === 'string' ? search.locale : undefined,
+    // Forces the widget document's theme regardless of visitor preference or
+    // branding themeMode. Used by the admin settings preview's Light/Dark
+    // toggle; resolved in __root so it never persists to the theme cookie.
+    theme: search.theme === 'light' || search.theme === 'dark' ? search.theme : undefined,
   }),
   loader: async ({ context, location }) => {
     const { settings, session } = context

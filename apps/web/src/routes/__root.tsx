@@ -232,12 +232,22 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
   const widgetLocaleParam = useRouterState({
     select: (s) => (s.location.search as { locale?: string }).locale,
   })
+  // The widget also honors a `?theme=` override (the admin settings preview
+  // appends it): forced for that document only, never persisted to the cookie.
+  const widgetThemeParam = useRouterState({
+    select: (s) => (s.location.search as { theme?: string }).theme,
+  })
 
   // Portal routes can force a specific theme (light/dark) via branding config.
   // Admin and other non-portal routes always respect the user's preference.
   const isPortalRoute = !NON_PORTAL_PREFIXES.some((prefix) => pathname.startsWith(prefix))
   const themeMode = settings?.brandingConfig?.themeMode ?? 'user'
-  const forcedTheme = isPortalRoute && themeMode !== 'user' ? themeMode : undefined
+  const widgetForcedTheme =
+    routeIds.includes('/widget') && (widgetThemeParam === 'light' || widgetThemeParam === 'dark')
+      ? widgetThemeParam
+      : undefined
+  const forcedTheme =
+    widgetForcedTheme ?? (isPortalRoute && themeMode !== 'user' ? themeMode : undefined)
 
   // next-themes' inline script sets the class on <html> before first paint.
   // We pass the resolved default so the script knows what to apply.
