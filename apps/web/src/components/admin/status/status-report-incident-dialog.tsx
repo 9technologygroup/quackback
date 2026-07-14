@@ -38,7 +38,7 @@ import {
   type AffectedRow,
 } from './status-incident-fields'
 import { deriveImpact } from '@/lib/shared/status-calc'
-import { IMPACT_LABELS } from './status-admin-colors'
+import { IMPACT_LABELS, type StatusIncidentImpact } from './status-admin-colors'
 
 export function ReportIncidentDialog({ variant = 'default' }: { variant?: 'default' | 'outline' }) {
   const [open, setOpen] = useState(false)
@@ -50,6 +50,10 @@ export function ReportIncidentDialog({ variant = 'default' }: { variant?: 'defau
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [affected, setAffected] = useState<AffectedRow[]>([])
+  // A template's configured impact applies as a pin (impactOverride) —
+  // otherwise the template's pre-classified severity would be silently
+  // dropped in favor of the derived value.
+  const [templateImpact, setTemplateImpact] = useState<StatusIncidentImpact | null>(null)
   const [notify, setNotify] = useState(true)
   const [backfillStart, setBackfillStart] = useState<Date | undefined>(undefined)
   const [backfillEnd, setBackfillEnd] = useState<Date | undefined>(undefined)
@@ -59,6 +63,7 @@ export function ReportIncidentDialog({ variant = 'default' }: { variant?: 'defau
     setTitle('')
     setBody('')
     setAffected([])
+    setTemplateImpact(null)
     setNotify(true)
     setBackfillStart(undefined)
     setBackfillEnd(undefined)
@@ -66,6 +71,7 @@ export function ReportIncidentDialog({ variant = 'default' }: { variant?: 'defau
   }
 
   const derivedImpact = deriveImpact(affected.map((a) => a.componentStatus))
+  const effectiveImpact = templateImpact ?? derivedImpact
   const canSubmit =
     title.trim().length > 0 &&
     body.trim().length > 0 &&
@@ -80,6 +86,7 @@ export function ReportIncidentDialog({ variant = 'default' }: { variant?: 'defau
         kind: 'incident',
         title: title.trim(),
         status: backfill ? 'resolved' : 'investigating',
+        ...(templateImpact ? { impact: templateImpact, impactOverride: true } : {}),
         affectedComponents: affected,
         body: body.trim(),
         ...(backfill && backfillStart && backfillEnd
@@ -134,6 +141,11 @@ export function ReportIncidentDialog({ variant = 'default' }: { variant?: 'defau
                   setTitle(t.title)
                   setBody(t.body)
                   setAffected(templateToAffectedRows(t.componentIds, 'incident'))
+                  setTemplateImpact(
+                    t.impact === 'minor' || t.impact === 'major' || t.impact === 'critical'
+                      ? t.impact
+                      : null
+                  )
                 }}
               />
             </div>
@@ -170,9 +182,11 @@ export function ReportIncidentDialog({ variant = 'default' }: { variant?: 'defau
               <span>
                 Impact:{' '}
                 <span className="font-semibold text-foreground">
-                  {IMPACT_LABELS[derivedImpact]}
+                  {IMPACT_LABELS[effectiveImpact]}
                 </span>{' '}
-                · derived from the worst affected service. You can pin it after publishing.
+                {templateImpact
+                  ? '· pinned by the applied template. You can change it after publishing.'
+                  : '· derived from the worst affected service. You can pin it after publishing.'}
               </span>
             </div>
           )}

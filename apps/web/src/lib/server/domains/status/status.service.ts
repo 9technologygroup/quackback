@@ -313,7 +313,9 @@ export async function postIncidentUpdate(
       ...existing,
       status: 'in_progress',
       scheduledStartAt: updateData.scheduledStartAt as Date,
-    })
+    }).catch((err) =>
+      log.error({ err, incident_id: id }, 'failed to re-enqueue maintenance jobs on manual start')
+    )
   }
 
   if (becomesTerminal && !input.skipRestore) {
@@ -453,7 +455,21 @@ export async function listStatusIncidents(
   if (state === 'active') conditions.push(isNull(statusIncidents.resolvedAt))
   if (state === 'resolved') conditions.push(isNotNull(statusIncidents.resolvedAt))
   const term = search?.trim()
-  if (term) conditions.push(ilike(statusIncidents.title, `%${term}%`))
+  if (term) {
+    const pattern = `%${term}%`
+    // Title OR any update body — operators search for error codes and
+    // phrases that only appear in updates, not titles.
+    conditions.push(
+      or(
+        ilike(statusIncidents.title, pattern),
+        sql`EXISTS (
+          SELECT 1 FROM ${statusIncidentUpdates}
+          WHERE ${statusIncidentUpdates.incidentId} = ${statusIncidents.id}
+            AND ${statusIncidentUpdates.body} ILIKE ${pattern}
+        )`
+      )!
+    )
+  }
 
   if (cursor) {
     const cursorRow = await db.query.statusIncidents.findFirst({

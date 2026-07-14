@@ -206,7 +206,7 @@ function StatusIncidentRow({
         <div className="flex items-center flex-wrap gap-2 text-xs text-muted-foreground mt-2.5">
           <LifecycleBadge status={lifecycle} />
           <span>·</span>
-          <Badge variant="outline" className="h-5">
+          <Badge variant="outline" size="sm">
             {IMPACT_LABELS[incident.impact]}
           </Badge>
           {visibleComponents.map((c) => (

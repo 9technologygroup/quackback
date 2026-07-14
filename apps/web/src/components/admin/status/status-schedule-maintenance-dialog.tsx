@@ -62,7 +62,15 @@ export function ScheduleMaintenanceDialog({
     createMutation.reset()
   }
 
-  const canSubmit = title.trim().length > 0 && body.trim().length > 0 && affected.length > 0
+  // The window bounds are required: a date-less window with autoStart on
+  // would sit in 'scheduled' forever (no job is ever enqueued for a null
+  // start bound).
+  const canSubmit =
+    title.trim().length > 0 &&
+    body.trim().length > 0 &&
+    affected.length > 0 &&
+    !!scheduledStart &&
+    !!scheduledEnd
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()

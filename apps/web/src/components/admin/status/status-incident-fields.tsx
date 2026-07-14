@@ -75,7 +75,7 @@ export function AffectedComponentsField({
 
   if (isLoading) return <p className="text-xs text-muted-foreground">Loading services…</p>
   if (components.length === 0) {
-    return <p className="text-xs text-muted-foreground">No services yet — create one first.</p>
+    return <p className="text-xs text-muted-foreground">No services yet. Create one first.</p>
   }
 
   return (

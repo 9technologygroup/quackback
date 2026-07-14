@@ -228,7 +228,12 @@ export async function startMaintenanceNow(incidentId: StatusIncidentId): Promise
     ...incident,
     scheduledStartAt: now,
     status: 'in_progress',
-  })
+  }).catch((err) =>
+    log.error(
+      { err, incident_id: incidentId },
+      'failed to re-enqueue maintenance jobs on start-now'
+    )
+  )
 }
 
 /**

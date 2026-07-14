@@ -469,7 +469,7 @@ function EditorSidebarContent({
         />
         {details.affected.length === 0 && (
           <p className="text-[11px] text-destructive">
-            Select at least one service. Changes save once one is selected.
+            Select at least one service. Changes are not saved until one is selected.
           </p>
         )}
       </SideSection>
@@ -491,13 +491,19 @@ function EditorSidebarContent({
           onChange={(e) => onPatch({ title: e.target.value })}
           className="h-8 text-sm"
         />
-        <p className="text-[11px] text-muted-foreground h-3.5">
-          {saveState === 'saving'
-            ? 'Saving…'
-            : saveState === 'saved'
-              ? 'Saved'
-              : 'Details save automatically.'}
-        </p>
+        {details.title.trim().length === 0 ? (
+          <p className="text-[11px] text-destructive h-3.5">
+            Add a title. Changes are not saved without one.
+          </p>
+        ) : (
+          <p className="text-[11px] text-muted-foreground h-3.5">
+            {saveState === 'saving'
+              ? 'Saving…'
+              : saveState === 'saved'
+                ? 'Saved'
+                : 'Details save automatically.'}
+          </p>
+        )}
       </SideSection>
     </>
   )

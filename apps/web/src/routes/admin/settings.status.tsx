@@ -67,7 +67,7 @@ function StatusSettingsPage() {
       <PageHeader
         icon={SignalIcon}
         title="Status"
-        description="Public status page for your services — incidents, maintenance, and uptime history."
+        description="Public status page for your services: incidents, maintenance, and uptime history."
       />
 
       <StatusGeneralCard

@@ -44,6 +44,14 @@ describe('listStatusIncidents search', () => {
     expect(params).toContain('%api errors%')
   })
 
+  it('also matches update bodies (operators search for error codes posted in updates)', async () => {
+    await listStatusIncidents({ search: 'ECONNRESET' })
+    const { sql, params } = capturedWhereSql()
+    expect(sql).toContain('exists')
+    expect(sql).toContain('"body" ilike')
+    expect(params.filter((p) => p === '%ECONNRESET%')).toHaveLength(2)
+  })
+
   it('trims the term and ignores whitespace-only search', async () => {
     await listStatusIncidents({ search: '   ' })
     const { sql } = capturedWhereSql()

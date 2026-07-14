@@ -142,7 +142,7 @@ export function useStartStatusMaintenanceNow() {
   return useMutation({
     mutationFn: (id: string) => startStatusMaintenanceNowFn({ data: { id } }),
     onSuccess: (data) => {
-      queryClient.setQueryData(statusKeys.incidentDetail(data.id), data)
+      mergeIncidentDetail(queryClient, data)
       queryClient.invalidateQueries({ queryKey: statusKeys.incidents() })
       queryClient.invalidateQueries({ queryKey: statusKeys.components() })
       queryClient.invalidateQueries({ queryKey: statusKeys.overview() })
