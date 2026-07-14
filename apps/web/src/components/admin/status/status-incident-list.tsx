@@ -22,7 +22,8 @@ import { useDebouncedSearch } from '@/lib/client/hooks/use-debounced-search'
 import { Route } from '@/routes/admin/status'
 import { statusIncidentQueries, type StatusIncidentAdmin } from '@/lib/client/queries/status'
 import { useDeleteStatusIncident } from '@/lib/client/mutations/status'
-import { CreateStatusIncidentDialog } from './status-incident-modal'
+import { ReportIncidentDialog } from './status-report-incident-dialog'
+import { ScheduleMaintenanceDialog } from './status-schedule-maintenance-dialog'
 import {
   IMPACT_COLORS,
   IMPACT_LABELS,
@@ -109,9 +110,17 @@ export function StatusIncidentList({ kind, state, emptyMessage }: StatusIncident
           activeSort={sort}
           onSortChange={(v) => setSort(v as SortMode)}
           action={
+            // One primary action per tab: on the maintenance tab the
+            // schedule button takes the primary slot.
             <div className="flex items-center gap-2 ml-auto">
-              <CreateStatusIncidentDialog kind="maintenance" />
-              <CreateStatusIncidentDialog kind="incident" />
+              {kind === 'maintenance' ? (
+                <ScheduleMaintenanceDialog variant="default" />
+              ) : (
+                <>
+                  <ScheduleMaintenanceDialog />
+                  <ReportIncidentDialog />
+                </>
+              )}
             </div>
           }
         />

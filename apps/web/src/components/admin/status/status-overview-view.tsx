@@ -18,7 +18,8 @@ import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { Route } from '@/routes/admin/status'
 import { statusOverviewQueries, type StatusOverview } from '@/lib/client/queries/status'
 import { useStartStatusMaintenanceNow } from '@/lib/client/mutations/status'
-import { CreateStatusIncidentDialog } from './status-incident-modal'
+import { ReportIncidentDialog } from './status-report-incident-dialog'
+import { ScheduleMaintenanceDialog } from './status-schedule-maintenance-dialog'
 import {
   COMPONENT_STATUS_COLORS,
   COMPONENT_STATUS_LABELS,
@@ -41,8 +42,8 @@ export function StatusOverviewView() {
       <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm px-3 py-2.5 flex items-center gap-2 border-b border-border/40">
         <h2 className="text-sm font-semibold px-1">Overview</h2>
         <div className="flex items-center gap-2 ml-auto">
-          <CreateStatusIncidentDialog kind="maintenance" />
-          <CreateStatusIncidentDialog kind="incident" />
+          <ScheduleMaintenanceDialog />
+          <ReportIncidentDialog />
         </div>
       </div>
 

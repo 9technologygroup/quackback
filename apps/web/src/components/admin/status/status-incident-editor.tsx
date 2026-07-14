@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Loader2 } from 'lucide-react'
-import { Cog6ToothIcon, EnvelopeIcon, DocumentTextIcon } from '@heroicons/react/24/outline'
+import { Cog6ToothIcon, EnvelopeIcon } from '@heroicons/react/24/outline'
 import type { StatusIncidentId } from '@quackback/ids'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -21,7 +21,6 @@ import { Switch } from '@/components/ui/switch'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DateTimePicker } from '@/components/ui/datetime-picker'
 import { TimeAgo } from '@/components/ui/time-ago'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { ModalHeader } from '@/components/shared/modal-header'
 import { ModalFooter } from '@/components/shared/modal-footer'
@@ -30,13 +29,13 @@ import { useUrlModal } from '@/lib/client/hooks/use-url-modal'
 import { useKeyboardSubmit } from '@/lib/client/hooks/use-keyboard-submit'
 import { SidebarContainer, StatusSelect } from '@/components/shared/sidebar-primitives'
 import { Route } from '@/routes/admin/status'
-import {
-  statusIncidentQueries,
-  statusTemplateQueries,
-  type StatusIncidentAdminDetail,
-} from '@/lib/client/queries/status'
+import { statusIncidentQueries, type StatusIncidentAdminDetail } from '@/lib/client/queries/status'
 import { useUpdateStatusIncident, usePostStatusIncidentUpdate } from '@/lib/client/mutations/status'
-import { AffectedComponentsField, type AffectedRow } from './status-incident-modal'
+import {
+  AffectedComponentsField,
+  TemplatePickerButton,
+  type AffectedRow,
+} from './status-incident-fields'
 import { StatusLifecycleStepper } from './status-lifecycle-stepper'
 import {
   IMPACT_COLORS,
@@ -282,8 +281,9 @@ function StatusIncidentEditorContent({
                 className="min-h-24 border-0 shadow-none rounded-none focus-visible:ring-0 resize-y"
               />
               <div className="flex items-center gap-2 px-3 py-2 border-t border-border/40 bg-muted/30">
-                <InsertTemplateButton
-                  onInsert={(text) => setBody((b) => (b ? `${b}\n\n${text}` : text))}
+                <TemplatePickerButton
+                  label="Insert template"
+                  onApply={(t) => setBody((b) => (b ? `${b}\n\n${t.body}` : t.body))}
                 />
                 <div className="ml-auto">
                   {terminal && (
@@ -564,44 +564,6 @@ function IncidentTimeline({ incident }: { incident: StatusIncidentAdminDetail })
         )
       })}
     </div>
-  )
-}
-
-// ─── Insert template ────────────────────────────────────────────────────
-
-function InsertTemplateButton({ onInsert }: { onInsert: (body: string) => void }) {
-  const { data: templates } = useQuery(statusTemplateQueries.list())
-  const [open, setOpen] = useState(false)
-  if (!templates || templates.length === 0) return null
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-        >
-          <DocumentTextIcon className="h-3.5 w-3.5" />
-          Insert template
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-64 p-1">
-        {templates.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => {
-              onInsert(t.body)
-              setOpen(false)
-            }}
-            className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted/50 transition-colors"
-          >
-            <span className="block font-medium">{t.name}</span>
-            <span className="block text-xs text-muted-foreground truncate">{t.body}</span>
-          </button>
-        ))}
-      </PopoverContent>
-    </Popover>
   )
 }
 
