@@ -1,14 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   DndContext,
-  closestCenter,
+  DragOverlay,
+  closestCorners,
   KeyboardSensor,
   PointerSensor,
+  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core'
 import {
   arrayMove,
@@ -116,12 +120,18 @@ export function StatusComponentsView() {
   // visible ids, so drag is disabled while searching.
   const dragDisabled = term !== ''
 
+  /** The service row being dragged (null for group drags). Also blocks the
+   *  sync-from-server effect so a mid-drag refetch can't clobber the
+   *  in-flight container moves. */
+  const [activeDrag, setActiveDrag] = useState<StatusComponentAdmin | null>(null)
+  const commitInFlight = useRef(false)
+
   useEffect(() => {
-    if (data) {
+    if (data && !activeDrag && !commitInFlight.current) {
       setGroups(data.groups)
       setUngrouped(data.ungrouped)
     }
-  }, [data])
+  }, [data, activeDrag])
 
   const reorderComponents = useReorderStatusComponents()
   const reorderGroups = useReorderStatusGroups()
@@ -141,14 +151,87 @@ export function StatusComponentsView() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
+  const UNGROUPED = '__ungrouped__'
+
+  /** Container holding a component id: UNGROUPED, a group id, or null. */
+  function findContainerOf(componentId: string): string | null {
+    if (ungrouped.some((c) => c.id === componentId)) return UNGROUPED
+    return groups.find((g) => g.components.some((c) => c.id === componentId))?.id ?? null
+  }
+
+  /** A droppable target can be a component id, a group id (its header row,
+   *  which doubles as the drop target for empty groups), or the ungrouped
+   *  drop zone. Resolve any of them to a container id. */
+  function resolveContainer(overId: string): string | null {
+    if (overId === UNGROUPED) return UNGROUPED
+    if (groups.some((g) => g.id === overId)) return overId
+    return findContainerOf(overId)
+  }
+
+  function containerComponents(containerId: string): StatusComponentAdmin[] {
+    if (containerId === UNGROUPED) return ungrouped
+    return groups.find((g) => g.id === containerId)?.components ?? []
+  }
+
+  function setContainerComponents(containerId: string, next: StatusComponentAdmin[]) {
+    if (containerId === UNGROUPED) {
+      setUngrouped(next)
+    } else {
+      setGroups((prev) => prev.map((g) => (g.id === containerId ? { ...g, components: next } : g)))
+    }
+  }
+
+  function handleDragStart(event: DragStartEvent) {
+    const id = String(event.active.id)
+    const component =
+      ungrouped.find((c) => c.id === id) ??
+      groups.flatMap((g) => g.components).find((c) => c.id === id) ??
+      null
+    setActiveDrag(component)
+  }
+
+  /** Cross-container moves happen live during the drag (the canonical
+   *  dnd-kit multi-container pattern); the drop only commits. */
+  function handleDragOver(event: DragOverEvent) {
+    if (!activeDrag || dragDisabled) return
+    const { active, over } = event
+    if (!over) return
+    const activeId = String(active.id)
+    const overId = String(over.id)
+
+    const from = findContainerOf(activeId)
+    const to = resolveContainer(overId)
+    if (!from || !to || from === to) return
+
+    const moving = containerComponents(from).find((c) => c.id === activeId)
+    if (!moving) return
+    const target = containerComponents(to)
+    // Over a component: insert at its index. Over a header/zone: append.
+    const overIndex = target.findIndex((c) => c.id === overId)
+    const insertAt = overIndex === -1 ? target.length : overIndex
+
+    setContainerComponents(
+      from,
+      containerComponents(from).filter((c) => c.id !== activeId)
+    )
+    setContainerComponents(to, [...target.slice(0, insertAt), moving, ...target.slice(insertAt)])
+  }
+
+  function resetFromServer() {
+    if (data) {
+      setGroups(data.groups)
+      setUngrouped(data.ungrouped)
+    }
+  }
+
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
     if (dragDisabled) return
-    if (!over || active.id === over.id) return
 
     // Groups themselves can be reordered when the dragged id matches a group.
     const groupIndex = groups.findIndex((g) => g.id === active.id)
     if (groupIndex !== -1) {
+      if (!over || active.id === over.id) return
       const overIndex = groups.findIndex((g) => g.id === over.id)
       if (overIndex === -1) return
       const reordered = arrayMove(groups, groupIndex, overIndex)
@@ -162,38 +245,100 @@ export function StatusComponentsView() {
       return
     }
 
-    // Otherwise it's a component — find which section (group or ungrouped) it lives in.
-    const ungroupedIndex = ungrouped.findIndex((c) => c.id === active.id)
-    if (ungroupedIndex !== -1) {
-      const overIndex = ungrouped.findIndex((c) => c.id === over.id)
-      if (overIndex === -1) return
-      const reordered = arrayMove(ungrouped, ungroupedIndex, overIndex)
-      setUngrouped(reordered)
-      try {
-        await reorderComponents.mutateAsync(reordered.map((c) => c.id))
-      } catch {
-        toast.error('Failed to reorder services')
-        if (data) setUngrouped(data.ungrouped)
-      }
+    // Otherwise it's a component. The mid-drag container moves in
+    // handleDragOver are a cosmetic preview only; the commit is computed
+    // from SERVER truth + the drop target, because the last onDragOver's
+    // setState may not have flushed by the time the drop fires. Only the
+    // active row ever moves locally, so every other row's server container
+    // is reliable.
+    if (!data) return
+    const activeId = String(active.id)
+    // `over` is frequently the dragged row itself: after handleDragOver moved
+    // it across containers, the pointer sits on its own preview slot. In that
+    // case (and when over is null) the LOCAL preview state is the answer, and
+    // it is guaranteed flushed: dnd-kit measured the active row's droppable
+    // rect at its new home to produce over === active in the first place.
+    const overId = over && String(over.id) !== activeId ? String(over.id) : null
+    const allServer = [...data.ungrouped, ...data.groups.flatMap((g) => g.components)]
+    const moving = allServer.find((c) => c.id === activeId)
+    if (!moving) return
+
+    const serverContainerOf = (componentId: string): string | null => {
+      if (data.ungrouped.some((c) => c.id === componentId)) return UNGROUPED
+      return data.groups.find((g) => g.components.some((c) => c.id === componentId))?.id ?? null
+    }
+    const serverListOf = (containerId: string) =>
+      containerId === UNGROUPED
+        ? data.ungrouped
+        : (data.groups.find((g) => g.id === containerId)?.components ?? [])
+
+    const originalContainer = serverContainerOf(activeId)
+    let destContainer: string | null
+    if (overId === null)
+      destContainer = findContainerOf(activeId) // local preview
+    else if (overId === UNGROUPED) destContainer = UNGROUPED
+    else if (data.groups.some((g) => g.id === overId)) destContainer = overId
+    else destContainer = serverContainerOf(overId)
+    if (!originalContainer || !destContainer) {
+      resetFromServer()
       return
     }
 
-    for (const group of groups) {
-      const idx = group.components.findIndex((c) => c.id === active.id)
-      if (idx === -1) continue
-      const overIndex = group.components.findIndex((c) => c.id === over.id)
-      if (overIndex === -1) return
-      const reorderedComponents = arrayMove(group.components, idx, overIndex)
-      setGroups((prev) =>
-        prev.map((g) => (g.id === group.id ? { ...g, components: reorderedComponents } : g))
-      )
-      try {
-        await reorderComponents.mutateAsync(reorderedComponents.map((c) => c.id))
-      } catch {
-        toast.error('Failed to reorder services')
-        if (data) setGroups(data.groups)
+    const movedGroups = destContainer !== originalContainer
+    let ordered: StatusComponentAdmin[]
+    if (overId === null) {
+      // Dropped on its own preview slot: place it at the previewed index
+      // within the server truth of the destination.
+      const localIndex = containerComponents(destContainer).findIndex((c) => c.id === activeId)
+      const target = serverListOf(destContainer).filter((c) => c.id !== activeId)
+      const insertAt = localIndex === -1 ? target.length : Math.min(localIndex, target.length)
+      ordered = [...target.slice(0, insertAt), moving, ...target.slice(insertAt)]
+      const originalIds = serverListOf(originalContainer).map((c) => c.id)
+      if (!movedGroups && ordered.map((c) => c.id).join() === originalIds.join()) return
+    } else if (!movedGroups) {
+      // Same container: canonical sortable semantics (take the over item's slot).
+      const list = serverListOf(originalContainer)
+      const from = list.findIndex((c) => c.id === activeId)
+      const to = list.findIndex((c) => c.id === overId)
+      if (from === -1 || to === -1 || from === to) {
+        resetFromServer()
+        return
       }
-      return
+      ordered = arrayMove(list, from, to)
+    } else {
+      // Cross container: insert before the over item, or append when dropped
+      // on a group header / the ungrouped zone.
+      const target = serverListOf(destContainer).filter((c) => c.id !== activeId)
+      const overIndex = target.findIndex((c) => c.id === overId)
+      const insertAt = overIndex === -1 ? target.length : overIndex
+      ordered = [...target.slice(0, insertAt), moving, ...target.slice(insertAt)]
+    }
+
+    // Reflect the final arrangement locally right away (the refetch confirms).
+    const stripActive = (list: StatusComponentAdmin[]) => list.filter((c) => c.id !== activeId)
+    setUngrouped(destContainer === UNGROUPED ? ordered : stripActive(data.ungrouped))
+    setGroups(
+      data.groups.map((g) =>
+        g.id === destContainer
+          ? { ...g, components: ordered }
+          : { ...g, components: stripActive(g.components) }
+      )
+    )
+
+    commitInFlight.current = true
+    try {
+      if (movedGroups) {
+        await updateComponentMutation.mutateAsync({
+          id: activeId,
+          groupId: destContainer === UNGROUPED ? null : destContainer,
+        })
+      }
+      await reorderComponents.mutateAsync(ordered.map((c) => c.id))
+    } catch {
+      toast.error('Failed to move service')
+      resetFromServer()
+    } finally {
+      commitInFlight.current = false
     }
   }
 
@@ -274,10 +419,20 @@ export function StatusComponentsView() {
         <div className="p-3 space-y-4">
           <DndContext
             sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
+            collisionDetection={closestCorners}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={(e) => {
+              setActiveDrag(null)
+              void handleDragEnd(e)
+            }}
+            onDragCancel={() => {
+              setActiveDrag(null)
+              resetFromServer()
+            }}
           >
             <div className="rounded-xl overflow-hidden border border-border/50 bg-card shadow-sm divide-y divide-border/50">
+              {activeDrag && ungrouped.length === 0 && <UngroupedDropZone />}
               <SortableContext
                 items={visibleUngrouped.map((c) => c.id)}
                 strategy={verticalListSortingStrategy}
@@ -329,6 +484,15 @@ export function StatusComponentsView() {
                 ))}
               </SortableContext>
             </div>
+
+            <DragOverlay>
+              {activeDrag ? (
+                <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium shadow-lg">
+                  <Bars3Icon className="h-3.5 w-3.5 text-muted-foreground" />
+                  {activeDrag.name}
+                </div>
+              ) : null}
+            </DragOverlay>
           </DndContext>
 
           {groups.length === 0 && ungrouped.length === 0 && (
@@ -393,6 +557,24 @@ export function StatusComponentsView() {
   )
 }
 
+/** Drop target for pulling a service out of every group when the ungrouped
+ *  section has no rows to drop onto. Only rendered mid-drag. */
+function UngroupedDropZone() {
+  const { setNodeRef, isOver } = useDroppable({ id: '__ungrouped__' })
+  return (
+    <div
+      ref={setNodeRef}
+      className={`px-3 py-2.5 text-xs border-2 border-dashed rounded-lg m-2 text-center transition-colors ${
+        isOver
+          ? 'border-primary/60 bg-primary/5 text-foreground'
+          : 'border-border/60 text-muted-foreground'
+      }`}
+    >
+      Drop here to remove from its group
+    </div>
+  )
+}
+
 function SortableGroupHeader({
   group,
   onDelete,
@@ -402,9 +584,8 @@ function SortableGroupHeader({
   onDelete: () => void
   onAddComponent: () => void
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: group.id,
-  })
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging, isOver } =
+    useSortable({ id: group.id })
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -415,7 +596,9 @@ function SortableGroupHeader({
     <div
       ref={setNodeRef}
       style={style}
-      className="group flex items-center gap-2 bg-muted/40 px-3 py-2"
+      className={`group flex items-center gap-2 px-3 py-2 transition-colors ${
+        isOver ? 'bg-primary/10' : 'bg-muted/40'
+      }`}
     >
       <button
         {...attributes}
