@@ -11,7 +11,6 @@ import {
   posts,
   boards,
   postTagAssignments,
-  postRoadmaps,
   postTags,
   postComments,
   eq,
@@ -88,8 +87,8 @@ export async function getPostWithDetails(postId: PostId): Promise<PostWithDetail
     throw new NotFoundError('POST_NOT_FOUND', `Post with ID ${postId} not found`)
   }
 
-  // Get board, tags, roadmaps, and pinned comment in parallel
-  const [board, postTagsResult, roadmapsResult, pinnedCommentData] = await Promise.all([
+  // Get board, tags, and pinned comment in parallel.
+  const [board, postTagsResult, pinnedCommentData] = await Promise.all([
     db.query.boards.findFirst({ where: eq(boards.id, post.boardId) }),
     db
       .select({
@@ -100,10 +99,6 @@ export async function getPostWithDetails(postId: PostId): Promise<PostWithDetail
       .from(postTagAssignments)
       .innerJoin(postTags, eq(postTags.id, postTagAssignments.tagId))
       .where(eq(postTagAssignments.postId, postId)),
-    db
-      .select({ roadmapId: postRoadmaps.roadmapId })
-      .from(postRoadmaps)
-      .where(eq(postRoadmaps.postId, postId)),
     post.pinnedCommentId
       ? db.query.postComments.findFirst({
           where: eq(postComments.id, post.pinnedCommentId),
@@ -168,7 +163,6 @@ export async function getPostWithDetails(postId: PostId): Promise<PostWithDetail
       name: t.name,
       color: t.color,
     })),
-    roadmapIds: roadmapsResult.map((r) => r.roadmapId),
     pinnedComment,
     authorName: post.author?.displayName ?? null,
     // Sanitize at the source so every consumer (admin detail, v1 API, …) is safe.

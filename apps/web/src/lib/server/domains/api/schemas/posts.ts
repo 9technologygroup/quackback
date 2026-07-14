@@ -81,7 +81,6 @@ const PostDetailSchema = z.object({
   authorEmail: z.string().nullable().meta({ example: 'user@example.com' }),
   ownerId: z.string().nullable().meta({ description: 'Assigned team member ID' }),
   tags: z.array(TagSchema).meta({ description: 'Tags assigned to this post' }),
-  roadmapIds: z.array(z.string()).meta({ description: 'IDs of roadmaps this post belongs to' }),
   pinnedComment: PinnedCommentSchema.meta({
     description: 'Pinned comment used as official response',
   }),

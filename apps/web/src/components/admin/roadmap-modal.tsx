@@ -57,7 +57,6 @@ function toPortalPostView(post: PostDetails): PublicPostDetailView {
     createdAt: post.createdAt,
     board: post.board,
     tags: post.tags,
-    roadmaps: [],
     comments: toPortalComments(post),
     pinnedComment: post.pinnedComment,
     pinnedCommentId: post.pinnedCommentId,

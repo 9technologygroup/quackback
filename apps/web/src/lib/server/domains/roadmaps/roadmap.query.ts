@@ -12,13 +12,12 @@ import {
   roadmaps,
   roadmapColumns,
   posts,
-  postRoadmaps,
   postTagAssignments,
   boards,
   userSegments,
   type Roadmap,
 } from '@/lib/server/db'
-import { type RoadmapId, type PostId } from '@quackback/ids'
+import { type RoadmapId } from '@quackback/ids'
 import { NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { ANONYMOUS_ACTOR, boardViewFilter, canViewRoadmap, type Actor } from '@/lib/server/policy'
 import {
@@ -180,16 +179,9 @@ async function queryRoadmapPosts(
 
   const hasMore = results.length > limit
   return {
-    items: (hasMore ? results.slice(0, limit) : results).map((result, position) => ({
+    items: (hasMore ? results.slice(0, limit) : results).map((result) => ({
       ...result.post,
       board: result.board,
-      // Transitional response shape for REST/RPC compatibility. Membership was
-      // derived above and no post_roadmaps row was read.
-      roadmapEntry: {
-        postId: result.post.id,
-        roadmapId: roadmap.id,
-        position: offset + position,
-      },
     })),
     total: Number(countResult[0]?.count ?? 0),
     hasMore,
@@ -255,16 +247,4 @@ export function getPublicRoadmapDateBuckets(
   actor: Actor = ANONYMOUS_ACTOR
 ): Promise<RoadmapDateBucket[]> {
   return dateBucketsFor(roadmapId, actor)
-}
-
-// Phase 2 compatibility read for post detail/API consumers. Roadmap rendering
-// does not call this path.
-export async function getPostRoadmaps(postId: PostId): Promise<Roadmap[]> {
-  const entries = await db
-    .select({ roadmap: roadmaps })
-    .from(postRoadmaps)
-    .innerJoin(roadmaps, eq(postRoadmaps.roadmapId, roadmaps.id))
-    .where(eq(postRoadmaps.postId, postId))
-    .orderBy(asc(roadmaps.position))
-  return entries.map((entry) => entry.roadmap)
 }

@@ -162,8 +162,6 @@ export {
   postMentionsRelations,
   postNotes,
   postNotesRelations,
-  postRoadmaps,
-  postRoadmapsRelations,
   posts,
   postsRelations,
   postTagAssignments,

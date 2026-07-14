@@ -1,7 +1,7 @@
 /**
  * Team-member post actions for the portal post detail page.
  *
- * Wires the admin post mutations (status, ETA, tags, board, roadmap, comments
+ * Wires the admin post mutations (status, ETA, tags, board, comments
  * lock, delete/restore, title/content edit) to the portal detail cache, one
  * capability per permission key. Gating here is render-only — every server
  * function independently enforces its own permission.
@@ -16,14 +16,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useIntl } from 'react-intl'
 import { toast } from 'sonner'
-import type {
-  BoardId,
-  PostId,
-  PostStatusId,
-  PostTagId,
-  PrincipalId,
-  RoadmapId,
-} from '@quackback/ids'
+import type { BoardId, PostId, PostStatusId, PostTagId, PrincipalId } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { usePortalPermissions } from '@/lib/client/hooks/use-portal-permissions'
 import { portalDetailQueries, type PublicPostDetailView } from '@/lib/client/queries/portal-detail'
@@ -40,7 +33,6 @@ import {
   useUpdatePost,
 } from './posts'
 import type { EditPostInput } from './portal-post-actions'
-import { addPostToRoadmapFn, removePostFromRoadmapFn } from '@/lib/server/functions/roadmaps'
 import { setPostEtaFn, setPostOwnerFn } from '@/lib/server/functions/posts'
 import type { OwnerRef } from '@/lib/server/functions/post-owner-context'
 import type { PostTag } from '@/lib/shared/db-types'
@@ -72,7 +64,6 @@ export function usePortalTeamPostActions({
   const canSetTags = can(PERMISSIONS.POST_SET_TAGS)
   const canSetBoard = can(PERMISSIONS.POST_SET_BOARD)
   const canSetOwner = can(PERMISSIONS.POST_SET_OWNER)
-  const canManageRoadmap = can(PERMISSIONS.ROADMAP_MANAGE)
   const canMerge = can(PERMISSIONS.POST_MERGE)
   const canTeamEdit = can(PERMISSIONS.POST_EDIT)
   const canTeamDelete = can(PERMISSIONS.POST_DELETE)
@@ -91,7 +82,6 @@ export function usePortalTeamPostActions({
   // permissions a narrowly-scoped role may not hold).
   const { data: allTags } = useQuery({ ...portalQueries.tags(), enabled: canSetTags })
   const { data: allBoards } = useQuery({ ...portalQueries.boards(), enabled: canSetBoard })
-  const { data: allRoadmaps } = useQuery({ ...portalQueries.roadmaps(), enabled: canManageRoadmap })
 
   // Owner (assignee) context. The public post payload carries no owner, so the
   // current owner and the assignable roster are fetched here, each gated on
@@ -366,47 +356,6 @@ export function usePortalTeamPostActions({
       }
     : undefined
 
-  const onRoadmapAdd = canManageRoadmap
-    ? async (roadmapId: RoadmapId) => {
-        const roadmap = (allRoadmaps ?? []).find((r) => r.id === roadmapId)
-        await runReversible({
-          optimistic: (p) =>
-            roadmap
-              ? {
-                  ...p,
-                  roadmaps: [
-                    ...p.roadmaps,
-                    { id: roadmap.id, name: roadmap.name, slug: roadmap.slug },
-                  ],
-                }
-              : p,
-          message: intl.formatMessage({
-            id: 'portal.postDetail.team.roadmapAdded',
-            defaultMessage: 'Added to roadmap',
-          }),
-          perform: () => addPostToRoadmapFn({ data: { roadmapId, postId } }),
-          undo: () => removePostFromRoadmapFn({ data: { roadmapId, postId } }),
-        })
-      }
-    : undefined
-
-  const onRoadmapRemove = canManageRoadmap
-    ? async (roadmapId: RoadmapId) => {
-        await runReversible({
-          optimistic: (p) => ({
-            ...p,
-            roadmaps: p.roadmaps.filter((r) => r.id !== roadmapId),
-          }),
-          message: intl.formatMessage({
-            id: 'portal.postDetail.team.roadmapRemoved',
-            defaultMessage: 'Removed from roadmap',
-          }),
-          perform: () => removePostFromRoadmapFn({ data: { roadmapId, postId } }),
-          undo: () => addPostToRoadmapFn({ data: { roadmapId, postId } }),
-        })
-      }
-    : undefined
-
   // --- Manage actions (lock, delete/restore) ---
 
   const onToggleLock = canTeamEdit
@@ -494,7 +443,6 @@ export function usePortalTeamPostActions({
     canSetTags,
     canSetBoard,
     canSetOwner,
-    canManageRoadmap,
     canMerge,
     canTeamEdit,
     canTeamDelete,
@@ -507,7 +455,6 @@ export function usePortalTeamPostActions({
     // Option lists
     allTags,
     allBoards,
-    allRoadmaps,
     ownerCandidates,
     owner: owner ?? null,
     // Metadata editors
@@ -516,8 +463,6 @@ export function usePortalTeamPostActions({
     onTagsChange,
     onBoardChange,
     onOwnerChange,
-    onRoadmapAdd,
-    onRoadmapRemove,
     isMetaUpdating,
     // Manage actions
     onToggleLock,

@@ -75,9 +75,6 @@ export {
   useDeleteAuthProviderCredentials,
 } from './auth-provider-credentials'
 
-// Roadmap posts mutations
-export { useAddPostToRoadmap, useRemovePostFromRoadmap } from './roadmap-posts'
-
 // Roadmap mutations
 export {
   useCreateRoadmap,

@@ -1275,6 +1275,20 @@
       "when": 1784772660000,
       "tag": "0198_roadmap_views",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1784772720000,
+      "tag": "0199_drop_roadmap_curation",
+      "breakpoints": true
+    },
+    {
+      "idx": 200,
+      "version": "7",
+      "when": 1784772780000,
+      "tag": "0200_assistant_drop_channels_ai_label",
+      "breakpoints": true
     }
   ]
 }

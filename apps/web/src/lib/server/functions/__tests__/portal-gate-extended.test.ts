@@ -677,7 +677,6 @@ describe('portal.ts fetchPublicRoadmapPosts — portal-visibility gate', () => {
           statusId: 'st_1',
           eta: null,
           board: { id: 'b1', name: 'Ideas', slug: 'ideas' },
-          roadmapEntry: { postId: 'post_1', roadmapId: 'rm_1', position: 0 },
         },
       ],
       hasMore: false,

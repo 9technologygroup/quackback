@@ -45,7 +45,6 @@ export interface RoadmapView {
   frequency: RoadmapFrequency | null
   visibility: RoadmapVisibility
   visibleSegmentIds: SegmentId[] | null
-  isPublic: boolean
   position: number
   columns: Array<{
     id: RoadmapColumnId

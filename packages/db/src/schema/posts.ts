@@ -14,7 +14,7 @@ import {
 } from 'drizzle-orm/pg-core'
 import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
-import { boards, postTags, roadmaps } from './boards'
+import { boards, postTags } from './boards'
 import { postStatuses } from './statuses'
 import { postExternalLinks } from './external-links'
 import { feedbackSuggestions } from './feedback'
@@ -194,25 +194,6 @@ export const postTagAssignments = pgTable(
     uniqueIndex('post_tag_assignments_pk').on(table.postId, table.tagId),
     index('post_tag_assignments_post_id_idx').on(table.postId),
     index('post_tag_assignments_tag_id_idx').on(table.tagId),
-  ]
-)
-
-export const postRoadmaps = pgTable(
-  'post_roadmaps',
-  {
-    postId: typeIdColumn('post')('post_id')
-      .notNull()
-      .references(() => posts.id, { onDelete: 'cascade' }),
-    roadmapId: typeIdColumn('roadmap')('roadmap_id')
-      .notNull()
-      .references(() => roadmaps.id, { onDelete: 'cascade' }),
-    position: integer('position').notNull().default(0),
-  },
-  (table) => [
-    uniqueIndex('post_roadmaps_pk').on(table.postId, table.roadmapId),
-    index('post_roadmaps_post_id_idx').on(table.postId),
-    index('post_roadmaps_roadmap_id_idx').on(table.roadmapId),
-    index('post_roadmaps_position_idx').on(table.roadmapId, table.position),
   ]
 )
 
@@ -454,21 +435,9 @@ export const postsRelations = relations(posts, ({ one, many }) => ({
   votes: many(postVotes),
   comments: many(postComments),
   tags: many(postTagAssignments),
-  roadmaps: many(postRoadmaps),
   notes: many(postNotes),
   externalLinks: many(postExternalLinks),
   incomingSuggestions: many(feedbackSuggestions, { relationName: 'suggestionResult' }),
-}))
-
-export const postRoadmapsRelations = relations(postRoadmaps, ({ one }) => ({
-  post: one(posts, {
-    fields: [postRoadmaps.postId],
-    references: [posts.id],
-  }),
-  roadmap: one(roadmaps, {
-    fields: [postRoadmaps.roadmapId],
-    references: [roadmaps.id],
-  }),
 }))
 
 export const postVotesRelations = relations(postVotes, ({ one }) => ({

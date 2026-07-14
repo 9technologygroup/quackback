@@ -100,7 +100,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 565 surfaces
+### Server functions (`requireAuth`) — 563 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -443,8 +443,6 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/roadmaps.ts`::createRoadmapColumnFn | roadmap.manage |
 | `lib/server/functions/roadmaps.ts`::updateRoadmapColumnFn | roadmap.manage |
 | `lib/server/functions/roadmaps.ts`::deleteRoadmapColumnFn | roadmap.manage |
-| `lib/server/functions/roadmaps.ts`::addPostToRoadmapFn | roadmap.manage |
-| `lib/server/functions/roadmaps.ts`::removePostFromRoadmapFn | roadmap.manage |
 | `lib/server/functions/roadmaps.ts`::reorderRoadmapsFn | roadmap.manage |
 | `lib/server/functions/roadmaps.ts`::getRoadmapPostsFn | roadmap.manage |
 | `lib/server/functions/roadmaps.ts`::getRoadmapDateBucketsFn | roadmap.manage |
@@ -670,7 +668,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/integrations/zendesk/functions.ts`::getZendeskConnectUrl | integration.manage |
 | `lib/server/integrations/zendesk/functions.ts`::searchZendeskUserFn | integration.view |
 
-### Public REST API (`withApiKeyAuth`) — 105 surfaces
+### Public REST API (`withApiKeyAuth`) — 103 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -731,9 +729,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `routes/api/v1/roadmaps/$roadmapId.columns.$columnId.ts`::DELETE | roadmap.manage |
 | `routes/api/v1/roadmaps/$roadmapId.columns.ts`::GET | PUBLIC (any valid key) |
 | `routes/api/v1/roadmaps/$roadmapId.columns.ts`::POST | roadmap.manage |
-| `routes/api/v1/roadmaps/$roadmapId.posts.$postId.ts`::DELETE | roadmap.manage |
 | `routes/api/v1/roadmaps/$roadmapId.posts.ts`::GET | PUBLIC (any valid key) |
-| `routes/api/v1/roadmaps/$roadmapId.posts.ts`::POST | roadmap.manage |
 | `routes/api/v1/roadmaps/$roadmapId.ts`::GET | PUBLIC (any valid key) |
 | `routes/api/v1/roadmaps/$roadmapId.ts`::PATCH | roadmap.manage |
 | `routes/api/v1/roadmaps/$roadmapId.ts`::DELETE | roadmap.manage |
@@ -794,7 +790,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 3. MCP tools
 
-40 tools. "Team" = requires an admin/member role in addition to the scope.
+39 tools. "Team" = requires an admin/member role in addition to the scope.
 
 | Tool | Scope(s) | Team |
 | --- | --- | :---: |
@@ -819,7 +815,6 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | list_suggestions | read:feedback | ✓ |
 | list_tickets | read:chat | ✓ |
 | manage_category | write:article | ✓ |
-| manage_roadmap_post | write:feedback | ✓ |
 | merge_post | write:feedback | ✓ |
 | proxy_vote | write:feedback | ✓ |
 | react_to_comment | write:feedback | · |
@@ -851,7 +846,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-173 of 834 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+173 of 830 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 

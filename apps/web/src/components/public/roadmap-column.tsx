@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
 import {
   usePublicRoadmapPosts,
-  flattenRoadmapPostEntries,
+  flattenRoadmapViewPosts,
 } from '@/lib/client/hooks/use-roadmap-posts-query'
 import type { RoadmapId, PostStatusId } from '@quackback/ids'
 import type { RoadmapFilters } from '@/lib/shared/types'
@@ -41,7 +41,7 @@ export function RoadmapColumn({
     }
   )
 
-  const posts = flattenRoadmapPostEntries(data)
+  const posts = flattenRoadmapViewPosts(data)
   const total = data?.pages[0]?.total ?? 0
 
   const sentinelRef = useInfiniteScroll({

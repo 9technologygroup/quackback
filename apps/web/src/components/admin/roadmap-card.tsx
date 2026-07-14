@@ -3,10 +3,10 @@ import { useDraggable } from '@dnd-kit/core'
 import { ChevronUpIcon, Squares2X2Icon, CalendarIcon } from '@heroicons/react/24/solid'
 import { Badge } from '@/components/ui/badge'
 import { formatMonthYear } from '@/lib/shared/utils'
-import type { RoadmapPostEntry } from '@/lib/shared/types'
+import type { RoadmapViewPost } from '@/lib/shared/types'
 
 interface RoadmapCardProps {
-  post: RoadmapPostEntry
+  post: RoadmapViewPost
   placementId: string
   onClick?: () => void
 }
@@ -35,7 +35,7 @@ export const RoadmapCard = memo(function RoadmapCard({
   )
 })
 
-function CardContent({ post }: { post: RoadmapPostEntry }) {
+function CardContent({ post }: { post: RoadmapViewPost }) {
   const etaLabel = formatMonthYear(post.eta)
   return (
     <>
@@ -64,7 +64,7 @@ function CardContent({ post }: { post: RoadmapPostEntry }) {
   )
 }
 
-export function RoadmapCardOverlay({ post }: { post: RoadmapPostEntry }) {
+export function RoadmapCardOverlay({ post }: { post: RoadmapViewPost }) {
   return (
     <div className="flex bg-card rounded-lg border border-border/50 shadow-lg cursor-grabbing w-[320px]">
       <CardContent post={post} />

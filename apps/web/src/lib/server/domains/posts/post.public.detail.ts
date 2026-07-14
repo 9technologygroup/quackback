@@ -11,8 +11,6 @@ import {
   postComments,
   postCommentReactions,
   postStatuses,
-  postRoadmaps,
-  roadmaps,
   principal as principalTable,
 } from '@/lib/server/db'
 import { toUuid, fromUuid, type PostId, type PostCommentId, type PrincipalId } from '@quackback/ids'
@@ -113,7 +111,7 @@ export async function getPublicPostDetail(
   // filter, the canonical's public detail would leak comments posted on
   // team-only or segment-restricted boards that were later merged in.
   const [postResults, commentsWithReactions, viewableMergedSourceIds] = await Promise.all([
-    // Query 1: Post with embedded tags, roadmaps, and author avatar
+    // Query 1: Post with embedded tags and author avatar
     db
       .select({
         id: posts.id,
@@ -140,13 +138,6 @@ export async function getPublicPostDetail(
            WHERE pt.post_id = ${posts.id}),
           '[]'
         )`.as('tags_json'),
-        roadmapsJson: sql<string>`COALESCE(
-          (SELECT json_agg(json_build_object('id', r.id, 'name', r.name, 'slug', r.slug))
-           FROM ${postRoadmaps} pr
-           INNER JOIN ${roadmaps} r ON r.id = pr.roadmap_id
-           WHERE pr.post_id = ${posts.id} AND r.is_public = true),
-          '[]'
-        )`.as('roadmaps_json'),
         authorName: sql<string | null>`(
           SELECT m.display_name FROM ${principalTable} m
           WHERE m.id = ${posts.principalId}
@@ -319,9 +310,6 @@ export async function getPublicPostDetail(
   const tagsResult = parseJson<
     Array<{ id: import('@quackback/ids').PostTagId; name: string; color: string }>
   >(postResult.tagsJson)
-  const roadmapsResult = parseJson<Array<{ id: string; name: string; slug: string }>>(
-    postResult.roadmapsJson
-  )
   const authorAvatarUrl = parseAvatarData(postResult.authorAvatarData)
 
   // Extract rows from execute result (handles both postgres-js and neon-http formats)
@@ -501,7 +489,6 @@ export async function getPublicPostDetail(
     // and strips it before the response reaches the client.
     boardAccess: postResult.boardAccess,
     tags: tagsResult,
-    roadmaps: roadmapsResult,
     comments: hydratedRootComments,
     pinnedComment,
     pinnedCommentId: pinnedComment ? (postResult.pinnedCommentId as PostCommentId) : null,

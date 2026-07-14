@@ -32,7 +32,6 @@ const roadmapColumnSchema = z.object({
 const updateRoadmapSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
-  isPublic: z.boolean().optional(),
   type: roadmapTypeSchema.optional(),
   baseFilter: roadmapBaseFilterSchema.optional(),
   dateSource: z.literal('eta').nullable().optional(),
@@ -58,7 +57,6 @@ function serializeRoadmap(
     frequency: roadmap.frequency,
     visibility: roadmap.visibility,
     visibleSegmentIds: roadmap.visibleSegmentIds,
-    isPublic: roadmap.visibility === 'public',
     position: roadmap.position,
     columns: roadmap.columns,
     createdAt: roadmap.createdAt.toISOString(),
@@ -109,13 +107,10 @@ export const Route = createFileRoute('/api/v1/roadmaps/$roadmapId')({
 
           const { updateRoadmap } = await import('@/lib/server/domains/roadmaps/roadmap.service')
 
-          const { isPublic, ...input } = parsed.data
-          const roadmap = await updateRoadmap(roadmapId, {
-            ...input,
-            visibility:
-              input.visibility ??
-              (isPublic === undefined ? undefined : isPublic ? 'public' : 'team'),
-          } as Parameters<typeof updateRoadmap>[1])
+          const roadmap = await updateRoadmap(
+            roadmapId,
+            parsed.data as Parameters<typeof updateRoadmap>[1]
+          )
 
           return successResponse(serializeRoadmap(roadmap))
         } catch (error) {

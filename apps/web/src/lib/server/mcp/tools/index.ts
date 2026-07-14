@@ -1,7 +1,7 @@
 /**
  * MCP Tools for Quackback
  *
- * 40 tools calling domain services directly (no HTTP self-loop), grouped by
+ * 39 tools calling domain services directly (no HTTP self-loop), grouped by
  * resource module. Each tool declares its authorization contract — `{ scope,
  * teamOnly, feature }` — on `registerTool` (see ./helpers), except the two
  * cross-entity lookup tools (search, get_details) which gate per-branch.
@@ -13,7 +13,6 @@
  * - comments.ts      add_comment, update_comment, delete_comment,
  *                    react_to_comment
  * - changelog.ts     create_changelog, update_changelog, delete_changelog
- * - roadmaps.ts      manage_roadmap_post
  * - suggestions.ts   list_suggestions, accept_suggestion, dismiss_suggestion,
  *                    restore_suggestion
  * - help-center.ts   create_article, update_article, delete_article,
@@ -32,7 +31,6 @@ import { registerSearchTools } from './search'
 import { registerPostTools } from './posts'
 import { registerCommentTools } from './comments'
 import { registerChangelogTools } from './changelog'
-import { registerRoadmapTools } from './roadmaps'
 import { registerSuggestionTools } from './suggestions'
 import { registerHelpCenterTools } from './help-center'
 import { registerConversationTools } from './conversations'
@@ -43,7 +41,6 @@ export function registerTools(server: McpServer, auth: McpAuthContext) {
   registerPostTools(server, auth)
   registerCommentTools(server, auth)
   registerChangelogTools(server, auth)
-  registerRoadmapTools(server, auth)
   registerSuggestionTools(server, auth)
   registerHelpCenterTools(server, auth)
   registerConversationTools(server, auth)

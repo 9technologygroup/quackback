@@ -84,9 +84,6 @@ export {
   // Integration mutations
   useUpdateIntegration,
   useDeleteIntegration,
-  // Roadmap posts mutations
-  useAddPostToRoadmap,
-  useRemovePostFromRoadmap,
   // Roadmap mutations
   useCreateRoadmap,
   useUpdateRoadmap,

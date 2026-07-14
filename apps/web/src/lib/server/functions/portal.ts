@@ -592,7 +592,6 @@ export const fetchPublicRoadmaps = createServerFn({ method: 'GET' }).handler(asy
       frequency: r.frequency,
       visibility: r.visibility,
       visibleSegmentIds: r.visibleSegmentIds as SegmentId[] | null,
-      isPublic: r.visibility === 'public',
       position: r.position,
       columns: r.columns.map((column) => ({
         id: column.id,
@@ -683,11 +682,6 @@ export const fetchPublicRoadmapPosts = createServerFn({ method: 'GET' })
           statusId: item.statusId ? String(item.statusId) : null,
           eta: exposeEta ? toIsoStringOrNull(item.eta) : null,
           board: { id: String(item.board.id), name: item.board.name, slug: item.board.slug },
-          roadmapEntry: {
-            postId: String(item.roadmapEntry.postId),
-            roadmapId: String(item.roadmapEntry.roadmapId),
-            position: item.roadmapEntry.position,
-          },
         })),
       }
     } catch (error) {

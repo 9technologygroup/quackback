@@ -252,7 +252,6 @@ const MCP_TOOLS = [
   'restore_post',
   'merge_post',
   'unmerge_post',
-  'manage_roadmap_post',
   'create_changelog',
   'update_changelog',
   'delete_changelog',

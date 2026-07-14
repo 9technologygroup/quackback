@@ -144,7 +144,7 @@ test.describe('Public Roadmap', () => {
     }
 
     // Each card shows a Badge with the board name; shadcn Badge uses data-slot="badge"
-    const boardBadge = roadmapCards.first().locator('[data-slot="badge"]')
+    const boardBadge = roadmapCards.first().locator('[data-slot="badge"]').first()
     await expect(boardBadge).toBeVisible()
   })
 

@@ -51,7 +51,7 @@ export type {
   RoadmapPost,
   RoadmapPostListResult,
   RoadmapPostsListResult,
-  RoadmapPostEntry,
+  RoadmapViewPost,
 } from './roadmaps'
 
 // Webhook types

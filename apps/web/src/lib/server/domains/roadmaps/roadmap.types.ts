@@ -2,9 +2,8 @@
  * Input/Output types for RoadmapService operations
  */
 
-import type { PostRoadmap, Roadmap, RoadmapColumn } from '@/lib/server/db'
+import type { Roadmap, RoadmapColumn } from '@/lib/server/db'
 import type {
-  PostId,
   RoadmapId,
   RoadmapColumnId,
   PostStatusId,
@@ -62,26 +61,10 @@ export interface UpdateRoadmapInput {
 }
 
 /**
- * Input for adding a post to a roadmap
+ * Post returned by a derived roadmap view.
  */
-export interface AddPostToRoadmapInput {
-  postId: PostId
-  roadmapId: RoadmapId
-}
-
-/**
- * Input for reordering posts within a roadmap
- */
-export interface ReorderPostsInput {
-  roadmapId: RoadmapId
-  postIds: PostId[]
-}
-
-/**
- * Roadmap post entry for display
- */
-export interface RoadmapPostEntry {
-  id: PostId
+export interface RoadmapViewPost {
+  id: import('@quackback/ids').PostId
   title: string
   voteCount: number
   statusId: PostStatusId | null
@@ -92,14 +75,13 @@ export interface RoadmapPostEntry {
     name: string
     slug: string
   }
-  roadmapEntry: PostRoadmap
 }
 
 /**
- * Result for roadmap post list queries (with roadmap entry data)
+ * Result for derived roadmap post list queries.
  */
 export interface RoadmapPostsListResult {
-  items: RoadmapPostEntry[]
+  items: RoadmapViewPost[]
   total: number
   hasMore: boolean
 }

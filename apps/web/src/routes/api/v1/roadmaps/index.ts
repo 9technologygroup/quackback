@@ -35,7 +35,6 @@ const createRoadmapSchema = z.object({
     .max(100)
     .regex(/^[a-z0-9-]+$/, 'Slug must contain only lowercase letters, numbers, and hyphens'),
   description: z.string().max(500).optional(),
-  isPublic: z.boolean().optional(),
   type: roadmapTypeSchema.optional(),
   baseFilter: roadmapBaseFilterSchema.optional(),
   dateSource: z.literal('eta').nullable().optional(),
@@ -61,7 +60,6 @@ function serializeRoadmap(
     frequency: roadmap.frequency,
     visibility: roadmap.visibility,
     visibleSegmentIds: roadmap.visibleSegmentIds,
-    isPublic: roadmap.visibility === 'public',
     position: roadmap.position,
     columns: roadmap.columns,
     createdAt: roadmap.createdAt.toISOString(),
@@ -111,11 +109,7 @@ export const Route = createFileRoute('/api/v1/roadmaps/')({
           // Import service function
           const { createRoadmap } = await import('@/lib/server/domains/roadmaps/roadmap.service')
 
-          const { isPublic, ...input } = parsed.data
-          const roadmap = await createRoadmap({
-            ...input,
-            visibility: input.visibility ?? (isPublic === false ? 'team' : 'public'),
-          } as Parameters<typeof createRoadmap>[0])
+          const roadmap = await createRoadmap(parsed.data as Parameters<typeof createRoadmap>[0])
 
           return createdResponse(serializeRoadmap(roadmap))
         } catch (error) {

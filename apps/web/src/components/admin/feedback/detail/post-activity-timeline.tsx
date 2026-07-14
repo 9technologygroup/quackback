@@ -25,7 +25,6 @@ import {
   ArrowUturnLeftIcon,
   UserIcon,
   TagIcon,
-  MapIcon,
   LockClosedIcon,
   LockOpenIcon,
   ChatBubbleLeftIcon,
@@ -44,7 +43,7 @@ interface ActivityItem {
   id: string
   postId: string
   principalId: string | null
-  type: ActivityType
+  type: string
   metadata: Record<string, unknown>
   createdAt: string
   actorName: string | null
@@ -247,16 +246,6 @@ const ACTIVITY_CONFIG: Partial<Record<ActivityType, ActivityDisplayConfig>> = {
       )
     },
   },
-  'roadmap.added': {
-    icon: MapIcon,
-    label: (_, a) => `${actorLabel(a)} added to roadmap`,
-    detail: (m) => <span className="text-xs text-muted-foreground">{m.roadmapName as string}</span>,
-  },
-  'roadmap.removed': {
-    icon: MapIcon,
-    label: (_, a) => `${actorLabel(a)} removed from roadmap`,
-    detail: (m) => <span className="text-xs text-muted-foreground">{m.roadmapName as string}</span>,
-  },
   'comments.locked': {
     icon: LockClosedIcon,
     label: (_, a) => `${actorLabel(a)} locked comments`,
@@ -369,7 +358,7 @@ function ActivityEntry({
   activity: ActivityItem
   mergeStateByDuplicateId: Map<string, boolean>
 }) {
-  const config = ACTIVITY_CONFIG[activity.type]
+  const config = ACTIVITY_CONFIG[activity.type as ActivityType]
   if (!config) return null
 
   const Icon = config.icon

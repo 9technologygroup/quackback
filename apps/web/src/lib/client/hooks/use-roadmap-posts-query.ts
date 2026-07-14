@@ -3,7 +3,7 @@ import type {
   RoadmapPost,
   RoadmapPostListResult,
   RoadmapPostsListResult,
-  RoadmapPostEntry,
+  RoadmapViewPost,
 } from '@/lib/shared/types'
 import type { RoadmapId, PostStatusId } from '@quackback/ids'
 import type { RoadmapFilters } from '@/lib/shared/types'
@@ -156,10 +156,10 @@ export function flattenRoadmapPosts(
   return data.pages.flatMap((page) => page?.items ?? []).filter((item) => item?.id)
 }
 
-/** Flatten paginated roadmap post entries into a single array */
-export function flattenRoadmapPostEntries(
+/** Flatten paginated posts returned by a derived roadmap view. */
+export function flattenRoadmapViewPosts(
   data: InfiniteData<RoadmapPostsListResult> | undefined
-): RoadmapPostEntry[] {
+): RoadmapViewPost[] {
   if (!data?.pages) return []
   return data.pages.flatMap((page) => page?.items ?? []).filter((item) => item?.id)
 }

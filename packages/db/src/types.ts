@@ -4,7 +4,6 @@ import type { boards, roadmaps, roadmapColumns, postTags } from './schema/boards
 import type { postStatuses } from './schema/statuses'
 import type {
   posts,
-  postRoadmaps,
   postTagAssignments,
   postVotes,
   postComments,
@@ -531,10 +530,6 @@ export type NewPostStatusEntity = InferInsertModel<typeof postStatuses>
 export type Post = InferSelectModel<typeof posts>
 export type NewPost = InferInsertModel<typeof posts>
 
-// Post roadmap types (many-to-many junction)
-export type PostRoadmap = InferSelectModel<typeof postRoadmaps>
-export type NewPostRoadmap = InferInsertModel<typeof postRoadmaps>
-
 // Vote types
 export type PostVote = InferSelectModel<typeof postVotes>
 export type NewPostVote = InferInsertModel<typeof postVotes>
@@ -902,7 +897,6 @@ export type CommentWithReplies = Comment & {
 export type PostWithDetails = Post & {
   board: Board
   tags: PostTag[]
-  roadmaps: Roadmap[]
   comments: CommentWithReplies[]
   votes: PostVote[]
 }

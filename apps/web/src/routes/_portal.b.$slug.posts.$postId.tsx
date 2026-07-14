@@ -305,7 +305,6 @@ function PostDetailPage() {
               createdAt={new Date(post.createdAt)}
               eta={post.eta ?? null}
               tags={post.tags}
-              roadmaps={post.roadmaps}
               allStatuses={
                 team.canSetStatus ? (statusesQuery.data as unknown as PostStatusEntity[]) : []
               }

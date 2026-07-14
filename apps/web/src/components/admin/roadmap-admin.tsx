@@ -25,7 +25,7 @@ import { useChangePostStatusId, useSetPostEta } from '@/lib/client/mutations/pos
 import { useSegments } from '@/lib/client/hooks/use-segments-queries'
 import { adminQueries } from '@/lib/client/queries/admin'
 import { Route } from '@/routes/admin/roadmap'
-import type { RoadmapPostEntry } from '@/lib/shared/types'
+import type { RoadmapViewPost } from '@/lib/shared/types'
 import type { PostStatusId, PostId, RoadmapId } from '@quackback/ids'
 
 export function RoadmapAdmin() {
@@ -63,7 +63,7 @@ export function RoadmapAdmin() {
   )
 
   // Track dragged post for overlay
-  const [activePost, setActivePost] = useState<RoadmapPostEntry | null>(null)
+  const [activePost, setActivePost] = useState<RoadmapViewPost | null>(null)
 
   // Distance threshold: drag only starts after moving 8px (like Trello)
   // This allows click to work normally if pointer doesn't move much
@@ -88,7 +88,7 @@ export function RoadmapAdmin() {
     const { active, over } = event
     if (!over || over.data.current?.type !== 'Column') return
 
-    const draggedPost = active.data.current?.post as RoadmapPostEntry | undefined
+    const draggedPost = active.data.current?.post as RoadmapViewPost | undefined
     const targetStatusId = over.data.current.statusId as PostStatusId | undefined
     const targetBucketId = over.data.current.bucketId as string | undefined
 

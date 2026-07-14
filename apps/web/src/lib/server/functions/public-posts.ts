@@ -599,7 +599,6 @@ export const listPublicRoadmapsFn = createServerFn({ method: 'GET' }).handler(as
       frequency: roadmap.frequency,
       visibility: roadmap.visibility,
       visibleSegmentIds: roadmap.visibleSegmentIds as SegmentId[] | null,
-      isPublic: roadmap.visibility === 'public',
       position: roadmap.position,
       columns: roadmap.columns.map((column) => ({
         id: String(column.id),
@@ -676,11 +675,6 @@ export const getPublicRoadmapPostsFn = createServerFn({ method: 'GET' })
             id: String(item.board.id),
             name: item.board.name,
             slug: item.board.slug,
-          },
-          roadmapEntry: {
-            postId: String(item.roadmapEntry.postId),
-            roadmapId: String(item.roadmapEntry.roadmapId),
-            position: item.roadmapEntry.position,
           },
         })),
       }

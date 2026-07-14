@@ -71,14 +71,10 @@ function MergePreviewContent({
 
   const { session } = useRouteContext({ from: '__root__' })
   const { data: statuses = [] } = useQuery(adminQueries.statuses())
-  const { data: roadmaps = [] } = useQuery(adminQueries.roadmaps())
   const adminUser = session?.user ? { name: session.user.name, email: session.user.email } : null
 
   const post = data.post as PostDetails
   const currentStatus = statuses.find((s) => s.id === post.statusId)
-  const postRoadmaps = (post.roadmapIds || [])
-    .map((id) => roadmaps.find((r) => r.id === id))
-    .filter(Boolean) as Array<{ id: string; name: string; slug: string }>
 
   const contentJson = getInitialContentJson(post)
   const canonicalComments = toPortalComments(post)
@@ -185,7 +181,6 @@ function MergePreviewContent({
               authorPrincipalId={post.principalId}
               createdAt={new Date(post.createdAt)}
               tags={post.tags}
-              roadmaps={postRoadmaps}
               canEdit
               hideSubscribe
               votersAdditionalPostIds={[duplicatePostId]}

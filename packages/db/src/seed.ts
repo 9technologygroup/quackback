@@ -17,15 +17,14 @@ import type {
   PostStatusId,
   PrincipalId,
   PostId,
-  RoadmapId,
   UserId,
   WorkspaceId,
   ChangelogId,
   RawFeedbackItemId,
 } from '@quackback/ids'
 import { user, account, settings, principal } from './schema/auth'
-import { boards, postTags, roadmaps } from './schema/boards'
-import { posts, postTagAssignments, postRoadmaps, postVotes, postComments } from './schema/posts'
+import { boards, postTags, roadmaps, roadmapColumns } from './schema/boards'
+import { posts, postTagAssignments, postVotes, postComments } from './schema/posts'
 import { postStatuses, DEFAULT_STATUSES } from './schema/statuses'
 import { changelogEntries, changelogEntryPosts } from './schema/changelog'
 import { segments } from './schema/segments'
@@ -438,10 +437,8 @@ async function seed() {
   }
 
   // Create or get roadmaps
-  const roadmapIds: RoadmapId[] = []
   const existingRoadmaps = await db.select().from(roadmaps)
   if (existingRoadmaps.length > 0) {
-    roadmapIds.push(...existingRoadmaps.map((r) => r.id))
     console.log(`Using ${existingRoadmaps.length} existing roadmaps`)
   } else {
     for (let i = 0; i < roadmapPresets.length; i++) {
@@ -452,11 +449,20 @@ async function seed() {
         slug: r.slug,
         name: r.name,
         description: r.description,
-        isPublic: true,
+        visibility: 'public',
         position: i,
         createdAt: randomDate(30),
       })
-      roadmapIds.push(roadmapId)
+      const columns = DEFAULT_STATUSES.filter((status) => status.showOnRoadmap).map(
+        (status, position) => ({
+          roadmapId,
+          statusId: statusMap.get(status.slug)!,
+          name: status.name,
+          color: status.color,
+          position,
+        })
+      )
+      await db.insert(roadmapColumns).values(columns)
     }
     console.log(`Created ${roadmapPresets.length} roadmaps`)
   }
@@ -524,37 +530,6 @@ async function seed() {
         .onConflictDoNothing()
     }
     console.log(`Created ${CONFIG.posts} posts`)
-
-    // Assign posts to roadmaps (posts with planned/in_progress/complete status)
-    const roadmapStatusSlugs = ['planned', 'in_progress', 'complete']
-    const postRoadmapInserts: (typeof postRoadmaps.$inferInsert)[] = []
-    const roadmapPositions = new Map<RoadmapId, number>()
-    roadmapIds.forEach((id) => roadmapPositions.set(id, 0))
-
-    for (const post of postRecords) {
-      if (roadmapStatusSlugs.includes(post.statusSlug)) {
-        // Assign to 1-2 random roadmaps
-        const numRoadmaps = 1 + Math.floor(Math.random() * 2)
-        const usedRoadmaps = new Set<RoadmapId>()
-        for (let r = 0; r < numRoadmaps; r++) {
-          const roadmapId = pick(roadmapIds)
-          if (!usedRoadmaps.has(roadmapId)) {
-            usedRoadmaps.add(roadmapId)
-            const position = roadmapPositions.get(roadmapId) ?? 0
-            postRoadmapInserts.push({
-              postId: post.id,
-              roadmapId,
-              position,
-            })
-            roadmapPositions.set(roadmapId, position + 1)
-          }
-        }
-      }
-    }
-    for (let i = 0; i < postRoadmapInserts.length; i += BATCH_SIZE) {
-      await db.insert(postRoadmaps).values(postRoadmapInserts.slice(i, i + BATCH_SIZE))
-    }
-    console.log(`Assigned ${postRoadmapInserts.length} posts to roadmaps`)
 
     // Create votes (sample, not all) - votes require principalId
     console.log('Creating votes...')

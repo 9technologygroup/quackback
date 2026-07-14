@@ -2,7 +2,6 @@ import {
   pgTable,
   text,
   timestamp,
-  boolean,
   jsonb,
   integer,
   index,
@@ -59,8 +58,6 @@ export const roadmaps = pgTable(
     frequency: text('frequency', { enum: ROADMAP_FREQUENCIES }),
     visibility: text('visibility', { enum: ROADMAP_VISIBILITIES }).default('public').notNull(),
     visibleSegmentIds: jsonb('visible_segment_ids').$type<string[] | null>(),
-    // Transitional Phase 2 storage. Application reads use visibility.
-    isPublic: boolean('is_public').default(true).notNull(),
     position: integer('position').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -70,7 +67,6 @@ export const roadmaps = pgTable(
   (table) => [
     // Note: roadmaps_slug_unique constraint already provides uniqueness; no separate index needed
     index('roadmaps_position_idx').on(table.position),
-    index('roadmaps_is_public_idx').on(table.isPublic),
     index('roadmaps_visibility_idx').on(table.visibility),
     index('roadmaps_deleted_at_idx').on(table.deletedAt),
     check('roadmaps_type_check', sql`${table.type} IN ('column', 'date')`),
@@ -138,7 +134,7 @@ export const postTags = pgTable(
 )
 
 // Relations - defined after posts import to avoid circular dependency
-import { posts, postRoadmaps } from './posts'
+import { posts } from './posts'
 import { changelogEntries } from './changelog'
 
 export const boardsRelations = relations(boards, ({ many }) => ({
@@ -147,7 +143,6 @@ export const boardsRelations = relations(boards, ({ many }) => ({
 }))
 
 export const roadmapsRelations = relations(roadmaps, ({ many }) => ({
-  postRoadmaps: many(postRoadmaps),
   columns: many(roadmapColumns),
 }))
 

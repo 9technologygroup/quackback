@@ -5,7 +5,6 @@ import {
   postVotes,
   postComments,
   postTagAssignments,
-  postRoadmaps,
   postCommentReactions,
 } from '../schema/posts'
 import { REACTION_EMOJIS, MODERATION_STATES } from '../types'
@@ -59,7 +58,6 @@ describe('Schema definitions', () => {
       expect(columns).toContain('slug')
       expect(columns).toContain('name')
       expect(columns).toContain('description')
-      expect(columns).toContain('isPublic')
       expect(columns).toContain('type')
       expect(columns).toContain('baseFilter')
       expect(columns).toContain('dateSource')
@@ -68,6 +66,7 @@ describe('Schema definitions', () => {
       expect(columns).toContain('visibleSegmentIds')
       expect(columns).toContain('createdAt')
       expect(columns).toContain('updatedAt')
+      expect(columns).not.toContain('isPublic')
     })
 
     it('defines status-backed roadmap columns', () => {
@@ -141,20 +140,6 @@ describe('Schema definitions', () => {
       expect(columns).toContain('postId')
       expect(columns).toContain('tagId')
       expect(columns.length).toBe(2)
-    })
-  })
-
-  describe('postRoadmaps schema', () => {
-    it('has correct table name', () => {
-      expect(getTableName(postRoadmaps)).toBe('post_roadmaps')
-    })
-
-    it('has junction table columns', () => {
-      const columns = Object.keys(getTableColumns(postRoadmaps))
-      expect(columns).toContain('postId')
-      expect(columns).toContain('roadmapId')
-      expect(columns).toContain('position')
-      expect(columns.length).toBe(3)
     })
   })
 

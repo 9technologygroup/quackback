@@ -77,7 +77,6 @@ export interface PostWithDetails extends Post {
     color: string
   }>
   commentCount: number
-  roadmapIds: string[]
   /** Pinned comment displayed as official response */
   pinnedComment: PinnedComment | null
   /** Author name resolved from member->user relation */
@@ -261,7 +260,6 @@ export interface PublicPostDetail {
    */
   boardAccess: BoardAccess
   tags: Array<{ id: string; name: string; color: string }>
-  roadmaps: Array<{ id: string; name: string; slug: string }>
   comments: PublicComment[]
   /** Pinned comment as official response */
   pinnedComment: PinnedComment | null

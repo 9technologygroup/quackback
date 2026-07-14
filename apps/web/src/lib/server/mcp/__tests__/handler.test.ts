@@ -88,7 +88,6 @@ vi.mock('@/lib/server/domains/posts/post.query', () => ({
     authorEmail: 'jane@example.com',
     ownerPrincipalId: null,
     tags: [],
-    roadmapIds: [],
     pinnedComment: null,
     summaryJson: null,
     summaryUpdatedAt: null,
@@ -282,8 +281,6 @@ vi.mock('@/lib/server/domains/roadmaps/roadmap.service', () => ({
   listRoadmaps: vi
     .fn()
     .mockResolvedValue([{ id: 'roadmap_test', name: 'Q1 2026', slug: 'q1-2026' }]),
-  addPostToRoadmap: vi.fn().mockResolvedValue(undefined),
-  removePostFromRoadmap: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/server/domains/principals/principal.service', () => ({
@@ -665,7 +662,6 @@ describe('MCP HTTP Handler', () => {
       expect(toolNames).toContain('update_comment')
       expect(toolNames).toContain('delete_comment')
       expect(toolNames).toContain('react_to_comment')
-      expect(toolNames).toContain('manage_roadmap_post')
       expect(toolNames).toContain('merge_post')
       expect(toolNames).toContain('unmerge_post')
       expect(toolNames).toContain('delete_post')
@@ -683,7 +679,7 @@ describe('MCP HTTP Handler', () => {
       expect(toolNames).toContain('add_ticket_note')
       expect(toolNames).toContain('link_ticket')
       expect(toolNames).toContain('unlink_ticket')
-      expect(toolNames).toHaveLength(40)
+      expect(toolNames).toHaveLength(39)
     })
 
     it('should handle resources/list request', async () => {
@@ -1285,30 +1281,6 @@ describe('MCP HTTP Handler', () => {
           principalType: 'user',
         })
       )
-    })
-
-    // ── manage_roadmap_post tool ────────────────────────────────────────
-
-    it('should handle tools/call for manage_roadmap_post', async () => {
-      const handleMcpRequest = await initializeSession()
-
-      const response = await handleMcpRequest(
-        mcpRequest(
-          jsonRpcRequest('tools/call', {
-            name: 'manage_roadmap_post',
-            arguments: { action: 'add', roadmapId: 'roadmap_test', postId: 'post_test' },
-          })
-        )
-      )
-
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        result: { content: Array<{ text: string }> }
-      }
-      const text = JSON.parse(body.result.content[0].text)
-      expect(text.action).toBe('add')
-      expect(text.postId).toBe('post_test')
-      expect(text.roadmapId).toBe('roadmap_test')
     })
 
     // ── merge_post tool ─────────────────────────────────────────────────

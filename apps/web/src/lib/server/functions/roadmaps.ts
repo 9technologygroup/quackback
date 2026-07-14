@@ -2,19 +2,13 @@ import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import type {
   BoardId,
-  PostId,
   PostStatusId,
   PostTagId,
   RoadmapColumnId,
   RoadmapId,
   SegmentId,
 } from '@quackback/ids'
-import {
-  postIdSchema,
-  postStatusIdSchema,
-  roadmapColumnIdSchema,
-  roadmapIdSchema,
-} from '@quackback/ids/zod'
+import { postStatusIdSchema, roadmapColumnIdSchema, roadmapIdSchema } from '@quackback/ids/zod'
 import { requireAuth } from './auth-helpers'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
@@ -28,14 +22,12 @@ import {
   type RoadmapBaseFilter,
 } from '@/lib/shared/roadmap-config'
 import {
-  addPostToRoadmap,
   createRoadmap,
   createRoadmapColumn,
   deleteRoadmap,
   deleteRoadmapColumn,
   getRoadmap,
   listRoadmaps,
-  removePostFromRoadmap,
   reorderRoadmaps,
   updateRoadmap,
   updateRoadmapColumn,
@@ -83,8 +75,6 @@ const updateRoadmapSchema = z.object({
 })
 
 const deleteRoadmapSchema = z.object({ id: roadmapIdSchema })
-const addPostToRoadmapSchema = z.object({ roadmapId: roadmapIdSchema, postId: postIdSchema })
-const removePostFromRoadmapSchema = addPostToRoadmapSchema
 const roadmapIdInputSchema = z
   .string()
   .refine((value) => roadmapIdSchema.safeParse(value).success, 'Invalid roadmap ID')
@@ -129,8 +119,6 @@ export type CreateRoadmapInput = z.infer<typeof createRoadmapSchema>
 export type GetRoadmapInput = z.infer<typeof getRoadmapSchema>
 export type UpdateRoadmapInput = z.infer<typeof updateRoadmapSchema>
 export type DeleteRoadmapInput = z.infer<typeof deleteRoadmapSchema>
-export type AddPostToRoadmapInput = z.infer<typeof addPostToRoadmapSchema>
-export type RemovePostFromRoadmapInput = z.infer<typeof removePostFromRoadmapSchema>
 export type ReorderRoadmapsInput = z.infer<typeof reorderRoadmapsSchema>
 export type GetRoadmapPostsInput = z.infer<typeof getRoadmapPostsSchema>
 
@@ -146,8 +134,6 @@ function serializeRoadmap(roadmap: RoadmapWithColumns) {
     frequency: roadmap.frequency,
     visibility: roadmap.visibility,
     visibleSegmentIds: roadmap.visibleSegmentIds,
-    // Compatibility response field, derived from visibility rather than is_public.
-    isPublic: roadmap.visibility === 'public',
     position: roadmap.position,
     columns: roadmap.columns.map((column) => ({
       id: String(column.id),
@@ -248,30 +234,6 @@ export const deleteRoadmapColumnFn = createServerFn({ method: 'POST' })
     return { id: data.id }
   })
 
-// Phase 2 contract compatibility. Normal post and roadmap UI does not call these.
-export const addPostToRoadmapFn = createServerFn({ method: 'POST' })
-  .validator(addPostToRoadmapSchema)
-  .handler(async ({ data }) => {
-    const auth = await requireAuth({ permission: PERMISSIONS.ROADMAP_MANAGE })
-    await addPostToRoadmap(
-      { roadmapId: data.roadmapId as RoadmapId, postId: data.postId as PostId },
-      auth.principal.id
-    )
-    return { success: true }
-  })
-
-export const removePostFromRoadmapFn = createServerFn({ method: 'POST' })
-  .validator(removePostFromRoadmapSchema)
-  .handler(async ({ data }) => {
-    const auth = await requireAuth({ permission: PERMISSIONS.ROADMAP_MANAGE })
-    await removePostFromRoadmap(
-      data.postId as PostId,
-      data.roadmapId as RoadmapId,
-      auth.principal.id
-    )
-    return { success: true }
-  })
-
 export const reorderRoadmapsFn = createServerFn({ method: 'POST' })
   .validator(reorderRoadmapsSchema)
   .handler(async ({ data }) => {
@@ -304,11 +266,6 @@ export const getRoadmapPostsFn = createServerFn({ method: 'GET' })
         statusId: item.statusId ? String(item.statusId) : null,
         eta: toIsoStringOrNull(item.eta),
         board: { id: String(item.board.id), name: item.board.name, slug: item.board.slug },
-        roadmapEntry: {
-          postId: String(item.roadmapEntry.postId),
-          roadmapId: String(item.roadmapEntry.roadmapId),
-          position: item.roadmapEntry.position,
-        },
       })),
     }
   })

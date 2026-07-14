@@ -60,8 +60,6 @@ export interface PostDetails {
   isCommentsLocked?: boolean
   /** Map of principalId to avatar URL (base64 or external URL) */
   avatarUrls?: Record<string, string | null>
-  /** IDs of roadmaps this post belongs to */
-  roadmapIds?: string[]
   /** AI-generated post summary */
   summaryJson?: {
     summary: string

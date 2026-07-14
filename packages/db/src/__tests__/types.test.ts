@@ -10,8 +10,6 @@ import type {
   NewPost,
   PostTagAssignment,
   NewPostTagAssignment,
-  PostRoadmap,
-  NewPostRoadmap,
   PostVote,
   NewPostVote,
   Comment,
@@ -24,11 +22,8 @@ import type {
   ChangelogEntry,
   NewChangelogEntry,
   PostWithTags,
-  PostWithRoadmaps,
   CommentWithReplies,
   PostWithDetails,
-  RoadmapWithPosts,
-  BoardWithRoadmaps,
 } from '../types'
 
 describe('Type definitions', () => {
@@ -67,7 +62,7 @@ describe('Type definitions', () => {
       expectTypeOf<Roadmap>().toHaveProperty('id')
       expectTypeOf<Roadmap>().toHaveProperty('slug')
       expectTypeOf<Roadmap>().toHaveProperty('name')
-      expectTypeOf<Roadmap>().toHaveProperty('isPublic')
+      expectTypeOf<Roadmap>().toHaveProperty('visibility')
       expectTypeOf<Roadmap>().toHaveProperty('position')
     })
 
@@ -120,16 +115,6 @@ describe('Type definitions', () => {
     it('NewPostTagAssignment has required fields', () => {
       expectTypeOf<NewPostTagAssignment>().toHaveProperty('postId')
       expectTypeOf<NewPostTagAssignment>().toHaveProperty('tagId')
-    })
-
-    it('PostRoadmap has correct shape', () => {
-      expectTypeOf<PostRoadmap>().toHaveProperty('postId')
-      expectTypeOf<PostRoadmap>().toHaveProperty('roadmapId')
-    })
-
-    it('NewPostRoadmap has required fields', () => {
-      expectTypeOf<NewPostRoadmap>().toHaveProperty('postId')
-      expectTypeOf<NewPostRoadmap>().toHaveProperty('roadmapId')
     })
   })
 
@@ -227,12 +212,6 @@ describe('Type definitions', () => {
       expectTypeOf<PostWithTags['tags']>().toEqualTypeOf<PostTag[]>()
     })
 
-    it('PostWithRoadmaps extends Post with roadmaps array', () => {
-      expectTypeOf<PostWithRoadmaps>().toHaveProperty('id')
-      expectTypeOf<PostWithRoadmaps>().toHaveProperty('roadmaps')
-      expectTypeOf<PostWithRoadmaps['roadmaps']>().toEqualTypeOf<Roadmap[]>()
-    })
-
     it('CommentWithReplies has recursive replies', () => {
       expectTypeOf<CommentWithReplies>().toHaveProperty('id')
       expectTypeOf<CommentWithReplies>().toHaveProperty('content')
@@ -244,25 +223,12 @@ describe('Type definitions', () => {
       expectTypeOf<PostWithDetails>().toHaveProperty('id')
       expectTypeOf<PostWithDetails>().toHaveProperty('board')
       expectTypeOf<PostWithDetails>().toHaveProperty('tags')
-      expectTypeOf<PostWithDetails>().toHaveProperty('roadmaps')
       expectTypeOf<PostWithDetails>().toHaveProperty('comments')
       expectTypeOf<PostWithDetails>().toHaveProperty('votes')
     })
 
     it('PostWithDetails.board is a Board', () => {
       expectTypeOf<PostWithDetails['board']>().toEqualTypeOf<Board>()
-    })
-
-    it('RoadmapWithPosts extends Roadmap with posts array', () => {
-      expectTypeOf<RoadmapWithPosts>().toHaveProperty('id')
-      expectTypeOf<RoadmapWithPosts>().toHaveProperty('posts')
-      expectTypeOf<RoadmapWithPosts['posts']>().toEqualTypeOf<Post[]>()
-    })
-
-    it('BoardWithRoadmaps extends Board with roadmaps array', () => {
-      expectTypeOf<BoardWithRoadmaps>().toHaveProperty('id')
-      expectTypeOf<BoardWithRoadmaps>().toHaveProperty('roadmaps')
-      expectTypeOf<BoardWithRoadmaps['roadmaps']>().toEqualTypeOf<Roadmap[]>()
     })
   })
 })

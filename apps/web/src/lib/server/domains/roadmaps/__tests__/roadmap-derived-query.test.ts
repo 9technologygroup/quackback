@@ -202,7 +202,7 @@ describe.skipIf(!fixture.available)('roadmap derived membership (real DB)', () =
   afterEach(fixture.rollback)
   afterAll(fixture.close)
 
-  it('derives exclusive status-column membership without post_roadmaps rows and applies every base filter', async () => {
+  it('derives exclusive status-column membership and applies every base filter', async () => {
     const seeded = await seedBase()
     const roadmapId = await seedRoadmap(seeded, {
       baseFilter: {
@@ -227,7 +227,6 @@ describe.skipIf(!fixture.available)('roadmap derived membership (real DB)', () =
 
     const columnA = await getRoadmapPosts(roadmapId, { statusId: seeded.statusA })
     expect(columnA.items.map((post) => post.id)).toEqual([target])
-    expect(columnA.items[0]?.roadmapEntry).toMatchObject({ roadmapId, postId: target })
 
     const columnB = await getRoadmapPosts(roadmapId, { statusId: seeded.statusB })
     expect(columnB.items).toEqual([])

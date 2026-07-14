@@ -7,7 +7,7 @@ import { RoadmapCard } from './roadmap-card'
 import { cn } from '@/lib/shared/utils'
 import {
   useRoadmapPostsByRoadmap,
-  flattenRoadmapPostEntries,
+  flattenRoadmapViewPosts,
 } from '@/lib/client/hooks/use-roadmap-posts-query'
 import type { RoadmapId, PostStatusId } from '@quackback/ids'
 import type { RoadmapFilters } from '@/lib/shared/types'
@@ -45,7 +45,7 @@ export const RoadmapColumn = memo(function RoadmapColumn({
   const { data, isFetchingNextPage, hasNextPage, fetchNextPage, isLoading } =
     useRoadmapPostsByRoadmap({ roadmapId, statusId, bucketId, filters })
 
-  const posts = flattenRoadmapPostEntries(data)
+  const posts = flattenRoadmapViewPosts(data)
   const total = data?.pages[0]?.total ?? 0
 
   const sentinelRef = useInfiniteScroll({

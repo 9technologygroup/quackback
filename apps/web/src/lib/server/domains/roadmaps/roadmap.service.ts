@@ -9,23 +9,18 @@ import {
   roadmaps,
   roadmapColumns,
   postStatuses,
-  posts,
-  postRoadmaps,
   type Roadmap,
   type RoadmapColumn,
   type Transaction,
 } from '@/lib/server/db'
-import type { RoadmapId, RoadmapColumnId, PostId, PrincipalId } from '@quackback/ids'
+import type { RoadmapId, RoadmapColumnId } from '@quackback/ids'
 import { positionCaseSql } from '@/lib/server/utils'
 import { NotFoundError, ValidationError, ConflictError } from '@/lib/shared/errors'
 import { roadmapBaseFilterSchema } from '@/lib/shared/roadmap-config'
-import { createActivity } from '@/lib/server/domains/activity/activity.service'
 import { roadmapViewFilter, type Actor, ANONYMOUS_ACTOR } from '@/lib/server/policy'
 import type {
-  AddPostToRoadmapInput,
   CreateRoadmapColumnInput,
   CreateRoadmapInput,
-  ReorderPostsInput,
   RoadmapColumnInput,
   RoadmapWithColumns,
   UpdateRoadmapColumnInput,
@@ -170,8 +165,6 @@ export async function createRoadmap(input: CreateRoadmapInput): Promise<RoadmapW
         frequency: type === 'date' ? (input.frequency ?? 'monthly') : null,
         visibility,
         visibleSegmentIds: visibility === 'segment' ? input.visibleSegmentIds : null,
-        // Transitional mirror only. visibility is the application source of truth.
-        isPublic: visibility === 'public',
         position,
       })
       .returning()
@@ -224,9 +217,7 @@ export async function updateRoadmap(
                 type === 'date' ? (input.frequency ?? current.frequency ?? 'monthly') : null,
             }
           : {}),
-        ...(input.visibility !== undefined
-          ? { visibility, isPublic: visibility === 'public' }
-          : {}),
+        ...(input.visibility !== undefined ? { visibility } : {}),
         ...(input.visibility !== undefined || input.visibleSegmentIds !== undefined
           ? {
               visibleSegmentIds:
@@ -353,75 +344,4 @@ export async function deleteRoadmapColumn(id: RoadmapColumnId): Promise<void> {
   if (!deleted.length) {
     throw new NotFoundError('ROADMAP_COLUMN_NOT_FOUND', `Roadmap column ${id} not found`)
   }
-}
-
-// Phase 2 compatibility only. Normal UI placement no longer calls these writers.
-export async function addPostToRoadmap(
-  input: AddPostToRoadmapInput,
-  actorPrincipalId?: PrincipalId
-): Promise<void> {
-  const roadmap = await db.query.roadmaps.findFirst({ where: eq(roadmaps.id, input.roadmapId) })
-  if (!roadmap) {
-    throw new NotFoundError('ROADMAP_NOT_FOUND', `Roadmap with ID ${input.roadmapId} not found`)
-  }
-  const post = await db.query.posts.findFirst({ where: eq(posts.id, input.postId) })
-  if (!post) throw new NotFoundError('POST_NOT_FOUND', `Post with ID ${input.postId} not found`)
-  const existing = await db.query.postRoadmaps.findFirst({
-    where: and(eq(postRoadmaps.postId, input.postId), eq(postRoadmaps.roadmapId, input.roadmapId)),
-  })
-  if (existing) {
-    throw new ConflictError(
-      'POST_ALREADY_IN_ROADMAP',
-      `Post ${input.postId} is already in roadmap ${input.roadmapId}`
-    )
-  }
-  const [{ maxPosition }] = await db
-    .select({ maxPosition: sql<number>`COALESCE(MAX(${postRoadmaps.position}), -1)` })
-    .from(postRoadmaps)
-    .where(eq(postRoadmaps.roadmapId, input.roadmapId))
-  await db.insert(postRoadmaps).values({
-    postId: input.postId,
-    roadmapId: input.roadmapId,
-    position: (maxPosition ?? -1) + 1,
-  })
-  createActivity({
-    postId: input.postId,
-    principalId: actorPrincipalId ?? null,
-    type: 'roadmap.added',
-    metadata: { roadmapName: roadmap.name },
-  })
-}
-
-export async function removePostFromRoadmap(
-  postId: PostId,
-  roadmapId: RoadmapId,
-  actorPrincipalId?: PrincipalId
-): Promise<void> {
-  const deleted = await db
-    .delete(postRoadmaps)
-    .where(and(eq(postRoadmaps.postId, postId), eq(postRoadmaps.roadmapId, roadmapId)))
-    .returning()
-  if (!deleted.length) {
-    throw new NotFoundError('POST_NOT_IN_ROADMAP', `Post ${postId} is not in roadmap ${roadmapId}`)
-  }
-  const roadmap = await db.query.roadmaps.findFirst({
-    where: eq(roadmaps.id, roadmapId),
-    columns: { name: true },
-  })
-  createActivity({
-    postId,
-    principalId: actorPrincipalId ?? null,
-    type: 'roadmap.removed',
-    metadata: { roadmapName: roadmap?.name ?? '' },
-  })
-}
-
-export async function reorderPostsInColumn(input: ReorderPostsInput): Promise<void> {
-  if (!input.postIds.length) return
-  await db
-    .update(postRoadmaps)
-    .set({ position: positionCaseSql(postRoadmaps.postId, input.postIds) })
-    .where(
-      and(eq(postRoadmaps.roadmapId, input.roadmapId), inArray(postRoadmaps.postId, input.postIds))
-    )
 }
