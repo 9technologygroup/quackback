@@ -46,7 +46,6 @@ import {
   ASSISTANT_GUIDANCE_APPLIES_WHEN_MAX_LENGTH,
   ASSISTANT_GUIDANCE_INSTRUCTION_MAX_LENGTH,
   ASSISTANT_GUIDANCE_NAME_MAX_LENGTH,
-  DEFAULT_ASSISTANT_GUIDANCE_AGENT,
 } from '@/lib/shared/assistant/guidance'
 import type { AssistantGuidanceRule } from '@/lib/server/domains/assistant/guidance.service'
 import { useUnsavedChanges } from './assistant-form'
@@ -74,7 +73,7 @@ function ruleInput(rule: AssistantGuidanceRule): GuidanceRuleInput {
   }
 }
 
-export function GuidanceRulesCard() {
+export function GuidanceRulesCard({ agent }: { agent: AssistantAgentKind }) {
   const intl = useIntl()
   const rulesQuery = useQuery(assistantQueries.guidanceRules())
   const statsQuery = useQuery(assistantQueries.guidanceRuleStats())
@@ -134,22 +133,16 @@ export function GuidanceRulesCard() {
     )
   }
 
-  const filteredRules = rules.filter((rule) => guidanceRuleMatchesQuery(rule, query))
+  // This card is scoped to a single peer agent (D4): each page owns its agent's
+  // rules. Filtering by `agent` keeps ordering, the char budget, and reorder
+  // writes confined to that agent's list, so the Agent and Copilot pages never
+  // step on each other's guidance.
+  const agentRules = rules.filter((rule) => rule.agent === agent)
+  const filteredRules = agentRules.filter((rule) => guidanceRuleMatchesQuery(rule, query))
   const charBudget = rulesQuery.data.charBudget ?? FALLBACK_CHAR_BUDGET
-  const enabledChars = rules
+  const enabledChars = agentRules
     .filter((rule) => rule.enabled)
     .reduce((sum, rule) => sum + rule.instruction.length, 0)
-
-  const agentLabel = (agent: AssistantAgentKind) =>
-    agent === 'copilot'
-      ? intl.formatMessage({
-          id: 'automation.agent.guidance.agent.copilot',
-          defaultMessage: 'Copilot',
-        })
-      : intl.formatMessage({
-          id: 'automation.agent.guidance.agent.agent',
-          defaultMessage: 'Agent',
-        })
 
   async function toggleEnabled(rule: AssistantGuidanceRule) {
     const next = { ...ruleInput(rule), enabled: !rule.enabled }
@@ -176,15 +169,25 @@ export function GuidanceRulesCard() {
   }
 
   async function move(rule: AssistantGuidanceRule, direction: -1 | 1) {
-    const index = rules.findIndex((candidate) => candidate.id === rule.id)
+    const agentOrder = rules.filter((candidate) => candidate.agent === agent)
+    const index = agentOrder.findIndex((candidate) => candidate.id === rule.id)
     const target = index + direction
-    if (index < 0 || target < 0 || target >= rules.length) return
+    if (index < 0 || target < 0 || target >= agentOrder.length) return
     const previous = rules
-    const next = [...rules]
-    ;[next[index], next[target]] = [next[target], next[index]]
+    const nextAgentOrder = [...agentOrder]
+    ;[nextAgentOrder[index], nextAgentOrder[target]] = [
+      nextAgentOrder[target],
+      nextAgentOrder[index],
+    ]
+    // Weave the reordered agent rules back into the full list without disturbing
+    // the other agent's rows, then persist only this agent's new order.
+    let cursor = 0
+    const next = rules.map((candidate) =>
+      candidate.agent === agent ? nextAgentOrder[cursor++] : candidate
+    )
     setRules(next)
     try {
-      await reorderRules.mutateAsync(next.map((candidate) => candidate.id))
+      await reorderRules.mutateAsync(nextAgentOrder.map((candidate) => candidate.id))
       setAnnouncement(
         intl.formatMessage(
           {
@@ -265,7 +268,7 @@ export function GuidanceRulesCard() {
         }
       >
         <div className="space-y-4">
-          {rules.length > 0 && (
+          {agentRules.length > 0 && (
             <SearchInput
               value={query}
               onChange={setQuery}
@@ -276,7 +279,7 @@ export function GuidanceRulesCard() {
             />
           )}
 
-          {rules.length === 0 ? (
+          {agentRules.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border/70 p-5">
               <p className="text-sm font-medium">
                 {intl.formatMessage({
@@ -320,7 +323,7 @@ export function GuidanceRulesCard() {
           ) : (
             <div className="divide-y divide-border/60">
               {filteredRules.map((rule) => {
-                const index = rules.findIndex((candidate) => candidate.id === rule.id)
+                const index = agentRules.findIndex((candidate) => candidate.id === rule.id)
                 const stat = statsQuery.data?.[rule.id]
                 return (
                   <article key={rule.id} className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0">
@@ -360,9 +363,6 @@ export function GuidanceRulesCard() {
                         </p>
                         <p className="mt-2 line-clamp-2 text-sm">{rule.instruction}</p>
                         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                          <Badge variant="outline" size="sm">
-                            {agentLabel(rule.agent as AssistantAgentKind)}
-                          </Badge>
                           <span>
                             {intl.formatMessage(
                               {
@@ -419,7 +419,7 @@ export function GuidanceRulesCard() {
                         size="icon"
                         className="size-11 sm:size-8"
                         disabled={
-                          index === rules.length - 1 ||
+                          index === agentRules.length - 1 ||
                           reorderRules.isPending ||
                           Boolean(query.trim())
                         }
@@ -518,6 +518,7 @@ export function GuidanceRulesCard() {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         rule={editingRule}
+        defaultAgent={agent}
         defaultPriority={rules.length}
         enabledCharsExcludingSelf={
           enabledChars - (editingRule?.enabled ? editingRule.instruction.length : 0)
@@ -563,6 +564,7 @@ function GuidanceRuleDialog({
   open,
   onOpenChange,
   rule,
+  defaultAgent,
   defaultPriority,
   enabledCharsExcludingSelf,
   charBudget,
@@ -571,6 +573,7 @@ function GuidanceRuleDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   rule: AssistantGuidanceRule | null
+  defaultAgent: AssistantAgentKind
   defaultPriority: number
   enabledCharsExcludingSelf: number
   charBudget: number
@@ -582,12 +585,11 @@ function GuidanceRuleDialog({
   const [conditionMode, setConditionMode] = useState<'always' | 'conditional'>('always')
   const [appliesWhen, setAppliesWhen] = useState('')
   const [instruction, setInstruction] = useState('')
-  // The "Applies to" picker below owns which peer agent a rule targets. New rules
-  // default to the Agent; editing initializes to (and can change) the rule's own
-  // agent — this card lists both agents' rules, so keeping the picker editable on
-  // edit lets a rule be reassigned rather than stranding it. (Chosen over a
-  // disabled-on-edit picker; Phase 2's Copilot page will add a per-agent surface.)
-  const [agent, setAgent] = useState<AssistantAgentKind>(DEFAULT_ASSISTANT_GUIDANCE_AGENT)
+  // The "Applies to" picker below owns which peer agent a rule targets. New
+  // rules default to the page's own agent (`defaultAgent`); editing initializes
+  // to (and can change) the rule's own agent — reassigning a rule simply moves
+  // it to the other agent's page rather than stranding it (D4).
+  const [agent, setAgent] = useState<AssistantAgentKind>(defaultAgent)
   const [enabled, setEnabled] = useState(true)
   const [priority, setPriority] = useState(0)
   const [error, setError] = useState('')
@@ -600,12 +602,12 @@ function GuidanceRuleDialog({
     setConditionMode(rule?.appliesWhen ? 'conditional' : 'always')
     setAppliesWhen(rule?.appliesWhen ?? '')
     setInstruction(rule?.instruction ?? '')
-    setAgent((rule?.agent as AssistantAgentKind | undefined) ?? DEFAULT_ASSISTANT_GUIDANCE_AGENT)
+    setAgent((rule?.agent as AssistantAgentKind | undefined) ?? defaultAgent)
     setEnabled(rule?.enabled ?? true)
     setPriority(rule?.priority ?? defaultPriority)
     setError('')
     setErrors({})
-  }, [open, rule, defaultPriority])
+  }, [open, rule, defaultAgent, defaultPriority])
 
   const initial: GuidanceRuleInput = rule
     ? ruleInput(rule)
@@ -613,7 +615,7 @@ function GuidanceRuleDialog({
         name: '',
         appliesWhen: null,
         instruction: '',
-        agent: DEFAULT_ASSISTANT_GUIDANCE_AGENT,
+        agent: defaultAgent,
         enabled: true,
         priority: defaultPriority,
       }

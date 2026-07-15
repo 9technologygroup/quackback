@@ -45,7 +45,8 @@ export function AssistantConfigChangelogCard() {
       })}
       description={intl.formatMessage({
         id: 'automation.agent.history.description',
-        defaultMessage: 'See who changed the AI agent settings and when.',
+        defaultMessage:
+          'See who changed Quinn’s settings and when, across both the Agent and Copilot.',
       })}
     >
       {changelogQuery.isPending ? (

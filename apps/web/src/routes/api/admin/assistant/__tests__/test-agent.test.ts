@@ -191,6 +191,43 @@ describe('POST /api/admin/assistant/test', () => {
     expect(invalid.status).toBe(400)
   })
 
+  it('runs the copilot agent on the copilot surface and omits voice presets', async () => {
+    mockRunAssistantTurn.mockResolvedValue({
+      status: 'answered',
+      text: 'Here is what I found.',
+      citations: [],
+      escalation: undefined,
+      trace: {
+        promptVersion: 'support-agent-v2',
+        configRevision: 7,
+        role: 'copilot_qa',
+        appliedGuidance: [],
+        toolCalls: [{ name: 'search_knowledge', outcome: 'read' }],
+      },
+    })
+
+    const response = await handleTestAgent({
+      request: request({ ...validBody, agent: 'copilot' }),
+    })
+    const frames = parseSse(await response.text())
+
+    expect(mockRunAssistantTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: 'copilot_qa',
+        surface: 'copilot',
+        conversationId: null,
+        simulate: true,
+        actorPrincipalId: 'principal_admin',
+      })
+    )
+    const final = frames.find((frame) => frame.event === 'assistant-test.v2.final')
+    expect(final?.data).toMatchObject({ trace: { role: 'copilot_qa' } })
+    expect((final?.data as { trace: Record<string, unknown> }).trace).not.toHaveProperty('tone')
+    expect((final?.data as { trace: Record<string, unknown> }).trace).not.toHaveProperty(
+      'responseLength'
+    )
+  })
+
   it('emits V2 activity, delta, and an exactly allowlisted final trace', async () => {
     mockRunAssistantTurn.mockImplementation(
       async (input: {

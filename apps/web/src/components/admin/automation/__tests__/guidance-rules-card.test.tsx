@@ -11,7 +11,7 @@ const rules = [
     name: 'Refund policy',
     appliesWhen: 'When a customer asks for a refund',
     instruction: 'Explain the 30-day policy.',
-    roles: ['customer_support', 'suggested_reply'],
+    agent: 'agent',
     enabled: true,
     priority: 0,
     createdById: null,
@@ -23,12 +23,24 @@ const rules = [
     name: 'Always be clear',
     appliesWhen: null,
     instruction: 'State the next step.',
-    roles: ['customer_support'],
+    agent: 'agent',
     enabled: false,
     priority: 1,
     createdById: null,
     createdAt: new Date('2026-07-02'),
     updatedAt: new Date('2026-07-02'),
+  },
+  {
+    id: 'assistant_guidance_3',
+    name: 'Copilot only note',
+    appliesWhen: null,
+    instruction: 'Summarize for the teammate.',
+    agent: 'copilot',
+    enabled: true,
+    priority: 2,
+    createdById: null,
+    createdAt: new Date('2026-07-03'),
+    updatedAt: new Date('2026-07-03'),
   },
 ]
 let guidanceCharBudget = 4000
@@ -79,12 +91,12 @@ afterEach(() => {
   createGuidanceRule.mockReset()
 })
 
-function renderCard() {
+function renderCard(agent: 'agent' | 'copilot' = 'agent') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <IntlProvider locale="en" messages={{}} onError={() => {}}>
       <QueryClientProvider client={queryClient}>
-        <GuidanceRulesCard />
+        <GuidanceRulesCard agent={agent} />
       </QueryClientProvider>
     </IntlProvider>
   )
@@ -113,6 +125,19 @@ describe('GuidanceRulesCard', () => {
     expect(screen.getByText('Always on')).toBeInTheDocument()
     expect(screen.getByText('Applied 12 times')).toBeInTheDocument()
     expect(screen.queryByText(/resolved/i)).not.toBeInTheDocument()
+  })
+
+  it('scopes the list to the card’s agent', async () => {
+    renderCard('agent')
+    expect(await screen.findByText('Refund policy')).toBeInTheDocument()
+    // A copilot-owned rule never appears on the Agent page.
+    expect(screen.queryByText('Copilot only note')).not.toBeInTheDocument()
+  })
+
+  it('shows only the copilot rule on the Copilot page', async () => {
+    renderCard('copilot')
+    expect(await screen.findByText('Copilot only note')).toBeInTheDocument()
+    expect(screen.queryByText('Refund policy')).not.toBeInTheDocument()
   })
 
   it('keeps edit, delete, and move controls visible and filters V2 fields', async () => {

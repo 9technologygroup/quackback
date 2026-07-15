@@ -38,7 +38,7 @@ export function AssistantDeploymentCard({
         next.respond
           ? intl.formatMessage({
               id: 'automation.agent.deployment.enabledStatus',
-              defaultMessage: 'Automatic replies are enabled for the Web widget.',
+              defaultMessage: 'Automatic replies are enabled in Messenger.',
             })
           : intl.formatMessage({
               id: 'automation.agent.deployment.pausedStatus',
@@ -68,7 +68,7 @@ export function AssistantDeploymentCard({
               <h2 id="assistant-deployment-heading" className="text-sm font-medium">
                 {intl.formatMessage({
                   id: 'automation.agent.deployment.channelHeading',
-                  defaultMessage: 'Web widget replies',
+                  defaultMessage: 'Messenger replies',
                 })}
               </h2>
               <Badge variant={!available ? 'outline' : live ? 'default' : 'secondary'} shape="pill">
@@ -93,7 +93,7 @@ export function AssistantDeploymentCard({
                 ? intl.formatMessage({
                     id: 'automation.agent.deployment.unavailable',
                     defaultMessage:
-                      'Enable the support inbox to use automatic replies in the Web widget.',
+                      'Enable the support inbox to use automatic replies in Messenger.',
                   })
                 : live
                   ? intl.formatMessage({
@@ -151,11 +151,11 @@ export function AssistantDeploymentCard({
           confirmingEnabled
             ? intl.formatMessage({
                 id: 'automation.agent.deployment.enableConfirmTitle',
-                defaultMessage: 'Enable automatic replies in the Web widget?',
+                defaultMessage: 'Enable automatic replies in Messenger?',
               })
             : intl.formatMessage({
                 id: 'automation.agent.deployment.pauseConfirmTitle',
-                defaultMessage: 'Pause automatic replies in the Web widget?',
+                defaultMessage: 'Pause automatic replies in Messenger?',
               })
         }
         description={

@@ -28,7 +28,7 @@ it('shows deployment as a compact channel-level control', () => {
     </IntlProvider>
   )
 
-  expect(screen.getByRole('heading', { name: 'Web widget replies' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'Messenger replies' })).toBeInTheDocument()
   expect(screen.getByText('Paused')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Enable automatic replies' })).toBeInTheDocument()
 })

@@ -124,6 +124,7 @@ describe('TestAgentCard', () => {
         body: JSON.stringify({
           messages: [{ sender: 'customer', content: 'Can I get a refund?' }],
           channel: 'widget',
+          agent: 'agent',
         }),
       })
     )

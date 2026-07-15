@@ -26,9 +26,11 @@ import { AssistantAnswer } from '@/components/shared/conversation/assistant-turn
 import { assistantQueries } from '@/lib/client/queries/assistant'
 import { useSseTurn } from '@/lib/client/hooks/use-sse-turn'
 import {
+  ASSISTANT_TEST_AGENTS,
   ASSISTANT_TEST_EVENTS,
   ASSISTANT_TEST_MAX_CONTENT_CHARS,
   type AssistantTestActivityPayload,
+  type AssistantTestAgent,
   type AssistantTestChannel,
   type AssistantTestCitation,
   type AssistantTestErrorPayload,
@@ -143,14 +145,17 @@ function visibleError(
 
 export function TestAgentCard({
   liveChannels = ['widget'],
+  initialAgent = 'agent',
 }: {
   liveChannels?: readonly AssistantTestChannel[]
+  initialAgent?: AssistantTestAgent
 }) {
   const intl = useIntl()
   const settingsQuery = useQuery(assistantQueries.settings())
   const identity = settingsQuery.data?.config.identity ?? DEFAULT_IDENTITY
   const channels = liveChannels.length > 0 ? liveChannels : (['widget'] as const)
   const [channel, setChannel] = useState<AssistantTestChannel>(channels[0])
+  const [agent, setAgent] = useState<AssistantTestAgent>(initialAgent)
   const [messages, setMessages] = useState<TestTurnMessage[]>([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<'idle' | 'streaming' | 'error'>('idle')
@@ -212,7 +217,7 @@ export function TestAgentCard({
 
     await start({
       url: '/api/admin/assistant/test',
-      body: { messages: thread, channel },
+      body: { messages: thread, channel, agent },
       handlers: {
         [ASSISTANT_TEST_EVENTS.activity]: (data) => {
           const next = (data as AssistantTestActivityPayload).status
@@ -305,41 +310,77 @@ export function TestAgentCard({
               defaultMessage: 'Try a scenario',
             })}
           </h3>
-          {channels.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-2">
               <span className="text-[13px] text-muted-foreground">
                 {intl.formatMessage({
-                  id: 'automation.test.channel.label',
-                  defaultMessage: 'Channel',
+                  id: 'automation.test.agent.label',
+                  defaultMessage: 'Agent',
                 })}
               </span>
               <Select
-                value={channel}
-                onValueChange={(value) => setChannel(value as AssistantTestChannel)}
+                value={agent}
+                disabled={busy}
+                onValueChange={(value) => setAgent(value as AssistantTestAgent)}
               >
                 <SelectTrigger
                   size="sm"
                   className="min-h-11 min-w-32 sm:min-h-8"
                   aria-label={intl.formatMessage({
-                    id: 'automation.test.channel.label',
-                    defaultMessage: 'Channel',
+                    id: 'automation.test.agent.label',
+                    defaultMessage: 'Agent',
                   })}
                 >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {channels.map((item) => (
+                  {ASSISTANT_TEST_AGENTS.map((item) => (
                     <SelectItem key={item} value={item}>
                       {intl.formatMessage({
-                        id: `automation.test.channel.${item}`,
-                        defaultMessage: item === 'widget' ? 'Web widget' : 'Email',
+                        id: `automation.test.agent.${item}`,
+                        defaultMessage: item === 'copilot' ? 'Copilot' : 'Agent',
                       })}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-          )}
+            {agent === 'agent' && channels.length > 1 && (
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] text-muted-foreground">
+                  {intl.formatMessage({
+                    id: 'automation.test.channel.label',
+                    defaultMessage: 'Channel',
+                  })}
+                </span>
+                <Select
+                  value={channel}
+                  onValueChange={(value) => setChannel(value as AssistantTestChannel)}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="min-h-11 min-w-32 sm:min-h-8"
+                    aria-label={intl.formatMessage({
+                      id: 'automation.test.channel.label',
+                      defaultMessage: 'Channel',
+                    })}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {channels.map((item) => (
+                      <SelectItem key={item} value={item}>
+                        {intl.formatMessage({
+                          id: `automation.test.channel.${item}`,
+                          defaultMessage: item === 'widget' ? 'Messenger' : 'Email',
+                        })}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
         </div>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {SCENARIOS.map((scenario) => (
@@ -601,27 +642,29 @@ function HandledReplyPanel({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="space-y-4 rounded-xl border border-border/60 bg-card p-4 text-[13px]">
-          <DetailSection
-            title={intl.formatMessage({
-              id: 'automation.test.handled.presets',
-              defaultMessage: 'Reply presets',
-            })}
-          >
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="outline" shape="pill">
-                {intl.formatMessage({
-                  id: `automation.agent.voice.tone.${trace.tone}.label`,
-                  defaultMessage: titleCase(trace.tone),
-                })}
-              </Badge>
-              <Badge variant="outline" shape="pill">
-                {intl.formatMessage({
-                  id: `automation.agent.voice.length.${trace.responseLength}.label`,
-                  defaultMessage: titleCase(trace.responseLength),
-                })}
-              </Badge>
-            </div>
-          </DetailSection>
+          {trace.tone && trace.responseLength ? (
+            <DetailSection
+              title={intl.formatMessage({
+                id: 'automation.test.handled.presets',
+                defaultMessage: 'Reply presets',
+              })}
+            >
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline" shape="pill">
+                  {intl.formatMessage({
+                    id: `automation.agent.voice.tone.${trace.tone}.label`,
+                    defaultMessage: titleCase(trace.tone),
+                  })}
+                </Badge>
+                <Badge variant="outline" shape="pill">
+                  {intl.formatMessage({
+                    id: `automation.agent.voice.length.${trace.responseLength}.label`,
+                    defaultMessage: titleCase(trace.responseLength),
+                  })}
+                </Badge>
+              </div>
+            </DetailSection>
+          ) : null}
 
           <DetailSection
             title={intl.formatMessage({

@@ -20,6 +20,12 @@ export const ASSISTANT_TEST_MAX_CONTENT_CHARS = 4_000
 export const ASSISTANT_TEST_CHANNELS = ['widget', 'email'] as const
 export type AssistantTestChannel = (typeof ASSISTANT_TEST_CHANNELS)[number]
 
+// Which peer agent a test turn exercises. `agent` runs the customer-facing
+// `customer_support` role on the chosen channel; `copilot` runs the
+// teammate-facing `copilot_qa` role on the `copilot` surface.
+export const ASSISTANT_TEST_AGENTS = ['agent', 'copilot'] as const
+export type AssistantTestAgent = (typeof ASSISTANT_TEST_AGENTS)[number]
+
 export interface AssistantTestMessage {
   sender: 'customer' | 'assistant'
   content: string
@@ -28,6 +34,7 @@ export interface AssistantTestMessage {
 export interface AssistantTestRequest {
   messages: AssistantTestMessage[]
   channel?: AssistantTestChannel
+  agent?: AssistantTestAgent
 }
 
 export interface AssistantTestCitation {
@@ -47,9 +54,12 @@ export interface AssistantTestEscalation {
 export interface AssistantTestTrace {
   promptVersion: string
   configRevision: number
-  role: 'customer_support'
-  tone: AssistantTone
-  responseLength: AssistantResponseLength
+  // Copilot answers are working notes with no tone/length presets (D11), so
+  // those two fields are present only for the customer-facing `customer_support`
+  // role.
+  role: 'customer_support' | 'copilot_qa'
+  tone?: AssistantTone
+  responseLength?: AssistantResponseLength
   appliedGuidance: Array<{ id: string; name: string }>
   toolCalls: Array<{
     name: string

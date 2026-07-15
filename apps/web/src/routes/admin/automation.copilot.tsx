@@ -1,22 +1,16 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, useBlocker } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import { useIntl } from 'react-intl'
-import { SparklesIcon } from '@heroicons/react/24/solid'
+import { UserGroupIcon } from '@heroicons/react/24/solid'
 import { z } from 'zod'
-import { AdditionalInstructionsCard } from '@/components/admin/automation/additional-instructions-card'
-import {
-  AssistantDeploymentCard,
-  type WidgetAssistantDeployment,
-} from '@/components/admin/automation/assistant-deployment-card'
 import { AssistantConfigChangelogCard } from '@/components/admin/automation/assistant-config-changelog-card'
 import {
   AssistantDirtyStateProvider,
   useAssistantDirtyState,
 } from '@/components/admin/automation/assistant-form'
-import { AssistantIdentityCard } from '@/components/admin/automation/assistant-identity-card'
-import { AssistantVoiceCard } from '@/components/admin/automation/assistant-basics-card'
-import { AgentKnowledgeCard } from '@/components/admin/automation/assistant-knowledge-card'
+import { CopilotCapabilitiesCard } from '@/components/admin/automation/copilot-capabilities-card'
+import { CopilotDeploymentCard } from '@/components/admin/automation/copilot-deployment-card'
+import { CopilotKnowledgeCard } from '@/components/admin/automation/assistant-knowledge-card'
 import { GuidanceRulesCard } from '@/components/admin/automation/guidance-rules-card'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { DefaultErrorPage } from '@/components/shared/error-page'
@@ -27,14 +21,14 @@ import { assistantQueries } from '@/lib/client/queries/assistant'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
-const AGENT_TABS = ['basics', 'knowledge', 'guidance', 'history'] as const
-type AgentTab = (typeof AGENT_TABS)[number]
+const COPILOT_TABS = ['basics', 'knowledge', 'guidance', 'history'] as const
+type CopilotTab = (typeof COPILOT_TABS)[number]
 
 const searchSchema = z.object({
-  tab: z.enum(AGENT_TABS).optional(),
+  tab: z.enum(COPILOT_TABS).optional(),
 })
 
-export const Route = createFileRoute('/admin/automation/agent')({
+export const Route = createFileRoute('/admin/automation/copilot')({
   validateSearch: searchSchema,
   beforeLoad: ({ context }) => {
     const permissions = (context as { permissions?: PermissionKey[] }).permissions ?? []
@@ -48,18 +42,18 @@ export const Route = createFileRoute('/admin/automation/agent')({
   errorComponent: ({ error, reset }) => (
     <DefaultErrorPage error={error} reset={reset} fullPage={false} />
   ),
-  component: AssistantAgentPage,
+  component: AssistantCopilotPage,
 })
 
-function AssistantAgentPage() {
+function AssistantCopilotPage() {
   return (
     <AssistantDirtyStateProvider>
-      <AssistantAgentSettings />
+      <AssistantCopilotSettings />
     </AssistantDirtyStateProvider>
   )
 }
 
-function AssistantAgentSettings() {
+function AssistantCopilotSettings() {
   const intl = useIntl()
   const settingsQuery = useQuery(assistantQueries.settings())
   const { settings } = Route.useRouteContext()
@@ -67,12 +61,7 @@ function AssistantAgentSettings() {
   const navigate = Route.useNavigate()
   const { dirtyTabs, hasUnsavedChanges } = useAssistantDirtyState()
   const flags = settings?.featureFlags as FeatureFlags | undefined
-  const tab: AgentTab = requestedTab
-  const initialDeployment = settings?.publicWidgetConfig?.messenger?.assistant
-  const [deployment, setDeployment] = useState<WidgetAssistantDeployment>({
-    enabled: initialDeployment?.enabled ?? true,
-    respond: initialDeployment?.respond ?? false,
-  })
+  const tab: CopilotTab = requestedTab
   const unsavedLabel = intl.formatMessage({
     id: 'automation.agent.tabs.unsaved',
     defaultMessage: 'Unsaved changes',
@@ -84,7 +73,7 @@ function AssistantAgentSettings() {
   })
 
   function setTab(value: string) {
-    const next = value as AgentTab
+    const next = value as CopilotTab
     void navigate({
       search: (previous) => ({ ...previous, tab: next === 'basics' ? undefined : next }),
       replace: true,
@@ -92,7 +81,7 @@ function AssistantAgentSettings() {
   }
 
   function openTestAgent() {
-    void navigate({ to: '/admin/automation/test' })
+    void navigate({ to: '/admin/automation/test', search: { agent: 'copilot' } })
   }
 
   return (
@@ -107,20 +96,20 @@ function AssistantAgentSettings() {
         <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex items-start gap-2.5">
             <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-              <SparklesIcon className="size-4 text-primary" />
+              <UserGroupIcon className="size-4 text-primary" />
             </div>
             <div>
               <h1 className="text-lg font-semibold text-foreground">
                 {intl.formatMessage({
-                  id: 'automation.agent.title',
-                  defaultMessage: 'Quinn Agent',
+                  id: 'automation.copilot.title',
+                  defaultMessage: 'Quinn Copilot',
                 })}
               </h1>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {intl.formatMessage({
-                  id: 'automation.agent.pageDescription',
+                  id: 'automation.copilot.pageDescription',
                   defaultMessage:
-                    'The customer-facing agent. Replies in Messenger and anywhere else Quinn speaks for you.',
+                    'The teammate-facing agent. Answers questions and drafts replies in the inbox.',
                 })}
               </p>
             </div>
@@ -166,11 +155,7 @@ function AssistantAgentSettings() {
           </div>
         ) : (
           <>
-            <AssistantDeploymentCard
-              deployment={deployment}
-              available={Boolean(flags?.supportInbox)}
-              onChange={setDeployment}
-            />
+            <CopilotDeploymentCard available={Boolean(flags?.inboxAi)} />
 
             <Tabs value={tab} onValueChange={setTab} variant="line" className="space-y-6">
               <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
@@ -180,7 +165,6 @@ function AssistantAgentSettings() {
                       id: 'automation.agent.tabs.basics',
                       defaultMessage: 'Basics',
                     })}
-                    {dirtyTabs.has('basics') && <UnsavedChangesIndicator label={unsavedLabel} />}
                   </TabsTrigger>
                   <TabsTrigger value="knowledge">
                     {intl.formatMessage({
@@ -209,9 +193,7 @@ function AssistantAgentSettings() {
                 forceMount
                 className="space-y-6 data-[state=inactive]:hidden"
               >
-                <AssistantIdentityCard />
-                <AssistantVoiceCard />
-                <AdditionalInstructionsCard />
+                <CopilotCapabilitiesCard />
               </TabsContent>
 
               <TabsContent
@@ -219,7 +201,7 @@ function AssistantAgentSettings() {
                 forceMount
                 className="space-y-6 data-[state=inactive]:hidden"
               >
-                <AgentKnowledgeCard />
+                <CopilotKnowledgeCard />
               </TabsContent>
 
               <TabsContent
@@ -236,13 +218,13 @@ function AssistantAgentSettings() {
                   </h2>
                   <p className="text-xs text-muted-foreground">
                     {intl.formatMessage({
-                      id: 'automation.agent.guidanceLayers.description',
+                      id: 'automation.copilot.guidanceLayers.description',
                       defaultMessage:
-                        "Writing guidelines set the baseline. Situational guidance follows each rule's conditions and scope.",
+                        'Situational guidance follows each rule’s conditions and scope when Copilot answers a teammate.',
                     })}
                   </p>
                 </div>
-                <GuidanceRulesCard agent="agent" />
+                <GuidanceRulesCard agent="copilot" />
               </TabsContent>
 
               <TabsContent

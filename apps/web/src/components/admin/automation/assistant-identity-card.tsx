@@ -278,7 +278,7 @@ export function AssistantIdentityCard() {
           <p className="text-xs text-muted-foreground">
             {intl.formatMessage({
               id: 'automation.agent.identity.previewHelp',
-              defaultMessage: 'This identity appears in the Web widget and customer conversations.',
+              defaultMessage: 'This identity appears in Messenger and customer conversations.',
             })}
           </p>
           {avatarManaged && <ManagedSettingHint />}
