@@ -52,8 +52,10 @@ import type {
   SeedGuidance,
   SeedKbArticle,
   SeedStatusIncident,
+  SeedCustomAction,
   SeedTicketSummary,
 } from '../types'
+import { createCustomAction } from '@/lib/server/domains/assistant/custom-actions.service'
 
 function suffix(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -106,6 +108,7 @@ export async function applyScenarioSettings(config: ScenarioConfig = {}): Promis
   const assistantConfig = buildScenarioAssistantConfig(config)
   const featureFlags = JSON.stringify({
     assistantTools: config.assistantTools === true,
+    assistantCustomActions: config.customActions === true,
   })
   await testDb
     .update(settings)
@@ -299,6 +302,31 @@ export async function seedGuidanceRule(rule: SeedGuidance): Promise<void> {
   })
 }
 
+/**
+ * Seed a custom-action definition via the service (so encryption/validation
+ * match production). The url is a placeholder — Phase 5 scenarios assert on the
+ * assembled tool set, never firing the request, so no host is contacted.
+ */
+export async function seedCustomAction(action: SeedCustomAction): Promise<void> {
+  await createCustomAction(
+    {
+      name: action.name,
+      whenToUse: action.whenToUse ?? `Use the ${action.name} action when relevant.`,
+      request: {
+        method: 'GET',
+        url: action.url ?? 'https://example.test/eval-action',
+        headers: [],
+      },
+      variables: action.variables ?? [],
+      responseAllowlist: action.responseAllowlist ?? [],
+      responseCharLimit: 4000,
+      assignments: action.assignments,
+      enabled: action.enabled ?? true,
+    },
+    testDb
+  )
+}
+
 export async function seedAttribute(attr: {
   key: string
   label: string
@@ -387,6 +415,9 @@ export async function seedFixtures(
   }
   for (const attr of fixtures?.attributes ?? []) {
     await seedAttribute(attr)
+  }
+  for (const action of fixtures?.customActions ?? []) {
+    await seedCustomAction(action)
   }
 
   // Conversation seeding is opt-in per scenario. A real conversationId engages

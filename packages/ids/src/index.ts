@@ -121,6 +121,7 @@ export type {
   AssistantInvolvementId,
   AssistantGuidanceRuleId,
   AssistantPendingActionId,
+  AssistantCustomActionId,
   AssistantToolCallId,
   AssistantSnippetId,
   TicketId,

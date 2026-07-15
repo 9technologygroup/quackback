@@ -18,6 +18,8 @@ import { AssistantIdentityCard } from '@/components/admin/automation/assistant-i
 import { AssistantVoiceCard } from '@/components/admin/automation/assistant-basics-card'
 import { AgentKnowledgeCard } from '@/components/admin/automation/assistant-knowledge-card'
 import { GuidanceRulesCard } from '@/components/admin/automation/guidance-rules-card'
+import { BuiltInActionsCard } from '@/components/admin/automation/builtin-actions-card'
+import { CustomActionsCard } from '@/components/admin/automation/custom-actions-card'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { DefaultErrorPage } from '@/components/shared/error-page'
 import { BackLink } from '@/components/ui/back-link'
@@ -27,7 +29,7 @@ import { assistantQueries } from '@/lib/client/queries/assistant'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
-const AGENT_TABS = ['basics', 'knowledge', 'guidance', 'history'] as const
+const AGENT_TABS = ['basics', 'knowledge', 'guidance', 'actions', 'history'] as const
 type AgentTab = (typeof AGENT_TABS)[number]
 
 const searchSchema = z.object({
@@ -195,6 +197,13 @@ function AssistantAgentSettings() {
                     })}
                     {dirtyTabs.has('guidance') && <UnsavedChangesIndicator label={unsavedLabel} />}
                   </TabsTrigger>
+                  <TabsTrigger value="actions">
+                    {intl.formatMessage({
+                      id: 'automation.agent.tabs.actions',
+                      defaultMessage: 'Actions',
+                    })}
+                    {dirtyTabs.has('actions') && <UnsavedChangesIndicator label={unsavedLabel} />}
+                  </TabsTrigger>
                   <TabsTrigger value="history">
                     {intl.formatMessage({
                       id: 'automation.agent.tabs.history',
@@ -243,6 +252,15 @@ function AssistantAgentSettings() {
                   </p>
                 </div>
                 <GuidanceRulesCard agent="agent" />
+              </TabsContent>
+
+              <TabsContent
+                value="actions"
+                forceMount
+                className="space-y-6 data-[state=inactive]:hidden"
+              >
+                <BuiltInActionsCard agent="agent" />
+                {flags?.assistantCustomActions && <CustomActionsCard agent="agent" />}
               </TabsContent>
 
               <TabsContent

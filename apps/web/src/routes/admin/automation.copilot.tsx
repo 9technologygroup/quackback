@@ -12,6 +12,8 @@ import { CopilotCapabilitiesCard } from '@/components/admin/automation/copilot-c
 import { CopilotDeploymentCard } from '@/components/admin/automation/copilot-deployment-card'
 import { CopilotKnowledgeCard } from '@/components/admin/automation/assistant-knowledge-card'
 import { GuidanceRulesCard } from '@/components/admin/automation/guidance-rules-card'
+import { BuiltInActionsCard } from '@/components/admin/automation/builtin-actions-card'
+import { CustomActionsCard } from '@/components/admin/automation/custom-actions-card'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { DefaultErrorPage } from '@/components/shared/error-page'
 import { BackLink } from '@/components/ui/back-link'
@@ -21,7 +23,7 @@ import { assistantQueries } from '@/lib/client/queries/assistant'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
-const COPILOT_TABS = ['basics', 'knowledge', 'guidance', 'history'] as const
+const COPILOT_TABS = ['basics', 'knowledge', 'guidance', 'actions', 'history'] as const
 type CopilotTab = (typeof COPILOT_TABS)[number]
 
 const searchSchema = z.object({
@@ -179,6 +181,13 @@ function AssistantCopilotSettings() {
                     })}
                     {dirtyTabs.has('guidance') && <UnsavedChangesIndicator label={unsavedLabel} />}
                   </TabsTrigger>
+                  <TabsTrigger value="actions">
+                    {intl.formatMessage({
+                      id: 'automation.agent.tabs.actions',
+                      defaultMessage: 'Actions',
+                    })}
+                    {dirtyTabs.has('actions') && <UnsavedChangesIndicator label={unsavedLabel} />}
+                  </TabsTrigger>
                   <TabsTrigger value="history">
                     {intl.formatMessage({
                       id: 'automation.agent.tabs.history',
@@ -225,6 +234,15 @@ function AssistantCopilotSettings() {
                   </p>
                 </div>
                 <GuidanceRulesCard agent="copilot" />
+              </TabsContent>
+
+              <TabsContent
+                value="actions"
+                forceMount
+                className="space-y-6 data-[state=inactive]:hidden"
+              >
+                <BuiltInActionsCard agent="copilot" />
+                {flags?.assistantCustomActions && <CustomActionsCard agent="copilot" />}
               </TabsContent>
 
               <TabsContent

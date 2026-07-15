@@ -1317,6 +1317,13 @@
       "when": 1784773020000,
       "tag": "0204_assistant_config_v3",
       "breakpoints": true
+    },
+    {
+      "idx": 205,
+      "version": "7",
+      "when": 1784773080000,
+      "tag": "0205_assistant_custom_actions",
+      "breakpoints": true
     }
   ]
 }

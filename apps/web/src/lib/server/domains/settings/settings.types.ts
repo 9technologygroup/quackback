@@ -971,6 +971,11 @@ export interface FeatureFlags {
    *  conversations and creating tickets. Every action has per-action
    *  controls and approvals. */
   assistantTools: boolean
+  /** Custom actions library (QUINN-TWO-AGENT-SPEC D6/Phase 5): admin-authored
+   *  HTTP actions the assistant can call, defined once and assigned per agent.
+   *  Off by default; gates dynamic registration of custom actions into the
+   *  toolset (built-in actions are unaffected). */
+  assistantCustomActions: boolean
   /** Status page: public/private/segment-scoped service status with incidents,
    *  maintenance windows, uptime history, and subscriber notifications. */
   statusPage: boolean
@@ -1041,6 +1046,7 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   inboxAi: false,
   assistantProactiveSuggestions: false,
   assistantTools: false,
+  assistantCustomActions: false,
 }
 
 /**
@@ -1100,6 +1106,11 @@ export const FEATURE_FLAG_REGISTRY: Record<
     label: 'Assistant actions',
     description:
       'Let the AI assistant take actions such as closing conversations or creating tickets. Actions have per-action controls and approvals.',
+  },
+  assistantCustomActions: {
+    label: 'Custom actions',
+    description:
+      'Build your own actions from an HTTP request the assistant can call, define them once, and assign them to the Agent or Copilot. Scoped response access and audit logging keep them safe.',
   },
   assistantProactiveSuggestions: {
     label: 'Proactive suggested replies',
@@ -1232,6 +1243,7 @@ export const LAB_SECTIONS: Array<{
       { key: 'aiFeedbackExtraction' },
       { key: 'inboxAi', subFlags: ['assistantProactiveSuggestions'] },
       { key: 'assistantTools' },
+      { key: 'assistantCustomActions' },
     ],
   },
   {
