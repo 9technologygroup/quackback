@@ -5,7 +5,7 @@
  * teammate reply after it (pull-on-view — the server never speculates on an
  * item nobody has open; there is no server-push per inbound message, see the
  * spec's non-goals). Sibling of copilot.ts, sharing its whole gate sequence
- * (`gateCopilotRequest`: copilot.use -> body parse -> inboxAi flag +
+ * (`gateCopilotAguiRequest`: copilot.use -> AG-UI body parse -> inboxAi flag +
  * configured -> AI token budget -> item-scoped viewability) PLUS one more
  * layer: the `assistantProactiveSuggestions` flag, checked the same way
  * `assertCopilotAvailable` checks `inboxAi` (404 NOT_FOUND when off)
@@ -58,45 +58,44 @@
  * message, and for a closed item there is nothing to suggest until it reopens
  * with new customer traffic (which changes the cache key too).
  *
- * Streaming contract: FINAL-ONLY, per the suggest.v1 contract doc
- * (copilot-contract.ts) — no delta frames are sent. A suggestion's honest
- * miss is only knowable at the end of the run, so streaming deltas
- * would put a half-drafted guess on screen that a trailing skip then
- * evaporates. The error frame is unchanged.
+ * Streaming contract: FINAL-ONLY on the CLIENT (the suggested-reply store reads
+ * only RUN_FINISHED.result and ignores partial chunks) — a suggestion's honest
+ * miss is only knowable at the end of the run, so a half-drafted guess must
+ * never render. The server rides the same AG-UI wire as copilot.ts and may emit
+ * model chunks; the client drops them. The terminal RUN_FINISHED.result carries
+ * the `SuggestFinalPayload`, or a coded RUN_ERROR ends the stream on failure.
  */
 import { createFileRoute } from '@tanstack/react-router'
+import { toServerSentEventsResponse } from '@tanstack/ai'
 import { z } from 'zod'
 import { isValidTypeId } from '@quackback/ids'
 import {
-  runAssistantTurn,
+  streamAssistantTurn,
   ensureAssistantPrincipal,
   loadAssistantItemState,
+  type AssistantTurnResult,
 } from '@/lib/server/domains/assistant'
-import { gateCopilotRequest, streamAssistantSse } from '@/lib/server/domains/assistant/copilot-gate'
+import { gateCopilotAguiRequest } from '@/lib/server/domains/assistant/copilot-gate'
 import { withAssistantItemRef } from '@/lib/server/domains/assistant/item-ref.schema'
 import {
   isFeatureEnabled,
   isCopilotCapabilityEnabled,
 } from '@/lib/server/domains/settings/settings.service'
 import { errorResponse, conflictResponse } from '@/lib/server/domains/api/responses'
-import { logger } from '@/lib/server/logger'
-import {
-  SUGGEST_EVENTS,
-  type SuggestFinalPayload,
-  type SuggestErrorPayload,
-} from '@/lib/shared/assistant/copilot-contract'
-
-const log = logger.child({ component: 'assistant-suggest' })
+import type { SuggestFinalPayload } from '@/lib/shared/assistant/copilot-contract'
 
 const lastCustomerMessageIdSchema = z.string().refine((v) => isValidTypeId(v, 'conversation_msg'), {
   message: 'Invalid message ID format',
 })
 
-const requestSchema = withAssistantItemRef({
+// The item ref plus the client's cache-key message id ride forwardedProps; a
+// suggestion turn carries no question, so the AG-UI messages are ignored (the
+// `suggested_reply` intent owns the turn's fixed drafting message server-side).
+const forwardedPropsSchema = withAssistantItemRef({
   lastCustomerMessageId: lastCustomerMessageIdSchema,
 })
 
-/** The final frame every no-suggestion outcome maps to (see `handleSuggest`). */
+/** The final payload every no-suggestion outcome maps to (see `toSuggestFinal`). */
 const SKIP_FINAL: SuggestFinalPayload = {
   text: '',
   citations: [],
@@ -104,14 +103,33 @@ const SKIP_FINAL: SuggestFinalPayload = {
   skip: true,
 }
 
+/**
+ * Map a completed suggestion turn onto its final payload. Every no-suggestion
+ * outcome collapses to the one skip payload: the engine muting the turn
+ * (defensive; the intent's own turn messages never carry human_agent), the
+ * tool-derived `skip` honest miss, and a done-but-empty text (a model that left
+ * "text" blank without setting skip: an empty card is a stuck card, so blank
+ * means skip here).
+ */
+function toSuggestFinal(result: AssistantTurnResult): SuggestFinalPayload {
+  if (result.status === 'suppressed' || result.skip || !result.text.trim()) {
+    return SKIP_FINAL
+  }
+  return {
+    text: result.text,
+    citations: result.citations,
+    internalSourced: result.internalSourced,
+  }
+}
+
 export async function handleSuggest({ request }: { request: Request }): Promise<Response> {
-  const gate = await gateCopilotRequest(
+  const gate = await gateCopilotAguiRequest(
     request,
-    requestSchema,
+    forwardedPropsSchema,
     'A valid conversationId or ticketId, and lastCustomerMessageId, are required'
   )
   if (!gate.ok) return gate.response
-  const { auth, parsed, conversationId, ticketId } = gate
+  const { auth, parsed, conversationId, ticketId, agui } = gate
 
   // Additional gate past assertCopilotAvailable's inboxAi check: the
   // same 404 NOT_FOUND shape, one flag layer up. A workspace can run Copilot
@@ -143,20 +161,9 @@ export async function handleSuggest({ request }: { request: Request }): Promise<
 
   const assistant = await ensureAssistantPrincipal()
 
-  return streamAssistantSse({
-    request,
-    error: {
-      event: SUGGEST_EVENTS.error,
-      payload: {
-        code: 'TURN_FAILED',
-        message: 'Suggestion generation failed',
-      } satisfies SuggestErrorPayload,
-    },
-    logError: (err) => log.error({ err }, 'suggestion turn failed'),
-    run: async (sse) => {
-      // Final-only: no onTextDelta is wired, so no suggest.v1.delta frames
-      // are ever sent (see the streaming contract in this file's doc comment).
-      const result = await runAssistantTurn({
+  return toServerSentEventsResponse(
+    streamAssistantTurn({
+      input: {
         assistantPrincipalId: assistant.id,
         role: 'suggested_reply',
         conversationId,
@@ -165,29 +172,16 @@ export async function handleSuggest({ request }: { request: Request }): Promise<
         // Owns the suggestion invariants end-to-end: the turn's fixed
         // drafting message, the framing, the 'copilot_suggest' usage-log
         // step, the read-only tool policy, and the report_inability-to-skip
-        // mapping (see COPILOT_INTENT_PROFILES,
-        // assistant.runtime.ts).
+        // mapping (see COPILOT_INTENT_PROFILES, assistant.runtime.ts).
         actorPrincipalId: auth.principal.id,
         latestCustomerMessageId: item.latestCustomerMessageId,
         signal: request.signal,
-      })
-
-      // Every no-suggestion outcome collapses to the one skip frame: the
-      // engine muting the turn (defensive; the intent's own turn messages
-      // never carry human_agent), the tool-derived `skip` honest miss, and a
-      // done-but-empty text (a model that left "text" blank without setting
-      // skip: an empty card is a stuck card, so blank means skip here).
-      if (result.status === 'suppressed' || result.skip || !result.text.trim()) {
-        sse.send(SUGGEST_EVENTS.final, SKIP_FINAL)
-      } else {
-        sse.send(SUGGEST_EVENTS.final, {
-          text: result.text,
-          citations: result.citations,
-          internalSourced: result.internalSourced,
-        } satisfies SuggestFinalPayload)
-      }
-    },
-  })
+      },
+      wire: { threadId: agui.threadId, runId: agui.runId },
+      buildFinalPayload: toSuggestFinal,
+      mapError: () => ({ code: 'TURN_FAILED', message: 'Suggestion generation failed' }),
+    })
+  )
 }
 
 export const Route = createFileRoute('/api/admin/assistant/suggest')({

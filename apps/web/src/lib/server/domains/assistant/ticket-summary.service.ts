@@ -6,9 +6,9 @@
  * ticket's customer-visible thread when it closes, so Quinn's copilot can
  * later ground on how similar tickets were resolved (see
  * `tickets-retrieval.ts`). Same shape as the conversation on-close path —
- * config-gated no-op, `response_format: json_object`, strip-fences /
- * parse / validate, embed via the shared `generateEmbedding`, upsert one row
- * per ticket keyed on `ticketId`.
+ * config-gated no-op, a schema-validated `chat({ stream: false })` structured
+ * call, embed via the shared `generateEmbedding`, upsert one row per ticket
+ * keyed on `ticketId`.
  *
  * TWO differences from the conversation summary:
  *   - The source text is the ticket thread via `listTicketMessages({
@@ -25,11 +25,17 @@
  * (events/process.ts) fires it fire-and-forget off `ticket.status_changed →
  * closed`, exactly as the conversation-close branch fires its sibling.
  */
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
 import { db, tickets, ticketSummaries, eq, sql } from '@/lib/server/db'
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { config } from '@/lib/server/config'
+import {
+  isAiClientConfigured,
+  structuredOutputProviderOptions,
+} from '@/lib/server/domains/ai/config'
+import { createUsageLoggingMiddleware } from '@/lib/server/domains/ai/usage-middleware'
 import { getChatModel, getEmbeddingModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { generateEmbedding } from '@/lib/server/domains/embeddings/embedding.service'
 import { listTicketMessages } from '@/lib/server/domains/tickets/ticket-message.service'
@@ -54,9 +60,7 @@ Rules for "summary" (2-4 sentences):
 - BAD: "The customer had a login issue."
 - GOOD: "SSO login failed with a 'redirect_uri mismatch' after the customer changed their Okta domain; resolved by re-adding the new callback URL in the SSO settings."`
 
-interface TicketSummaryJson {
-  summary: string
-}
+const TicketSummarySchema = z.object({ summary: z.string() })
 
 /**
  * Summarize a just-closed ticket and upsert the result (one row per ticket,
@@ -70,9 +74,8 @@ export async function summarizeTicketOnClose(ticketId: TicketId): Promise<void> 
   try {
     await enforceAiTokenBudget()
 
-    const openai = getOpenAI()
     const model = getChatModel('summary')
-    if (!openai || !model) return
+    if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) return
 
     const [ticketRow, thread] = await Promise.all([
       db.query.tickets.findFirst({
@@ -98,60 +101,36 @@ export async function summarizeTicketOnClose(ticketId: TicketId): Promise<void> 
     // against aiTokensPerMonth, distinct from the on-demand copilot Summarize
     // chip's 'copilot_summary' (analytics/copilot-usage.ts counts only the
     // latter), matching how the conversation on-close path stays off that report.
-    const completion = await withUsageLogging(
-      {
-        pipelineStep: 'ticket_summary',
-        callType: 'chat_completion',
-        model,
-        metadata: { ticketId },
-      },
-      () =>
-        withRetry(() =>
-          openai.chat.completions.create({
-            model,
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: truncated },
-            ],
-            response_format: { type: 'json_object' },
-            temperature: 0.2,
-            max_completion_tokens: 400,
-          })
-        ),
-      (r) => ({
-        inputTokens: r.usage?.prompt_tokens ?? 0,
-        outputTokens: r.usage?.completion_tokens,
-        totalTokens: r.usage?.total_tokens ?? 0,
-      })
-    )
+    const object = await chat({
+      adapter: openaiCompatibleText(model, {
+        baseURL: config.openaiBaseUrl!,
+        apiKey: config.openaiApiKey!,
+      }),
+      systemPrompts: [SYSTEM_PROMPT],
+      messages: [{ role: 'user', content: truncated }],
+      outputSchema: TicketSummarySchema,
+      stream: false,
+      modelOptions: { max_tokens: 400, ...structuredOutputProviderOptions() },
+      middleware: [
+        createUsageLoggingMiddleware({
+          pipelineStep: 'ticket_summary',
+          model,
+          metadata: { ticketId },
+        }),
+      ],
+    })
 
-    const responseText = completion.choices[0]?.message?.content
-    if (!responseText) {
-      log.error({ ticket_id: ticketId }, 'empty ticket summary response')
-      return
-    }
-
-    let parsed: Partial<TicketSummaryJson>
-    try {
-      parsed = JSON.parse(stripCodeFences(responseText))
-    } catch {
-      log.error(
-        { ticket_id: ticketId, response_length: responseText.length },
-        'failed to parse ticket summary json'
-      )
-      return
-    }
-    if (typeof parsed.summary !== 'string' || !parsed.summary.trim()) {
+    const summaryText = object.summary.trim()
+    if (!summaryText) {
       log.error({ ticket_id: ticketId }, 'invalid ticket summary shape')
       return
     }
-    const summaryText = parsed.summary.trim()
 
     // Best-effort: a failed/unavailable embedding still saves the summary text
     // (retrieval's keyword fallback can still use it), just without the
     // semantic ranking path.
     const embedding = await generateEmbedding(summaryText, {
-      pipelineStep: 'assistant_ticket_summary_embedding',
+      pipelineStep: 'ticket_summary_embedding',
     })
 
     const values = {

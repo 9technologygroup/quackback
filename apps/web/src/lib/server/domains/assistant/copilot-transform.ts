@@ -18,6 +18,7 @@
  * instruction rather than failing or stalling.
  */
 import { z } from 'zod'
+import type { StreamChunk } from '@tanstack/ai'
 import { db, conversationMessages, eq, and, desc, isNull } from '@/lib/server/db'
 import type { PrincipalId } from '@quackback/ids'
 import { getChatModel } from '@/lib/server/domains/ai/models'
@@ -149,6 +150,13 @@ export interface RunCopilotTransformParams {
   principalId: PrincipalId
   signal?: AbortSignal
   onTextDelta?: (delta: string) => void
+  /**
+   * AG-UI wire forwarding (see synthesis-core's option of the same name):
+   * receives the attempt's committed model-stream chunks for a route serving
+   * the AG-UI protocol. The route owns the canonical run lifecycle around them
+   * (streamSynthesisToWire); direct callers leave it unset and are unchanged.
+   */
+  wireSink?: (chunk: StreamChunk) => void
 }
 
 export interface CopilotTransformResult {
@@ -192,6 +200,7 @@ export async function runCopilotTransform(
     onFailure: 'throw',
     signal: params.signal,
     onTextDelta: params.onTextDelta,
+    wireSink: params.wireSink,
     usageLogParams: {
       pipelineStep: 'copilot_transform',
       callType: 'chat_completion',

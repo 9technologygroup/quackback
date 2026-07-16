@@ -5,6 +5,9 @@
  * Summaries include a prose overview, urgency level, key quotes, and next steps.
  */
 
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
 import {
   db,
   posts,
@@ -18,14 +21,39 @@ import {
   sql,
   notInArray,
 } from '@/lib/server/db'
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { config } from '@/lib/server/config'
+import {
+  isAiClientConfigured,
+  structuredOutputProviderOptions,
+} from '@/lib/server/domains/ai/config'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import type { PostId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'summary' })
+
+/**
+ * `chat({ outputSchema })` collapses "empty response", "response wasn't
+ * valid JSON", and "response didn't match the schema" into one thrown
+ * `Error` tagged with one of these `code`s (see @tanstack/ai's
+ * `finalizationError` handling) — the structured-output analogue of this
+ * service's old empty-response / JSON.parse / shape-guard branches, all of
+ * which logged and returned rather than throwing. A transport/network
+ * failure throws too, but without this `code`, so it still propagates
+ * exactly as an uncaught `withRetry` failure did before.
+ */
+const STRUCTURED_OUTPUT_ERROR_CODES = new Set([
+  'structured-output-parse-failed',
+  'structured-output-validation-failed',
+  'structured-output-missing-result',
+])
+
+function isStructuredOutputError(err: unknown): boolean {
+  return STRUCTURED_OUTPUT_ERROR_CODES.has(
+    (err as { code?: string } | null | undefined)?.code ?? ''
+  )
+}
 
 const SYSTEM_PROMPT = `You are a product feedback analyst writing post briefs for a PM's triage queue.
 Your job is to surface what matters for prioritization, not restate the obvious.
@@ -63,6 +91,17 @@ interface PostSummaryJson {
   nextSteps: string[]
 }
 
+// `summary` mirrors the old typeof-guard: a missing/wrong-typed value fails
+// validation, which the caller maps to the old "invalid shape" log+return.
+// `keyQuotes`/`nextSteps` mirror the old Array.isArray coercion: `.catch([])`
+// swallows a missing or wrong-shaped value locally (without failing the rest
+// of the object), replacing it with `[]` exactly like the old manual coercion.
+const PostSummarySchema = z.object({
+  summary: z.string(),
+  keyQuotes: z.array(z.string()).catch([]),
+  nextSteps: z.array(z.string()).catch([]),
+})
+
 /**
  * Generate and save an AI summary for a post.
  * Fetches the post title, content, and comments, then calls the LLM.
@@ -70,9 +109,8 @@ interface PostSummaryJson {
 export async function generateAndSavePostSummary(postId: PostId): Promise<void> {
   await enforceAiTokenBudget()
 
-  const openai = getOpenAI()
   const model = getChatModel('summary')
-  if (!openai || !model) return
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) return
 
   // Fetch post (include existing summary for continuity on updates)
   const post = await db.query.posts.findFirst({
@@ -122,48 +160,23 @@ export async function generateAndSavePostSummary(postId: PostId): Promise<void> 
       '\n\nA previous summary is included. Update it to reflect the current state of the discussion — preserve existing context that is still relevant, and incorporate any new information from recent comments.'
     : SYSTEM_PROMPT
 
-  const { result: completion } = await withRetry(() =>
-    openai.chat.completions.create({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: input },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-      max_completion_tokens: 1000,
-    })
-  )
-
-  const responseText = completion.choices[0]?.message?.content
-  if (!responseText) {
-    log.error({ post_id: postId }, 'empty summary response')
-    return
-  }
-
   let summaryJson: PostSummaryJson
   try {
-    summaryJson = JSON.parse(stripCodeFences(responseText))
-  } catch {
-    log.error(
-      { post_id: postId, response_length: responseText.length },
-      'failed to parse summary json'
-    )
+    summaryJson = await chat({
+      adapter: openaiCompatibleText(model, {
+        baseURL: config.openaiBaseUrl!,
+        apiKey: config.openaiApiKey!,
+      }),
+      systemPrompts: [systemPrompt],
+      messages: [{ role: 'user', content: input }],
+      outputSchema: PostSummarySchema,
+      stream: false,
+      modelOptions: { max_tokens: 1000, ...structuredOutputProviderOptions() },
+    })
+  } catch (err) {
+    if (!isStructuredOutputError(err)) throw err
+    log.error({ post_id: postId, err }, 'failed to parse summary json')
     return
-  }
-
-  // Validate shape
-  if (typeof summaryJson.summary !== 'string') {
-    log.error({ post_id: postId }, 'invalid summary shape')
-    return
-  }
-
-  // Coerce arrays
-  if (!Array.isArray(summaryJson.keyQuotes)) {
-    summaryJson.keyQuotes = []
-  }
-  if (!Array.isArray(summaryJson.nextSteps)) {
-    summaryJson.nextSteps = []
   }
 
   await db
@@ -196,7 +209,8 @@ export async function refreshStaleSummaries(): Promise<void> {
   // Fast-path skip when AI is off OR the summary model is unset/disabled —
   // otherwise the sweep would query a batch and per-post no-op until the
   // circuit breaker trips.
-  if (!getOpenAI() || !getChatModel('summary')) return
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !getChatModel('summary'))
+    return
   if (_sweepInProgress) return
   _sweepInProgress = true
   try {

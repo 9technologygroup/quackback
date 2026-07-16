@@ -45,27 +45,47 @@ vi.mock('@/lib/server/functions/workspace', () => ({
 }))
 
 import { ANONYMOUS_ACTOR } from '@/lib/server/policy/types'
-import { handleKbAsk, KB_ASK_MAX_QUERY_CHARS, KB_ASK_RATE_LIMIT } from '../kb-ask'
-import { parseAskAiSseBlock } from '@/components/help-center/ask-ai'
+import { handleKbAsk, handleKbAskProbe, KB_ASK_MAX_QUERY_CHARS, KB_ASK_RATE_LIMIT } from '../kb-ask'
 import { makeKbArticle } from '@/lib/server/domains/assistant/__tests__/kb-fixtures'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 
-function makeRequest(
-  params: Record<string, string> = {},
+/** Build an AG-UI RunAgentInput POST request. `question` rides the trailing
+ *  user message; omit it (or pass null) to send a question-less body. */
+function makePost(
+  question: string | null,
   ip = '203.0.113.9',
   extraHeaders: Record<string, string> = {}
 ): Request {
-  const url = new URL('http://localhost/api/widget/kb-ask')
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  return new Request(url, { headers: { 'x-forwarded-for': ip, ...extraHeaders } })
+  const messages = question === null ? [] : [{ id: 'q', role: 'user', content: question }]
+  return new Request('http://localhost/api/widget/kb-ask', {
+    method: 'POST',
+    headers: { 'x-forwarded-for': ip, ...extraHeaders },
+    body: JSON.stringify({
+      threadId: 'thread-test',
+      runId: 'run-test',
+      messages,
+      tools: [],
+      context: [],
+      state: {},
+      forwardedProps: {},
+    }),
+  })
 }
 
-/** Parse an SSE body into [{event, data}] frames, via the client's parser. */
-function parseSse(body: string): Array<{ event: string; data: unknown }> {
-  return body
+/** A bare GET (the capability probe). */
+function makeProbe(): Request {
+  return new Request('http://localhost/api/widget/kb-ask', {
+    headers: { 'x-forwarded-for': '203.0.113.9' },
+  })
+}
+
+/** Parse toServerSentEventsResponse output: `data: <json>` blocks. */
+function parseAguiSse(text: string): Array<Record<string, unknown> & { type: string }> {
+  return text
     .split('\n\n')
-    .map(parseAskAiSseBlock)
-    .filter((frame): frame is { event: string; data: unknown } => frame !== null)
+    .map((block) => block.trim())
+    .filter((block) => block.startsWith('data: '))
+    .map((block) => JSON.parse(block.slice('data: '.length)))
 }
 
 beforeEach(() => {
@@ -86,21 +106,29 @@ beforeEach(() => {
   })
 })
 
-describe('GET /api/widget/kb-ask', () => {
+const SOURCE_META = {
+  articleId: 'kb_article_1',
+  title: 'Title kb_article_1',
+  slug: 'slug-kb_article_1',
+  categorySlug: 'general',
+  categoryName: 'General',
+}
+
+describe('GET /api/widget/kb-ask (capability probe)', () => {
   it('404s when the help center flag is off', async () => {
     mockGetFeatureFlags.mockResolvedValue({ helpCenter: false, helpCenterAiAnswers: true })
-    const res = await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    const res = await handleKbAskProbe({ request: makeProbe() })
     expect(res.status).toBe(404)
   })
 
   it('404s when the AI answers flag is off', async () => {
     mockGetFeatureFlags.mockResolvedValue({ helpCenter: true, helpCenterAiAnswers: false })
-    const res = await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    const res = await handleKbAskProbe({ request: makeProbe() })
     expect(res.status).toBe(404)
   })
 
-  it('serves a capability probe when no query is given', async () => {
-    const res = await handleKbAsk({ request: makeRequest() })
+  it('serves a capability probe with the widget CORS header', async () => {
+    const res = await handleKbAskProbe({ request: makeProbe() })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ data: { enabled: true } })
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*')
@@ -111,21 +139,47 @@ describe('GET /api/widget/kb-ask', () => {
 
   it('reports enabled=false on the probe when AI is not configured', async () => {
     mockIsConfigured.mockReturnValue(false)
-    const res = await handleKbAsk({ request: makeRequest() })
+    const res = await handleKbAskProbe({ request: makeProbe() })
     expect(await res.json()).toEqual({ data: { enabled: false } })
+  })
+})
+
+describe('POST /api/widget/kb-ask', () => {
+  it('404s when the AI answers flag is off', async () => {
+    mockGetFeatureFlags.mockResolvedValue({ helpCenter: true, helpCenterAiAnswers: false })
+    const res = await handleKbAsk({ request: makePost('hello') })
+    expect(res.status).toBe(404)
+  })
+
+  it('400s on a non-AG-UI body', async () => {
+    const res = await handleKbAsk({
+      request: new Request('http://localhost/api/widget/kb-ask', {
+        method: 'POST',
+        headers: { 'x-forwarded-for': '203.0.113.9' },
+        body: JSON.stringify({ q: 'hello' }),
+      }),
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('INVALID_REQUEST')
+  })
+
+  it('400s when the AG-UI messages carry no trailing user question', async () => {
+    const res = await handleKbAsk({ request: makePost(null) })
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('INVALID_QUERY')
   })
 
   it('400s on a blank query', async () => {
-    const res = await handleKbAsk({ request: makeRequest({ q: '   ' }) })
+    const res = await handleKbAsk({ request: makePost('   ') })
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error.code).toBe('INVALID_QUERY')
   })
 
   it('413s when the query exceeds the length cap', async () => {
-    const res = await handleKbAsk({
-      request: makeRequest({ q: 'x'.repeat(KB_ASK_MAX_QUERY_CHARS + 1) }),
-    })
+    const res = await handleKbAsk({ request: makePost('x'.repeat(KB_ASK_MAX_QUERY_CHARS + 1)) })
     expect(res.status).toBe(413)
     const body = await res.json()
     expect(body.error.code).toBe('QUERY_TOO_LONG')
@@ -133,20 +187,18 @@ describe('GET /api/widget/kb-ask', () => {
 
   it('429s with Retry-After when over the per-IP limit', async () => {
     mockIncrementBucket.mockResolvedValue({ count: KB_ASK_RATE_LIMIT + 1 })
-    const res = await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    const res = await handleKbAsk({ request: makePost('hello') })
     expect(res.status).toBe(429)
     expect(res.headers.get('Retry-After')).toBe('42')
     expect(mockRetrieve).not.toHaveBeenCalled()
   })
 
   it('429s when a single anonymous session exceeds its own budget, even under the IP limit', async () => {
-    // Same IP, same bearer session, repeated requests: the session bucket
-    // trips even though the (shared) IP bucket alone would still allow it.
     mockIncrementBucket.mockImplementation(async (spec: { key: string }) =>
       spec.key.includes(':session:') ? { count: KB_ASK_RATE_LIMIT + 1 } : { count: 1 }
     )
     const res = await handleKbAsk({
-      request: makeRequest({ q: 'hello' }, '203.0.113.9', { Authorization: 'Bearer session-a' }),
+      request: makePost('hello', '203.0.113.9', { Authorization: 'Bearer session-a' }),
     })
     expect(res.status).toBe(429)
     expect(mockRetrieve).not.toHaveBeenCalled()
@@ -157,15 +209,14 @@ describe('GET /api/widget/kb-ask', () => {
       count: spec.key.includes('session-a') ? KB_ASK_RATE_LIMIT + 1 : 1,
     }))
     const res = await handleKbAsk({
-      request: makeRequest({ q: 'hello' }, '203.0.113.9', { Authorization: 'Bearer session-b' }),
+      request: makePost('hello', '203.0.113.9', { Authorization: 'Bearer session-b' }),
     })
-    // A different bearer session on the same IP is unaffected by session-a's limit.
     expect(res.status).toBe(200)
   })
 
   it('503s when the workspace is unavailable', async () => {
     mockGetSettings.mockResolvedValue(null)
-    const res = await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    const res = await handleKbAsk({ request: makePost('hello') })
     expect(res.status).toBe(503)
     const body = await res.json()
     expect(body.error.code).toBe('WORKSPACE_UNAVAILABLE')
@@ -174,20 +225,20 @@ describe('GET /api/widget/kb-ask', () => {
 
   it('keys the tenant bucket off the resolved workspace id, not a caller-supplied header', async () => {
     mockGetSettings.mockResolvedValue({ id: 'settings_evade_test' })
-    await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    await handleKbAsk({ request: makePost('hello') })
     const keys = mockIncrementBucket.mock.calls.map(([spec]) => spec.key)
     expect(keys).toContain('kbask:tenant:settings_evade_test')
   })
 
   it('fails open when Redis is down', async () => {
     mockIncrementBucket.mockResolvedValue({ count: null })
-    const res = await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    const res = await handleKbAsk({ request: makePost('hello') })
     expect(res.status).toBe(200)
   })
 
   it('503s when AI is not configured', async () => {
     mockIsConfigured.mockReturnValue(false)
-    const res = await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    const res = await handleKbAsk({ request: makePost('hello') })
     expect(res.status).toBe(503)
     const body = await res.json()
     expect(body.error.code).toBe('AI_NOT_CONFIGURED')
@@ -197,90 +248,98 @@ describe('GET /api/widget/kb-ask', () => {
     mockEnforceAiTokenBudget.mockRejectedValue(
       new TierLimitError({ limit: 'aiTokensPerMonth', message: "You've used your AI budget" })
     )
-    const res = await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    const res = await handleKbAsk({ request: makePost('hello') })
     expect(res.status).toBe(402)
     const body = await res.json()
     expect(body.error.code).toBe('TIER_LIMIT_EXCEEDED')
     expect(body.error.message).toBe("You've used your AI budget")
-    // No streamed model answer: retrieval and synthesis never run.
     expect(mockRetrieve).not.toHaveBeenCalled()
     expect(mockSynthesize).not.toHaveBeenCalled()
   })
 
   it('checks the ai token budget after the rate limit but before retrieval', async () => {
     mockIncrementBucket.mockResolvedValue({ count: KB_ASK_RATE_LIMIT + 1 })
-    await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    await handleKbAsk({ request: makePost('hello') })
     expect(mockEnforceAiTokenBudget).not.toHaveBeenCalled()
   })
 
-  it('streams versioned sources, delta, and final events', async () => {
-    mockSynthesize.mockImplementation(async (params: { onAnswerDelta?: (d: string) => void }) => {
-      params.onAnswerDelta?.('Do the ')
-      params.onAnswerDelta?.('thing.')
-      return { kind: 'grounded', answer: 'Do the thing.', sources: [{ articleId: 'kb_article_1' }] }
-    })
+  it('streams RUN_STARTED, STATE_SNAPSHOT, forwarded model chunks, then RUN_FINISHED.result', async () => {
+    mockSynthesize.mockImplementation(
+      async (params: { wireSink?: (chunk: Record<string, unknown>) => void }) => {
+        params.wireSink?.({ type: 'TEXT_MESSAGE_START', messageId: 'm1' })
+        params.wireSink?.({
+          type: 'TEXT_MESSAGE_CONTENT',
+          messageId: 'm1',
+          delta: '{"answer":"Do the',
+        })
+        params.wireSink?.({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: ' thing."}' })
+        params.wireSink?.({ type: 'TEXT_MESSAGE_END', messageId: 'm1' })
+        return {
+          kind: 'grounded',
+          answer: 'Do the thing.',
+          sources: [{ articleId: 'kb_article_1' }],
+        }
+      }
+    )
 
-    const res = await handleKbAsk({ request: makeRequest({ q: 'how do I do the thing?' }) })
+    const res = await handleKbAsk({ request: makePost('how do I do the thing?') })
     expect(res.status).toBe(200)
     expect(res.headers.get('Content-Type')).toContain('text/event-stream')
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*')
 
-    const frames = parseSse(await res.text())
-    expect(frames.map((f) => f.event)).toEqual([
-      'kb-ask.v1.sources',
-      'kb-ask.v1.delta',
-      'kb-ask.v1.delta',
-      'kb-ask.v1.final',
-    ])
-    expect(frames[0].data).toEqual({
-      sources: [
-        {
-          articleId: 'kb_article_1',
-          title: 'Title kb_article_1',
-          slug: 'slug-kb_article_1',
-          categorySlug: 'general',
-          categoryName: 'General',
-        },
-      ],
+    const chunks = parseAguiSse(await res.text())
+    expect(chunks[0]).toMatchObject({
+      type: 'RUN_STARTED',
+      threadId: 'thread-test',
+      runId: 'run-test',
     })
-    expect(frames[3].data).toEqual({
+    // STATE_SNAPSHOT carries the pre-synthesis source metadata join, first.
+    expect(chunks[1]).toMatchObject({
+      type: 'STATE_SNAPSHOT',
+      snapshot: { sources: [SOURCE_META] },
+    })
+    // The forwarded model chunks land between the snapshot and the terminal frame.
+    expect(chunks.map((c) => c.type)).toEqual([
+      'RUN_STARTED',
+      'STATE_SNAPSHOT',
+      'TEXT_MESSAGE_START',
+      'TEXT_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_END',
+      'RUN_FINISHED',
+    ])
+    const finished = chunks.at(-1) as { type: string; result?: unknown }
+    expect(finished.result).toEqual({
       kind: 'grounded',
       answer: 'Do the thing.',
       sources: [{ articleId: 'kb_article_1' }],
     })
   })
 
-  it('short-circuits on empty retrieval: skips the model, returns a graceful miss with related', async () => {
-    // Nothing cleared the answer floor. The model must NOT run on empty context:
-    // with no articles it can only answer from training, and those ungrounded
-    // deltas would stream to the client before the final no_answer lands. The
-    // related lookup (softer floor, keyed by minScore) still surfaces a near-miss.
+  it('short-circuits on empty retrieval: no snapshot, no model call, RUN_FINISHED miss with related', async () => {
     mockRetrieve.mockImplementation(async (_q: string, opts?: { minScore?: number }) =>
       opts?.minScore !== undefined ? [makeKbArticle('kb_article_9')] : []
     )
 
-    const res = await handleKbAsk({ request: makeRequest({ q: 'gibberish' }) })
-    const frames = parseSse(await res.text())
+    const res = await handleKbAsk({ request: makePost('gibberish') })
+    const chunks = parseAguiSse(await res.text())
 
     expect(mockSynthesize).not.toHaveBeenCalled()
-    // No sources event (nothing retrieved) and no deltas: a single final miss.
-    expect(frames.map((f) => f.event)).toEqual(['kb-ask.v1.final'])
-    expect(frames.at(-1)).toEqual({
-      event: 'kb-ask.v1.final',
-      data: {
-        kind: 'no_answer',
-        answer: MISS_FALLBACK,
-        sources: [],
-        related: [
-          {
-            articleId: 'kb_article_9',
-            title: 'Title kb_article_9',
-            slug: 'slug-kb_article_9',
-            categorySlug: 'general',
-            categoryName: 'General',
-          },
-        ],
-      },
+    // No STATE_SNAPSHOT (nothing retrieved): just the lifecycle pair.
+    expect(chunks.map((c) => c.type)).toEqual(['RUN_STARTED', 'RUN_FINISHED'])
+    expect((chunks.at(-1) as { result?: unknown }).result).toEqual({
+      kind: 'no_answer',
+      answer: MISS_FALLBACK,
+      sources: [],
+      related: [
+        {
+          articleId: 'kb_article_9',
+          title: 'Title kb_article_9',
+          slug: 'slug-kb_article_9',
+          categorySlug: 'general',
+          categoryName: 'General',
+        },
+      ],
     })
   })
 
@@ -288,7 +347,7 @@ describe('GET /api/widget/kb-ask', () => {
     mockRetrieve.mockImplementation(async (_q: string, opts?: { minScore?: number }) =>
       opts?.minScore !== undefined ? [makeKbArticle('kb_article_9')] : []
     )
-    const res = await handleKbAsk({ request: makeRequest({ q: 'gibberish' }) })
+    const res = await handleKbAsk({ request: makePost('gibberish') })
     await res.text()
 
     expect(mockSynthesize).not.toHaveBeenCalled()
@@ -307,8 +366,6 @@ describe('GET /api/widget/kb-ask', () => {
   })
 
   it('reuses the retrieved articles as related suggestions on a no-answer', async () => {
-    // Articles were retrieved but did not answer: they become the suggestions,
-    // with no extra retrieval round-trip.
     mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
     mockSynthesize.mockResolvedValue({
       kind: 'no_answer',
@@ -316,26 +373,30 @@ describe('GET /api/widget/kb-ask', () => {
       sources: [],
     })
 
-    const res = await handleKbAsk({ request: makeRequest({ q: 'nearby topic' }) })
-    const frames = parseSse(await res.text())
-    const final = frames.at(-1)?.data as { kind: string; related: Array<{ articleId: string }> }
+    const res = await handleKbAsk({ request: makePost('nearby topic') })
+    const chunks = parseAguiSse(await res.text())
+    const result = (
+      chunks.at(-1) as { result?: { kind: string; related: Array<{ articleId: string }> } }
+    ).result!
 
-    expect(final.kind).toBe('no_answer')
-    expect(final.related.map((r) => r.articleId)).toEqual(['kb_article_1'])
+    expect(result.kind).toBe('no_answer')
+    expect(result.related.map((r) => r.articleId)).toEqual(['kb_article_1'])
     // The retrieved set was reused; no second retrieval call.
     expect(mockRetrieve).toHaveBeenCalledTimes(1)
   })
 
-  it('emits a versioned error event when synthesis fails', async () => {
+  it('emits a RUN_ERROR frame when synthesis fails', async () => {
     mockSynthesize.mockRejectedValue(new Error('provider down'))
-    const res = await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
-    const frames = parseSse(await res.text())
-    expect(frames.at(-1)?.event).toBe('kb-ask.v1.error')
-    expect((frames.at(-1)?.data as { code: string }).code).toBe('SYNTHESIS_FAILED')
+    const res = await handleKbAsk({ request: makePost('hello') })
+    const chunks = parseAguiSse(await res.text())
+    const last = chunks.at(-1) as { type: string; code?: string }
+    expect(last.type).toBe('RUN_ERROR')
+    expect(last.code).toBe('SYNTHESIS_FAILED')
   })
 
   it('retrieves with the public audience and an anonymous viewer for unidentified callers', async () => {
-    await handleKbAsk({ request: makeRequest({ q: 'hello' }) })
+    const res = await handleKbAsk({ request: makePost('hello') })
+    await res.text()
     expect(mockRetrieve).toHaveBeenCalledWith('hello', {
       audience: 'public',
       viewer: ANONYMOUS_ACTOR,

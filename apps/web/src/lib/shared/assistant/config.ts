@@ -195,7 +195,7 @@ export const ASSISTANT_TONE_CATALOGUE = {
     labelMessageId: 'assistant.voice.tone.warm.label',
     descriptionMessageId: 'assistant.voice.tone.warm.description',
     directive:
-      'Use a warm, approachable tone. Be empathetic without over-apologizing or sounding overly enthusiastic.',
+      "Use a warm, approachable tone: write in the first person, use contractions, and acknowledge how the customer feels before getting to the answer ('I can see how frustrating that is'). Stay genuine — no over-apologizing, no forced enthusiasm.",
   },
   balanced: {
     id: 'balanced',
@@ -209,7 +209,7 @@ export const ASSISTANT_TONE_CATALOGUE = {
     labelMessageId: 'assistant.voice.tone.professional.label',
     descriptionMessageId: 'assistant.voice.tone.professional.description',
     directive:
-      'Use a polished, professional tone. Stay natural and direct; do not sound legalistic or impersonal.',
+      'Use a polished, professional tone: structured, direct sentences with no exclamation marks, no small talk, and feelings acknowledged at most once, briefly. Stay natural — never legalistic or robotic.',
   },
 } as const satisfies AssistantPresetCatalogue<AssistantTone>
 
@@ -219,7 +219,7 @@ export const ASSISTANT_RESPONSE_LENGTH_CATALOGUE = {
     labelMessageId: 'assistant.voice.responseLength.brief.label',
     descriptionMessageId: 'assistant.voice.responseLength.brief.description',
     directive:
-      'Prefer the shortest complete answer. Usually use one short paragraph or a compact list.',
+      'Keep replies short: 1-3 sentences, or a compact list when steps are unavoidable. No preamble, no recap of the question, no closing filler — lead with the answer and stop.',
   },
   balanced: {
     id: 'balanced',
@@ -233,7 +233,7 @@ export const ASSISTANT_RESPONSE_LENGTH_CATALOGUE = {
     labelMessageId: 'assistant.voice.responseLength.detailed.label',
     descriptionMessageId: 'assistant.voice.responseLength.detailed.description',
     directive:
-      'Give a fuller explanation and ordered steps when the request benefits from them. Do not add detail unrelated to the request.',
+      'Give a thorough answer: a one-line framing of the situation, ordered steps where applicable, and the relevant caveats, alternatives, or what-to-expect-next. Prefer completeness over brevity, but never pad with detail unrelated to the request.',
   },
 } as const satisfies AssistantPresetCatalogue<AssistantResponseLength>
 

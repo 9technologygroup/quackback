@@ -90,7 +90,7 @@ function textThenError(message: string) {
 function toolThenError(message: string) {
   return (async function* () {
     yield { type: 'RUN_STARTED' }
-    yield { type: 'TOOL_CALL_START', toolCallName: 'search_knowledge' }
+    yield { type: 'TOOL_CALL_START', toolCallName: 'search' }
     yield { type: 'RUN_ERROR', message }
   })()
 }

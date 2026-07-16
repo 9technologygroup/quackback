@@ -14,10 +14,12 @@
  * catalogue; preview always classifies exactly one, possibly-unsaved
  * definition) and only reach here once they're committed to spending a call.
  */
-import type OpenAI from 'openai'
-import { stripCodeFences, structuredOutputProviderOptions } from '@/lib/server/domains/ai/config'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
+import { config } from '@/lib/server/config'
+import { structuredOutputProviderOptions } from '@/lib/server/domains/ai/config'
+import { createUsageLoggingMiddleware } from '@/lib/server/domains/ai/usage-middleware'
 
 /**
  * Bounds any transcript handed to the classifier call, real conversation or
@@ -82,31 +84,35 @@ export function renderAttributeCatalogue(
     .join('\n\n')
 }
 
-interface RawClassificationResult {
-  key?: unknown
-  optionId?: unknown
-  reasoning?: unknown
-}
-
-/** Parse + validate the model's raw response into typed rows; malformed shapes yield []. */
-function parseClassificationResponse(responseText: string): RawClassificationResult[] {
-  let parsed: { results?: unknown }
-  try {
-    parsed = JSON.parse(stripCodeFences(responseText))
-  } catch {
-    return []
-  }
-  return Array.isArray(parsed.results) ? (parsed.results as RawClassificationResult[]) : []
-}
+/**
+ * Deliberately PERMISSIVE: a shape mismatch (missing/extra fields, wrong
+ * types) degrades to `{ results: [] }` via `.catch` rather than throwing, so
+ * a malformed-but-parseable model response reproduces the old
+ * parse-fail-or-empty → `[]` behavior. A genuine call failure (network,
+ * provider error, nothing to parse at all) still rejects the `chat()` call
+ * itself and is NOT caught here — see `runClassificationCall`'s doc.
+ */
+const ClassificationResponseSchema = z
+  .object({
+    results: z
+      .array(
+        z.object({
+          key: z.string().optional(),
+          optionId: z.string().nullable().optional(),
+          reasoning: z.string().optional(),
+        })
+      )
+      .catch([]),
+  })
+  .catch({ results: [] })
 
 export interface RunClassificationCallParams {
-  openai: OpenAI
   model: string
   definitions: readonly ClassificationDefinitionInput[]
   /** Rendered transcript text — callers own their own truncation/formatting
    *  (a full conversation vs. a single ephemeral sample message differ). */
   transcript: string
-  /** Forwarded verbatim to `withUsageLogging`'s `metadata` field. */
+  /** Forwarded verbatim to the usage-logging middleware's `metadata` field. */
   usageMetadata: Record<string, unknown>
 }
 
@@ -123,7 +129,7 @@ export interface RunClassificationCallParams {
 export async function runClassificationCall(
   params: RunClassificationCallParams
 ): Promise<ClassificationCallResult[]> {
-  const { openai, model, definitions, transcript, usageMetadata } = params
+  const { model, definitions, transcript, usageMetadata } = params
 
   const userContent = [
     'Attributes to classify:',
@@ -133,37 +139,26 @@ export async function runClassificationCall(
     transcript,
   ].join('\n')
 
-  const completion = await withUsageLogging(
-    {
-      pipelineStep: 'classification',
-      callType: 'chat_completion',
-      model,
-      metadata: usageMetadata,
-    },
-    () =>
-      withRetry(() =>
-        openai.chat.completions.create({
-          model,
-          messages: [
-            { role: 'system', content: CLASSIFICATION_SYSTEM_PROMPT },
-            { role: 'user', content: userContent },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.1,
-          max_tokens: 1500,
-          ...structuredOutputProviderOptions(),
-        })
-      ),
-    (r) => ({
-      inputTokens: r.usage?.prompt_tokens ?? 0,
-      outputTokens: r.usage?.completion_tokens,
-      totalTokens: r.usage?.total_tokens ?? 0,
-    })
-  )
+  const object = await chat({
+    adapter: openaiCompatibleText(model, {
+      baseURL: config.openaiBaseUrl!,
+      apiKey: config.openaiApiKey!,
+    }),
+    systemPrompts: [CLASSIFICATION_SYSTEM_PROMPT],
+    messages: [{ role: 'user', content: userContent }],
+    outputSchema: ClassificationResponseSchema,
+    stream: false,
+    modelOptions: { max_tokens: 1500, ...structuredOutputProviderOptions() },
+    middleware: [
+      createUsageLoggingMiddleware({
+        pipelineStep: 'classification',
+        model,
+        metadata: usageMetadata,
+      }),
+    ],
+  })
 
-  const responseText = completion.choices?.[0]?.message?.content
-  if (!responseText) return []
-  const rawResults = parseClassificationResponse(responseText)
+  const rawResults = object.results
   if (rawResults.length === 0) return []
 
   const defsByKey = new Map(definitions.map((d) => [d.key, d]))

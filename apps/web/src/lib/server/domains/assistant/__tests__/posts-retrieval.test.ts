@@ -13,9 +13,11 @@ vi.mock('@/lib/server/db', () => ({
     select: vi.fn(() => ({
       from: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({
-              limit: (...args: unknown[]) => mockLimit(...args),
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: (...args: unknown[]) => mockLimit(...args),
+              }),
             }),
           }),
         }),
@@ -27,6 +29,10 @@ vi.mock('@/lib/server/db', () => ({
     slug: 'slug',
     access: 'access',
     deletedAt: 'board_deleted_at',
+  },
+  postStatuses: {
+    id: 'post_status_id',
+    name: 'post_status_name',
   },
   posts: {
     id: 'id',
@@ -127,6 +133,7 @@ describe('retrievePosts', () => {
         title: 'Post post_1',
         content: 'post body',
         boardSlug: 'general',
+        statusName: null,
         score: 0.82,
         isPublic: true,
         updatedAt: new Date('2026-06-01T00:00:00.000Z'),

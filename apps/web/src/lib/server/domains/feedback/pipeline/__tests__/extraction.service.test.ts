@@ -71,34 +71,35 @@ vi.mock('@/lib/server/db', () => ({
   })),
 }))
 
-const mockOpenAI = {
-  chat: {
-    completions: {
-      create: vi.fn(),
-    },
-  },
-}
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
 
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: vi.fn(() => mockOpenAI),
-  stripCodeFences: vi.fn((s: string) => s.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '')),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+
+const mockCreateUsageLoggingMiddleware = vi.fn((..._args: unknown[]) => ({
+  name: 'ai-usage-logging',
+}))
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: (...args: unknown[]) => mockCreateUsageLoggingMiddleware(...args),
 }))
 
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: vi.fn(() => 'test-model'),
   getEmbeddingModel: vi.fn(() => 'test-embedding-model'),
-}))
-
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: vi.fn((fn: () => Promise<unknown>) =>
-    fn().then((result: unknown) => ({ result, retryCount: 0 }))
-  ),
-}))
-
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
-    fn().then(({ result }) => result)
-  ),
 }))
 
 vi.mock('../pipeline-log', () => ({
@@ -132,6 +133,8 @@ describe('extraction.service', () => {
     vi.clearAllMocks()
     // Default: plan allows extraction. Disabled-path tests override per-case.
     mockGetTierLimits.mockResolvedValue({ features: { aiFeedbackExtraction: true } })
+    mockConfig.openaiApiKey = 'test-key'
+    mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   })
 
   const rawItemId = 'raw_item_123' as RawFeedbackItemId
@@ -147,30 +150,21 @@ describe('extraction.service', () => {
   it('should extract signals and enqueue interpret jobs', async () => {
     mockFindFirst.mockResolvedValueOnce(mockItem)
     mockShouldExtract.mockResolvedValueOnce({ extract: true, tier: 2, reason: 'ok' })
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [
+    mockChat.mockResolvedValueOnce({
+      signals: [
         {
-          message: {
-            content: JSON.stringify({
-              signals: [
-                {
-                  signalType: 'feature_request',
-                  summary: 'CSV export needed',
-                  evidence: ['We need CSV export'],
-                  confidence: 0.9,
-                },
-                {
-                  signalType: 'usability_issue',
-                  summary: 'Data portability',
-                  evidence: ['export data'],
-                  confidence: 0.7,
-                },
-              ],
-            }),
-          },
+          signalType: 'feature_request',
+          summary: 'CSV export needed',
+          evidence: ['We need CSV export'],
+          confidence: 0.9,
+        },
+        {
+          signalType: 'usability_issue',
+          summary: 'Data portability',
+          evidence: ['export data'],
+          confidence: 0.7,
         },
       ],
-      usage: { prompt_tokens: 100, completion_tokens: 50 },
     })
 
     const { extractSignals } = await import('../extraction.service')
@@ -210,17 +204,26 @@ describe('extraction.service', () => {
       })
     )
 
-    // Verify AI usage logging
-    const { withUsageLogging } = await import('@/lib/server/domains/ai/usage-log')
-    expect(withUsageLogging).toHaveBeenCalledWith(
+    // Verify AI usage logging middleware was wired with the right pipeline step
+    expect(mockCreateUsageLoggingMiddleware).toHaveBeenCalledWith(
       expect.objectContaining({
         pipelineStep: 'extraction',
-        callType: 'chat_completion',
         rawFeedbackItemId: rawItemId,
-      }),
-      expect.any(Function),
-      expect.any(Function)
+        metadata: expect.objectContaining({ promptVersion: 'v1' }),
+      })
     )
+
+    // Verify chat() was called with the right shape: no temperature, max_tokens not max_completion_tokens
+    expect(mockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [{ role: 'user', content: 'mocked extraction prompt' }],
+        stream: false,
+        modelOptions: expect.objectContaining({ max_tokens: 2000 }),
+      })
+    )
+    const callArgs = mockChat.mock.calls[0][0] as { modelOptions: Record<string, unknown> }
+    expect(callArgs.modelOptions).not.toHaveProperty('temperature')
+    expect(callArgs.modelOptions).not.toHaveProperty('max_completion_tokens')
   })
 
   it('should skip when quality gate rejects', async () => {
@@ -230,8 +233,8 @@ describe('extraction.service', () => {
     const { extractSignals } = await import('../extraction.service')
     await extractSignals(rawItemId)
 
-    // Should not call LLM
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    // Should not call the LLM
+    expect(mockChat).not.toHaveBeenCalled()
     // Should mark as completed
     expect(updateSetCalls.length).toBeGreaterThanOrEqual(2)
     const lastSet = updateSetCalls[updateSetCalls.length - 1][0] as Record<string, unknown>
@@ -278,7 +281,7 @@ describe('extraction.service', () => {
     const { extractSignals } = await import('../extraction.service')
     await extractSignals(rawItemId)
 
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
     expect(mockShouldExtract).not.toHaveBeenCalled()
     const states = updateSetCalls.map((c) => (c[0] as { processingState?: string }).processingState)
     expect(states).toEqual(['completed'])
@@ -295,7 +298,7 @@ describe('extraction.service', () => {
     const { extractSignals } = await import('../extraction.service')
     await extractSignals(rawItemId)
 
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
     const states = updateSetCalls.map((c) => (c[0] as { processingState?: string }).processingState)
     expect(states).toEqual(['dismissed'])
   })
@@ -303,20 +306,11 @@ describe('extraction.service', () => {
   it('should filter low-confidence signals and log filter counts', async () => {
     mockFindFirst.mockResolvedValueOnce(mockItem)
     mockShouldExtract.mockResolvedValueOnce({ extract: true, tier: 2, reason: 'ok' })
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [
-        {
-          message: {
-            content: JSON.stringify({
-              signals: [
-                { signalType: 'feature_request', summary: 'high', evidence: [], confidence: 0.8 },
-                { signalType: 'question', summary: 'low', evidence: [], confidence: 0.3 },
-              ],
-            }),
-          },
-        },
+    mockChat.mockResolvedValueOnce({
+      signals: [
+        { signalType: 'feature_request', summary: 'high', evidence: [], confidence: 0.8 },
+        { signalType: 'question', summary: 'low', evidence: [], confidence: 0.3 },
       ],
-      usage: {},
     })
 
     const { extractSignals } = await import('../extraction.service')
@@ -345,22 +339,13 @@ describe('extraction.service', () => {
   it('should limit to 5 signals max', async () => {
     mockFindFirst.mockResolvedValueOnce(mockItem)
     mockShouldExtract.mockResolvedValueOnce({ extract: true, tier: 2, reason: 'ok' })
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [
-        {
-          message: {
-            content: JSON.stringify({
-              signals: Array.from({ length: 7 }, (_, i) => ({
-                signalType: 'feature_request',
-                summary: `signal ${i}`,
-                evidence: [],
-                confidence: 0.9,
-              })),
-            }),
-          },
-        },
-      ],
-      usage: {},
+    mockChat.mockResolvedValueOnce({
+      signals: Array.from({ length: 7 }, (_, i) => ({
+        signalType: 'feature_request',
+        summary: `signal ${i}`,
+        evidence: [],
+        confidence: 0.9,
+      })),
     })
 
     const { extractSignals } = await import('../extraction.service')
@@ -370,37 +355,34 @@ describe('extraction.service', () => {
     expect(signalValues).toHaveLength(5)
   })
 
-  it('should parse JSON wrapped in code fences', async () => {
+  it('captures usage tokens onto the raw item row from the chat() middleware', async () => {
     mockFindFirst.mockResolvedValueOnce(mockItem)
     mockShouldExtract.mockResolvedValueOnce({ extract: true, tier: 2, reason: 'ok' })
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [
-        {
-          message: {
-            content:
-              '```json\n' +
-              JSON.stringify({
-                signals: [
-                  { signalType: 'bug_report', summary: 'test', evidence: [], confidence: 0.8 },
-                ],
-              }) +
-              '\n```',
-          },
-        },
-      ],
-      usage: {},
-    })
+    mockChat.mockImplementationOnce(
+      async (args: { middleware: Array<{ onUsage?: (...a: unknown[]) => void }> }) => {
+        for (const mw of args.middleware) {
+          mw.onUsage?.({}, { promptTokens: 120, completionTokens: 40, totalTokens: 160 })
+        }
+        return {
+          signals: [{ signalType: 'bug_report', summary: 'test', evidence: [], confidence: 0.8 }],
+        }
+      }
+    )
 
     const { extractSignals } = await import('../extraction.service')
     await extractSignals(rawItemId)
 
-    expect(insertValuesCalls.length).toBe(1)
+    const interpretingSet = updateSetCalls.find(
+      (call) => (call[0] as Record<string, unknown>).processingState === 'interpreting'
+    )?.[0] as Record<string, unknown>
+    expect(interpretingSet.extractionInputTokens).toBe(120)
+    expect(interpretingSet.extractionOutputTokens).toBe(40)
   })
 
   it('should mark as failed on LLM error and log extraction.failed', async () => {
     mockFindFirst.mockResolvedValueOnce(mockItem)
     mockShouldExtract.mockResolvedValueOnce({ extract: true, tier: 2, reason: 'ok' })
-    mockOpenAI.chat.completions.create.mockRejectedValueOnce(new Error('API error'))
+    mockChat.mockRejectedValueOnce(new Error('API error'))
 
     const { extractSignals } = await import('../extraction.service')
     await expect(extractSignals(rawItemId)).rejects.toThrow('API error')
@@ -424,12 +406,38 @@ describe('extraction.service', () => {
     )
   })
 
+  it('marks a schema-invalid model response as terminal even with attempts left', async () => {
+    // chat() throws with a distinguishing `.code` when the response doesn't
+    // validate against outputSchema — mirrors the old hand-rolled
+    // 'missing signals array' / JSON-parse-failure UnrecoverableErrors,
+    // which were always terminal regardless of attempts remaining.
+    mockFindFirst.mockResolvedValueOnce(mockItem)
+    mockShouldExtract.mockResolvedValueOnce({ extract: true, tier: 2, reason: 'ok' })
+    const schemaErr = Object.assign(new Error('response did not match schema'), {
+      code: 'structured-output-validation-failed',
+    })
+    mockChat.mockRejectedValueOnce(schemaErr)
+
+    const { extractSignals } = await import('../extraction.service')
+    await expect(extractSignals(rawItemId, { currentAttempt: 1, maxAttempts: 3 })).rejects.toThrow()
+
+    const lastSet = updateSetCalls[updateSetCalls.length - 1][0] as Record<string, unknown>
+    expect(lastSet.processingState).toBe('failed')
+
+    const { logPipelineEvent } = await import('../pipeline-log')
+    expect(logPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'extraction.failed',
+        detail: expect.objectContaining({ terminal: true }),
+      })
+    )
+  })
+
   it('should throw when AI not configured (for an entitled, ready item)', async () => {
     // The model check now runs AFTER the item/state/entitlement gates, so an
     // entitled, ready item reaches it and throws when the client is missing.
     mockFindFirst.mockResolvedValueOnce({ ...mockItem })
-    const { getOpenAI } = await import('@/lib/server/domains/ai/config')
-    vi.mocked(getOpenAI).mockReturnValueOnce(null)
+    mockConfig.openaiApiKey = undefined
 
     const { extractSignals } = await import('../extraction.service')
     await expect(extractSignals(rawItemId)).rejects.toThrow('not configured')
@@ -441,7 +449,7 @@ describe('extraction.service', () => {
     // state BullMQ's guard checks on the next attempt, not terminal 'failed'.
     mockFindFirst.mockResolvedValueOnce(mockItem)
     mockShouldExtract.mockResolvedValueOnce({ extract: true, tier: 2, reason: 'ok' })
-    mockOpenAI.chat.completions.create.mockRejectedValueOnce(new Error('transient API error'))
+    mockChat.mockRejectedValueOnce(new Error('transient API error'))
 
     const { extractSignals } = await import('../extraction.service')
     await expect(extractSignals(rawItemId, { currentAttempt: 1, maxAttempts: 3 })).rejects.toThrow(
@@ -468,7 +476,7 @@ describe('extraction.service', () => {
     // UnrecoverableError) LLM error.
     mockFindFirst.mockResolvedValueOnce(mockItem)
     mockShouldExtract.mockResolvedValueOnce({ extract: true, tier: 2, reason: 'ok' })
-    mockOpenAI.chat.completions.create.mockRejectedValueOnce(new Error('final API error'))
+    mockChat.mockRejectedValueOnce(new Error('final API error'))
 
     const { extractSignals } = await import('../extraction.service')
     await expect(extractSignals(rawItemId, { currentAttempt: 3, maxAttempts: 3 })).rejects.toThrow(
@@ -488,9 +496,9 @@ describe('extraction.service', () => {
   })
 
   it('should throw UnrecoverableError when client is present but extraction model is null', async () => {
-    // Client is non-null (default mock returns mockOpenAI) but the model is
-    // disabled — e.g. AI_EXTRACTION_MODEL=off. Rejects before transitioning
-    // the item to `extracting` (no state write / attempt-count bump).
+    // Client is configured (default mockConfig) but the model is disabled —
+    // e.g. AI_EXTRACTION_MODEL=off. Rejects before transitioning the item to
+    // `extracting` (no state write / attempt-count bump).
     mockFindFirst.mockResolvedValueOnce({ ...mockItem })
     const { getChatModel } = await import('@/lib/server/domains/ai/models')
     vi.mocked(getChatModel).mockReturnValueOnce(null)

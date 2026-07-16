@@ -10,37 +10,37 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const mockOpenAI = {
-  chat: { completions: { create: vi.fn() } },
-}
-
 const mockIsFeatureEnabled = vi.fn()
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
 }))
 
-const mockGetOpenAI = vi.fn(() => mockOpenAI as unknown)
-const mockStructuredOutputProviderOptions = vi.fn(() => ({}))
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
+
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: () => mockGetOpenAI(),
-  stripCodeFences: (s: string) => s.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, ''),
-  structuredOutputProviderOptions: () => mockStructuredOutputProviderOptions(),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: () => ({ name: 'ai-usage-logging' }),
 }))
 
 const mockGetChatModel = vi.fn((_feature?: string): string | null => 'test-classification-model')
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: (feature: string) => mockGetChatModel(feature),
-}))
-
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: (fn: () => Promise<unknown>) =>
-    fn().then((result: unknown) => ({ result, retryCount: 0 })),
-}))
-
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
-    fn().then(({ result }) => result)
-  ),
 }))
 
 const mockEnforceAiTokenBudget = vi.fn()
@@ -149,18 +149,11 @@ function fakeDefinition(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function chatResponse(json: unknown, overrides: Record<string, unknown> = {}) {
-  return {
-    choices: [{ message: { content: JSON.stringify(json) } }],
-    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-    ...overrides,
-  }
-}
-
 beforeEach(() => {
   vi.clearAllMocks()
+  mockConfig.openaiApiKey = 'test-key'
+  mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   mockIsFeatureEnabled.mockResolvedValue(true)
-  mockGetOpenAI.mockReturnValue(mockOpenAI as unknown)
   mockGetChatModel.mockReturnValue('test-classification-model')
   mockEnforceAiTokenBudget.mockResolvedValue(undefined)
   mockListConversationAttributes.mockResolvedValue([fakeDefinition()])
@@ -181,14 +174,14 @@ describe('classifyConversationAttributes: gating', () => {
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(result).toEqual([])
     expect(mockListConversationAttributes).not.toHaveBeenCalled()
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('is a no-op when the AI client is not configured', async () => {
-    mockGetOpenAI.mockReturnValue(null)
+    mockConfig.openaiApiKey = undefined
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(result).toEqual([])
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('is a no-op when the classification chat model is not configured', async () => {
@@ -204,14 +197,14 @@ describe('classifyConversationAttributes: gating', () => {
     )
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(result).toEqual([])
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('is a no-op when there are no enabled (aiDetect) definitions', async () => {
     mockListConversationAttributes.mockResolvedValue([])
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(result).toEqual([])
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('narrows to detectOnClose definitions for the teammate_close trigger', async () => {
@@ -219,11 +212,11 @@ describe('classifyConversationAttributes: gating', () => {
       fakeDefinition({ key: 'issue_type', detectOnClose: false }),
       fakeDefinition({ key: 'sentiment', detectOnClose: true }),
     ])
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({ results: [{ key: 'sentiment', optionId: 'opt_billing', reasoning: 'x' }] })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'sentiment', optionId: 'opt_billing', reasoning: 'x' }],
+    })
     await classifyConversationAttributes(conversationId, { trigger: 'teammate_close' })
-    const userMessage = mockOpenAI.chat.completions.create.mock.calls[0][0].messages.find(
+    const userMessage = mockChat.mock.calls[0][0].messages.find(
       (m: { role: string }) => m.role === 'user'
     ).content
     expect(userMessage).toContain('sentiment')
@@ -238,14 +231,14 @@ describe('classifyConversationAttributes: gating', () => {
       trigger: 'teammate_close',
     })
     expect(result).toEqual([])
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('is a no-op when the conversation transcript is empty', async () => {
     mockLoadConversationThread.mockResolvedValue([])
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(result).toEqual([])
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   // Phase 2 live re-check's restrictToKeys filter (AI-ATTRIBUTES-PARITY-
@@ -261,14 +254,14 @@ describe('classifyConversationAttributes: gating', () => {
     })
 
     it('classifies only the definitions whose key is in restrictToKeys', async () => {
-      mockOpenAI.chat.completions.create.mockResolvedValue(
-        chatResponse({ results: [{ key: 'sentiment', optionId: 'opt_billing', reasoning: 'x' }] })
-      )
+      mockChat.mockResolvedValue({
+        results: [{ key: 'sentiment', optionId: 'opt_billing', reasoning: 'x' }],
+      })
       await classifyConversationAttributes(conversationId, {
         trigger: 'live_recheck',
         restrictToKeys: ['sentiment'],
       })
-      const userMessage = mockOpenAI.chat.completions.create.mock.calls[0][0].messages.find(
+      const userMessage = mockChat.mock.calls[0][0].messages.find(
         (m: { role: string }) => m.role === 'user'
       ).content
       expect(userMessage).toContain('sentiment')
@@ -281,20 +274,18 @@ describe('classifyConversationAttributes: gating', () => {
         restrictToKeys: ['not_an_enabled_key'],
       })
       expect(result).toEqual([])
-      expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+      expect(mockChat).not.toHaveBeenCalled()
     })
 
     it('classifies the full enabled catalogue when restrictToKeys is omitted', async () => {
-      mockOpenAI.chat.completions.create.mockResolvedValue(
-        chatResponse({
-          results: [
-            { key: 'issue_type', optionId: 'opt_billing', reasoning: 'x' },
-            { key: 'sentiment', optionId: 'opt_billing', reasoning: 'y' },
-          ],
-        })
-      )
+      mockChat.mockResolvedValue({
+        results: [
+          { key: 'issue_type', optionId: 'opt_billing', reasoning: 'x' },
+          { key: 'sentiment', optionId: 'opt_billing', reasoning: 'y' },
+        ],
+      })
       await classifyConversationAttributes(conversationId, { trigger: 'live_recheck' })
-      const userMessage = mockOpenAI.chat.completions.create.mock.calls[0][0].messages.find(
+      const userMessage = mockChat.mock.calls[0][0].messages.find(
         (m: { role: string }) => m.role === 'user'
       ).content
       expect(userMessage).toContain('sentiment')
@@ -313,24 +304,22 @@ describe('classifyConversationAttributes: gating', () => {
         restrictToKeys: ['sentiment'],
       })
       expect(result).toEqual([])
-      expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+      expect(mockChat).not.toHaveBeenCalled()
     })
   })
 })
 
 describe('classifyConversationAttributes: happy path', () => {
   it('classifies, writes through setConversationAttribute with src ai, and reports applied', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        results: [
-          {
-            key: 'issue_type',
-            optionId: 'opt_billing',
-            reasoning: 'Customer was charged twice.',
-          },
-        ],
-      })
-    )
+    mockChat.mockResolvedValue({
+      results: [
+        {
+          key: 'issue_type',
+          optionId: 'opt_billing',
+          reasoning: 'Customer was charged twice.',
+        },
+      ],
+    })
 
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
 
@@ -345,29 +334,23 @@ describe('classifyConversationAttributes: happy path', () => {
     ])
   })
 
-  it('logs usage under the classification pipeline step with conversationId + trigger metadata', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({ results: [{ key: 'issue_type', optionId: 'opt_billing', reasoning: 'x' }] })
-    )
-    const { withUsageLogging } = await import('@/lib/server/domains/ai/usage-log')
+  it('passes the classification pipeline step and conversationId + trigger metadata to chat()', async () => {
+    mockChat.mockResolvedValue({
+      results: [{ key: 'issue_type', optionId: 'opt_billing', reasoning: 'x' }],
+    })
     await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
-    expect(withUsageLogging).toHaveBeenCalledWith(
+    expect(mockChat).toHaveBeenCalledWith(
       expect.objectContaining({
-        pipelineStep: 'classification',
-        callType: 'chat_completion',
-        metadata: expect.objectContaining({ conversationId, trigger: 'handoff' }),
-      }),
-      expect.any(Function),
-      expect.any(Function)
+        stream: false,
+        middleware: expect.any(Array),
+      })
     )
   })
 
   it('records one combined internal note for the applied writes this run', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        results: [{ key: 'issue_type', optionId: 'opt_billing', reasoning: 'Charged twice.' }],
-      })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'issue_type', optionId: 'opt_billing', reasoning: 'Charged twice.' }],
+    })
     await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
 
     expect(mockDb.insert).toHaveBeenCalledTimes(1)
@@ -381,31 +364,27 @@ describe('classifyConversationAttributes: happy path', () => {
   })
 
   it('drops a result whose optionId is not one of the definition options', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        results: [{ key: 'issue_type', optionId: 'opt_not_real', reasoning: 'x' }],
-      })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'issue_type', optionId: 'opt_not_real', reasoning: 'x' }],
+    })
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(mockSetConversationAttribute).not.toHaveBeenCalled()
     expect(result).toEqual([])
   })
 
   it('drops a result whose key is not in the enabled catalogue', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        results: [{ key: 'not_a_real_attribute', optionId: 'opt_billing', reasoning: 'x' }],
-      })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'not_a_real_attribute', optionId: 'opt_billing', reasoning: 'x' }],
+    })
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(mockSetConversationAttribute).not.toHaveBeenCalled()
     expect(result).toEqual([])
   })
 
   it('treats a null optionId as "nothing applies" and skips the write when already unset', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({ results: [{ key: 'issue_type', optionId: null, reasoning: 'Unclear.' }] })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'issue_type', optionId: null, reasoning: 'Unclear.' }],
+    })
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(mockSetConversationAttribute).not.toHaveBeenCalled()
     expect(result).toEqual([])
@@ -418,11 +397,9 @@ describe('classifyConversationAttributes: happy path', () => {
     mockConversationRow.current = {
       customAttributes: { issue_type: { v: 'opt_billing', src: 'ai', at: '2025-01-01' } },
     }
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        results: [{ key: 'issue_type', optionId: 'opt_billing', reasoning: 'Still billing.' }],
-      })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'issue_type', optionId: 'opt_billing', reasoning: 'Still billing.' }],
+    })
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(mockSetConversationAttribute).not.toHaveBeenCalled()
     expect(mockDb.insert).not.toHaveBeenCalled()
@@ -434,11 +411,9 @@ describe('classifyConversationAttributes: happy path', () => {
       customAttributes: { issue_type: { v: 'opt_billing', src: 'ai', at: '2025-01-01' } },
     }
     mockSetConversationAttribute.mockResolvedValue({})
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        results: [{ key: 'issue_type', optionId: null, reasoning: 'No longer applies.' }],
-      })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'issue_type', optionId: null, reasoning: 'No longer applies.' }],
+    })
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(mockSetConversationAttribute).toHaveBeenCalledWith(
       { conversationId },
@@ -450,23 +425,25 @@ describe('classifyConversationAttributes: happy path', () => {
   })
 
   it('never throws on a malformed model response', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(chatResponse({ notResults: true }))
+    // Simulates what the hub's permissive outputSchema reduces a
+    // shape-mismatched response down to: `{ results: [] }`.
+    mockChat.mockResolvedValue({ results: [] })
     const result = await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     expect(result).toEqual([])
     expect(mockSetConversationAttribute).not.toHaveBeenCalled()
   })
 
   it('never throws when the model call itself rejects', async () => {
-    mockOpenAI.chat.completions.create.mockRejectedValue(new Error('upstream error'))
+    mockChat.mockRejectedValue(new Error('upstream error'))
     await expect(
       classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     ).resolves.toEqual([])
   })
 
   it('uses the bounded Quinn actor identity as the note author', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({ results: [{ key: 'issue_type', optionId: 'opt_billing', reasoning: 'x' }] })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'issue_type', optionId: 'opt_billing', reasoning: 'x' }],
+    })
     await classifyConversationAttributes(conversationId, { trigger: 'handoff' })
     const insertedValues = mockInsertValues.mock.calls[0][0]
     expect(insertedValues.principalId).toBe('principal_quinn')

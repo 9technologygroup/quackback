@@ -18,14 +18,16 @@
  * this is a foreground, admin-invoked action — gating and parsing failures
  * are thrown, not swallowed, so the editor can surface them.
  */
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
+import { config } from '@/lib/server/config'
 import {
-  getOpenAI,
-  stripCodeFences,
+  isAiClientConfigured,
   structuredOutputProviderOptions,
 } from '@/lib/server/domains/ai/config'
+import { createUsageLoggingMiddleware } from '@/lib/server/domains/ai/usage-middleware'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service'
 import { ValidationError } from '@/lib/shared/errors'
@@ -47,6 +49,32 @@ export interface DraftAttributeDescriptionsResult {
   options: { label: string; description: string }[]
 }
 
+/**
+ * Deliberately PERMISSIVE at the field level: a wrong-typed
+ * `attributeDescription` or option `label`/`description` degrades that one
+ * field to `undefined` via `.catch` rather than failing the whole response,
+ * mirroring the old hand-parser's per-field `typeof` guards. `options`
+ * itself is NOT given a `.catch` fallback at the array level — if it's
+ * missing or not an array at all, the outer object's `.catch` kicks in with
+ * `options: undefined`, which `draftAttributeDescriptions` below detects and
+ * turns into the same `VALIDATION_ERROR` the old `Array.isArray` check
+ * threw. A genuine call failure (network, provider error) still rejects the
+ * `chat()` call itself and is not caught here.
+ */
+const DraftDescriptionsSchema = z
+  .object({
+    attributeDescription: z.string().optional().catch(undefined),
+    options: z
+      .array(
+        z.object({
+          label: z.string().optional().catch(undefined),
+          description: z.string().optional().catch(undefined),
+        })
+      )
+      .optional(),
+  })
+  .catch({ options: undefined })
+
 export async function draftAttributeDescriptions(
   input: DraftAttributeDescriptionsInput
 ): Promise<DraftAttributeDescriptionsResult> {
@@ -56,9 +84,8 @@ export async function draftAttributeDescriptions(
       'AI attribute detection is turned off'
     )
   }
-  const openai = getOpenAI()
   const model = getChatModel('classification')
-  if (!openai || !model) {
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) {
     throw new ValidationError('AI_NOT_CONFIGURED', 'AI is not configured')
   }
   await enforceAiTokenBudget()
@@ -76,58 +103,35 @@ export async function draftAttributeDescriptions(
     ...optionLabels.map((l) => `- ${l}`),
   ].join('\n')
 
-  const completion = await withUsageLogging(
-    {
-      pipelineStep: 'classification',
-      callType: 'chat_completion',
-      model,
-      metadata: { pipelineContext: 'attribute_description_draft' },
-    },
-    () =>
-      withRetry(() =>
-        openai.chat.completions.create({
-          model,
-          messages: [
-            { role: 'system', content: DRAFT_SYSTEM_PROMPT },
-            { role: 'user', content: userContent },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.3,
-          max_tokens: 1500,
-          ...structuredOutputProviderOptions(),
-        })
-      ),
-    (r) => ({
-      inputTokens: r.usage?.prompt_tokens ?? 0,
-      outputTokens: r.usage?.completion_tokens,
-      totalTokens: r.usage?.total_tokens ?? 0,
-    })
-  )
+  const object = await chat({
+    adapter: openaiCompatibleText(model, {
+      baseURL: config.openaiBaseUrl!,
+      apiKey: config.openaiApiKey!,
+    }),
+    systemPrompts: [DRAFT_SYSTEM_PROMPT],
+    messages: [{ role: 'user', content: userContent }],
+    outputSchema: DraftDescriptionsSchema,
+    stream: false,
+    modelOptions: { max_tokens: 1500, ...structuredOutputProviderOptions() },
+    middleware: [
+      createUsageLoggingMiddleware({
+        pipelineStep: 'classification',
+        model,
+        metadata: { pipelineContext: 'attribute_description_draft' },
+      }),
+    ],
+  })
 
-  const responseText = completion.choices?.[0]?.message?.content
-  if (!responseText) {
-    throw new ValidationError('VALIDATION_ERROR', 'The model returned no response')
-  }
-
-  let parsed: { attributeDescription?: unknown; options?: unknown }
-  try {
-    parsed = JSON.parse(stripCodeFences(responseText))
-  } catch {
-    throw new ValidationError('VALIDATION_ERROR', 'The model returned an unparseable response')
-  }
-  if (!Array.isArray(parsed.options)) {
+  if (!object.options) {
     throw new ValidationError('VALIDATION_ERROR', 'The model returned an unexpected response shape')
   }
 
-  const attributeDescription =
-    typeof parsed.attributeDescription === 'string' ? parsed.attributeDescription.trim() : ''
+  const attributeDescription = object.attributeDescription?.trim() ?? ''
 
   const byLabel = new Map<string, string>()
-  for (const raw of parsed.options) {
-    if (typeof raw !== 'object' || raw === null) continue
-    const entry = raw as { label?: unknown; description?: unknown }
-    if (typeof entry.label !== 'string') continue
-    byLabel.set(entry.label, typeof entry.description === 'string' ? entry.description.trim() : '')
+  for (const raw of object.options) {
+    if (typeof raw.label !== 'string') continue
+    byLabel.set(raw.label, typeof raw.description === 'string' ? raw.description.trim() : '')
   }
 
   // Re-ordered (and re-keyed) to match the caller's INPUT order — the model's

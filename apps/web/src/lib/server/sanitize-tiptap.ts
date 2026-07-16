@@ -210,8 +210,8 @@ function sanitizeAttrs(
     case 'quackbackEmbed': {
       // A Quackback link embed carries only `{ kind, id }`. `kind` must be one
       // of the embeddable entity types, and `id` must be valid for that kind:
-      //   - post / changelog: a real TypeID (charset + round-trip verified)
-      //   - article:          a help-center article slug (lowercase alphanumeric + hyphens)
+      //   - post / changelog / ticket: a real TypeID (charset + round-trip verified)
+      //   - article:                   a help-center article slug (lowercase alphanumeric + hyphens)
       // Anything else strips attrs → the atom node survives but the serializer
       // renders nothing, so a malformed embed can never display.
       const kind = attrs.kind
@@ -222,7 +222,10 @@ function sanitizeAttrs(
         if (!ARTICLE_SLUG_RE.test(id)) return undefined
         return { kind, id }
       }
-      if ((kind !== 'post' && kind !== 'changelog') || !isValidTypeId(id, kind)) {
+      if (
+        (kind !== 'post' && kind !== 'changelog' && kind !== 'ticket') ||
+        !isValidTypeId(id, kind)
+      ) {
         return undefined
       }
       return { kind, id }

@@ -6,22 +6,49 @@
  */
 
 import { UnrecoverableError } from 'bullmq'
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
+import type { ChatMiddleware } from '@tanstack/ai'
 import { db, eq, rawFeedbackItems, feedbackSignals, sql } from '@/lib/server/db'
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { config } from '@/lib/server/config'
+import {
+  isAiClientConfigured,
+  structuredOutputProviderOptions,
+} from '@/lib/server/domains/ai/config'
+import { createUsageLoggingMiddleware } from '@/lib/server/domains/ai/usage-middleware'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { buildExtractionPrompt } from './prompts/extraction.prompt'
 import { shouldExtract } from './quality-gate.service'
 import { logPipelineEvent } from './pipeline-log'
 import { enqueueFeedbackAiJob } from '../queues/feedback-ai-queue'
 import { logger } from '@/lib/server/logger'
-import type { ExtractionResult, RawFeedbackContent, RawFeedbackItemContextEnvelope } from '../types'
+import type { RawFeedbackContent, RawFeedbackItemContextEnvelope } from '../types'
 import type { RawFeedbackItemId } from '@quackback/ids'
 
 const log = logger.child({ component: 'extraction' })
 
 const EXTRACTION_PROMPT_VERSION = 'v1'
+
+// Mirrors the extraction prompt's contract (prompts/extraction.prompt.ts).
+// Kept permissive on the per-signal fields the old hand-parsed path never
+// actually validated (signalType as a free string, confidence optional,
+// evidence defaulted) — chat()'s outputSchema now enforces the top-level
+// `signals` array where the old code threw UnrecoverableError by hand
+// ('Extraction result missing signals array'), but stays exactly as
+// tolerant as before for the per-signal shape so a borderline model
+// response doesn't newly hard-fail where it used to succeed.
+const ExtractionSignalSchema = z.object({
+  signalType: z.string(),
+  summary: z.string(),
+  implicitNeed: z.string().optional(),
+  evidence: z.array(z.string()).optional(),
+  confidence: z.number().optional(),
+})
+
+const ExtractionResultSchema = z.object({
+  signals: z.array(ExtractionSignalSchema),
+})
 
 /**
  * Extract signals from a raw feedback item.
@@ -76,9 +103,8 @@ export async function extractSignals(
     return
   }
 
-  const openai = getOpenAI()
   const model = getChatModel('extraction')
-  if (!openai || !model) {
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) {
     throw new UnrecoverableError('Extraction model not configured')
   }
 
@@ -164,45 +190,61 @@ export async function extractSignals(
       context,
     })
 
-    const completion = await withUsageLogging(
-      {
-        pipelineStep: 'extraction',
-        callType: 'chat_completion',
-        model,
-        rawFeedbackItemId: rawItemId,
-        metadata: { promptVersion: EXTRACTION_PROMPT_VERSION },
+    // Usage tokens for the raw item's own extractionInputTokens/OutputTokens
+    // columns aren't on chat()'s resolved value (unlike the old completion
+    // object) — captured via a second, local middleware alongside the usage
+    // logger so those columns keep getting populated exactly as before.
+    let capturedInputTokens: number | null = null
+    let capturedOutputTokens: number | null = null
+    const captureUsageMiddleware: ChatMiddleware = {
+      name: 'extraction-usage-capture',
+      onUsage(_ctx, usage) {
+        if (typeof usage.promptTokens === 'number') capturedInputTokens = usage.promptTokens
+        if (typeof usage.completionTokens === 'number')
+          capturedOutputTokens = usage.completionTokens
       },
-      () =>
-        withRetry(() =>
-          openai.chat.completions.create({
-            model,
-            messages: [{ role: 'user', content: prompt }],
-            response_format: { type: 'json_object' },
-            temperature: 0.1,
-            max_completion_tokens: 2000,
-          })
-        ),
-      (r) => ({
-        inputTokens: r.usage?.prompt_tokens ?? 0,
-        outputTokens: r.usage?.completion_tokens,
-        totalTokens: r.usage?.total_tokens ?? 0,
-      })
-    )
-
-    const responseText = completion.choices[0]?.message?.content
-    if (!responseText) {
-      throw new UnrecoverableError('Empty response from extraction model')
     }
 
-    let result: ExtractionResult
+    let result: z.infer<typeof ExtractionResultSchema>
     try {
-      result = JSON.parse(stripCodeFences(responseText))
-    } catch {
-      throw new UnrecoverableError(`Failed to parse extraction JSON: ${responseText.slice(0, 200)}`)
-    }
-
-    if (!result.signals || !Array.isArray(result.signals)) {
-      throw new UnrecoverableError('Extraction result missing signals array')
+      result = await chat({
+        adapter: openaiCompatibleText(model, {
+          baseURL: config.openaiBaseUrl!,
+          apiKey: config.openaiApiKey!,
+        }),
+        messages: [{ role: 'user', content: prompt }],
+        outputSchema: ExtractionResultSchema,
+        stream: false,
+        modelOptions: { max_tokens: 2000, ...structuredOutputProviderOptions() },
+        middleware: [
+          createUsageLoggingMiddleware({
+            pipelineStep: 'extraction',
+            model,
+            rawFeedbackItemId: rawItemId,
+            metadata: { promptVersion: EXTRACTION_PROMPT_VERSION },
+          }),
+          captureUsageMiddleware,
+        ],
+      })
+    } catch (err) {
+      // chat() throws with a distinguishing `.code` when the model's
+      // response didn't validate against outputSchema (or was empty) —
+      // mirrors the old hand-rolled 'Empty response...' /
+      // 'Failed to parse extraction JSON...' / 'missing signals array'
+      // UnrecoverableErrors, which were always terminal regardless of
+      // attempts left. Any other error (network, rate limit, provider 5xx)
+      // stays a plain Error so the retry-attempt accounting below still
+      // applies exactly as before.
+      const code = (err as { code?: unknown } | undefined)?.code
+      if (
+        code === 'structured-output-validation-failed' ||
+        code === 'structured-output-missing-result'
+      ) {
+        throw new UnrecoverableError(
+          `Extraction model returned invalid output: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+      throw err
     }
 
     // Capture all signal types and confidences before filtering for audit
@@ -233,7 +275,7 @@ export async function extractSignals(
             rawFeedbackItemId: rawItemId,
             signalType: s.signalType,
             summary: s.summary,
-            evidence: s.evidence,
+            evidence: s.evidence ?? [],
             implicitNeed: s.implicitNeed,
             extractionConfidence:
               typeof s.confidence === 'number' && !Number.isNaN(s.confidence)
@@ -268,8 +310,8 @@ export async function extractSignals(
       .set({
         processingState: 'interpreting',
         stateChangedAt: new Date(),
-        extractionInputTokens: completion.usage?.prompt_tokens ?? null,
-        extractionOutputTokens: completion.usage?.completion_tokens ?? null,
+        extractionInputTokens: capturedInputTokens,
+        extractionOutputTokens: capturedOutputTokens,
         updatedAt: new Date(),
       })
       .where(eq(rawFeedbackItems.id, rawItemId))

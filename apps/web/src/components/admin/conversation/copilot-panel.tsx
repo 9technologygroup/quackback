@@ -3,8 +3,9 @@
  * conversation OR ticket (COPILOT-SIDEBAR-UX.md; item-scoped per unified
  * inbox §2.9). Renders inside the unified inbox detail panel's "Copilot" tab
  * (inbox-detail-panel.tsx). Streams against POST /api/admin/assistant/copilot
- * (copilot.v1.* SSE events, cloned from the admin assistant sandbox's
- * fetch/SSE/patch-last-turn shape), reuses AssistantAnswer for citation
+ * over TanStack AI's AG-UI protocol (useAguiTurn: the thread is the native
+ * AG-UI message history; RUN_FINISHED.result carries the post-processed
+ * CopilotFinalPayload), reuses AssistantAnswer for citation
  * rendering, and gates any internal-sourced answer behind a hard confirm
  * before it can reach a customer-facing composer (B.4's leak gate) — "Add as
  * note" never confirms, from anywhere.
@@ -65,20 +66,15 @@ import {
   type SourceOption,
   type SourceType,
 } from './copilot-sources'
-import { useSseTurn } from '@/lib/client/hooks/use-sse-turn'
+import { useAguiTurn } from '@/lib/client/hooks/use-agui-turn'
 import { useCopilotTransform } from '@/lib/client/hooks/use-copilot-transform'
-import { extractHttpErrorMessage, GENERIC_ERROR } from '@/lib/client/utils/http-error'
+import { GENERIC_ERROR } from '@/lib/client/utils/http-error'
 import { cn } from '@/lib/shared/utils'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import {
-  COPILOT_EVENTS,
-  type CopilotActivityPayload,
   type CopilotAnswerType,
   type CopilotCitation,
-  type CopilotDeltaPayload,
-  type CopilotErrorPayload,
   type CopilotFinalPayload,
-  type CopilotHistoryEntry,
   type CopilotProposedAction,
   type TransformKind,
 } from '@/lib/shared/assistant/copilot-contract'
@@ -91,7 +87,6 @@ import type { AssistantActivityStatus } from '@/lib/shared/conversation/types'
 import type { InboxItemRef } from '@/lib/shared/inbox/items'
 
 const MAX_QUESTION_CHARS = 4000
-const MAX_HISTORY_ENTRIES = 20
 
 /**
  * Panel-scoped bindings, surfaced in the inbox shortcut help panel. These are
@@ -216,17 +211,6 @@ function useSourceFilter(principalId: string | undefined, visibleTypes: SourceTy
   return { checked, toggle }
 }
 
-function buildHistory(turns: CopilotTurn[]): CopilotHistoryEntry[] {
-  const out: CopilotHistoryEntry[] = []
-  for (const t of turns) {
-    out.push({ role: 'teammate', content: t.question })
-    if (t.status === 'done' && t.answer && !t.suppressed) {
-      out.push({ role: 'copilot', content: t.answer })
-    }
-  }
-  return out.slice(-MAX_HISTORY_ENTRIES)
-}
-
 /** The turn-scoped qualifiers every usage event carries. `internalSourced` is
  *  omitted (not asserted `false`) on an unfinalized turn — the final frame
  *  that carries the server-derived signal never arrived. */
@@ -266,7 +250,12 @@ export function CopilotPanel({
   const [input, setInput] = useState('')
   const [pendingInsert, setPendingInsert] = useState<PendingInsert | null>(null)
   const [saveMacroTurnId, setSaveMacroTurnId] = useState<string | null>(null)
-  const { start, stop } = useSseTurn()
+  const {
+    start,
+    stop,
+    clear: clearThread,
+    rewindToTurn,
+  } = useAguiTurn({ url: '/api/admin/assistant/copilot' })
   // Answer rewrites run independently from the ask/answer stream, so changing
   // a prior answer never aborts a follow-up question.
   const runTransform = useCopilotTransform(item)
@@ -333,36 +322,39 @@ export function CopilotPanel({
   )
 
   const runTurn = useCallback(
-    async (id: string, question: string, history: CopilotHistoryEntry[]) => {
+    async (id: string, question: string) => {
       const patch = (p: Partial<CopilotTurn>) =>
         setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, ...p } : t)))
 
       let answer = ''
       let finished = false
 
+      // History rides the AG-UI thread natively (useChat re-sends its
+      // accumulated messages); only the item ref and source filter travel on
+      // forwardedProps.
       await start({
-        url: '/api/admin/assistant/copilot',
-        body: {
+        question,
+        forwardedProps: {
           ...itemRefBody(item),
-          question,
-          history,
           ...(sourceTypesParam ? { sourceTypes: sourceTypesParam } : {}),
         },
         handlers: {
-          [COPILOT_EVENTS.delta]: (data) => {
-            answer += (data as CopilotDeltaPayload).text
+          onTextDelta: (_delta, fullText) => {
+            answer = fullText
             patch({ answer, activity: null })
           },
-          [COPILOT_EVENTS.activity]: (data) => {
-            patch({ activity: (data as CopilotActivityPayload).status })
+          onActivity: (status) => {
+            patch({ activity: status })
           },
-          [COPILOT_EVENTS.final]: (data) => {
-            const final = data as CopilotFinalPayload
+          onFinal: (payload) => {
+            const final = payload as CopilotFinalPayload
             finished = true
             // The ONLY place `finalized` flips true: the flags below are
-            // trustworthy exactly when this frame arrived.
+            // trustworthy exactly when this frame arrived. A suppressed
+            // final's empty text stands; otherwise fall back to the streamed
+            // text if the final somehow arrived without any.
             patch({
-              answer: final.text || answer,
+              answer: final.suppressed ? '' : final.text || answer,
               answerType: final.answerType,
               citations: final.citations,
               internalSourced: final.internalSourced,
@@ -373,28 +365,16 @@ export function CopilotPanel({
               activity: null,
             })
           },
-          [COPILOT_EVENTS.error]: (data) => {
-            const err = data as CopilotErrorPayload
+          onError: (message) => {
             finished = true
-            patch({ status: 'error', errorMessage: err.message })
+            patch({ status: 'error', errorMessage: message })
           },
-        },
-        onHttpError: async (res) => {
-          patch({ status: 'error', errorMessage: await extractHttpErrorMessage(res) })
-        },
-        onStreamEnd: () => {
-          // Ended without a final frame: the turn stays unfinalized, so the
-          // card falls back to the note-only affordance (see CopilotTurnView).
-          if (!finished) patch({ status: 'done', activity: null })
-        },
-        onAbort: () => {
-          // Stopped intentionally — keep whatever streamed so far, but the
-          // turn is NOT finalized: no final frame means no trustworthy
-          // internalSourced/answerType, so no customer-facing insert.
-          patch({ status: 'done', activity: null })
-        },
-        onError: () => {
-          patch({ status: 'error', errorMessage: GENERIC_ERROR })
+          onStreamEnd: () => {
+            // Ended without a final frame (truncation or an intentional
+            // stop): the turn stays unfinalized, so the card falls back to
+            // the note-only affordance (see CopilotTurnView).
+            if (!finished) patch({ status: 'done', activity: null })
+          },
         },
       })
     },
@@ -404,7 +384,6 @@ export function CopilotPanel({
   const ask = useCallback(() => {
     const question = input.trim().slice(0, MAX_QUESTION_CHARS)
     if (!question || busy) return
-    const history = buildHistory(turns)
     setInput('')
     const id = String(nextIdRef.current++)
     setTurns((prev) => [
@@ -422,8 +401,8 @@ export function CopilotPanel({
         activity: null,
       },
     ])
-    void runTurn(id, question, history)
-  }, [input, busy, turns, runTurn])
+    void runTurn(id, question)
+  }, [input, busy, runTurn])
 
   const retry = useCallback(
     (id: string) => {
@@ -431,7 +410,9 @@ export function CopilotPanel({
       const idx = turns.findIndex((t) => t.id === id)
       if (idx === -1) return
       const question = turns[idx].question
-      const history = buildHistory(turns.slice(0, idx))
+      // Rewind the native AG-UI thread to just before this turn's question so
+      // the re-ask carries only the history that preceded it.
+      rewindToTurn(idx)
       setTurns((prev) =>
         prev.map((t) =>
           t.id === id
@@ -451,16 +432,17 @@ export function CopilotPanel({
             : t
         )
       )
-      void runTurn(id, question, history)
+      void runTurn(id, question)
     },
-    [turns, busy, runTurn]
+    [turns, busy, rewindToTurn, runTurn]
   )
 
   const newChat = useCallback(() => {
     if (busy) return
+    clearThread()
     setTurns([])
     setInput('')
-  }, [busy])
+  }, [busy, clearThread])
 
   const handleAddToComposer = useCallback(
     (turn: CopilotTurn) =>

@@ -24,16 +24,13 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { AssistantAnswer } from '@/components/shared/conversation/assistant-turn'
 import { assistantQueries } from '@/lib/client/queries/assistant'
-import { useSseTurn } from '@/lib/client/hooks/use-sse-turn'
+import { useAguiTurn } from '@/lib/client/hooks/use-agui-turn'
 import {
   ASSISTANT_TEST_AGENTS,
-  ASSISTANT_TEST_EVENTS,
   ASSISTANT_TEST_MAX_CONTENT_CHARS,
-  type AssistantTestActivityPayload,
   type AssistantTestAgent,
   type AssistantTestChannel,
   type AssistantTestCitation,
-  type AssistantTestErrorPayload,
   type AssistantTestFinalPayload,
   type AssistantTestTrace,
 } from '@/lib/shared/assistant/test-agent-contract'
@@ -86,25 +83,6 @@ const SCENARIOS = [
     defaultPrompt: 'I would like to speak with a human, please.',
   },
 ] as const
-
-/** Parse both standard API envelopes and the tier service's structured error. */
-export async function parseTestAgentHttpError(response: Response): Promise<ParsedHttpError> {
-  try {
-    const body = (await response.json()) as {
-      error?: string | { code?: string; message?: string }
-      message?: string
-    }
-    if (body.error === 'tier_limit_exceeded') {
-      return { code: 'TIER_LIMIT_EXCEEDED', message: body.message }
-    }
-    if (body.error && typeof body.error === 'object') {
-      return { code: body.error.code ?? 'REQUEST_FAILED', message: body.error.message }
-    }
-  } catch {
-    // The localized generic message below is safer than exposing an unstructured body.
-  }
-  return { code: 'REQUEST_FAILED' }
-}
 
 function visibleError(
   error: ParsedHttpError,
@@ -163,7 +141,7 @@ export function TestAgentCard({
   const [error, setError] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState('')
   const nextId = useRef(1)
-  const { start, stop } = useSseTurn()
+  const { start, stop, clear, rewindToTurn } = useAguiTurn({ url: '/api/admin/assistant/test' })
   const busy = status === 'streaming'
 
   useEffect(() => stop, [stop])
@@ -174,13 +152,10 @@ export function TestAgentCard({
 
     const customerId = nextId.current++
     const assistantId = nextId.current++
-    const thread = [
-      ...messages.map(({ sender, content: messageContent }) => ({
-        sender,
-        content: messageContent,
-      })),
-      { sender: 'customer' as const, content },
-    ]
+    // How many customer turns precede this one — the native AG-UI thread index
+    // to rewind to if this turn fails, so a Retry re-asks cleanly instead of
+    // leaving the failed question in the model's history.
+    const turnIndex = messages.filter((message) => message.sender === 'customer').length
     let answer = ''
     let failed = false
     let finalized = false
@@ -206,6 +181,7 @@ export function TestAgentCard({
     const fail = (message: string) => {
       if (failed || finalized) return
       failed = true
+      rewindToTurn(turnIndex)
       setMessages((current) =>
         current.filter((item) => item.id !== customerId && item.id !== assistantId)
       )
@@ -215,21 +191,22 @@ export function TestAgentCard({
       setAnnouncement(message)
     }
 
+    // History rides the native AG-UI thread (useChat re-sends its accumulated
+    // messages); only the two sandbox selectors travel on forwardedProps.
     await start({
-      url: '/api/admin/assistant/test',
-      body: { messages: thread, channel, agent },
+      question: content,
+      forwardedProps: { channel, agent },
       handlers: {
-        [ASSISTANT_TEST_EVENTS.activity]: (data) => {
-          const next = (data as AssistantTestActivityPayload).status
+        onActivity: (next) => {
           setActivity(next)
           setAnnouncement(activityLabel(next, intl.formatMessage))
         },
-        [ASSISTANT_TEST_EVENTS.delta]: (data) => {
-          answer += (data as { text: string }).text
+        onTextDelta: (_delta, fullText) => {
+          answer = fullText
           patchAssistant({ content: answer })
         },
-        [ASSISTANT_TEST_EVENTS.final]: (data) => {
-          const final = data as AssistantTestFinalPayload
+        onFinal: (payload) => {
+          const final = payload as AssistantTestFinalPayload
           finalized = true
           patchAssistant({
             content: final.text || answer,
@@ -245,30 +222,24 @@ export function TestAgentCard({
             })
           )
         },
-        [ASSISTANT_TEST_EVENTS.error]: (data) => {
-          const streamError = data as AssistantTestErrorPayload
-          fail(
-            visibleError(
-              { code: streamError.code, message: streamError.message },
-              intl.formatMessage
-            )
-          )
+        // A RUN_ERROR carries the server's coded message; an HTTP gate failure
+        // (tier limit, not configured) surfaces its envelope message via the
+        // hook's fetch wrapper. Fall back to the localized generic when a bare
+        // transport failure carries nothing usable.
+        onError: (message) =>
+          fail(message || visibleError({ code: 'NETWORK_ERROR' }, intl.formatMessage)),
+        onStreamEnd: () => {
+          if (!failed && !finalized) {
+            fail(visibleError({ code: 'STREAM_ENDED' }, intl.formatMessage))
+          }
         },
       },
-      onHttpError: async (response) => {
-        fail(visibleError(await parseTestAgentHttpError(response), intl.formatMessage))
-      },
-      onStreamEnd: () => {
-        if (!failed && !finalized) {
-          fail(visibleError({ code: 'STREAM_ENDED' }, intl.formatMessage))
-        }
-      },
-      onError: () => fail(visibleError({ code: 'NETWORK_ERROR' }, intl.formatMessage)),
     })
   }
 
   function reset() {
     stop()
+    clear()
     setMessages([])
     setInput('')
     setStatus('idle')
@@ -611,9 +582,9 @@ function HandledReplyPanel({
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState<'prompt' | 'config' | null>(null)
   const actions = trace.toolCalls.filter(
-    ({ name }) => name !== 'search_knowledge' && name !== 'handoff_to_human'
+    ({ name }) => name !== 'search' && name !== 'handoff_to_human'
   )
-  const searched = trace.toolCalls.some(({ name }) => name === 'search_knowledge')
+  const searched = trace.toolCalls.some(({ name }) => name === 'search')
 
   async function copy(value: string, field: 'prompt' | 'config') {
     await navigator.clipboard?.writeText(value)

@@ -183,7 +183,7 @@ export async function retrieveConversationSummaries(
   const excludeConversationId = options.conversationId ?? null
 
   const embedding = await generateEmbedding(query, {
-    pipelineStep: 'assistant_conversation_summaries_retrieval_query_embedding',
+    pipelineStep: 'assistant_summaries_query',
   })
 
   const rows = embedding

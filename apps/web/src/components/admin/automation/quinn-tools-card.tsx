@@ -17,11 +17,14 @@ import { quinnToolMetricsQuery } from '@/lib/client/queries/assistant-tools-anal
 function ActionLabel({ toolName }: { toolName: string }) {
   const intl = useIntl()
   const defaults: Record<string, string> = {
+    search: 'Find an answer',
+    // Historical ledger rows predate the tool's rename to `search`.
     search_knowledge: 'Find an answer',
     set_attribute: 'Update customer details',
     end_conversation: 'End a conversation',
     create_ticket: 'Create a ticket',
     capture_feedback: 'Capture feedback',
+    share_post: 'Share a feedback post',
   }
   return (
     <Tooltip>

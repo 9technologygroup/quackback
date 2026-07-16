@@ -2,16 +2,15 @@
  * Shared gate sequences for every teammate-facing Copilot entry point, in two
  * shapes for two error contracts:
  *
- * - `gateCopilotRequest`, for the SSE routes (copilot.ts, transform.ts,
- *   suggest.ts): `copilot.use` permission -> body parse against the caller's
- *   own zod schema -> `assertCopilotAvailable` (the `inboxAi` flag,
- *   then the assistant being configured) -> the AI token budget ->
- *   item-scoped viewability (`assertConversationViewable` or
- *   `assertTicketVisible`, whichever the parsed request carries — unified
- *   inbox §2.9), each already mapped onto the route's error envelope
- *   (forbiddenResponse / errorResponse). The routes ran this exact sequence
- *   verbatim before this; only the request schema and the invalid-request
- *   message differ between them, so this is generic over all of them.
+ * - `gateCopilotAguiRequest`, for the AG-UI streaming routes (copilot.ts,
+ *   transform.ts, suggest.ts): `copilot.use` permission -> AG-UI body parse
+ *   (`chatParamsFromRequestBody`, with the route's own fields validated off
+ *   `forwardedProps` against its zod schema) -> `assertCopilotAvailable` (the
+ *   `inboxAi` flag, then the assistant being configured) -> the AI token
+ *   budget -> item-scoped viewability (`assertConversationViewable` or
+ *   `assertTicketVisible`, whichever the parsed ref carries — unified inbox
+ *   §2.9), each already mapped onto the route's error envelope
+ *   (forbiddenResponse / errorResponse).
  * - `gateCopilotFn`, for the copilot server fns (copilot-events.ts,
  *   copilot-summary.ts): the same order minus parse and budget, every failure
  *   left as its original throw (see its doc). The Response shape can't just
@@ -19,16 +18,13 @@
  *   steps, so the two share `assertCopilotAvailable` and
  *   `resolveViewableItem` instead of one wrapping the other.
  *
- * `streamAssistantSse` (bottom) is the other half of what those SSE routes
- * share: the response shell that follows a passed gate (detached run,
- * abort-aware error frame, guaranteed close).
- *
  * sandbox.ts is deliberately NOT a caller: it has no conversation to assert
  * viewability against and gates on a different permission (`settings.manage`,
  * not `copilot.use`), so its shape genuinely differs rather than merely
  * duplicating these.
  */
 import type { z } from 'zod'
+import { chatParamsFromRequestBody } from '@tanstack/ai'
 import type { ConversationId, TicketId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
 import {
@@ -55,12 +51,11 @@ import { NotFoundError } from '@/lib/shared/errors'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import { errorResponse, forbiddenResponse } from '@/lib/server/domains/api/responses'
-import { createSseStream, SSE_RESPONSE_HEADERS, type SseStream } from '@/lib/server/utils/sse'
 
 /**
  * Thrown by `assertCopilotAvailable` when either check fails; carries enough
  * to reproduce either gate shape's original error exactly (a mapped
- * `errorResponse` in `gateCopilotRequest`, a propagated throw out of
+ * `errorResponse` in `gateCopilotAguiRequest`, a propagated throw out of
  * `gateCopilotFn`).
  */
 export class CopilotUnavailableError extends Error {
@@ -78,7 +73,7 @@ export class CopilotUnavailableError extends Error {
  * The `inboxAi` flag -> assistant-configured half of the Copilot
  * gate sequence, order load-bearing (the flag is checked first). Permission
  * and item viewability differ per gate shape and stay out of this helper;
- * this covers only the two checks both shapes (`gateCopilotRequest`,
+ * this covers only the two checks both shapes (`gateCopilotAguiRequest`,
  * `gateCopilotFn`) run verbatim.
  */
 export async function assertCopilotAvailable(): Promise<void> {
@@ -119,7 +114,7 @@ export type CopilotGateResult<T> = CopilotGateOk<T> | CopilotGateFailed
  * Item-scoped viewability, the last step of both gate shapes: resolve which
  * branch of the `{ conversationId } | { ticketId }` ref the request carries
  * and assert THAT item is viewable by the actor. Throws the assert helpers'
- * NotFoundError — `gateCopilotRequest` maps it onto its error envelope,
+ * NotFoundError — `gateCopilotAguiRequest` maps it onto its error envelope,
  * `gateCopilotFn` lets it propagate.
  */
 async function resolveViewableItem(
@@ -137,7 +132,7 @@ async function resolveViewableItem(
 }
 
 /**
- * Throw-shaped sibling of `gateCopilotRequest` for the copilot server fns
+ * Throw-shaped sibling of `gateCopilotAguiRequest` for the copilot server fns
  * (copilot-events.ts, copilot-summary.ts), which surface every failure as a
  * thrown rejection rather than a mapped Response. Same gate order, minus the
  * body parse (owned by each fn's validator) and the token budget — budget
@@ -168,37 +163,47 @@ export async function gateCopilotFn(
 }
 
 /**
- * Run the shared gate. `schema` is the caller's own request shape — either a
- * `conversationId` field (validated as today, see `conversation-id.schema.ts`)
- * or a `ticketId` one (see `item-ref.schema.ts`'s `withAssistantItemRef`, the
- * only kind of schema the two callers actually build); `invalidRequestMessage`
- * is the route-specific 400 body text a malformed request gets. Returns
- * either the gate's outputs for the caller to continue its own turn-specific
- * logic, or a Response the caller must return immediately, untouched.
+ * The parsed AG-UI envelope a passed `gateCopilotAguiRequest` hands back
+ * alongside the gate outputs: the client-accumulated message history and the
+ * thread/run ids to echo on the canonical lifecycle chunks.
  */
-export async function gateCopilotRequest<
+export interface CopilotAguiEnvelope {
+  messages: ReadonlyArray<unknown>
+  threadId: string
+  runId: string
+}
+
+export type CopilotAguiGateResult<T> =
+  | (CopilotGateOk<T> & { agui: CopilotAguiEnvelope })
+  | CopilotGateFailed
+
+/**
+ * The Response-shaped gate for the AG-UI streaming routes: the body is an
+ * AG-UI `RunAgentInput` (validated by `chatParamsFromRequestBody`), and the
+ * route's own fields — the item ref plus whatever else it needs — ride
+ * `forwardedProps`, validated against the caller's schema.
+ */
+export async function gateCopilotAguiRequest<
   T extends { conversationId: string } | { ticketId: string },
 >(
   request: Request,
-  schema: z.ZodType<T>,
+  forwardedPropsSchema: z.ZodType<T>,
   invalidRequestMessage: string
-): Promise<CopilotGateResult<T>> {
+): Promise<CopilotAguiGateResult<T>> {
   let auth: AuthContext
   try {
     auth = await requireAuth({ permission: PERMISSIONS.COPILOT_USE })
   } catch (err) {
-    // Only a genuine denial maps to 403 (isAuthDenialError lives beside
-    // requireAuth's throws, so vocabulary and matcher change together).
-    // Anything else — a session-store or settings-read failure — is
-    // infrastructure and must surface as a 500, never be dressed up as
-    // "Copilot access required".
     if (!isAuthDenialError(err)) throw err
     return { ok: false, response: forbiddenResponse('Copilot access required') }
   }
 
   let parsed: T
+  let agui: CopilotAguiEnvelope
   try {
-    parsed = schema.parse(await request.json())
+    const params = await chatParamsFromRequestBody(await request.json())
+    parsed = forwardedPropsSchema.parse(params.forwardedProps)
+    agui = { messages: params.messages, threadId: params.threadId, runId: params.runId }
   } catch {
     return { ok: false, response: errorResponse('INVALID_REQUEST', invalidRequestMessage, 400) }
   }
@@ -224,50 +229,11 @@ export async function gateCopilotRequest<
   const actor = await policyActorFromAuth(auth)
   try {
     const { conversationId, ticketId } = await resolveViewableItem(parsed, actor)
-    return { ok: true, auth, actor, parsed, conversationId, ticketId }
+    return { ok: true, auth, actor, parsed, conversationId, ticketId, agui }
   } catch (err) {
     if (err instanceof NotFoundError) {
       return { ok: false, response: errorResponse(err.code, err.message, 404) }
     }
     throw err
   }
-}
-
-/**
- * The SSE response shell shared by the streaming Copilot routes (copilot.ts,
- * transform.ts, suggest.ts), following a passed `gateCopilotRequest`: open the
- * stream, kick `run` off DETACHED (the Response must return while the turn is
- * still streaming), and on a throw send the route's error frame — unless the
- * client already hung up (`request.signal.aborted`), where an abort is the
- * expected teardown, not a failure worth a frame or a log line. The stream
- * always closes, and the Response carries `SSE_RESPONSE_HEADERS`. Each route
- * keeps what genuinely differs: gating, turn-input construction, delta/final
- * payload mapping (sent by `run` itself), and its own component-tagged
- * failure log via `logError`.
- */
-export function streamAssistantSse(options: {
-  request: Request
-  /** The error frame sent when `run` throws on a live (non-aborted) request. */
-  error: { event: string; payload: { code: string; message: string } }
-  /** Route-owned failure logging (its own logger child + message). */
-  logError: (err: unknown) => void
-  /** The route's turn: stream deltas/activity and send the final frame via `sse`. */
-  run: (sse: SseStream) => Promise<void>
-}): Response {
-  const sse = createSseStream()
-
-  void (async () => {
-    try {
-      await options.run(sse)
-    } catch (error) {
-      if (!options.request.signal.aborted) {
-        options.logError(error)
-        sse.send(options.error.event, options.error.payload)
-      }
-    } finally {
-      sse.close()
-    }
-  })()
-
-  return new Response(sse.stream, { headers: SSE_RESPONSE_HEADERS })
 }

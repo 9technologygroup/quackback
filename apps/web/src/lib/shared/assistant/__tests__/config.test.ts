@@ -314,19 +314,19 @@ describe('voice preset catalogues', () => {
 
   it('uses the normative prompt directives', () => {
     expect(ASSISTANT_TONE_DIRECTIVES).toEqual({
-      warm: 'Use a warm, approachable tone. Be empathetic without over-apologizing or sounding overly enthusiastic.',
+      warm: "Use a warm, approachable tone: write in the first person, use contractions, and acknowledge how the customer feels before getting to the answer ('I can see how frustrating that is'). Stay genuine — no over-apologizing, no forced enthusiasm.",
       balanced:
         'Use a clear, calm, natural tone. Be friendly without adding unnecessary enthusiasm or formality.',
       professional:
-        'Use a polished, professional tone. Stay natural and direct; do not sound legalistic or impersonal.',
+        'Use a polished, professional tone: structured, direct sentences with no exclamation marks, no small talk, and feelings acknowledged at most once, briefly. Stay natural — never legalistic or robotic.',
     })
     expect(ASSISTANT_RESPONSE_LENGTH_DIRECTIVES).toEqual({
       brief:
-        'Prefer the shortest complete answer. Usually use one short paragraph or a compact list.',
+        'Keep replies short: 1-3 sentences, or a compact list when steps are unavoidable. No preamble, no recap of the question, no closing filler — lead with the answer and stop.',
       balanced:
         'Give enough context to make the answer clear, then state the next step. Avoid unnecessary detail.',
       detailed:
-        'Give a fuller explanation and ordered steps when the request benefits from them. Do not add detail unrelated to the request.',
+        'Give a thorough answer: a one-line framing of the situation, ordered steps where applicable, and the relevant caveats, alternatives, or what-to-expect-next. Prefer completeness over brevity, but never pad with detail unrelated to the request.',
     })
   })
 })

@@ -120,12 +120,12 @@ describe('createAssistantTracingMiddleware', () => {
 
     mw.onStart!(c)
     mw.onBeforeToolCall!(c, {
-      toolName: 'search_knowledge',
+      toolName: 'search',
       toolCallId: 'call-1',
       args: SECRET_ARGS,
     } as unknown as ToolCallHookContext)
     mw.onAfterToolCall!(c, {
-      toolName: 'search_knowledge',
+      toolName: 'search',
       toolCallId: 'call-1',
       ok: true,
       duration: 12,
@@ -161,7 +161,7 @@ describe('createAssistantTracingMiddleware', () => {
     expect(root.attributes['quackback.assistant.tool_call_count']).toBe(1)
 
     // Tool child: name + outcome shape only.
-    expect(tool.attributes['gen_ai.tool.name']).toBe('search_knowledge')
+    expect(tool.attributes['gen_ai.tool.name']).toBe('search')
     expect(tool.attributes['quackback.assistant.tool.ok']).toBe(true)
     expect(tool.attributes['quackback.assistant.tool.duration_ms']).toBe(12)
 
@@ -245,7 +245,7 @@ describe('createAssistantTracingMiddleware', () => {
 
     mw.onStart!(c)
     mw.onBeforeToolCall!(c, {
-      toolName: 'search_knowledge',
+      toolName: 'search',
       toolCallId: 'call-1',
       args: {},
     } as unknown as ToolCallHookContext)

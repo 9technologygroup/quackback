@@ -129,7 +129,10 @@ async function hybridQuery(
   const pattern = `%${query}%`
   const semantic = sql<number>`COALESCE(1 - (${changelogEntries.embedding} <=> ${vectorStr}::vector), 0)`
   const keyword = sql<number>`(CASE WHEN (${changelogEntries.title} ILIKE ${pattern} OR ${changelogEntries.content} ILIKE ${pattern}) THEN 1 ELSE 0 END)`
-  const combined = sql<number>`(${CHANGELOG_KEYWORD_WEIGHT} * ${keyword} + ${CHANGELOG_SEMANTIC_WEIGHT} * ${semantic})`
+  // The weights ride as query parameters; without the cast postgres infers
+  // their type from the integer CASE arm and rejects the float literal
+  // ("invalid input syntax for type integer"), killing the whole query.
+  const combined = sql<number>`(${CHANGELOG_KEYWORD_WEIGHT}::float8 * ${keyword} + ${CHANGELOG_SEMANTIC_WEIGHT}::float8 * ${semantic})`
 
   return db
     .select({
@@ -202,7 +205,7 @@ export async function retrieveChangelogEntries(
   const minScore = options.minScore ?? CHANGELOG_SEMANTIC_SIMILARITY_FLOOR
 
   const embedding = await generateEmbedding(query, {
-    pipelineStep: 'assistant_changelog_retrieval_query_embedding',
+    pipelineStep: 'assistant_changelog_query',
   })
 
   const rows = embedding

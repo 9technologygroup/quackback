@@ -1,57 +1,61 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
-import { useSseTurn } from './use-sse-turn'
-import { extractHttpErrorMessage, GENERIC_ERROR } from '@/lib/client/utils/http-error'
+import type { StreamChunk } from '@tanstack/ai'
+import { runAguiTurn, type AguiRunHandle } from '@/lib/client/utils/agui-run'
+import { GENERIC_ERROR } from '@/lib/client/utils/http-error'
 import { itemRefBody } from '@/lib/client/copilot-events'
 import type { InboxItemRef } from '@/lib/shared/inbox/items'
 import {
-  TRANSFORM_EVENTS,
   type TransformKind,
-  type TransformDeltaPayload,
   type TransformFinalPayload,
-  type TransformErrorPayload,
 } from '@/lib/shared/assistant/copilot-contract'
 
-/** Shared streamed rewrite runner for Copilot answers and composer drafts. */
+/**
+ * Shared streamed rewrite runner for Copilot answers and composer drafts, over
+ * TanStack AI's AG-UI protocol: the transform kind and item ref ride
+ * forwardedProps, the source text is the turn's user message, and the rewritten
+ * text comes back on the terminal RUN_FINISHED.result ({ text }). Keeps its
+ * external shape — `(kind, text) => Promise<string | null>` — so its call sites
+ * are unchanged: abort resolves to null (no toast), a failure toasts and
+ * resolves to null. A new call supersedes any run still in flight (and the last
+ * run is aborted on unmount).
+ */
 export function useCopilotTransform(item: InboxItemRef) {
-  const { start, stop } = useSseTurn()
+  const activeRef = useRef<AguiRunHandle | null>(null)
 
-  useEffect(() => stop, [stop])
+  useEffect(() => () => activeRef.current?.stop(), [])
 
   return useCallback(
-    async (transform: TransformKind, text: string): Promise<string | null> => {
-      let result = ''
-      let ok = true
-      await start({
-        url: '/api/admin/assistant/transform',
-        body: { ...itemRefBody(item), text, transform },
-        handlers: {
-          [TRANSFORM_EVENTS.delta]: (data) => {
-            result += (data as TransformDeltaPayload).text
+    (transform: TransformKind, text: string): Promise<string | null> => {
+      activeRef.current?.stop()
+      return new Promise<string | null>((resolve) => {
+        let finalText: string | null = null
+        let ok = true
+        const run = runAguiTurn({
+          url: '/api/admin/assistant/transform',
+          message: text,
+          forwardedProps: { ...itemRefBody(item), transform },
+          onChunk: (chunk: StreamChunk) => {
+            const c = chunk as { type: string; result?: unknown; message?: unknown }
+            if (c.type === 'RUN_FINISHED' && c.result !== undefined) {
+              finalText = (c.result as TransformFinalPayload).text || null
+            } else if (c.type === 'RUN_ERROR') {
+              ok = false
+              toast.error((typeof c.message === 'string' && c.message) || GENERIC_ERROR)
+            }
           },
-          [TRANSFORM_EVENTS.final]: (data) => {
-            const final = data as TransformFinalPayload
-            if (final.text) result = final.text
-          },
-          [TRANSFORM_EVENTS.error]: (data) => {
+          onError: (error) => {
             ok = false
-            toast.error((data as TransformErrorPayload).message || GENERIC_ERROR)
+            toast.error(error.message || GENERIC_ERROR)
           },
-        },
-        onHttpError: async (res) => {
-          ok = false
-          toast.error(await extractHttpErrorMessage(res))
-        },
-        onAbort: () => {
-          ok = false
-        },
-        onError: () => {
-          ok = false
-          toast.error(GENERIC_ERROR)
-        },
+        })
+        activeRef.current = run
+        void run.done.finally(() => {
+          if (activeRef.current === run) activeRef.current = null
+          resolve(ok && finalText ? finalText : null)
+        })
       })
-      return ok && result ? result : null
     },
-    [item, start]
+    [item]
   )
 }

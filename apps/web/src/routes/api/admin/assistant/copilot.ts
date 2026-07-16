@@ -10,8 +10,18 @@
  * to the conversation/ticket itself and never opens or touches an
  * assistant_involvements row: those side effects live entirely in
  * assistant.orchestrator.ts's runAssistantTurnForConversation, which this
- * route never calls; it calls the runtime seam (runAssistantTurn) directly,
- * exactly as the admin sandbox does.
+ * route never calls; it calls the runtime seam directly, exactly as the
+ * admin sandbox does.
+ *
+ * WIRE: TanStack AI's AG-UI protocol. The client (useChat) POSTs a
+ * `RunAgentInput` — its accumulated message history plus `forwardedProps`
+ * carrying the item ref and source filter — and the response is
+ * `toServerSentEventsResponse(streamAssistantTurn(...))`: one canonical
+ * RUN_STARTED/RUN_FINISHED pair around the turn's committed model chunks
+ * (structured-JSON text deltas, TOOL_CALL_*), STEP_STARTED/STEP_FINISHED
+ * activity status lines, and a terminal RUN_FINISHED whose standard `result`
+ * slot carries the post-processed `CopilotFinalPayload`. Failures end the
+ * stream with a coded RUN_ERROR frame instead.
  *
  * ACTION tools are forced to `writeToolPolicy: 'propose'` (see
  * `resolveEffectiveToolMode`) regardless of the assistantTools setting and
@@ -23,85 +33,70 @@
  * Proposing is the one documented exception to "never writes to it": a proposal
  * inserts a real `assistant_pending_actions` row and an accompanying internal
  * note on the conversation announcing it (surfacePendingActionNote, so other
- * teammates see the proposal in the thread without polling). No other conversation message is
- * written and no involvement is opened. `proposedActions` on the final payload
- * mirrors what got proposed, straight off the tool context's ledger.
+ * teammates see the proposal in the thread without polling). No other
+ * conversation message is written and no involvement is opened.
+ * `proposedActions` on the final payload mirrors what got proposed, straight
+ * off the tool context's ledger.
  *
  * Gated on `copilot.use` (the authz matrix picks this up automatically) and
- * the `inboxAi` flag, mirroring sandbox.ts's SSE shape otherwise.
- * The shared gate sequence (permission -> body parse -> flag -> configured ->
- * token budget -> conversation-viewable) lives in copilot-gate.ts, alongside
- * transform.ts.
+ * the `inboxAi` flag. The shared gate sequence (permission -> AG-UI body parse
+ * -> flag -> configured -> token budget -> item-viewable) lives in
+ * copilot-gate.ts (`gateCopilotAguiRequest`), alongside transform.ts.
  */
 import { createFileRoute } from '@tanstack/react-router'
+import { toServerSentEventsResponse } from '@tanstack/ai'
 import { z } from 'zod'
 import {
-  runAssistantTurn,
+  streamAssistantTurn,
   ensureAssistantPrincipal,
-  activityToStatus,
-  type AssistantThreadMessage,
+  type AssistantTurnResult,
 } from '@/lib/server/domains/assistant'
-import { gateCopilotRequest, streamAssistantSse } from '@/lib/server/domains/assistant/copilot-gate'
+import { gateCopilotAguiRequest } from '@/lib/server/domains/assistant/copilot-gate'
+import { aguiThreadMessages } from '@/lib/server/domains/assistant/agui'
 import { withAssistantItemRef } from '@/lib/server/domains/assistant/item-ref.schema'
 import { isCopilotCapabilityEnabled } from '@/lib/server/domains/settings/settings.service'
 import { errorResponse } from '@/lib/server/domains/api/responses'
-import { logger } from '@/lib/server/logger'
-import {
-  COPILOT_EVENTS,
-  type CopilotDeltaPayload,
-  type CopilotActivityPayload,
-  type CopilotFinalPayload,
-  type CopilotErrorPayload,
-  type CopilotHistoryEntry,
-} from '@/lib/shared/assistant/copilot-contract'
-
-const log = logger.child({ component: 'assistant-copilot' })
+import type { CopilotFinalPayload } from '@/lib/shared/assistant/copilot-contract'
 
 const MAX_QUESTION_CHARS = 4000
 const MAX_HISTORY_TURNS = 20
 
-// The zod literals are the runtime validation; the type annotation just pins
-// the parsed shape to the shared CopilotHistoryEntry so the route and the
-// sidebar's history building can never drift silently.
-const historyEntrySchema: z.ZodType<CopilotHistoryEntry> = z.object({
-  role: z.enum(['teammate', 'copilot']),
-  content: z.string().min(1).max(MAX_QUESTION_CHARS),
-})
-
-// Backward compatible: the pre-§2.9 client only ever sends `conversationId`,
-// which is still just the schema's first union branch (see
-// `withAssistantItemRef`'s doc comment).
-const requestSchema = withAssistantItemRef({
-  question: z.string().min(1).max(MAX_QUESTION_CHARS),
-  history: z.array(historyEntrySchema).max(MAX_HISTORY_TURNS).default([]),
+// The route's own fields ride the AG-UI request's forwardedProps; the message
+// history is the AG-UI envelope itself (no separate `history` field anymore).
+const forwardedPropsSchema = withAssistantItemRef({
   sourceTypes: z.array(z.enum(['article', 'post', 'snippet', 'summary'])).optional(),
 })
 
-/** Map the teammate's prior turns + new question onto the runtime's message
- *  vocabulary: a teammate turn reads as 'customer' (the one asking Quinn),
- *  Copilot's own prior answers read as 'assistant', and the question is
- *  always last. */
-function toTurnMessages(
-  history: CopilotHistoryEntry[],
-  question: string
-): AssistantThreadMessage[] {
-  return [
-    ...history.map((h) => ({
-      sender: h.role === 'teammate' ? ('customer' as const) : ('assistant' as const),
-      content: h.content,
-    })),
-    { sender: 'customer' as const, content: question },
-  ]
+function toFinalPayload(result: AssistantTurnResult): CopilotFinalPayload {
+  if (result.status === 'suppressed') {
+    return {
+      text: '',
+      citations: [],
+      internalSourced: false,
+      suppressed: result.reason,
+      proposedActions: [],
+      // No text, so no action buttons render either way; the neutral
+      // default keeps the payload well-formed.
+      answerType: 'draft_reply',
+    }
+  }
+  return {
+    text: result.text,
+    citations: result.citations,
+    internalSourced: result.internalSourced,
+    proposedActions: result.proposedActions ?? [],
+    answerType: result.answerType,
+  }
 }
 
 export async function handleCopilot({ request }: { request: Request }): Promise<Response> {
-  const gate = await gateCopilotRequest(
+  const gate = await gateCopilotAguiRequest(
     request,
-    requestSchema,
-    'A valid conversationId or ticketId, and a question, are required'
+    forwardedPropsSchema,
+    'A valid conversationId or ticketId is required'
   )
   if (!gate.ok) return gate.response
-  const { auth, parsed, conversationId, ticketId } = gate
+  const { auth, parsed, conversationId, ticketId, agui } = gate
 
   // Copilot Q&A capability gate (v3 config). Layered past inboxAi the same way
   // suggest.ts layers assistantProactiveSuggestions: the same 404 NOT_FOUND
@@ -111,30 +106,32 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
     return errorResponse('NOT_FOUND', 'Copilot Q&A is not available', 404)
   }
 
+  // The AG-UI history maps onto the runtime's thread vocabulary (teammate
+  // turns read as 'customer' — the one asking Quinn); the question is the
+  // trailing user turn, length-gated exactly as the old request schema was.
+  const messages = aguiThreadMessages(agui.messages, {
+    maxTurns: MAX_HISTORY_TURNS + 1,
+    maxChars: MAX_QUESTION_CHARS,
+  })
+  const question = messages.at(-1)
+  if (!question || question.sender !== 'customer') {
+    return errorResponse('INVALID_REQUEST', 'A question is required', 400)
+  }
+
   // Provisioning Quinn's identity is idempotent and, like the sandbox, not a
   // conversation write of its own.
   const assistant = await ensureAssistantPrincipal()
-  const messages = toTurnMessages(parsed.history, parsed.question)
 
-  return streamAssistantSse({
-    request,
-    error: {
-      event: COPILOT_EVENTS.error,
-      payload: { code: 'TURN_FAILED', message: 'Copilot run failed' } satisfies CopilotErrorPayload,
-    },
-    logError: (err) => log.error({ err }, 'copilot turn failed'),
-    run: async (sse) => {
-      const result = await runAssistantTurn({
+  return toServerSentEventsResponse(
+    streamAssistantTurn({
+      input: {
         messages,
         assistantPrincipalId: assistant.id,
         role: 'copilot_qa',
         // A real conversation OR ticket id (unlike the sandbox's null-null),
-        // never both — so the turn gets item-scoped grounding (the
-        // past-conversation-summaries source on the conversation branch, the
-        // ticket context block on the ticket branch; see this file's doc
-        // comment). `writeToolPolicy: 'propose'` keeps a write tool from ever
-        // executing for real here, turning it into a pending-approval
-        // proposal instead.
+        // never both — so the turn gets item-scoped grounding (see this
+        // file's doc comment). `writeToolPolicy: 'propose'` keeps a write
+        // tool from ever executing for real here.
         conversationId,
         ticketId,
         surface: 'copilot',
@@ -144,36 +141,12 @@ export async function handleCopilot({ request }: { request: Request }): Promise<
         actorPrincipalId: auth.principal.id,
         sourceTypes: parsed.sourceTypes,
         signal: request.signal,
-        onTextDelta: (text) =>
-          sse.send(COPILOT_EVENTS.delta, { text } satisfies CopilotDeltaPayload),
-        onActivity: (activity) =>
-          sse.send(COPILOT_EVENTS.activity, {
-            status: activityToStatus(activity),
-          } satisfies CopilotActivityPayload),
-      })
-
-      if (result.status === 'suppressed') {
-        sse.send(COPILOT_EVENTS.final, {
-          text: '',
-          citations: [],
-          internalSourced: false,
-          suppressed: result.reason,
-          proposedActions: [],
-          // No text, so no action buttons render either way; the neutral
-          // default keeps the payload well-formed.
-          answerType: 'draft_reply',
-        } satisfies CopilotFinalPayload)
-      } else {
-        sse.send(COPILOT_EVENTS.final, {
-          text: result.text,
-          citations: result.citations,
-          internalSourced: result.internalSourced,
-          proposedActions: result.proposedActions ?? [],
-          answerType: result.answerType,
-        } satisfies CopilotFinalPayload)
-      }
-    },
-  })
+      },
+      wire: { threadId: agui.threadId, runId: agui.runId },
+      buildFinalPayload: toFinalPayload,
+      mapError: () => ({ code: 'TURN_FAILED', message: 'Copilot run failed' }),
+    })
+  )
 }
 
 export const Route = createFileRoute('/api/admin/assistant/copilot')({

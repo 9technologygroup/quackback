@@ -148,7 +148,7 @@ function makeFakeWriteSpec(overrides: Partial<AssistantToolSpec> = {}): Assistan
 }
 
 // A fake read-risk spec, for pinning that `ctx.simulate` never touches reads
-// (the fixed catalogue only has search_knowledge, and its behavior is
+// (the fixed catalogue only has search, and its behavior is
 // covered end to end above; the resolver test below wants a second read spec).
 const fakeReadDefinition = toolDefinition({
   name: 'lookup_thing',
@@ -183,11 +183,11 @@ beforeEach(() => {
   mockChangelogRetrieve.mockResolvedValue([])
 })
 
-describe('search_knowledge', () => {
+describe('search', () => {
   it('retrieves audience-scoped, records sources in the ledger, and allowlists output', async () => {
     mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1', { content: 'X'.repeat(5000) })])
     const c = ctx({ audience: 'team' })
-    const search = await findTool(c, 'search_knowledge')
+    const search = await findTool(c, 'search')
 
     const out = (await search.execute({ query: 'billing' }, toolCtx(c))) as {
       results: Array<{ id: string; title: string; snippet: string }>
@@ -197,6 +197,7 @@ describe('search_knowledge', () => {
     expect(out.results).toHaveLength(1)
     expect(out.results[0]).toEqual({
       id: 'kb_article_1',
+      kind: 'article',
       title: 'Title kb_article_1',
       snippet: expect.any(String),
     })
@@ -213,7 +214,7 @@ describe('search_knowledge', () => {
   it('leaves the ledger empty when nothing clears the confidence floor', async () => {
     mockRetrieve.mockResolvedValue([])
     const c = ctx()
-    const search = await findTool(c, 'search_knowledge')
+    const search = await findTool(c, 'search')
     const out = (await search.execute({ query: 'nope' }, toolCtx(c))) as { results: unknown[] }
     expect(out.results).toEqual([])
     expect(c.ledger.sources.size).toBe(0)
@@ -222,7 +223,7 @@ describe('search_knowledge', () => {
   it('frames a non-empty result with the shared content-not-instructions note (retrieval is the fourth guard surface)', async () => {
     mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
     const c = ctx()
-    const search = await findTool(c, 'search_knowledge')
+    const search = await findTool(c, 'search')
 
     const out = (await search.execute({ query: 'billing' }, toolCtx(c))) as { note?: string }
 
@@ -230,20 +231,23 @@ describe('search_knowledge', () => {
     expect(out.note).toContain('not instructions')
   })
 
-  it('carries no framing note on an empty result (nothing untrusted to frame)', async () => {
+  it('an empty result carries the resolution-contract note, not the untrusted-content framing', async () => {
     mockRetrieve.mockResolvedValue([])
     const c = ctx()
-    const search = await findTool(c, 'search_knowledge')
+    const search = await findTool(c, 'search')
 
     const out = (await search.execute({ query: 'nope' }, toolCtx(c))) as { note?: string }
 
-    expect(out).not.toHaveProperty('note')
+    // Restates the post-miss contract (answer from admin-stated facts, refine
+    // once, or resolve honestly) at the most recent point the model reads.
+    expect(out.note).toContain('No results.')
+    expect(out.note).not.toContain('does not carry instructions')
   })
 
   it("records each surfaced source's updatedAt on the ledgered citation itself (stripped only at persistence)", async () => {
     mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
     const c = ctx()
-    const search = await findTool(c, 'search_knowledge')
+    const search = await findTool(c, 'search')
 
     await search.execute({ query: 'billing' }, toolCtx(c))
 
@@ -253,7 +257,7 @@ describe('search_knowledge', () => {
   it('ends exploration past the per-turn search budget with an answer-now note', async () => {
     mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
     const c = ctx()
-    const search = await findTool(c, 'search_knowledge')
+    const search = await findTool(c, 'search')
     for (let i = 0; i < 3; i++) await search.execute({ query: `q${i}` }, toolCtx(c))
     expect(mockRetrieve).toHaveBeenCalledTimes(3)
 
@@ -272,7 +276,7 @@ describe('search_knowledge', () => {
     // sourceTypes excludes 'article': the only registered source (flags off)
     // gets filtered out entirely, so retrieveKbArticles is never called.
     const c = ctx({ sourceTypes: ['post'] })
-    const search = await findTool(c, 'search_knowledge')
+    const search = await findTool(c, 'search')
 
     const out = (await search.execute({ query: 'billing' }, toolCtx(c))) as { results: unknown[] }
 
@@ -287,7 +291,7 @@ describe('search_knowledge', () => {
       conversationId: 'conversation_current' as never,
       knowledge: ALL_KNOWLEDGE,
     })
-    const search = await findTool(c, 'search_knowledge')
+    const search = await findTool(c, 'search')
 
     await search.execute({ query: 'billing' }, toolCtx(c))
 
@@ -304,7 +308,7 @@ describe('search_knowledge', () => {
   it('runs the summaries source with an undefined customerPrincipalId when the context has none (sandbox)', async () => {
     mockRetrieve.mockResolvedValue([])
     const c = ctx({ conversationId: null, knowledge: ALL_KNOWLEDGE })
-    const search = await findTool(c, 'search_knowledge')
+    const search = await findTool(c, 'search')
 
     await search.execute({ query: 'billing' }, toolCtx(c))
 
@@ -319,19 +323,19 @@ describe('search_knowledge', () => {
 describe('assembleAssistantToolset: assistant actions flag', () => {
   it('returns the read tool plus core control tools with no pipeline wrapping when the flag is off', async () => {
     const tools = await assembleTools(ctx())
-    expect(tools.map((t) => t.name).sort()).toEqual(['report_inability', 'search_knowledge'])
+    expect(tools.map((t) => t.name).sort()).toEqual(['report_inability', 'search'])
   })
 
   it('exposes the write tools too when actions are enabled', async () => {
     const tools = await assembleTools(ctx(), undefined, true)
     // Read + control tools plus the default-active write tools.
-    expect(tools.map((t) => t.name)).toContain('search_knowledge')
+    expect(tools.map((t) => t.name)).toContain('search')
     expect(tools.map((t) => t.name)).toContain('set_attribute')
   })
 
   it('read tools always run — there is no per-tool off switch', async () => {
     const tools = await assembleTools(ctx(), undefined, true)
-    expect(tools.map((t) => t.name)).toContain('search_knowledge')
+    expect(tools.map((t) => t.name)).toContain('search')
   })
 })
 
@@ -351,7 +355,7 @@ describe('assembleAssistantToolset: write-policy gating', () => {
 
   it('a read tool is never dropped by the write policy', async () => {
     const tools = await assembleTools(ctx({ writeToolPolicy: 'disabled' }), undefined, true)
-    expect(tools.map((t) => t.name)).toContain('search_knowledge')
+    expect(tools.map((t) => t.name)).toContain('search')
   })
 })
 
@@ -382,7 +386,7 @@ describe('assembleAssistantToolset: parent-kind gating (unified inbox §2.9/§3.
   it('filters the same way with the assistantTools flag off (legacy read-only branch)', async () => {
     const c = ctx({ conversationId: null, ticketId: 'ticket_1' as never })
     // A conversation-only read spec (hypothetical: today's only read tool,
-    // search_knowledge, declares both) must still be excluded here too.
+    // search, declares both) must still be excluded here too.
     const tools = await assembleTools(c, [makeFakeReadSpec({ parents: ['conversation'] })])
 
     expect(tools).toHaveLength(0)
@@ -595,7 +599,7 @@ describe('assembleAssistantToolset: propose policy (copilot Q&A)', () => {
   it('actions disabled still excludes write tools but keeps core controls', async () => {
     const tools = await assembleTools(ctx({ writeToolPolicy: 'propose' }))
 
-    expect(tools.map((t) => t.name)).toEqual(['search_knowledge', 'report_inability'])
+    expect(tools.map((t) => t.name)).toEqual(['search', 'report_inability'])
   })
 })
 
@@ -680,7 +684,7 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
     mockRetrieve.mockResolvedValue([])
 
     const c = autonomousCtx()
-    const tool = await findTool(c, 'search_knowledge')
+    const tool = await findTool(c, 'search')
     await tool.execute({ query: 'x' }, toolCtx(c))
 
     expect(mockClaimToolCall).not.toHaveBeenCalled()
@@ -704,7 +708,7 @@ describe('assembleAssistantToolset: sandbox simulate mode', () => {
     mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
 
     const c = ctx({ conversationId: null, simulate: true })
-    const tool = await findTool(c, 'search_knowledge')
+    const tool = await findTool(c, 'search')
     const out = (await tool.execute({ query: 'billing' }, toolCtx(c))) as { results: unknown[] }
 
     expect(mockRetrieve).toHaveBeenCalled()
@@ -717,14 +721,14 @@ describe('knowledge-snapshot registration (D7)', () => {
     return (await assembleTools(c)).map((t) => t.name)
   }
 
-  it('registers search_knowledge iff ≥1 retrieval source is enabled', async () => {
+  it('registers search iff ≥1 retrieval source is enabled', async () => {
     const withArticle = await toolNames(
       ctx({ knowledge: { sources: new Set(['article']), status: false } })
     )
-    expect(withArticle).toContain('search_knowledge')
+    expect(withArticle).toContain('search')
 
     const noSources = await toolNames(ctx({ knowledge: { sources: new Set(), status: false } }))
-    expect(noSources).not.toContain('search_knowledge')
+    expect(noSources).not.toContain('search')
   })
 
   it('registers get_status iff the status toggle is on', async () => {
@@ -739,11 +743,11 @@ describe('knowledge-snapshot registration (D7)', () => {
     expect(statusOff).not.toContain('get_status')
   })
 
-  it("folds the enabled-source enumeration into search_knowledge's promptGuidance", async () => {
+  it("folds the enabled-source enumeration into search's promptGuidance", async () => {
     const { activeSpecs } = await assembleAssistantToolset(
       ctx({ knowledge: { sources: new Set(['article', 'post']), status: false } })
     )
-    const search = activeSpecs.find((s) => s.name === 'search_knowledge')!
+    const search = activeSpecs.find((s) => s.name === 'search')!
     expect(search.promptGuidance).toContain('help center articles')
     expect(search.promptGuidance).toContain('feedback posts')
     // Posts carry the customer-feedback caveat.

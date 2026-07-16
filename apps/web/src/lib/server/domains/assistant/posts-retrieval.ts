@@ -12,7 +12,7 @@
  * Changelog entries have no tsvector or embedding today, so they are not a
  * grounding source yet — deferred, not in scope here.
  */
-import { db, posts, boards, and, eq, isNull, sql } from '@/lib/server/db'
+import { db, posts, boards, postStatuses, and, eq, isNull, sql } from '@/lib/server/db'
 import { generateEmbedding } from '@/lib/server/domains/embeddings/embedding.service'
 import { orTermsTsQuery } from '@/lib/server/domains/help-center/help-center-search.service'
 import type { ContentAudience } from './audience'
@@ -47,6 +47,7 @@ export interface RetrievedPost {
   title: string
   content: string
   boardSlug: string
+  statusName: string | null
   score: number
   /** Whether the post's board is anonymous-viewable: the same predicate the
    *  'public' branch of {@link postsVisibilityConditions} enforces at query
@@ -114,6 +115,8 @@ interface PostRetrievalRow {
   title: string
   content: string
   boardSlug: string
+  /** Post status name (the roadmap-state signal), null when status-less. */
+  statusName: string | null
   score: number
   isPublic: boolean
   updatedAt: Date
@@ -136,7 +139,10 @@ async function hybridQuery(
   const tsQuery = orTermsTsQuery(query)
   const semantic = sql<number>`COALESCE(1 - (${posts.embedding} <=> ${vectorStr}::vector), 0)`
   const keyword = sql<number>`COALESCE(ts_rank(${posts.searchVector}, ${tsQuery}), 0)`
-  const combined = sql<number>`(${POSTS_KEYWORD_WEIGHT} * ${keyword} + ${POSTS_SEMANTIC_WEIGHT} * ${semantic})`
+  // The weights ride as query parameters; without the cast postgres infers
+  // their type from the integer CASE arm and rejects the float literal
+  // ("invalid input syntax for type integer"), killing the whole query.
+  const combined = sql<number>`(${POSTS_KEYWORD_WEIGHT}::float8 * ${keyword} + ${POSTS_SEMANTIC_WEIGHT}::float8 * ${semantic})`
 
   return db
     .select({
@@ -144,12 +150,14 @@ async function hybridQuery(
       title: posts.title,
       content: trimmedContent(),
       boardSlug: boards.slug,
+      statusName: postStatuses.name,
       score: combined.as('score'),
       isPublic: isPublicBoard().as('is_public_board'),
       updatedAt: posts.updatedAt,
     })
     .from(posts)
     .innerJoin(boards, eq(posts.boardId, boards.id))
+    .leftJoin(postStatuses, eq(posts.statusId, postStatuses.id))
     .where(
       and(
         ...postsVisibilityConditions(ceiling),
@@ -185,12 +193,14 @@ async function keywordQuery(
       title: posts.title,
       content: trimmedContent(),
       boardSlug: boards.slug,
+      statusName: postStatuses.name,
       score: rank.as('score'),
       isPublic: isPublicBoard().as('is_public_board'),
       updatedAt: posts.updatedAt,
     })
     .from(posts)
     .innerJoin(boards, eq(posts.boardId, boards.id))
+    .leftJoin(postStatuses, eq(posts.statusId, postStatuses.id))
     .where(
       and(
         ...postsVisibilityConditions(ceiling),
@@ -226,7 +236,7 @@ export async function retrievePosts(
   const keywordRankFloor = options.keywordRankFloor ?? POSTS_KEYWORD_RANK_FLOOR
 
   const embedding = await generateEmbedding(query, {
-    pipelineStep: 'assistant_posts_retrieval_query_embedding',
+    pipelineStep: 'assistant_posts_query',
   })
 
   const rows = embedding
@@ -238,6 +248,7 @@ export async function retrievePosts(
     title: r.title,
     content: r.content ?? '',
     boardSlug: r.boardSlug,
+    statusName: r.statusName ?? null,
     score: Number(r.score),
     isPublic: r.isPublic,
     updatedAt: r.updatedAt,
@@ -259,7 +270,10 @@ export const postsKnowledgeSource: KnowledgeSource = {
         id: p.id,
         sourceType: 'post' as const,
         title: p.title,
-        excerpt: p.content.slice(0, KNOWLEDGE_SNIPPET_CHARS),
+        // The status line leads the excerpt: a post's status is its roadmap
+        // state (roadmap columns derive from statuses), so "is X planned?"
+        // is answerable straight from the snippet.
+        excerpt: `${p.statusName ? `Status: ${p.statusName}\n` : ''}${p.content.slice(0, KNOWLEDGE_SNIPPET_CHARS)}`,
         score: p.score,
         updatedAt: p.updatedAt.toISOString(),
         citation: {

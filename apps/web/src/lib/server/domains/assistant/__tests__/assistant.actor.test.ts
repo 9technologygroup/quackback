@@ -24,7 +24,7 @@ describe('assistant.actor', () => {
     expect(actor.permissions).toEqual(new Set(ASSISTANT_PERMISSIONS))
   })
 
-  it('quinnActor can view and reply to conversations and publish team-only action notices', () => {
+  it('quinnActor can view and reply to conversations, publish team-only action notices, and record attributes', () => {
     const principalId = 'principal_xyz123' as PrincipalId
     const actor = quinnActor(principalId)
 
@@ -32,12 +32,21 @@ describe('assistant.actor', () => {
     expect(can(actor, PERMISSIONS.CONVERSATION_VIEW_ALL)).toBe(true)
     expect(can(actor, PERMISSIONS.CONVERSATION_REPLY)).toBe(true)
     expect(can(actor, PERMISSIONS.TICKET_NOTE)).toBe(true)
+    // Recording metadata facts learned mid-conversation (set_attribute) is
+    // inside the autonomous remit: server-side only, AI-precedence rules, a
+    // human-set value always wins.
+    expect(can(actor, PERMISSIONS.CONVERSATION_SET_ATTRIBUTES)).toBe(true)
+    // Raising a ticket from a reported problem is the support surface's core
+    // escalation artifact — internal work, never outward action.
+    expect(can(actor, PERMISSIONS.TICKET_CREATE)).toBe(true)
     expect(actor.permissions).toEqual(
       new Set([
         PERMISSIONS.CONVERSATION_VIEW,
         PERMISSIONS.CONVERSATION_VIEW_ALL,
         PERMISSIONS.CONVERSATION_REPLY,
         PERMISSIONS.TICKET_NOTE,
+        PERMISSIONS.CONVERSATION_SET_ATTRIBUTES,
+        PERMISSIONS.TICKET_CREATE,
       ])
     )
   })
@@ -46,13 +55,12 @@ describe('assistant.actor', () => {
     const principalId = 'principal_xyz123' as PrincipalId
     const actor = quinnActor(principalId)
 
-    // Permissions outside the assistant boundary
+    // Permissions outside the assistant boundary: workflow state and
+    // customer-visible publishing stay teammate-approved.
     expect(can(actor, PERMISSIONS.MEMBER_MANAGE)).toBe(false)
     expect(can(actor, PERMISSIONS.SETTINGS_MANAGE)).toBe(false)
     expect(can(actor, PERMISSIONS.WORKFLOW_MANAGE)).toBe(false)
     expect(can(actor, PERMISSIONS.CONVERSATION_SET_STATUS)).toBe(false)
-    expect(can(actor, PERMISSIONS.CONVERSATION_SET_ATTRIBUTES)).toBe(false)
-    expect(can(actor, PERMISSIONS.TICKET_CREATE)).toBe(false)
     expect(can(actor, PERMISSIONS.POST_CREATE)).toBe(false)
     expect(can(actor, PERMISSIONS.POST_VOTE_ON_BEHALF)).toBe(false)
   })

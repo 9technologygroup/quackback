@@ -12,14 +12,19 @@
 
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
-import type { PostId, ChangelogId, PostStatusId } from '@quackback/ids'
+import type { PostId, ChangelogId, PostStatusId, TicketId, PrincipalId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy'
 import type {
   EmbedPreview,
   EmbedPostPreview,
   EmbedChangelogPreview,
   EmbedArticlePreview,
+  EmbedTicketPreview,
 } from '@/lib/shared/embeds/types'
+import type { TicketType } from '@/lib/shared/db-types'
+import type { ConversationPriority } from '@/lib/shared/conversation/types'
+import { isTeamMember } from '@/lib/shared/roles'
+import { formatTicketNumber } from '@/lib/shared/tickets'
 import { toIsoStringOrNull } from '@/lib/shared/utils/date'
 import { contentPreview } from '@/lib/shared/utils/string'
 
@@ -57,6 +62,52 @@ type ArticleInput = {
 }
 
 /**
+ * Enriched ticket slice the embed reader loads before viewer scoping. The
+ * status is already projected to its customer-facing stage label + color (never
+ * the internal status name), so the projection stays a pure field rename. The
+ * scope-only fields (`type`, `requesterPrincipalId`, `deletedAt`) drive
+ * {@link scopeTicketEmbed} and are dropped from the viewer-safe preview.
+ */
+export interface TicketEmbedRow {
+  id: string
+  number: number
+  title: string
+  type: TicketType
+  requesterPrincipalId: PrincipalId | null
+  deletedAt: Date | string | null
+  /** Public stage label (Received / In progress / …), or null when the status
+   *  maps to no public stage. Never the internal status name. */
+  statusLabel: string | null
+  statusColor: string
+  priority: ConversationPriority
+  createdAt: Date | string | null
+}
+
+/**
+ * Whether `actor` may see a ticket embed, and (if so) the row to project. The
+ * card resolves ONLY for:
+ *   - a team member (mirrors how a post embed resolves through the same portal
+ *     read path for a teammate viewer), or
+ *   - the ticket's own requester on a `customer` ticket — the same ownership
+ *     gate `loadOwnedTicketOr404` enforces for the portal ticket page.
+ * Everyone else (a different visitor, an anonymous viewer, a requester of some
+ * OTHER ticket) gets null → the resolver degrades to "unavailable", leaking no
+ * existence. A soft-deleted ticket is unavailable for everyone.
+ */
+export function scopeTicketEmbed(ticket: TicketEmbedRow, actor: Actor): TicketEmbedRow | null {
+  if (ticket.deletedAt) return null
+  if (isTeamMember(actor.role)) return ticket
+  if (
+    ticket.type === 'customer' &&
+    actor.principalId != null &&
+    ticket.requesterPrincipalId === actor.principalId
+  ) {
+    return ticket
+  }
+  return null
+}
+
+/**
  * Viewer-scoped resolvers injected into {@link resolveEmbed}. Wired to the real
  * public read paths in the server fn below; replaced with fakes in tests.
  */
@@ -66,6 +117,9 @@ export interface EmbedResolverDeps {
   getChangelog: (id: ChangelogId) => Promise<ChangelogInput | null>
   /** Resolve a published, viewer-accessible help-center article by slug. */
   getArticle: (slug: string) => Promise<ArticleInput | null>
+  /** Resolve a ticket the viewer may embed (already scoped via
+   *  {@link scopeTicketEmbed}), or null when unavailable to this viewer. */
+  getTicket: (id: TicketId, actor: Actor) => Promise<TicketEmbedRow | null>
 }
 
 /**
@@ -131,6 +185,26 @@ export function projectArticlePreview(article: ArticleInput, baseUrl: string): E
   }
 }
 
+/**
+ * Project a viewer-scoped ticket row into the customer-safe card shape. The
+ * `reference` is the formatted sequential number and `url` is the absolute
+ * portal ticket page (opened in a new tab from the widget). `baseUrl` is the
+ * canonical portal base.
+ */
+export function projectTicketPreview(ticket: TicketEmbedRow, baseUrl: string): EmbedTicketPreview {
+  return {
+    kind: 'ticket',
+    ticketId: ticket.id,
+    reference: formatTicketNumber(ticket.number),
+    title: ticket.title,
+    statusLabel: ticket.statusLabel,
+    statusColor: ticket.statusColor,
+    priority: ticket.priority,
+    createdAt: toIsoStringOrNull(ticket.createdAt),
+    url: joinBase(baseUrl, `/support/ticket/${ticket.id}`),
+  }
+}
+
 /** Join a base URL and an absolute path, collapsing any trailing slash on the
  *  base so `${base}/path` never doubles up (`config.baseUrl` may or may not
  *  carry one). */
@@ -145,7 +219,7 @@ function joinBase(base: string, path: string): string {
  * exception ever escapes and no gated data leaks.
  */
 export async function resolveEmbed(
-  kind: 'post' | 'changelog' | 'article',
+  kind: 'post' | 'changelog' | 'article' | 'ticket',
   id: string,
   actor: Actor,
   deps: EmbedResolverDeps,
@@ -163,6 +237,11 @@ export async function resolveEmbed(
       if (!article) return { unavailable: true }
       return projectArticlePreview(article, baseUrl)
     }
+    if (kind === 'ticket') {
+      const ticket = await deps.getTicket(id as TicketId, actor)
+      if (!ticket) return { unavailable: true }
+      return projectTicketPreview(ticket, baseUrl)
+    }
     const entry = await deps.getChangelog(id as ChangelogId)
     if (!entry) return { unavailable: true }
     return projectChangelogPreview(entry, baseUrl)
@@ -176,7 +255,7 @@ export async function resolveEmbed(
 // ---------------------------------------------------------------------------
 
 export const getEmbedPreviewFn = createServerFn({ method: 'GET' })
-  .validator(z.object({ kind: z.enum(['post', 'changelog', 'article']), id: z.string() }))
+  .validator(z.object({ kind: z.enum(['post', 'changelog', 'article', 'ticket']), id: z.string() }))
   .handler(async ({ data }): Promise<EmbedPreview> => {
     try {
       // Outer gate: a private portal serves no embed preview to a denied caller
@@ -195,11 +274,13 @@ export const getEmbedPreviewFn = createServerFn({ method: 'GET' })
         { listPublicStatuses },
         { getPublicChangelogMetaById },
         { getPublicArticleBySlug },
+        { getTicketEmbedForViewer },
       ] = await Promise.all([
         import('@/lib/server/domains/posts/post.public.detail'),
         import('@/lib/server/domains/statuses/status.service'),
         import('@/lib/server/domains/changelog/changelog.public'),
         import('@/lib/server/domains/help-center/help-center.article.service'),
+        import('@/lib/server/domains/tickets/ticket-embed.service'),
       ])
 
       // Canonical portal base for the absolute embed `url` (opened in a new tab
@@ -226,6 +307,10 @@ export const getEmbedPreviewFn = createServerFn({ method: 'GET' })
               return null
             }
           },
+          // Viewer-scoped inside the service (team member OR the ticket's own
+          // requester); a ticket this viewer can't see resolves to null →
+          // "unavailable", never leaking that the ticket exists.
+          getTicket: getTicketEmbedForViewer,
         },
         config.baseUrl
       )

@@ -7,10 +7,16 @@
  * via the BYOK AI client and writes the result as a DRAFT translation --
  * never auto-published -- so a human always reviews before it goes live.
  */
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
+import { config } from '@/lib/server/config'
+import {
+  isAiClientConfigured,
+  structuredOutputProviderOptions,
+} from '@/lib/server/domains/ai/config'
+import { createUsageLoggingMiddleware } from '@/lib/server/domains/ai/usage-middleware'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { markdownToTiptapJson } from '@/lib/server/markdown-tiptap'
 import { getHelpCenterConfig } from '@/lib/server/domains/settings/settings.service'
 import { getArticleById } from './help-center.article.service'
@@ -21,11 +27,11 @@ import type { HelpCenterArticleWithCategory } from './help-center.types'
 
 const log = logger.child({ component: 'help-center-auto-translate' })
 
-interface TranslationResult {
-  title: string
-  description: string
-  content: string
-}
+const TranslationResultSchema = z.object({
+  title: z.string(),
+  description: z.string().optional(),
+  content: z.string(),
+})
 
 /**
  * Builds the chat messages for a translation call. Pure so the prompt shape
@@ -70,15 +76,14 @@ export async function translateArticleForLocale(
   articleId: KbArticleId,
   locale: string
 ): Promise<void> {
-  const openai = getOpenAI()
   const model = getChatModel('helpCenterTranslate')
-  if (!openai || !model) {
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) {
     log.debug({ article_id: articleId, locale }, 'auto-translate skipped: AI not configured')
     return
   }
 
-  const config = await getHelpCenterConfig()
-  const protectedTerms = config.autoTranslate?.protectedTerms ?? []
+  const helpCenterConfig = await getHelpCenterConfig()
+  const protectedTerms = helpCenterConfig.autoTranslate?.protectedTerms ?? []
 
   const article = await getArticleById(articleId)
   const { system, user } = buildTranslationPrompt({
@@ -89,41 +94,26 @@ export async function translateArticleForLocale(
     protectedTerms,
   })
 
-  const completion = await withUsageLogging(
-    {
-      pipelineStep: 'help_center_translate',
-      callType: 'chat_completion',
-      model,
-      metadata: { articleId, locale },
-    },
-    () =>
-      withRetry(() =>
-        openai.chat.completions.create({
-          model,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.2,
-        })
-      ),
-    (result) => ({
-      inputTokens: result.usage?.prompt_tokens ?? 0,
-      outputTokens: result.usage?.completion_tokens ?? 0,
-      totalTokens: result.usage?.total_tokens ?? 0,
-    })
-  )
-
-  const raw = completion.choices[0]?.message?.content
-  if (!raw) {
-    log.error({ article_id: articleId, locale }, 'auto-translate: empty AI response')
-    return
-  }
-
-  let parsed: TranslationResult
+  let parsed: z.infer<typeof TranslationResultSchema>
   try {
-    parsed = JSON.parse(stripCodeFences(raw)) as TranslationResult
+    parsed = await chat({
+      adapter: openaiCompatibleText(model, {
+        baseURL: config.openaiBaseUrl!,
+        apiKey: config.openaiApiKey!,
+      }),
+      systemPrompts: [system],
+      messages: [{ role: 'user', content: user }],
+      outputSchema: TranslationResultSchema,
+      stream: false,
+      modelOptions: { ...structuredOutputProviderOptions() },
+      middleware: [
+        createUsageLoggingMiddleware({
+          pipelineStep: 'help_center_translate',
+          model,
+          metadata: { articleId, locale },
+        }),
+      ],
+    })
   } catch (err) {
     log.error({ err, article_id: articleId, locale }, 'auto-translate: unparseable AI response')
     return
@@ -153,9 +143,9 @@ export async function queueAutoTranslateOnPublish(
   article: HelpCenterArticleWithCategory
 ): Promise<void> {
   try {
-    const config = await getHelpCenterConfig()
-    if (!config.autoTranslate?.enabled) return
-    const additionalLocales = config.locales?.additional ?? []
+    const helpCenterConfig = await getHelpCenterConfig()
+    if (!helpCenterConfig.autoTranslate?.enabled) return
+    const additionalLocales = helpCenterConfig.locales?.additional ?? []
     if (additionalLocales.length === 0) return
 
     const { enqueueHelpCenterTranslateJob } = await import('./help-center-translate-queue')

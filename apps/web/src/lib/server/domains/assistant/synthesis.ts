@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod'
+import type { StreamChunk } from '@tanstack/ai'
 import { config } from '@/lib/server/config'
 import { isAiClientConfigured } from '@/lib/server/domains/ai/config'
 import { getChatModel } from '@/lib/server/domains/ai/models'
@@ -44,6 +45,14 @@ export interface SynthesizeAnswerParams {
   signal?: AbortSignal
   /** Called with each new fragment of the answer text as it streams. */
   onAnswerDelta?: (delta: string) => void
+  /**
+   * AG-UI wire forwarding, threaded verbatim into runSynthesis: every
+   * wire-forwardable model chunk (buffered until the attempt commits — see
+   * synthesis-core's wireSink) flows here in order, for a route that wraps them
+   * in the canonical run lifecycle. Orthogonal to `onAnswerDelta` (a caller may
+   * use either or both).
+   */
+  wireSink?: (chunk: StreamChunk) => void
 }
 
 export class AskAiNotConfiguredError extends Error {
@@ -152,6 +161,7 @@ export async function synthesizeAnswer(params: SynthesizeAnswerParams): Promise<
     onFailure: 'throw',
     signal: params.signal,
     onTextDelta: params.onAnswerDelta,
+    wireSink: params.wireSink,
     usageLogParams: {
       pipelineStep: 'help_center_answers',
       callType: 'chat_completion',

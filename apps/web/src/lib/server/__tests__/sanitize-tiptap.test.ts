@@ -569,6 +569,7 @@ describe('sanitizeTiptapContent', () => {
   // Real, round-trip-valid TypeIDs (same fixtures as the parse-embed-url test).
   const EMBED_POST_ID = 'post_01ktjwt5tyf6br9mw521h13n6n'
   const EMBED_CHANGELOG_ID = 'changelog_01ktjwt5tyf6br9mwcz1vskk44'
+  const EMBED_TICKET_ID = 'ticket_01ktjwt5tyf6br9mw521h13n6n'
 
   it('preserves a valid post embed node with kind/id attrs', () => {
     const input = {
@@ -590,6 +591,27 @@ describe('sanitizeTiptapContent', () => {
     const node = result.content!.find((n) => n.type === 'quackbackEmbed')
     expect(node).toBeDefined()
     expect(node!.attrs).toEqual({ kind: 'changelog', id: EMBED_CHANGELOG_ID })
+  })
+
+  it('preserves a valid ticket embed node with kind/id attrs', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'quackbackEmbed', attrs: { kind: 'ticket', id: EMBED_TICKET_ID } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content!.find((n) => n.type === 'quackbackEmbed')
+    expect(node).toBeDefined()
+    expect(node!.attrs).toEqual({ kind: 'ticket', id: EMBED_TICKET_ID })
+  })
+
+  it('neutralizes a ticket embed whose id is not a valid TypeID', () => {
+    const input = {
+      type: 'doc',
+      content: [{ type: 'quackbackEmbed', attrs: { kind: 'ticket', id: 'not-a-ticket' } }],
+    }
+    const result = sanitizeTiptapContent(input)
+    const node = result.content?.find((n) => n.type === 'quackbackEmbed')
+    expect(node?.attrs).toBeUndefined()
   })
 
   it('drops unknown attrs from a valid embed node', () => {

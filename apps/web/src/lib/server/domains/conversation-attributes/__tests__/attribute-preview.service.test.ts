@@ -9,37 +9,37 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const mockOpenAI = {
-  chat: { completions: { create: vi.fn() } },
-}
-
 const mockIsFeatureEnabled = vi.fn()
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
 }))
 
-const mockGetOpenAI = vi.fn(() => mockOpenAI as unknown)
-const mockStructuredOutputProviderOptions = vi.fn(() => ({}))
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
+
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: () => mockGetOpenAI(),
-  stripCodeFences: (s: string) => s.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, ''),
-  structuredOutputProviderOptions: () => mockStructuredOutputProviderOptions(),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: () => ({ name: 'ai-usage-logging' }),
 }))
 
 const mockGetChatModel = vi.fn((_feature?: string): string | null => 'test-classification-model')
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: (feature: string) => mockGetChatModel(feature),
-}))
-
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: (fn: () => Promise<unknown>) =>
-    fn().then((result: unknown) => ({ result, retryCount: 0 })),
-}))
-
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
-    fn().then(({ result }) => result)
-  ),
 }))
 
 const mockEnforceAiTokenBudget = vi.fn()
@@ -48,14 +48,6 @@ vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
 }))
 
 import { previewAttributeDetection } from '../attribute-preview.service'
-
-function chatResponse(json: unknown, overrides: Record<string, unknown> = {}) {
-  return {
-    choices: [{ message: { content: JSON.stringify(json) } }],
-    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-    ...overrides,
-  }
-}
 
 const definition = {
   key: 'issue_type',
@@ -69,8 +61,9 @@ const definition = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockConfig.openaiApiKey = 'test-key'
+  mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   mockIsFeatureEnabled.mockResolvedValue(true)
-  mockGetOpenAI.mockReturnValue(mockOpenAI as unknown)
   mockGetChatModel.mockReturnValue('test-classification-model')
   mockEnforceAiTokenBudget.mockResolvedValue(undefined)
 })
@@ -81,11 +74,11 @@ describe('previewAttributeDetection: gating', () => {
     await expect(
       previewAttributeDetection({ definition, sampleMessage: 'I was charged twice' })
     ).rejects.toMatchObject({ code: 'AI_ATTRIBUTE_DETECTION_DISABLED' })
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('throws when the AI client is not configured', async () => {
-    mockGetOpenAI.mockReturnValue(null)
+    mockConfig.openaiApiKey = undefined
     await expect(
       previewAttributeDetection({ definition, sampleMessage: 'I was charged twice' })
     ).rejects.toMatchObject({ code: 'AI_NOT_CONFIGURED' })
@@ -112,7 +105,7 @@ describe('previewAttributeDetection: gating', () => {
     await expect(
       previewAttributeDetection({ definition, sampleMessage: '   ' })
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('rejects a definition with no options', async () => {
@@ -122,23 +115,21 @@ describe('previewAttributeDetection: gating', () => {
         sampleMessage: 'I was charged twice',
       })
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 })
 
 describe('previewAttributeDetection: happy path', () => {
   it('returns the predicted option id, label, and reasoning', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        results: [
-          {
-            key: 'issue_type',
-            optionId: 'opt_billing',
-            reasoning: 'Customer says they were charged twice.',
-          },
-        ],
-      })
-    )
+    mockChat.mockResolvedValue({
+      results: [
+        {
+          key: 'issue_type',
+          optionId: 'opt_billing',
+          reasoning: 'Customer says they were charged twice.',
+        },
+      ],
+    })
     const result = await previewAttributeDetection({
       definition,
       sampleMessage: 'I was charged twice for my subscription.',
@@ -151,22 +142,20 @@ describe('previewAttributeDetection: happy path', () => {
   })
 
   it('sends only the sample message as the transcript, prefixed as the customer', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({ results: [{ key: 'issue_type', optionId: null, reasoning: 'Unclear.' }] })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'issue_type', optionId: null, reasoning: 'Unclear.' }],
+    })
     await previewAttributeDetection({ definition, sampleMessage: 'Hello there' })
-    const userMessage = mockOpenAI.chat.completions.create.mock.calls[0][0].messages.find(
+    const userMessage = mockChat.mock.calls[0][0].messages.find(
       (m: { role: string }) => m.role === 'user'
     ).content
     expect(userMessage).toContain('Customer: Hello there')
   })
 
   it('returns a null optionId/optionLabel when nothing applies', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        results: [{ key: 'issue_type', optionId: null, reasoning: 'Nothing matches.' }],
-      })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'issue_type', optionId: null, reasoning: 'Nothing matches.' }],
+    })
     const result = await previewAttributeDetection({
       definition,
       sampleMessage: 'Just saying hi.',
@@ -179,7 +168,9 @@ describe('previewAttributeDetection: happy path', () => {
   })
 
   it('falls back to a graceful result when the model returns nothing usable', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(chatResponse({ notResults: true }))
+    // Simulates what the hub's permissive outputSchema reduces a
+    // shape-mismatched response down to: `{ results: [] }`.
+    mockChat.mockResolvedValue({ results: [] })
     const result = await previewAttributeDetection({
       definition,
       sampleMessage: 'I was charged twice.',
@@ -192,11 +183,9 @@ describe('previewAttributeDetection: happy path', () => {
   })
 
   it('works with an unsaved definition (no persisted key)', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        results: [{ key: 'preview_attribute', optionId: 'opt_billing', reasoning: 'x' }],
-      })
-    )
+    mockChat.mockResolvedValue({
+      results: [{ key: 'preview_attribute', optionId: 'opt_billing', reasoning: 'x' }],
+    })
     const result = await previewAttributeDetection({
       definition: { ...definition, key: '' },
       sampleMessage: 'I was charged twice.',

@@ -11,7 +11,7 @@
  * scope honesty) is encoded around that loop. The model produces response
  * content; operational decisions such as handoff and inability are tools.
  */
-import { parsePartialJSON, maxIterations } from '@tanstack/ai'
+import { parsePartialJSON, maxIterations, type StreamChunk } from '@tanstack/ai'
 import { z } from 'zod'
 import { config } from '@/lib/server/config'
 import { db, conversations, principal, eq } from '@/lib/server/db'
@@ -56,7 +56,9 @@ import {
   ASSISTANT_PROMPT_VERSION,
   buildAssistantSystemMessages,
   resolveAssistantRolePolicy,
+  type AssistantBoardCatalogueEntry,
 } from './assistant.system-prompt'
+import { listBoards } from '@/lib/server/domains/boards/board.service'
 import { runSynthesis, safeJsonRepair, type AttemptOutcome } from './synthesis-core'
 import {
   evaluateZeroToolCompletion,
@@ -71,6 +73,16 @@ import { getTicket } from '@/lib/server/domains/tickets/ticket.service'
 import { listTicketMessages } from '@/lib/server/domains/tickets/ticket-message.service'
 import { loadConversationThread } from './assistant.thread'
 import { buildTicketTranscript, buildConversationTranscript, budgetTranscript } from './transcript'
+import {
+  createChunkQueue,
+  createPairingTracker,
+  runErrorChunk,
+  runFinishedChunk,
+  runStartedChunk,
+  stepFinishedChunk,
+  stepStartedChunk,
+  type WireRunIds,
+} from './agui'
 
 const log = logger.child({ component: 'assistant-runtime' })
 
@@ -192,7 +204,7 @@ export type AssistantActivity = { kind: 'thinking' } | { kind: 'tool'; tool: str
  *  line — both render the exact same three states from the same steps. */
 export function activityToStatus(activity: AssistantActivity): AssistantActivityStatus {
   if (activity.kind === 'thinking') return 'thinking'
-  return activity.tool === 'search_knowledge' ? 'searching_kb' : 'reviewing_conversation'
+  return activity.tool === 'search' ? 'searching_kb' : 'reviewing_conversation'
 }
 
 interface AssistantTurnCommonInput {
@@ -219,7 +231,7 @@ interface AssistantTurnCommonInput {
   /** Actual latest role request when the role owns a synthetic model message. */
   latestRequestForGuidance?: string
   /**
-   * Per-request NARROWING filter over search_knowledge's grounding sources
+   * Per-request NARROWING filter over search's grounding sources
    * (the copilot Answer-sources picker); undefined consults every source the
    * workspace's flags already registered. See `retrieveKnowledge`.
    */
@@ -259,6 +271,14 @@ interface AssistantTurnCommonInput {
   onTextDelta?: (delta: string) => void
   /** Surfaces agentic steps (tool calls) as they happen, for a live status trace. */
   onActivity?: (activity: AssistantActivity) => void
+  /**
+   * AG-UI wire forwarding (see synthesis-core's option of the same name):
+   * receives the turn's committed model-stream chunks for a route serving the
+   * AG-UI protocol. Internal seam — routes reach it via `streamAssistantTurn`,
+   * which owns the canonical run lifecycle around these chunks; direct callers
+   * (orchestrator, evals) leave it unset and are byte-for-byte unchanged.
+   */
+  wireSink?: (chunk: StreamChunk) => void
 }
 
 /**
@@ -354,6 +374,10 @@ export interface AssistantCompletionTrace {
   toolCalls: readonly string[]
   inabilityReported: boolean
   handoffRequested: boolean
+  /** Whether admin-authored guidance was injected this turn. Guidance facts
+   *  (policies, guarantees) are legitimate grounding, so an answered turn
+   *  whose searches all came back empty is not automatically a fabrication. */
+  hasAdminGuidance: boolean
 }
 
 /**
@@ -386,12 +410,17 @@ export function validateAssistantCompletion(
 
   // A different tool result may itself be the complete basis for the final
   // response (for example a handoff or ticket creation after an empty search).
-  const hasAlternativeToolResult = trace.toolCalls.some((name) => name !== 'search_knowledge')
+  // Admin guidance also legitimately grounds an answer no search could find
+  // (e.g. a money-back guarantee stated only in a guidance rule), so its
+  // presence exempts the turn from the empty-search rejection — the
+  // fabricated-citation gate above still applies unconditionally.
+  const hasAlternativeToolResult = trace.toolCalls.some((name) => name !== 'search')
   if (
     trace.searchCalls > 0 &&
     trace.sources.size === 0 &&
     !trace.handoffRequested &&
-    !hasAlternativeToolResult
+    !hasAlternativeToolResult &&
+    !trace.hasAdminGuidance
   ) {
     throw new AssistantCompletionError('empty_search_without_resolution_tool')
   }
@@ -399,7 +428,7 @@ export function validateAssistantCompletion(
   // retrieval), but it must not excuse paraphrasing retrieved sources
   // without citing them — only a write/control tool result can do that.
   const hasNonReadResolutionTool = trace.toolCalls.some(
-    (name) => name !== 'search_knowledge' && name !== 'get_status'
+    (name) => name !== 'search' && name !== 'get_status'
   )
   if (
     trace.searchCalls > 0 &&
@@ -924,7 +953,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
 
   // Compile the resolved agent's per-agent knowledge map (config v3) into this
   // turn's enabled retrieval sources + status flag. This is the single seam
-  // that turns admin toggles into the assembled toolset: search_knowledge
+  // that turns admin toggles into the assembled toolset: search
   // registers iff ≥1 source is enabled, get_status iff `status` is on, and the
   // enabled set both scopes retrieval and drives the tool's source enumeration.
   const knowledgeSnapshot = resolveAssistantKnowledgeSnapshot(
@@ -1138,6 +1167,31 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     }
   }
 
+  // Live board catalogue, the sibling of the attribute block above:
+  // capture_feedback's required boardId is unknowable to the model without an
+  // enumeration, so the tool is only usable alongside its catalogue — fetched
+  // when the tool made the cut, and the tool dropped when the read fails (a
+  // catalogue-less capture_feedback just stalls the model on a guessable id).
+  let boardCatalogue: AssistantBoardCatalogueEntry[] | undefined
+  if (toolNames.has('capture_feedback')) {
+    try {
+      boardCatalogue = (await listBoards()).map((board) => ({
+        id: board.id,
+        name: board.name,
+        description: board.description ?? null,
+      }))
+    } catch (error) {
+      log.warn({ err: error }, 'board catalogue load failed; omitting capture_feedback')
+      boardCatalogue = undefined
+    }
+    if (!boardCatalogue || boardCatalogue.length === 0) {
+      const keep = activeSpecs.map((spec) => spec.name !== 'capture_feedback')
+      tools = tools.filter((_, index) => keep[index])
+      activeSpecs = activeSpecs.filter((_, index) => keep[index])
+      toolNames = new Set(tools.map((tool) => tool.name))
+    }
+  }
+
   const trustedContextParts: string[] = []
   const modelMessages = toModelMessages(messages)
   if (ticketGrounding) {
@@ -1181,6 +1235,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     guidance: selectedGuidance.map((rule) => rule.instruction),
     workflowInstructions: input.stepInstructions,
     attributeCatalogue: attributeDefinitions,
+    boardCatalogue,
   })
 
   // Tool-backed turns have an objective execution ledger. A zero-tool public
@@ -1230,6 +1285,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     signal: input.signal,
     onTextDelta: input.onTextDelta,
     onActivity: input.onActivity,
+    wireSink: input.wireSink,
     usageLogParams: {
       // The intent-profiled step (see COPILOT_INTENT_PROFILES: 'suggest' logs
       // 'copilot_suggest' to stay out of the Q&A question count); every
@@ -1299,6 +1355,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
         toolCalls: toolContext.ledger.toolCalls,
         inabilityReported: toolContext.ledger.inabilityReport !== null,
         handoffRequested: toolContext.ledger.handoffRequest !== null,
+        hasAdminGuidance: selectedGuidance.length > 0,
       })
 
       if (
@@ -1415,4 +1472,106 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     }
   }
   return { status: 'answered', ...delivered }
+}
+
+export interface StreamAssistantTurnOptions {
+  input: AssistantTurnInput
+  /** Thread/run ids echoed on the canonical lifecycle chunks (from the AG-UI
+   *  request body, so the client correlates the run it started). */
+  wire: WireRunIds
+  /**
+   * Maps the turn's post-processed result to this surface's terminal payload
+   * (CopilotFinalPayload, AssistantTestFinalPayload, ...), carried on AG-UI's
+   * standard RUN_FINISHED.result slot. Runs after
+   * the turn fully completes — citations relinked, completion validated — so
+   * the payload is the enriched result, never the raw model object.
+   */
+  buildFinalPayload: (result: AssistantTurnResult) => unknown
+  /** Maps a turn failure to the wire error frame. Defaults to
+   *  not_configured / turn_failed. */
+  mapError?: (error: unknown) => { code: string; message: string }
+}
+
+function defaultMapError(error: unknown): { code: string; message: string } {
+  if (error instanceof AssistantNotConfiguredError) {
+    return { code: 'not_configured', message: error.message }
+  }
+  return { code: 'turn_failed', message: 'The assistant could not complete this turn.' }
+}
+
+/**
+ * The AG-UI wire shape of one assistant turn, for routes serving
+ * `toServerSentEventsResponse`. Runs the exact `runAssistantTurn` (identical
+ * retry/salvage/post-processing semantics) with its committed model-stream
+ * chunks forwarded to the wire, wrapped in ONE canonical run lifecycle:
+ *
+ *   RUN_STARTED, <committed model chunks: text deltas as raw structured JSON,
+ *   TOOL_CALL_*, CUSTOM (incl. structured-output.*)>, STEP_* activity, and a
+ *   terminal RUN_FINISHED whose standard `result` slot carries the
+ *   post-processed surface payload
+ *
+ * — or RUN_ERROR as the terminal frame on failure. The engine's own
+ * per-iteration lifecycle chunks never reach the wire (synthesis-core filters
+ * them): ChatClient settles a run on ANY RUN_FINISHED, so a mid-loop one would
+ * end the client's turn early. A suppressed turn (silence rule) emits no model
+ * chunks, just the lifecycle pair with the suppressed payload on `result`.
+ */
+export function streamAssistantTurn(
+  options: StreamAssistantTurnOptions
+): AsyncGenerator<StreamChunk> {
+  const queue = createChunkQueue()
+  const mapError = options.mapError ?? defaultMapError
+
+  // Server-authoritative activity on AG-UI's standard step lifecycle: each
+  // status change is a STEP_STARTED (stepName = the shared activity
+  // vocabulary), closing the previous step first so pairs stay balanced.
+  // Deliberately NOT routed through the commit buffer — 'thinking' fires at
+  // attempt start, before any model chunk exists, and the client should show
+  // it immediately (matching the old contract's timing).
+  const callerOnActivity = options.input.onActivity
+  let openStep: AssistantActivityStatus | null = null
+  const closeOpenStep = (): void => {
+    if (openStep !== null) {
+      queue.push(stepFinishedChunk(openStep))
+      openStep = null
+    }
+  }
+  const onActivity = (activity: AssistantActivity): void => {
+    const status = activityToStatus(activity)
+    if (status !== openStep) {
+      closeOpenStep()
+      queue.push(stepStartedChunk(status))
+      openStep = status
+    }
+    callerOnActivity?.(activity)
+  }
+
+  // AG-UI pairing compliance: close any triad a committed-but-failed attempt
+  // left open before a retry's new message or the terminal frame (see
+  // createPairingTracker). `observe` runs BEFORE the chunk is pushed so its
+  // synthetic END lands ahead of a superseding START.
+  const pairing = createPairingTracker((chunk) => queue.push(chunk))
+  const wireSink = (chunk: StreamChunk): void => {
+    pairing.observe(chunk)
+    queue.push(chunk)
+  }
+
+  queue.push(runStartedChunk(options.wire))
+  void runAssistantTurn({ ...options.input, onActivity, wireSink })
+    .then((result) => {
+      pairing.closeOpen()
+      closeOpenStep()
+      queue.push(runFinishedChunk(options.wire, options.buildFinalPayload(result)))
+      queue.end()
+    })
+    .catch((error: unknown) => {
+      log.warn({ err: error }, 'assistant wire turn failed')
+      pairing.closeOpen()
+      closeOpenStep()
+      const { code, message } = mapError(error)
+      queue.push(runErrorChunk(options.wire, code, message))
+      queue.end()
+    })
+
+  return queue.stream()
 }

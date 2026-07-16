@@ -1,56 +1,54 @@
+/**
+ * Test agent sandbox: an admin-only preview that runs the exact production turn
+ * seam (`streamAssistantTurn` -> `runAssistantTurn`) against live config with
+ * `conversationId: null` + `simulate: true` — a turn that never writes, never
+ * audits, and never touches the inbox. Unlike copilot.ts this gates on
+ * `settings.manage` (not `copilot.use`) and has NO item ref (the sandbox is not
+ * scoped to any conversation or ticket), so it parses the AG-UI body directly
+ * rather than through `gateCopilotAguiRequest`.
+ *
+ * WIRE: TanStack AI's AG-UI protocol (as copilot.ts). The client POSTs a
+ * `RunAgentInput` whose messages are the test thread and whose forwardedProps
+ * carry the two sandbox selectors (`channel`, `agent`); the response is
+ * `toServerSentEventsResponse(streamAssistantTurn(...))`. The terminal
+ * RUN_FINISHED.result carries the client-safe `AssistantTestFinalPayload`
+ * (built by `buildFinalPayload` below), which is an explicit allowlist —
+ * hidden prompts, instruction bodies, reasoning, tool args, and tool results
+ * never cross the boundary. Failures end the stream with a coded RUN_ERROR.
+ */
 import { createFileRoute } from '@tanstack/react-router'
+import { toServerSentEventsResponse, chatParamsFromRequestBody } from '@tanstack/ai'
 import { z } from 'zod'
 import {
-  activityToStatus,
   ensureAssistantPrincipal,
   isAssistantConfigured,
-  runAssistantTurn,
+  streamAssistantTurn,
+  type AssistantTurnInput,
+  type AssistantTurnResult,
   type AssistantTurnTrace,
 } from '@/lib/server/domains/assistant'
+import { aguiThreadMessages } from '@/lib/server/domains/assistant/agui'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import { requireAuth } from '@/lib/server/functions/auth-helpers'
 import { isAuthDenialError } from '@/lib/server/functions/auth-errors'
-import { logger } from '@/lib/server/logger'
-import { createSseStream, SSE_RESPONSE_HEADERS } from '@/lib/server/utils/sse'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   ASSISTANT_TEST_AGENTS,
   ASSISTANT_TEST_CHANNELS,
-  ASSISTANT_TEST_EVENTS,
   ASSISTANT_TEST_MAX_CONTENT_CHARS,
   ASSISTANT_TEST_MAX_MESSAGES,
-  type AssistantTestActivityPayload,
   type AssistantTestCitation,
-  type AssistantTestDeltaPayload,
-  type AssistantTestErrorPayload,
   type AssistantTestFinalPayload,
   type AssistantTestTrace,
 } from '@/lib/shared/assistant/test-agent-contract'
-import type { AssistantTurnInput } from '@/lib/server/domains/assistant'
 
-const log = logger.child({ component: 'assistant-test' })
-
-const requestSchema = z
-  .object({
-    messages: z
-      .array(
-        z
-          .object({
-            sender: z.enum(['customer', 'assistant']),
-            content: z.string().trim().min(1).max(ASSISTANT_TEST_MAX_CONTENT_CHARS),
-          })
-          .strict()
-      )
-      .min(1)
-      .max(ASSISTANT_TEST_MAX_MESSAGES)
-      .refine((messages) => messages.at(-1)?.sender === 'customer', {
-        message: 'The final message must be from the customer',
-      }),
-    channel: z.enum(ASSISTANT_TEST_CHANNELS).default('widget'),
-    agent: z.enum(ASSISTANT_TEST_AGENTS).default('agent'),
-  })
-  .strict()
+// The two sandbox selectors ride the AG-UI request's forwardedProps; the test
+// thread is the AG-UI messages envelope itself.
+const forwardedPropsSchema = z.object({
+  channel: z.enum(ASSISTANT_TEST_CHANNELS).default('widget'),
+  agent: z.enum(ASSISTANT_TEST_AGENTS).default('agent'),
+})
 
 function jsonError(status: number, code: string, message: string): Response {
   return Response.json({ error: { code, message } }, { status })
@@ -89,6 +87,27 @@ function toSafeTrace(trace: AssistantTurnTrace): AssistantTestTrace {
   throw new Error(`Test agent runtime returned an unsupported role "${trace.role}"`)
 }
 
+/** Map a completed turn onto the client-safe final payload (the allowlist). A
+ *  suppressed turn should never happen in the sandbox (its single customer turn
+ *  can't trip the silence rule), so it fails the run rather than emit a card. */
+function toFinalPayload(result: AssistantTurnResult): AssistantTestFinalPayload {
+  if (result.status === 'suppressed') {
+    throw new Error('Test agent turn was unexpectedly suppressed')
+  }
+  const citations: AssistantTestCitation[] = result.citations.map(({ type, id, title, url }) => ({
+    type,
+    id,
+    title,
+    url,
+  }))
+  return {
+    text: result.text,
+    citations,
+    escalation: result.escalation ? { reason: result.escalation.reason, mode: 'handoff' } : null,
+    trace: toSafeTrace(result.trace),
+  }
+}
+
 export async function handleTestAgent({ request }: { request: Request }): Promise<Response> {
   let auth: Awaited<ReturnType<typeof requireAuth>>
   try {
@@ -98,11 +117,24 @@ export async function handleTestAgent({ request }: { request: Request }): Promis
     return jsonError(403, 'FORBIDDEN', 'Assistant management access required')
   }
 
-  let parsed: z.infer<typeof requestSchema>
+  let forwarded: z.infer<typeof forwardedPropsSchema>
+  let agui: { messages: ReadonlyArray<unknown>; threadId: string; runId: string }
   try {
-    parsed = requestSchema.parse(await request.json())
+    const params = await chatParamsFromRequestBody(await request.json())
+    forwarded = forwardedPropsSchema.parse(params.forwardedProps)
+    agui = { messages: params.messages, threadId: params.threadId, runId: params.runId }
   } catch {
     return jsonError(400, 'INVALID_REQUEST', 'A valid customer conversation is required')
+  }
+
+  // The AG-UI history maps onto the runtime's thread vocabulary; the test turn
+  // must end on a customer message (the thing Quinn is answering).
+  const messages = aguiThreadMessages(agui.messages, {
+    maxTurns: ASSISTANT_TEST_MAX_MESSAGES,
+    maxChars: ASSISTANT_TEST_MAX_CONTENT_CHARS,
+  })
+  if (messages.length === 0 || messages.at(-1)?.sender !== 'customer') {
+    return jsonError(400, 'INVALID_REQUEST', 'The final message must be from the customer')
   }
 
   if (!isAssistantConfigured()) {
@@ -119,27 +151,20 @@ export async function handleTestAgent({ request }: { request: Request }): Promis
   }
 
   const assistant = await ensureAssistantPrincipal()
-  const sse = createSseStream()
 
   // The discriminated turn contract forbids selecting a customer role with the
   // team surface (and vice versa), so each agent builds its own complete input.
   // Both stay `conversationId: null` + `simulate: true` — a sandbox turn that
   // never writes, never audits, and never touches the inbox.
   const common = {
-    messages: parsed.messages,
+    messages,
     assistantPrincipalId: assistant.id,
     conversationId: null,
     simulate: true,
     signal: request.signal,
-    onActivity: (activity: Parameters<NonNullable<AssistantTurnInput['onActivity']>>[0]) =>
-      sse.send(ASSISTANT_TEST_EVENTS.activity, {
-        status: activityToStatus(activity),
-      } satisfies AssistantTestActivityPayload),
-    onTextDelta: (text: string) =>
-      sse.send(ASSISTANT_TEST_EVENTS.delta, { text } satisfies AssistantTestDeltaPayload),
   }
-  const turnInput: AssistantTurnInput =
-    parsed.agent === 'copilot'
+  const input: AssistantTurnInput =
+    forwarded.agent === 'copilot'
       ? {
           ...common,
           role: 'copilot_qa',
@@ -151,42 +176,17 @@ export async function handleTestAgent({ request }: { request: Request }): Promis
       : {
           ...common,
           role: 'customer_support',
-          surface: parsed.channel,
+          surface: forwarded.channel,
         }
 
-  void (async () => {
-    try {
-      const result = await runAssistantTurn(turnInput)
-
-      if (result.status === 'suppressed') {
-        throw new Error('Test agent turn was unexpectedly suppressed')
-      }
-
-      const citations: AssistantTestCitation[] = result.citations.map(
-        ({ type, id, title, url }) => ({ type, id, title, url })
-      )
-      sse.send(ASSISTANT_TEST_EVENTS.final, {
-        text: result.text,
-        citations,
-        escalation: result.escalation
-          ? { reason: result.escalation.reason, mode: 'handoff' }
-          : null,
-        trace: toSafeTrace(result.trace),
-      } satisfies AssistantTestFinalPayload)
-    } catch (error) {
-      if (!request.signal.aborted) {
-        log.error({ err: error }, 'assistant test turn failed')
-        sse.send(ASSISTANT_TEST_EVENTS.error, {
-          code: 'TURN_FAILED',
-          message: 'The test run failed',
-        } satisfies AssistantTestErrorPayload)
-      }
-    } finally {
-      sse.close()
-    }
-  })()
-
-  return new Response(sse.stream, { headers: SSE_RESPONSE_HEADERS })
+  return toServerSentEventsResponse(
+    streamAssistantTurn({
+      input,
+      wire: { threadId: agui.threadId, runId: agui.runId },
+      buildFinalPayload: toFinalPayload,
+      mapError: () => ({ code: 'TURN_FAILED', message: 'The test run failed' }),
+    })
+  )
 }
 
 export const Route = createFileRoute('/api/admin/assistant/test')({

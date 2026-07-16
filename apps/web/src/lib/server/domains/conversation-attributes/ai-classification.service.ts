@@ -28,7 +28,7 @@
  * service principal.
  *
  * Gated, in order: the `inboxAi` feature flag; a configured AI
- * client + `classification` chat model (the same getOpenAI()/getChatModel()
+ * client + `classification` chat model (the same isAiClientConfigured()/getChatModel()
  * guard the other pipeline classifiers use — sentiment, quality-gate — rather
  * than importing the much larger assistant runtime module just for its
  * equivalent `isAssistantConfigured` check); `enforceAiTokenBudget()`; and at
@@ -40,7 +40,8 @@
  */
 import { db, conversations, conversationMessages, eq } from '@/lib/server/db'
 import type { ConversationId } from '@quackback/ids'
-import { getOpenAI } from '@/lib/server/domains/ai/config'
+import { config } from '@/lib/server/config'
+import { isAiClientConfigured } from '@/lib/server/domains/ai/config'
 import { getChatModel } from '@/lib/server/domains/ai/models'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
@@ -188,9 +189,8 @@ export async function classifyConversationAttributes(
   try {
     if (!(await isFeatureEnabled('inboxAi'))) return []
 
-    const openai = getOpenAI()
     const model = getChatModel('classification')
-    if (!openai || !model) return []
+    if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) return []
 
     try {
       await enforceAiTokenBudget()
@@ -226,7 +226,6 @@ export async function classifyConversationAttributes(
     const currentAttributes = (row?.customAttributes ?? {}) as Record<string, unknown>
 
     const results = await runClassificationCall({
-      openai,
       model,
       definitions: toClassificationDefinitionInput(definitions),
       transcript,

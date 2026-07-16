@@ -29,7 +29,10 @@ export interface LogAiUsageParams {
 
 export async function logAiUsage(params: LogAiUsageParams): Promise<void> {
   await db.insert(aiUsageLog).values({
-    pipelineStep: params.pipelineStep,
+    // Clamped to the column's varchar(30): an over-long step label must cost
+    // us a few characters, never the row — and inside a wrapping transaction
+    // (tests, evals) a failed insert would abort the whole transaction.
+    pipelineStep: params.pipelineStep.slice(0, 30),
     callType: params.callType,
     model: params.model,
     rawFeedbackItemId: (params.rawFeedbackItemId ??

@@ -1,7 +1,7 @@
 /**
  * Source-adapter seam for Quinn's grounding retrieval.
  *
- * `search_knowledge` used to call the knowledge base directly (the only
+ * `search` used to call the knowledge base directly (the only
  * grounding source that existed). This module generalizes that into a
  * `KnowledgeSource` per grounding source — the knowledge base always,
  * feedback posts, admin-curated snippets, and the same customer's own
@@ -26,11 +26,14 @@ import { retrieveKbArticles } from './retrieval'
 import type { AssistantConfig, AssistantAgentKind } from '@/lib/shared/assistant/config'
 import type { AssistantCitation } from './assistant.toolspec'
 import { ASSISTANT_CITATION_TYPES, type AssistantCitationType } from './citation-types'
+import { logger } from '@/lib/server/logger'
+
+const log = logger.child({ component: 'assistant-retrieval-sources' })
 
 /** Per-item snippet budget handed to the model (full content stays server-side). */
 export const KNOWLEDGE_SNIPPET_CHARS = 1200
 
-/** Default number of merged items handed to the model per search_knowledge call. */
+/** Default number of merged items handed to the model per search call. */
 export const KNOWLEDGE_TOP_K = 5
 
 /**
@@ -137,7 +140,7 @@ export const kbKnowledgeSource: KnowledgeSource = {
 /**
  * The retrieval sources a turn can ground on, plus the status flag, compiled
  * from the resolved agent's per-agent `knowledge` map (config v3). `sources`
- * drives both `search_knowledge`'s registration (registered iff ≥1 source is
+ * drives both `search`'s registration (registered iff ≥1 source is
  * enabled) and its dynamic source enumeration; `status` drives `get_status`.
  * Internal-notes grounding is NOT a retrieval source (it rides the copilot
  * grounding block), so it lives on the runtime, not here.
@@ -206,7 +209,7 @@ const SOURCE_TYPE_PROMPT_LABELS: Record<AssistantCitationType, string> = {
 
 /**
  * The model-facing enumeration of the turn's enabled retrieval sources, folded
- * into `search_knowledge`'s promptGuidance at assembly time (assistant.tools.ts)
+ * into `search`'s promptGuidance at assembly time (assistant.tools.ts)
  * so the description the model reads is dynamic per turn while the static tool
  * definition contract stays fixed. Posts carry a standing caveat: they are
  * customer-submitted, cited as feedback, never asserted as fact. `''` when no
@@ -266,7 +269,7 @@ export async function resolveKnowledgeSources(
 /**
  * Compose every registered source for one query: run them in parallel, merge
  * by per-source rank, and trim to `topK`. This is the one thing
- * `search_knowledge` calls — it no longer knows the knowledge base is even a
+ * `search` calls — it no longer knows the knowledge base is even a
  * source, let alone the only one.
  *
  * The merge is rank-based interleaving, NOT a sort on raw scores: score
@@ -318,14 +321,26 @@ export async function retrieveKnowledge(
   const sources = opts.sourceTypes
     ? resolved.filter((source) => opts.sourceTypes!.includes(source.sourceType))
     : resolved
+  // One failing source must degrade, never dominate: without the per-source
+  // catch a single throwing adapter rejects the whole fan-out and the entire
+  // search tool fails, which contradicts the padding contract below (a
+  // degraded source contributes nothing; the others still answer).
   const perSource = await Promise.all(
     sources.map((source) =>
-      source.retrieve(query, ceiling, {
-        topK,
-        signal: opts.signal,
-        customerPrincipalId: opts.customerPrincipalId,
-        conversationId: opts.conversationId,
-      })
+      source
+        .retrieve(query, ceiling, {
+          topK,
+          signal: opts.signal,
+          customerPrincipalId: opts.customerPrincipalId,
+          conversationId: opts.conversationId,
+        })
+        .catch((error: unknown): RetrievedItem[] => {
+          log.warn(
+            { err: error, sourceType: source.sourceType },
+            'knowledge source retrieval failed; continuing without it'
+          )
+          return []
+        })
     )
   )
   // Rank within each source (its own scale is self-consistent), then

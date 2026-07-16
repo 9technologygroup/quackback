@@ -14,26 +14,32 @@
  * whatever this store already knows for its key, including an in-flight
  * generation that kept streaming in the background while unmounted.
  *
- * Streaming runs through `runSseTurn` (the same skeleton `useSseTurn` wraps)
- * with a store-owned AbortController per run rather than the hook itself:
- * `useSseTurn`'s controller is scoped to the calling component's lifecycle
- * (aborted on unmount), which is the opposite of what a cross-remount cache
- * needs — a generation in flight when a teammate switches ITEMS should keep
- * running, so it's ready the moment they switch back. The one run worth
- * killing is a superseded one: when the SAME item gets a newer customer
- * message, the old key can never render again, so its stream is aborted
- * (see the in-flight registry below) instead of burning tokens to completion.
+ * Streaming runs through a per-run `ChatClient` (TanStack AI's AG-UI protocol,
+ * via `runAguiTurn`) rather than a component hook: a component-scoped client
+ * would abort on unmount, the opposite of what a cross-remount cache needs — a
+ * generation in flight when a teammate switches ITEMS should keep running, so
+ * it's ready the moment they switch back. The one run worth killing is a
+ * superseded one: when the SAME item gets a newer customer message, the old key
+ * can never render again, so its client is stopped (see the in-flight registry
+ * below) instead of burning tokens to completion.
+ *
+ * FINAL-ONLY: the store reads only the terminal RUN_FINISHED.result (the
+ * `SuggestFinalPayload`) and ignores every partial chunk. A suggestion's honest
+ * miss is only knowable at the end of the run, so a half-drafted guess must
+ * never render even though the server may stream model chunks.
  */
-import { runSseTurn } from '@/lib/client/hooks/use-sse-turn'
-import { extractHttpErrorMessage, GENERIC_ERROR } from '@/lib/client/utils/http-error'
+import { runAguiTurn, type AguiRunHandle } from '@/lib/client/utils/agui-run'
+import { GENERIC_ERROR } from '@/lib/client/utils/http-error'
 import type { AssistantItemRef } from '@/lib/client/copilot-events'
 import {
-  SUGGEST_EVENTS,
   type CopilotCitation,
-  type SuggestDeltaPayload,
   type SuggestFinalPayload,
-  type SuggestErrorPayload,
 } from '@/lib/shared/assistant/copilot-contract'
+
+/** The AG-UI turn message. A suggestion carries no question — the
+ *  `suggested_reply` intent owns the turn's drafting instruction server-side —
+ *  so this placeholder is ignored (the route reads only forwardedProps). */
+const SUGGEST_MESSAGE = 'Draft a suggested reply.'
 
 export type SuggestionStatus = 'loading' | 'streaming' | 'done' | 'skip' | 'error'
 
@@ -81,15 +87,22 @@ export const SUGGESTION_CACHE_MAX = 50
 
 const cache = new Map<string, SuggestionEntry>()
 const listeners = new Map<string, Set<Listener>>()
+/** One in-flight run: the message id it was started for, a `superseded` flag
+ *  its own chunk handlers check (a superseded run's late frames must never flip
+ *  the entry the supersede site already settled), and the ChatClient `stop`. */
+interface InflightRun {
+  messageId: string
+  state: { superseded: boolean }
+  stop: () => void
+}
 /** In-flight runs, keyed by ITEM id (not suggestion key): at most one
  *  generation per item is ever worth having. When `ensureSuggestion` starts a
  *  run for a NEWER customer message on the same item, the older run's key is
- *  permanently stale — nothing will ever render it — so its stream is aborted
- *  rather than left burning tokens to completion (the server honors the
- *  request signal). Runs for OTHER items stay untouched: those keys stay
- *  renderable, and finishing in the background is the whole point of the
- *  cross-remount cache. */
-const inflight = new Map<string, { messageId: string; controller: AbortController }>()
+ *  permanently stale — nothing will ever render it — so its client is stopped
+ *  rather than left burning tokens to completion (the server honors the abort).
+ *  Runs for OTHER items stay untouched: those keys stay renderable, and
+ *  finishing in the background is the whole point of the cross-remount cache. */
+const inflight = new Map<string, InflightRun>()
 
 /** The one key every entry/listener is keyed by: an item's own id paired with
  *  the customer message driving this generation. A new customer message
@@ -166,93 +179,83 @@ function evictOverCap(): void {
   }
 }
 
-async function runSuggestion(
+function runSuggestion(
   key: string,
   item: SuggestItemRef,
   lastCustomerMessageId: string,
-  signal: AbortSignal
-): Promise<void> {
-  let text = ''
+  state: { superseded: boolean }
+): AguiRunHandle {
   let finished = false
-  await runSseTurn(
-    {
-      url: '/api/admin/assistant/suggest',
-      body: { ...item, lastCustomerMessageId },
-      // Every handler/outcome below early-returns once this run's signal has
-      // aborted: an abort means a newer run superseded this one (or a test
-      // reset tore the store down), and THAT site already owns the entry's
-      // terminal state — a frame still buffered in the old stream must not
-      // flip the superseded entry back to life.
-      handlers: {
-        [SUGGEST_EVENTS.delta]: (data) => {
-          if (signal.aborted) return
-          text += (data as SuggestDeltaPayload).text
-          setEntry(key, { status: 'streaming', text, citations: [], internalSourced: false })
-        },
-        [SUGGEST_EVENTS.final]: (data) => {
-          if (signal.aborted) return
-          finished = true
-          const final = data as SuggestFinalPayload
-          const finalText = final.text || text
-          if (final.skip || !finalText.trim()) {
-            // Honest miss — or a non-skip final that arrived with no usable
-            // text (belt to the server's own guard): render nothing rather
-            // than a bare card, and never counted as "shown".
-            setEntry(key, { status: 'skip', text: '', citations: [], internalSourced: false })
-          } else {
-            // 'suggestion_shown' is NOT logged here: a final frame landing is
-            // not a teammate seeing it (a background completion for an item
-            // nobody has open would deflate the acceptance rate). The CARD
-            // logs shown on first render of this entry, exactly-once via
-            // `markSuggestionShown`.
-            setEntry(key, {
-              status: 'done',
-              text: finalText,
-              citations: final.citations,
-              internalSourced: final.internalSourced,
-            })
-          }
-        },
-        [SUGGEST_EVENTS.error]: (data) => {
-          if (signal.aborted) return
-          finished = true
-          const err = data as SuggestErrorPayload
-          setEntry(key, errorEntry(err.message || GENERIC_ERROR))
-        },
-      },
-      onHttpError: async (res) => {
-        if (signal.aborted) return
-        // 409 CONFLICT is the suggest route's staleness signal: the
-        // lastCustomerMessageId this run carried is no longer the item's
-        // latest customer message. Not a failure worth a doomed Retry card
-        // (retrying re-sends the same stale id) — render nothing; the newer
-        // message is a new cache key, which regenerates naturally.
-        if (res.status === 409) {
+  // Every handler below early-returns once this run is superseded: a supersede
+  // means a newer run replaced this one (or a test reset tore the store down),
+  // and THAT site already owns the entry's terminal state — a frame still
+  // buffered in the old stream must not flip the superseded entry back to life.
+  const run = runAguiTurn({
+    url: '/api/admin/assistant/suggest',
+    message: SUGGEST_MESSAGE,
+    forwardedProps: { ...item, lastCustomerMessageId },
+    onChunk: (chunk) => {
+      if (state.superseded || finished) return
+      const c = chunk as { type: string; result?: unknown; code?: unknown; message?: unknown }
+      // FINAL-ONLY: partial chunks (text deltas, tool calls) are ignored; only
+      // the terminal RUN_FINISHED.result transitions state. A bare
+      // RUN_FINISHED without a result (the engine's own) is not our terminal.
+      if (c.type === 'RUN_FINISHED') {
+        if (c.result === undefined) return
+        finished = true
+        const final = c.result as SuggestFinalPayload
+        const finalText = final.text || ''
+        if (final.skip || !finalText.trim()) {
+          // Honest miss — or a non-skip final that arrived with no usable text
+          // (belt to the server's own guard): render nothing rather than a
+          // bare card, and never counted as "shown".
           setEntry(key, { status: 'skip', text: '', citations: [], internalSourced: false })
-          return
+        } else {
+          // 'suggestion_shown' is NOT logged here: a final frame landing is not
+          // a teammate seeing it (a background completion for an item nobody
+          // has open would deflate the acceptance rate). The CARD logs shown on
+          // first render of this entry, exactly-once via `markSuggestionShown`.
+          setEntry(key, {
+            status: 'done',
+            text: finalText,
+            citations: final.citations,
+            internalSourced: final.internalSourced,
+          })
         }
-        setEntry(key, errorEntry(await extractHttpErrorMessage(res)))
-      },
-      onStreamEnd: () => {
-        // Stream ended without a final/error frame — a quiet failure, same
-        // retry affordance as an explicit error event.
-        if (!finished && !signal.aborted) setEntry(key, errorEntry(GENERIC_ERROR))
-      },
-      onAbort: () => {
-        // Deliberately a no-op: every abort site already owns its terminal
-        // entry state (ensureSuggestion writes the stale-key error before
-        // aborting a superseded run; a retry's abort is followed by the fresh
-        // run's own loading entry; resetSuggestionStoreForTests WANTS the
-        // maps empty). Writing here would resurrect entries the abort site
-        // just settled or cleared.
-      },
-      onError: () => {
-        if (signal.aborted) return
-        setEntry(key, errorEntry(GENERIC_ERROR))
-      },
+      } else if (c.type === 'RUN_ERROR') {
+        finished = true
+        // A 409 rides the wire as a `http_409` RUN_ERROR (see aguiFetchClient):
+        // the suggest route's staleness/closed signal. Not a failure worth a
+        // doomed Retry card (retrying re-sends the same stale id) — render
+        // nothing; the newer message is a new cache key, which regenerates.
+        if (c.code === 'http_409') {
+          setEntry(key, { status: 'skip', text: '', citations: [], internalSourced: false })
+        } else {
+          setEntry(
+            key,
+            errorEntry(typeof c.message === 'string' && c.message ? c.message : GENERIC_ERROR)
+          )
+        }
+      }
     },
-    signal
-  )
+    onError: (error) => {
+      // A transport failure that never produced a RUN_ERROR chunk (rare — HTTP
+      // errors ride the synthetic RUN_ERROR frame).
+      if (state.superseded || finished) return
+      finished = true
+      setEntry(key, errorEntry(error.message || GENERIC_ERROR))
+    },
+  })
+
+  void run.done.then(() => {
+    // Stream ended without a terminal final/error frame — a quiet failure, same
+    // retry affordance as an explicit error event. A superseded run owns
+    // nothing (the supersede site already settled its entry, or a reset wants
+    // the maps empty), and an abort resolves `done` the same way.
+    if (!finished && !state.superseded) setEntry(key, errorEntry(GENERIC_ERROR))
+  })
+
+  return run
 }
 
 /** Start generation for `key` unless it's already cached or in flight.
@@ -283,16 +286,21 @@ export function ensureSuggestion(
     if (prior.messageId !== lastCustomerMessageId) {
       setEntry(suggestionKey(itemId, prior.messageId), errorEntry(GENERIC_ERROR))
     }
-    prior.controller.abort()
+    // Mark superseded BEFORE stopping so any late/buffered frame this run still
+    // delivers is dropped by its own handlers rather than reviving the entry.
+    prior.state.superseded = true
+    prior.stop()
     inflight.delete(itemId)
   }
 
   setEntry(key, LOADING_ENTRY)
   evictOverCap()
-  const controller = new AbortController()
-  inflight.set(itemId, { messageId: lastCustomerMessageId, controller })
-  void runSuggestion(key, item, lastCustomerMessageId, controller.signal).finally(() => {
-    if (inflight.get(itemId)?.controller === controller) inflight.delete(itemId)
+  const state = { superseded: false }
+  const run = runSuggestion(key, item, lastCustomerMessageId, state)
+  const entry: InflightRun = { messageId: lastCustomerMessageId, state, stop: run.stop }
+  inflight.set(itemId, entry)
+  void run.done.finally(() => {
+    if (inflight.get(itemId) === entry) inflight.delete(itemId)
   })
 }
 
@@ -318,7 +326,10 @@ export function dismissSuggestion(key: string): void {
 /** Test-only reset — the module-level maps otherwise leak state across test
  *  cases (and across items/messages within a single session, by design). */
 export function resetSuggestionStoreForTests(): void {
-  for (const { controller } of inflight.values()) controller.abort()
+  for (const run of inflight.values()) {
+    run.state.superseded = true
+    run.stop()
+  }
   inflight.clear()
   cache.clear()
   listeners.clear()

@@ -2,7 +2,7 @@
  * Shared knowledge-base retrieval for AI answers.
  *
  * The single retrieval module behind help-center Ask AI (and, later, the
- * assistant's search_knowledge tool). Audience-scoped whole-article top-k:
+ * assistant's search tool). Audience-scoped whole-article top-k:
  * semantic (pgvector cosine over kb_articles.embedding) when a query
  * embedding is available, keyword (tsvector) otherwise. Results below the
  * similarity floor are simply absent, so an empty result means "no relevant

@@ -22,6 +22,7 @@ import {
   type AgentLoopStrategy,
   type AnyChatMiddleware,
   type AnyTool,
+  type StreamChunk,
 } from '@tanstack/ai'
 import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
 import { jsonrepair } from 'jsonrepair'
@@ -30,6 +31,7 @@ import { config } from '@/lib/server/config'
 import { stripCodeFences, structuredOutputProviderOptions } from '@/lib/server/domains/ai/config'
 import { withRetry } from '@/lib/server/domains/ai/retry'
 import { withUsageLogging, type AiAnswerKind } from '@/lib/server/domains/ai/usage-log'
+import { isWireForwardable } from './agui'
 
 /** Output budget default: constrained decoding on small models needs headroom. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 1024
@@ -115,6 +117,17 @@ interface RunAttemptOptions<TContext> {
    * is ever re-dialed — a committed failure stops immediately regardless.
    */
   transportRetries?: number
+  /**
+   * AG-UI wire forwarding. When set, every wire-forwardable chunk the model
+   * stream produces (text deltas, tool-call lifecycle, CUSTOM events —
+   * engine RUN_STARTED/RUN_FINISHED/RUN_ERROR stay out, see agui.ts) is
+   * BUFFERED until the attempt commits, then flushed and forwarded live in
+   * order. A pristine failure (transport re-dial) therefore never leaks a
+   * half-open message to the wire; a committed attempt streams exactly what
+   * the old delta callbacks streamed, plus the native tool/structured chunks.
+   * The route-level generator owns the canonical run lifecycle around this.
+   */
+  wireSink?: (chunk: StreamChunk) => void
 }
 
 /** jsonrepair throws on hopeless input; treat that as "no repair available". */
@@ -215,6 +228,21 @@ async function streamOnce<TContext>(
     baseURL: config.openaiBaseUrl!,
     apiKey: config.openaiApiKey!,
   })
+  // TOOLS AND response_format MUST NOT SHARE A REQUEST. The compatible
+  // adapter reports combined tools+schema support (the API accepts it), but
+  // under constrained decoding models stop CALLING tools: generation is
+  // funneled into the schema, so an action request gets narrated into the
+  // text field ("I'll log that now") instead of emitted as a tool call —
+  // reproduced minimally on GLM 5.2 and DeepSeek v4 via OpenRouter. Forcing
+  // the engine's split path (agent loop without outputSchema, then a separate
+  // structured finalization request) restores reliable tool calling; the
+  // finalization emits the same structured-output.* events, one extra model
+  // call per tool-using turn. Tool-less calls keep the single-request stream.
+  if (opts.tools) {
+    ;(
+      adapter as { supportsCombinedToolsAndSchema?: (modelOptions?: unknown) => boolean }
+    ).supportsCombinedToolsAndSchema = () => false
+  }
 
   const modelOptions = {
     max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
@@ -258,6 +286,23 @@ async function streamOnce<TContext>(
   let final: unknown | null = null
   let usage: AttemptOutcome['usage']
   let runError: string | null = null
+
+  // Wire forwarding (see RunAttemptOptions.wireSink): held back until commit so
+  // a pristine re-dial stays invisible, then flushed in arrival order. Scoped
+  // per dial — a discarded buffer IS the re-dial invisibility guarantee.
+  const wireBuffer: StreamChunk[] = []
+  const forwardToWire = (chunk: StreamChunk): void => {
+    if (!opts.wireSink || !isWireForwardable(chunk)) return
+    if (!committed) {
+      wireBuffer.push(chunk)
+      return
+    }
+    if (wireBuffer.length > 0) {
+      for (const buffered of wireBuffer) opts.wireSink(buffered)
+      wireBuffer.length = 0
+    }
+    opts.wireSink(chunk)
+  }
 
   // The one classification point for every non-normal exit — a thrown error
   // mid-loop OR a post-loop RUN_ERROR that salvage couldn't recover. Pristine =>
@@ -314,7 +359,15 @@ async function streamOnce<TContext>(
           break
         }
         case 'CUSTOM': {
-          if (chunk.name === 'structured-output.complete') {
+          if (chunk.name === 'structured-output.start') {
+            // The split path's finalization boundary (see the adapter override
+            // above): everything accumulated so far is the agent loop's
+            // UNCONSTRAINED prose, not the structured JSON. Reset the
+            // delta-diffing state so the finalization stream parses cleanly —
+            // without this, prose + JSON concatenate and no delta ever parses.
+            raw = ''
+            emitted = ''
+          } else if (chunk.name === 'structured-output.complete') {
             // The decoded structured answer: a meaningful commit.
             committed = true
             final = (chunk.value as { object: unknown }).object
@@ -338,6 +391,9 @@ async function streamOnce<TContext>(
           break
         }
       }
+      // After the switch so `committed` already reflects THIS chunk: the
+      // committing chunk itself flushes the buffer and goes to the wire.
+      forwardToWire(chunk)
     }
   } catch (err) {
     exitStreamError(err instanceof Error ? err : new Error(String(err)))

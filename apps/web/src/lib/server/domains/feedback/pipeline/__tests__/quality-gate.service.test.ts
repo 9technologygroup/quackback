@@ -4,34 +4,35 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const mockOpenAI = {
-  chat: {
-    completions: {
-      create: vi.fn(),
-    },
-  },
-}
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
 
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: vi.fn(() => mockOpenAI),
-  stripCodeFences: vi.fn((s: string) => s.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '')),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+
+const mockCreateUsageLoggingMiddleware = vi.fn((..._args: unknown[]) => ({
+  name: 'ai-usage-logging',
+}))
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: (...args: unknown[]) => mockCreateUsageLoggingMiddleware(...args),
 }))
 
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: () => 'test-model',
   getEmbeddingModel: () => 'test-embedding-model',
-}))
-
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: vi.fn((fn: () => Promise<unknown>) =>
-    fn().then((result: unknown) => ({ result, retryCount: 0 }))
-  ),
-}))
-
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
-    fn().then(({ result }) => result)
-  ),
 }))
 
 vi.mock('../prompts/quality-gate.prompt', () => ({
@@ -41,6 +42,8 @@ vi.mock('../prompts/quality-gate.prompt', () => ({
 describe('quality-gate.service', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockConfig.openaiApiKey = 'test-key'
+    mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   })
 
   const makeItem = (text: string, sourceType = 'intercom') => ({
@@ -57,8 +60,8 @@ describe('quality-gate.service', () => {
     expect(result.reason).toContain('insufficient content')
 
     // Tier 1 skips should not call the LLM or usage logging
-    const { withUsageLogging } = await import('@/lib/server/domains/ai/usage-log')
-    expect(withUsageLogging).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
+    expect(mockCreateUsageLoggingMiddleware).not.toHaveBeenCalled()
   })
 
   it('should hard skip empty content', async () => {
@@ -75,9 +78,8 @@ describe('quality-gate.service', () => {
     expect(result.tier).toBe(2)
     expect(result.reason).toContain('high-intent')
     // Should not call LLM or usage logging
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
-    const { withUsageLogging } = await import('@/lib/server/domains/ai/usage-log')
-    expect(withUsageLogging).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
+    expect(mockCreateUsageLoggingMiddleware).not.toHaveBeenCalled()
   })
 
   it('should auto-pass api source with 15+ words', async () => {
@@ -89,22 +91,18 @@ describe('quality-gate.service', () => {
   })
 
   it('should NOT auto-pass intercom source with 15+ words', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [{ message: { content: '{"extract": true, "reason": "has feedback"}' } }],
-    })
+    mockChat.mockResolvedValueOnce({ extract: true, reason: 'has feedback' })
 
     const { shouldExtract } = await import('../quality-gate.service')
     const longText = 'word '.repeat(20).trim()
     const result = await shouldExtract(makeItem(longText, 'intercom'))
     // Should call LLM for intercom
-    expect(mockOpenAI.chat.completions.create).toHaveBeenCalled()
+    expect(mockChat).toHaveBeenCalled()
     expect(result.extract).toBe(true)
   })
 
   it('should return LLM gate result when extract=true', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [{ message: { content: '{"extract": true, "reason": "contains feedback"}' } }],
-    })
+    mockChat.mockResolvedValueOnce({ extract: true, reason: 'contains feedback' })
 
     const { shouldExtract } = await import('../quality-gate.service')
     const result = await shouldExtract(
@@ -114,23 +112,46 @@ describe('quality-gate.service', () => {
     expect(result.tier).toBe(3)
     expect(result.reason).toBe('contains feedback')
 
-    const { withUsageLogging } = await import('@/lib/server/domains/ai/usage-log')
-    expect(withUsageLogging).toHaveBeenCalledWith(
+    expect(mockCreateUsageLoggingMiddleware).toHaveBeenCalledWith(
       expect.objectContaining({
         pipelineStep: 'quality_gate',
-        callType: 'chat_completion',
         model: expect.any(String),
-        metadata: expect.objectContaining({ promptVersion: 'v1' }),
-      }),
-      expect.any(Function),
-      expect.any(Function)
+        metadata: expect.objectContaining({ promptVersion: 'v1', temperature: 0 }),
+      })
+    )
+
+    // No temperature / max_completion_tokens on the request itself — the
+    // OpenRouter require_parameters gate routes to zero providers otherwise.
+    const callArgs = mockChat.mock.calls[0][0] as { modelOptions: Record<string, unknown> }
+    expect(callArgs.modelOptions).not.toHaveProperty('temperature')
+    expect(callArgs.modelOptions).not.toHaveProperty('max_completion_tokens')
+    expect(callArgs.modelOptions.max_tokens).toBe(100)
+  })
+
+  it('should use a larger max_tokens budget for channel-monitored items', async () => {
+    mockChat.mockResolvedValueOnce({
+      extract: true,
+      reason: 'ok',
+      suggestedTitle: 'Dark mode request',
+    })
+
+    const { shouldExtract } = await import('../quality-gate.service')
+    await shouldExtract({
+      ...makeItem('I really wish you would add dark mode to the app please', 'slack'),
+      context: { metadata: { ingestionMode: 'channel_monitor' } },
+    })
+
+    const callArgs = mockChat.mock.calls[0][0] as { modelOptions: Record<string, unknown> }
+    expect(callArgs.modelOptions.max_tokens).toBe(200)
+    expect(mockCreateUsageLoggingMiddleware).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ isChannelMonitor: true }),
+      })
     )
   })
 
   it('should return LLM gate result when extract=false', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [{ message: { content: '{"extract": false, "reason": "just a greeting"}' } }],
-    })
+    mockChat.mockResolvedValueOnce({ extract: false, reason: 'just a greeting' })
 
     const { shouldExtract } = await import('../quality-gate.service')
     const result = await shouldExtract(
@@ -142,9 +163,7 @@ describe('quality-gate.service', () => {
   })
 
   it('should thread rawFeedbackItemId to usage logging', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [{ message: { content: '{"extract": true, "reason": "ok"}' } }],
-    })
+    mockChat.mockResolvedValueOnce({ extract: true, reason: 'ok' })
 
     const { shouldExtract } = await import('../quality-gate.service')
     await shouldExtract({
@@ -152,19 +171,16 @@ describe('quality-gate.service', () => {
       rawFeedbackItemId: 'raw_item_abc',
     })
 
-    const { withUsageLogging } = await import('@/lib/server/domains/ai/usage-log')
-    expect(withUsageLogging).toHaveBeenCalledWith(
+    expect(mockCreateUsageLoggingMiddleware).toHaveBeenCalledWith(
       expect.objectContaining({
         pipelineStep: 'quality_gate',
         rawFeedbackItemId: 'raw_item_abc',
-      }),
-      expect.any(Function),
-      expect.any(Function)
+      })
     )
   })
 
   it('should pass through on LLM error', async () => {
-    mockOpenAI.chat.completions.create.mockRejectedValueOnce(new Error('API timeout'))
+    mockChat.mockRejectedValueOnce(new Error('API timeout'))
 
     const { shouldExtract } = await import('../quality-gate.service')
     const result = await shouldExtract(
@@ -174,17 +190,32 @@ describe('quality-gate.service', () => {
     expect(result.reason).toContain('error')
   })
 
+  it('should pass through when the model response fails schema validation', async () => {
+    // chat() throws (rather than returning malformed JSON to hand-parse) when
+    // the response doesn't conform to outputSchema — quality gate treats
+    // this exactly like any other LLM error: fail open.
+    const schemaErr = Object.assign(new Error('response did not match schema'), {
+      code: 'structured-output-validation-failed',
+    })
+    mockChat.mockRejectedValueOnce(schemaErr)
+
+    const { shouldExtract } = await import('../quality-gate.service')
+    const result = await shouldExtract(
+      makeItem('I need the export feature to work better please fix it', 'intercom')
+    )
+    expect(result.extract).toBe(true)
+    expect(result.tier).toBe(3)
+    expect(result.reason).toContain('error')
+  })
+
   it('should fall back to word count when AI not configured', async () => {
-    const { getOpenAI } = await import('@/lib/server/domains/ai/config')
-    vi.mocked(getOpenAI).mockReturnValueOnce(null)
+    mockConfig.openaiApiKey = undefined
 
     const { shouldExtract } = await import('../quality-gate.service')
 
     // 15+ words should pass
     const longResult = await shouldExtract(makeItem('word '.repeat(20).trim(), 'intercom'))
     expect(longResult.extract).toBe(true)
-
-    vi.mocked(getOpenAI).mockReturnValueOnce(null)
 
     // <15 words but >=5 should fail
     const shortResult = await shouldExtract(

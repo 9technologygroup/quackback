@@ -1,21 +1,13 @@
 /**
- * The copilot.v1 SSE contract, shared by the server route (emit) and the
- * inbox Copilot sidebar (consume). Client-safe: names and payload types only.
- * Uses the same delta/activity/final/error vocabulary as Test agent,
- * vocabulary), scoped to a real conversation and a teammate asker instead of
- * an admin preview.
- *
- * The event vocabulary is a versioned contract, so additions must come as new
- * names (or a v2), never as silent shape changes.
+ * The Copilot surface contract, shared by the server routes (emit) and the
+ * inbox Copilot sidebar (consume). Client-safe: payload types and the usage
+ * vocabulary only. The wire itself is TanStack AI's AG-UI protocol: text
+ * streams as structured-JSON deltas, activity rides STEP_STARTED, and each
+ * surface's final payload below travels on the terminal RUN_FINISHED's
+ * standard `result` slot — so this module carries payload SHAPES, not event
+ * names. The payload shapes are a versioned contract: additions must come as
+ * new fields, never as silent shape changes.
  */
-import type { AssistantActivityStatus } from '@/lib/shared/conversation/types'
-
-export const COPILOT_EVENTS = {
-  delta: 'copilot.v1.delta',
-  activity: 'copilot.v1.activity',
-  final: 'copilot.v1.final',
-  error: 'copilot.v1.error',
-} as const
 
 /** One prior turn in a copilot thread, as sent on the request body: a teammate
  *  question or one of Copilot's own past answers. Shared by the route's request
@@ -102,17 +94,6 @@ export const COPILOT_INSERT_DESTINATIONS = ['reply', 'note'] as const
 
 export type CopilotInsertDestination = (typeof COPILOT_INSERT_DESTINATIONS)[number]
 
-/** copilot.v1.delta: one fragment of the streamed answer text. */
-export interface CopilotDeltaPayload {
-  text: string
-}
-
-/** copilot.v1.activity: a live "thinking / searching" status line, reusing
- *  the widget's activity vocabulary. */
-export interface CopilotActivityPayload {
-  status: AssistantActivityStatus
-}
-
 /**
  * A write-tool call this copilot turn turned into a pending-approval row
  * (P2-C.4, "act-on-approval"): a Copilot answer can propose a real action and a
@@ -131,7 +112,7 @@ export interface CopilotProposedAction {
 }
 
 /**
- * copilot.v1.final: the completed turn. `suppressed` carries the silence-rule
+ * The completed turn (RUN_FINISHED.result). `suppressed` carries the silence-rule
  * reason on the rare turn Quinn was muted for (text is then empty and
  * `internalSourced` is always false). `internalSourced` is `true` when any
  * citation in the answer is internal: the server-computed gate the sidebar's
@@ -151,25 +132,14 @@ export interface CopilotFinalPayload {
   answerType: CopilotAnswerType
 }
 
-/** copilot.v1.error: a terminal failure after the stream opened. */
-export interface CopilotErrorPayload {
-  code: string
-  message: string
-}
-
 /**
- * transform.v1 SSE contract (P2-C.1): rewrites over already-composed text, run
- * from two entry points (COPILOT-SIDEBAR-UX.md "What P2-C adds"): the answer
- * card's "Add to composer & modify" menu (source = the streamed answer) and
- * the composer's Improve menu (source = the teammate's active draft). Same
- * delta/final/error vocabulary as copilot.v1, scoped down to a single field
- * (`text`) since a transform has no citations or sources of its own.
+ * Transform (P2-C.1): rewrites over already-composed text, run from two entry
+ * points (COPILOT-SIDEBAR-UX.md "What P2-C adds"): the answer card's "Add to
+ * composer & modify" menu (source = the streamed answer) and the composer's
+ * Improve menu (source = the teammate's active draft). Scoped down to a
+ * single field (`text`) since a transform has no citations or sources of its
+ * own.
  */
-export const TRANSFORM_EVENTS = {
-  delta: 'transform.v1.delta',
-  final: 'transform.v1.final',
-  error: 'transform.v1.error',
-} as const
 
 /**
  * `my_tone` mines the teammate's own past replies for style excerpts.
@@ -189,51 +159,27 @@ export const TRANSFORM_KINDS = [
 
 export type TransformKind = (typeof TRANSFORM_KINDS)[number]
 
-/** transform.v1.delta: one fragment of the rewritten text. */
-export interface TransformDeltaPayload {
-  text: string
-}
-
-/** transform.v1.final: the completed rewrite. */
+/** The completed rewrite (RUN_FINISHED.result). */
 export interface TransformFinalPayload {
   text: string
 }
 
-/** transform.v1.error: a terminal failure after the stream opened. */
-export interface TransformErrorPayload {
-  code: string
-  message: string
-}
-
 /**
- * suggest.v1 SSE contract: a proactive reply suggestion for the conversation's
- * latest unanswered customer message, generated when a teammate views the
+ * Suggest: a proactive reply suggestion for the conversation's latest
+ * unanswered customer message, generated when a teammate views the
  * conversation (pull-on-view, not push-per-message — the server never
- * speculates on conversations nobody is looking at). Same delta/final/error
- * vocabulary as copilot.v1; no activity events (the card shows a single
- * loading state) and no proposed actions (a suggestion turn runs its tools
- * read-only — it drafts, it never acts).
+ * speculates on conversations nobody is looking at). No proposed actions (a
+ * suggestion turn runs its tools read-only — it drafts, it never acts).
  *
- * The server currently sends FINAL-ONLY: no delta frames. A suggestion turn's
- * honest-miss (`skip: true`) is only knowable at the end of the run, so
- * streaming the text as it generates would show the teammate a draft that a
- * trailing skip then evaporates — a guess dressed up as a draft, on screen
- * the whole time. `delta` stays in the vocabulary (clients must keep
- * handling it) so streaming can return once a skip-aware transport exists.
+ * The card renders FINAL-ONLY: the client ignores streamed deltas entirely. A
+ * suggestion turn's honest-miss (`skip: true`) is only knowable at the end of
+ * the run, so rendering the text as it generates would show the teammate a
+ * draft that a trailing skip then evaporates — a guess dressed up as a draft,
+ * on screen the whole time.
  */
-export const SUGGEST_EVENTS = {
-  delta: 'suggest.v1.delta',
-  final: 'suggest.v1.final',
-  error: 'suggest.v1.error',
-} as const
-
-/** suggest.v1.delta: one fragment of the streamed suggestion text. */
-export interface SuggestDeltaPayload {
-  text: string
-}
 
 /**
- * suggest.v1.final: the completed suggestion. `skip: true` is the honest-miss
+ * The completed suggestion (RUN_FINISHED.result). `skip: true` is the honest-miss
  * outcome — Quinn judged there is nothing grounded worth suggesting (text is
  * then empty, `internalSourced` false, and the client renders no card rather
  * than an empty one). `internalSourced` gates the same blocking confirm the
@@ -245,10 +191,4 @@ export interface SuggestFinalPayload {
   citations: CopilotCitation[]
   internalSourced: boolean
   skip?: boolean
-}
-
-/** suggest.v1.error: a terminal failure after the stream opened. */
-export interface SuggestErrorPayload {
-  code: string
-  message: string
 }

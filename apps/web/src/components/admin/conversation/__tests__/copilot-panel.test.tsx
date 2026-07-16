@@ -12,10 +12,9 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ConversationId } from '@quackback/ids'
-import { COPILOT_EVENTS } from '@/lib/shared/assistant/copilot-contract'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { installInMemoryLocalStorage } from '@/test/local-storage'
-import { sseFrame, mockStreamingResponse } from '@/test/sse'
+import { aguiRun, structuredDeltas, mockStreamingResponse } from '@/test/agui'
 
 // Radix Popover/DropdownMenu rely on pointer/layout APIs happy-dom lacks.
 beforeAll(() => {
@@ -100,13 +99,15 @@ function renderPanel(
   return { onInsert }
 }
 
-function transformSseFrames(text: string): string {
-  return sseFrame('transform.v1.delta', { text }) + sseFrame('transform.v1.final', { text })
+/** A full transform AG-UI run: the rewritten text on RUN_FINISHED.result
+ *  ({ text }), the shape useCopilotTransform's ChatClient reads. */
+function transformRun(text: string): string {
+  return aguiRun({ result: { text } })
 }
 
-/** Route fetch by URL: the ask/copilot endpoint and the transform endpoint
- *  stream independently in the real app (separate useSseTurn instances), so
- *  tests that exercise both in one flow need a fetch mock that branches. */
+/** Route fetch by URL: the ask/copilot endpoint (useAguiTurn) and the transform
+ *  endpoint (useCopilotTransform's ChatClient) stream independently in the real
+ *  app, so tests that exercise both in one flow need a fetch mock that branches. */
 function stubFetchByUrl(responses: { copilot?: string; transform?: string }) {
   const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
     if (url.includes('/transform') && responses.transform !== undefined) {
@@ -129,15 +130,18 @@ async function ask(question: string) {
 
 const DEFAULT_ANSWER = 'A public answer.'
 
-/** The single final-frame builder every describe shares: one completed turn's
- *  final SSE payload, any field overridable per test. */
+/** The single completed-turn builder every describe shares: a full AG-UI run
+ *  whose terminal RUN_FINISHED.result carries the CopilotFinalPayload, any
+ *  field overridable per test. */
 function finalFrame(overrides: Record<string, unknown> = {}) {
-  return sseFrame(COPILOT_EVENTS.final, {
-    text: DEFAULT_ANSWER,
-    citations: [],
-    internalSourced: false,
-    answerType: 'draft_reply',
-    ...overrides,
+  return aguiRun({
+    result: {
+      text: DEFAULT_ANSWER,
+      citations: [],
+      internalSourced: false,
+      answerType: 'draft_reply',
+      ...overrides,
+    },
   })
 }
 
@@ -187,10 +191,11 @@ function proposedActionRow(overrides: Record<string, unknown> = {}) {
 
 describe('<CopilotPanel> ask -> stream -> answer', () => {
   it('streams delta text and renders the final answer with citations', async () => {
-    const frames =
-      sseFrame(COPILOT_EVENTS.delta, { text: 'The refund ' }) +
-      sseFrame(COPILOT_EVENTS.delta, { text: 'window is 30 days.' }) +
-      sseFrame(COPILOT_EVENTS.final, {
+    const frames = aguiRun({
+      // The streamed model chunks are raw structured JSON; the panel diffs the
+      // prose out of the partial parse's `text` field.
+      middle: structuredDeltas({ text: 'The refund window is 30 days [1].' }),
+      result: {
         text: 'The refund window is 30 days [1].',
         citations: [
           {
@@ -201,7 +206,8 @@ describe('<CopilotPanel> ask -> stream -> answer', () => {
           },
         ],
         internalSourced: false,
-      })
+      },
+    })
     const fetchMock = vi.fn().mockResolvedValue(mockStreamingResponse(frames))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -212,20 +218,20 @@ describe('<CopilotPanel> ask -> stream -> answer', () => {
     expect(screen.getByText('What is the refund window?')).toBeInTheDocument()
     expect(await screen.findByText('1 relevant source')).toBeInTheDocument()
 
+    // The question rides the AG-UI messages; the item ref rides forwardedProps.
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(body.conversationId).toBe(CONVERSATION_ID)
-    expect(body.question).toBe('What is the refund window?')
-    expect(body.sourceTypes).toBeUndefined() // all visible sources checked -> omitted
+    expect(body.forwardedProps.conversationId).toBe(CONVERSATION_ID)
+    expect((body.messages as Array<{ content: string }>).at(-1)?.content).toBe(
+      'What is the refund window?'
+    )
+    expect(body.forwardedProps.sourceTypes).toBeUndefined() // all visible sources checked -> omitted
 
     vi.unstubAllGlobals()
   })
 
   it('shows the graceful-miss copy on a suppressed final payload', async () => {
-    const frames = sseFrame(COPILOT_EVENTS.final, {
-      text: '',
-      citations: [],
-      internalSourced: false,
-      suppressed: 'silence',
+    const frames = aguiRun({
+      result: { text: '', citations: [], internalSourced: false, suppressed: 'silence' },
     })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
 
@@ -257,11 +263,7 @@ describe('<CopilotPanel> ask -> stream -> answer', () => {
   })
 
   it('swaps the placeholder from "Ask a question..." to "Ask a follow-up question..." after a turn', async () => {
-    const frames = sseFrame(COPILOT_EVENTS.final, {
-      text: 'Answer.',
-      citations: [],
-      internalSourced: false,
-    })
+    const frames = aguiRun({ result: { text: 'Answer.', citations: [], internalSourced: false } })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
 
     renderPanel()
@@ -275,11 +277,7 @@ describe('<CopilotPanel> ask -> stream -> answer', () => {
   })
 
   it('"New chat" clears the thread back to the empty state', async () => {
-    const frames = sseFrame(COPILOT_EVENTS.final, {
-      text: 'Answer.',
-      citations: [],
-      internalSourced: false,
-    })
+    const frames = aguiRun({ result: { text: 'Answer.', citations: [], internalSourced: false } })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
 
     renderPanel()
@@ -339,8 +337,9 @@ describe('<CopilotPanel> Cmd/Ctrl+Enter inserts the last answer', () => {
     )
     modEnter()
 
-    // The chord submitted the question (second fetch), no insert happened.
-    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2)
+    // The chord submitted the question (second fetch), no insert happened. The
+    // ChatClient dispatches its POST across a tick, so wait for it.
+    await waitFor(() => expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2))
     expect(onInsert).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
@@ -408,9 +407,10 @@ describe('<CopilotPanel> unfinalized (aborted/truncated) turns fail closed', () 
    *  aborted (Stop) or truncated stream leaves behind: status done, but
    *  internalSourced/answerType never arrived. */
   async function askAborted() {
-    const frames =
-      sseFrame(COPILOT_EVENTS.delta, { text: 'A partial ' }) +
-      sseFrame(COPILOT_EVENTS.delta, { text: 'answer.' })
+    // A run whose stream ends after deltas with a bare RUN_FINISHED (no
+    // result): the terminal payload with internalSourced/answerType never
+    // arrived, so the turn is done-but-unfinalized.
+    const frames = aguiRun({ middle: structuredDeltas({ text: 'A partial answer.' }) })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
     const onInsert = vi.fn()
     renderPanel({ onInsert })
@@ -467,7 +467,7 @@ describe('<CopilotPanel> unfinalized (aborted/truncated) turns fail closed', () 
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        mockStreamingResponse(sseFrame(COPILOT_EVENTS.delta, { text: 'Partial one.' }))
+        mockStreamingResponse(aguiRun({ middle: structuredDeltas({ text: 'Partial one.' }) }))
       )
       .mockResolvedValueOnce(mockStreamingResponse(finalFrame({ text: 'Complete answer.' })))
     vi.stubGlobal('fetch', fetchMock)
@@ -612,16 +612,18 @@ describe('<CopilotPanel> answerType button precedence', () => {
 
 describe('<CopilotPanel> "Add to composer & modify" menu', () => {
   async function askAndOpenModifyMenu(internalSourced: boolean) {
-    const copilotFrames = sseFrame(COPILOT_EVENTS.final, {
-      text: 'Here is the original answer.',
-      citations: internalSourced
-        ? [{ type: 'snippet', id: 'snippet_1', title: 'Internal note', url: '', internal: true }]
-        : [],
-      internalSourced,
+    const copilotFrames = aguiRun({
+      result: {
+        text: 'Here is the original answer.',
+        citations: internalSourced
+          ? [{ type: 'snippet', id: 'snippet_1', title: 'Internal note', url: '', internal: true }]
+          : [],
+        internalSourced,
+      },
     })
     const fetchMock = stubFetchByUrl({
       copilot: copilotFrames,
-      transform: transformSseFrames('Here is the FRIENDLIER answer.'),
+      transform: transformRun('Here is the FRIENDLIER answer.'),
     })
     const onInsert = vi.fn()
     renderPanel({ onInsert })
@@ -638,12 +640,7 @@ describe('<CopilotPanel> "Add to composer & modify" menu', () => {
   }
 
   it('lists the tone rows under the "Add to composer & modify" header, above Add as note / Save as macro', async () => {
-    vi.stubGlobal('fetch', vi.fn())
-    const frames = sseFrame(COPILOT_EVENTS.final, {
-      text: 'Answer.',
-      citations: [],
-      internalSourced: false,
-    })
+    const frames = aguiRun({ result: { text: 'Answer.', citations: [], internalSourced: false } })
     stubFetchByUrl({ copilot: frames })
     renderPanel()
     await ask('Question?')
@@ -704,11 +701,7 @@ describe('<CopilotPanel> Answer-sources popover', () => {
   })
 
   it('persists the selection to localStorage per teammate and sends sourceTypes on the next ask', async () => {
-    const frames = sseFrame(COPILOT_EVENTS.final, {
-      text: 'Answer.',
-      citations: [],
-      internalSourced: false,
-    })
+    const frames = aguiRun({ result: { text: 'Answer.', citations: [], internalSourced: false } })
     const fetchMock = vi.fn().mockResolvedValue(mockStreamingResponse(frames))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -722,9 +715,12 @@ describe('<CopilotPanel> Answer-sources popover', () => {
     expect(JSON.parse(stored as string)).not.toContain('snippet')
 
     await ask('Question with a narrowed filter')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(body.sourceTypes).toEqual(expect.arrayContaining(['article', 'post', 'summary']))
-    expect(body.sourceTypes).not.toContain('snippet')
+    expect(body.forwardedProps.sourceTypes).toEqual(
+      expect.arrayContaining(['article', 'post', 'summary'])
+    )
+    expect(body.forwardedProps.sourceTypes).not.toContain('snippet')
     vi.unstubAllGlobals()
   })
 
@@ -937,7 +933,7 @@ describe('<CopilotPanel> usage events', () => {
   it('logs transform_inserted when a modify-menu transform result inserts', async () => {
     stubFetchByUrl({
       copilot: finalFrame({ text: 'Here is the original answer.' }),
-      transform: transformSseFrames('Here is the FRIENDLIER answer.'),
+      transform: transformRun('Here is the FRIENDLIER answer.'),
     })
     const onInsert = vi.fn()
     renderPanel({ onInsert })
@@ -1141,18 +1137,20 @@ describe('<CopilotPanel> thumbs feedback', () => {
 describe('<CopilotPanel> source freshness line', () => {
   it('shows "Updated … ago" in the source row hovercard when updatedAt is present', async () => {
     const updatedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString()
-    const frames = sseFrame(COPILOT_EVENTS.final, {
-      text: 'The refund window is 30 days [1].',
-      citations: [
-        {
-          type: 'article',
-          id: 'article_1',
-          title: 'Refund policy',
-          url: 'https://help.example.com/refunds',
-          updatedAt,
-        },
-      ],
-      internalSourced: false,
+    const frames = aguiRun({
+      result: {
+        text: 'The refund window is 30 days [1].',
+        citations: [
+          {
+            type: 'article',
+            id: 'article_1',
+            title: 'Refund policy',
+            url: 'https://help.example.com/refunds',
+            updatedAt,
+          },
+        ],
+        internalSourced: false,
+      },
     })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
     renderPanel()
@@ -1165,17 +1163,19 @@ describe('<CopilotPanel> source freshness line', () => {
   })
 
   it('renders no freshness line when updatedAt is absent', async () => {
-    const frames = sseFrame(COPILOT_EVENTS.final, {
-      text: 'The refund window is 30 days [1].',
-      citations: [
-        {
-          type: 'article',
-          id: 'article_1',
-          title: 'Refund policy',
-          url: 'https://help.example.com/refunds',
-        },
-      ],
-      internalSourced: false,
+    const frames = aguiRun({
+      result: {
+        text: 'The refund window is 30 days [1].',
+        citations: [
+          {
+            type: 'article',
+            id: 'article_1',
+            title: 'Refund policy',
+            url: 'https://help.example.com/refunds',
+          },
+        ],
+        internalSourced: false,
+      },
     })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
     renderPanel()
@@ -1190,18 +1190,20 @@ describe('<CopilotPanel> source freshness line', () => {
 describe('<CopilotPanel> proposed actions (P2-C.4)', () => {
   async function askAndGetProposal(overrides: Record<string, unknown> = {}) {
     hoisted.getAssistantPendingActionFn.mockResolvedValue(proposedActionRow(overrides))
-    const frames = sseFrame(COPILOT_EVENTS.final, {
-      text: "I've proposed closing this conversation for you.",
-      citations: [],
-      internalSourced: false,
-      proposedActions: [
-        {
-          id: 'assistant_action_1',
-          toolName: 'end_conversation',
-          summary: 'Close the conversation',
-          label: 'End conversation',
-        },
-      ],
+    const frames = aguiRun({
+      result: {
+        text: "I've proposed closing this conversation for you.",
+        citations: [],
+        internalSourced: false,
+        proposedActions: [
+          {
+            id: 'assistant_action_1',
+            toolName: 'end_conversation',
+            summary: 'Close the conversation',
+            label: 'End conversation',
+          },
+        ],
+      },
     })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
     renderPanel()
@@ -1224,11 +1226,13 @@ describe('<CopilotPanel> proposed actions (P2-C.4)', () => {
   })
 
   it('renders nothing extra when the turn proposed no actions', async () => {
-    const frames = sseFrame(COPILOT_EVENTS.final, {
-      text: 'Just an answer, nothing proposed.',
-      citations: [],
-      internalSourced: false,
-      proposedActions: [],
+    const frames = aguiRun({
+      result: {
+        text: 'Just an answer, nothing proposed.',
+        citations: [],
+        internalSourced: false,
+        proposedActions: [],
+      },
     })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
     renderPanel()

@@ -71,34 +71,32 @@ vi.mock('../prompts/suggestion.prompt', () => ({
   buildSuggestionPrompt: vi.fn(() => 'mocked suggestion prompt'),
 }))
 
-const mockOpenAI = {
-  chat: {
-    completions: {
-      create: vi.fn(),
-    },
-  },
-}
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
 
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: vi.fn(() => mockOpenAI),
-  stripCodeFences: vi.fn((s: string) => s.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '')),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: () => ({ name: 'ai-usage-logging' }),
 }))
 
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: () => 'test-model',
   getEmbeddingModel: () => 'test-embedding-model',
-}))
-
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: vi.fn((fn: () => Promise<unknown>) =>
-    fn().then((result: unknown) => ({ result, retryCount: 0 }))
-  ),
-}))
-
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
-    fn().then(({ result }) => result)
-  ),
 }))
 
 vi.mock('../pipeline-log', () => ({
@@ -109,6 +107,8 @@ describe('interpretation.service (state & deduplication)', () => {
   beforeEach(() => {
     updateSetCalls.length = 0
     vi.clearAllMocks()
+    mockConfig.openaiApiKey = 'test-key'
+    mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   })
 
   const signalId = 'signal_123' as FeedbackSignalId
@@ -245,19 +245,11 @@ describe('interpretation.service (state & deduplication)', () => {
     mockFindSimilarPendingSuggestions.mockResolvedValueOnce([])
 
     // Mock LLM for suggestion generation
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [
-        {
-          message: {
-            content: JSON.stringify({
-              title: 'Add CSV Export',
-              body: 'Users need CSV export for data',
-              boardId: 'board_1',
-              reasoning: 'Clear feature request',
-            }),
-          },
-        },
-      ],
+    mockChat.mockResolvedValueOnce({
+      title: 'Add CSV Export',
+      body: 'Users need CSV export for data',
+      boardId: 'board_1',
+      reasoning: 'Clear feature request',
     })
 
     mockSignalFindMany.mockResolvedValueOnce([{ id: signalId, processingState: 'completed' }])

@@ -13,6 +13,9 @@ export async function extractHttpErrorMessage(res: Response): Promise<string> {
   try {
     const body = await res.json()
     if (body?.error?.message) return body.error.message as string
+    // The tier-limit envelope is `{ error: 'tier_limit_exceeded', message }` —
+    // `error` is a string, so fall back to the top-level `message`.
+    if (typeof body?.message === 'string') return body.message
   } catch {
     // Non-JSON error body: keep the generic message.
   }

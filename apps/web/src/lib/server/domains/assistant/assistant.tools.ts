@@ -38,7 +38,7 @@ import { describeEnabledKnowledgeSources } from './retrieval-sources'
 const log = logger.child({ component: 'assistant-tools' })
 
 /**
- * Fold the turn's enabled-source enumeration into `search_knowledge`'s
+ * Fold the turn's enabled-source enumeration into `search`'s
  * promptGuidance so the model learns which sources it may search this turn and
  * that it can target a subset. This makes the model-facing description dynamic
  * without touching the static tool definition — the spec/definition contract
@@ -54,7 +54,7 @@ function withDynamicPromptGuidance(
   const enumeration = describeEnabledKnowledgeSources(ctx.knowledge.sources)
   if (!enumeration) return specs
   return specs.map((spec) =>
-    spec.name === 'search_knowledge'
+    spec.name === 'search'
       ? { ...spec, promptGuidance: `${spec.promptGuidance} ${enumeration}` }
       : spec
   )
@@ -214,7 +214,7 @@ async function runWithPipeline(
       // returns a key for a write-risk spec.
       idempotencyKey: resolveIdempotencyKey(spec, args, ctx),
     })
-    // Mirrors how search_knowledge records onto ctx.ledger.sources: the caller (the
+    // Mirrors how search records onto ctx.ledger.sources: the caller (the
     // copilot route, today) reads this ledger off the tool context after the
     // turn to surface what got proposed, alongside the customer-facing note
     // proposePendingAction already dropped in the thread. `pending` is the

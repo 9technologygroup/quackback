@@ -1,77 +1,33 @@
 /**
- * Shared Ask AI client: capability probe, SSE consumption, and the answer
+ * Shared Ask AI client: capability probe, AG-UI transport, and the answer
  * panel used by the widget Help tab and the /hc hero search.
  *
- * Consumes the versioned kb-ask.v1.* event contract. The answer is rendered
- * through the shared AssistantAnswer component, so its inline [n] citation
- * dots and hover source cards match the messenger assistant exactly. A miss
- * ('no_answer') streams a graceful reply plus related-article suggestions.
+ * The answer streams over TanStack AI's AG-UI wire (ChatClient +
+ * fetchServerSentEvents — NOT ai-react, this is the public /hc bundle). It is
+ * rendered through the shared AssistantAnswer component, so its inline [n]
+ * citation dots and hover source cards match the messenger assistant exactly.
+ * A miss ('no_answer') streams a graceful reply plus related-article
+ * suggestions.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FormattedMessage, useIntl } from 'react-intl'
 import { useQuery } from '@tanstack/react-query'
 import { SparklesIcon, XMarkIcon } from '@heroicons/react/24/outline'
-import {
-  KB_ASK_EVENTS,
-  type KbAskAnswerKind,
-  type KbAskFinalPayload,
-  type KbAskSourceMeta,
+import { ChatClient, fetchServerSentEvents } from '@tanstack/ai-client'
+import { parsePartialJSON, type StreamChunk } from '@tanstack/ai'
+import type {
+  KbAskAnswerKind,
+  KbAskFinalPayload,
+  KbAskSourceMeta,
+  KbAskStateSnapshot,
 } from '@/lib/shared/help-center/kb-ask-contract'
 import { AssistantAnswer } from '@/components/shared/conversation/assistant-turn'
 import type { ConversationMessageCitation } from '@/lib/shared/conversation/types'
-import { parseAskAiSseBlock, readSseBlocks } from '@/lib/client/utils/sse-blocks'
+import { extractHttpErrorMessage } from '@/lib/client/utils/http-error'
 import { splitByTerms } from './ask-ai-text'
 
-// Re-exported for existing importers (the kb-ask/sandbox/copilot route tests,
-// and any future non-component client code should import the lib/ module
-// directly — see sse-blocks.ts's doc comment for why the implementation lives
-// there instead of here).
-export { parseAskAiSseBlock, readSseBlocks }
-
-// ============================================================================
-// Stream contract (kb-ask.v1.*)
-// ============================================================================
-
-// Event names and payload shapes live in the shared contract module,
-// imported by this client and the server route. Existing importers keep the
-// AskAiSourceMeta name.
+// Existing importers keep the AskAiSourceMeta name.
 export type AskAiSourceMeta = KbAskSourceMeta
-
-interface AskAiStreamHandlers {
-  onSources?: (sources: AskAiSourceMeta[]) => void
-  onDelta?: (text: string) => void
-  onFinal?: (final: KbAskFinalPayload) => void
-  onError?: (code: string) => void
-}
-
-/**
- * Read a kb-ask SSE body to completion, dispatching versioned events.
- * Unknown event names are ignored so future additions stay backward
- * compatible for older clients.
- */
-export async function readAskAiStream(
-  body: ReadableStream<Uint8Array>,
-  handlers: AskAiStreamHandlers
-): Promise<void> {
-  await readSseBlocks(body, (block) => {
-    const parsed = parseAskAiSseBlock(block)
-    if (!parsed) return
-    switch (parsed.event) {
-      case KB_ASK_EVENTS.sources:
-        handlers.onSources?.((parsed.data as { sources: AskAiSourceMeta[] }).sources)
-        break
-      case KB_ASK_EVENTS.delta:
-        handlers.onDelta?.((parsed.data as { text: string }).text)
-        break
-      case KB_ASK_EVENTS.final:
-        handlers.onFinal?.(parsed.data as KbAskFinalPayload)
-        break
-      case KB_ASK_EVENTS.error:
-        handlers.onError?.((parsed.data as { code: string }).code)
-        break
-    }
-  })
-}
 
 // ============================================================================
 // Hooks
@@ -136,14 +92,29 @@ function toCitations(sources: AskAiSourceMeta[]): ConversationMessageCitation[] 
   }))
 }
 
+const KB_ASK_URL = '/api/widget/kb-ask'
+
+/** Non-2xx responses carry the widget `{error:{message}}` envelope (rate
+ *  limits, flag gates, budget); surface that message on the thrown error so a
+ *  transport failure isn't a generic one. fetchClient must satisfy
+ *  `typeof fetch` (including `preconnect`), so copy it off the global. */
+const askAiFetch: typeof fetch = Object.assign(
+  async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const res = await fetch(input, init)
+    if (!res.ok) throw new Error(await extractHttpErrorMessage(res))
+    return res
+  },
+  { preconnect: fetch.preconnect }
+)
+
 /** Drive one Ask AI question at a time; re-asking aborts the previous run. */
 export function useAskAi() {
   const [state, setState] = useState<AskAiState>(IDLE_STATE)
-  const abortRef = useRef<AbortController | null>(null)
+  const clientRef = useRef<ChatClient | null>(null)
 
   const reset = useCallback(() => {
-    abortRef.current?.abort()
-    abortRef.current = null
+    clientRef.current?.stop()
+    clientRef.current = null
     setState(IDLE_STATE)
   }, [])
 
@@ -151,9 +122,9 @@ export function useAskAi() {
     const q = question.trim()
     if (!q) return
 
-    abortRef.current?.abort()
-    const controller = new AbortController()
-    abortRef.current = controller
+    // A fresh single-turn client per ask: re-asking aborts the previous run and
+    // starts a new thread (each question is independent — no history carries).
+    clientRef.current?.stop()
 
     // A result-less state (loading, error, hard no-answer): the answer/source
     // fields are all empty and unread until a terminal event replaces them.
@@ -168,74 +139,116 @@ export function useAskAi() {
 
     setState(blank('loading'))
 
+    // Per-run accumulators. `retrieved` is the STATE_SNAPSHOT display join;
+    // `raw`/`emitted` diff the answer prose out of the raw-JSON text deltas;
+    // `terminal` dedupes the final/error so a stream reports its outcome once.
     let retrieved: AskAiSourceMeta[] = []
-    try {
-      const res = await fetch(`/api/widget/kb-ask?q=${encodeURIComponent(q)}`, {
-        signal: controller.signal,
-      })
-      if (!res.ok || !res.body) {
-        setState(blank('error'))
+    let raw = ''
+    let emitted = ''
+    let terminal = false
+
+    const applyFinal = (final: KbAskFinalPayload) => {
+      // Hard failure fallback: the model could not be reached at all.
+      if (final.answer === null) {
+        setState(blank('no-answer'))
         return
       }
-
-      await readAskAiStream(res.body, {
-        onSources: (sources) => {
-          retrieved = sources
-        },
-        onDelta: (text) => {
-          setState((prev) => ({
-            ...prev,
-            status: 'streaming',
-            answer: prev.answer + text,
-          }))
-        },
-        onFinal: (final) => {
-          // Hard failure fallback: the model could not be reached at all.
-          if (final.answer === null) {
-            setState(blank('no-answer'))
-            return
-          }
-          // Graceful miss: keep the streamed reply, offer related articles.
-          if (final.kind === 'no_answer') {
-            setState({
-              status: 'done',
-              question: q,
-              answer: final.answer,
-              kind: 'no_answer',
-              citedSources: [],
-              related: final.related ?? [],
-            })
-            return
-          }
-          const byId = new Map(retrieved.map((s) => [s.articleId, s]))
-          const cited = final.sources.flatMap((s) => {
-            const meta = byId.get(s.articleId)
-            return meta ? [meta] : []
-          })
-          setState({
-            status: 'done',
-            question: q,
-            answer: final.answer,
-            kind: 'grounded',
-            citedSources: cited,
-            related: [],
-          })
-        },
-        onError: () => {
-          setState(blank('error'))
-        },
+      // Graceful miss: keep the streamed reply, offer related articles.
+      if (final.kind === 'no_answer') {
+        setState({
+          status: 'done',
+          question: q,
+          answer: final.answer,
+          kind: 'no_answer',
+          citedSources: [],
+          related: final.related ?? [],
+        })
+        return
+      }
+      const byId = new Map(retrieved.map((s) => [s.articleId, s]))
+      const cited = final.sources.flatMap((s) => {
+        const meta = byId.get(s.articleId)
+        return meta ? [meta] : []
       })
+      setState({
+        status: 'done',
+        question: q,
+        answer: final.answer,
+        kind: 'grounded',
+        citedSources: cited,
+        related: [],
+      })
+    }
 
-      // A stream that closed without a terminal event is a failure, not
-      // silence.
+    const client = new ChatClient({
+      connection: fetchServerSentEvents(KB_ASK_URL, () => ({ fetchClient: askAiFetch })),
+      onChunk: (rawChunk: StreamChunk) => {
+        const chunk = rawChunk as {
+          type: string
+          snapshot?: unknown
+          delta?: unknown
+          result?: unknown
+        }
+        switch (chunk.type) {
+          case 'STATE_SNAPSHOT': {
+            // The pre-synthesis source metadata join (citation-dot display).
+            const sources = (chunk.snapshot as KbAskStateSnapshot | undefined)?.sources
+            if (Array.isArray(sources)) retrieved = sources
+            break
+          }
+          case 'TEXT_MESSAGE_CONTENT': {
+            // Deltas are the raw structured JSON; surface only the growth of the
+            // `answer` field so the panel streams clean prose, not the envelope.
+            if (typeof chunk.delta !== 'string') break
+            raw += chunk.delta
+            const partial = parsePartialJSON(raw) as Record<string, unknown> | undefined
+            const text = typeof partial?.answer === 'string' ? partial.answer : ''
+            if (text.length > emitted.length && text.startsWith(emitted)) {
+              emitted = text
+              setState((prev) => ({ ...prev, status: 'streaming', answer: text }))
+            }
+            break
+          }
+          case 'RUN_FINISHED': {
+            // AG-UI's standard result slot is what "finalized" means; a bare
+            // RUN_FINISHED (no result) does not settle the turn.
+            if (chunk.result === undefined || terminal) break
+            terminal = true
+            applyFinal(chunk.result as KbAskFinalPayload)
+            break
+          }
+          case 'RUN_ERROR': {
+            if (terminal) break
+            terminal = true
+            setState(blank('error'))
+            break
+          }
+        }
+      },
+      onError: (error: Error) => {
+        // Transport failure (HTTP error, dropped stream) with no RUN_ERROR
+        // frame. An abort is the caller's own stop(), not an error.
+        if (terminal || error.name === 'AbortError') return
+        terminal = true
+        setState(blank('error'))
+      },
+    })
+    clientRef.current = client
+
+    try {
+      await client.sendMessage(q)
+    } catch {
+      // onError already mapped the failure to the error state; sendMessage may
+      // additionally reject once the run settles.
+    }
+
+    // A stream that closed without a terminal frame is a failure, not silence.
+    if (!terminal) {
       setState((prev) =>
         prev.status === 'loading' || prev.status === 'streaming'
           ? { ...prev, status: 'error' }
           : prev
       )
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return
-      setState(blank('error'))
     }
   }, [])
 

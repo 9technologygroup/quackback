@@ -12,27 +12,33 @@ import type { ConversationId, ConversationMessageId, PrincipalId } from '@quackb
 import type { Actor } from '@/lib/server/policy/types'
 import type { Conversation, ConversationMessage } from '@/lib/server/db'
 
-const mockGetOpenAI = vi.fn()
 const mockGetChatModel = vi.fn()
-const mockCreate = vi.fn()
 const publishConversationUpdate = vi.fn()
 const conversationToDTO = vi.fn(async (c: { id: string }) => ({ id: c.id }))
 
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
+
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: () => mockGetOpenAI(),
-  stripCodeFences: (s: string) => s.replace(/```json\n?|```/g, ''),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: () => ({ name: 'ai-usage-logging' }),
 }))
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: (...args: unknown[]) => mockGetChatModel(...args),
-}))
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: async (fn: () => Promise<unknown>) => ({ result: await fn(), retryCount: 0 }),
-}))
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: async (
-    _params: unknown,
-    fn: () => Promise<{ result: unknown; retryCount: number }>
-  ) => (await fn()).result,
 }))
 vi.mock('@/lib/server/realtime/conversation-channels', () => ({
   publishConversationUpdate: (...a: unknown[]) => publishConversationUpdate(...a),
@@ -168,6 +174,8 @@ function makeConversation(over: Partial<Conversation> = {}): Conversation {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockConfig.openaiApiKey = 'test-key'
+  mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   conversationRow = undefined
   messageRows = []
   cachedTranslationRow = undefined
@@ -227,7 +235,7 @@ describe('maybeDetectCustomerLanguage', () => {
     const conv = makeConversation({ detectedCustomerLanguage: 'de' })
     const result = await maybeDetectCustomerLanguage(conv)
     expect(result).toBe(conv)
-    expect(mockGetOpenAI).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('skips silently when there are no visitor messages to detect from', async () => {
@@ -235,12 +243,12 @@ describe('maybeDetectCustomerLanguage', () => {
     const conv = makeConversation()
     const result = await maybeDetectCustomerLanguage(conv)
     expect(result).toBe(conv)
-    expect(mockGetOpenAI).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('skips silently when AI is not configured', async () => {
     messageRows = [{ content: 'bonjour' }]
-    mockGetOpenAI.mockReturnValue(null)
+    mockConfig.openaiApiKey = undefined
     mockGetChatModel.mockReturnValue(null)
     const conv = makeConversation()
     const result = await maybeDetectCustomerLanguage(conv)
@@ -249,12 +257,8 @@ describe('maybeDetectCustomerLanguage', () => {
 
   it('detects and persists the language on success', async () => {
     messageRows = [{ content: 'bonjour, je voudrais un remboursement' }]
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({
-      choices: [{ message: { content: JSON.stringify({ language: 'fr' }) } }],
-      usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
-    })
+    mockChat.mockResolvedValue({ language: 'fr' })
     updateReturns = [
       makeConversation({ detectedCustomerLanguage: 'fr' }) as unknown as Record<string, unknown>,
     ]
@@ -267,11 +271,8 @@ describe('maybeDetectCustomerLanguage', () => {
 
   it('persists the undetermined sentinel on a completed-but-inconclusive detection, and never re-calls', async () => {
     messageRows = [{ content: 'xyzzy plugh' }]
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({
-      choices: [{ message: { content: JSON.stringify({ language: null }) } }],
-    })
+    mockChat.mockResolvedValue({ language: null })
     updateReturns = [
       makeConversation({
         detectedCustomerLanguage: UNDETERMINED_LANGUAGE,
@@ -290,14 +291,15 @@ describe('maybeDetectCustomerLanguage', () => {
       makeConversation({ detectedCustomerLanguage: UNDETERMINED_LANGUAGE })
     )
     expect(again.detectedCustomerLanguage).toBe(UNDETERMINED_LANGUAGE)
-    expect(mockGetOpenAI).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('swallows an unparseable AI response and returns the conversation unchanged', async () => {
+    // With outputSchema, chat() throws on a non-conforming response; the
+    // surrounding try/catch in maybeDetectCustomerLanguage logs and swallows it.
     messageRows = [{ content: 'bonjour' }]
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({ choices: [{ message: { content: 'not json' } }] })
+    mockChat.mockRejectedValue(new Error('response did not match schema'))
 
     const conv = makeConversation()
     const result = await maybeDetectCustomerLanguage(conv)
@@ -307,9 +309,8 @@ describe('maybeDetectCustomerLanguage', () => {
 
   it('swallows a thrown AI error and returns the conversation unchanged', async () => {
     messageRows = [{ content: 'bonjour' }]
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockRejectedValue(new Error('network blip'))
+    mockChat.mockRejectedValue(new Error('network blip'))
 
     const conv = makeConversation()
     await expect(maybeDetectCustomerLanguage(conv)).resolves.toBe(conv)
@@ -328,20 +329,14 @@ describe('translateIncomingMessage', () => {
     const result = await translateIncomingMessage(message, 'en')
 
     expect(result).toEqual({ content: 'Hello, my package is late.', cached: true })
-    expect(mockGetOpenAI).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
     expect(insertedTranslations).toHaveLength(0)
   })
 
   it('translates and writes the cache row on a miss (fresh translation)', async () => {
     cachedTranslationRow = undefined
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({
-      choices: [
-        { message: { content: JSON.stringify({ content: 'Hello, my package is late.' }) } },
-      ],
-      usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 },
-    })
+    mockChat.mockResolvedValue({ content: 'Hello, my package is late.' })
 
     const result = await translateIncomingMessage(message, 'en')
 
@@ -357,11 +352,8 @@ describe('translateIncomingMessage', () => {
 
   it('never mutates conversation_messages — only the translation cache table is written', async () => {
     cachedTranslationRow = undefined
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({
-      choices: [{ message: { content: JSON.stringify({ content: 'translated' }) } }],
-    })
+    mockChat.mockResolvedValue({ content: 'translated' })
 
     await translateIncomingMessage(message, 'en')
 
@@ -374,7 +366,7 @@ describe('translateIncomingMessage', () => {
 
   it('throws TranslationUnavailableError when AI is not configured', async () => {
     cachedTranslationRow = undefined
-    mockGetOpenAI.mockReturnValue(null)
+    mockConfig.openaiApiKey = undefined
     mockGetChatModel.mockReturnValue(null)
 
     await expect(translateIncomingMessage(message, 'en')).rejects.toBeInstanceOf(
@@ -384,10 +376,12 @@ describe('translateIncomingMessage', () => {
   })
 
   it('throws TranslationUnavailableError on an unparseable AI response', async () => {
+    // With outputSchema, chat() throws on a non-conforming response where the
+    // old code had a JSON.parse catch branch; the surrounding try/catch here
+    // converts either into the same TranslationUnavailableError.
     cachedTranslationRow = undefined
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({ choices: [{ message: { content: 'not json' } }] })
+    mockChat.mockRejectedValue(new Error('response did not match schema'))
 
     await expect(translateIncomingMessage(message, 'en')).rejects.toBeInstanceOf(
       TranslationUnavailableError
@@ -397,20 +391,15 @@ describe('translateIncomingMessage', () => {
 
 describe('translateOutgoingContent', () => {
   it('returns the translated text on success', async () => {
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({
-      choices: [
-        { message: { content: JSON.stringify({ content: 'Bonjour, comment puis-je aider?' }) } },
-      ],
-    })
+    mockChat.mockResolvedValue({ content: 'Bonjour, comment puis-je aider?' })
 
     const result = await translateOutgoingContent('Hi, how can I help?', 'fr')
     expect(result).toBe('Bonjour, comment puis-je aider?')
   })
 
   it('throws TranslationUnavailableError when AI is not configured (blocks the send)', async () => {
-    mockGetOpenAI.mockReturnValue(null)
+    mockConfig.openaiApiKey = undefined
     mockGetChatModel.mockReturnValue(null)
 
     await expect(translateOutgoingContent('Hi', 'fr')).rejects.toBeInstanceOf(
@@ -419,9 +408,8 @@ describe('translateOutgoingContent', () => {
   })
 
   it('throws TranslationUnavailableError when the AI response has no content', async () => {
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({ choices: [{ message: { content: JSON.stringify({}) } }] })
+    mockChat.mockResolvedValue({})
 
     await expect(translateOutgoingContent('Hi', 'fr')).rejects.toBeInstanceOf(
       TranslationUnavailableError
@@ -462,21 +450,21 @@ describe('resolveOutgoingReplyTranslation', () => {
     conversationRow = { translationEnabled: false, detectedCustomerLanguage: 'fr' }
     const result = await resolveOutgoingReplyTranslation(baseInput())
     expect(result).toEqual({ content: baseInput().content, contentJson: baseInput().contentJson })
-    expect(mockGetOpenAI).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('passes content through untouched when no customer language has been detected yet', async () => {
     conversationRow = { translationEnabled: true, detectedCustomerLanguage: null }
     const result = await resolveOutgoingReplyTranslation(baseInput())
     expect(result.translatedFrom).toBeUndefined()
-    expect(mockGetOpenAI).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('passes content through untouched when there is no text to translate', async () => {
     conversationRow = { translationEnabled: true, detectedCustomerLanguage: 'fr' }
     const result = await resolveOutgoingReplyTranslation({ ...baseInput(), content: '   ' })
     expect(result.content).toBe('   ')
-    expect(mockGetOpenAI).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('skips translation when the teammate already writes in the customer language', async () => {
@@ -484,19 +472,14 @@ describe('resolveOutgoingReplyTranslation', () => {
     teammateRow = { preferredLanguage: 'en' }
     const result = await resolveOutgoingReplyTranslation(baseInput())
     expect(result).toEqual({ content: baseInput().content, contentJson: baseInput().contentJson })
-    expect(mockGetOpenAI).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('translates and preserves the original when languages differ (outgoing send)', async () => {
     conversationRow = { translationEnabled: true, detectedCustomerLanguage: 'fr' }
     teammateRow = { preferredLanguage: 'en' }
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({
-      choices: [
-        { message: { content: JSON.stringify({ content: 'Bonjour, comment puis-je aider?' }) } },
-      ],
-    })
+    mockChat.mockResolvedValue({ content: 'Bonjour, comment puis-je aider?' })
 
     const result = await resolveOutgoingReplyTranslation(baseInput())
 
@@ -513,11 +496,8 @@ describe('resolveOutgoingReplyTranslation', () => {
   it('defaults the teammate locale to "en" when no preference is set', async () => {
     conversationRow = { translationEnabled: true, detectedCustomerLanguage: 'fr' }
     teammateRow = { preferredLanguage: null }
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
-    mockCreate.mockResolvedValue({
-      choices: [{ message: { content: JSON.stringify({ content: 'x' }) } }],
-    })
+    mockChat.mockResolvedValue({ content: 'x' })
 
     const result = await resolveOutgoingReplyTranslation(baseInput())
     expect(result.translatedFrom?.sourceLocale).toBe('en')
@@ -526,7 +506,7 @@ describe('resolveOutgoingReplyTranslation', () => {
   it('throws TranslationUnavailableError (BLOCKS the send) when the AI call fails', async () => {
     conversationRow = { translationEnabled: true, detectedCustomerLanguage: 'fr' }
     teammateRow = { preferredLanguage: 'en' }
-    mockGetOpenAI.mockReturnValue(null)
+    mockConfig.openaiApiKey = undefined
     mockGetChatModel.mockReturnValue(null)
 
     await expect(resolveOutgoingReplyTranslation(baseInput())).rejects.toBeInstanceOf(
@@ -550,18 +530,14 @@ describe('resolveOutgoingReplyTranslation', () => {
       await expect(
         resolveOutgoingReplyTranslation({ ...baseInput(), contentJson: richContentJson })
       ).rejects.toBeInstanceOf(TranslationRichContentError)
-      expect(mockGetOpenAI).not.toHaveBeenCalled()
-      expect(mockCreate).not.toHaveBeenCalled()
+      expect(mockChat).not.toHaveBeenCalled()
     })
 
     it('still translates a plain-text send with no image/embed, exactly as before', async () => {
       conversationRow = { translationEnabled: true, detectedCustomerLanguage: 'fr' }
       teammateRow = { preferredLanguage: 'en' }
-      mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
       mockGetChatModel.mockReturnValue('gpt-test')
-      mockCreate.mockResolvedValue({
-        choices: [{ message: { content: JSON.stringify({ content: 'Bonjour' }) } }],
-      })
+      mockChat.mockResolvedValue({ content: 'Bonjour' })
 
       const plainTextDoc = {
         type: 'doc',
@@ -585,7 +561,7 @@ describe('resolveOutgoingReplyTranslation', () => {
         contentJson: richContentJson,
       })
       expect(result.contentJson).toEqual(richContentJson)
-      expect(mockGetOpenAI).not.toHaveBeenCalled()
+      expect(mockChat).not.toHaveBeenCalled()
     })
   })
 })

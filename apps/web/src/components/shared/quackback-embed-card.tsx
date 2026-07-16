@@ -8,6 +8,7 @@ import { StatusBadge } from '@/components/ui/status-badge'
 import { TimeAgo } from '@/components/ui/time-ago'
 import { getEmbedPreviewFn } from '@/lib/server/functions/embeds'
 import { usePostVote } from '@/lib/client/hooks/use-post-vote'
+import { priorityMeta } from '@/lib/shared/conversation/priority-meta'
 import { cn, getInitials } from '@/lib/shared/utils'
 
 const voteBoxCls =
@@ -152,7 +153,7 @@ export function QuackbackEmbedCard({
   onOpenInModal,
   getAuthHeaders,
 }: {
-  kind: 'post' | 'changelog' | 'article'
+  kind: 'post' | 'changelog' | 'article' | 'ticket'
   id: string
   /** Live surfaces (default) get a working vote button + a clickable card; the
    *  in-editor preview passes `false` for an inert, non-navigating card. */
@@ -196,7 +197,14 @@ export function QuackbackEmbedCard({
   }
 
   if ('unavailable' in data) {
-    const label = kind === 'post' ? 'post' : kind === 'article' ? 'article' : 'update'
+    const label =
+      kind === 'post'
+        ? 'post'
+        : kind === 'article'
+          ? 'article'
+          : kind === 'ticket'
+            ? 'ticket'
+            : 'update'
     return (
       <div className={`${shellCls} px-3 py-2.5 text-xs text-muted-foreground`}>
         This {label} is unavailable
@@ -300,6 +308,43 @@ export function QuackbackEmbedCard({
     return (
       <EmbedShell href={arHref} openMode={arOpenMode}>
         {articleInner}
+      </EmbedShell>
+    )
+  }
+
+  if (data.kind === 'ticket') {
+    const priority = priorityMeta(data.priority)
+    const ticketInner = (
+      <div className="p-3">
+        <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
+          <span>Support ticket</span>
+          <span className="text-muted-foreground/40">·</span>
+          <span className="font-mono normal-case tracking-normal">{data.reference}</span>
+        </div>
+        <h3 className="mt-0.5 line-clamp-1 text-sm font-semibold text-foreground">{data.title}</h3>
+        <div className="mt-1.5 flex items-center gap-2.5">
+          {data.statusLabel && <StatusBadge name={data.statusLabel} color={data.statusColor} />}
+          {data.priority !== 'none' && (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <span
+                className="size-1.5 shrink-0 rounded-full"
+                style={{ backgroundColor: priority.color }}
+                aria-hidden="true"
+              />
+              {priority.label}
+            </span>
+          )}
+        </div>
+      </div>
+    )
+    if (!interactive) return <div className={shellCls}>{ticketInner}</div>
+    // A ticket has no in-place modal in the conversation surfaces, so modal
+    // callers open the portal ticket page in a new tab (like article/changelog).
+    const tkOpenMode = openMode === 'modal' ? 'newTab' : openMode
+    const tkHref = tkOpenMode === 'newTab' ? data.url : `/support/ticket/${data.ticketId}`
+    return (
+      <EmbedShell href={tkHref} openMode={tkOpenMode}>
+        {ticketInner}
       </EmbedShell>
     )
   }

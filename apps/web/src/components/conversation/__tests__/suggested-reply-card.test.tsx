@@ -14,8 +14,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ConversationId, ConversationMessageId } from '@quackback/ids'
-import { SUGGEST_EVENTS } from '@/lib/shared/assistant/copilot-contract'
-import { sseFrame, streamOf, stubStreamingFetch } from '@/test/sse'
+import { aguiRun, aguiErrorRun, stubAguiFetch, mockStreamingResponse } from '@/test/agui'
 import {
   ensureSuggestion,
   getSuggestionEntry,
@@ -60,12 +59,16 @@ import { SuggestedReplyCard } from '../suggested-reply-card'
 const CONVERSATION_ID = 'conversation_1' as ConversationId
 const MESSAGE_ID = 'conversation_message_1' as ConversationMessageId
 
+/** A full suggestion AG-UI run: the `SuggestFinalPayload` rides the terminal
+ *  RUN_FINISHED.result — the only frame the store reads (FINAL-ONLY). */
 function doneFrames(overrides: Record<string, unknown> = {}): string {
-  return sseFrame(SUGGEST_EVENTS.final, {
-    text: 'Here is a suggested reply.',
-    citations: [],
-    internalSourced: false,
-    ...overrides,
+  return aguiRun({
+    result: {
+      text: 'Here is a suggested reply.',
+      citations: [],
+      internalSourced: false,
+      ...overrides,
+    },
   })
 }
 
@@ -118,7 +121,7 @@ describe('gating', () => {
       settings: { featureFlags: { inboxAi: true, assistantProactiveSuggestions: false } },
       principal: { role: 'admin' },
     }
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     const { container } = renderCard()
     expect(container).toBeEmptyDOMElement()
   })
@@ -128,7 +131,7 @@ describe('gating', () => {
       settings: { featureFlags: { inboxAi: false, assistantProactiveSuggestions: true } },
       principal: { role: 'admin' },
     }
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     const { container } = renderCard()
     expect(container).toBeEmptyDOMElement()
   })
@@ -138,64 +141,72 @@ describe('gating', () => {
       settings: { featureFlags: { inboxAi: true, assistantProactiveSuggestions: true } },
       principal: { role: 'contributor-without-copilot' },
     }
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     const { container } = renderCard()
     expect(container).toBeEmptyDOMElement()
   })
 })
 
 describe('spend gates (dwell / visibility / composer)', () => {
+  // The ChatClient transport dispatches its POST across microtask/zero-timer
+  // ticks after the dwell timer fires (not synchronously inside the timer
+  // callback like the old transport), so time is driven with the ASYNC fake
+  // timer API, which flushes those ticks along the way.
+  const advance = (ms: number) => act(async () => vi.advanceTimersByTimeAsync(ms))
+
   it('does not generate before the dwell elapses; fires after it', async () => {
     vi.useFakeTimers()
-    const fetchMock = stubStreamingFetch(doneFrames())
+    const fetchMock = stubAguiFetch(doneFrames())
     renderCard({ dwellMs: 800 })
 
-    act(() => vi.advanceTimersByTime(700))
+    await advance(700)
     expect(fetchMock).not.toHaveBeenCalled()
 
-    act(() => vi.advanceTimersByTime(100))
+    await advance(100)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('never generates for a card unmounted before the dwell elapses (arrow-keying past)', () => {
+  it('never generates for a card unmounted before the dwell elapses (arrow-keying past)', async () => {
     vi.useFakeTimers()
-    const fetchMock = stubStreamingFetch(doneFrames())
+    const fetchMock = stubAguiFetch(doneFrames())
     const { unmount } = renderCard({ dwellMs: 800 })
 
-    act(() => vi.advanceTimersByTime(400))
+    await advance(400)
     unmount()
-    act(() => vi.advanceTimersByTime(2000))
+    await advance(2000)
 
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('holds fire in a hidden tab, then generates on becoming visible while still mounted', async () => {
     vi.useFakeTimers()
-    const fetchMock = stubStreamingFetch(doneFrames())
+    const fetchMock = stubAguiFetch(doneFrames())
     setVisibility('hidden')
     renderCard({ dwellMs: 800 })
 
-    act(() => vi.advanceTimersByTime(2000))
+    await advance(2000)
     expect(fetchMock).not.toHaveBeenCalled()
 
     setVisibility('visible')
-    act(() => {
+    await act(async () => {
       document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('never generates when the tab stays hidden and the card unmounts', () => {
+  it('never generates when the tab stays hidden and the card unmounts', async () => {
     vi.useFakeTimers()
-    const fetchMock = stubStreamingFetch(doneFrames())
+    const fetchMock = stubAguiFetch(doneFrames())
     setVisibility('hidden')
     const { unmount } = renderCard({ dwellMs: 800 })
 
-    act(() => vi.advanceTimersByTime(2000))
+    await advance(2000)
     unmount()
     setVisibility('visible')
-    act(() => {
+    await act(async () => {
       document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
     })
 
     expect(fetchMock).not.toHaveBeenCalled()
@@ -203,23 +214,23 @@ describe('spend gates (dwell / visibility / composer)', () => {
 
   it('skips generation when the composer already has text at dwell-fire time (one-shot, no retrigger)', async () => {
     vi.useFakeTimers()
-    const fetchMock = stubStreamingFetch(doneFrames())
+    const fetchMock = stubAguiFetch(doneFrames())
     let composerHasText = true
     renderCard({ dwellMs: 800, shouldDeferSuggestion: () => composerHasText })
 
-    act(() => vi.advanceTimersByTime(800))
+    await advance(800)
     expect(fetchMock).not.toHaveBeenCalled()
 
     // Clearing the composer AFTER the dwell fired must not retrigger — the
     // skip is one-shot; only a new customer message (new key) or a fresh
     // mount generates.
     composerHasText = false
-    act(() => vi.advanceTimersByTime(5000))
+    await advance(5000)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('generates normally when the composer is empty at dwell-fire time', async () => {
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     renderCard({ shouldDeferSuggestion: () => false })
     await screen.findByText(/Here is a suggested reply/)
   })
@@ -227,7 +238,7 @@ describe('spend gates (dwell / visibility / composer)', () => {
 
 describe('streaming outcomes', () => {
   it('shows a subtle loading state, then the streamed answer with actions', async () => {
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     renderCard()
     await screen.findByText(/Here is a suggested reply/)
     expect(screen.getByRole('button', { name: 'Insert' })).toBeInTheDocument()
@@ -236,7 +247,7 @@ describe('streaming outcomes', () => {
   })
 
   it('renders NOTHING on a skip:true final payload', async () => {
-    stubStreamingFetch(doneFrames({ text: '', skip: true }))
+    stubAguiFetch(doneFrames({ text: '', skip: true }))
     const { container } = renderCard()
     // Wait for the stream to resolve, then assert no card ever appears.
     await waitFor(() => expect(container.textContent).toBe(''))
@@ -247,13 +258,10 @@ describe('streaming outcomes', () => {
   it('shows a quiet retry affordance on error, which re-fetches', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        body: streamOf(
-          sseFrame(SUGGEST_EVENTS.error, { code: 'boom', message: 'Could not draft it' })
-        ),
-      } as Response)
-      .mockResolvedValueOnce({ ok: true, body: streamOf(doneFrames()) } as Response)
+      .mockResolvedValueOnce(
+        mockStreamingResponse(aguiErrorRun({ code: 'boom', message: 'Could not draft it' }))
+      )
+      .mockResolvedValueOnce(mockStreamingResponse(doneFrames()))
     vi.stubGlobal('fetch', fetchMock)
 
     renderCard()
@@ -266,7 +274,7 @@ describe('streaming outcomes', () => {
 
 describe('logging', () => {
   it('logs suggestion_shown exactly once for a generated card, across a remount', async () => {
-    const fetchMock = stubStreamingFetch(doneFrames())
+    const fetchMock = stubAguiFetch(doneFrames())
     const { unmount } = renderCard()
     await screen.findByText(/Here is a suggested reply/)
     unmount()
@@ -292,7 +300,7 @@ describe('logging', () => {
     // different item (the cross-remount cache keeps it streaming) must not
     // count toward the acceptance-rate denominator until they return and the
     // done card really renders.
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     ensureSuggestion(
       suggestionKey(CONVERSATION_ID, MESSAGE_ID),
       { conversationId: CONVERSATION_ID },
@@ -316,7 +324,7 @@ describe('logging', () => {
 
 describe('insert', () => {
   it('inserts directly and logs suggestion_inserted when not internal-sourced', async () => {
-    stubStreamingFetch(doneFrames({ internalSourced: false }))
+    stubAguiFetch(doneFrames({ internalSourced: false }))
     const { onInsert } = renderCard()
     await screen.findByText(/Here is a suggested reply/)
 
@@ -333,7 +341,7 @@ describe('insert', () => {
   })
 
   it('gates an internal-sourced suggestion behind a confirm before inserting', async () => {
-    stubStreamingFetch(doneFrames({ internalSourced: true }))
+    stubAguiFetch(doneFrames({ internalSourced: true }))
     const { onInsert } = renderCard()
     await screen.findByText(/Here is a suggested reply/)
 
@@ -349,7 +357,7 @@ describe('insert', () => {
   })
 
   it('cancelling the confirm never inserts', async () => {
-    stubStreamingFetch(doneFrames({ internalSourced: true }))
+    stubAguiFetch(doneFrames({ internalSourced: true }))
     const { onInsert } = renderCard()
     await screen.findByText(/Here is a suggested reply/)
 
@@ -365,7 +373,7 @@ describe('insert', () => {
 
 describe('dismiss', () => {
   it('removes the card and logs suggestion_dismissed', async () => {
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     renderCard()
     await screen.findByText(/Here is a suggested reply/)
 
@@ -379,7 +387,7 @@ describe('dismiss', () => {
   })
 
   it('a new lastCustomerMessageId revives a dismissed card', async () => {
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     const { rerender } = render(
       <SuggestedReplyCard
         item={{ kind: 'conversation', id: CONVERSATION_ID }}
@@ -408,7 +416,7 @@ describe('dismiss', () => {
 
 describe('Ask Copilot', () => {
   it('calls onAskCopilot without inserting or dismissing', async () => {
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     const { onAskCopilot, onInsert } = renderCard()
     await screen.findByText(/Here is a suggested reply/)
 
@@ -423,7 +431,7 @@ describe('Ask Copilot', () => {
     // The route only passes the callback while the Copilot panel is actually
     // openable (flag/permission gate + the ≥xl viewport that renders it);
     // absent, a visible link would be a dead click.
-    stubStreamingFetch(doneFrames())
+    stubAguiFetch(doneFrames())
     renderCard({ onAskCopilot: undefined })
     await screen.findByText(/Here is a suggested reply/)
 

@@ -23,11 +23,12 @@
  * silently dropping it.
  *
  * Both directions go through the same AI call shape as
- * help-center-auto-translate.service.ts: a chat-completion JSON contract,
- * `withRetry`, and `withUsageLogging` under the single 'inbox_translation'
- * pipeline step (metadata.stage distinguishes detect/incoming/outgoing). Both
- * prompt builders wrap the untrusted (customer- or teammate-authored) text
- * they embed with injection-guard.ts's `wrapUntrustedText`.
+ * help-center-auto-translate.service.ts: a TanStack AI `chat()` call with a
+ * zod `outputSchema` and a usage-logging middleware, under the single
+ * 'inbox_translation' pipeline step (metadata.stage distinguishes
+ * detect/incoming/outgoing). Both prompt builders wrap the untrusted
+ * (customer- or teammate-authored) text they embed with injection-guard.ts's
+ * `wrapUntrustedText`.
  *
  * Customer-language detection is lazy, cached, and off the request path:
  * `maybeDetectCustomerLanguage` is fired fire-and-forget from
@@ -55,10 +56,16 @@ import {
 } from '@/lib/server/db'
 import type { ConversationId, ConversationMessageId, UserId } from '@quackback/ids'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
+import { config } from '@/lib/server/config'
+import {
+  isAiClientConfigured,
+  structuredOutputProviderOptions,
+} from '@/lib/server/domains/ai/config'
+import { createUsageLoggingMiddleware } from '@/lib/server/domains/ai/usage-middleware'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { ValidationError, ForbiddenError, NotFoundError } from '@/lib/shared/errors'
 import { canActAsAgent } from '@/lib/server/policy/conversation'
 import type { Actor } from '@/lib/server/policy/types'
@@ -85,6 +92,9 @@ const log = logger.child({ component: 'conversation-translation' })
 const PIPELINE_STEP = 'inbox_translation'
 const RECENT_VISITOR_MESSAGES_FOR_DETECTION = 5
 const DETECTION_TEXT_CHAR_LIMIT = 2000
+
+const LanguageDetectionSchema = z.object({ language: z.string().nullable().optional() })
+const InboxTranslationSchema = z.object({ content: z.string() })
 
 /** Thrown when a translation call could not complete (AI unconfigured,
  *  network failure, or an unparseable/empty response). The outgoing send
@@ -151,47 +161,47 @@ Return strict JSON only: {"content": "string"}`
   return { system, user }
 }
 
-/** Raw chat-completion call shared by detection + both translate directions,
- *  so all three go through the identical AI-config/retry/usage-logging path
- *  (matching the help-center-auto-translate precedent). Returns null when AI
- *  isn't configured for this feature — callers decide whether that's a
- *  silent skip (detection) or a blocking failure (translation). */
-async function callInboxTranslationModel(
+/** Raw chat call shared by detection + both translate directions, so all
+ *  three go through the identical AI-config/usage-logging path (matching the
+ *  help-center-auto-translate precedent). Returns null when AI isn't
+ *  configured for this feature — callers decide whether that's a silent skip
+ *  (detection) or a blocking failure (translation). THROWS when the call
+ *  itself fails or the response doesn't match `outputSchema` (a network
+ *  failure or a malformed model response) — callers decide whether that's
+ *  swallowed by an outer try/catch (detection) or converted into a typed,
+ *  caller-facing error (translation). */
+async function callInboxTranslationModel<T>(
   stage: 'detect' | 'incoming' | 'outgoing',
   system: string,
   user: string,
-  metadata: Record<string, unknown>
-): Promise<string | null> {
-  const openai = getOpenAI()
+  metadata: Record<string, unknown>,
+  outputSchema: z.ZodType<T>
+): Promise<T | null> {
   const model = getChatModel('inboxTranslation')
-  if (!openai || !model) return null
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) return null
 
-  const completion = await withUsageLogging(
-    {
-      pipelineStep: PIPELINE_STEP,
-      callType: 'chat_completion',
-      model,
-      metadata: { stage, ...metadata },
-    },
-    () =>
-      withRetry(() =>
-        openai.chat.completions.create({
-          model,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.2,
-        })
-      ),
-    (result) => ({
-      inputTokens: result.usage?.prompt_tokens ?? 0,
-      outputTokens: result.usage?.completion_tokens ?? 0,
-      totalTokens: result.usage?.total_tokens ?? 0,
-    })
-  )
-  return completion.choices[0]?.message?.content ?? null
+  // chat() can't infer the structured-output type through the generic
+  // `z.ZodType<T>` (it resolves to `unknown`), so assert the validated result
+  // back to T — the schema the caller passed IS the T contract.
+  const result = await chat({
+    adapter: openaiCompatibleText(model, {
+      baseURL: config.openaiBaseUrl!,
+      apiKey: config.openaiApiKey!,
+    }),
+    systemPrompts: [system],
+    messages: [{ role: 'user', content: user }],
+    outputSchema,
+    stream: false,
+    modelOptions: { ...structuredOutputProviderOptions() },
+    middleware: [
+      createUsageLoggingMiddleware({
+        pipelineStep: PIPELINE_STEP,
+        model,
+        metadata: { stage, ...metadata },
+      }),
+    ],
+  })
+  return result as T
 }
 
 /**
@@ -240,16 +250,19 @@ export async function maybeDetectCustomerLanguage(
     if (!text) return conversation
 
     const { system, user: userMessage } = buildLanguageDetectionPrompt(text)
-    const raw = await callInboxTranslationModel('detect', system, userMessage, {
-      conversationId: conversation.id,
-    })
-    if (!raw) return conversation
+    const result = await callInboxTranslationModel(
+      'detect',
+      system,
+      userMessage,
+      { conversationId: conversation.id },
+      LanguageDetectionSchema
+    )
+    if (!result) return conversation
 
-    const parsed = JSON.parse(stripCodeFences(raw)) as { language?: string | null }
     // A conclusive "I don't know" is persisted as UNDETERMINED_LANGUAGE, not
     // left null, so the guard above short-circuits forever after — see the
     // doc comment.
-    const language = primaryLanguageSubtag(parsed.language) ?? UNDETERMINED_LANGUAGE
+    const language = primaryLanguageSubtag(result.language) ?? UNDETERMINED_LANGUAGE
 
     const [updated] = await db
       .update(conversations)
@@ -301,33 +314,39 @@ export async function translateIncomingMessage(
     text: message.content,
     targetLocale: locale,
   })
-  const raw = await callInboxTranslationModel('incoming', system, userMessage, {
-    conversationMessageId: message.id,
-    targetLocale: locale,
-  })
-  if (!raw) throw new TranslationUnavailableError()
 
-  let parsed: { content?: string }
+  let result: { content: string } | null
   try {
-    parsed = JSON.parse(stripCodeFences(raw)) as { content?: string }
+    result = await callInboxTranslationModel(
+      'incoming',
+      system,
+      userMessage,
+      { conversationMessageId: message.id, targetLocale: locale },
+      InboxTranslationSchema
+    )
   } catch (err) {
+    // With outputSchema, chat() throws on a malformed/non-conforming
+    // response (as well as on a network/provider failure) where the old
+    // hand-parse code had a separate JSON.parse catch branch — both collapse
+    // to the same BLOCK-the-send outcome here.
     log.error({ err, message_id: message.id }, 'inbox translation: unparseable AI response')
     throw new TranslationUnavailableError()
   }
-  if (!parsed.content) throw new TranslationUnavailableError()
+  if (!result) throw new TranslationUnavailableError()
+  if (!result.content) throw new TranslationUnavailableError()
 
   await db
     .insert(conversationMessageTranslations)
-    .values({ conversationMessageId: message.id, locale, content: parsed.content })
+    .values({ conversationMessageId: message.id, locale, content: result.content })
     .onConflictDoUpdate({
       target: [
         conversationMessageTranslations.conversationMessageId,
         conversationMessageTranslations.locale,
       ],
-      set: { content: parsed.content, updatedAt: new Date() },
+      set: { content: result.content, updatedAt: new Date() },
     })
 
-  return { content: parsed.content, cached: false }
+  return { content: result.content, cached: false }
 }
 
 /**
@@ -342,20 +361,23 @@ export async function translateOutgoingContent(
 ): Promise<string> {
   const locale = primaryLanguageSubtag(targetLocale) ?? targetLocale
   const { system, user: userMessage } = buildInboxTranslationPrompt({ text, targetLocale: locale })
-  const raw = await callInboxTranslationModel('outgoing', system, userMessage, {
-    targetLocale: locale,
-  })
-  if (!raw) throw new TranslationUnavailableError()
 
-  let parsed: { content?: string }
+  let result: { content: string } | null
   try {
-    parsed = JSON.parse(stripCodeFences(raw)) as { content?: string }
+    result = await callInboxTranslationModel(
+      'outgoing',
+      system,
+      userMessage,
+      { targetLocale: locale },
+      InboxTranslationSchema
+    )
   } catch (err) {
     log.error({ err }, 'inbox translation: unparseable AI response (outgoing)')
     throw new TranslationUnavailableError()
   }
-  if (!parsed.content) throw new TranslationUnavailableError()
-  return parsed.content
+  if (!result) throw new TranslationUnavailableError()
+  if (!result.content) throw new TranslationUnavailableError()
+  return result.content
 }
 
 export interface ResolveOutgoingReplyInput {

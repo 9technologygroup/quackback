@@ -131,10 +131,14 @@ vi.mock('@/lib/server/db', () => {
   }
 })
 
-import { postEmbedDoc, sharePost } from '../conversation.cards'
+import { postEmbedDoc, sharePost, ticketEmbedDoc, shareTicket } from '../conversation.cards'
+import type { TicketId } from '@quackback/ids'
 
 const conversationId = 'conversation_1' as ConversationId
 const postId = 'post_1' as PostId
+// A real ticket TypeID so the embed survives write-time sanitization with its
+// attrs intact (an invalid id keeps the node but strips the attrs).
+const ticketId = 'ticket_01ktjwt5tyf6br9mw521h13n6n' as TicketId
 const agentPrincipalId = 'principal_agent' as PrincipalId
 const agent = {
   principalId: agentPrincipalId,
@@ -194,6 +198,45 @@ describe('sharePost', () => {
   it('refuses a non-agent actor before any write', async () => {
     await expect(
       sharePost({ conversationId, postId }, { agentActor: visitorActor, agentPrincipalId, agent })
+    ).rejects.toBeInstanceOf(ForbiddenError)
+    expect(insertedMessages).toHaveLength(0)
+  })
+})
+
+describe('ticketEmbedDoc', () => {
+  it('builds a ticket embed doc', () => {
+    const doc = ticketEmbedDoc(ticketId)
+    const node = embedNode(doc)
+    expect(node).toBeTruthy()
+    expect(node?.attrs).toMatchObject({ kind: 'ticket', id: ticketId })
+  })
+})
+
+describe('shareTicket', () => {
+  it('sends an embed-only agent message carrying a quackbackEmbed ticket node', async () => {
+    const shared = await shareTicket(
+      { conversationId, ticketId },
+      { agentActor, agentPrincipalId, agent }
+    )
+    expect(shared.message.senderType).toBe('agent')
+    // The broadcast DTO carries the ticket embed doc.
+    expect(embedNode(shared.message.contentJson)).toMatchObject({
+      attrs: { kind: 'ticket', id: ticketId },
+    })
+    // The persisted row is an empty-text agent message whose contentJson embeds
+    // the ticket.
+    expect(insertedMessages[0]).toMatchObject({ senderType: 'agent', content: '' })
+    expect(embedNode(insertedMessages[0].contentJson)).toMatchObject({
+      attrs: { kind: 'ticket', id: ticketId },
+    })
+  })
+
+  it('refuses a non-agent actor before any write', async () => {
+    await expect(
+      shareTicket(
+        { conversationId, ticketId },
+        { agentActor: visitorActor, agentPrincipalId, agent }
+      )
     ).rejects.toBeInstanceOf(ForbiddenError)
     expect(insertedMessages).toHaveLength(0)
   })

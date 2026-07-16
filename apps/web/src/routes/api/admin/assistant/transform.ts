@@ -13,67 +13,78 @@
  * transform itself never reads or writes the item's messages, and (like
  * copilot.ts) never touches assistant_involvements or unread counts.
  *
+ * WIRE: TanStack AI's AG-UI protocol (as copilot.ts). The client POSTs a
+ * `RunAgentInput` whose forwardedProps carry the item ref and the transform
+ * kind, and whose trailing user message is the SOURCE TEXT to rewrite; the
+ * response is `toServerSentEventsResponse(streamSynthesisToWire(...))`: one
+ * canonical RUN_STARTED/RUN_FINISHED pair around the rewrite's committed model
+ * chunks, with the `TransformFinalPayload` ({ text }) on the standard
+ * RUN_FINISHED.result slot. Failures end the stream with a coded RUN_ERROR.
+ *
  * Same gate order as copilot.ts: `copilot.use` -> the `inboxAi` flag
  * -> AI configured -> the AI token budget -> the item-viewable check. That
- * shared sequence lives in copilot-gate.ts, alongside copilot.ts.
+ * shared sequence lives in copilot-gate.ts (`gateCopilotAguiRequest`).
  */
 import { createFileRoute } from '@tanstack/react-router'
+import { toServerSentEventsResponse } from '@tanstack/ai'
 import { z } from 'zod'
 import { runCopilotTransform } from '@/lib/server/domains/assistant'
-import { gateCopilotRequest, streamAssistantSse } from '@/lib/server/domains/assistant/copilot-gate'
+import { gateCopilotAguiRequest } from '@/lib/server/domains/assistant/copilot-gate'
+import { aguiThreadMessages, streamSynthesisToWire } from '@/lib/server/domains/assistant/agui'
 import { withAssistantItemRef } from '@/lib/server/domains/assistant/item-ref.schema'
+import { errorResponse } from '@/lib/server/domains/api/responses'
 import { logger } from '@/lib/server/logger'
 import {
-  TRANSFORM_EVENTS,
   TRANSFORM_KINDS,
-  type TransformDeltaPayload,
   type TransformFinalPayload,
-  type TransformErrorPayload,
 } from '@/lib/shared/assistant/copilot-contract'
 
 const log = logger.child({ component: 'assistant-transform' })
 
 const MAX_TEXT_CHARS = 8000
 
-// Backward compatible: the pre-§2.9 client only ever sends `conversationId`,
-// which is still just the schema's first union branch (see
-// `withAssistantItemRef`'s doc comment).
-const requestSchema = withAssistantItemRef({
-  text: z.string().min(1).max(MAX_TEXT_CHARS),
+// The transform kind rides forwardedProps; the SOURCE TEXT is the AG-UI
+// request's trailing user message (the AG-UI-native shape — the thing being
+// rewritten reads as the turn's user turn, not a bespoke body field).
+const forwardedPropsSchema = withAssistantItemRef({
   transform: z.enum(TRANSFORM_KINDS),
 })
 
 export async function handleTransform({ request }: { request: Request }): Promise<Response> {
-  const gate = await gateCopilotRequest(
+  const gate = await gateCopilotAguiRequest(
     request,
-    requestSchema,
-    'A valid conversationId or ticketId, plus text and transform, are required'
+    forwardedPropsSchema,
+    'A valid conversationId or ticketId, a transform, and source text are required'
   )
   if (!gate.ok) return gate.response
-  const { auth, parsed } = gate
+  const { auth, parsed, agui } = gate
 
-  return streamAssistantSse({
-    request,
-    error: {
-      event: TRANSFORM_EVENTS.error,
-      payload: {
-        code: 'TRANSFORM_FAILED',
-        message: 'Transform failed',
-      } satisfies TransformErrorPayload,
-    },
-    logError: (err) => log.error({ err }, 'copilot transform failed'),
-    run: async (sse) => {
-      const result = await runCopilotTransform({
-        transform: parsed.transform,
-        text: parsed.text,
-        principalId: auth.principal.id,
-        signal: request.signal,
-        onTextDelta: (text) =>
-          sse.send(TRANSFORM_EVENTS.delta, { text } satisfies TransformDeltaPayload),
-      })
-      sse.send(TRANSFORM_EVENTS.final, { text: result.text } satisfies TransformFinalPayload)
-    },
-  })
+  // The source text is the trailing user turn, length-capped exactly as the
+  // old `text` body field was (over-cap truncates, matching the AG-UI history
+  // contract, rather than rejecting).
+  const [source] = aguiThreadMessages(agui.messages, { maxTurns: 1, maxChars: MAX_TEXT_CHARS })
+  if (!source || source.sender !== 'customer') {
+    return errorResponse('INVALID_REQUEST', 'Source text is required', 400)
+  }
+
+  return toServerSentEventsResponse(
+    streamSynthesisToWire({
+      wire: { threadId: agui.threadId, runId: agui.runId },
+      run: (wireSink) =>
+        runCopilotTransform({
+          transform: parsed.transform,
+          text: source.content,
+          principalId: auth.principal.id,
+          signal: request.signal,
+          wireSink,
+        }),
+      buildFinalPayload: (result): TransformFinalPayload => ({ text: result.text }),
+      mapError: (err) => {
+        log.error({ err }, 'copilot transform failed')
+        return { code: 'TRANSFORM_FAILED', message: 'Transform failed' }
+      },
+    })
+  )
 }
 
 export const Route = createFileRoute('/api/admin/assistant/transform')({

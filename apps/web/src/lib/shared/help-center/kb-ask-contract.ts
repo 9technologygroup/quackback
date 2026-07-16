@@ -1,17 +1,13 @@
 /**
- * The kb-ask.v1 SSE contract, shared by the server route (emit) and the Ask
- * AI client (consume). Client-safe: names and payload types only.
+ * Shared kb-ask payload shapes, used by the server route (emit) and the Ask AI
+ * client (consume) over TanStack AI's AG-UI wire. Client-safe: types only.
  *
- * The event vocabulary is a public contract, so additions must come as new
- * names (or a v2), never as silent shape changes.
+ * The pre-synthesis source metadata rides AG-UI's standard STATE_SNAPSHOT
+ * event (`{ snapshot: KbAskStateSnapshot }`); the validated answer rides the
+ * standard RUN_FINISHED.result slot (`KbAskFinalPayload`); a terminal failure
+ * rides RUN_ERROR `{ code, message }`. These payloads ship with our own
+ * bundles in lockstep, so their shapes can evolve without a wire version.
  */
-
-export const KB_ASK_EVENTS = {
-  sources: 'kb-ask.v1.sources',
-  delta: 'kb-ask.v1.delta',
-  final: 'kb-ask.v1.final',
-  error: 'kb-ask.v1.error',
-} as const
 
 /** Display metadata for one retrieved article, sent before synthesis starts. */
 export interface KbAskSourceMeta {
@@ -22,14 +18,13 @@ export interface KbAskSourceMeta {
   categoryName: string
 }
 
-/** kb-ask.v1.sources: the articles the answer will be built from. */
-export interface KbAskSourcesPayload {
+/**
+ * STATE_SNAPSHOT.snapshot: the articles the answer will be built from, shipped
+ * before synthesis so the surface can resolve the citation-dot display join
+ * while the answer streams.
+ */
+export interface KbAskStateSnapshot {
   sources: KbAskSourceMeta[]
-}
-
-/** kb-ask.v1.delta: one fragment of the streamed answer text. */
-export interface KbAskDeltaPayload {
-  text: string
 }
 
 /**
@@ -39,7 +34,7 @@ export interface KbAskDeltaPayload {
  */
 export type KbAskAnswerKind = 'grounded' | 'no_answer'
 
-/** kb-ask.v1.final: the validated answer. */
+/** RUN_FINISHED.result: the validated answer. */
 export interface KbAskFinalPayload {
   /** 'grounded' cites articles; 'no_answer' is a graceful, uncited miss. */
   kind: KbAskAnswerKind
@@ -49,10 +44,4 @@ export interface KbAskFinalPayload {
   sources: Array<{ articleId: string }>
   /** Related near-miss articles to suggest as next steps on a no_answer. */
   related?: KbAskSourceMeta[]
-}
-
-/** kb-ask.v1.error: a terminal failure after the stream opened. */
-export interface KbAskErrorPayload {
-  code: string
-  message: string
 }

@@ -16,7 +16,7 @@ const toolsData = [
     risk: 'write' as const,
   },
   {
-    name: 'search_knowledge',
+    name: 'search',
     label: 'Search knowledge',
     description: 'Search KB.',
     risk: 'read' as const,

@@ -157,7 +157,7 @@ export async function retrieveSnippets(
   const minScore = options.minScore ?? SNIPPETS_SEMANTIC_SIMILARITY_FLOOR
 
   const embedding = await generateEmbedding(query, {
-    pipelineStep: 'assistant_snippets_retrieval_query_embedding',
+    pipelineStep: 'assistant_snippets_query',
   })
 
   const rows = embedding

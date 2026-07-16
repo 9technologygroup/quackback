@@ -173,6 +173,14 @@ export async function runAssistantTurnForConversation(
   // carries the FULL clean answer so far, reset per attempt via the `thinking`
   // activity, so a retry or a dropped frame self-heals.
   let streamed = ''
+  // The live preview is OPTIMISTIC: completion validation only runs once an
+  // attempt finishes, so a streamed answer can still be rejected server-side.
+  // Once that happens the customer has already watched one answer get
+  // retracted — streaming a second candidate that could ALSO be retracted
+  // reads as the bot answering twice. From the first invalidation on, the
+  // turn goes preview-silent: activity statuses keep the typing indicator
+  // alive and the retry's answer arrives once, as the validated final reply.
+  let previewSilent = false
   // Coalesce delta publishes: each carries the FULL answer so far, so publishing
   // on every fragment is O(N^2) bytes + one Redis publish per token. Throttle to
   // a smooth cadence — a dropped tail is harmless since the persisted reply is the
@@ -206,11 +214,29 @@ export async function runAssistantTurnForConversation(
       latestCustomerMessageId,
       stepInstructions: opts?.stepInstructions ?? null,
       onActivity: (activity) => {
-        if (activity.kind === 'thinking') streamed = ''
+        if (activity.kind === 'thinking') {
+          // A fresh 'thinking' after answer text already streamed is a retry:
+          // the finished attempt was invalidated after the fact. Retract the
+          // dead preview EXPLICITLY (the widget also clears on the activity
+          // event, but an empty delta closes the race for any consumer that
+          // handles only deltas) and go preview-silent for the rest of the
+          // turn — see `previewSilent`.
+          if (streamed.length > 0 && !previewSilent) {
+            previewSilent = true
+            publishConversationOnlyEvent(conversationId, {
+              kind: 'assistant_delta',
+              conversationId,
+              text: '',
+              at: new Date().toISOString(),
+            })
+          }
+          streamed = ''
+        }
         publishActivity(activityToStatus(activity))
       },
       onTextDelta: (delta) => {
         streamed += delta
+        if (previewSilent) return
         const now = Date.now()
         if (now - lastDeltaAt < 90) return
         lastDeltaAt = now

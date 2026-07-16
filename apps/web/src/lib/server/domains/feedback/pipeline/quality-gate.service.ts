@@ -12,15 +12,31 @@
  * since there is no human-provided one.
  */
 
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
+import { config } from '@/lib/server/config'
+import {
+  isAiClientConfigured,
+  structuredOutputProviderOptions,
+} from '@/lib/server/domains/ai/config'
+import { createUsageLoggingMiddleware } from '@/lib/server/domains/ai/usage-middleware'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { buildQualityGatePrompt } from './prompts/quality-gate.prompt'
 import { logger } from '@/lib/server/logger'
 import type { RawFeedbackContent, RawFeedbackItemContextEnvelope } from '../types'
 
 const log = logger.child({ component: 'quality-gate' })
+
+// Mirrors the quality-gate prompt's contract (prompts/quality-gate.prompt.ts).
+// All fields optional: the old hand-parsed path treated a missing `extract`
+// as pass-through-true and a missing `reason` as a placeholder string, and
+// `suggestedTitle` is only requested for channel-monitored items.
+const QualityGateResponseSchema = z.object({
+  extract: z.boolean().optional(),
+  reason: z.string().optional(),
+  suggestedTitle: z.string().optional(),
+})
 
 /** Sources where users intentionally submit feedback — high baseline intent. */
 const HIGH_INTENT_SOURCES = new Set(['api', 'quackback'])
@@ -74,9 +90,8 @@ export async function shouldExtract(item: {
   }
 
   // Tier 3: LLM gate
-  const openai = getOpenAI()
   const model = getChatModel('qualityGate')
-  if (!openai || !model) {
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) {
     // AI not configured — fall back to permissive behavior
     return {
       extract: words >= 15,
@@ -90,43 +105,27 @@ export async function shouldExtract(item: {
   try {
     const prompt = buildQualityGatePrompt(item)
 
-    const completion = await withUsageLogging(
-      {
-        pipelineStep: 'quality_gate',
-        callType: 'chat_completion',
-        model,
-        rawFeedbackItemId: item.rawFeedbackItemId,
-        metadata: { promptVersion: 'v1', isChannelMonitor, temperature: 0 },
+    const result = await chat({
+      adapter: openaiCompatibleText(model, {
+        baseURL: config.openaiBaseUrl!,
+        apiKey: config.openaiApiKey!,
+      }),
+      messages: [{ role: 'user', content: prompt }],
+      outputSchema: QualityGateResponseSchema,
+      stream: false,
+      modelOptions: {
+        max_tokens: isChannelMonitor ? 200 : 100,
+        ...structuredOutputProviderOptions(),
       },
-      () =>
-        withRetry(
-          () =>
-            openai.chat.completions.create({
-              model,
-              messages: [{ role: 'user', content: prompt }],
-              response_format: { type: 'json_object' },
-              temperature: 0,
-              max_tokens: isChannelMonitor ? 200 : 100,
-            }),
-          { maxRetries: 2, baseDelayMs: 500 }
-        ),
-      (r) => ({
-        inputTokens: r.usage?.prompt_tokens ?? 0,
-        outputTokens: r.usage?.completion_tokens,
-        totalTokens: r.usage?.total_tokens ?? 0,
-      })
-    )
-
-    const responseText = completion.choices[0]?.message?.content
-    if (!responseText) {
-      return { extract: true, tier: 3, reason: 'quality gate returned empty response' }
-    }
-
-    const result = JSON.parse(stripCodeFences(responseText)) as {
-      extract?: boolean
-      reason?: string
-      suggestedTitle?: string
-    }
+      middleware: [
+        createUsageLoggingMiddleware({
+          pipelineStep: 'quality_gate',
+          model,
+          rawFeedbackItemId: item.rawFeedbackItemId,
+          metadata: { promptVersion: 'v1', isChannelMonitor, temperature: 0 },
+        }),
+      ],
+    })
 
     return {
       extract: result.extract !== false,
@@ -135,7 +134,11 @@ export async function shouldExtract(item: {
       suggestedTitle: result.suggestedTitle,
     }
   } catch (error) {
-    // Quality gate failure should never block the pipeline — pass through
+    // Quality gate failure should never block the pipeline — pass through.
+    // Covers both a transport/provider error and chat() throwing on a
+    // response that didn't validate against outputSchema (the old code's
+    // distinct 'empty response' / JSON-parse-failure branches collapse into
+    // this same fail-open path, same as any other LLM error did before).
     log.warn({ err: error }, 'llm call failed, passing through')
     return { extract: true, tier: 3, reason: 'quality gate error, passing through' }
   }

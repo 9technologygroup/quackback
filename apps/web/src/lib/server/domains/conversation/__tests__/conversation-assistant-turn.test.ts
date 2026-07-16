@@ -26,13 +26,13 @@ const assistantMock = vi.hoisted(() => ({
   recordAssistantAnswer: vi.fn(async () => {}),
   setInvolvementRating: vi.fn(async () => {}),
   // Mirrors the real assistant.runtime.ts mapping (thinking -> thinking; any
-  // tool -> searching_kb for search_knowledge, else reviewing_conversation) so
+  // tool -> searching_kb for search, else reviewing_conversation) so
   // the activity-snapshot assertions below see the same status strings the
   // unmocked domain would produce.
   activityToStatus: vi.fn((activity: { kind: string; tool?: string }) =>
     activity.kind === 'thinking'
       ? 'thinking'
-      : activity.tool === 'search_knowledge'
+      : activity.tool === 'search'
         ? 'searching_kb'
         : 'reviewing_conversation'
   ),
@@ -213,7 +213,7 @@ const V2_IDENTITY: DeliveredFields['identity'] = {
 // Durable trace fixtures contain only bounded config metadata and tool names/outcomes,
 // never prompts, customer text, tool arguments, or tool results.
 const PRIVACY_SAFE_TRACE: DeliveredFields['trace'] = {
-  promptVersion: 'support-agent-v2',
+  promptVersion: 'support-agent-v3',
   configRevision: 12,
   role: 'customer_support',
   tone: 'balanced',
@@ -476,6 +476,58 @@ describe('runAssistantTurnForConversation escalation dispatch', () => {
         stepInstructions: 'Answer only the billing question.',
       })
     )
+  })
+})
+
+describe('runAssistantTurnForConversation preview retraction (invalidated attempt)', () => {
+  async function publishedEvents(): Promise<Array<Record<string, unknown>>> {
+    const { publishConversationOnlyEvent } =
+      await import('@/lib/server/realtime/conversation-channels')
+    return vi.mocked(publishConversationOnlyEvent).mock.calls.map(([, e]) => e as never)
+  }
+
+  it('retracts a streamed answer on retry and stays preview-silent for the rest of the turn', async () => {
+    assistantMock.runAssistantTurn.mockImplementation(
+      async (input: { onActivity: (a: unknown) => void; onTextDelta: (d: string) => void }) => {
+        // Attempt 1: streams a full answer, then gets invalidated post-hoc
+        // (e.g. fabricated_citation) — the retry starts with a fresh
+        // 'thinking'.
+        input.onActivity({ kind: 'thinking' })
+        input.onTextDelta('All systems are ')
+        input.onTextDelta('operational right now.')
+        // Attempt 2 (the retry): must never stream a second candidate the
+        // customer could watch get retracted again.
+        input.onActivity({ kind: 'thinking' })
+        input.onTextDelta('We currently have a degraded-performance incident.')
+        return answered({ text: 'We currently have a degraded-performance incident.' })
+      }
+    )
+    await runAssistantTurnForConversation(CONV)
+
+    const deltas = (await publishedEvents()).filter((e) => e.kind === 'assistant_delta')
+    // Attempt 1's preview streamed at least once.
+    expect(deltas.some((e) => (e.text as string).length > 0)).toBe(true)
+    // The invalidation retracted it with an explicit empty frame...
+    const retractionIndex = deltas.findIndex((e) => e.text === '')
+    expect(retractionIndex).toBeGreaterThan(-1)
+    // ...and nothing streamed after it: the retry's answer arrives only as
+    // the persisted, validated reply.
+    expect(deltas.slice(retractionIndex + 1)).toEqual([])
+  })
+
+  it('a clean single-attempt turn streams without any retraction frame', async () => {
+    assistantMock.runAssistantTurn.mockImplementation(
+      async (input: { onActivity: (a: unknown) => void; onTextDelta: (d: string) => void }) => {
+        input.onActivity({ kind: 'thinking' })
+        input.onTextDelta('Here is your answer.')
+        return answered({ text: 'Here is your answer.' })
+      }
+    )
+    await runAssistantTurnForConversation(CONV)
+
+    const deltas = (await publishedEvents()).filter((e) => e.kind === 'assistant_delta')
+    expect(deltas.length).toBeGreaterThan(0)
+    expect(deltas.every((e) => (e.text as string).length > 0)).toBe(true)
   })
 })
 

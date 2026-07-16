@@ -58,7 +58,7 @@ describe('evaluateZeroToolCompletion', () => {
       model: 'test-model',
       messages: [{ sender: 'customer', content: 'Tell me about Quackback' }],
       candidate: "I'm not familiar with anything called",
-      availableTools: ['search_knowledge', 'report_inability'],
+      availableTools: ['search', 'report_inability'],
       surface: 'widget',
       conversationId: 'conversation_1',
     })
@@ -90,7 +90,7 @@ describe('evaluateZeroToolCompletion', () => {
         model: 'test-model',
         messages: [{ sender: 'customer', content: 'Tell me about Quackback' }],
         candidate: 'I do not know.',
-        availableTools: ['search_knowledge'],
+        availableTools: ['search'],
         surface: 'widget',
         conversationId: 'conversation_1',
       })

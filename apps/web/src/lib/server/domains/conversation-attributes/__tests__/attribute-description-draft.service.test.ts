@@ -7,37 +7,37 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const mockOpenAI = {
-  chat: { completions: { create: vi.fn() } },
-}
-
 const mockIsFeatureEnabled = vi.fn()
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: (...args: unknown[]) => mockIsFeatureEnabled(...args),
 }))
 
-const mockGetOpenAI = vi.fn(() => mockOpenAI as unknown)
-const mockStructuredOutputProviderOptions = vi.fn(() => ({}))
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
+
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: () => mockGetOpenAI(),
-  stripCodeFences: (s: string) => s.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, ''),
-  structuredOutputProviderOptions: () => mockStructuredOutputProviderOptions(),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: () => ({ name: 'ai-usage-logging' }),
 }))
 
 const mockGetChatModel = vi.fn((_feature?: string): string | null => 'test-classification-model')
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: (feature: string) => mockGetChatModel(feature),
-}))
-
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: (fn: () => Promise<unknown>) =>
-    fn().then((result: unknown) => ({ result, retryCount: 0 })),
-}))
-
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
-    fn().then(({ result }) => result)
-  ),
 }))
 
 const mockEnforceAiTokenBudget = vi.fn()
@@ -47,18 +47,11 @@ vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
 
 import { draftAttributeDescriptions } from '../attribute-description-draft.service'
 
-function chatResponse(json: unknown, overrides: Record<string, unknown> = {}) {
-  return {
-    choices: [{ message: { content: JSON.stringify(json) } }],
-    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-    ...overrides,
-  }
-}
-
 beforeEach(() => {
   vi.clearAllMocks()
+  mockConfig.openaiApiKey = 'test-key'
+  mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   mockIsFeatureEnabled.mockResolvedValue(true)
-  mockGetOpenAI.mockReturnValue(mockOpenAI as unknown)
   mockGetChatModel.mockReturnValue('test-classification-model')
   mockEnforceAiTokenBudget.mockResolvedValue(undefined)
 })
@@ -69,11 +62,11 @@ describe('draftAttributeDescriptions: gating', () => {
     await expect(
       draftAttributeDescriptions({ label: 'Issue type', optionLabels: ['Billing', 'Bug'] })
     ).rejects.toMatchObject({ code: 'AI_ATTRIBUTE_DETECTION_DISABLED' })
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('throws when AI is not configured', async () => {
-    mockGetOpenAI.mockReturnValue(null)
+    mockConfig.openaiApiKey = undefined
     await expect(
       draftAttributeDescriptions({ label: 'Issue type', optionLabels: ['Billing'] })
     ).rejects.toMatchObject({ code: 'AI_NOT_CONFIGURED' })
@@ -94,15 +87,13 @@ describe('draftAttributeDescriptions: gating', () => {
 
 describe('draftAttributeDescriptions: happy path', () => {
   it('returns an attribute description and one description per option, in the given order', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        attributeDescription: 'What kind of issue the customer has.',
-        options: [
-          { label: 'Bug report', description: 'Applies when something is broken.' },
-          { label: 'Billing', description: 'Applies when the customer asks about a charge.' },
-        ],
-      })
-    )
+    mockChat.mockResolvedValue({
+      attributeDescription: 'What kind of issue the customer has.',
+      options: [
+        { label: 'Bug report', description: 'Applies when something is broken.' },
+        { label: 'Billing', description: 'Applies when the customer asks about a charge.' },
+      ],
+    })
     const result = await draftAttributeDescriptions({
       label: 'Issue type',
       optionLabels: ['Billing', 'Bug report'],
@@ -116,12 +107,10 @@ describe('draftAttributeDescriptions: happy path', () => {
   })
 
   it('falls back to an empty description for an option the model omitted', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      chatResponse({
-        attributeDescription: 'desc',
-        options: [{ label: 'Billing', description: 'x' }],
-      })
-    )
+    mockChat.mockResolvedValue({
+      attributeDescription: 'desc',
+      options: [{ label: 'Billing', description: 'x' }],
+    })
     const result = await draftAttributeDescriptions({
       label: 'Issue type',
       optionLabels: ['Billing', 'Bug report'],
@@ -132,10 +121,19 @@ describe('draftAttributeDescriptions: happy path', () => {
     ])
   })
 
-  it('throws on a malformed model response', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(chatResponse({ notTheShape: true }))
+  it('throws on a malformed model response (options missing entirely)', async () => {
+    // Simulates what the permissive outputSchema reduces a shape-mismatched
+    // response down to: the outer `.catch` fallback of `{ options: undefined }`.
+    mockChat.mockResolvedValue({ options: undefined })
     await expect(
       draftAttributeDescriptions({ label: 'Issue type', optionLabels: ['Billing'] })
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' })
+  })
+
+  it('propagates a hard call failure (network/provider error) rather than swallowing it', async () => {
+    mockChat.mockRejectedValue(new Error('upstream error'))
+    await expect(
+      draftAttributeDescriptions({ label: 'Issue type', optionLabels: ['Billing'] })
+    ).rejects.toThrow('upstream error')
   })
 })

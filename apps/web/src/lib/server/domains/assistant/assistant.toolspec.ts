@@ -21,6 +21,9 @@ import { z } from 'zod'
 import {
   conversations,
   eq,
+  and,
+  tickets,
+  ticketConversations,
   ASSISTANT_HANDOFF_REASONS,
   type AssistantHandoffReason,
 } from '@/lib/server/db'
@@ -49,7 +52,11 @@ import { classifyConversationAttributes } from '@/lib/server/domains/conversatio
 import { readAttributeValue } from '@/lib/shared/conversation/attribute-values'
 import { setConversationStatus } from '@/lib/server/domains/conversation/conversation.service'
 import { createTicket } from '@/lib/server/domains/tickets/ticket.service'
+import { linkTicketToConversation } from '@/lib/server/domains/tickets/ticket-conversation-link.service'
+import { formatTicketNumber } from '@/lib/shared/tickets'
+import { ConflictError } from '@/lib/shared/errors'
 import { createPostFromConversation } from '@/lib/server/domains/conversation/conversation.convert'
+import { sharePost, shareTicket } from '@/lib/server/domains/conversation/conversation.cards'
 import { quinnActor } from './assistant.actor'
 import { RETRIEVED_CONTENT_NOTE } from './injection-guard'
 import { logger } from '@/lib/server/logger'
@@ -139,7 +146,7 @@ export type AssistantWriteToolPolicy = 'simulate' | 'execute' | 'propose' | 'dis
  * reset. Minted only by `makeAssistantToolLedger`.
  */
 export interface AssistantToolLedger {
-  /** Sources surfaced by search_knowledge this run, keyed by id, for citation assembly. */
+  /** Sources surfaced by search this run, keyed by id, for citation assembly. */
   sources: Map<string, AssistantCitation>
   /**
    * Tool names actually invoked this attempt, in call order. Completion
@@ -161,7 +168,7 @@ export interface AssistantToolLedger {
    * attempt's proposals. See `AssistantProposedAction`.
    */
   proposedActions: AssistantProposedAction[]
-  /** search_knowledge calls made this attempt, for the server-side search budget. */
+  /** search calls made this attempt, for the server-side search budget. */
   searchCalls: number
 }
 
@@ -224,7 +231,7 @@ export interface AssistantToolContext {
    */
   customerPrincipalId?: PrincipalId
   /**
-   * Per-request NARROWING filter over the grounding sources search_knowledge
+   * Per-request NARROWING filter over the grounding sources search
    * consults (the copilot Answer-sources picker); undefined means every
    * source the workspace's flags already registered. Can only drop a
    * registered source, never re-enable one a flag left off; see
@@ -233,7 +240,7 @@ export interface AssistantToolContext {
   sourceTypes?: RetrievedItem['sourceType'][]
   /**
    * The turn's compiled knowledge snapshot (config v3): the enabled retrieval
-   * source types (drives which sources `search_knowledge` consults and its
+   * source types (drives which sources `search` consults and its
    * dynamic enumeration) and whether `get_status` is registered. Minted by
    * `resolveAssistantKnowledgeSnapshot` (retrieval-sources.ts) from the
    * resolved agent's per-agent `knowledge` map; never re-read from settings
@@ -336,7 +343,7 @@ export function makeAssistantToolContext(init: {
 }
 
 /**
- * Hard per-attempt budget on search_knowledge. Prompt discipline alone does not
+ * Hard per-attempt budget on search. Prompt discipline alone does not
  * hold — a model that dislikes its results keeps reformulating until the
  * iteration cap kills the whole turn with no answer. Past the budget the tool
  * returns no articles and an explicit
@@ -447,6 +454,9 @@ const searchKnowledgeOutputSchema = z.object({
   results: z.array(
     z.object({
       id: z.string(),
+      /** Which entity the result is, so the model can reason per-kind (share a
+       *  'post', link an 'article') without decoding TypeID prefixes. */
+      kind: z.enum(ASSISTANT_CITATION_TYPES),
       title: z.string(),
       snippet: z.string(),
     })
@@ -455,9 +465,9 @@ const searchKnowledgeOutputSchema = z.object({
 })
 
 export const searchKnowledgeTool = toolDefinition({
-  name: 'search_knowledge',
+  name: 'search',
   description:
-    'Search the workspace knowledge for content relevant to the question. The enabled sources for this turn are listed in the operating guidance. Returns only content the current viewer is allowed to see. Call this before answering and cite the returned result ids.',
+    "Search the workspace's content. One query returns a single ranked list spanning every source enabled for this turn (listed in the operating guidance) — help center articles, feedback posts (each carries its roadmap status when set), changelog entries, and more. Each result's `kind` names its entity type. Returns only content the current viewer is allowed to see. Call this before answering and cite the returned result ids.",
   inputSchema: z.object({
     query: z.string().min(1).max(500).describe('A focused search query derived from the question.'),
     sources: z
@@ -466,7 +476,7 @@ export const searchKnowledgeTool = toolDefinition({
       .max(ASSISTANT_CITATION_TYPES.length)
       .optional()
       .describe(
-        "Optional: restrict this search to a subset of the turn's enabled sources. Omit to search all of them. Values outside the enabled set are ignored."
+        "Optional and rarely needed: restrict this search to a subset of the turn's enabled sources. Omit to search all of them (recommended). Values outside the enabled set are ignored."
       ),
   }),
   outputSchema: withGateEnvelope(searchKnowledgeOutputSchema),
@@ -495,6 +505,12 @@ function intersectSourceTypes(
   return picker.filter((type) => requestedSet.has(type))
 }
 
+const EMPTY_SEARCH_NOTE =
+  'No results. If the admin workspace instructions or situational guidance already state the ' +
+  'answer, answer from them directly. Otherwise refine the query once, or resolve the turn ' +
+  'honestly (report_inability or a handoff where available) — never answer a workspace-specific ' +
+  'question without grounding.'
+
 async function executeSearchKnowledge(
   args: SearchKnowledgeArgs,
   ctx: AssistantToolContext
@@ -517,7 +533,16 @@ async function executeSearchKnowledge(
   // narrowing intersects the copilot Answer-sources picker (ctx.sourceTypes)
   // with any model-supplied `sources` target — either can only drop sources,
   // never re-enable one the snapshot left unregistered.
-  const narrowing = intersectSourceTypes(ctx.sourceTypes, args.sources)
+  // The input contract says values outside the enabled set are IGNORED, so a
+  // model-supplied target is sanitized against the registered snapshot first:
+  // an entirely-invalid target (e.g. sources:['article'] on a changelog-only
+  // turn) degrades to "search everything enabled" instead of guaranteeing an
+  // empty result the model then reads as "no coverage".
+  const requestedSources = args.sources?.filter((type) => ctx.knowledge.sources.has(type))
+  const narrowing = intersectSourceTypes(
+    ctx.sourceTypes,
+    requestedSources?.length ? requestedSources : undefined
+  )
   const items = await retrieveKnowledge(args.query, ctx.audience, {
     customerPrincipalId: ctx.customerPrincipalId,
     conversationId: ctx.conversationId,
@@ -536,6 +561,7 @@ async function executeSearchKnowledge(
   return {
     results: items.map((item) => ({
       id: item.id,
+      kind: item.sourceType,
       title: item.title,
       snippet: item.excerpt,
     })),
@@ -543,7 +569,12 @@ async function executeSearchKnowledge(
     // customer-derived summaries), so a non-empty result carries the shared
     // content-not-instructions note — see RETRIEVED_CONTENT_NOTE
     // (injection-guard.ts) for why it is a trailing note rather than a fence.
-    ...(items.length > 0 ? { note: RETRIEVED_CONTENT_NOTE } : {}),
+    // An empty result instead restates the resolution contract at the exact
+    // moment weak models drop it: post-miss, the tool result is the most
+    // recent thing the model reads, and without the reminder it either
+    // answers ungrounded (the completion gate rejects that) or forgets that
+    // admin-stated facts never needed the search in the first place.
+    ...(items.length > 0 ? { note: RETRIEVED_CONTENT_NOTE } : { note: EMPTY_SEARCH_NOTE }),
   }
 }
 
@@ -803,9 +834,14 @@ const createTicketOutputSchema = z.object({
 export const createTicketTool = toolDefinition({
   name: 'create_ticket',
   description:
-    'Open a support ticket to track work that needs a teammate beyond this conversation, such as a bug report or an account problem to investigate. Use customer when the customer is waiting on the outcome, back_office for internal-only work with no customer thread, and tracker for a linked follow-up item. Do not use this for feature requests or product feedback; use capture_feedback for those.',
+    "Open a support ticket to track work that needs a teammate beyond this conversation, such as a bug report or an account problem to investigate. Default to customer: it is filed on the requester's behalf, linked to this conversation, and the customer can see and track it. Use back_office ONLY for internal work the customer must not see, and tracker only for a linked follow-up item. Do not use this for feature requests or product feedback; use capture_feedback for those.",
   inputSchema: z.object({
-    type: z.enum(TICKET_TYPES).describe('The kind of ticket to open.'),
+    type: z
+      .enum(TICKET_TYPES)
+      .default('customer')
+      .describe(
+        'The kind of ticket to open. Omit for the default, customer — visible and trackable by the requester.'
+      ),
     title: z.string().min(1).max(300).describe('A short, specific summary of the issue.'),
     description: z
       .string()
@@ -833,6 +869,24 @@ export const captureFeedbackTool = toolDefinition({
     content: z.string().max(2000).optional().describe('Additional detail from the conversation.'),
   }),
   outputSchema: withGateEnvelope(captureFeedbackOutputSchema),
+})
+
+const sharePostOutputSchema = z.object({
+  shared: z.boolean(),
+  note: z.string().optional(),
+})
+
+export const sharePostTool = toolDefinition({
+  name: 'share_post',
+  description:
+    "Share an existing feedback post into the conversation as a live card the customer can open and vote on. Use when the customer requests something an existing post already tracks — share it and invite them to vote instead of capturing a duplicate (capture_feedback is only for NEW ideas). Only a post id returned by this turn's search results can be shared.",
+  inputSchema: z.object({
+    postId: z
+      .string()
+      .min(1)
+      .describe('The post TypeID to share, exactly as returned by search this turn.'),
+  }),
+  outputSchema: withGateEnvelope(sharePostOutputSchema),
 })
 
 /**
@@ -971,9 +1025,38 @@ async function executeCreateTicket(
   if (!row) {
     return { created: false, note: NO_CONVERSATION_NOTE }
   }
+  // Mirrors the input schema's default: InferToolInput is the PRE-parse shape,
+  // so the field is optional here even though zod fills it at parse time.
+  const type = args.type ?? 'customer'
+  // A conversation carries at most ONE customer ticket (the
+  // ticket_conversations partial-unique index). Check before creating so a
+  // duplicate ask surfaces the existing ticket's reference instead of
+  // minting an orphan ticket the link step would then reject.
+  if (type === 'customer') {
+    const [existing] = await ctx.db
+      .select({ number: tickets.number })
+      .from(ticketConversations)
+      .innerJoin(tickets, eq(tickets.id, ticketConversations.ticketId))
+      .where(
+        and(
+          eq(ticketConversations.conversationId, conversationId),
+          eq(ticketConversations.ticketType, 'customer')
+        )
+      )
+      .limit(1)
+    if (existing) {
+      return {
+        created: false,
+        note: `This conversation already has ticket ${formatTicketNumber(existing.number)}; add to it rather than opening another.`,
+      }
+    }
+  }
+  // The requester is the conversation's customer — the ticket is filed ON
+  // THEIR BEHALF (they can see and track a customer ticket), while the
+  // activity trail records the assistant principal as the creator.
   const ticket = await createTicket(
     {
-      type: args.type,
+      type,
       title: args.title,
       description: args.description,
       priority: args.priority,
@@ -981,6 +1064,39 @@ async function executeCreateTicket(
     },
     ctx.actor
   )
+  // Tie the customer ticket back to its originating conversation: the join
+  // row is the provenance record, and the link announces itself on the
+  // conversation thread. Best-effort past creation — a lost race to the
+  // one-customer-ticket constraint must not turn the created ticket into a
+  // reported failure.
+  if (type === 'customer') {
+    let linked = false
+    try {
+      await linkTicketToConversation(ticket.id as TicketId, conversationId, ctx.actor)
+      linked = true
+    } catch (error) {
+      if (!(error instanceof ConflictError)) throw error
+    }
+    // Drop the live ticket card into the chat so the customer sees the ticket
+    // they can open and track. Only on a successful link (a lost race means
+    // another ticket already owns this conversation), and best-effort: the
+    // ticket exists regardless, so a failed card send is logged, never fatal.
+    // Write-tool idempotency already guards against a double send across retries.
+    if (linked) {
+      try {
+        await shareTicket(
+          { conversationId, ticketId: ticket.id as TicketId },
+          {
+            agentActor: ctx.actor,
+            agentPrincipalId: ctx.assistantPrincipalId,
+            agent: { principalId: ctx.assistantPrincipalId, displayName: ctx.assistantName },
+          }
+        )
+      } catch (error) {
+        log.warn({ err: error, ticketId: ticket.id }, 'ticket embed card send failed')
+      }
+    }
+  }
   return { created: true, ticketId: ticket.id, reference: ticket.reference, title: ticket.title }
 }
 
@@ -1016,6 +1132,45 @@ async function executeCaptureFeedback(
     }
   )
   return { created: result.created, postId: result.postId }
+}
+
+type SharePostArgs = InferToolInput<typeof sharePostTool>
+type SharePostOutput = z.infer<typeof sharePostOutputSchema>
+
+async function executeSharePost(
+  args: SharePostArgs,
+  ctx: AssistantToolContext
+): Promise<SharePostOutput> {
+  const conversationId = ctx.conversationId
+  if (!conversationId) {
+    return { shared: false, note: NO_CONVERSATION_NOTE }
+  }
+  // The model sends the post id as a free string; validate the TypeID format
+  // before consulting the ledger, same idiom as capture_feedback's boardId.
+  if (!isTypeId(args.postId, 'post')) {
+    return { shared: false, note: 'Unknown or invalid post id.' }
+  }
+  // Only a post THIS TURN's search actually surfaced may be shared: the id
+  // must sit in the source ledger as a 'post' citation. A hallucinated or
+  // remembered id is structurally unshareable — it never reaches the DB, so
+  // the customer can never be handed a card for content the audience-scoped
+  // search would not have returned them.
+  const cited = ctx.ledger.sources.get(args.postId)
+  if (!cited || cited.type !== 'post') {
+    return {
+      shared: false,
+      note: "Only a post surfaced by this turn's search can be shared. Search first.",
+    }
+  }
+  await sharePost(
+    { conversationId, postId: args.postId },
+    {
+      agentActor: ctx.actor,
+      agentPrincipalId: ctx.assistantPrincipalId,
+      agent: { principalId: ctx.assistantPrincipalId, displayName: ctx.assistantName },
+    }
+  )
+  return { shared: true, note: `Shared "${cited.title}" into the conversation.` }
 }
 
 /**
@@ -1169,11 +1324,28 @@ const SPECS: readonly AssistantToolSpec[] = [
     summarize: (args) => `Create a ${args.type} ticket: "${args.title}"`,
   }),
   defineToolSpec({
+    label: 'Share feedback post',
+    description:
+      'Share an existing feedback post into the conversation as a live card the customer can open and vote on.',
+    promptGuidance:
+      "Use when search surfaced an existing feedback post matching the customer's request: share it so they can vote, and say so in your reply. Never share a post the search did not return this turn.",
+    risk: 'write',
+    // Sharing sends a customer-visible agent message: sendAgentMessage gates on
+    // canActAsAgent, which checks exactly this permission.
+    permissions: [PERMISSIONS.CONVERSATION_REPLY],
+    // Only meaningful when this turn's search can actually surface posts —
+    // mirrors how get_status registers only when its knowledge source is on.
+    availableWhen: (ctx) => ctx.knowledge.sources.has('post'),
+    definition: sharePostTool,
+    execute: executeSharePost,
+    summarize: (args) => `Share feedback post ${args.postId}`,
+  }),
+  defineToolSpec({
     label: 'Capture feedback',
     description:
       'Create a public feedback post from the conversation, attributed to the customer, for the team roadmap.',
     promptGuidance:
-      'Use for a feature request or suggestion the customer raises, not for a problem that needs a fix.',
+      'Use for a feature request or suggestion the customer raises, not for a problem that needs a fix. Pick boardId from the workspace board catalogue below; never guess one. If search already surfaced a matching post, use share_post instead of capturing a duplicate.',
     risk: 'write',
     permissions: [PERMISSIONS.POST_CREATE, PERMISSIONS.POST_VOTE_ON_BEHALF],
     definition: captureFeedbackTool,

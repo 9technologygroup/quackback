@@ -22,32 +22,33 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
   },
 }))
 
-const mockOpenAI = {
-  chat: { completions: { create: vi.fn() } },
-}
-const mockGetOpenAI = vi.fn(() => mockOpenAI as unknown)
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
+
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: () => mockGetOpenAI(),
-  stripCodeFences: (s: string) => s.replace(/^```[a-z]*\n?/i, '').replace(/```$/, ''),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: () => ({ name: 'ai-usage-logging' }),
 }))
 
 const mockGetChatModel = vi.fn(() => 'test-model' as string | null)
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: () => mockGetChatModel(),
   getEmbeddingModel: () => 'test-embedding-model',
-}))
-
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: (fn: () => Promise<unknown>) =>
-    fn().then((result: unknown) => ({ result, retryCount: 0 })),
-}))
-
-const mockWithUsageLogging = vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
-  fn().then(({ result }) => result)
-)
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: (...args: [unknown, () => Promise<{ result: unknown }>]) =>
-    mockWithUsageLogging(...args),
 }))
 
 const mockEnforceAiTokenBudget = vi.fn().mockResolvedValue(undefined)
@@ -89,13 +90,10 @@ import { summarizeTicketOnClose } from '../ticket-summary.service'
 const TICKET_ID = 'ticket_1' as TicketId
 const REQUESTER_ID = 'principal_requester_1' as PrincipalId
 
-function completion(content: string) {
-  return { choices: [{ message: { content } }], usage: {} }
-}
-
 beforeEach(() => {
   vi.clearAllMocks()
-  mockGetOpenAI.mockReturnValue(mockOpenAI)
+  mockConfig.openaiApiKey = 'test-key'
+  mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   mockGetChatModel.mockReturnValue('test-model')
   mockTicketFindFirst.mockResolvedValue({ requesterPrincipalId: REQUESTER_ID })
   mockListTicketMessages.mockResolvedValue({ messages: [{ id: 'm1' }] })
@@ -105,14 +103,14 @@ beforeEach(() => {
 
 describe('summarizeTicketOnClose', () => {
   it('no-ops without touching the model when AI is unconfigured', async () => {
-    mockGetOpenAI.mockReturnValue(null)
+    mockConfig.openaiApiKey = undefined
     await summarizeTicketOnClose(TICKET_ID)
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
     expect(mockInsertValues).not.toHaveBeenCalled()
   })
 
   it('excludes internal notes when loading the ticket thread', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(completion('{"summary":"resolved"}'))
+    mockChat.mockResolvedValue({ summary: 'resolved' })
     await summarizeTicketOnClose(TICKET_ID)
     expect(mockListTicketMessages).toHaveBeenCalledWith(TICKET_ID, { includeInternal: false })
   })
@@ -120,14 +118,14 @@ describe('summarizeTicketOnClose', () => {
   it('no-ops when nothing customer-visible happened (empty transcript)', async () => {
     mockBuildTicketTranscript.mockReturnValue('')
     await summarizeTicketOnClose(TICKET_ID)
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
     expect(mockInsertValues).not.toHaveBeenCalled()
   })
 
   it('upserts a summary row keyed on ticketId with the denormalized requester', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      completion('{"summary":"SSO redirect_uri mismatch; fixed by re-adding the callback URL."}')
-    )
+    mockChat.mockResolvedValue({
+      summary: 'SSO redirect_uri mismatch; fixed by re-adding the callback URL.',
+    })
     await summarizeTicketOnClose(TICKET_ID)
 
     expect(mockInsertValues).toHaveBeenCalledTimes(1)
@@ -144,7 +142,7 @@ describe('summarizeTicketOnClose', () => {
 
   it('persists the embedding columns when an embedding is generated', async () => {
     mockGenerateEmbedding.mockResolvedValue([0.1, 0.2, 0.3])
-    mockOpenAI.chat.completions.create.mockResolvedValue(completion('{"summary":"resolved"}'))
+    mockChat.mockResolvedValue({ summary: 'resolved' })
     await summarizeTicketOnClose(TICKET_ID)
 
     const values = mockInsertValues.mock.calls[0][0]
@@ -154,7 +152,9 @@ describe('summarizeTicketOnClose', () => {
   })
 
   it('swallows a malformed model response (never throws, writes nothing)', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(completion('not json'))
+    // With outputSchema, chat() validates and rejects on a non-conforming
+    // response; the outer best-effort catch logs and swallows it.
+    mockChat.mockRejectedValue(new Error('response did not match schema'))
     await expect(summarizeTicketOnClose(TICKET_ID)).resolves.toBeUndefined()
     expect(mockInsertValues).not.toHaveBeenCalled()
     expect(mockLogError).toHaveBeenCalled()

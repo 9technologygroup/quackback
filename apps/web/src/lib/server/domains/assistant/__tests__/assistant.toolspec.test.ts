@@ -92,8 +92,8 @@ describe('assistant.toolspec registry completeness', () => {
   })
 })
 
-describe('search_knowledge spec', () => {
-  const spec = ASSISTANT_TOOL_SPECS.search_knowledge
+describe('search spec', () => {
+  const spec = ASSISTANT_TOOL_SPECS.search
 
   it('exists with the expected shape', () => {
     expect(spec).toBeDefined()
@@ -173,8 +173,9 @@ describe('resolveToolSpecs', () => {
       'get_status',
       'handoff_to_human',
       'report_inability',
-      'search_knowledge',
+      'search',
       'set_attribute',
+      'share_post',
     ])
   })
 

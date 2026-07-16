@@ -71,34 +71,35 @@ vi.mock('../prompts/suggestion.prompt', () => ({
   buildSuggestionPrompt: vi.fn(() => 'mocked suggestion prompt'),
 }))
 
-const mockOpenAI = {
-  chat: {
-    completions: {
-      create: vi.fn(),
-    },
-  },
-}
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
 
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: vi.fn(() => mockOpenAI),
-  stripCodeFences: vi.fn((s: string) => s.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '')),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+
+const mockCreateUsageLoggingMiddleware = vi.fn((..._args: unknown[]) => ({
+  name: 'ai-usage-logging',
+}))
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: (...args: unknown[]) => mockCreateUsageLoggingMiddleware(...args),
 }))
 
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: () => 'test-model',
   getEmbeddingModel: () => 'test-embedding-model',
-}))
-
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: vi.fn((fn: () => Promise<unknown>) =>
-    fn().then((result: unknown) => ({ result, retryCount: 0 }))
-  ),
-}))
-
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
-    fn().then(({ result }) => result)
-  ),
 }))
 
 vi.mock('../pipeline-log', () => ({
@@ -109,6 +110,8 @@ describe('interpretation.service', () => {
   beforeEach(() => {
     updateSetCalls.length = 0
     vi.clearAllMocks()
+    mockConfig.openaiApiKey = 'test-key'
+    mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   })
 
   const signalId = 'signal_123' as FeedbackSignalId
@@ -178,19 +181,11 @@ describe('interpretation.service', () => {
     ])
 
     // Mock LLM for suggestion generation (vote suggestions also generate title/body)
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [
-        {
-          message: {
-            content: JSON.stringify({
-              title: 'Add CSV Export',
-              body: 'Users need CSV export',
-              boardId: 'board_1',
-              reasoning: 'Feature request',
-            }),
-          },
-        },
-      ],
+    mockChat.mockResolvedValueOnce({
+      title: 'Add CSV Export',
+      body: 'Users need CSV export',
+      boardId: 'board_1',
+      reasoning: 'Feature request',
     })
 
     mockSignalFindMany.mockResolvedValueOnce([{ id: signalId, processingState: 'completed' }])
@@ -230,17 +225,14 @@ describe('interpretation.service', () => {
       })
     )
 
-    // Verify AI usage logging for suggestion generation
-    const { withUsageLogging } = await import('@/lib/server/domains/ai/usage-log')
-    expect(withUsageLogging).toHaveBeenCalledWith(
+    // Verify AI usage logging middleware for suggestion generation
+    expect(mockCreateUsageLoggingMiddleware).toHaveBeenCalledWith(
       expect.objectContaining({
         pipelineStep: 'suggestion',
         rawFeedbackItemId: rawItemId,
         signalId,
         metadata: expect.objectContaining({ suggestionType: 'vote_on_post' }),
-      }),
-      expect.any(Function),
-      expect.any(Function)
+      })
     )
   })
 
@@ -256,19 +248,11 @@ describe('interpretation.service', () => {
     mockFindSimilarPendingSuggestions.mockResolvedValueOnce([])
 
     // Mock LLM for suggestion generation
-    mockOpenAI.chat.completions.create.mockResolvedValueOnce({
-      choices: [
-        {
-          message: {
-            content: JSON.stringify({
-              title: 'Add CSV Export',
-              body: 'Users need CSV export for data',
-              boardId: 'board_1',
-              reasoning: 'Clear feature request',
-            }),
-          },
-        },
-      ],
+    mockChat.mockResolvedValueOnce({
+      title: 'Add CSV Export',
+      body: 'Users need CSV export for data',
+      boardId: 'board_1',
+      reasoning: 'Clear feature request',
     })
 
     mockSignalFindMany.mockResolvedValueOnce([{ id: signalId, processingState: 'completed' }])
@@ -316,7 +300,7 @@ describe('interpretation.service', () => {
     })
     mockFindSimilarPosts.mockResolvedValueOnce([])
     mockFindSimilarPendingSuggestions.mockResolvedValueOnce([])
-    mockOpenAI.chat.completions.create.mockRejectedValueOnce(new Error('API down'))
+    mockChat.mockRejectedValueOnce(new Error('API down'))
     mockSignalFindMany.mockResolvedValueOnce([{ id: signalId, processingState: 'completed' }])
 
     const { interpretSignal } = await import('../interpretation.service')

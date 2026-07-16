@@ -26,7 +26,7 @@
  * A suggestion never reaches the customer by itself — it is agent-facing
  * assist, same as the Copilot panel, so it is never gated by that rule.
  *
- * Streams POST /api/admin/assistant/suggest (suggest.v1.* — SUGGEST_EVENTS)
+ * Streams POST /api/admin/assistant/suggest (AG-UI; final-only rendering)
  * through the module-level cache in suggested-reply-store.ts, which is what
  * makes "generate once per (item, lastCustomerMessageId)" and "tab
  * switches/re-renders never re-fetch" hold even though this component fully
@@ -146,7 +146,7 @@ export function SuggestedReplyCard({
   // has open must not deflate the acceptance rate. Exactly-once across
   // remounts/re-renders is the store's job (`markSuggestionShown` flips the
   // entry-level shownLogged flag and returns true only on the first flip).
-  // Shown/dismissed carry neither destination nor rating (SUGGEST_EVENTS
+  // Shown/dismissed carry neither destination nor rating (the suggest usage-event
   // contract doc) — only the item + kind, so the denominator can never be
   // conflated with an actual insert destination.
   const shownRenderable = gateOpen && entry?.status === 'done' && !entry.dismissed

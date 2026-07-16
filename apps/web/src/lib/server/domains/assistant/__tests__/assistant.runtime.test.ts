@@ -141,6 +141,13 @@ vi.mock('@/lib/server/domains/conversation-attributes/conversation-attribute.ser
   listConversationAttributes: (...args: unknown[]) => mockListConversationAttributes(...args),
 }))
 
+// The live board catalogue: fetched only when capture_feedback made it into
+// the turn's tool set (the sibling of the attribute-catalogue read above).
+const mockListBoards = vi.fn()
+vi.mock('@/lib/server/domains/boards/board.service', () => ({
+  listBoards: (...args: unknown[]) => mockListBoards(...args),
+}))
+
 const DEFAULT_RUNTIME_CONFIG: AssistantRuntimeConfig = {
   config: {
     version: 3 as const,
@@ -259,8 +266,10 @@ import {
   relinkCitations,
   validateAssistantCompletion,
   AssistantCompletionError,
+  streamAssistantTurn,
   type AssistantRuntimeConfig,
   type AssistantThreadMessage,
+  type AssistantTurnResult,
 } from '../assistant.runtime'
 import type { AssistantCitation } from '../assistant.toolspec'
 
@@ -324,6 +333,9 @@ beforeEach(() => {
   mockListEnabledGuidanceCandidates.mockResolvedValue([])
   mockSelectApplicableGuidance.mockResolvedValue([])
   mockListConversationAttributes.mockResolvedValue([])
+  mockListBoards.mockResolvedValue([
+    { id: 'board_features', name: 'Feature Requests', description: 'Product ideas' },
+  ])
   mockAssembleAssistantToolset.mockImplementation((...args: unknown[]) =>
     realAssembleAssistantToolsetRef.current(...args)
   )
@@ -553,9 +565,10 @@ describe('terminal completion protocol', () => {
         {
           searchCalls: 1,
           sources: new Map([[source.id, source]]),
-          toolCalls: ['search_knowledge'],
+          toolCalls: ['search'],
           inabilityReported: false,
           handoffRequested: false,
+          hasAdminGuidance: false,
         }
       )
     ).toThrowError(new AssistantCompletionError('uncited_retrieved_answer'))
@@ -569,9 +582,10 @@ describe('terminal completion protocol', () => {
         {
           searchCalls: 1,
           sources: new Map([[source.id, source]]),
-          toolCalls: ['search_knowledge'],
+          toolCalls: ['search'],
           inabilityReported: false,
           handoffRequested: false,
+          hasAdminGuidance: false,
         }
       )
     ).not.toThrow()
@@ -587,9 +601,10 @@ describe('terminal completion protocol', () => {
         {
           searchCalls: 1,
           sources: new Map(),
-          toolCalls: ['search_knowledge'],
+          toolCalls: ['search'],
           inabilityReported: false,
           handoffRequested: false,
+          hasAdminGuidance: false,
         }
       )
     ).toThrowError(new AssistantCompletionError('empty_search_without_resolution_tool'))
@@ -603,9 +618,29 @@ describe('terminal completion protocol', () => {
         {
           searchCalls: 1,
           sources: new Map(),
-          toolCalls: ['search_knowledge', 'report_inability'],
+          toolCalls: ['search', 'report_inability'],
           inabilityReported: true,
           handoffRequested: false,
+          hasAdminGuidance: false,
+        }
+      )
+    ).not.toThrow()
+  })
+
+  it('accepts an answered turn after empty searches when admin guidance was injected (guidance is grounding)', () => {
+    // A guidance rule may state the fact the KB never had (e.g. a money-back
+    // guarantee); rejecting the answer would punish exactly the behavior the
+    // guidance asked for. The fabricated-citation gate still applies.
+    expect(() =>
+      validateAssistantCompletion(
+        { text: 'Yes — our 30-day money-back guarantee covers your purchase.', citations: [] },
+        {
+          searchCalls: 2,
+          sources: new Map(),
+          toolCalls: ['search', 'search'],
+          inabilityReported: false,
+          handoffRequested: false,
+          hasAdminGuidance: true,
         }
       )
     ).not.toThrow()
@@ -627,6 +662,7 @@ describe('terminal completion protocol', () => {
           toolCalls: ['get_status'],
           inabilityReported: false,
           handoffRequested: false,
+          hasAdminGuidance: false,
         }
       )
     ).not.toThrow()
@@ -639,9 +675,10 @@ describe('terminal completion protocol', () => {
         {
           searchCalls: 1,
           sources: new Map(),
-          toolCalls: ['search_knowledge', 'get_status'],
+          toolCalls: ['search', 'get_status'],
           inabilityReported: false,
           handoffRequested: false,
+          hasAdminGuidance: false,
         }
       )
     ).not.toThrow()
@@ -683,7 +720,7 @@ describe('runAssistantTurn', () => {
     expect(mockChat).not.toHaveBeenCalled()
   })
 
-  it('runs the tool round trip and assembles citations from what search_knowledge surfaced', async () => {
+  it('runs the tool round trip and assembles citations from what search surfaced', async () => {
     mockRetrieve.mockResolvedValue([makeKbArticle('kb_article_1')])
     const deltas: string[] = []
     mockChat.mockImplementation(
@@ -692,8 +729,8 @@ describe('runAssistantTurn', () => {
         context: unknown
       }) =>
         (async function* () {
-          // Simulate the model calling search_knowledge; the loop threads context.
-          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          // Simulate the model calling search; the loop threads context.
+          const search = opts.tools.find((t) => t.name === 'search')!
           await search.execute(
             { query: 'reset password' },
             { context: opts.context, emitCustomEvent: () => {} }
@@ -735,7 +772,7 @@ describe('runAssistantTurn', () => {
       skip: false,
       identity: DEFAULT_RUNTIME_CONFIG.config.identity,
       trace: {
-        promptVersion: 'support-agent-v2',
+        promptVersion: 'support-agent-v3',
         configRevision: 1,
         role: 'customer_support',
         tone: 'balanced',
@@ -756,7 +793,7 @@ describe('runAssistantTurn', () => {
         context: unknown
       }) =>
         (async function* () {
-          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          const search = opts.tools.find((t) => t.name === 'search')!
           await search.execute(
             { query: 'internal escalation policy' },
             { context: opts.context, emitCustomEvent: () => {} }
@@ -792,7 +829,7 @@ describe('runAssistantTurn', () => {
         context: unknown
       }) =>
         (async function* () {
-          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          const search = opts.tools.find((t) => t.name === 'search')!
           await search.execute(
             { query: 'internal policy' },
             { context: opts.context, emitCustomEvent: () => {} }
@@ -825,7 +862,7 @@ describe('runAssistantTurn', () => {
         context: unknown
       }) =>
         (async function* () {
-          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          const search = opts.tools.find((t) => t.name === 'search')!
           await search.execute(
             { query: 'public policy' },
             { context: opts.context, emitCustomEvent: () => {} }
@@ -873,7 +910,7 @@ describe('runAssistantTurn', () => {
           context: unknown
         }) =>
           (async function* () {
-            const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+            const search = opts.tools.find((t) => t.name === 'search')!
             await search.execute(
               { query: 'policy' },
               { context: opts.context, emitCustomEvent: () => {} }
@@ -913,7 +950,7 @@ describe('runAssistantTurn', () => {
         context: unknown
       }) =>
         (async function* () {
-          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          const search = opts.tools.find((t) => t.name === 'search')!
           const report = opts.tools.find((t) => t.name === 'report_inability')!
           await search.execute(
             { query: 'obscure' },
@@ -1228,7 +1265,7 @@ describe('runAssistantTurn', () => {
           )
         }
         return (async function* () {
-          const search = opts.tools.find((tool) => tool.name === 'search_knowledge')!
+          const search = opts.tools.find((tool) => tool.name === 'search')!
           await search.execute(
             { query: 'What is Quackback?' },
             { context: opts.context, emitCustomEvent: () => {} }
@@ -1250,7 +1287,7 @@ describe('runAssistantTurn', () => {
     expect(mockEvaluateZeroToolCompletion).toHaveBeenCalledWith(
       expect.objectContaining({
         candidate: "I'm not familiar with anything called",
-        availableTools: expect.arrayContaining(['search_knowledge']),
+        availableTools: expect.arrayContaining(['search']),
       })
     )
     expect(mockChat).toHaveBeenCalledTimes(2)
@@ -1403,7 +1440,7 @@ describe('runAssistantTurn', () => {
         context: unknown
       }) =>
         (async function* () {
-          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          const search = opts.tools.find((t) => t.name === 'search')!
           await search.execute(
             { query: 'reset password' },
             { context: opts.context, emitCustomEvent: () => {} }
@@ -1429,7 +1466,7 @@ describe('runAssistantTurn', () => {
     expect(mockWithUsageLogging).toHaveBeenCalledTimes(1)
     expect(lastLoggedMetadata?.answerKind).toBe('answered')
     expect(lastLoggedMetadata).toMatchObject({
-      toolCalls: ['search_knowledge'],
+      toolCalls: ['search'],
       searchCalls: 1,
       citationCandidates: 1,
       completionDisposition: 'answer',
@@ -1444,7 +1481,7 @@ describe('runAssistantTurn', () => {
         context: unknown
       }) =>
         (async function* () {
-          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          const search = opts.tools.find((t) => t.name === 'search')!
           const report = opts.tools.find((t) => t.name === 'report_inability')!
           await search.execute(
             { query: 'obscure' },
@@ -1467,7 +1504,7 @@ describe('runAssistantTurn', () => {
 
     expect(lastLoggedMetadata?.answerKind).toBe('no_sources')
     expect(lastLoggedMetadata).toMatchObject({
-      toolCalls: ['search_knowledge', 'report_inability'],
+      toolCalls: ['search', 'report_inability'],
       completionDisposition: 'inability',
       inabilityReason: 'no_relevant_sources',
     })
@@ -1588,7 +1625,7 @@ describe('runAssistantTurn', () => {
       ticketId: null,
       surface: 'widget',
       role: 'customer_support',
-      promptVersion: 'support-agent-v2',
+      promptVersion: 'support-agent-v3',
       configRevision: 1,
       tone: 'balanced',
       responseLength: 'balanced',
@@ -1678,7 +1715,7 @@ describe('runAssistantTurn', () => {
       proposedActions: [],
       skip: false,
       identity: DEFAULT_RUNTIME_CONFIG.config.identity,
-      trace: expect.objectContaining({ promptVersion: 'support-agent-v2', configRevision: 1 }),
+      trace: expect.objectContaining({ promptVersion: 'support-agent-v3', configRevision: 1 }),
     })
     // Salvaged on the first attempt; no retry needed.
     expect(mockChat).toHaveBeenCalledTimes(1)
@@ -1686,7 +1723,7 @@ describe('runAssistantTurn', () => {
 })
 
 describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
-  /** Drives the model to call search_knowledge once, capturing the ctx it ran under. */
+  /** Drives the model to call search once, capturing the ctx it ran under. */
   function driveSearch(onSearch: (ctx: unknown) => void) {
     mockChat.mockImplementation(
       (opts: {
@@ -1695,7 +1732,7 @@ describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
       }) =>
         (async function* () {
           onSearch(opts.context)
-          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          const search = opts.tools.find((t) => t.name === 'search')!
           const report = opts.tools.find((t) => t.name === 'report_inability')!
           await search.execute(
             { query: 'billing' },
@@ -1763,7 +1800,7 @@ describe('runAssistantTurn: customer-scoped retrieval context (P2-A.4)', () => {
     expect(capturedCtx?.customerPrincipalId).toBeUndefined()
   })
 
-  it('threads sourceTypes onto the tool context for search_knowledge to forward', async () => {
+  it('threads sourceTypes onto the tool context for search to forward', async () => {
     mockRetrieve.mockResolvedValue([])
     let capturedCtx: { sourceTypes?: unknown } | undefined
     driveSearch((ctx) => {
@@ -2275,7 +2312,7 @@ describe('runAssistantTurn: conversation-scoped grounding (copilot conversation 
       }) =>
         (async function* () {
           capturedCtx = opts.context as typeof capturedCtx
-          const search = opts.tools.find((t) => t.name === 'search_knowledge')!
+          const search = opts.tools.find((t) => t.name === 'search')!
           const report = opts.tools.find((t) => t.name === 'report_inability')!
           await search.execute(
             { query: 'billing' },
@@ -2339,13 +2376,13 @@ describe('runAssistantTurn: V2 prompt and config snapshot', () => {
 
     const prompt = systemPromptsFromLastCall().join('\n')
     expect(prompt).toContain("You are Nova, Acme's AI customer-support agent")
-    expect(prompt).toContain('Use a warm, approachable tone.')
-    expect(prompt).toContain('Prefer the shortest complete answer.')
+    expect(prompt).toContain('Use a warm, approachable tone')
+    expect(prompt).toContain('Keep replies short: 1-3 sentences')
     expect(prompt).toContain('Call customers members.')
     expect(result).toMatchObject({
       identity,
       trace: {
-        promptVersion: 'support-agent-v2',
+        promptVersion: 'support-agent-v3',
         configRevision: 12,
         role: 'customer_support',
         tone: 'warm',
@@ -2354,7 +2391,7 @@ describe('runAssistantTurn: V2 prompt and config snapshot', () => {
       },
     })
     expect(lastLoggedMetadata).toMatchObject({
-      promptVersion: 'support-agent-v2',
+      promptVersion: 'support-agent-v3',
       configRevision: 12,
       role: 'customer_support',
       tone: 'warm',
@@ -2484,11 +2521,73 @@ describe('runAssistantTurn: attribute catalogue injection (P0)', () => {
   it('flag on but no definitions exist: no workspace-attributes section is added', async () => {
     mockActionsFlag(true)
     mockListConversationAttributes.mockResolvedValue([])
+    mockListBoards.mockResolvedValue([
+      { id: 'board_features', name: 'Feature Requests', description: 'Product ideas' },
+    ])
     mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
 
     await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
 
     expect(systemPromptsFromLastCall().join('\n')).not.toContain('# Workspace attribute catalogue')
+  })
+})
+
+describe('runAssistantTurn: board catalogue (capture_feedback)', () => {
+  function systemPromptsFromLastCall(): string[] {
+    const call = mockChat.mock.calls.at(-1)?.[0] as { systemPrompts: string[] }
+    return call.systemPrompts
+  }
+
+  it('actions off: no board fetch and no board-catalogue section', async () => {
+    mockActionsFlag(false)
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
+
+    expect(mockListBoards).not.toHaveBeenCalled()
+    expect(systemPromptsFromLastCall().join('\n')).not.toContain('# Workspace board catalogue')
+  })
+
+  it('actions on: fetches and injects the live board catalogue', async () => {
+    mockActionsFlag(true)
+    mockChat.mockImplementation(() => chunkStream(completeRun({ text: 'ok', citations: [] })))
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
+
+    expect(mockListBoards).toHaveBeenCalledTimes(1)
+    const prompts = systemPromptsFromLastCall().join('\n')
+    expect(prompts).toContain('# Workspace board catalogue')
+    expect(prompts).toContain('board_features')
+    expect(prompts).toContain('Feature Requests')
+  })
+
+  it('board read fails: capture_feedback is dropped rather than left unusable', async () => {
+    mockActionsFlag(true)
+    mockListBoards.mockRejectedValue(new Error('db down'))
+    let toolNames: string[] = []
+    mockChat.mockImplementation((opts: { tools: Array<{ name: string }> }) => {
+      toolNames = opts.tools.map((tool) => tool.name)
+      return chunkStream(completeRun({ text: 'ok', citations: [] }))
+    })
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
+
+    expect(toolNames).not.toContain('capture_feedback')
+    expect(systemPromptsFromLastCall().join('\n')).not.toContain('# Workspace board catalogue')
+  })
+
+  it('no boards exist: capture_feedback is dropped (its boardId would be unguessable)', async () => {
+    mockActionsFlag(true)
+    mockListBoards.mockResolvedValue([])
+    let toolNames: string[] = []
+    mockChat.mockImplementation((opts: { tools: Array<{ name: string }> }) => {
+      toolNames = opts.tools.map((tool) => tool.name)
+      return chunkStream(completeRun({ text: 'ok', citations: [] }))
+    })
+
+    await runAssistantTurn({ ...baseInput, messages: customerAsks('hi') })
+
+    expect(toolNames).not.toContain('capture_feedback')
   })
 })
 
@@ -2517,8 +2616,8 @@ describe('runAssistantTurn: registry-derived tool activity (E-6)', () => {
 
   it('ignores a tool-call chunk for a name outside the assembled tool set', async () => {
     mockAssembleAssistantToolset.mockResolvedValue({
-      tools: [{ name: 'search_knowledge', description: 'x', execute: async () => ({}) }],
-      activeSpecs: [{ name: 'search_knowledge', promptGuidance: 'x' }],
+      tools: [{ name: 'search', description: 'x', execute: async () => ({}) }],
+      activeSpecs: [{ name: 'search', promptGuidance: 'x' }],
     })
     mockChat.mockImplementation(() =>
       chunkStream([
@@ -2626,5 +2725,139 @@ describe('salvageAssistantOutput', () => {
 
   it('returns null for empty output', () => {
     expect(salvageAssistantOutput('   ')).toBeNull()
+  })
+})
+
+describe('streamAssistantTurn (AG-UI wire shape)', () => {
+  type WireChunk = Record<string, unknown> & { type: string; name?: string }
+
+  const WIRE = { threadId: 'thread-wire', runId: 'run-wire' }
+
+  async function collect(input: Parameters<typeof streamAssistantTurn>[0]): Promise<WireChunk[]> {
+    const out: WireChunk[] = []
+    for await (const chunk of streamAssistantTurn(input)) out.push(chunk as WireChunk)
+    return out
+  }
+
+  it('wraps a successful turn in exactly one canonical lifecycle pair with quackback:final before RUN_FINISHED', async () => {
+    const object = { text: 'Answer text here.', citations: [] }
+    mockChat.mockReturnValue(chunkStream(completeRun(object)))
+
+    const chunks = await collect({
+      input: { ...baseInput, messages: customerAsks('how do I reset my password?') },
+      wire: WIRE,
+      buildFinalPayload: (result: AssistantTurnResult) => ({ status: result.status }),
+    })
+
+    expect(chunks[0]).toMatchObject({ type: 'RUN_STARTED', ...WIRE })
+    expect(chunks.at(-1)).toMatchObject({ type: 'RUN_FINISHED', ...WIRE, finishReason: 'stop' })
+    // Exactly one of each lifecycle frame: the engine's inner RUN_FINISHED
+    // (completeRun ends with one) must never leak through.
+    expect(chunks.filter((c) => c.type === 'RUN_STARTED')).toHaveLength(1)
+    expect(chunks.filter((c) => c.type === 'RUN_FINISHED')).toHaveLength(1)
+    expect(chunks.filter((c) => c.type === 'RUN_ERROR')).toHaveLength(0)
+
+    const types = chunks.map((c) => (c.type === 'CUSTOM' ? `CUSTOM:${c.name}` : c.type))
+    expect(types).toEqual([
+      'RUN_STARTED',
+      // The attempt-start 'thinking' step (AG-UI standard step lifecycle),
+      // server-authoritative and deliberately outside the commit buffer.
+      'STEP_STARTED',
+      'TEXT_MESSAGE_CONTENT',
+      'CUSTOM:structured-output.complete',
+      'STEP_FINISHED',
+      'RUN_FINISHED',
+    ])
+    // The post-processed payload rides AG-UI's standard RUN_FINISHED.result.
+    const finished = chunks.at(-1) as { result?: unknown }
+    expect(finished.result).toEqual({ status: 'answered' })
+  })
+
+  it('emits only the lifecycle pair around quackback:final for a suppressed turn (no model call)', async () => {
+    const chunks = await collect({
+      input: {
+        ...baseInput,
+        messages: [
+          { sender: 'customer', content: 'hi' },
+          { sender: 'assistant', content: 'hello' },
+          { sender: 'human_agent', content: 'I got this' },
+        ],
+      },
+      wire: WIRE,
+      buildFinalPayload: (result: AssistantTurnResult) => ({ status: result.status }),
+    })
+
+    expect(mockChat).not.toHaveBeenCalled()
+    expect(chunks.map((c) => (c.type === 'CUSTOM' ? `CUSTOM:${c.name}` : c.type))).toEqual([
+      'RUN_STARTED',
+      'RUN_FINISHED',
+    ])
+    const finished = chunks.at(-1) as { result?: unknown }
+    expect(finished.result).toEqual({ status: 'suppressed' })
+  })
+
+  it('terminates with a coded RUN_ERROR (and no RUN_FINISHED) when the turn fails', async () => {
+    mockConfig.aiChatModel = undefined
+
+    const chunks = await collect({
+      input: { ...baseInput, messages: customerAsks('hi') },
+      wire: WIRE,
+      buildFinalPayload: () => ({}),
+    })
+
+    expect(chunks[0]).toMatchObject({ type: 'RUN_STARTED' })
+    expect(chunks.at(-1)).toMatchObject({ type: 'RUN_ERROR', code: 'not_configured' })
+    expect(chunks.filter((c) => c.type === 'RUN_FINISHED')).toHaveLength(0)
+  })
+
+  it('closes an unterminated TEXT_MESSAGE triad before the terminal frame (AG-UI pairing compliance)', async () => {
+    // A committed attempt that dies mid-message: START + CONTENT, no END, then
+    // a RUN_ERROR. Committed ⇒ no transport re-dial; salvage recovers a final
+    // from the raw text, so the turn still succeeds — but the wire's open
+    // message triad must be closed before quackback:final/RUN_FINISHED.
+    const object = { text: 'Answer text here.', citations: [] }
+    mockChat.mockReturnValue(
+      chunkStream([
+        { type: 'TEXT_MESSAGE_START', messageId: 'orphan' },
+        { type: 'TEXT_MESSAGE_CONTENT', messageId: 'orphan', delta: JSON.stringify(object) },
+        { type: 'RUN_ERROR', message: 'stream dropped mid-message' },
+      ])
+    )
+
+    const chunks = await collect({
+      input: { ...baseInput, messages: customerAsks('hi') },
+      wire: WIRE,
+      buildFinalPayload: (result: AssistantTurnResult) => ({ status: result.status }),
+    })
+
+    const types = chunks.map((c) => (c.type === 'CUSTOM' ? `CUSTOM:${c.name}` : c.type))
+    expect(types).toEqual([
+      'RUN_STARTED',
+      'STEP_STARTED',
+      'TEXT_MESSAGE_START',
+      'TEXT_MESSAGE_CONTENT',
+      'TEXT_MESSAGE_END', // synthesized: the engine never closed the triad
+      'STEP_FINISHED',
+      'RUN_FINISHED',
+    ])
+    const end = chunks.find((c) => c.type === 'TEXT_MESSAGE_END') as { messageId?: string }
+    expect(end.messageId).toBe('orphan')
+  })
+
+  it('honors a caller-supplied error mapper', async () => {
+    mockConfig.aiChatModel = undefined
+
+    const chunks = await collect({
+      input: { ...baseInput, messages: customerAsks('hi') },
+      wire: WIRE,
+      buildFinalPayload: () => ({}),
+      mapError: () => ({ code: 'custom_code', message: 'custom message' }),
+    })
+
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'RUN_ERROR',
+      code: 'custom_code',
+      message: 'custom message',
+    })
   })
 })

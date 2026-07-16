@@ -4,7 +4,7 @@
  * layer, and the TanStack AI runtime seam.
  *
  * Retrieval was built for help-center Ask AI first; the same module backs
- * Quinn's search_knowledge tool. The runtime seam is what the next wave's
+ * Quinn's search tool. The runtime seam is what the next wave's
  * messenger wiring and the admin sandbox both call.
  */
 export {
@@ -17,7 +17,7 @@ export {
 } from './retrieval'
 
 // Source-adapter seam: the composed knowledge-base + (flagged) feedback-posts
-// grounding retrieval behind Quinn's search_knowledge tool.
+// grounding retrieval behind Quinn's search tool.
 export {
   retrieveKnowledge,
   resolveKnowledgeSources,
@@ -166,6 +166,7 @@ export {
 } from './assistant.system-prompt'
 export {
   runAssistantTurn,
+  streamAssistantTurn,
   isAssistantConfigured,
   respondEligible,
   assembleCitations,

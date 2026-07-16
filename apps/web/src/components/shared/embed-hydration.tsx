@@ -6,7 +6,7 @@ import { QuackbackEmbedCard, type EmbedOpenMode } from '@/components/shared/quac
 
 interface EmbedTarget {
   el: HTMLElement
-  kind: 'post' | 'changelog' | 'article'
+  kind: 'post' | 'changelog' | 'article' | 'ticket'
   id: string
 }
 
@@ -61,12 +61,13 @@ export function EmbedHydration({
       const id = el.getAttribute('data-id')
       // Re-validate kind AND the id (defense in depth): a stray placeholder that
       // ever slipped past the write sanitizer can't trigger a lookup with a junk
-      // id. post/changelog ids are TypeIDs; an article id is a help-center slug.
+      // id. post/changelog/ticket ids are TypeIDs; an article id is a help-center slug.
       if (!id) return
       const valid =
         kind === 'article'
           ? isValidArticleSlug(id)
-          : (kind === 'post' || kind === 'changelog') && isValidTypeId(id, kind)
+          : (kind === 'post' || kind === 'changelog' || kind === 'ticket') &&
+            isValidTypeId(id, kind)
       if (valid) found.push({ el, kind: kind as EmbedTarget['kind'], id })
     })
     setTargets(found)

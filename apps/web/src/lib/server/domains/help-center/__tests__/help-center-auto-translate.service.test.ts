@@ -1,29 +1,35 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { KbArticleId } from '@quackback/ids'
 
-const mockGetOpenAI = vi.fn()
 const mockGetChatModel = vi.fn()
 const mockGetHelpCenterConfig = vi.fn()
 const mockGetArticleById = vi.fn()
 const mockUpsertArticleTranslation = vi.fn()
 const mockEnqueueHelpCenterTranslateJob = vi.fn()
-const mockCreate = vi.fn()
+
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
 
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: () => mockGetOpenAI(),
-  stripCodeFences: (s: string) => s.replace(/```json\n?|```/g, ''),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: () => ({ name: 'ai-usage-logging' }),
 }))
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: (...args: unknown[]) => mockGetChatModel(...args),
-}))
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: async (fn: () => Promise<unknown>) => ({ result: await fn(), retryCount: 0 }),
-}))
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: async (
-    _params: unknown,
-    fn: () => Promise<{ result: unknown; retryCount: number }>
-  ) => (await fn()).result,
 }))
 vi.mock('@/lib/server/markdown-tiptap', () => ({
   markdownToTiptapJson: (md: string) => ({ type: 'doc', content: [{ type: 'text', text: md }] }),
@@ -45,13 +51,10 @@ const { buildTranslationPrompt, translateArticleForLocale, queueAutoTranslateOnP
   await import('../help-center-auto-translate.service')
 
 beforeEach(() => {
-  mockGetOpenAI.mockReset()
-  mockGetChatModel.mockReset()
-  mockGetHelpCenterConfig.mockReset()
-  mockGetArticleById.mockReset()
-  mockUpsertArticleTranslation.mockReset()
-  mockEnqueueHelpCenterTranslateJob.mockReset()
-  mockCreate.mockReset()
+  vi.clearAllMocks()
+  mockConfig.openaiApiKey = 'test-key'
+  mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
+  mockGetChatModel.mockReturnValue('gpt-test')
 })
 
 describe('buildTranslationPrompt', () => {
@@ -100,23 +103,27 @@ describe('buildTranslationPrompt', () => {
       protectedTerms: [],
     })
     const parsed = JSON.parse(user)
-    expect(parsed).toEqual({ title: 'Refunds', description: 'How to get one', content: 'Body text' })
+    expect(parsed).toEqual({
+      title: 'Refunds',
+      description: 'How to get one',
+      content: 'Body text',
+    })
   })
 })
 
 describe('translateArticleForLocale', () => {
   it('no-ops silently when AI is not configured', async () => {
-    mockGetOpenAI.mockReturnValue(null)
+    mockConfig.openaiApiKey = undefined
     mockGetChatModel.mockReturnValue(null)
 
     await translateArticleForLocale('kb_article_1' as KbArticleId, 'de')
 
     expect(mockGetArticleById).not.toHaveBeenCalled()
     expect(mockUpsertArticleTranslation).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('writes a draft translation from the AI response', async () => {
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
     mockGetChatModel.mockReturnValue('gpt-test')
     mockGetHelpCenterConfig.mockResolvedValue({ autoTranslate: { protectedTerms: ['Quackback'] } })
     mockGetArticleById.mockResolvedValue({
@@ -124,19 +131,10 @@ describe('translateArticleForLocale', () => {
       description: 'How to get one',
       content: 'Contact Quackback support.',
     })
-    mockCreate.mockResolvedValue({
-      choices: [
-        {
-          message: {
-            content: JSON.stringify({
-              title: 'Rückerstattungen',
-              description: 'Wie man eine bekommt',
-              content: 'Kontaktieren Sie den Quackback-Support.',
-            }),
-          },
-        },
-      ],
-      usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+    mockChat.mockResolvedValue({
+      title: 'Rückerstattungen',
+      description: 'Wie man eine bekommt',
+      content: 'Kontaktieren Sie den Quackback-Support.',
     })
 
     await translateArticleForLocale('kb_article_1' as KbArticleId, 'de')
@@ -153,13 +151,28 @@ describe('translateArticleForLocale', () => {
   })
 
   it('does not throw and does not write when the AI response is unparseable', async () => {
-    mockGetOpenAI.mockReturnValue({ chat: { completions: { create: mockCreate } } })
+    // With outputSchema, chat() validates and rejects on a non-conforming
+    // response; the surrounding try/catch logs and returns without writing.
     mockGetChatModel.mockReturnValue('gpt-test')
     mockGetHelpCenterConfig.mockResolvedValue({ autoTranslate: { protectedTerms: [] } })
     mockGetArticleById.mockResolvedValue({ title: 'Refunds', description: null, content: 'x' })
-    mockCreate.mockResolvedValue({ choices: [{ message: { content: 'not json' } }] })
+    mockChat.mockRejectedValue(new Error('response did not match schema'))
 
-    await expect(translateArticleForLocale('kb_article_1' as KbArticleId, 'de')).resolves.toBeUndefined()
+    await expect(
+      translateArticleForLocale('kb_article_1' as KbArticleId, 'de')
+    ).resolves.toBeUndefined()
+    expect(mockUpsertArticleTranslation).not.toHaveBeenCalled()
+  })
+
+  it('does not throw and does not write when the AI response is incomplete', async () => {
+    mockGetChatModel.mockReturnValue('gpt-test')
+    mockGetHelpCenterConfig.mockResolvedValue({ autoTranslate: { protectedTerms: [] } })
+    mockGetArticleById.mockResolvedValue({ title: 'Refunds', description: null, content: 'x' })
+    mockChat.mockResolvedValue({ title: '', content: '' })
+
+    await expect(
+      translateArticleForLocale('kb_article_1' as KbArticleId, 'de')
+    ).resolves.toBeUndefined()
     expect(mockUpsertArticleTranslation).not.toHaveBeenCalled()
   })
 })
@@ -211,6 +224,8 @@ describe('queueAutoTranslateOnPublish', () => {
   it('swallows enqueue errors rather than throwing (never blocks publish)', async () => {
     mockGetHelpCenterConfig.mockRejectedValue(new Error('settings unavailable'))
 
-    await expect(queueAutoTranslateOnPublish({ id: 'kb_article_1' } as never)).resolves.toBeUndefined()
+    await expect(
+      queueAutoTranslateOnPublish({ id: 'kb_article_1' } as never)
+    ).resolves.toBeUndefined()
   })
 })

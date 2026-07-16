@@ -7,15 +7,24 @@
  * query length cap. The session and tenant buckets stop a single anonymous
  * session (or a Host-header switcheroo) from burning unlimited AI budget
  * even while staying under the per-IP cap.
- * The response is SSE with the versioned kb-ask.v1.* events; names and
- * payload shapes live in the shared contract module
- * (lib/shared/help-center/kb-ask-contract.ts), imported by this route and
- * the Ask AI client.
  *
- * Requests without a `q` act as a capability probe so public surfaces can
+ * WIRE: TanStack AI's AG-UI protocol. The client POSTs a `RunAgentInput` (its
+ * message history; the trailing user turn is the question), and the response
+ * is `toServerSentEventsResponse` over one canonical RUN_STARTED/RUN_FINISHED
+ * pair: a STATE_SNAPSHOT of the retrieved-article display metadata (the
+ * citation-dot join, shipped before the answer streams), then the buffered
+ * model chunks forwarded off synthesis's wireSink, then a terminal
+ * RUN_FINISHED whose standard `result` slot carries the validated answer
+ * (kind/answer/sources/related). A failure ends the stream with a coded
+ * RUN_ERROR frame. Payload shapes live in the shared contract module
+ * (lib/shared/help-center/kb-ask-contract.ts), imported by this route and the
+ * Ask AI client.
+ *
+ * A GET (no answer path anymore) is a capability probe so public surfaces can
  * hide the affordance when AI is not configured.
  */
 import { createFileRoute } from '@tanstack/react-router'
+import { toServerSentEventsResponse, chatParamsFromRequestBody } from '@tanstack/ai'
 import { getFeatureFlags } from '@/lib/server/domains/settings/settings.service'
 import {
   retrieveKbArticles,
@@ -26,11 +35,17 @@ import {
   type RetrievedKbArticle,
 } from '@/lib/server/domains/assistant'
 import {
-  KB_ASK_EVENTS,
-  type KbAskErrorPayload,
-  type KbAskFinalPayload,
-  type KbAskSourceMeta,
-  type KbAskSourcesPayload,
+  createChunkQueue,
+  createPairingTracker,
+  runStartedChunk,
+  runFinishedChunk,
+  runErrorChunk,
+  stateSnapshotChunk,
+} from '@/lib/server/domains/assistant/agui'
+import type {
+  KbAskFinalPayload,
+  KbAskSourceMeta,
+  KbAskStateSnapshot,
 } from '@/lib/shared/help-center/kb-ask-contract'
 import {
   enforceWidgetQuota,
@@ -44,7 +59,6 @@ import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce
 import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
 import { logAiUsage, type AiAnswerKind } from '@/lib/server/domains/ai/usage-log'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { createSseStream, SSE_RESPONSE_HEADERS } from '@/lib/server/utils/sse'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'widget-kb-ask' })
@@ -64,6 +78,21 @@ function toSourceMeta(a: RetrievedKbArticle): KbAskSourceMeta {
     categorySlug: a.categorySlug,
     categoryName: a.categoryName,
   }
+}
+
+/**
+ * The question is the trailing user turn's text. History is machine-accumulated
+ * by the client, so read the last user message's string content (Ask AI is
+ * single-turn; earlier turns, if any, are grounding the client chose to send).
+ */
+function trailingUserQuestion(messages: ReadonlyArray<unknown>): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as { role?: string; content?: unknown }
+    if (message.role === 'user') {
+      return typeof message.content === 'string' ? message.content : null
+    }
+  }
+  return null
 }
 
 /**
@@ -90,24 +119,46 @@ async function relatedArticles(
   }
 }
 
+/**
+ * Capability probe: lets clients hide the Ask AI affordance when no model is
+ * configured, without exposing any configuration detail. The answer path is
+ * POST-only, so a GET only ever probes.
+ */
+export async function handleKbAskProbe({
+  request: _request,
+}: {
+  request: Request
+}): Promise<Response> {
+  const flags = await getFeatureFlags()
+  if (!flags.helpCenter || !flags.helpCenterAiAnswers) {
+    return widgetJsonError(404, 'NOT_FOUND', 'Knowledge base not found')
+  }
+  return Response.json({ data: { enabled: isAskAiConfigured() } }, { headers: widgetCorsHeaders() })
+}
+
 export async function handleKbAsk({ request }: { request: Request }): Promise<Response> {
   const flags = await getFeatureFlags()
   if (!flags.helpCenter || !flags.helpCenterAiAnswers) {
     return widgetJsonError(404, 'NOT_FOUND', 'Knowledge base not found')
   }
 
-  const url = new URL(request.url)
-  const rawQuery = url.searchParams.get('q')
-
-  // Capability probe: lets clients hide the Ask AI affordance when no model
-  // is configured, without exposing any configuration detail.
-  if (rawQuery === null) {
-    return Response.json(
-      { data: { enabled: isAskAiConfigured() } },
-      { headers: widgetCorsHeaders() }
-    )
+  // Parse the AG-UI RunAgentInput; the question is the trailing user turn.
+  let messages: ReadonlyArray<unknown>
+  let threadId: string
+  let runId: string
+  try {
+    const params = await chatParamsFromRequestBody(await request.json())
+    messages = params.messages
+    threadId = params.threadId
+    runId = params.runId
+  } catch {
+    return widgetJsonError(400, 'INVALID_REQUEST', 'Invalid request body')
   }
 
+  const rawQuery = trailingUserQuestion(messages)
+  if (rawQuery === null) {
+    return widgetJsonError(400, 'INVALID_QUERY', 'A question is required')
+  }
   const query = rawQuery.trim()
   if (!query) {
     return widgetJsonError(400, 'INVALID_QUERY', 'Query must not be empty')
@@ -162,8 +213,19 @@ export async function handleKbAsk({ request }: { request: Request }): Promise<Re
     return widgetJsonError(500, 'SERVER_ERROR', 'Answer lookup failed')
   }
 
-  const sse = createSseStream()
+  // One canonical RUN_STARTED ... RUN_FINISHED (or RUN_ERROR) pair. The pairing
+  // tracker closes any TEXT_MESSAGE triad a committed-but-failed attempt left
+  // open before the terminal frame; wireSink forwards synthesis's buffered
+  // model chunks straight into the queue the SSE serializer drains.
+  const wire = { threadId, runId }
+  const queue = createChunkQueue()
+  const pairing = createPairingTracker((chunk) => queue.push(chunk))
+  const wireSink = (chunk: Parameters<typeof pairing.observe>[0]) => {
+    pairing.observe(chunk)
+    queue.push(chunk)
+  }
 
+  queue.push(runStartedChunk(wire))
   void (async () => {
     try {
       // Nothing cleared the answer floor: skip the model entirely. On empty
@@ -183,68 +245,76 @@ export async function handleKbAsk({ request }: { request: Request }): Promise<Re
           status: 'success',
           metadata: { answerKind: 'no_sources' satisfies AiAnswerKind, query },
         }).catch((err) => log.warn({ err }, 'failed to log ai usage for kb-ask no_sources'))
-        sse.send(KB_ASK_EVENTS.final, {
-          kind: 'no_answer',
-          answer: ASK_AI_MISS_FALLBACK,
-          sources: [],
-          related: related.map(toSourceMeta),
-        } satisfies KbAskFinalPayload)
+        queue.push(
+          runFinishedChunk(wire, {
+            kind: 'no_answer',
+            answer: ASK_AI_MISS_FALLBACK,
+            sources: [],
+            related: related.map(toSourceMeta),
+          } satisfies KbAskFinalPayload)
+        )
+        queue.end()
         return
       }
 
-      // Stream the grounded candidates up front so the surface can show which
+      // Ship the grounded candidates up front so the surface can show which
       // articles the answer will be built from while it streams.
-      sse.send(KB_ASK_EVENTS.sources, {
-        sources: articles.map(toSourceMeta),
-      } satisfies KbAskSourcesPayload)
+      queue.push(
+        stateSnapshotChunk({
+          sources: articles.map(toSourceMeta),
+        } satisfies KbAskStateSnapshot)
+      )
 
       const result = await synthesizeAnswer({
         query,
         articles,
         signal: request.signal,
-        onAnswerDelta: (text) => sse.send(KB_ASK_EVENTS.delta, { text }),
+        wireSink,
       })
+      pairing.closeOpen()
 
       if (result.kind === 'grounded' && result.sources.length > 0) {
-        sse.send(KB_ASK_EVENTS.final, {
-          kind: 'grounded',
-          answer: result.answer,
-          sources: result.sources,
-        } satisfies KbAskFinalPayload)
+        queue.push(
+          runFinishedChunk(wire, {
+            kind: 'grounded',
+            answer: result.answer,
+            sources: result.sources,
+          } satisfies KbAskFinalPayload)
+        )
+        queue.end()
         return
       }
 
       // Graceful miss: keep the model's contextual reply, and suggest related
       // near-misses as clickable next steps.
       const related = await relatedArticles(query, articles, viewer)
-      sse.send(KB_ASK_EVENTS.final, {
-        kind: 'no_answer',
-        answer: result.answer,
-        sources: [],
-        related: related.map(toSourceMeta),
-      } satisfies KbAskFinalPayload)
+      queue.push(
+        runFinishedChunk(wire, {
+          kind: 'no_answer',
+          answer: result.answer,
+          sources: [],
+          related: related.map(toSourceMeta),
+        } satisfies KbAskFinalPayload)
+      )
+      queue.end()
     } catch (error) {
+      pairing.closeOpen()
       if (!request.signal.aborted) {
         log.error({ err: error }, 'kb ask synthesis failed')
-        sse.send(KB_ASK_EVENTS.error, {
-          code: 'SYNTHESIS_FAILED',
-          message: 'Answer generation failed',
-        } satisfies KbAskErrorPayload)
+        queue.push(runErrorChunk(wire, 'SYNTHESIS_FAILED', 'Answer generation failed'))
       }
-    } finally {
-      sse.close()
+      queue.end()
     }
   })()
 
-  return new Response(sse.stream, {
-    headers: { ...widgetCorsHeaders(), ...SSE_RESPONSE_HEADERS },
-  })
+  return toServerSentEventsResponse(queue.stream(), { headers: widgetCorsHeaders() })
 }
 
 export const Route = createFileRoute('/api/widget/kb-ask')({
   server: {
     handlers: {
-      GET: handleKbAsk,
+      GET: handleKbAskProbe,
+      POST: handleKbAsk,
     },
   },
 })

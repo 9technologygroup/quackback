@@ -2,7 +2,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { IntlProvider } from 'react-intl'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  aguiRun,
+  structuredDeltas,
+  stubAguiFetch,
+  mockStreamingResponse,
+  aguiRequestBody,
+} from '@/test/agui'
 
 const config = {
   version: 2 as const,
@@ -23,22 +30,15 @@ vi.mock('@/lib/server/functions/assistant-settings', () => ({
 
 import { TestAgentCard } from '../test-agent-card'
 
-function sse(...frames: Array<{ event: string; data: unknown }>): Response {
-  return new Response(
-    frames.map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''),
-    { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-  )
-}
-
 const trace = {
-  promptVersion: 'support-agent-v2',
+  promptVersion: 'support-agent-v3',
   configRevision: 9,
   role: 'customer_support' as const,
   tone: 'balanced' as const,
   responseLength: 'brief' as const,
   appliedGuidance: [{ id: 'guidance_1', name: 'Refund policy' }],
   toolCalls: [
-    { name: 'search_knowledge', outcome: 'read' as const },
+    { name: 'search', outcome: 'read' as const },
     { name: 'create_ticket', outcome: 'simulated' as const },
     { name: 'handoff_to_human', outcome: 'read' as const },
   ],
@@ -55,10 +55,6 @@ function renderCard(liveChannels?: readonly ('widget' | 'email')[]) {
   )
 }
 
-beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn())
-})
-
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
@@ -66,6 +62,7 @@ afterEach(() => {
 
 describe('TestAgentCard', () => {
   it('uses the configured identity, provides four starters, and hides a one-option channel selector', async () => {
+    stubAguiFetch('')
     renderCard(['widget'])
 
     expect(await screen.findByText('Ada')).toBeInTheDocument()
@@ -79,33 +76,35 @@ describe('TestAgentCard', () => {
   })
 
   it('shows the channel selector only when multiple customer channels are live', async () => {
+    stubAguiFetch('')
     renderCard(['widget', 'email'])
 
     expect(await screen.findByRole('combobox', { name: 'Channel' })).toBeInTheDocument()
   })
 
   it('streams a turn, announces finalization without announcing tokens, and renders only safe handling detail', async () => {
-    vi.mocked(fetch).mockResolvedValue(
-      sse(
-        { event: 'assistant-test.v2.activity', data: { status: 'searching_kb' } },
-        { event: 'assistant-test.v2.delta', data: { text: 'Here is ' } },
-        {
-          event: 'assistant-test.v2.final',
-          data: {
-            text: 'Here is the answer. [1]',
-            citations: [
-              { type: 'article', id: 'article_1', title: 'Refund guide', url: '/hc/refunds' },
-            ],
-            escalation: { reason: 'explicit_request', mode: 'handoff' },
-            trace: {
-              ...trace,
-              rawPrompt: 'do not render me',
-              instructions: 'private instruction',
-              reasoning: 'private reasoning',
-            },
+    const fetchMock = stubAguiFetch(
+      aguiRun({
+        middle: [
+          { type: 'STEP_STARTED', stepName: 'searching_kb' },
+          ...structuredDeltas({ text: 'Here is the answer. [1]' }),
+        ],
+        result: {
+          text: 'Here is the answer. [1]',
+          citations: [
+            { type: 'article', id: 'article_1', title: 'Refund guide', url: '/hc/refunds' },
+          ],
+          escalation: { reason: 'explicit_request', mode: 'handoff' },
+          // Unknown/extra fields the client must never render (belt: the server
+          // already strips these; the wire carries only the safe allowlist).
+          trace: {
+            ...trace,
+            rawPrompt: 'do not render me',
+            instructions: 'private instruction',
+            reasoning: 'private reasoning',
           },
-        }
-      )
+        },
+      })
     )
     renderCard()
     const input = screen.getByRole('textbox', { name: 'Customer message' })
@@ -117,16 +116,13 @@ describe('TestAgentCard', () => {
     const liveRegion = screen.getByRole('status')
     expect(liveRegion).toHaveTextContent('Reply complete.')
     expect(liveRegion).not.toHaveTextContent('Here is the answer')
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/admin/assistant/test',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          messages: [{ sender: 'customer', content: 'Can I get a refund?' }],
-          channel: 'widget',
-          agent: 'agent',
-        }),
-      })
+
+    // The question rides the AG-UI messages; the sandbox selectors ride
+    // forwardedProps (no hand-built `history` field anymore).
+    const body = aguiRequestBody(fetchMock)
+    expect(body.forwardedProps).toEqual({ channel: 'widget', agent: 'agent' })
+    expect((body.messages as Array<{ content: string }>).at(-1)?.content).toBe(
+      'Can I get a refund?'
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'How this reply was handled' }))
@@ -141,12 +137,13 @@ describe('TestAgentCard', () => {
     expect(screen.queryByText('private reasoning')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByText('Technical details'))
-    expect(screen.getByText('support-agent-v2')).toBeInTheDocument()
+    expect(screen.getByText('support-agent-v3')).toBeInTheDocument()
     expect(screen.getByText('9')).toBeInTheDocument()
   })
 
   it('preserves the scenario input on a structured budget failure and retries to a finalized reply', async () => {
-    vi.mocked(fetch)
+    const fetchMock = vi
+      .fn()
       .mockResolvedValueOnce(
         Response.json(
           {
@@ -160,11 +157,14 @@ describe('TestAgentCard', () => {
         )
       )
       .mockResolvedValueOnce(
-        sse({
-          event: 'assistant-test.v2.final',
-          data: { text: 'A successful retry.', citations: [], escalation: null, trace },
-        })
+        mockStreamingResponse(
+          aguiRun({
+            result: { text: 'A successful retry.', citations: [], escalation: null, trace },
+          })
+        )
       )
+    vi.stubGlobal('fetch', fetchMock)
+
     renderCard()
     fireEvent.click(screen.getByRole('button', { name: 'Ask for a refund' }))
     const input = screen.getByRole('textbox', { name: 'Customer message' })
@@ -185,12 +185,16 @@ describe('TestAgentCard', () => {
 
     expect(await screen.findByText('A successful retry.')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Reply complete.'))
-    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('restores the input and offers Retry when a stream ends without a final event', async () => {
-    vi.mocked(fetch).mockResolvedValue(
-      sse({ event: 'assistant-test.v2.delta', data: { text: 'Partial private failure' } })
+    // A run whose stream ends with no RUN_FINISHED.result (a truncation): the
+    // partial text must vanish and the input come back with a Retry.
+    stubAguiFetch(
+      structuredDeltas({ text: 'Partial private failure' })
+        .map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`)
+        .join('')
     )
     renderCard()
     const input = screen.getByRole('textbox', { name: 'Customer message' })

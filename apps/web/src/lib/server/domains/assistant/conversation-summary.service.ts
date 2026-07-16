@@ -5,8 +5,9 @@
  * transcript when it closes, so a later conversation with the SAME customer
  * can ground on it (see `conversation-summary-retrieval.ts`). Cloned from
  * `domains/summary/summary.service.ts`'s post-summary shape: same
- * config-gated no-op, same `response_format: json_object` contract, same
- * strip-fences-then-parse-then-validate pipeline.
+ * config-gated no-op, same `chat({ stream: false })` structured-output
+ * contract (TanStack AI validates against a zod schema instead of a
+ * hand-rolled strip-fences/parse/validate pipeline).
  *
  * Two differences from the post summary:
  *   - The source text is the conversation transcript via `loadConversationThread`
@@ -42,11 +43,17 @@
  * customer-history retrieval stay conversation-only; only the on-demand chip
  * gains a ticket branch.
  */
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
 import { db, conversations, conversationSummaries, eq, sql } from '@/lib/server/db'
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { config } from '@/lib/server/config'
+import {
+  isAiClientConfigured,
+  structuredOutputProviderOptions,
+} from '@/lib/server/domains/ai/config'
+import { createUsageLoggingMiddleware } from '@/lib/server/domains/ai/usage-middleware'
 import { getChatModel, getEmbeddingModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { generateEmbedding } from '@/lib/server/domains/embeddings/embedding.service'
 import { loadConversationThread } from './assistant.thread'
@@ -82,9 +89,7 @@ Rules for "summary" (2-4 sentences):
 - BAD: "The customer had a billing question."
 - GOOD: "Customer was double-charged for their March invoice after a plan upgrade; refunded $40 and confirmed by the customer."`
 
-interface ConversationSummaryJson {
-  summary: string
-}
+const ConversationSummarySchema = z.object({ summary: z.string() })
 
 const NOW_SYSTEM_PROMPT = `You are a support analyst producing a hand-off brief for a teammate about to read this open conversation.
 
@@ -99,6 +104,11 @@ Rules:
 - "bullets" are 2-5 short bullet points: the key facts, what has been tried or decided, and where things currently stand.
 - Do not invent information that is not in the transcript.
 - Write for a teammate who has not read the thread yet and needs to catch up fast.`
+
+const ConversationSummaryNowSchema = z.object({
+  question: z.string(),
+  bullets: z.array(z.string()),
+})
 
 export interface ConversationSummaryNow {
   question: string
@@ -116,9 +126,8 @@ export interface ConversationSummaryNow {
 async function loadConversationSummaryInput(conversationId: ConversationId) {
   await enforceAiTokenBudget()
 
-  const openai = getOpenAI()
   const model = getChatModel('summary')
-  if (!openai || !model) return null
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) return null
 
   const [conversationRow, messages] = await Promise.all([
     db.query.conversations.findFirst({
@@ -140,7 +149,7 @@ async function loadConversationSummaryInput(conversationId: ConversationId) {
       ? transcript.slice(0, GROUNDING_CHAR_BUDGET) + '\n\n[truncated]'
       : transcript
 
-  return { openai, model, conversationRow, transcript: truncated }
+  return { model, conversationRow, transcript: truncated }
 }
 
 /**
@@ -156,66 +165,42 @@ export async function summarizeConversationOnClose(conversationId: ConversationI
   try {
     const input = await loadConversationSummaryInput(conversationId)
     if (!input) return
-    const { openai, model, conversationRow, transcript } = input
+    const { model, conversationRow, transcript } = input
 
     // Usage-logged under its own pipeline step, 'conversation_summary' —
     // deliberately NOT 'copilot_summary', which analytics/copilot-usage.ts
     // counts as on-demand Summarize-chip calls; this fire-and-forget path
     // must meter against aiTokensPerMonth without inflating that report.
-    const completion = await withUsageLogging(
-      {
-        pipelineStep: 'conversation_summary',
-        callType: 'chat_completion',
-        model,
-        metadata: { conversationId },
-      },
-      () =>
-        withRetry(() =>
-          openai.chat.completions.create({
-            model,
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: transcript },
-            ],
-            response_format: { type: 'json_object' },
-            temperature: 0.2,
-            max_completion_tokens: 400,
-          })
-        ),
-      (r) => ({
-        inputTokens: r.usage?.prompt_tokens ?? 0,
-        outputTokens: r.usage?.completion_tokens,
-        totalTokens: r.usage?.total_tokens ?? 0,
-      })
-    )
+    const object = await chat({
+      adapter: openaiCompatibleText(model, {
+        baseURL: config.openaiBaseUrl!,
+        apiKey: config.openaiApiKey!,
+      }),
+      systemPrompts: [SYSTEM_PROMPT],
+      messages: [{ role: 'user', content: transcript }],
+      outputSchema: ConversationSummarySchema,
+      stream: false,
+      modelOptions: { max_tokens: 400, ...structuredOutputProviderOptions() },
+      middleware: [
+        createUsageLoggingMiddleware({
+          pipelineStep: 'conversation_summary',
+          model,
+          metadata: { conversationId },
+        }),
+      ],
+    })
 
-    const responseText = completion.choices[0]?.message?.content
-    if (!responseText) {
-      log.error({ conversation_id: conversationId }, 'empty conversation summary response')
-      return
-    }
-
-    let parsed: Partial<ConversationSummaryJson>
-    try {
-      parsed = JSON.parse(stripCodeFences(responseText))
-    } catch {
-      log.error(
-        { conversation_id: conversationId, response_length: responseText.length },
-        'failed to parse conversation summary json'
-      )
-      return
-    }
-    if (typeof parsed.summary !== 'string' || !parsed.summary.trim()) {
+    const summaryText = object.summary.trim()
+    if (!summaryText) {
       log.error({ conversation_id: conversationId }, 'invalid conversation summary shape')
       return
     }
-    const summaryText = parsed.summary.trim()
 
     // Best-effort: a failed/unavailable embedding still saves the summary
     // text (retrieval's keyword fallback can still use it), just without the
     // semantic ranking path.
     const embedding = await generateEmbedding(summaryText, {
-      pipelineStep: 'assistant_conversation_summary_embedding',
+      pipelineStep: 'assistant_summary_embedding',
     })
 
     const values = {
@@ -255,8 +240,8 @@ export async function summarizeConversationOnClose(conversationId: ConversationI
  * customer-visible to summarize yet (see `loadConversationSummaryInput`); the
  * caller (`summarizeConversationNowFn`) turns that into an error for the
  * teammate. Unlike `summarizeConversationOnClose`, this does not catch model
- * or parse failures: this path is an explicit, interactive request, so a
- * failure should surface rather than silently no-op.
+ * or schema-validation failures: this path is an explicit, interactive
+ * request, so a failure should surface rather than silently no-op.
  *
  * Usage-logged under `pipelineStep: 'copilot_summary'`, distinct from the
  * on-close path's `'conversation_summary'`: this is the one entry point
@@ -268,60 +253,31 @@ export async function generateConversationSummaryText(
 ): Promise<ConversationSummaryNow | null> {
   const input = await loadConversationSummaryInput(conversationId)
   if (!input) return null
-  const { openai, model, transcript } = input
+  const { model, transcript } = input
 
-  const completion = await withUsageLogging(
-    {
-      pipelineStep: 'copilot_summary',
-      callType: 'chat_completion',
-      model,
-      metadata: { conversationId },
-    },
-    () =>
-      withRetry(() =>
-        openai.chat.completions.create({
-          model,
-          messages: [
-            { role: 'system', content: NOW_SYSTEM_PROMPT },
-            { role: 'user', content: transcript },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.2,
-          max_completion_tokens: 400,
-        })
-      ),
-    (r) => ({
-      inputTokens: r.usage?.prompt_tokens ?? 0,
-      outputTokens: r.usage?.completion_tokens,
-      totalTokens: r.usage?.total_tokens ?? 0,
-    })
-  )
+  const object = await chat({
+    adapter: openaiCompatibleText(model, {
+      baseURL: config.openaiBaseUrl!,
+      apiKey: config.openaiApiKey!,
+    }),
+    systemPrompts: [NOW_SYSTEM_PROMPT],
+    messages: [{ role: 'user', content: transcript }],
+    outputSchema: ConversationSummaryNowSchema,
+    stream: false,
+    modelOptions: { max_tokens: 400, ...structuredOutputProviderOptions() },
+    middleware: [
+      createUsageLoggingMiddleware({
+        pipelineStep: 'copilot_summary',
+        model,
+        metadata: { conversationId },
+      }),
+    ],
+  })
 
-  const responseText = completion.choices[0]?.message?.content
-  if (!responseText) {
-    log.error({ conversation_id: conversationId }, 'empty on-demand conversation summary response')
-    return null
-  }
-
-  let parsed: Partial<ConversationSummaryNow>
-  try {
-    parsed = JSON.parse(stripCodeFences(responseText))
-  } catch {
-    log.error(
-      { conversation_id: conversationId, response_length: responseText.length },
-      'failed to parse on-demand conversation summary json'
-    )
-    return null
-  }
-
-  const question = typeof parsed.question === 'string' ? parsed.question.trim() : ''
-  const bullets = Array.isArray(parsed.bullets)
-    ? parsed.bullets
-        .filter(
-          (bullet): bullet is string => typeof bullet === 'string' && bullet.trim().length > 0
-        )
-        .map((bullet) => bullet.trim())
-    : []
+  const question = object.question.trim()
+  const bullets = object.bullets
+    .map((bullet) => bullet.trim())
+    .filter((bullet) => bullet.length > 0)
 
   if (!question || bullets.length === 0) {
     log.error({ conversation_id: conversationId }, 'invalid on-demand conversation summary shape')
@@ -340,9 +296,8 @@ export async function generateConversationSummaryText(
 async function loadTicketSummaryInput(ticketId: TicketId) {
   await enforceAiTokenBudget()
 
-  const openai = getOpenAI()
   const model = getChatModel('summary')
-  if (!openai || !model) return null
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) return null
 
   const thread = await listTicketMessages(ticketId, { includeInternal: false })
   const transcript = buildTicketTranscript(thread.messages)
@@ -353,77 +308,48 @@ async function loadTicketSummaryInput(ticketId: TicketId) {
       ? transcript.slice(0, GROUNDING_CHAR_BUDGET) + '\n\n[truncated]'
       : transcript
 
-  return { openai, model, transcript: truncated }
+  return { model, transcript: truncated }
 }
 
 /**
  * Ticket sibling of `generateConversationSummaryText` (unified inbox §2.9):
  * the ticket copilot's on-demand Summarize chip. Same contract in every
  * respect — never persists anything (no `ticket_summaries` table exists, and
- * none is added by this), propagates a model-call failure rather than
- * swallowing it, and is usage-logged under the same `copilot_summary`
- * pipeline step so analytics/copilot-usage.ts counts it identically to a
- * conversation summary.
+ * none is added by this), propagates a model-call or schema-validation
+ * failure rather than swallowing it, and is usage-logged under the same
+ * `copilot_summary` pipeline step so analytics/copilot-usage.ts counts it
+ * identically to a conversation summary.
  */
 export async function generateTicketSummaryText(
   ticketId: TicketId
 ): Promise<ConversationSummaryNow | null> {
   const input = await loadTicketSummaryInput(ticketId)
   if (!input) return null
-  const { openai, model, transcript } = input
+  const { model, transcript } = input
 
-  const completion = await withUsageLogging(
-    {
-      pipelineStep: 'copilot_summary',
-      callType: 'chat_completion',
-      model,
-      metadata: { ticketId },
-    },
-    () =>
-      withRetry(() =>
-        openai.chat.completions.create({
-          model,
-          messages: [
-            { role: 'system', content: NOW_SYSTEM_PROMPT },
-            { role: 'user', content: transcript },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.2,
-          max_completion_tokens: 400,
-        })
-      ),
-    (r) => ({
-      inputTokens: r.usage?.prompt_tokens ?? 0,
-      outputTokens: r.usage?.completion_tokens,
-      totalTokens: r.usage?.total_tokens ?? 0,
-    })
-  )
+  const object = await chat({
+    adapter: openaiCompatibleText(model, {
+      baseURL: config.openaiBaseUrl!,
+      apiKey: config.openaiApiKey!,
+    }),
+    systemPrompts: [NOW_SYSTEM_PROMPT],
+    messages: [{ role: 'user', content: transcript }],
+    outputSchema: ConversationSummaryNowSchema,
+    stream: false,
+    modelOptions: { max_tokens: 400, ...structuredOutputProviderOptions() },
+    middleware: [
+      createUsageLoggingMiddleware({
+        pipelineStep: 'copilot_summary',
+        model,
+        metadata: { ticketId },
+      }),
+    ],
+  })
 
-  const responseText = completion.choices[0]?.message?.content
-  if (!responseText) {
-    log.error({ ticket_id: ticketId }, 'empty on-demand ticket summary response')
-    return null
-  }
-
-  let parsed: Partial<ConversationSummaryNow>
-  try {
-    parsed = JSON.parse(stripCodeFences(responseText))
-  } catch {
-    log.error(
-      { ticket_id: ticketId, response_length: responseText.length },
-      'failed to parse on-demand ticket summary json'
-    )
-    return null
-  }
-
-  const question = typeof parsed.question === 'string' ? parsed.question.trim() : ''
-  const bullets = Array.isArray(parsed.bullets)
-    ? parsed.bullets
-        .filter(
-          (bullet): bullet is string => typeof bullet === 'string' && bullet.trim().length > 0
-        )
-        .map((bullet) => bullet.trim())
-    : []
+  const question = object.question.trim()
+  const bullets = object.bullets
+    .map((bullet) => bullet.trim())
+    .filter((bullet) => bullet.length > 0)
 
   if (!question || bullets.length === 0) {
     log.error({ ticket_id: ticketId }, 'invalid on-demand ticket summary shape')

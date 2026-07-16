@@ -1,6 +1,6 @@
 /**
- * The four write-risk tool specs (set_attribute, end_conversation,
- * create_ticket, capture_feedback): zod input bounds, spec shape (risk/modes/
+ * The write-risk tool specs (set_attribute, end_conversation, create_ticket,
+ * capture_feedback, share_post): zod input bounds, spec shape (risk/modes/
  * permissions), summarize text, and the executors' no-conversation guard plus
  * one mocked happy path each. The control-mode pipeline itself (approval,
  * autonomous, idempotency, audit) is exercised against a fake spec in
@@ -43,9 +43,23 @@ vi.mock('@/lib/server/domains/tickets/ticket.service', () => ({
   createTicket: (...args: unknown[]) => mockCreateTicket(...args),
 }))
 
+const mockLinkTicketToConversation = vi.fn()
+vi.mock('@/lib/server/domains/tickets/ticket-conversation-link.service', () => ({
+  linkTicketToConversation: (...args: unknown[]) => mockLinkTicketToConversation(...args),
+}))
+
 const mockCreatePostFromConversation = vi.fn()
 vi.mock('@/lib/server/domains/conversation/conversation.convert', () => ({
   createPostFromConversation: (...args: unknown[]) => mockCreatePostFromConversation(...args),
+}))
+
+// The embed-card sends are the message seams create_ticket (after a successful
+// link) and share_post drive — mocked so no real conversation write runs.
+const mockShareTicket = vi.fn()
+const mockSharePost = vi.fn()
+vi.mock('@/lib/server/domains/conversation/conversation.cards', () => ({
+  shareTicket: (...args: unknown[]) => mockShareTicket(...args),
+  sharePost: (...args: unknown[]) => mockSharePost(...args),
 }))
 
 import { ASSISTANT_TOOL_SPECS } from '../assistant.toolspec'
@@ -55,14 +69,21 @@ const ctx = makeToolTestContext
 
 /** A fake db that resolves `select().from().where().limit()` to one row. */
 function fakeDbReturning(row: Record<string, unknown> | undefined) {
+  return fakeDbSequence([row])
+}
+
+/** Each select() consumes the next queued row (undefined = empty result);
+ *  supports the optional innerJoin step the ticket dup-check uses. */
+function fakeDbSequence(rows: Array<Record<string, unknown> | undefined>) {
+  const queue = [...rows]
   return {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve(row ? [row] : []),
-        }),
-      }),
-    }),
+    select: () => {
+      const next = queue.shift()
+      const tail = {
+        where: () => ({ limit: () => Promise.resolve(next ? [next] : []) }),
+      }
+      return { from: () => ({ ...tail, innerJoin: () => tail }) }
+    },
   }
 }
 
@@ -338,7 +359,8 @@ describe('create_ticket', () => {
     })
     const c = ctx({
       conversationId: 'conversation_1' as never,
-      db: fakeDbReturning({ visitorPrincipalId: 'principal_visitor' }) as never,
+      // Snapshot lookup, then an EMPTY dup-check (no customer ticket linked yet).
+      db: fakeDbSequence([{ visitorPrincipalId: 'principal_visitor' }, undefined]) as never,
     })
     const out = await spec.execute({ type: 'customer', title: 'Cannot log in' }, c)
     expect(mockCreateTicket).toHaveBeenCalledWith(
@@ -349,12 +371,124 @@ describe('create_ticket', () => {
       }),
       expect.objectContaining({ principalType: 'service' })
     )
+    // Provenance: the customer ticket is tied back to its originating
+    // conversation (join row + the thread announcement the link service owns).
+    expect(mockLinkTicketToConversation).toHaveBeenCalledWith(
+      'ticket_1',
+      'conversation_1',
+      expect.objectContaining({ principalType: 'service' })
+    )
     expect(out).toEqual({
       created: true,
       ticketId: 'ticket_1',
       reference: 'T-42',
       title: 'Cannot log in',
     })
+  })
+
+  it('defaults an omitted type to customer (visible and trackable by the requester)', async () => {
+    const parsed = spec.definition.inputSchema.parse({ title: 'Cannot log in' })
+    expect(parsed.type).toBe('customer')
+
+    mockCreateTicket.mockResolvedValue({ id: 'ticket_1', reference: 'T-42', title: 'x' })
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      db: fakeDbSequence([{ visitorPrincipalId: 'principal_visitor' }, undefined]) as never,
+    })
+    await spec.execute({ title: 'Cannot log in' } as never, c)
+    expect(mockCreateTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'customer' }),
+      expect.anything()
+    )
+  })
+
+  it('back_office tickets skip the dup-check and are never conversation-linked', async () => {
+    mockCreateTicket.mockResolvedValue({ id: 'ticket_2', reference: 'T-43', title: 'x' })
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      db: fakeDbSequence([{ visitorPrincipalId: 'principal_visitor' }]) as never,
+    })
+    const out = await spec.execute({ type: 'back_office', title: 'Investigate infra' }, c)
+    expect(out).toMatchObject({ created: true })
+    expect(mockLinkTicketToConversation).not.toHaveBeenCalled()
+  })
+
+  it('refuses a second customer ticket for the same conversation, naming the existing one', async () => {
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      // Snapshot lookup, then the dup-check finds an existing linked ticket.
+      db: fakeDbSequence([{ visitorPrincipalId: 'principal_visitor' }, { number: 42 }]) as never,
+    })
+    const out = (await spec.execute({ type: 'customer', title: 'Cannot log in' }, c)) as {
+      created: boolean
+      note?: string
+    }
+    expect(out.created).toBe(false)
+    expect(out.note).toContain('already has ticket')
+    expect(mockCreateTicket).not.toHaveBeenCalled()
+    expect(mockLinkTicketToConversation).not.toHaveBeenCalled()
+  })
+
+  it('a lost race on the link (ConflictError) never turns the created ticket into a failure', async () => {
+    const { ConflictError } = await import('@/lib/shared/errors')
+    mockCreateTicket.mockResolvedValue({ id: 'ticket_1', reference: 'T-42', title: 'x' })
+    mockLinkTicketToConversation.mockRejectedValue(
+      new ConflictError('ALREADY_LINKED', 'This conversation already has a linked ticket')
+    )
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      db: fakeDbSequence([{ visitorPrincipalId: 'principal_visitor' }, undefined]) as never,
+    })
+    const out = await spec.execute({ type: 'customer', title: 'Cannot log in' }, c)
+    expect(out).toMatchObject({ created: true, ticketId: 'ticket_1' })
+    // A failed link means another ticket already owns the conversation — no card.
+    expect(mockShareTicket).not.toHaveBeenCalled()
+  })
+
+  it('drops the live ticket card into the chat as Quinn after linking a customer ticket', async () => {
+    mockLinkTicketToConversation.mockResolvedValue(undefined)
+    mockCreateTicket.mockResolvedValue({
+      id: 'ticket_1',
+      reference: 'T-42',
+      title: 'Cannot log in',
+    })
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      assistantPrincipalId: 'principal_assistant' as never,
+      db: fakeDbSequence([{ visitorPrincipalId: 'principal_visitor' }, undefined]) as never,
+    })
+    const out = await spec.execute({ type: 'customer', title: 'Cannot log in' }, c)
+    expect(out).toMatchObject({ created: true, ticketId: 'ticket_1' })
+    expect(mockShareTicket).toHaveBeenCalledWith(
+      { conversationId: 'conversation_1', ticketId: 'ticket_1' },
+      expect.objectContaining({
+        agentPrincipalId: 'principal_assistant',
+        agentActor: expect.objectContaining({ principalType: 'service' }),
+        agent: expect.objectContaining({ principalId: 'principal_assistant' }),
+      })
+    )
+  })
+
+  it('never sends a ticket card for a back_office ticket', async () => {
+    mockCreateTicket.mockResolvedValue({ id: 'ticket_2', reference: 'T-43', title: 'x' })
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      db: fakeDbSequence([{ visitorPrincipalId: 'principal_visitor' }]) as never,
+    })
+    await spec.execute({ type: 'back_office', title: 'Investigate infra' }, c)
+    expect(mockShareTicket).not.toHaveBeenCalled()
+  })
+
+  it('a failed card send never turns the created ticket into a failure', async () => {
+    mockLinkTicketToConversation.mockResolvedValue(undefined)
+    mockCreateTicket.mockResolvedValue({ id: 'ticket_1', reference: 'T-42', title: 'x' })
+    mockShareTicket.mockRejectedValue(new Error('broadcast down'))
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      db: fakeDbSequence([{ visitorPrincipalId: 'principal_visitor' }, undefined]) as never,
+    })
+    const out = await spec.execute({ type: 'customer', title: 'Cannot log in' }, c)
+    expect(out).toMatchObject({ created: true, ticketId: 'ticket_1' })
   })
 })
 
@@ -441,5 +575,107 @@ describe('capture_feedback', () => {
     const out = await spec.execute({ boardId: 'not-a-board-id', title: 'Add dark mode' }, c)
     expect(out).toEqual({ created: false, note: 'Unknown or invalid board id.' })
     expect(mockCreatePostFromConversation).not.toHaveBeenCalled()
+  })
+})
+
+describe('share_post', () => {
+  const spec = ASSISTANT_TOOL_SPECS.share_post
+  // A real, round-trip-valid post TypeID (isTypeId rejects structurally-bogus
+  // suffixes, so 'post_1'-style shorthands would fail the format gate).
+  const POST_ID = 'post_01ktjwt5tyf6br9mw521h13n6n'
+
+  /** A context with the posts knowledge source on and `postId` in the ledger
+   *  as a 'post' citation — the state a real search-then-share turn is in. */
+  function ledgeredCtx(overrides: Parameters<typeof ctx>[0] = {}) {
+    const c = ctx({
+      conversationId: 'conversation_1' as never,
+      assistantPrincipalId: 'principal_assistant' as never,
+      knowledge: { sources: new Set(['article', 'post'] as const), status: false },
+      ...overrides,
+    })
+    c.ledger.sources.set(POST_ID, {
+      type: 'post',
+      id: POST_ID,
+      title: 'Dark mode',
+      url: `/b/features/posts/${POST_ID}`,
+    })
+    return c
+  }
+
+  it('has the expected spec shape', () => {
+    expect(spec.risk).toBe('write')
+    // Sharing sends a customer-visible agent message; sendAgentMessage gates on
+    // canActAsAgent → CONVERSATION_REPLY, so that is the permission checked.
+    expect(spec.permissions).toEqual([PERMISSIONS.CONVERSATION_REPLY])
+  })
+
+  it('is conversation-only (unified inbox §2.9): never offered on a ticket-scoped turn', () => {
+    expect(spec.parents).toEqual(['conversation'])
+  })
+
+  it('is registered only when the posts knowledge source is enabled this turn', () => {
+    expect(spec.availableWhen).toBeDefined()
+    expect(spec.availableWhen!(ctx())).toBe(false) // KB-only default
+    expect(
+      spec.availableWhen!(
+        ctx({ knowledge: { sources: new Set(['article', 'post'] as const), status: false } })
+      )
+    ).toBe(true)
+  })
+
+  it('summarizes with the post id', () => {
+    expect(spec.summarize({ postId: POST_ID })).toBe(`Share feedback post ${POST_ID}`)
+  })
+
+  it('rejects an empty postId', () => {
+    expect(spec.definition.inputSchema.safeParse({ postId: '' }).success).toBe(false)
+    expect(spec.definition.inputSchema.safeParse({}).success).toBe(false)
+  })
+
+  it('reports no linked conversation without a conversationId', async () => {
+    const out = await spec.execute({ postId: POST_ID }, ctx())
+    expect(out).toEqual({ shared: false, note: 'No linked conversation.' })
+    expect(mockSharePost).not.toHaveBeenCalled()
+  })
+
+  it('fails gracefully on a malformed post id before consulting the ledger', async () => {
+    const out = await spec.execute({ postId: 'not-a-post-id' }, ledgeredCtx())
+    expect(out).toEqual({ shared: false, note: 'Unknown or invalid post id.' })
+    expect(mockSharePost).not.toHaveBeenCalled()
+  })
+
+  it('refuses a valid post id the turn ledger never surfaced (hallucination guard)', async () => {
+    const c = ledgeredCtx()
+    c.ledger.sources.clear()
+    const out = await spec.execute({ postId: POST_ID }, c)
+    expect(out).toEqual({
+      shared: false,
+      note: "Only a post surfaced by this turn's search can be shared. Search first.",
+    })
+    expect(mockSharePost).not.toHaveBeenCalled()
+  })
+
+  it('refuses an id ledgered under a non-post citation type', async () => {
+    const c = ledgeredCtx()
+    c.ledger.sources.set(POST_ID, { type: 'article', id: POST_ID, title: 'x', url: '/x' })
+    const out = await spec.execute({ postId: POST_ID }, c)
+    expect(out).toMatchObject({ shared: false })
+    expect(mockSharePost).not.toHaveBeenCalled()
+  })
+
+  it('shares a ledgered post as Quinn on the happy path', async () => {
+    const out = await spec.execute({ postId: POST_ID }, ledgeredCtx())
+    expect(mockSharePost).toHaveBeenCalledWith(
+      { conversationId: 'conversation_1', postId: POST_ID },
+      expect.objectContaining({
+        agentPrincipalId: 'principal_assistant',
+        agentActor: expect.objectContaining({ principalType: 'service' }),
+        agent: expect.objectContaining({
+          principalId: 'principal_assistant',
+          displayName: 'Quinn',
+        }),
+      })
+    )
+    expect(out).toEqual({ shared: true, note: 'Shared "Dark mode" into the conversation.' })
   })
 })

@@ -1,19 +1,18 @@
 // @vitest-environment happy-dom
 /**
  * suggested-reply-store: the module-level cache backing the proactive
- * suggested-reply card (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md). Covers the
- * final/error/skip streaming outcomes (the server sends FINAL-ONLY for
- * suggest.v1, but the store stays delta-tolerant per the contract), "generate
- * once per key" (no re-fetch on a repeated `ensureSuggestion` for the same
- * key), the store NEVER logging `suggestion_shown` itself (that's the card's
- * on-render event, guarded by `markSuggestionShown`), the 409-staleness ->
- * skip mapping, abort hardening (superseded same-item runs, retry-while-in-
- * flight, late frames after an abort, reset never resurrecting entries),
- * dismiss persistence, retry clearing the cache, and the eviction cap.
+ * suggested-reply card (QUINN-PROACTIVE-SUGGESTIONS-SPEC.md), now streaming over
+ * a per-run ChatClient (TanStack AI's AG-UI protocol). Covers the
+ * final/error/skip outcomes read off RUN_FINISHED.result, the FINAL-ONLY
+ * invariant (partial chunks ignored), "generate once per key", the store NEVER
+ * logging `suggestion_shown` itself (that's the card's on-render event), the
+ * 409-staleness -> skip mapping (a `http_409` RUN_ERROR), abort hardening
+ * (superseded same-item runs, retry-while-in-flight, late frames after a stop,
+ * reset never resurrecting entries), dismiss persistence, retry clearing the
+ * cache, and the eviction cap.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SUGGEST_EVENTS } from '@/lib/shared/assistant/copilot-contract'
-import { sseFrame, mockStreamingResponse, stubStreamingFetch } from '@/test/sse'
+import { aguiRun, aguiErrorRun, structuredDeltas, mockStreamingResponse } from '@/test/agui'
 
 const hoisted = vi.hoisted(() => ({ recordCopilotEvent: vi.fn() }))
 vi.mock('@/lib/client/copilot-events', () => ({
@@ -32,14 +31,27 @@ import {
   SUGGESTION_CACHE_MAX,
 } from '../suggested-reply-store'
 
-/** Wait until `getSuggestionEntry(key)` satisfies `predicate`, polling on
- *  microtask ticks — the store's fetch/stream resolution is all promise
- *  chains, no timers. */
+/** A DONE final: the wire shape the server actually sends (RUN_FINISHED.result). */
+function doneRun(text = 'Hi', citations: unknown[] = []): string {
+  return aguiRun({ result: { text, citations, internalSourced: false } })
+}
+
+/** Stub global fetch to a fresh streaming AG-UI response (the same frames) per
+ *  call. */
+function stubFetch(frames: string): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(() => Promise.resolve(mockStreamingResponse(frames)))
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
+/** Wait until `getSuggestionEntry(key)` satisfies `predicate`. The ChatClient
+ *  delivers chunks across setTimeout(0) ticks, so this polls both microtasks
+ *  and zero-timers. */
 async function waitForEntry(
   key: string,
   predicate: (entry: ReturnType<typeof getSuggestionEntry>) => boolean
 ): Promise<void> {
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 100; i++) {
     if (predicate(getSuggestionEntry(key))) return
     await Promise.resolve()
     await new Promise((r) => setTimeout(r, 0))
@@ -55,13 +67,25 @@ async function flush(rounds = 10): Promise<void> {
   }
 }
 
+/** Wait until the ChatClient has dispatched at least `count` fetches (the fetch
+ *  is deferred past the client's onResponse tick, unlike the old synchronous
+ *  runSseTurn). */
+async function waitForFetch(fetchMock: ReturnType<typeof vi.fn>, count: number): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    if (fetchMock.mock.calls.length >= count) return
+    await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 0))
+  }
+  throw new Error('waitForFetch timed out')
+}
+
 /** An `ok` response whose body never closes — an in-flight generation. */
 function hangingResponse(): Response {
   return { ok: true, body: new ReadableStream<Uint8Array>({ start() {} }) } as Response
 }
 
-/** An `ok` response whose body stays open until `push`/`close` are called —
- *  for racing frames against an abort. */
+/** An `ok` response whose body stays open until `push`/`close` are called — for
+ *  racing frames against a stop. */
 function controlledResponse(): {
   response: Response
   push: (s: string) => void
@@ -82,9 +106,9 @@ function controlledResponse(): {
 }
 
 /** An abort-AWARE fetch stub: the streamed body errors with an AbortError the
- *  moment the request's signal aborts — how a real fetch body behaves — so
- *  runSseTurn's onAbort path actually fires under test. */
-function stubAbortAwareHangingFetch() {
+ *  moment the request's signal aborts — how a real fetch body behaves — so the
+ *  ChatClient's abort path actually fires under test. */
+function stubAbortAwareHangingFetch(): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((_url: unknown, init?: RequestInit) => {
     const signal = init?.signal as AbortSignal
     return Promise.resolve({
@@ -102,7 +126,7 @@ function stubAbortAwareHangingFetch() {
   return fetchMock
 }
 
-/** The `signal` runSseTurn's fetch was called with, for abort assertions. */
+/** The `signal` the ChatClient's fetch was called with, for abort assertions. */
 function fetchSignal(fetchMock: ReturnType<typeof vi.fn>, call: number): AbortSignal {
   return (fetchMock.mock.calls[call][1] as RequestInit).signal as AbortSignal
 }
@@ -113,6 +137,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  resetSuggestionStoreForTests()
   vi.unstubAllGlobals()
 })
 
@@ -125,38 +150,15 @@ describe('suggestionKey', () => {
 })
 
 describe('ensureSuggestion', () => {
-  it('lands a final-only payload (the wire shape the server actually sends) as done', async () => {
-    stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.final, {
-        text: 'Sure, here is how.',
-        citations: [{ type: 'article', id: 'a1', title: 'Guide', url: 'https://x/guide' }],
-        internalSourced: false,
-      })
-    )
-
-    const key = suggestionKey('conversation_1', 'conversation_message_1')
-    ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
-
-    expect(getSuggestionEntry(key)?.status).toBe('loading')
-    await waitForEntry(key, (e) => e?.status === 'done')
-
-    const entry = getSuggestionEntry(key)
-    expect(entry?.text).toBe('Sure, here is how.')
-    expect(entry?.citations).toHaveLength(1)
-    expect(entry?.internalSourced).toBe(false)
-  })
-
-  // The server sends FINAL-ONLY for suggest.v1 (no delta frames), but the
-  // store stays delta-CAPABLE per the contract note — this pins the tolerance.
-  it('still tolerates delta frames ahead of the final (contract allows them)', async () => {
-    stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.delta, { text: 'Sure, ' }) +
-        sseFrame(SUGGEST_EVENTS.delta, { text: 'here is how.' }) +
-        sseFrame(SUGGEST_EVENTS.final, {
+  it('lands a final payload (RUN_FINISHED.result) as done', async () => {
+    stubFetch(
+      aguiRun({
+        result: {
           text: 'Sure, here is how.',
           citations: [{ type: 'article', id: 'a1', title: 'Guide', url: 'https://x/guide' }],
           internalSourced: false,
-        })
+        },
+      })
     )
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')
@@ -171,15 +173,32 @@ describe('ensureSuggestion', () => {
     expect(entry?.internalSourced).toBe(false)
   })
 
-  it('renders nothing (a "skip" status) on an honest-miss final payload, and never logs shown', async () => {
-    stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.final, {
-        text: '',
-        citations: [],
-        internalSourced: false,
-        skip: true,
+  it('ignores partial chunks entirely — only RUN_FINISHED.result transitions state (FINAL-ONLY)', async () => {
+    stubFetch(
+      aguiRun({
+        middle: structuredDeltas({ text: 'a half-drafted guess' }),
+        result: {
+          text: 'Sure, here is how.',
+          citations: [{ type: 'article', id: 'a1', title: 'Guide', url: 'https://x/guide' }],
+          internalSourced: false,
+        },
       })
     )
+
+    const key = suggestionKey('conversation_1', 'conversation_message_1')
+    ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
+
+    // The store never surfaces a 'streaming' status — the partial deltas are dropped.
+    expect(getSuggestionEntry(key)?.status).toBe('loading')
+    await waitForEntry(key, (e) => e?.status === 'done')
+
+    const entry = getSuggestionEntry(key)
+    expect(entry?.text).toBe('Sure, here is how.')
+    expect(entry?.citations).toHaveLength(1)
+  })
+
+  it('renders nothing (a "skip" status) on an honest-miss final payload, and never logs shown', async () => {
+    stubFetch(aguiRun({ result: { text: '', citations: [], internalSourced: false, skip: true } }))
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
@@ -189,12 +208,7 @@ describe('ensureSuggestion', () => {
   })
 
   it('treats a non-skip final with no usable text as a skip — never a bare card', async () => {
-    // Belt to the server's own guard: if a final somehow lands with skip:false
-    // but nothing to render, an empty "done" entry would strand the card as a
-    // bare header with no answer and no actions.
-    stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.final, { text: '   ', citations: [], internalSourced: false })
-    )
+    stubFetch(aguiRun({ result: { text: '   ', citations: [], internalSourced: false } }))
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
@@ -203,8 +217,8 @@ describe('ensureSuggestion', () => {
     expect(hoisted.recordCopilotEvent).not.toHaveBeenCalled()
   })
 
-  it('surfaces an explicit error event', async () => {
-    stubStreamingFetch(sseFrame(SUGGEST_EVENTS.error, { code: 'boom', message: 'It broke' }))
+  it('surfaces an explicit RUN_ERROR', async () => {
+    stubFetch(aguiErrorRun({ code: 'boom', message: 'It broke' }))
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
@@ -216,14 +230,12 @@ describe('ensureSuggestion', () => {
   it('surfaces a generic error when the HTTP response is not ok', async () => {
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue({
-          ok: false,
-          status: 500,
-          body: null,
-          json: async () => ({}),
-        } as Response)
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        body: null,
+        json: async () => ({}),
+      } as Response)
     )
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')
@@ -235,9 +247,9 @@ describe('ensureSuggestion', () => {
 
   it('maps HTTP 409 (stale lastCustomerMessageId) to a silent skip, never an error card', async () => {
     // The suggest route 409s when the id is no longer the item's latest
-    // customer message. A Retry would re-send the same stale id (doomed), so
-    // the store renders nothing — the newer message is a new key, which
-    // regenerates naturally.
+    // customer message; aguiFetchClient rewrites it to a `http_409` RUN_ERROR.
+    // A Retry would re-send the same stale id (doomed), so the store renders
+    // nothing — the newer message is a new key, which regenerates naturally.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -257,16 +269,12 @@ describe('ensureSuggestion', () => {
   })
 
   it('never re-fetches for a key that already has a cached/in-flight entry', async () => {
-    const fetchMock = stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.final, { text: 'Hi', citations: [], internalSourced: false })
-    )
+    const fetchMock = stubFetch(doneRun())
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
     await waitForEntry(key, (e) => e?.status === 'done')
 
-    // A second call for the SAME key (e.g. the card remounting on a tab
-    // switch / re-render) must not issue a second request.
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
 
@@ -274,13 +282,7 @@ describe('ensureSuggestion', () => {
   })
 
   it('never logs suggestion_shown itself — a background completion is not a view', async () => {
-    // The acceptance-rate denominator counts suggestions a teammate actually
-    // SAW. A final frame landing (possibly for an item nobody has open — the
-    // cross-remount cache keeps runs streaming in the background) logs
-    // nothing; the CARD fires shown on first render, via markSuggestionShown.
-    stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.final, { text: 'Hi', citations: [], internalSourced: false })
-    )
+    stubFetch(doneRun())
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
@@ -290,9 +292,7 @@ describe('ensureSuggestion', () => {
   })
 
   it('a distinct lastCustomerMessageId is a distinct cache key (regenerates)', async () => {
-    const fetchMock = stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.final, { text: 'Hi', citations: [], internalSourced: false })
-    )
+    const fetchMock = stubFetch(doneRun())
 
     const keyA = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(keyA, { conversationId: 'conversation_1' }, 'conversation_message_1')
@@ -306,37 +306,30 @@ describe('ensureSuggestion', () => {
   })
 
   it('aborts a still-streaming run when the SAME item gets a newer customer message', async () => {
-    // The old key can never render again (the card keys on the new message
-    // id), so its stream is cut off rather than left burning tokens.
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(hangingResponse())
-      .mockResolvedValueOnce(
-        mockStreamingResponse(
-          sseFrame(SUGGEST_EVENTS.final, { text: 'Fresh', citations: [], internalSourced: false })
-        )
-      )
+      .mockResolvedValueOnce(mockStreamingResponse(doneRun('Fresh')))
     vi.stubGlobal('fetch', fetchMock)
 
     const staleKey = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(staleKey, { conversationId: 'conversation_1' }, 'conversation_message_1')
+    await waitForFetch(fetchMock, 1)
     expect(fetchSignal(fetchMock, 0).aborted).toBe(false)
 
     const freshKey = suggestionKey('conversation_1', 'conversation_message_2')
     ensureSuggestion(freshKey, { conversationId: 'conversation_1' }, 'conversation_message_2')
 
-    // The superseded run is aborted and its entry marked terminal (it can
-    // never render, but it must never look in-flight either).
+    // The superseded run is stopped and its entry marked terminal (it can never
+    // render, but it must never look in-flight either).
     expect(fetchSignal(fetchMock, 0).aborted).toBe(true)
     expect(getSuggestionEntry(staleKey)?.status).toBe('error')
 
-    // The fresh run streams to completion untouched.
-    expect(fetchSignal(fetchMock, 1).aborted).toBe(false)
     await waitForEntry(freshKey, (e) => e?.status === 'done')
     expect(getSuggestionEntry(freshKey)?.text).toBe('Fresh')
   })
 
-  it('leaves runs for OTHER items streaming (the cross-remount survival contract)', () => {
+  it('leaves runs for OTHER items streaming (the cross-remount survival contract)', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(hangingResponse())
@@ -353,6 +346,7 @@ describe('ensureSuggestion', () => {
       { conversationId: 'conversation_2' },
       'conversation_message_9'
     )
+    await waitForFetch(fetchMock, 2)
 
     expect(fetchSignal(fetchMock, 0).aborted).toBe(false)
     expect(fetchSignal(fetchMock, 1).aborted).toBe(false)
@@ -360,11 +354,7 @@ describe('ensureSuggestion', () => {
 })
 
 describe('abort hardening', () => {
-  it('frames buffered past an abort never flip the superseded entry back to life', async () => {
-    // A stubbed stream isn't wired to the fetch signal, so its frames keep
-    // arriving after the abort — exactly the buffered-frame race: the run's
-    // handlers must drop them rather than overwrite the terminal state the
-    // abort site (ensureSuggestion) already wrote.
+  it('frames buffered past a stop never flip the superseded entry back to life', async () => {
     const run1 = controlledResponse()
     const fetchMock = vi
       .fn()
@@ -374,7 +364,8 @@ describe('abort hardening', () => {
 
     const staleKey = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(staleKey, { conversationId: 'conversation_1' }, 'conversation_message_1')
-    await flush(2) // let run 1's fetch resolve and its reader attach
+    await waitForFetch(fetchMock, 1)
+    await flush(2) // let run 1's reader attach
 
     // Supersede run 1 with a newer customer message on the same item.
     ensureSuggestion(
@@ -386,9 +377,7 @@ describe('abort hardening', () => {
     expect(getSuggestionEntry(staleKey)?.status).toBe('error')
 
     // Run 1's stream now delivers a full final frame anyway.
-    run1.push(
-      sseFrame(SUGGEST_EVENTS.final, { text: 'Zombie', citations: [], internalSourced: false })
-    )
+    run1.push(aguiRun({ result: { text: 'Zombie', citations: [], internalSourced: false } }))
     run1.close()
     await flush()
 
@@ -402,26 +391,19 @@ describe('abort hardening', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(hangingResponse())
-      .mockResolvedValueOnce(
-        mockStreamingResponse(
-          sseFrame(SUGGEST_EVENTS.final, {
-            text: 'Recovered',
-            citations: [],
-            internalSourced: false,
-          })
-        )
-      )
+      .mockResolvedValueOnce(mockStreamingResponse(doneRun('Recovered')))
     vi.stubGlobal('fetch', fetchMock)
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
+    await waitForFetch(fetchMock, 1)
     expect(fetchSignal(fetchMock, 0).aborted).toBe(false)
 
-    // Retry while the first run is still streaming: the prior run must die
-    // (same messageId or not), or two live runs would race over one entry.
+    // Retry while the first run is still streaming: the prior run must die, or
+    // two live runs would race over one entry.
     retrySuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await waitForFetch(fetchMock, 2)
     expect(fetchSignal(fetchMock, 0).aborted).toBe(true)
     expect(fetchSignal(fetchMock, 1).aborted).toBe(false)
 
@@ -430,9 +412,6 @@ describe('abort hardening', () => {
   })
 
   it('a test reset never resurrects entries through the abort path', async () => {
-    // The abort-aware stub makes the aborted run's read reject, driving
-    // runSseTurn's onAbort — which must be a no-op: every abort site owns its
-    // terminal entry state, and after a reset "terminal" means GONE.
     stubAbortAwareHangingFetch()
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')
@@ -448,16 +427,12 @@ describe('abort hardening', () => {
 
 describe('markSuggestionShown', () => {
   it('flips exactly once for a done entry — the card-side shown guard across remounts', async () => {
-    stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.final, { text: 'Hi', citations: [], internalSourced: false })
-    )
+    stubFetch(doneRun())
     const key = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
     await waitForEntry(key, (e) => e?.status === 'done')
 
     expect(markSuggestionShown(key)).toBe(true)
-    // A remounted card re-observing the same cached entry gets false — the
-    // flag lives ON the entry, so it survives exactly like dismissed does.
     expect(markSuggestionShown(key)).toBe(false)
   })
 
@@ -466,9 +441,7 @@ describe('markSuggestionShown', () => {
       false
     )
 
-    stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.final, { text: 'Hi', citations: [], internalSourced: false })
-    )
+    stubFetch(doneRun())
     const key = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
     // Still loading: not shown-able yet.
@@ -481,8 +454,8 @@ describe('markSuggestionShown', () => {
 })
 
 describe('eviction cap', () => {
-  /** Land `count` DONE entries sequentially (each its own item, so no
-   *  supersede aborts), returning their keys oldest-first. */
+  /** Land `count` DONE entries sequentially (each its own item, so no supersede
+   *  aborts), returning their keys oldest-first. */
   async function fillDone(count: number, offset = 0): Promise<string[]> {
     const keys: string[] = []
     for (let i = offset; i < offset + count; i++) {
@@ -495,20 +468,12 @@ describe('eviction cap', () => {
     return keys
   }
 
-  const DONE_FRAMES = sseFrame(SUGGEST_EVENTS.final, {
-    text: 'Hi',
-    citations: [],
-    internalSourced: false,
-  })
-
   it('evicts the oldest settled entry once the cap is exceeded', async () => {
-    stubStreamingFetch(DONE_FRAMES)
+    stubFetch(doneRun())
     const keys = await fillDone(SUGGESTION_CACHE_MAX)
 
-    // Every entry still cached at exactly the cap.
     expect(getSuggestionEntry(keys[0])).toBeDefined()
 
-    // One more insert evicts the oldest (pure insertion recency).
     ensureSuggestion(
       suggestionKey('conversation_extra', 'conversation_message_1'),
       { conversationId: 'conversation_extra' },
@@ -519,7 +484,7 @@ describe('eviction cap', () => {
   })
 
   it('evicts dismissed/error entries before still-renderable ones', async () => {
-    stubStreamingFetch(DONE_FRAMES)
+    stubFetch(doneRun())
     const keys = await fillDone(SUGGESTION_CACHE_MAX)
     dismissSuggestion(keys[10])
 
@@ -529,13 +494,12 @@ describe('eviction cap', () => {
       'conversation_message_1'
     )
 
-    // The dismissed entry went first; the oldest renderable one survived.
     expect(getSuggestionEntry(keys[10])).toBeUndefined()
     expect(getSuggestionEntry(keys[0])).toBeDefined()
   })
 
   it('never evicts a listener-attached key (a mounted card) — the next oldest goes instead', async () => {
-    stubStreamingFetch(DONE_FRAMES)
+    stubFetch(doneRun())
     const keys = await fillDone(SUGGESTION_CACHE_MAX)
     const unsubscribe = subscribeSuggestion(keys[0], () => {})
 
@@ -554,16 +518,15 @@ describe('eviction cap', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(hangingResponse())
-      .mockImplementation(() => Promise.resolve(mockStreamingResponse(DONE_FRAMES)))
+      .mockImplementation(() => Promise.resolve(mockStreamingResponse(doneRun())))
     vi.stubGlobal('fetch', fetchMock)
 
     const inflightKey = suggestionKey('conversation_hang', 'conversation_message_1')
     ensureSuggestion(inflightKey, { conversationId: 'conversation_hang' }, 'conversation_message_1')
+    await waitForFetch(fetchMock, 1)
 
     const keys = await fillDone(SUGGESTION_CACHE_MAX)
 
-    // The in-flight run (the map's oldest entry) is untouchable; the oldest
-    // DONE entry was evicted instead.
     expect(getSuggestionEntry(inflightKey)?.status).toBe('loading')
     expect(getSuggestionEntry(keys[0])).toBeUndefined()
     expect(getSuggestionEntry(keys[1])).toBeDefined()
@@ -572,9 +535,7 @@ describe('eviction cap', () => {
 
 describe('dismissSuggestion', () => {
   it('marks the entry dismissed in place, notifying subscribers', async () => {
-    stubStreamingFetch(
-      sseFrame(SUGGEST_EVENTS.final, { text: 'Hi', citations: [], internalSourced: false })
-    )
+    stubFetch(doneRun())
     const key = suggestionKey('conversation_1', 'conversation_message_1')
     ensureSuggestion(key, { conversationId: 'conversation_1' }, 'conversation_message_1')
     await waitForEntry(key, (e) => e?.status === 'done')
@@ -586,8 +547,6 @@ describe('dismissSuggestion', () => {
 
     expect(listener).toHaveBeenCalledTimes(1)
     expect(getSuggestionEntry(key)?.dismissed).toBe(true)
-    // The rest of the entry (text/citations) survives the dismiss — a retry
-    // affordance isn't needed, but nothing about the generation is discarded.
     expect(getSuggestionEntry(key)?.text).toBe('Hi')
   })
 
@@ -602,18 +561,8 @@ describe('retrySuggestion', () => {
   it('discards the cached entry and re-fetches', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(
-        mockStreamingResponse(sseFrame(SUGGEST_EVENTS.error, { code: 'boom', message: 'Nope' }))
-      )
-      .mockResolvedValueOnce(
-        mockStreamingResponse(
-          sseFrame(SUGGEST_EVENTS.final, {
-            text: 'Recovered',
-            citations: [],
-            internalSourced: false,
-          })
-        )
-      )
+      .mockResolvedValueOnce(mockStreamingResponse(aguiErrorRun({ code: 'boom', message: 'Nope' })))
+      .mockResolvedValueOnce(mockStreamingResponse(doneRun('Recovered')))
     vi.stubGlobal('fetch', fetchMock)
 
     const key = suggestionKey('conversation_1', 'conversation_message_1')

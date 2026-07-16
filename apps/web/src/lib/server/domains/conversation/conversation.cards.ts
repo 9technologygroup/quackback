@@ -11,6 +11,7 @@ import { db, conversations, conversationMessages, eq } from '@/lib/server/db'
 import type {
   ConversationId,
   PostId,
+  TicketId,
   BoardId,
   PrincipalId,
   ConversationMessageId,
@@ -36,6 +37,15 @@ export function postEmbedDoc(postId: PostId): TiptapContent {
   return { type: 'doc', content: [{ type: 'quackbackEmbed', attrs: { kind: 'post', id: postId } }] }
 }
 
+/** Embed doc for a support ticket — a single-node doc carrying a quackbackEmbed.
+ *  Renders the live ticket card (viewer-scoped) on every display surface. */
+export function ticketEmbedDoc(ticketId: TicketId): TiptapContent {
+  return {
+    type: 'doc',
+    content: [{ type: 'quackbackEmbed', attrs: { kind: 'ticket', id: ticketId } }],
+  }
+}
+
 /**
  * Agent shares (embeds) an existing post into the conversation. Sends an
  * embed-only agent message: the empty text is valid because the doc carries a
@@ -55,6 +65,28 @@ export async function sharePost(
     ctx.agentActor,
     undefined,
     postEmbedDoc(input.postId)
+  )
+}
+
+/**
+ * Agent shares (embeds) a support ticket into the conversation — the live card
+ * the customer sees when Quinn opens a customer ticket from their chat. Same
+ * embed-only agent message as {@link sharePost}; the ticket embed resolver
+ * viewer-scopes the card so it renders for the ticket's requester (and the
+ * team) but degrades to "unavailable" for anyone else.
+ */
+export async function shareTicket(
+  input: { conversationId: ConversationId; ticketId: TicketId },
+  ctx: CardAgentCtx
+): Promise<SendAgentMessageResult> {
+  const { sendAgentMessage } = await import('./conversation.service')
+  return sendAgentMessage(
+    input.conversationId,
+    '',
+    ctx.agent,
+    ctx.agentActor,
+    undefined,
+    ticketEmbedDoc(input.ticketId)
   )
 }
 

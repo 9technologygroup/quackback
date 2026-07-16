@@ -96,7 +96,7 @@ describe.skipIf(!reachable)('assistant runtime (live AI endpoint)', () => {
       ],
       onActivity: (activity) => pricingActivities.push(activity),
     })
-    expect(pricingActivities).toContainEqual({ kind: 'tool', tool: 'search_knowledge' })
+    expect(pricingActivities).toContainEqual({ kind: 'tool', tool: 'search' })
 
     const casualActivities: Array<{ kind: 'thinking' } | { kind: 'tool'; tool: string }> = []
     await runAssistantTurn({

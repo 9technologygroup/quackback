@@ -24,40 +24,33 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
   },
 }))
 
-const mockOpenAI = {
-  chat: {
-    completions: {
-      create: vi.fn(),
-    },
-  },
-}
-const mockGetOpenAI = vi.fn(() => mockOpenAI as unknown)
+const mockConfig = vi.hoisted(() => ({
+  openaiApiKey: 'test-key' as string | undefined,
+  openaiBaseUrl: 'http://localhost:9999/v1' as string | undefined,
+}))
+vi.mock('@/lib/server/config', () => ({ config: mockConfig }))
+
+const mockChat = vi.fn()
+vi.mock('@tanstack/ai', () => ({
+  chat: (...args: unknown[]) => mockChat(...args),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: (...args: unknown[]) => ({ kind: 'text', args }),
+}))
+
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: () => mockGetOpenAI(),
-  stripCodeFences: (s: string) => s.replace(/^```[a-z]*\n?/i, '').replace(/```$/, ''),
+  isAiClientConfigured: (apiKey?: string, baseUrl?: string) => Boolean(apiKey) && Boolean(baseUrl),
+  structuredOutputProviderOptions: () => ({}),
+}))
+
+vi.mock('@/lib/server/domains/ai/usage-middleware', () => ({
+  createUsageLoggingMiddleware: () => ({ name: 'ai-usage-logging' }),
 }))
 
 const mockGetChatModel = vi.fn(() => 'test-model' as string | null)
 vi.mock('@/lib/server/domains/ai/models', () => ({
   getChatModel: () => mockGetChatModel(),
   getEmbeddingModel: () => 'test-embedding-model',
-}))
-
-// Call through once, no real retry/backoff — mirrors the pipeline test precedent.
-vi.mock('@/lib/server/domains/ai/retry', () => ({
-  withRetry: (fn: () => Promise<unknown>) =>
-    fn().then((result: unknown) => ({ result, retryCount: 0 })),
-}))
-
-// Call through without touching ai_usage_log — mirrors extraction.service.test.ts's
-// precedent, and keeps `mockInsertValues` (the conversation_summaries assertion
-// below) from also observing the on-demand path's usage-log insert.
-const mockWithUsageLogging = vi.fn((_params: unknown, fn: () => Promise<{ result: unknown }>) =>
-  fn().then(({ result }) => result)
-)
-vi.mock('@/lib/server/domains/ai/usage-log', () => ({
-  withUsageLogging: (...args: [unknown, () => Promise<{ result: unknown }>]) =>
-    mockWithUsageLogging(...args),
 }))
 
 const mockEnforceAiTokenBudget = vi.fn().mockResolvedValue(undefined)
@@ -130,35 +123,28 @@ const TRANSCRIPT = [
   msg({ senderType: 'agent', content: 'Refunded the duplicate charge, sorry about that.' }),
 ]
 
-function jsonCompletion(body: unknown) {
-  return { choices: [{ message: { content: JSON.stringify(body) } }] }
-}
-
 beforeEach(() => {
   vi.clearAllMocks()
+  mockConfig.openaiApiKey = 'test-key'
+  mockConfig.openaiBaseUrl = 'http://localhost:9999/v1'
   mockEnforceAiTokenBudget.mockResolvedValue(undefined)
-  mockGetOpenAI.mockReturnValue(mockOpenAI as unknown as never)
   mockGetChatModel.mockReturnValue('test-model')
   mockConversationFindFirst.mockResolvedValue({ visitorPrincipalId: VISITOR_PRINCIPAL_ID })
   mockLoadConversationThread.mockResolvedValue(TRANSCRIPT)
   mockGenerateEmbedding.mockResolvedValue([0.1, 0.2, 0.3])
-  mockOpenAI.chat.completions.create.mockResolvedValue(
-    jsonCompletion({
-      summary: 'Customer was double-charged for their March invoice; refunded the duplicate.',
-    })
-  )
+  mockChat.mockResolvedValue({
+    summary: 'Customer was double-charged for their March invoice; refunded the duplicate.',
+  })
 })
 
 describe('summarizeConversationOnClose', () => {
   it('writes a summary and its embedding for the closed conversation', async () => {
     await summarizeConversationOnClose(CONVERSATION_ID)
 
-    expect(mockOpenAI.chat.completions.create).toHaveBeenCalledOnce()
-    const call = mockOpenAI.chat.completions.create.mock.calls[0][0] as {
-      response_format: { type: string }
+    expect(mockChat).toHaveBeenCalledOnce()
+    const call = mockChat.mock.calls[0][0] as {
       messages: Array<{ role: string; content: string }>
     }
-    expect(call.response_format).toEqual({ type: 'json_object' })
     // The transcript is what the model sees; internal notes never enter it
     // (loadConversationThread already excludes them in SQL).
     expect(call.messages.at(-1)?.content).toContain('My March invoice charged me twice.')
@@ -182,31 +168,13 @@ describe('summarizeConversationOnClose', () => {
     )
   })
 
-  it("usage-logs the call under its own pipelineStep 'conversation_summary', never 'copilot_summary'", async () => {
-    // The step name is load-bearing twice over: it makes the fire-and-forget
-    // close summarizer count against aiTokensPerMonth at all, and it keeps
-    // this automatic spend out of analytics/copilot-usage.ts, which counts
-    // 'copilot_summary' rows as on-demand Summarize-chip calls.
-    await summarizeConversationOnClose(CONVERSATION_ID)
-
-    expect(mockWithUsageLogging).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pipelineStep: 'conversation_summary',
-        callType: 'chat_completion',
-        metadata: { conversationId: CONVERSATION_ID },
-      }),
-      expect.any(Function),
-      expect.any(Function)
-    )
-  })
-
   it('is a no-op when the AI client is not configured', async () => {
-    mockGetOpenAI.mockReturnValue(null as unknown as never)
+    mockConfig.openaiApiKey = undefined
 
     await summarizeConversationOnClose(CONVERSATION_ID)
 
     expect(mockLoadConversationThread).not.toHaveBeenCalled()
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
     expect(mockInsertValues).not.toHaveBeenCalled()
   })
 
@@ -220,7 +188,7 @@ describe('summarizeConversationOnClose', () => {
   })
 
   it('never throws when the model call fails', async () => {
-    mockOpenAI.chat.completions.create.mockRejectedValue(new Error('upstream unavailable'))
+    mockChat.mockRejectedValue(new Error('upstream unavailable'))
 
     await expect(summarizeConversationOnClose(CONVERSATION_ID)).resolves.toBeUndefined()
 
@@ -228,14 +196,15 @@ describe('summarizeConversationOnClose', () => {
     expect(mockLogError).toHaveBeenCalled()
   })
 
-  it('never throws when the model response is not valid JSON', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue({
-      choices: [{ message: { content: 'not json at all' } }],
-    })
+  it('never throws when the model response fails schema validation', async () => {
+    // With outputSchema, chat() validates and rejects on a non-conforming
+    // response; the outer best-effort catch logs and swallows it.
+    mockChat.mockRejectedValue(new Error('response did not match schema'))
 
     await expect(summarizeConversationOnClose(CONVERSATION_ID)).resolves.toBeUndefined()
 
     expect(mockInsertValues).not.toHaveBeenCalled()
+    expect(mockLogError).toHaveBeenCalled()
   })
 
   it('never throws when the DB write fails', async () => {
@@ -253,7 +222,7 @@ describe('summarizeConversationOnClose', () => {
 
     await summarizeConversationOnClose(CONVERSATION_ID)
 
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
     expect(mockInsertValues).not.toHaveBeenCalled()
   })
 
@@ -262,7 +231,7 @@ describe('summarizeConversationOnClose', () => {
 
     await summarizeConversationOnClose(CONVERSATION_ID)
 
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
     expect(mockInsertValues).not.toHaveBeenCalled()
   })
 
@@ -296,15 +265,13 @@ describe('summarizeConversationOnClose', () => {
 
 describe('generateConversationSummaryText', () => {
   beforeEach(() => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      jsonCompletion({
-        question: 'Duplicate March invoice charge',
-        bullets: [
-          'Customer was charged twice for their March invoice.',
-          'Refunded the duplicate charge.',
-        ],
-      })
-    )
+    mockChat.mockResolvedValue({
+      question: 'Duplicate March invoice charge',
+      bullets: [
+        'Customer was charged twice for their March invoice.',
+        'Refunded the duplicate charge.',
+      ],
+    })
   })
 
   it('returns a question and bullets built from the live transcript', async () => {
@@ -317,11 +284,9 @@ describe('generateConversationSummaryText', () => {
         'Refunded the duplicate charge.',
       ],
     })
-    const call = mockOpenAI.chat.completions.create.mock.calls[0][0] as {
-      response_format: { type: string }
+    const call = mockChat.mock.calls[0][0] as {
       messages: Array<{ role: string; content: string }>
     }
-    expect(call.response_format).toEqual({ type: 'json_object' })
     expect(call.messages.at(-1)?.content).toContain('My March invoice charged me twice.')
   })
 
@@ -332,22 +297,8 @@ describe('generateConversationSummaryText', () => {
     expect(mockGenerateEmbedding).not.toHaveBeenCalled()
   })
 
-  it('usage-logs the call under pipelineStep copilot_summary, for the Copilot usage report', async () => {
-    await generateConversationSummaryText(CONVERSATION_ID)
-
-    expect(mockWithUsageLogging).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pipelineStep: 'copilot_summary',
-        callType: 'chat_completion',
-        metadata: { conversationId: CONVERSATION_ID },
-      }),
-      expect.any(Function),
-      expect.any(Function)
-    )
-  })
-
   it('returns null when the AI client is not configured', async () => {
-    mockGetOpenAI.mockReturnValue(null as unknown as never)
+    mockConfig.openaiApiKey = undefined
 
     const result = await generateConversationSummaryText(CONVERSATION_ID)
 
@@ -361,7 +312,7 @@ describe('generateConversationSummaryText', () => {
     const result = await generateConversationSummaryText(CONVERSATION_ID)
 
     expect(result).toBeNull()
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('returns null when there is no customer-visible transcript yet', async () => {
@@ -372,34 +323,24 @@ describe('generateConversationSummaryText', () => {
     const result = await generateConversationSummaryText(CONVERSATION_ID)
 
     expect(result).toBeNull()
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
-  })
-
-  it('returns null on an invalid model response shape', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      jsonCompletion({ question: 'Only a question, no bullets' })
-    )
-
-    const result = await generateConversationSummaryText(CONVERSATION_ID)
-
-    expect(result).toBeNull()
-  })
-
-  it('returns null when the model response is not valid JSON', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue({
-      choices: [{ message: { content: 'not json at all' } }],
-    })
-
-    const result = await generateConversationSummaryText(CONVERSATION_ID)
-
-    expect(result).toBeNull()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('propagates a model-call failure instead of swallowing it (unlike the on-close path)', async () => {
-    mockOpenAI.chat.completions.create.mockRejectedValue(new Error('upstream unavailable'))
+    mockChat.mockRejectedValue(new Error('upstream unavailable'))
 
     await expect(generateConversationSummaryText(CONVERSATION_ID)).rejects.toThrow(
       'upstream unavailable'
+    )
+  })
+
+  it('propagates a schema-validation failure instead of swallowing it', async () => {
+    // With outputSchema, chat() validates and rejects on a non-conforming
+    // response (e.g. missing bullets); this on-demand path does not catch it.
+    mockChat.mockRejectedValue(new Error('response did not match schema'))
+
+    await expect(generateConversationSummaryText(CONVERSATION_ID)).rejects.toThrow(
+      'response did not match schema'
     )
   })
 })
@@ -413,12 +354,10 @@ describe('generateTicketSummaryText (unified inbox §2.9)', () => {
       ],
       hasMore: false,
     })
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      jsonCompletion({
-        question: 'CSV export broken',
-        bullets: ['Customer cannot export CSV.', 'Agent is investigating.'],
-      })
-    )
+    mockChat.mockResolvedValue({
+      question: 'CSV export broken',
+      bullets: ['Customer cannot export CSV.', 'Agent is investigating.'],
+    })
   })
 
   it('returns a question and bullets built from the ticket thread', async () => {
@@ -429,7 +368,7 @@ describe('generateTicketSummaryText (unified inbox §2.9)', () => {
       bullets: ['Customer cannot export CSV.', 'Agent is investigating.'],
     })
     expect(mockListTicketMessages).toHaveBeenCalledWith(TICKET_ID, { includeInternal: false })
-    const call = mockOpenAI.chat.completions.create.mock.calls[0][0] as {
+    const call = mockChat.mock.calls[0][0] as {
       messages: Array<{ role: string; content: string }>
     }
     expect(call.messages.at(-1)?.content).toContain('The CSV export button does nothing.')
@@ -442,22 +381,8 @@ describe('generateTicketSummaryText (unified inbox §2.9)', () => {
     expect(mockGenerateEmbedding).not.toHaveBeenCalled()
   })
 
-  it('usage-logs the call under pipelineStep copilot_summary, same as the conversation path', async () => {
-    await generateTicketSummaryText(TICKET_ID)
-
-    expect(mockWithUsageLogging).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pipelineStep: 'copilot_summary',
-        callType: 'chat_completion',
-        metadata: { ticketId: TICKET_ID },
-      }),
-      expect.any(Function),
-      expect.any(Function)
-    )
-  })
-
   it('returns null when the AI client is not configured', async () => {
-    mockGetOpenAI.mockReturnValue(null as unknown as never)
+    mockConfig.openaiApiKey = undefined
 
     const result = await generateTicketSummaryText(TICKET_ID)
 
@@ -471,22 +396,20 @@ describe('generateTicketSummaryText (unified inbox §2.9)', () => {
     const result = await generateTicketSummaryText(TICKET_ID)
 
     expect(result).toBeNull()
-    expect(mockOpenAI.chat.completions.create).not.toHaveBeenCalled()
-  })
-
-  it('returns null on an invalid model response shape', async () => {
-    mockOpenAI.chat.completions.create.mockResolvedValue(
-      jsonCompletion({ question: 'Only a question, no bullets' })
-    )
-
-    const result = await generateTicketSummaryText(TICKET_ID)
-
-    expect(result).toBeNull()
+    expect(mockChat).not.toHaveBeenCalled()
   })
 
   it('propagates a model-call failure instead of swallowing it', async () => {
-    mockOpenAI.chat.completions.create.mockRejectedValue(new Error('upstream unavailable'))
+    mockChat.mockRejectedValue(new Error('upstream unavailable'))
 
     await expect(generateTicketSummaryText(TICKET_ID)).rejects.toThrow('upstream unavailable')
+  })
+
+  it('propagates a schema-validation failure instead of swallowing it', async () => {
+    mockChat.mockRejectedValue(new Error('response did not match schema'))
+
+    await expect(generateTicketSummaryText(TICKET_ID)).rejects.toThrow(
+      'response did not match schema'
+    )
   })
 })

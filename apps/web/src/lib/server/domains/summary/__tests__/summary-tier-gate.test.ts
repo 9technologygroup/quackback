@@ -13,9 +13,20 @@ vi.mock('@/lib/server/domains/ai/usage-counter', () => ({
   aiTokensThisMonth: vi.fn(),
 }))
 
+vi.mock('@/lib/server/config', () => ({
+  config: { openaiApiKey: undefined, openaiBaseUrl: undefined },
+}))
+
 vi.mock('@/lib/server/domains/ai/config', () => ({
-  getOpenAI: vi.fn(() => null),
-  stripCodeFences: vi.fn((s: string) => s),
+  isAiClientConfigured: vi.fn(() => false),
+  structuredOutputProviderOptions: vi.fn(() => ({})),
+}))
+
+vi.mock('@tanstack/ai', () => ({
+  chat: vi.fn(),
+}))
+vi.mock('@tanstack/ai-openai/compatible', () => ({
+  openaiCompatibleText: vi.fn((...args: unknown[]) => ({ kind: 'text', args })),
 }))
 
 vi.mock('@/lib/server/domains/ai/models', () => ({
@@ -64,7 +75,7 @@ describe('generateAndSavePostSummary — token budget gate', () => {
 
   it('does not throw when budget is null (OSS unlimited)', async () => {
     vi.mocked(getTierLimits).mockResolvedValue(OSS_TIER_LIMITS)
-    // openai is null so it returns early — we only care no TierLimitError fires.
+    // AI is unconfigured so it returns early — we only care no TierLimitError fires.
     await expect(generateAndSavePostSummary('post_x' as PostId)).resolves.toBeUndefined()
   })
 

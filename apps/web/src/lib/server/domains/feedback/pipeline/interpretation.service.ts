@@ -11,20 +11,33 @@
  */
 
 import { UnrecoverableError } from 'bullmq'
+import { chat } from '@tanstack/ai'
+import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
+import { z } from 'zod'
 import { db, eq, feedbackSignals, rawFeedbackItems } from '@/lib/server/db'
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { config } from '@/lib/server/config'
+import {
+  isAiClientConfigured,
+  structuredOutputProviderOptions,
+} from '@/lib/server/domains/ai/config'
+import { createUsageLoggingMiddleware } from '@/lib/server/domains/ai/usage-middleware'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { withUsageLogging } from '@/lib/server/domains/ai/usage-log'
 import { embedSignal, findSimilarPosts, findSimilarPendingSuggestions } from './embedding.service'
 import { createPostSuggestion, createVoteSuggestion } from './suggestion.service'
 import { logPipelineEvent } from './pipeline-log'
 import { buildSuggestionPrompt } from './prompts/suggestion.prompt'
 import { logger } from '@/lib/server/logger'
-import type { SuggestionGenerationResult } from '../types'
 import type { FeedbackSignalId, RawFeedbackItemId, BoardId, PostId } from '@quackback/ids'
 
 const log = logger.child({ component: 'interpretation' })
+
+/** Result from the LLM for generating a suggested post title/body from a signal. */
+const SuggestionGenerationSchema = z.object({
+  title: z.string(),
+  body: z.string(),
+  boardId: z.string().nullable(),
+  reasoning: z.string(),
+})
 
 /** Above this threshold, the primary suggestion is vote_on_post. */
 const VOTE_SUGGESTION_THRESHOLD = 0.8
@@ -270,7 +283,7 @@ async function generateSuggestion(opts: {
   bestSimilarity?: number
   similarPosts?: Array<{ postId: string; title: string; similarity: number; voteCount: number }>
 }): Promise<void> {
-  const openai = getOpenAI()
+  const aiConfigured = isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl)
   const model = getChatModel('interpretation')
 
   // Load boards for the prompt
@@ -290,7 +303,7 @@ async function generateSuggestion(opts: {
   let boardId = (validUserBoardId ?? allBoards[0]?.id) as BoardId | undefined
   let usedFallback = true
 
-  if (openai && model) {
+  if (aiConfigured && model) {
     const prompt = buildSuggestionPrompt({
       signal: opts.signal,
       sourceContent: opts.sourceContent,
@@ -298,41 +311,31 @@ async function generateSuggestion(opts: {
     })
 
     try {
-      const completion = await withUsageLogging(
-        {
-          pipelineStep: 'suggestion',
-          callType: 'chat_completion',
-          model,
-          rawFeedbackItemId: opts.rawFeedbackItemId,
-          signalId: opts.signalId,
-          metadata: { suggestionType: opts.type },
-        },
-        () =>
-          withRetry(() =>
-            openai.chat.completions.create({
-              model,
-              messages: [{ role: 'user', content: prompt }],
-              response_format: { type: 'json_object' },
-              temperature: 0.3,
-              max_completion_tokens: 2000,
-            })
-          ),
-        (r) => ({
-          inputTokens: r.usage?.prompt_tokens ?? 0,
-          outputTokens: r.usage?.completion_tokens,
-          totalTokens: r.usage?.total_tokens ?? 0,
-        })
-      )
+      const result = await chat({
+        adapter: openaiCompatibleText(model, {
+          baseURL: config.openaiBaseUrl!,
+          apiKey: config.openaiApiKey!,
+        }),
+        messages: [{ role: 'user', content: prompt }],
+        outputSchema: SuggestionGenerationSchema,
+        stream: false,
+        modelOptions: { max_tokens: 2000, ...structuredOutputProviderOptions() },
+        middleware: [
+          createUsageLoggingMiddleware({
+            pipelineStep: 'suggestion',
+            model,
+            rawFeedbackItemId: opts.rawFeedbackItemId,
+            signalId: opts.signalId,
+            metadata: { suggestionType: opts.type },
+          }),
+        ],
+      })
 
-      const responseText = completion.choices?.[0]?.message?.content
-      if (responseText) {
-        const result: SuggestionGenerationResult = JSON.parse(stripCodeFences(responseText))
-        suggestedTitle = result.title
-        suggestedBody = result.body
-        reasoning = result.reasoning
-        boardId = (validUserBoardId ?? result.boardId) as BoardId | undefined
-        usedFallback = false
-      }
+      suggestedTitle = result.title
+      suggestedBody = result.body
+      reasoning = result.reasoning
+      boardId = (validUserBoardId ?? result.boardId ?? undefined) as BoardId | undefined
+      usedFallback = false
     } catch (err) {
       log.warn({ err }, 'llm suggestion generation failed, using fallback')
     }

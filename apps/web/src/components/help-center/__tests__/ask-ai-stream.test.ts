@@ -1,62 +1,152 @@
-import { describe, it, expect, vi } from 'vitest'
-import { streamOf } from '@/test/sse'
-import { parseAskAiSseBlock, readAskAiStream } from '../ask-ai'
+// @vitest-environment happy-dom
+/**
+ * useAskAi over the AG-UI transport: a ChatClient (fetchServerSentEvents)
+ * against a stubbed fetch. Pins the chunk→state mapping — STATE_SNAPSHOT
+ * sources feed the citation join, TEXT_MESSAGE_CONTENT raw-JSON deltas stream
+ * the `answer` prose, RUN_FINISHED.result settles done/no-answer by kind, and
+ * RUN_ERROR / a transport failure settle the error state.
+ */
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { renderHook, act } from '@testing-library/react'
+import { aguiRun, aguiErrorRun, structuredDeltas, stubAguiFetch } from '@/test/agui'
+import { useAskAi, type AskAiSourceMeta } from '../ask-ai'
 
-describe('parseAskAiSseBlock', () => {
-  it('parses event and JSON data lines', () => {
-    const parsed = parseAskAiSseBlock('event: kb-ask.v1.delta\ndata: {"text":"hi"}')
-    expect(parsed).toEqual({ event: 'kb-ask.v1.delta', data: { text: 'hi' } })
-  })
-
-  it('returns null for comments and malformed blocks', () => {
-    expect(parseAskAiSseBlock(': ping')).toBeNull()
-    expect(parseAskAiSseBlock('event: x\ndata: {broken')).toBeNull()
-  })
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
-describe('readAskAiStream', () => {
-  it('dispatches versioned events across chunk boundaries', async () => {
-    const sources = [
-      {
-        articleId: 'kb_article_1',
-        title: 'T',
-        slug: 's',
-        categorySlug: 'c',
-        categoryName: 'C',
-      },
-    ]
-    const frames =
-      `event: kb-ask.v1.sources\ndata: ${JSON.stringify({ sources })}\n\n` +
-      `event: kb-ask.v1.delta\ndata: {"text":"Hello "}\n\n` +
-      `event: kb-ask.v1.delta\ndata: {"text":"world"}\n\n` +
-      `event: kb-ask.v1.final\ndata: {"answer":"Hello world","sources":[{"articleId":"kb_article_1"}]}\n\n`
-    // Split at awkward boundaries to prove buffering works.
-    const chunks = [frames.slice(0, 25), frames.slice(25, 90), frames.slice(90)]
+const META: AskAiSourceMeta = {
+  articleId: 'kb_article_1',
+  title: 'Refund policy',
+  slug: 'refund-policy',
+  categorySlug: 'billing',
+  categoryName: 'Billing',
+}
 
-    const onSources = vi.fn()
-    const onDelta = vi.fn()
-    const onFinal = vi.fn()
+const snapshotChunk = (sources: AskAiSourceMeta[]) => ({
+  type: 'STATE_SNAPSHOT',
+  snapshot: { sources },
+})
 
-    await readAskAiStream(streamOf(chunks), { onSources, onDelta, onFinal })
-
-    expect(onSources).toHaveBeenCalledWith(sources)
-    expect(onDelta.mock.calls.map((c) => c[0]).join('')).toBe('Hello world')
-    expect(onFinal).toHaveBeenCalledWith({
-      answer: 'Hello world',
+describe('useAskAi', () => {
+  it('maps a grounded run: snapshot sources, streamed prose, cited final', async () => {
+    const answer = {
+      kind: 'grounded',
+      answer: 'Do the thing.',
       sources: [{ articleId: 'kb_article_1' }],
+    }
+    stubAguiFetch(
+      aguiRun({
+        middle: [snapshotChunk([META]), ...structuredDeltas(answer)],
+        result: answer,
+      })
+    )
+
+    const { result } = renderHook(() => useAskAi())
+    await act(async () => {
+      await result.current.ask('how do I get a refund?')
+    })
+
+    expect(result.current.state).toMatchObject({
+      status: 'done',
+      question: 'how do I get a refund?',
+      kind: 'grounded',
+      answer: 'Do the thing.',
+      citedSources: [META],
+      related: [],
     })
   })
 
-  it('dispatches error events and ignores unknown ones', async () => {
-    const frames =
-      `event: kb-ask.v2.something-new\ndata: {}\n\n` +
-      `event: kb-ask.v1.error\ndata: {"code":"SYNTHESIS_FAILED","message":"x"}\n\n`
-    const onError = vi.fn()
-    const onFinal = vi.fn()
+  it('drops a cited articleId with no snapshot metadata', async () => {
+    const answer = {
+      kind: 'grounded',
+      answer: 'A.',
+      // The model cited an id that never appeared in the snapshot join.
+      sources: [{ articleId: 'kb_article_1' }, { articleId: 'kb_ghost' }],
+    }
+    stubAguiFetch(
+      aguiRun({ middle: [snapshotChunk([META]), ...structuredDeltas(answer)], result: answer })
+    )
 
-    await readAskAiStream(streamOf([frames]), { onError, onFinal })
+    const { result } = renderHook(() => useAskAi())
+    await act(async () => {
+      await result.current.ask('q')
+    })
 
-    expect(onError).toHaveBeenCalledWith('SYNTHESIS_FAILED')
-    expect(onFinal).not.toHaveBeenCalled()
+    expect(result.current.state.citedSources).toEqual([META])
+  })
+
+  it('maps a no_answer run to a done miss with related suggestions', async () => {
+    const answer = { kind: 'no_answer', answer: 'I could not find that.', sources: [] }
+    const resultPayload = {
+      kind: 'no_answer',
+      answer: 'I could not find that.',
+      sources: [],
+      related: [META],
+    }
+    stubAguiFetch(aguiRun({ middle: structuredDeltas(answer), result: resultPayload }))
+
+    const { result } = renderHook(() => useAskAi())
+    await act(async () => {
+      await result.current.ask('nearby topic')
+    })
+
+    expect(result.current.state).toMatchObject({
+      status: 'done',
+      kind: 'no_answer',
+      answer: 'I could not find that.',
+      citedSources: [],
+      related: [META],
+    })
+  })
+
+  it('settles the error state on a RUN_ERROR frame', async () => {
+    stubAguiFetch(aguiErrorRun({ code: 'SYNTHESIS_FAILED', message: 'Answer generation failed' }))
+
+    const { result } = renderHook(() => useAskAi())
+    await act(async () => {
+      await result.current.ask('q')
+    })
+
+    expect(result.current.state.status).toBe('error')
+  })
+
+  it('settles the error state on a non-2xx transport failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: { code: 'RATE_LIMITED', message: 'Slow down' } }), {
+            status: 429,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        )
+      )
+    )
+
+    const { result } = renderHook(() => useAskAi())
+    await act(async () => {
+      await result.current.ask('q')
+    })
+
+    expect(result.current.state.status).toBe('error')
+  })
+
+  it('reset returns the hook to idle', async () => {
+    const answer = { kind: 'grounded', answer: 'A.', sources: [{ articleId: 'kb_article_1' }] }
+    stubAguiFetch(
+      aguiRun({ middle: [snapshotChunk([META]), ...structuredDeltas(answer)], result: answer })
+    )
+
+    const { result } = renderHook(() => useAskAi())
+    await act(async () => {
+      await result.current.ask('q')
+    })
+    expect(result.current.state.status).toBe('done')
+
+    act(() => {
+      result.current.reset()
+    })
+    expect(result.current.state.status).toBe('idle')
   })
 })

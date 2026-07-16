@@ -143,7 +143,7 @@ export async function retrieveTicketSummaries(
   const minScore = options.minScore ?? TICKETS_SEMANTIC_SIMILARITY_FLOOR
 
   const embedding = await generateEmbedding(query, {
-    pipelineStep: 'assistant_tickets_retrieval_query_embedding',
+    pipelineStep: 'assistant_tickets_query',
   })
 
   const rows = embedding
