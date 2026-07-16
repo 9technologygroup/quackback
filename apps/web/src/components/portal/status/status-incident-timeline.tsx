@@ -63,7 +63,7 @@ export function StatusIncidentTimeline({
                 {intl.formatMessage(LIFECYCLE_LABEL[update.status])}
               </span>
               <span className="min-w-0 flex-1 text-muted-foreground">{update.body}</span>
-              <span className="shrink-0 whitespace-nowrap text-[11.5px] text-muted-foreground/70">
+              <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground/70">
                 {formatTimestamp(update.createdAt, true)}
               </span>
             </div>
@@ -74,26 +74,26 @@ export function StatusIncidentTimeline({
   }
 
   return (
-    <div className={cn('border-t border-border/40', className)}>
-      {sorted.map((update) => {
+    <div className={className}>
+      {sorted.map((update, index) => {
         const style = LIFECYCLE_STYLE[update.status]
+        const isLast = index === sorted.length - 1
         return (
-          <div key={update.id} className="flex gap-3.5 border-b border-border/40 py-5">
-            <div className="flex flex-col items-center pt-0.5">
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted">
-                <span className={cn('h-2 w-2 rounded-full', style.dot)} />
-              </span>
+          <div key={update.id} className="flex gap-3.5">
+            <div className="flex flex-col items-center">
+              <span className={cn('mt-1.5 h-2 w-2 shrink-0 rounded-full', style.dot)} />
+              {!isLast && <span className="mt-1.5 w-px flex-1 bg-border/60" />}
             </div>
-            <div className="min-w-0 flex-1">
+            <div className={cn('min-w-0 flex-1', !isLast && 'pb-6')}>
               <div className="flex flex-wrap items-baseline gap-2.5">
-                <span className={cn('text-[13px] font-bold', style.text)}>
+                <span className={cn('text-[13px] font-semibold', style.text)}>
                   {intl.formatMessage(LIFECYCLE_LABEL[update.status])}
                 </span>
                 <span className="text-xs text-muted-foreground">
                   {formatTimestamp(update.createdAt, false)}
                 </span>
               </div>
-              <p className="mt-1.5 max-w-[72ch] text-[14.5px] text-foreground/90">{update.body}</p>
+              <p className="mt-1 max-w-[72ch] text-sm text-foreground/90">{update.body}</p>
             </div>
           </div>
         )

@@ -150,26 +150,16 @@ function StatusPage() {
         className="mb-6"
       />
 
-      <StatusHero
-        status={snapshot.topLevel.status}
-        activeIncidentCount={snapshot.topLevel.activeIncidentCount}
-        lastUpdatedAt={lastUpdatedAt}
-      />
-
-      {snapshot.activeIncidents.length > 0 && (
-        <section className="mt-8">
-          <h2 className="mb-2.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-            <FormattedMessage
-              id="portal.status.section.activeIncidents"
-              defaultMessage="Active incidents"
-            />
-          </h2>
-          <div className="flex flex-col gap-2.5">
-            {snapshot.activeIncidents.map((incident) => (
-              <StatusIncidentCard key={incident.id} incident={incident} />
-            ))}
-          </div>
-        </section>
+      {/* Statuspage convention: when something is active, the incident itself
+          is the banner — no separate summary banner restating the outage. */}
+      {snapshot.activeIncidents.length === 0 ? (
+        <StatusHero status={snapshot.topLevel.status} lastUpdatedAt={lastUpdatedAt} />
+      ) : (
+        <div className="flex flex-col gap-3">
+          {snapshot.activeIncidents.map((incident) => (
+            <StatusIncidentCard key={incident.id} incident={incident} />
+          ))}
+        </div>
       )}
 
       <section className="mt-8">
@@ -194,25 +184,25 @@ function StatusPage() {
               defaultMessage="Scheduled maintenance"
             />
           </h2>
-          <div className="overflow-hidden rounded-2xl border border-border/50 bg-card shadow-xs">
+          <div className="overflow-hidden rounded-lg border border-border/50 bg-card shadow-xs">
             <div className="divide-y divide-border/40">
               {snapshot.upcomingMaintenance.map((incident) => {
                 const style = LIFECYCLE_STYLE[incident.status]
                 const latestUpdate = incident.updates[incident.updates.length - 1]
                 const start = new Date(incident.scheduledStartAt ?? incident.startedAt)
                 return (
-                  <div key={incident.id} className="flex gap-3.5 p-4 sm:p-[18px]">
-                    <div className="w-11 shrink-0 overflow-hidden rounded-lg border border-border/60 text-center">
-                      <div className="bg-blue-500/15 py-0.5 text-xs font-bold tracking-wide text-blue-600 uppercase dark:text-blue-400">
+                  <div key={incident.id} className="flex gap-3.5 p-4 sm:p-5">
+                    <div className="w-11 shrink-0 overflow-hidden rounded-md border border-border/60 text-center">
+                      <div className="bg-blue-500/15 py-0.5 text-[11px] font-semibold tracking-wide text-blue-600 uppercase dark:text-blue-400">
                         {start.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' })}
                       </div>
-                      <div className="py-0.5 text-base font-bold">
+                      <div className="py-0.5 text-sm font-semibold">
                         {start.toLocaleDateString('en-US', { day: 'numeric', timeZone: 'UTC' })}
                       </div>
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-[14.5px] font-semibold">
+                        <h3 className="text-sm font-semibold">
                           <Link
                             to="/status/$incidentId"
                             params={{ incidentId: incident.id }}
@@ -290,7 +280,7 @@ function StatusPage() {
                 <div className="flex flex-col gap-3.5">
                   {day.incidents.map((incident) => (
                     <div key={incident.id}>
-                      <h4 className="text-[14.5px] font-semibold">
+                      <h4 className="text-sm font-semibold">
                         <Link
                           to="/status/$incidentId"
                           params={{ incidentId: incident.id }}
@@ -324,7 +314,7 @@ function StatusPage() {
                     timeZone: 'UTC',
                   })}
                 </p>
-                <h4 className="text-[14.5px] font-semibold">
+                <h4 className="text-sm font-semibold">
                   <Link
                     to="/status/$incidentId"
                     params={{ incidentId: incident.id }}

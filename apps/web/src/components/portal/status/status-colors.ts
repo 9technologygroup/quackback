@@ -22,7 +22,10 @@ export interface StatusColorStyle {
   text: string
   /** Tailwind class for a soft background chip (`bg-*-500/10`). */
   soft: string
-  /** Raw hex, for inline styles (hero banner background, border-left color, native title tooltips). */
+  /** Tailwind class for a solid banner surface (`bg-*-600`) that carries
+   *  white text — the Statuspage-style status/incident header bar. */
+  solid: string
+  /** Raw hex, for the admin palette (`status-admin-colors.ts`) and inline styles. */
   hex: string
 }
 
@@ -35,36 +38,42 @@ const emerald: StatusColorStyle = {
   dot: 'bg-emerald-500',
   text: 'text-emerald-600 dark:text-emerald-400',
   soft: 'bg-emerald-500/10',
+  solid: 'bg-emerald-600',
   hex: '#10b981',
 }
 const amber: StatusColorStyle = {
   dot: 'bg-amber-500',
   text: 'text-amber-600 dark:text-amber-400',
   soft: 'bg-amber-500/10',
+  solid: 'bg-amber-600',
   hex: '#f59e0b',
 }
 const orange: StatusColorStyle = {
   dot: 'bg-orange-500',
   text: 'text-orange-600 dark:text-orange-400',
   soft: 'bg-orange-500/10',
+  solid: 'bg-orange-600',
   hex: '#f97316',
 }
 const red: StatusColorStyle = {
   dot: 'bg-red-500',
   text: 'text-red-600 dark:text-red-400',
   soft: 'bg-red-500/10',
+  solid: 'bg-red-600',
   hex: '#ef4444',
 }
 const blue: StatusColorStyle = {
   dot: 'bg-blue-500',
   text: 'text-blue-600 dark:text-blue-400',
   soft: 'bg-blue-500/10',
+  solid: 'bg-blue-600',
   hex: '#3b82f6',
 }
 const gray: StatusColorStyle = {
   dot: 'bg-muted-foreground/50',
   text: 'text-muted-foreground',
   soft: 'bg-muted/60',
+  solid: 'bg-slate-600',
   hex: '#94a3b8',
 }
 

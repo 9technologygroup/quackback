@@ -40,7 +40,7 @@ export function StatusUptimeBar({ days, className }: StatusUptimeBarProps) {
 
   return (
     <div className={cn('flex min-w-0 flex-col gap-1.5', className)}>
-      <div className="flex h-8 items-stretch gap-px">
+      <div className="flex h-7 items-stretch gap-px sm:gap-0.5">
         {days.map((day) => {
           const style = COMPONENT_STATUS_STYLE[day.worstStatus]
           const label = intl.formatMessage(COMPONENT_STATUS_LABEL[day.worstStatus])

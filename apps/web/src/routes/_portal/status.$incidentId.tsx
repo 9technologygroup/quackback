@@ -1,6 +1,7 @@
 import { createFileRoute, notFound } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { FormattedMessage, useIntl } from 'react-intl'
+import { cn } from '@/lib/shared/utils'
 import { publicStatusIncidentQueries } from '@/lib/client/queries/status'
 import {
   StatusIncidentTimeline,
@@ -73,18 +74,25 @@ function StatusIncidentPage() {
           <FormattedMessage id="portal.status.incidentDetail.backLink" defaultMessage="Status" />
         </BackLink>
 
-        <h1 className="text-[28px] font-bold leading-tight tracking-tight">{incident.title}</h1>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="min-w-0 text-2xl font-bold leading-tight tracking-tight">
+            {incident.title}
+          </h1>
+          <StatusSubscribeButton />
+        </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2.5">
           <span
-            className="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium"
-            style={{ backgroundColor: `${impactStyle.hex}26`, color: impactStyle.hex }}
+            className={cn(
+              'inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium',
+              impactStyle.soft,
+              impactStyle.text
+            )}
           >
             {intl.formatMessage(IMPACT_LABEL[incident.impact])}
           </span>
           <span
-            className="text-[11px] font-semibold tracking-wide uppercase"
-            style={{ color: lifecycleStyle.hex }}
+            className={cn('text-[11px] font-semibold tracking-wide uppercase', lifecycleStyle.text)}
           >
             {intl.formatMessage(LIFECYCLE_LABEL[incident.status])}
           </span>
@@ -126,11 +134,10 @@ function StatusIncidentPage() {
           </div>
         )}
 
-        <div className="mt-5">
-          <StatusSubscribeButton />
-        </div>
-
-        <StatusIncidentTimeline updates={incident.updates} className="mt-7" />
+        <h2 className="mt-8 mb-3 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <FormattedMessage id="portal.status.incidentDetail.updates" defaultMessage="Updates" />
+        </h2>
+        <StatusIncidentTimeline updates={incident.updates} />
       </div>
     </div>
   )

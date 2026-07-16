@@ -20,21 +20,16 @@ const HERO_ICON: Record<StatusComponentStatus, typeof CheckCircleIcon> = {
 
 interface StatusHeroProps {
   status: StatusComponentStatus
-  activeIncidentCount: number
   /** Most recent update timestamp across active incidents/maintenance, ISO
    *  string. Null when there's nothing active — the "Updated" line is hidden. */
   lastUpdatedAt: string | null
   className?: string
 }
 
-/** The top banner: colored by the page's worst-of-visible-components status,
- *  with the fixed headline copy from the approved mockup. */
-export function StatusHero({
-  status,
-  activeIncidentCount,
-  lastUpdatedAt,
-  className,
-}: StatusHeroProps) {
+/** The top banner: a solid Statuspage-style bar colored by the page's
+ *  worst-of-visible-components status. Only shown when no incident is active
+ *  — an active incident renders its own banner card instead. */
+export function StatusHero({ status, lastUpdatedAt, className }: StatusHeroProps) {
   const intl = useIntl()
   const Icon = HERO_ICON[status]
   const style = COMPONENT_STATUS_STYLE[status]
@@ -42,39 +37,23 @@ export function StatusHero({
 
   return (
     <div
-      className={cn('flex items-center gap-3.5 rounded-2xl px-5 py-4 text-white', className)}
-      style={{ backgroundColor: style.hex }}
+      className={cn(
+        'flex items-center gap-3 rounded-lg px-4 py-3.5 text-white',
+        style.solid,
+        className
+      )}
     >
-      <div className="flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full bg-white/20">
-        <Icon className="h-5 w-5" />
-      </div>
-      <div className="min-w-0">
-        <h2 className="text-[17px] font-semibold tracking-tight">{headline}</h2>
-        {(activeIncidentCount > 0 || lastUpdatedAt) && (
-          <div className="mt-0.5 text-xs opacity-85">
-            {activeIncidentCount > 0 && (
-              <span>
-                {intl.formatMessage(
-                  {
-                    id: 'portal.status.hero.activeIncidentCount',
-                    defaultMessage:
-                      '{count, plural, one {# active incident} other {# active incidents}}',
-                  },
-                  { count: activeIncidentCount }
-                )}
-              </span>
-            )}
-            {activeIncidentCount > 0 && lastUpdatedAt && <span> · </span>}
-            {lastUpdatedAt && (
-              <span>
-                <FormattedMessage
-                  id="portal.status.hero.updated"
-                  defaultMessage="Updated {time}"
-                  values={{ time: <TimeAgo date={lastUpdatedAt} className="inline" /> }}
-                />
-              </span>
-            )}
-          </div>
+      <Icon className="h-5 w-5 shrink-0" />
+      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <h2 className="text-[15px] font-semibold tracking-tight">{headline}</h2>
+        {lastUpdatedAt && (
+          <span className="text-xs text-white/80">
+            <FormattedMessage
+              id="portal.status.hero.updated"
+              defaultMessage="Updated {time}"
+              values={{ time: <TimeAgo date={lastUpdatedAt} className="inline" /> }}
+            />
+          </span>
         )}
       </div>
     </div>
