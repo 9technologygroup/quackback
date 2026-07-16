@@ -36,8 +36,21 @@ export function writeTranscript(t: Transcript): string {
   return file
 }
 
-/** Append one line to the run summary table. */
+let summaryStarted = false
+
+/** Append one line to the run summary table. The first append of the process
+ *  TRUNCATES the file and stamps a run header: a summary describes ONE run —
+ *  lines surviving from a previous run read as current results and send the
+ *  reader chasing failures that no longer exist (transcript JSONs, by
+ *  contrast, are deliberately kept as per-scenario history). A partial run
+ *  (vitest -t) therefore lists only what it actually ran. */
 export function appendSummary(line: string): void {
   ensureDir()
-  appendFileSync(path.join(resultsDir, 'summary.txt'), line + '\n')
+  const file = path.join(resultsDir, 'summary.txt')
+  if (!summaryStarted) {
+    summaryStarted = true
+    writeFileSync(file, `# eval run ${new Date().toISOString()}\n${line}\n`)
+    return
+  }
+  appendFileSync(file, line + '\n')
 }

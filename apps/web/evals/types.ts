@@ -86,6 +86,24 @@ export interface SeedStatusIncident {
   incidentTitle: string
 }
 
+/** A feedback board so `capture_feedback` has a catalogued target: the runtime
+ *  injects a live board catalogue beside the tool (prompt-catalogues.ts) and
+ *  drops the tool entirely when no boards exist. */
+export interface SeedBoard {
+  name: string
+  description?: string | null
+}
+
+/** A published feedback post on a public board (with a real embedding), the
+ *  grounding for share_post scenarios. */
+export interface SeedFeedbackPost {
+  title: string
+  content: string
+  /** Optional post status (e.g. 'Planned') — the roadmap-state signal the
+   *  posts source folds into each search snippet. */
+  statusName?: string
+}
+
 /** A conversation-attribute definition so `set_attribute` has a valid target. */
 export interface SeedAttribute {
   key: string
@@ -147,6 +165,13 @@ export interface Fixtures {
   attributes?: SeedAttribute[]
   /** Custom-action definitions (Phase 5): registered per assignment + flag. */
   customActions?: SeedCustomAction[]
+  /** Feedback boards for the capture_feedback catalogue. */
+  boards?: SeedBoard[]
+  /** Published feedback posts (public board + embedding) for share_post. */
+  feedbackPosts?: SeedFeedbackPost[]
+  /** Customer messages inserted into the seeded conversation, so grounding
+   *  rules have transcript evidence to act on (implies `withConversation`). */
+  conversationMessages?: string[]
   /**
    * Seed a real conversation + open involvement so a live write turn can
    * execute (scenario 21) or propose (scenario 22) against it. The turn is run
@@ -174,6 +199,8 @@ export type Structural =
   /** No citation of this source type (a boundary/leak-gate assertion). */
   | { type: 'excludesCitationType'; citationType: AssistantCitationType }
   | { type: 'handoff'; reasonOneOf?: string[] }
+  /** The turn must NOT escalate — the over-eager-handoff gate. */
+  | { type: 'noHandoff' }
   | { type: 'inability'; reasonOneOf?: string[] }
   | { type: 'internalSourced'; value: boolean }
   | { type: 'noWrites' }

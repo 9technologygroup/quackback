@@ -12,6 +12,15 @@ const BILLING_ARTICLE = {
     'Changes apply to your next invoice. You can also update your billing email from the same screen.',
 }
 
+const DOUBLE_CHARGE_ARTICLE = {
+  title: 'Duplicate or double charges',
+  content:
+    'If you see two charges in the same month, one is usually a pending authorization that drops off ' +
+    'within 3-5 business days. If both charges settle, we refund the duplicate: open Settings, then ' +
+    'Billing, then Invoices, and use "Report a problem" on the duplicate invoice. Refunds are issued ' +
+    'to the original payment method within 5-10 business days.',
+}
+
 const REFUND_GUIDANCE: SeedGuidance = {
   name: 'Mention the money-back guarantee on refund questions',
   appliesWhen: 'The customer is asking about refunds, cancellations, or getting their money back.',
@@ -27,6 +36,9 @@ export const voiceScenarios: Scenario[] = [
     kind: 'contrast',
     roles: ['customer_support'],
     surface: 'widget',
+    // Grounding gives the reply substance: without it both variants collapse
+    // into the same one-line honest miss and there is no room for tone to show.
+    fixtures: { kbArticles: [DOUBLE_CHARGE_ARTICLE] },
     prompt: 'I was charged twice this month and I am pretty upset about it. What can you do?',
     variants: [
       { label: 'warm', config: { tone: 'warm' } },
@@ -40,6 +52,9 @@ export const voiceScenarios: Scenario[] = [
     kind: 'contrast',
     roles: ['customer_support'],
     surface: 'widget',
+    // Same reasoning as 15: an ungrounded "I could not find that" is one
+    // sentence under EVERY length preset, so the contrast cannot exist.
+    fixtures: { kbArticles: [BILLING_ARTICLE] },
     prompt: 'How do I change the credit card on my account?',
     variants: [
       { label: 'brief', config: { responseLength: 'brief' } },
@@ -67,6 +82,11 @@ export const voiceScenarios: Scenario[] = [
   {
     id: '18',
     title: 'Guidance rule fires when its condition matches',
+    // Judgment-variance scenario: whether the reply visibly reflects the
+    // guidance wording flips run to run; 2-of-3 separates "guidance ignored"
+    // from phrasing luck.
+    repeats: 3,
+    stabilityThreshold: 2 / 3,
     roles: ['customer_support'],
     surface: 'widget',
     fixtures: { guidance: [REFUND_GUIDANCE] },

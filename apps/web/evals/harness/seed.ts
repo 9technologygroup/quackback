@@ -13,6 +13,7 @@
 import {
   createId,
   type ConversationId,
+  type PostStatusId,
   type PrincipalId,
   type AssistantInvolvementId,
 } from '@quackback/ids'
@@ -34,6 +35,10 @@ import {
   statusComponents,
   statusIncidents,
   statusIncidentComponents,
+  boards,
+  conversationMessages,
+  posts,
+  postStatuses,
 } from '@/lib/server/db'
 import { testDb } from '@/lib/server/__tests__/db-test-fixture'
 import { DEFAULT_ASSISTANT_CONFIG, type AssistantConfig } from '@/lib/shared/assistant/config'
@@ -46,6 +51,8 @@ import {
 import { generateEmbedding } from '@/lib/server/domains/embeddings/embedding.service'
 import { getEmbeddingModel } from '@/lib/server/domains/ai/models'
 import type {
+  SeedBoard,
+  SeedFeedbackPost,
   Fixtures,
   ScenarioConfig,
   SeedChangelogEntry,
@@ -327,6 +334,91 @@ export async function seedCustomAction(action: SeedCustomAction): Promise<void> 
   )
 }
 
+export async function seedBoard(board: SeedBoard): Promise<string> {
+  const boardId = createId('board')
+  await testDb.insert(boards).values({
+    id: boardId,
+    slug: `eval-board-${suffix()}`,
+    name: board.name,
+    description: board.description ?? null,
+  })
+  return boardId
+}
+
+/** A published feedback post (with a real embedding) on a PUBLIC board, so
+ *  the posts knowledge source can retrieve it at the customer ceiling — the
+ *  grounding for share_post scenarios. */
+export async function seedFeedbackPost(
+  authorPrincipalId: PrincipalId,
+  post: SeedFeedbackPost
+): Promise<string> {
+  const boardId = createId('board')
+  await testDb.insert(boards).values({
+    id: boardId,
+    slug: `eval-board-${suffix()}`,
+    name: 'Eval Feature Requests',
+    // The posts source only surfaces boards whose view access is anonymous
+    // (public) on a customer-ceiling turn.
+    access: {
+      view: 'anonymous',
+      vote: 'authenticated',
+      comment: 'authenticated',
+      submit: 'authenticated',
+    } as never,
+  })
+  let statusId: PostStatusId | null = null
+  if (post.statusName) {
+    statusId = createId('post_status')
+    await testDb.insert(postStatuses).values({
+      id: statusId,
+      name: post.statusName,
+      slug: `eval-status-${suffix()}`,
+    })
+  }
+  const postId = createId('post')
+  await testDb.insert(posts).values({
+    id: postId,
+    boardId,
+    title: post.title,
+    content: post.content,
+    principalId: authorPrincipalId,
+    moderationState: 'published',
+    ...(statusId ? { statusId } : {}),
+  })
+  const embedding = await generateEmbedding(`${post.title}\n\n${post.content}`, {
+    pipelineStep: 'eval_seed',
+  })
+  if (!embedding) {
+    throw new Error(
+      '[evals] Embedding generation returned null while seeding a feedback post. ' +
+        'Check OPENAI_API_KEY/OPENAI_BASE_URL and AI_EMBEDDING_MODEL.'
+    )
+  }
+  await testDb
+    .update(posts)
+    .set({
+      embedding: sql`${`[${embedding.join(',')}]`}::vector`,
+      embeddingModel: getEmbeddingModel() ?? 'unknown',
+      embeddingUpdatedAt: new Date(),
+    })
+    .where(eq(posts.id, postId))
+  return postId
+}
+
+/** A customer message in the seeded conversation, so transcript-grounded rules
+ *  (capture only what the customer actually asked for) have real evidence. */
+export async function seedConversationMessage(
+  conversation: SeededConversation,
+  content: string
+): Promise<void> {
+  await testDb.insert(conversationMessages).values({
+    conversationId: conversation.conversationId,
+    principalId: conversation.customerPrincipalId,
+    senderType: 'visitor',
+    content,
+  })
+}
+
 export async function seedAttribute(attr: {
   key: string
   label: string
@@ -419,6 +511,12 @@ export async function seedFixtures(
   for (const action of fixtures?.customActions ?? []) {
     await seedCustomAction(action)
   }
+  for (const board of fixtures?.boards ?? []) {
+    await seedBoard(board)
+  }
+  for (const post of fixtures?.feedbackPosts ?? []) {
+    await seedFeedbackPost(assistantPrincipalId, post)
+  }
 
   // Conversation seeding is opt-in per scenario. A real conversationId engages
   // the runtime's conversation-scoped machinery (the zero-tool completion
@@ -428,6 +526,13 @@ export async function seedFixtures(
   // the admin Test agent uses — which keeps them off the (model-dependent)
   // zero-tool evaluator.
   const conversation =
-    fixtures?.withConversation || opts.forceConversation ? await seedConversation() : undefined
+    fixtures?.withConversation || fixtures?.conversationMessages?.length || opts.forceConversation
+      ? await seedConversation()
+      : undefined
+  if (conversation) {
+    for (const content of fixtures?.conversationMessages ?? []) {
+      await seedConversationMessage(conversation, content)
+    }
+  }
   return { assistantPrincipalId, conversation }
 }

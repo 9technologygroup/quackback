@@ -32,7 +32,7 @@ export interface ToolsetCapture {
 export type Capture = TurnCapture | ToolsetCapture
 
 function searchCallCount(outcomes: AssistantToolOutcome[]): number {
-  return outcomes.filter((o) => o.name === 'search_knowledge').length
+  return outcomes.filter((o) => o.name === 'search').length
 }
 
 function gradeOne(a: Structural, cap: Capture): string | null {
@@ -108,6 +108,10 @@ function gradeOne(a: Structural, cap: Capture): string | null {
         return `expected handoff reason ∈ [${a.reasonOneOf.join(', ')}], got "${cap.handoffReason}"`
       }
       return null
+    }
+    case 'noHandoff': {
+      const escalated = 'escalation' in result && result.escalation != null
+      return escalated ? `expected no handoff, got one (reason "${cap.handoffReason}")` : null
     }
     case 'inability': {
       if (result.status !== 'cannot_answer') {

@@ -138,6 +138,38 @@ export const knowledgeScenarios: Scenario[] = [
       // Grounded by the tool result (the live incident), not retrieval — the
       // model must call get_status rather than search the knowledge base.
       { type: 'calledTool', name: 'get_status' },
+      // get_status returns no citable ids: a citation here is by definition
+      // fabricated (the exact live failure that used to trip the completion
+      // gate into a customer-visible retry).
+      { type: 'noCitations' },
+    ],
+  },
+  {
+    id: '38',
+    title:
+      'Status freshness — copilot ignores a stale "all operational" transcript claim and calls get_status',
+    roles: ['copilot_qa'],
+    config: { knowledge: { copilot: { status: true } } },
+    fixtures: {
+      withConversation: true,
+      // The bait: the transcript asserts everything is fine. Live state says
+      // otherwise; the prompt pins status answers to a THIS-turn get_status
+      // call, so answering from the transcript (the observed hallucination
+      // mode) fails the calledTool assertion.
+      conversationMessages: [
+        'I checked your status page this morning and everything showed operational, but my dashboard feels slow.',
+      ],
+      statusIncident: {
+        componentName: 'Website',
+        componentStatus: 'degraded_performance',
+        incidentTitle: 'Elevated latency',
+      },
+    },
+    prompt: 'Is the site actually having issues right now?',
+    structural: [
+      { type: 'status', oneOf: ['answered'] },
+      { type: 'calledTool', name: 'get_status' },
+      { type: 'noCitations' },
     ],
   },
   {
