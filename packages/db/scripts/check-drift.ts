@@ -126,20 +126,75 @@ const EXEMPTIONS: { reason: string; pattern: RegExp }[] = [
       /^ALTER TABLE "invitation" ALTER COLUMN "magic_link_tokens" SET DEFAULT '\{\}'::text\[\];?$/,
   },
   {
-    // 0139 adds a GIN pg_trgm index for the inbox message-content ILIKE search;
-    // drizzle-kit cannot express the gin_trgm_ops operator class, so it reads the
-    // index as undeclared and wants to drop it. The migration owns this DDL.
+    // GIN pg_trgm index for the inbox message-content ILIKE search (0139,
+    // narrowed to partial in 0209). It is declared in TS, but drizzle-kit cannot
+    // introspect the gin_trgm_ops opclass, so it reads the index as absent and
+    // wants to create it. The migration owns the real DDL.
     reason:
-      'pg_trgm GIN index for inbox content search; gin_trgm_ops opclass is not expressible in TS',
+      'pg_trgm GIN index for inbox content search; gin_trgm_ops opclass is not introspectable, so drizzle-kit re-emits the CREATE',
+    pattern:
+      /^CREATE INDEX "conversation_messages_content_trgm_idx" ON "conversation_messages" USING gin /,
+  },
+  {
+    // Drop half of the spurious pair for the same partial gin_trgm index.
+    reason:
+      'pg_trgm GIN index for inbox content search; drizzle-kit cannot round-trip the partial gin_trgm index, so it re-emits the DROP',
     pattern: /^DROP INDEX "conversation_messages_content_trgm_idx"/,
   },
   {
-    // 0139 adds a GIN pg_trgm index on principal.display_name for the inbox
-    // visitor-name ILIKE search. Same gin_trgm_ops limitation; the principal
-    // schema is not extended for it, so the index stays SQL-only.
+    // GIN pg_trgm index on principal.display_name for the inbox visitor-name
+    // ILIKE search (0139, narrowed to partial in 0209). Same gin_trgm_ops
+    // introspection limitation as above.
     reason:
-      'pg_trgm GIN index on principal.display_name for inbox name search; gin_trgm_ops opclass is not expressible in TS',
+      'pg_trgm GIN index on principal.display_name for inbox name search; gin_trgm_ops opclass is not introspectable, so drizzle-kit re-emits the CREATE',
+    pattern: /^CREATE INDEX "principal_display_name_trgm_idx" ON "principal" USING gin /,
+  },
+  {
+    // Drop half of the spurious pair for the same partial gin_trgm index.
+    reason:
+      'pg_trgm GIN index on principal.display_name for inbox name search; drizzle-kit cannot round-trip the partial gin_trgm index, so it re-emits the DROP',
     pattern: /^DROP INDEX "principal_display_name_trgm_idx"/,
+  },
+  {
+    // Case-insensitive unique index on lower(name) (0156). drizzle-kit cannot
+    // express a functional/expression index, so it reads the index as undeclared
+    // and wants to drop it. The plain unique on name is declared in TS separately.
+    reason: 'conversation_tags unique on lower(name) is an expression index, not expressible in TS',
+    pattern: /^DROP INDEX "conversation_tags_name_lower_key"/,
+  },
+  {
+    // HNSW cosine indexes over embedding columns (migrations 0203 + 0209).
+    // drizzle-kit cannot round-trip an hnsw partial index (vector_cosine_ops
+    // opclass + partial predicate), so it emits a spurious drop/create pair for
+    // every one. Each listed index is created by a migration, so a genuinely
+    // unmigrated hnsw index (a new, unlisted name) still fails the check.
+    reason:
+      'hnsw vector_cosine_ops partial index is not faithfully round-tripped by drizzle-kit; drop half of the spurious pair',
+    pattern:
+      /^DROP INDEX "(posts|kb_articles|feedback_signals|feedback_suggestions|assistant_snippets|conversation_summaries|ticket_summaries|changelog)_embedding_hnsw_idx"/,
+  },
+  {
+    reason:
+      'hnsw vector_cosine_ops partial index is not faithfully round-tripped by drizzle-kit; create half of the spurious pair',
+    pattern:
+      /^CREATE INDEX "(posts|kb_articles|feedback_signals|feedback_suggestions|assistant_snippets|conversation_summaries|ticket_summaries|changelog)_embedding_hnsw_idx" ON "\w+" USING hnsw /,
+  },
+  {
+    // Same empty text[] default false positive as invitation.magic_link_tokens
+    // above: '{}'::text[] reads back as '{""}', so drizzle-kit always thinks the
+    // default changed. Semantically identical. (apps, 0193.)
+    reason: 'drizzle-kit false positive: empty text[] default reads back as \'{""}\'',
+    pattern:
+      /^ALTER TABLE "apps" ALTER COLUMN "(granted_scopes|subscribed_event_types)" SET DEFAULT '\{\}';?$/,
+  },
+  {
+    // The settings.assistant_config jsonb default (0204) is byte-identical in TS,
+    // but postgres normalizes the stored jsonb literal (spacing/formatting) so
+    // drizzle-kit's introspected default never string-matches the TS default.
+    reason:
+      'drizzle-kit false positive: jsonb default is normalized by postgres and no longer string-matches TS',
+    pattern:
+      /^ALTER TABLE "settings" ALTER COLUMN "assistant_config" SET DEFAULT '\{"version":3,.*\}'::jsonb;?$/,
   },
 ]
 

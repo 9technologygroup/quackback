@@ -202,7 +202,12 @@ export const workflowVersions = pgTable(
       foreignColumns: [principal.id],
     }).onDelete('set null'),
     // The history sheet's hot read: a workflow's versions, newest first.
-    index('workflow_versions_workflow_created_idx').on(table.workflowId, table.createdAt.desc()),
+    index('workflow_versions_workflow_created_idx').on(
+      table.workflowId,
+      // Plain `DESC` in migration 0188 -> postgres default NULLS FIRST; declare
+      // it so drizzle-kit does not read a NULLS LAST mismatch.
+      table.createdAt.desc().nullsFirst()
+    ),
   ]
 )
 

@@ -160,7 +160,8 @@ export const slackChannelMonitors = pgTable(
     }).onDelete('cascade'),
     // Alphabetical for the drift check; see mapping_unique above.
     unique('slack_monitor_channel_unique').on(table.channelId, table.integrationId),
-    index('idx_slack_monitors_lookup').on(table.integrationId, table.channelId, table.enabled),
+    // idx_slack_monitors_lookup was dropped by migration 0207 as a redundant
+    // prefix of slack_monitor_channel_unique; no separate index is declared.
   ]
 )
 

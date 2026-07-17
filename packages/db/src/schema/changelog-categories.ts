@@ -15,6 +15,7 @@ import {
   uniqueIndex,
   index,
   primaryKey,
+  foreignKey,
 } from 'drizzle-orm/pg-core'
 import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn } from '@quackback/ids/drizzle'
@@ -43,15 +44,26 @@ export const changelogCategories = pgTable(
 export const changelogEntryCategories = pgTable(
   'changelog_entry_categories',
   {
-    changelogEntryId: typeIdColumn('changelog')('changelog_entry_id')
-      .notNull()
-      .references(() => changelogEntries.id, { onDelete: 'cascade' }),
-    categoryId: typeIdColumn('changelog_category')('category_id')
-      .notNull()
-      .references(() => changelogCategories.id, { onDelete: 'cascade' }),
+    changelogEntryId: typeIdColumn('changelog')('changelog_entry_id').notNull(),
+    categoryId: typeIdColumn('changelog_category')('category_id').notNull(),
   },
+  // Constraint names and composite-PK column order match migration 0158 (custom
+  // short names; drizzle-kit introspects composite PK columns alphabetically).
   (table) => [
-    primaryKey({ columns: [table.changelogEntryId, table.categoryId] }),
+    primaryKey({
+      name: 'changelog_entry_categories_pk',
+      columns: [table.categoryId, table.changelogEntryId],
+    }),
+    foreignKey({
+      name: 'changelog_entry_categories_entry_fk',
+      columns: [table.changelogEntryId],
+      foreignColumns: [changelogEntries.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'changelog_entry_categories_category_fk',
+      columns: [table.categoryId],
+      foreignColumns: [changelogCategories.id],
+    }).onDelete('cascade'),
     index('changelog_entry_categories_category_idx').on(table.categoryId),
   ]
 )

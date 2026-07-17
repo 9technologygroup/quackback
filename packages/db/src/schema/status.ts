@@ -18,6 +18,7 @@ import {
   uniqueIndex,
   jsonb,
   primaryKey,
+  foreignKey,
 } from 'drizzle-orm/pg-core'
 import { relations } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
@@ -133,6 +134,17 @@ export const statusIncidents = pgTable(
 )
 
 /** The public timeline: one row per posted update (the first is the publish body). */
+export const statusIncidentTemplates = pgTable('status_incident_templates', {
+  id: typeIdWithDefault('status_tmpl')('id').primaryKey(),
+  name: text('name').notNull(),
+  title: text('title').notNull(),
+  body: text('body').notNull(),
+  impact: text('impact').$type<StatusIncidentImpact>().default('minor').notNull(),
+  componentIds: jsonb('component_ids').$type<string[]>().notNull().default([]),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+})
+
 export const statusIncidentUpdates = pgTable(
   'status_incident_updates',
   {
@@ -148,13 +160,19 @@ export const statusIncidentUpdates = pgTable(
     }),
     // Provenance: the template this update was inserted from, if any. Nulled on
     // template delete so the row survives; usage counts derive from count(*).
-    templateId: typeIdColumnNullable('status_tmpl')('template_id').references(
-      () => statusIncidentTemplates.id,
-      { onDelete: 'set null' }
-    ),
+    templateId: typeIdColumnNullable('status_tmpl')('template_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [index('status_incident_updates_incident_idx').on(table.incidentId, table.createdAt)]
+  (table) => [
+    index('status_incident_updates_incident_idx').on(table.incidentId, table.createdAt),
+    // Named to match migration 0201's pg-truncated (63-char) constraint name;
+    // drizzle's generated name would be the untruncated 64-char form.
+    foreignKey({
+      name: 'status_incident_updates_template_id_status_incident_templates_i',
+      columns: [table.templateId],
+      foreignColumns: [statusIncidentTemplates.id],
+    }).onDelete('set null'),
+  ]
 )
 
 /** M:N incident <-> component, plus the status applied to each while open. */
@@ -170,7 +188,12 @@ export const statusIncidentComponents = pgTable(
     componentStatus: text('component_status').$type<StatusComponentStatus>().notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.incidentId, table.componentId] }),
+    // Explicit name + alphabetical column order match migration 0179 (drizzle-kit
+    // introspects composite PK columns alphabetically).
+    primaryKey({
+      name: 'status_incident_components_incident_id_component_id_pk',
+      columns: [table.componentId, table.incidentId],
+    }),
     index('status_incident_components_component_idx').on(table.componentId),
   ]
 )
@@ -193,17 +216,6 @@ export const statusSubscriptions = pgTable(
   },
   (table) => [uniqueIndex('status_subscriptions_principal_idx').on(table.principalId)]
 )
-
-export const statusIncidentTemplates = pgTable('status_incident_templates', {
-  id: typeIdWithDefault('status_tmpl')('id').primaryKey(),
-  name: text('name').notNull(),
-  title: text('title').notNull(),
-  body: text('body').notNull(),
-  impact: text('impact').$type<StatusIncidentImpact>().default('minor').notNull(),
-  componentIds: jsonb('component_ids').$type<string[]>().notNull().default([]),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-})
 
 export const statusComponentGroupsRelations = relations(statusComponentGroups, ({ many }) => ({
   components: many(statusComponents),
