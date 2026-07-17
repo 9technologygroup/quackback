@@ -56,7 +56,6 @@ export const postSubscriptions = pgTable(
     // Unique constraint: one subscription per principal per post
     uniqueIndex('post_subscriptions_unique').on(table.postId, table.principalId),
     index('post_subscriptions_principal_idx').on(table.principalId),
-    index('post_subscriptions_post_idx').on(table.postId),
     // Partial index for comment notification lookups
     index('post_subscriptions_post_comments_idx')
       .on(table.postId)
@@ -187,6 +186,11 @@ export const inAppNotifications = pgTable(
       .where(sql`read_at IS NULL AND archived_at IS NULL`),
     // Find notifications by related post
     index('in_app_notifications_post_idx').on(table.postId),
+    // FK RI lookup when a comment is deleted; partial because most
+    // notifications don't reference a comment.
+    index('in_app_notifications_comment_idx')
+      .on(table.commentId)
+      .where(sql`"comment_id" IS NOT NULL`),
   ]
 )
 

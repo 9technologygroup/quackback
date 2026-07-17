@@ -290,6 +290,11 @@ export const conversationMessages = pgTable(
     // Ticket-thread keyset pagination, mirroring the conversation index.
     index('conversation_messages_ticket_created_idx').on(table.ticketId, table.createdAt, table.id),
     index('conversation_messages_principal_idx').on(table.principalId),
+    // RI-lookup protection for principal deletion; partial because the
+    // deleted_by audit column is null on all live messages.
+    index('conversation_messages_deleted_by_principal_idx')
+      .on(table.deletedByPrincipalId)
+      .where(sql`"deleted_by_principal_id" IS NOT NULL`),
     // The `my_tone` transform's style-mining query (copilot-transform.ts's
     // fetchTeammateStyleExcerpts): principal_id + sender_type='agent' +
     // is_internal=false + deleted_at IS NULL, ordered by created_at DESC
@@ -478,7 +483,6 @@ export const conversationMessageReactions = pgTable(
       columns: [table.principalId],
       foreignColumns: [principal.id],
     }).onDelete('cascade'),
-    index('conversation_message_reactions_message_idx').on(table.conversationMessageId),
     index('conversation_message_reactions_principal_idx').on(table.principalId),
     uniqueIndex('conversation_message_reactions_unique_idx').on(
       table.conversationMessageId,

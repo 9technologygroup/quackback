@@ -45,8 +45,6 @@ export const postExternalLinks = pgTable(
       table.integrationType,
       table.postId
     ),
-    index('post_external_links_post_id_idx').on(table.postId),
-    index('post_external_links_type_external_id_idx').on(table.integrationType, table.externalId),
     index('post_external_links_post_status_idx').on(table.postId, table.status),
   ]
 )
@@ -105,7 +103,6 @@ export const ticketExternalLinks = pgTable(
       table.integrationType,
       table.ticketId
     ),
-    index('ticket_external_links_ticket_id_idx').on(table.ticketId),
     index('ticket_external_links_type_external_id_idx').on(table.integrationType, table.externalId),
     index('ticket_external_links_ticket_status_idx').on(table.ticketId, table.status),
   ]

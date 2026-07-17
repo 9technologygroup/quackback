@@ -83,7 +83,6 @@ export const changelogEntryPosts = pgTable(
       foreignColumns: [changelogEntries.id],
     }).onDelete('cascade'),
     uniqueIndex('changelog_entry_posts_pk').on(table.changelogEntryId, table.postId),
-    index('changelog_entry_posts_changelog_id_idx').on(table.changelogEntryId),
     index('changelog_entry_posts_post_id_idx').on(table.postId),
   ]
 )

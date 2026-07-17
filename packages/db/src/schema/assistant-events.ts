@@ -17,7 +17,7 @@
  * as assistant_tool_calls.
  */
 import { pgTable, text, timestamp, jsonb, index } from 'drizzle-orm/pg-core'
-import { relations } from 'drizzle-orm'
+import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumnNullable } from '@quackback/ids/drizzle'
 import { conversations } from './conversation'
 import { tickets } from './tickets'
@@ -50,6 +50,15 @@ export const assistantEvents = pgTable(
     // the daily sweep on a 180-day-capped, low-volume table doesn't warrant a
     // second index the way assistant_tool_calls' per-tool breakdown did.
     index('assistant_events_event_type_created_at_idx').on(table.eventType, table.createdAt),
+    // Per-conversation / per-ticket event feeds, plus the FK RI lookup when
+    // a conversation or ticket is deleted. Partial: most events have only
+    // one of the two set.
+    index('assistant_events_conversation_idx')
+      .on(table.conversationId)
+      .where(sql`"conversation_id" IS NOT NULL`),
+    index('assistant_events_ticket_idx')
+      .on(table.ticketId)
+      .where(sql`"ticket_id" IS NOT NULL`),
   ]
 )
 

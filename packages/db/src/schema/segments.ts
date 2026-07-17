@@ -190,7 +190,6 @@ export const userSegments = pgTable(
   },
   (table) => [
     uniqueIndex('user_segments_pk').on(table.principalId, table.segmentId),
-    index('user_segments_principal_id_idx').on(table.principalId),
     index('user_segments_segment_id_idx').on(table.segmentId),
     // DB-level backstop for the enum above, created by the SQL migration.
     check(

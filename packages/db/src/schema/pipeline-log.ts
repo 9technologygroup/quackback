@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm'
 import { pgTable, varchar, timestamp, jsonb, index, foreignKey } from 'drizzle-orm/pg-core'
 import { typeIdWithDefault, typeIdColumnNullable } from '@quackback/ids/drizzle'
 import { rawFeedbackItems, feedbackSignals, feedbackSuggestions } from './feedback'
@@ -40,5 +41,17 @@ export const pipelineLog = pgTable(
     index('pipeline_log_raw_item_idx').on(t.rawFeedbackItemId),
     index('pipeline_log_event_type_idx').on(t.eventType),
     index('pipeline_log_created_idx').on(t.createdAt),
+    // Pipeline-debugging lookups and FK RI checks when signals, suggestions,
+    // or posts are deleted; partial because each row sets only the columns
+    // relevant to its event type.
+    index('pipeline_log_signal_idx')
+      .on(t.signalId)
+      .where(sql`"signal_id" IS NOT NULL`),
+    index('pipeline_log_suggestion_idx')
+      .on(t.suggestionId)
+      .where(sql`"suggestion_id" IS NOT NULL`),
+    index('pipeline_log_post_idx')
+      .on(t.postId)
+      .where(sql`"post_id" IS NOT NULL`),
   ]
 )

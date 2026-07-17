@@ -55,7 +55,6 @@ export const integrations = pgTable(
   },
   (table) => [
     unique('integration_type_unique').on(table.integrationType),
-    index('idx_integrations_type_status').on(table.integrationType, table.status),
     // CHECK constraint to ensure error count is never negative
     check('error_count_non_negative', sql`error_count >= 0`),
   ]

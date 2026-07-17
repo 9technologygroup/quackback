@@ -148,6 +148,10 @@ export const tickets = pgTable(
     uniqueIndex('tickets_number_uq').on(table.number),
     index('tickets_status_id_idx').on(table.statusId),
     index('tickets_assignee_principal_id_idx').on(table.assigneePrincipalId),
+    // Team-inbox filter; partial because most tickets have no team assignee.
+    index('tickets_assignee_team_idx')
+      .on(table.assigneeTeamId)
+      .where(sql`"assignee_team_id" IS NOT NULL`),
     index('tickets_requester_principal_id_idx').on(table.requesterPrincipalId),
     index('tickets_company_id_idx').on(table.companyId),
     // Type-scoped status boards (e.g. all open customer tickets).

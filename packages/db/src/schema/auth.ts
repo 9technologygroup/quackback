@@ -191,12 +191,10 @@ export const session = pgTable(
       .references(() => user.id, { onDelete: 'cascade' }),
   },
   (table) => [
-    index('session_userId_idx').on(table.userId),
-    // Composite index drives the `max(session.created_at) GROUP BY
-    // user_id` aggregate used by the team-list "last sign-in" column
-    // — without it, the planner does an index scan on `session_userId_idx`
-    // but still reads every row's created_at. With this, the planner
-    // can do an index-only scan and stop at the first row per group.
+    // Composite serves both plain user_id lookups and the
+    // `max(session.created_at) GROUP BY user_id` aggregate used by the
+    // team-list "last sign-in" column: the planner can do an index-only
+    // scan and stop at the first row per group.
     // nullsFirst matches the migration's plain DESC (postgres default).
     index('session_userId_createdAt_idx').on(table.userId, table.createdAt.desc().nullsFirst()),
     // Range-scan support for the active-users analytics query, which counts
@@ -227,8 +225,8 @@ export const account = pgTable(
       .notNull(),
   },
   (table) => [
-    index('account_userId_idx').on(table.userId),
-    // Backs the segment evaluator's signup_source lookup:
+    // Also serves plain user_id lookups; backs the segment evaluator's
+    // signup_source lookup:
     // `SELECT provider_id FROM account WHERE user_id = $1 ORDER BY
     // created_at ASC LIMIT 1`. Without the composite the ORDER BY
     // requires a sort even though the WHERE is index-satisfied.
@@ -640,12 +638,16 @@ export const principal = pgTable(
     index('principal_contact_email_idx')
       .on(table.contactEmail)
       .where(sql`contact_email IS NOT NULL`),
-    // Index for user listings filtered by role
-    index('principal_role_idx').on(table.role),
     // Index for filtering by principal type
     index('principal_type_idx').on(table.type),
-    // Composite index for date-filtered user listings (e.g. portal users by join date)
+    // Composite index for user listings filtered by role, with or without a
+    // date filter (e.g. portal users by join date)
     index('principal_role_created_at_idx').on(table.role, table.createdAt),
+    // RI-lookup protection: principal deletion checks blocked_by references
+    // against this table itself.
+    index('principal_blocked_by_idx')
+      .on(table.blockedByPrincipalId)
+      .where(sql`"blocked_by_principal_id" IS NOT NULL`),
     // Case-insensitive prefix search for the @-mention typeahead;
     // text_pattern_ops lets the planner use it for LIKE 'prefix%'.
     index('principal_displayname_lower_idx').using(
@@ -699,7 +701,6 @@ export const invitation = pgTable(
       .references(() => user.id, { onDelete: 'cascade' }),
   },
   (table) => [
-    index('invitation_email_idx').on(table.email),
     // Index for duplicate invitation checks (legacy — kept for backward compatibility)
     index('invitation_email_status_idx').on(table.email, table.status),
     // Composite index for kind-discriminated lookup paths
@@ -795,26 +796,41 @@ export const oauthRefreshToken = pgTable(
       table.userId,
       table.createdAt
     ),
+    // FK RI-lookup protection: session logout/expiry and user deletion
+    // check these columns on every referenced-row delete.
+    index('oauth_refresh_token_session_id_idx').on(table.sessionId),
+    index('oauth_refresh_token_user_id_idx').on(table.userId),
   ]
 )
 
 /**
  * OAuth Access Token table - Short-lived tokens for API access
  */
-export const oauthAccessToken = pgTable('oauth_access_token', {
-  id: text('id').primaryKey(),
-  token: text('token').unique(),
-  clientId: text('client_id')
-    .notNull()
-    .references(() => oauthClient.clientId, { onDelete: 'cascade' }),
-  sessionId: text('session_id').references(() => session.id, { onDelete: 'set null' }),
-  userId: typeIdColumn('user')('user_id').references(() => user.id, { onDelete: 'cascade' }),
-  referenceId: text('reference_id'),
-  refreshId: text('refresh_id').references(() => oauthRefreshToken.id, { onDelete: 'cascade' }),
-  expiresAt: timestamp('expires_at', { withTimezone: true }),
-  createdAt: timestamp('created_at', { withTimezone: true }),
-  scopes: text('scopes').array().notNull(),
-})
+export const oauthAccessToken = pgTable(
+  'oauth_access_token',
+  {
+    id: text('id').primaryKey(),
+    token: text('token').unique(),
+    clientId: text('client_id')
+      .notNull()
+      .references(() => oauthClient.clientId, { onDelete: 'cascade' }),
+    sessionId: text('session_id').references(() => session.id, { onDelete: 'set null' }),
+    userId: typeIdColumn('user')('user_id').references(() => user.id, { onDelete: 'cascade' }),
+    referenceId: text('reference_id'),
+    refreshId: text('refresh_id').references(() => oauthRefreshToken.id, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }),
+    scopes: text('scopes').array().notNull(),
+  },
+  (table) => [
+    // FK RI-lookup protection: session logout/expiry, refresh-token
+    // rotation, and user deletion check these columns on every
+    // referenced-row delete.
+    index('oauth_access_token_session_id_idx').on(table.sessionId),
+    index('oauth_access_token_user_id_idx').on(table.userId),
+    index('oauth_access_token_refresh_id_idx').on(table.refreshId),
+  ]
+)
 
 /**
  * OAuth Consent table - Records of user consent for OAuth client scopes

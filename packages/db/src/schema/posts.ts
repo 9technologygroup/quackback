@@ -130,10 +130,16 @@ export const posts = pgTable(
       columns: [table.trackedByPrincipalId],
       foreignColumns: [principal.id],
     }).onDelete('set null'),
-    index('posts_board_id_idx').on(table.boardId),
     index('posts_status_id_idx').on(table.statusId),
-    index('posts_principal_id_idx').on(table.principalId),
     index('posts_owner_principal_id_idx').on(table.ownerPrincipalId),
+    // Partial indexes on mostly-null audit columns: never filtered on directly,
+    // but principal deletion RI-checks them per referencing table.
+    index('posts_deleted_by_principal_idx')
+      .on(table.deletedByPrincipalId)
+      .where(sql`"deleted_by_principal_id" IS NOT NULL`),
+    index('posts_merged_by_principal_idx')
+      .on(table.mergedByPrincipalId)
+      .where(sql`"merged_by_principal_id" IS NOT NULL`),
     index('posts_tracked_by_principal_id_idx').on(table.trackedByPrincipalId),
     index('posts_created_at_idx').on(table.createdAt),
     index('posts_vote_count_idx').on(table.voteCount),
@@ -192,7 +198,6 @@ export const postTagAssignments = pgTable(
       foreignColumns: [postTags.id],
     }).onDelete('cascade'),
     uniqueIndex('post_tag_assignments_pk').on(table.postId, table.tagId),
-    index('post_tag_assignments_post_id_idx').on(table.postId),
     index('post_tag_assignments_tag_id_idx').on(table.tagId),
   ]
 )
@@ -227,15 +232,20 @@ export const postVotes = pgTable(
       columns: [table.addedByPrincipalId],
       foreignColumns: [principal.id],
     }).onDelete('set null'),
-    index('post_votes_post_id_idx').on(table.postId),
     // Unique constraint: one vote per principal per post
     uniqueIndex('post_votes_principal_post_idx').on(table.postId, table.principalId),
-    index('post_votes_principal_id_idx').on(table.principalId),
     index('post_votes_principal_created_at_idx').on(table.principalId, table.createdAt),
     // Partial index for finding integration-sourced votes
     index('post_votes_source_type_idx')
       .on(table.sourceType)
       .where(sql`source_type IS NOT NULL`),
+    // RI-lookup protection for principal / suggestion deletion
+    index('post_votes_added_by_principal_idx')
+      .on(table.addedByPrincipalId)
+      .where(sql`"added_by_principal_id" IS NOT NULL`),
+    index('post_votes_feedback_suggestion_idx')
+      .on(table.feedbackSuggestionId)
+      .where(sql`"feedback_suggestion_id" IS NOT NULL`),
   ]
 )
 
@@ -285,7 +295,6 @@ export const postComments = pgTable(
       columns: [table.parentId],
       foreignColumns: [table.id],
     }).onDelete('cascade'),
-    index('post_comments_post_id_idx').on(table.postId),
     index('post_comments_parent_id_idx').on(table.parentId),
     index('post_comments_principal_id_idx').on(table.principalId),
     index('post_comments_created_at_idx').on(table.createdAt),
@@ -298,6 +307,10 @@ export const postComments = pgTable(
     index('post_comments_status_change_to_id_idx')
       .on(table.statusChangeToId)
       .where(sql`status_change_to_id IS NOT NULL`),
+    // RI-lookup protection for principal deletion
+    index('post_comments_deleted_by_principal_idx')
+      .on(table.deletedByPrincipalId)
+      .where(sql`"deleted_by_principal_id" IS NOT NULL`),
   ]
 )
 
@@ -316,7 +329,6 @@ export const postCommentReactions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    index('post_comment_reactions_comment_id_idx').on(table.commentId),
     index('post_comment_reactions_principal_id_idx').on(table.principalId),
     uniqueIndex('post_comment_reactions_unique_idx').on(
       table.commentId,
@@ -344,6 +356,7 @@ export const postEditHistory = pgTable(
   },
   (table) => [
     index('post_edit_history_post_id_idx').on(table.postId),
+    index('post_edit_history_editor_principal_idx').on(table.editorPrincipalId),
     index('post_edit_history_created_at_idx').on(table.createdAt),
   ]
 )
@@ -364,6 +377,7 @@ export const postCommentEditHistory = pgTable(
   },
   (table) => [
     index('post_comment_edit_history_comment_id_idx').on(table.commentId),
+    index('post_comment_edit_history_editor_principal_idx').on(table.editorPrincipalId),
     index('post_comment_edit_history_created_at_idx').on(table.createdAt),
   ]
 )

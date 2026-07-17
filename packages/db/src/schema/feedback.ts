@@ -208,6 +208,8 @@ export const feedbackSuggestions = pgTable(
     index('feedback_suggestions_created_idx').on(t.createdAt),
     index('feedback_suggestions_result_post_idx').on(t.resultPostId),
     index('feedback_suggestions_signal_idx').on(t.signalId),
+    // Board-scoped suggestion queries and the FK RI lookup on board deletion.
+    index('feedback_suggestions_board_id_idx').on(t.boardId),
     index('feedback_suggestions_embedding_hnsw_idx')
       .using('hnsw', sql`${t.embedding} vector_cosine_ops`)
       .where(sql`${t.embedding} IS NOT NULL`),

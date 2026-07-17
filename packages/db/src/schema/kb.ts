@@ -143,7 +143,6 @@ export const helpCenterArticles = pgTable(
   },
   (table) => [
     uniqueIndex('kb_articles_slug_idx').on(table.slug),
-    index('kb_articles_category_id_idx').on(table.categoryId),
     index('kb_articles_principal_id_idx').on(table.principalId),
     index('kb_articles_published_at_idx').on(table.publishedAt),
     index('kb_articles_deleted_at_idx').on(table.deletedAt),
@@ -173,10 +172,7 @@ export const helpCenterArticleFeedback = pgTable(
     helpful: boolean('helpful').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [
-    index('kb_article_feedback_article_id_idx').on(table.articleId),
-    uniqueIndex('kb_article_feedback_unique_idx').on(table.articleId, table.principalId),
-  ]
+  (table) => [uniqueIndex('kb_article_feedback_unique_idx').on(table.articleId, table.principalId)]
 )
 
 // ============================================

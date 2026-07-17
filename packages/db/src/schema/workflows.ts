@@ -119,6 +119,9 @@ export const workflowRuns = pgTable(
       .on(table.conversationId, table.state)
       .where(sql`"conversation_id" IS NOT NULL`),
     index('workflow_runs_state_idx').on(table.state),
+    // Per-workflow run listings and the retention compactor's per-workflow
+    // scans; also the FK RI lookup on workflow deletion.
+    index('workflow_runs_workflow_idx').on(table.workflowId),
     // workflowEffectiveness (workflow-reporting.ts) filters by a started_at
     // range with no other narrowing predicate; a plain btree serves it directly.
     index('workflow_runs_started_at_idx').on(table.startedAt),
@@ -158,6 +161,9 @@ export const workflowRunEvents = pgTable(
       foreignColumns: [principal.id],
     }).onDelete('set null'),
     index('workflow_run_events_cap_idx').on(table.workflowId, table.subjectPrincipalId, table.at),
+    // Run-detail timeline lookups and the FK RI lookup on run deletion
+    // (retention compactor deletes runs in bulk).
+    index('workflow_run_events_run_idx').on(table.runId),
   ]
 )
 
