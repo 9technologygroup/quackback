@@ -24,6 +24,7 @@ vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, className }: { children: React.ReactNode; className?: string }) => (
     <a className={className}>{children}</a>
   ),
+  useSearch: () => ({}),
 }))
 
 const createRoleFn = vi.fn().mockResolvedValue({ role: {}, droppedKeys: [] })
@@ -32,6 +33,7 @@ vi.mock('@/lib/server/functions/roles', () => ({
   listRolesFn: vi.fn(),
   createRoleFn: (args: unknown) => createRoleFn(args),
   updateRoleFn: (args: unknown) => updateRoleFn(args),
+  deleteRoleFn: vi.fn().mockResolvedValue({ reassignedCount: 0 }),
 }))
 
 // The editor's ceiling: everything except billing.manage (an Admin-grade editor).
@@ -158,9 +160,12 @@ describe('RoleEditor', () => {
     expect(screen.getByLabelText(PERMISSIONS.TICKET_VIEW)).toBeTruthy()
   })
 
-  it('shows the read-only notice for system presets', () => {
+  it('renders system presets read-only (no Save, offers Duplicate)', () => {
     renderEditor(OWNER_PRESET.id)
-    expect(screen.getByText(/Built-in roles are read-only/)).toBeTruthy()
+    // The name is static text, not an editable input.
+    expect(screen.getByRole('heading', { name: 'Owner' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Save role' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Duplicate' })).toBeTruthy()
   })
 
   it('create mode shows the Start-from band and a Create button', () => {

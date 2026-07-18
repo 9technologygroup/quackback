@@ -6,45 +6,64 @@ test.describe('Admin Roles Settings', () => {
     await page.waitForLoadState('networkidle')
   })
 
-  test('displays the four preset roles', async ({ page }) => {
+  test('displays the four preset roles as cards', async ({ page }) => {
     for (const name of ['Owner', 'Admin', 'Manager', 'Contributor']) {
-      await expect(page.getByText(name, { exact: true }).first()).toBeVisible({ timeout: 10000 })
+      await expect(page.getByRole('link', { name: new RegExp(name) }).first()).toBeVisible({
+        timeout: 10000,
+      })
     }
     await expect(page.getByText('Preset').first()).toBeVisible()
   })
 
-  test('expands a preset to show its permission keys', async ({ page }) => {
-    await page.getByText('Contributor', { exact: true }).first().click()
+  test('clicking a preset opens its read-only detail page', async ({ page }) => {
+    await page
+      .getByRole('link', { name: /Contributor/ })
+      .first()
+      .click()
+
+    // Read-only: a heading (not an editable name field), a Duplicate action,
+    // and no Save button.
+    await expect(page.getByRole('heading', { name: 'Contributor' })).toBeVisible({ timeout: 15000 })
+    await expect(page.getByRole('button', { name: 'Duplicate' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Save role' })).toHaveCount(0)
+
+    // Its permissions are browsable (categories expand).
+    await page.getByRole('button', { name: /Feedback/ }).click()
     await expect(page.getByText('post.view_private').first()).toBeVisible({ timeout: 10000 })
   })
 
-  test('duplicate, edit, save, and delete a custom role end to end', async ({ page }) => {
+  test('create via duplicate, edit, and delete a custom role end to end', async ({ page }) => {
     const roleName = `E2E Role ${Date.now().toString(36)}`
 
-    // Duplicate the Manager preset.
-    const managerCard = page.locator('div.rounded-lg.border').filter({ hasText: 'Manager' }).first()
-    await managerCard.getByRole('button', { name: 'Duplicate' }).click()
-    const nameInput = page.getByLabel('Name')
-    await nameInput.fill(roleName)
-    await page.getByRole('button', { name: 'Create & edit' }).click()
+    // Open the Manager preset and duplicate it -> full-page create surface.
+    await page
+      .getByRole('link', { name: /Manager/ })
+      .first()
+      .click()
+    await page.getByRole('button', { name: 'Duplicate' }).click()
 
-    // Lands in the editor with the duplicated set staged.
-    await expect(page.getByDisplayValue(roleName)).toBeVisible({ timeout: 15000 })
-    await expect(page.getByText(/of \d+ granted/).first()).toBeVisible()
+    await expect(page.getByText('Start from')).toBeVisible({ timeout: 15000 })
+    await page.getByLabel('Name').fill(roleName)
+    await expect(page.getByText(/of \d+ selected/).first()).toBeVisible()
 
-    // Toggle one permission off and save (categories are collapsed by default).
+    // Trim one permission and create.
     await page.getByRole('button', { name: /Feedback/ }).click()
     await page.getByLabel('post.view_private', { exact: true }).click()
-    await page.getByRole('button', { name: 'Save role' }).click()
+    await page.getByRole('button', { name: 'Create role' }).click()
 
-    // Back on the roles tab, the custom card exists.
-    const customCard = page.locator('div.rounded-lg.border').filter({ hasText: roleName }).first()
+    // Back on the tab, the custom card exists and links to its editor.
+    const customCard = page.getByRole('link', { name: new RegExp(roleName) }).first()
     await expect(customCard).toBeVisible({ timeout: 15000 })
     await expect(customCard.getByText('Custom')).toBeVisible()
 
-    // Delete it (no holders, so no reassignment needed).
-    await customCard.getByRole('button', { name: 'Delete' }).click()
+    // Open it and delete from the detail page (no holders -> no reassignment).
+    await customCard.click()
+    await expect(page.getByRole('button', { name: 'Save role' })).toBeVisible({ timeout: 15000 })
+    await page.getByRole('button', { name: 'Delete' }).click()
     await page.getByRole('button', { name: 'Delete role' }).click()
-    await expect(page.getByText(roleName)).toHaveCount(0, { timeout: 15000 })
+
+    await expect(page.getByRole('link', { name: new RegExp(roleName) })).toHaveCount(0, {
+      timeout: 15000,
+    })
   })
 })
