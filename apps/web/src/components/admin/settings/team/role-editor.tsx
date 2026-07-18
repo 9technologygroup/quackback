@@ -234,9 +234,9 @@ export function RoleEditor(props: RoleEditorProps) {
         )}
         <div className="flex flex-col items-end gap-1.5 text-right">
           <Badge
-            variant={role?.isSystem ? 'secondary' : 'outline'}
+            variant={role?.isSystem ? 'subtle' : 'outline'}
             size="sm"
-            className={cn('uppercase tracking-wide', !role?.isSystem && CUSTOM_ROLE_BADGE)}
+            className={cn(!role?.isSystem && CUSTOM_ROLE_BADGE)}
           >
             {role?.isSystem ? 'Preset' : 'Custom'}
           </Badge>

@@ -85,8 +85,8 @@ function RoleCard({ role }: { role: RoleWithMeta }) {
         <span className="truncate text-sm font-semibold">{role.name}</span>
         <Badge
           size="sm"
-          variant={role.isSystem ? 'secondary' : 'outline'}
-          className={cn('shrink-0 uppercase tracking-wide', !role.isSystem && CUSTOM_ROLE_BADGE)}
+          variant={role.isSystem ? 'subtle' : 'outline'}
+          className={cn('shrink-0', !role.isSystem && CUSTOM_ROLE_BADGE)}
         >
           {role.isSystem ? 'Preset' : 'Custom'}
         </Badge>
