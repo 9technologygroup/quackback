@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 import { UserGroupIcon, PencilSquareIcon, TrashIcon, PlusIcon } from '@heroicons/react/24/solid'
 import { settingsQueries } from '@/lib/client/queries/settings'
 import { deleteTeamFn, type TeamDTO } from '@/lib/server/functions/teams'
-import { PageHeader } from '@/components/shared/page-header'
+import { SettingsCard } from '@/components/admin/settings/settings-card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
@@ -61,21 +61,19 @@ export function TeamsTab() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        icon={UserGroupIcon}
+      <SettingsCard
         title="Teams"
         description="Group teammates into named teams"
         action={
-          <Button onClick={openCreate}>
+          <Button size="sm" onClick={openCreate}>
             <PlusIcon className="h-4 w-4" />
             New team
           </Button>
         }
-      />
-
-      <div className="rounded-xl border border-border/50 bg-card shadow-sm divide-y divide-border/50">
+        contentClassName="p-0 sm:p-0 divide-y divide-border/50"
+      >
         {teams.length === 0 ? (
-          <p className="h-24 flex items-center justify-center text-muted-foreground text-sm">
+          <p className="flex h-24 items-center justify-center text-sm text-muted-foreground">
             No teams yet
           </p>
         ) : (
@@ -135,7 +133,7 @@ export function TeamsTab() {
             </div>
           ))
         )}
-      </div>
+      </SettingsCard>
 
       <TeamDialog
         open={dialogOpen}

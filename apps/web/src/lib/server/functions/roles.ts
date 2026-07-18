@@ -23,7 +23,8 @@ const roleIdSchema = z.string().refine((v) => isValidTypeId(v, 'role'), 'Invalid
 
 const createRoleSchema = z.object({
   name: z.string().min(1).max(64),
-  description: z.string().max(280).optional(),
+  description: z.string().max(280).nullable().optional(),
+  permissionKeys: z.array(z.string().max(64)).max(256).optional(),
   duplicateFromRoleId: roleIdSchema.optional(),
 })
 
@@ -66,6 +67,7 @@ export const createRoleFn = createServerFn({ method: 'POST' })
       {
         name: data.name,
         description: data.description,
+        permissionKeys: data.permissionKeys as PermissionKey[] | undefined,
         duplicateFromRoleId: data.duplicateFromRoleId as RoleId | undefined,
       },
       editorFromAuth(auth),

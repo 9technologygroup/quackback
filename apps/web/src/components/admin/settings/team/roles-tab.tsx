@@ -2,15 +2,14 @@ import { useState } from 'react'
 import { useSuspenseQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import type { RoleId } from '@quackback/ids'
 import { PERMISSIONS, PERMISSION_CATALOGUE, PERMISSION_CATEGORIES } from '@/lib/shared/permissions'
 import { CATEGORY_LABELS } from '@/lib/client/permission-labels'
 import { useHasPermission } from '@/lib/client/use-permissions'
 import { settingsQueries } from '@/lib/client/queries/settings'
-import { createRoleFn, deleteRoleFn, listRolesFn } from '@/lib/server/functions/roles'
+import { deleteRoleFn, listRolesFn } from '@/lib/server/functions/roles'
+import { SettingsCard } from '@/components/admin/settings/settings-card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Dialog,
@@ -28,58 +27,56 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/shared/utils'
+import { CUSTOM_ROLE_BADGE, CUSTOM_ROLE_NOTICE } from './role-ui'
 
 /** The serialized shape the roles server fn returns across the boundary. */
 type RolesPayload = Awaited<ReturnType<typeof listRolesFn>>
 type RoleWithMeta = RolesPayload['roles'][number]
 
 /**
- * Roles tab — a card grid over the roles table: the seeded presets
- * (read-only, duplicatable) plus custom roles (editable, deletable), a
- * dashed new-role tile, and the plan-cap banner when the operator set a
- * finite maxCustomRoles. Selecting a card opens its permission listing in a
- * full-width panel below the grid. Write affordances are gated on
- * role.manage (render-only; the server functions enforce for real).
+ * Roles tab — a SettingsCard holding a card grid over the roles table: the
+ * seeded presets (read-only, duplicatable) plus custom roles (editable,
+ * deletable), a dashed new-role tile, and the plan-cap banner when the
+ * operator set a finite maxCustomRoles. Selecting a card opens its permission
+ * listing in a panel below the grid. Creating and duplicating both route to
+ * the full-page /roles/new surface; only deletion stays a dialog. Write
+ * affordances gate on role.manage (render-only; the server enforces).
  */
 export function RolesTab() {
   const { data } = useSuspenseQuery(settingsQueries.roles())
   const { roles, maxCustomRoles } = data
   const canManage = useHasPermission(PERMISSIONS.ROLE_MANAGE)
+  const navigate = useNavigate()
   const [openRoleId, setOpenRoleId] = useState<string | null>(null)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [duplicateFrom, setDuplicateFrom] = useState<RoleWithMeta | null>(null)
   const [deleting, setDeleting] = useState<RoleWithMeta | null>(null)
 
   const customCount = roles.filter((r) => !r.isSystem).length
   const capReached = maxCustomRoles != null && customCount >= maxCustomRoles
   const openRole = roles.find((r) => r.id === openRoleId) ?? null
 
-  const startCreate = (source: RoleWithMeta | null) => {
-    setDuplicateFrom(source)
-    setCreateOpen(true)
-  }
+  // Create and duplicate are both the full-page /roles/new surface; duplicate
+  // preselects its source via ?from.
+  const startCreate = (source: RoleWithMeta | null) =>
+    navigate({
+      to: '/admin/settings/members/roles/new',
+      search: source ? { from: source.id } : {},
+    })
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-sm text-muted-foreground">
-          Built-in roles are read-only — duplicate one to customize it. Custom roles can grant any
-          mix of permissions you hold yourself.
-        </p>
-        {canManage && (
-          <Button
-            size="sm"
-            className="shrink-0"
-            disabled={capReached}
-            onClick={() => startCreate(null)}
-          >
+    <SettingsCard
+      title="Roles"
+      description="Built-in roles are read-only — duplicate one to customize it. Custom roles grant any mix of permissions you hold yourself."
+      action={
+        canManage ? (
+          <Button size="sm" disabled={capReached} onClick={() => startCreate(null)}>
             New role
           </Button>
-        )}
-      </div>
-
+        ) : undefined
+      }
+      contentClassName="space-y-4"
+    >
       {maxCustomRoles != null && (
-        <div className="rounded-lg border border-amber-300/50 bg-amber-50 px-3.5 py-2.5 text-[13px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+        <div className={cn('rounded-lg border px-3.5 py-2.5 text-[13px]', CUSTOM_ROLE_NOTICE)}>
           <strong>
             {customCount} of {maxCustomRoles}
           </strong>{' '}
@@ -95,7 +92,7 @@ export function RolesTab() {
             <div
               key={role.id}
               className={cn(
-                'flex flex-col rounded-lg border bg-card p-3.5 transition-colors',
+                'flex flex-col rounded-xl border bg-card p-3.5 shadow-sm transition-colors',
                 isOpen && 'border-foreground/30'
               )}
             >
@@ -110,11 +107,7 @@ export function RolesTab() {
                   <Badge
                     size="sm"
                     variant={role.isSystem ? 'secondary' : 'outline'}
-                    className={cn(
-                      'uppercase tracking-wide',
-                      !role.isSystem &&
-                        'border-amber-300/60 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
-                    )}
+                    className={cn('uppercase tracking-wide', !role.isSystem && CUSTOM_ROLE_BADGE)}
                   >
                     {role.isSystem ? 'Preset' : 'Custom'}
                   </Badge>
@@ -131,7 +124,7 @@ export function RolesTab() {
                       Duplicate
                     </Button>
                   ) : (
-                    <EditRoleButton roleId={role.id as RoleId} />
+                    <EditRoleButton roleId={role.id} />
                   ))}
               </div>
               {role.description && (
@@ -162,7 +155,7 @@ export function RolesTab() {
         {canManage && !capReached && (
           <button
             type="button"
-            className="flex min-h-24 items-center justify-center rounded-lg border-[1.5px] border-dashed text-xs font-semibold text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+            className="flex min-h-24 items-center justify-center rounded-xl border-[1.5px] border-dashed text-xs font-semibold text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
             onClick={() => startCreate(null)}
           >
             + New role
@@ -171,7 +164,7 @@ export function RolesTab() {
       </div>
 
       {openRole && (
-        <div className="rounded-lg border">
+        <div className="rounded-xl border shadow-sm">
           <div className="flex flex-wrap items-center gap-2 border-b bg-muted/40 px-4 py-2.5">
             <span className="text-sm font-semibold">{openRole.name}</span>
             <span className="font-mono text-[11px] text-muted-foreground">
@@ -221,23 +214,17 @@ export function RolesTab() {
         </div>
       )}
 
-      <CreateRoleDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        roles={roles}
-        initialDuplicateFrom={duplicateFrom}
-      />
       <DeleteRoleDialog
         key={deleting?.id ?? 'none'}
         role={deleting}
         roles={roles}
         onOpenChange={() => setDeleting(null)}
       />
-    </div>
+    </SettingsCard>
   )
 }
 
-function EditRoleButton({ roleId }: { roleId: RoleId }) {
+function EditRoleButton({ roleId }: { roleId: string }) {
   const navigate = useNavigate()
   return (
     <Button
@@ -248,107 +235,6 @@ function EditRoleButton({ roleId }: { roleId: RoleId }) {
     >
       Edit
     </Button>
-  )
-}
-
-function CreateRoleDialog({
-  open,
-  onOpenChange,
-  roles,
-  initialDuplicateFrom,
-}: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  roles: RoleWithMeta[]
-  initialDuplicateFrom: RoleWithMeta | null
-}) {
-  const [name, setName] = useState('')
-  const [sourceId, setSourceId] = useState<string>('blank')
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
-
-  // Reset per open so a previous duplicate choice doesn't leak into "New role".
-  const [lastOpen, setLastOpen] = useState(false)
-  if (open !== lastOpen) {
-    setLastOpen(open)
-    if (open) {
-      setSourceId(initialDuplicateFrom?.id ?? 'blank')
-      setName(initialDuplicateFrom ? `${initialDuplicateFrom.name} copy`.slice(0, 64) : '')
-    }
-  }
-
-  const create = useMutation({
-    mutationFn: () =>
-      createRoleFn({
-        data: {
-          name: name.trim(),
-          duplicateFromRoleId: sourceId === 'blank' ? undefined : sourceId,
-        },
-      }),
-    onSuccess: async ({ role, droppedKeys }) => {
-      await queryClient.invalidateQueries({ queryKey: ['settings', 'roles'] })
-      if (droppedKeys.length > 0) {
-        toast.info(
-          `${droppedKeys.length} permission${droppedKeys.length === 1 ? '' : 's'} you don't hold ${
-            droppedKeys.length === 1 ? 'was' : 'were'
-          } left off the duplicate.`
-        )
-      }
-      onOpenChange(false)
-      navigate({ to: '/admin/settings/members/roles/$roleId', params: { roleId: role.id } })
-    },
-    onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Couldn't create role. Try again.")
-    },
-  })
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Create role</DialogTitle>
-          <DialogDescription>
-            Start from an existing role's permissions, or from nothing.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="role-name">Name</Label>
-            <Input
-              id="role-name"
-              value={name}
-              maxLength={64}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Support Lead"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Start from</Label>
-            <Select value={sourceId} onValueChange={setSourceId}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="blank">Blank — no permissions</SelectItem>
-                {roles.map((r) => (
-                  <SelectItem key={r.id} value={r.id}>
-                    Duplicate {r.name} · {r.permissionKeys.length} permissions
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={() => create.mutate()} disabled={!name.trim() || create.isPending}>
-            {create.isPending ? 'Creating…' : 'Create & edit'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   )
 }
 

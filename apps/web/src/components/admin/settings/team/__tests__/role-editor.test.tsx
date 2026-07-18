@@ -20,11 +20,17 @@ import { RoleEditor } from '../role-editor'
 const navigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
+  // BackLink renders a router Link; stub it as a plain anchor.
+  Link: ({ children, className }: { children: React.ReactNode; className?: string }) => (
+    <a className={className}>{children}</a>
+  ),
 }))
 
+const createRoleFn = vi.fn().mockResolvedValue({ role: {}, droppedKeys: [] })
 const updateRoleFn = vi.fn().mockResolvedValue({})
 vi.mock('@/lib/server/functions/roles', () => ({
   listRolesFn: vi.fn(),
+  createRoleFn: (args: unknown) => createRoleFn(args),
   updateRoleFn: (args: unknown) => updateRoleFn(args),
 }))
 
@@ -64,7 +70,20 @@ function renderEditor(roleId = CUSTOM_ROLE.id) {
   })
   return render(
     <QueryClientProvider client={client}>
-      <RoleEditor roleId={roleId} />
+      <RoleEditor mode="edit" roleId={roleId} />
+    </QueryClientProvider>
+  )
+}
+
+function renderCreate(duplicateFromId?: string) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  client.setQueryData(['settings', 'roles'], {
+    roles: [OWNER_PRESET, CUSTOM_ROLE],
+    maxCustomRoles: null,
+  })
+  return render(
+    <QueryClientProvider client={client}>
+      <RoleEditor mode="create" duplicateFromId={duplicateFromId} />
     </QueryClientProvider>
   )
 }
@@ -142,5 +161,21 @@ describe('RoleEditor', () => {
   it('shows the read-only notice for system presets', () => {
     renderEditor(OWNER_PRESET.id)
     expect(screen.getByText(/Built-in roles are read-only/)).toBeTruthy()
+  })
+
+  it('create mode shows the Start-from band and a Create button', () => {
+    renderCreate()
+    expect(screen.getByText('Start from')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Create role' })).toBeTruthy()
+    // Blank start: nothing selected (chip + footer both show it).
+    expect(screen.getAllByText(/0 of \d+ selected/).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('create with a duplicate source stages the source permissions (ceiling-filtered)', () => {
+    // Duplicating the custom role (holds POST_VIEW_PRIVATE, within the ceiling).
+    renderCreate(CUSTOM_ROLE.id)
+    expect(screen.getByDisplayValue('Support Lead copy')).toBeTruthy()
+    expect(screen.getAllByText(/1 of \d+ selected/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/staged from/)).toBeTruthy()
   })
 })

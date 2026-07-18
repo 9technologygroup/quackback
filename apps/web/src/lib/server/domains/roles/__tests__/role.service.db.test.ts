@@ -112,6 +112,30 @@ describe.skipIf(!fixture.available)('role.service (real Postgres)', () => {
     )
   })
 
+  it('creates with an explicit permissionKeys set (the create page path)', async () => {
+    const editor = ownerEditor(await seedPrincipal())
+    const { role } = await createRole(
+      {
+        name: 'Explicit',
+        permissionKeys: [PERMISSIONS.POST_VIEW_PRIVATE, PERMISSIONS.TICKET_VIEW],
+      },
+      editor
+    )
+    expect(new Set(role.permissionKeys)).toEqual(
+      new Set([PERMISSIONS.POST_VIEW_PRIVATE, PERMISSIONS.TICKET_VIEW])
+    )
+  })
+
+  it('rejects an explicit permissionKeys set above the editor ceiling', async () => {
+    const limited: RoleEditor = {
+      principalId: await seedPrincipal(),
+      permissions: [PERMISSIONS.POST_VIEW_PRIVATE],
+    }
+    await expect(
+      createRole({ name: 'Too much', permissionKeys: [PERMISSIONS.BILLING_MANAGE] }, limited)
+    ).rejects.toThrow(/permissions you don't hold/)
+  })
+
   it('duplicating intersects with the editor grant ceiling and reports drops', async () => {
     const owner = await roleByKey(SYSTEM_ROLES.OWNER)
     const editor: RoleEditor = {

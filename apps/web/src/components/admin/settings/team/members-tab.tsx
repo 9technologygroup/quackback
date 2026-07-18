@@ -7,9 +7,9 @@ import {
   getFilteredRowModel,
   useReactTable,
 } from '@tanstack/react-table'
-import { useSuspenseQuery } from '@tanstack/react-query'
+import { useSuspenseQuery, useQueryClient } from '@tanstack/react-query'
 import { settingsQueries } from '@/lib/client/queries/settings'
-import { EnvelopeIcon } from '@heroicons/react/24/solid'
+import { EnvelopeIcon, PlusIcon } from '@heroicons/react/24/solid'
 import { Avatar } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/shared/utils'
@@ -24,7 +24,9 @@ import {
 import { SearchInput } from '@/components/shared/search-input'
 import { FormError } from '@/components/shared/form-error'
 import { CopyButton } from '@/components/shared/copy-button'
-import { TeamHeader } from '@/components/admin/settings/team/team-header'
+import { SettingsCard } from '@/components/admin/settings/settings-card'
+import { Button } from '@/components/ui/button'
+import { InviteMemberDialog } from '@/components/auth/invite-member-dialog'
 import {
   type PendingInvitation,
   getExpiryText,
@@ -33,6 +35,7 @@ import {
   InviteLinkRow,
 } from '@/components/admin/settings/team/pending-invitations'
 import { MemberActions } from '@/components/admin/settings/team/member-actions'
+import { CUSTOM_ROLE_BADGE } from '@/components/admin/settings/team/role-ui'
 import type { UserId, PrincipalId } from '@quackback/ids'
 import { isAdmin } from '@/lib/shared/roles'
 
@@ -80,7 +83,7 @@ function roleBadge(r: TeamRow, role: string, extra = '') {
       variant="outline"
       className={cn(
         isCustom
-          ? 'border-amber-300/60 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+          ? CUSTOM_ROLE_BADGE
           : isAdmin(role)
             ? 'bg-primary/10 text-primary border-primary/30'
             : 'bg-muted/50',
@@ -114,6 +117,8 @@ export function MembersTab({ workspaceName, currentMember }: MembersTabProps) {
   const { members, avatarMap, formattedInvitations } = teamDataQuery.data
 
   const [search, setSearch] = useState('')
+  const [showInviteDialog, setShowInviteDialog] = useState(false)
+  const queryClient = useQueryClient()
   const [error, setError] = useState<string | null>(null)
   const [inviteLinkMap, setInviteLinkMap] = useState<Record<string, string>>({})
 
@@ -312,12 +317,20 @@ export function MembersTab({ workspaceName, currentMember }: MembersTabProps) {
 
   return (
     <div className="space-y-6">
-      <TeamHeader workspaceName={workspaceName} />
-
       {error && <FormError message={error} />}
 
-      <div className="rounded-xl border border-border/50 bg-card shadow-sm">
-        <div className="px-4 pt-4 pb-2">
+      <SettingsCard
+        title="Members"
+        description={`Manage who has access to ${workspaceName}`}
+        action={
+          <Button size="sm" onClick={() => setShowInviteDialog(true)}>
+            <PlusIcon className="h-4 w-4" />
+            Invite member
+          </Button>
+        }
+        contentClassName="p-0 sm:p-0"
+      >
+        <div className="px-4 pt-4 pb-2 sm:px-6">
           <SearchInput
             value={search}
             onChange={setSearch}
@@ -502,7 +515,13 @@ export function MembersTab({ workspaceName, currentMember }: MembersTabProps) {
             })
           )}
         </div>
-      </div>
+      </SettingsCard>
+
+      <InviteMemberDialog
+        open={showInviteDialog}
+        onClose={() => setShowInviteDialog(false)}
+        onSuccess={() => queryClient.invalidateQueries({ queryKey: ['settings', 'team'] })}
+      />
     </div>
   )
 }

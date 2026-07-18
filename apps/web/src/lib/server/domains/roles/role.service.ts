@@ -41,7 +41,8 @@ import {
 
 type Executor = Database | Transaction
 import { generateId, type PrincipalId, type RoleId } from '@quackback/ids'
-import { ALL_PERMISSIONS, SYSTEM_ROLES, type PermissionKey } from '@/lib/shared/permissions'
+import { SYSTEM_ROLES, type PermissionKey } from '@/lib/shared/permissions'
+import { assertKnownPermissions, assertWithinCeiling } from './role.ceiling'
 import { ForbiddenError, NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { getTierLimits } from '@/lib/server/domains/settings/tier-limits.service'
 import { enforceCountLimit } from '@/lib/server/domains/settings/tier-enforce'
@@ -204,7 +205,17 @@ async function assertNotHeldByEditor(roleId: RoleId, editor: RoleEditor, verb: s
 export interface CreateRoleInput {
   name: string
   description?: string | null
-  /** Copy this role's permissions (intersected with the editor's own set). */
+  /**
+   * The exact permission set to create the role with. Rejected key-by-key
+   * against the editor's own grant ceiling (assignment/authoring parity).
+   * The create page sends its staged-and-edited selection here.
+   */
+  permissionKeys?: PermissionKey[]
+  /**
+   * Copy this role's permissions (intersected with the editor's own set,
+   * dropping what they don't hold). Used when no explicit `permissionKeys` is
+   * given — kept for API callers that duplicate without editing.
+   */
   duplicateFromRoleId?: RoleId
 }
 
@@ -214,13 +225,17 @@ export async function createRole(
   audit?: { actor: AuditActor; headers?: Headers }
 ): Promise<{ role: RoleWithMeta; droppedKeys: PermissionKey[] }> {
   const name = assertValidName(input.name)
+  const held = new Set(editor.permissions)
 
   let grantedKeys: PermissionKey[] = []
   let droppedKeys: PermissionKey[] = []
-  if (input.duplicateFromRoleId) {
+  if (input.permissionKeys) {
+    assertKnownPermissions(input.permissionKeys)
+    assertWithinCeiling(input.permissionKeys, held)
+    grantedKeys = [...new Set(input.permissionKeys)]
+  } else if (input.duplicateFromRoleId) {
     const source = await loadRole(input.duplicateFromRoleId)
     const sourceKeys = await permissionKeysForRole(db, source.id)
-    const held = new Set(editor.permissions)
     grantedKeys = [...sourceKeys].filter((k) => held.has(k))
     droppedKeys = [...sourceKeys].filter((k) => !held.has(k)).sort()
   }
@@ -300,11 +315,7 @@ export async function updateRole(
 
   let nextKeys: Set<PermissionKey> | null = null
   if (input.permissionKeys) {
-    const catalogue = new Set<string>(ALL_PERMISSIONS)
-    const unknown = input.permissionKeys.filter((k) => !catalogue.has(k))
-    if (unknown.length > 0) {
-      throw new ValidationError('VALIDATION_ERROR', `Unknown permissions: ${unknown.join(', ')}`)
-    }
+    assertKnownPermissions(input.permissionKeys)
     nextKeys = new Set(input.permissionKeys)
   }
 
@@ -317,14 +328,13 @@ export async function updateRole(
     auditedBeforeCount = current.size
 
     if (nextKeys) {
+      // Additions only: keys already on the role stay even if the editor no
+      // longer holds them (de-escalation is free; retaining is not a grant).
       const held = new Set(editor.permissions)
-      const aboveCeiling = [...nextKeys].filter((k) => !current.has(k) && !held.has(k))
-      if (aboveCeiling.length > 0) {
-        throw new ForbiddenError(
-          'GRANT_CEILING',
-          `You can't grant permissions you don't hold: ${aboveCeiling.sort().join(', ')}`
-        )
-      }
+      assertWithinCeiling(
+        [...nextKeys].filter((k) => !current.has(k)),
+        held
+      )
     }
 
     await tx
