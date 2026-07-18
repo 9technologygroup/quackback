@@ -216,6 +216,11 @@ export interface SetRoleOpts extends MutateOpts {
    * heal reaps mismatched Owner/Manager rows with no recorded grantor.
    */
   assignRoleId?: RoleId
+  /**
+   * Recorded as the assignment's grantor for explicit grants. Left NULL for
+   * legacy-preset reconciles (system-derived rows stay heal-eligible).
+   */
+  assignGrantedBy?: PrincipalId
 }
 
 /**
@@ -297,7 +302,13 @@ export async function setPrincipalRole(
   // workspace grant (a custom role) with the legacy preset. A guard-filtered
   // no-op update (no target row) reconciles nothing.
   if (reconcilable && target && (opts.assignRoleId != null || target.role !== role)) {
-    await reconcileWorkspaceAssignment(exec, target.id, role, opts.assignRoleId)
+    await reconcileWorkspaceAssignment(
+      exec,
+      target.id,
+      role,
+      opts.assignRoleId,
+      opts.assignGrantedBy
+    )
   }
   const keys = userId ? [CACHE_KEYS.PRINCIPAL_BY_USER(userId)] : []
   if (!opts.executor) for (const k of keys) await cacheDel(k)
@@ -315,7 +326,8 @@ async function reconcileWorkspaceAssignment(
   exec: Executor,
   principalId: PrincipalId,
   role: Role,
-  assignRoleId?: RoleId
+  assignRoleId?: RoleId,
+  assignGrantedBy?: PrincipalId
 ): Promise<void> {
   await exec
     .delete(principalRoleAssignments)
@@ -340,7 +352,16 @@ async function reconcileWorkspaceAssignment(
     if (!preset) return
     roleId = preset.id
   }
-  await exec.insert(principalRoleAssignments).values({ principalId, roleId }).onConflictDoNothing()
+  await exec
+    .insert(principalRoleAssignments)
+    .values({
+      principalId,
+      roleId,
+      // Only explicit grants record a grantor; preset reconciles stay NULL so
+      // the seed heal keeps owning them.
+      grantedByPrincipalId: assignRoleId != null ? (assignGrantedBy ?? null) : null,
+    })
+    .onConflictDoNothing()
 }
 
 // ---------------------------------------------- profile / type mutation ---

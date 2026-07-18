@@ -1,7 +1,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { z } from 'zod'
-import type { InviteId, PrincipalId, UserId } from '@quackback/ids'
+import type { InviteId, PrincipalId, RoleId, UserId } from '@quackback/ids'
 import { db, invitation, principal, user, and, eq } from '@/lib/server/db'
 import { ROLE_RANK, type Role } from '@/lib/shared/roles'
 import {
@@ -239,15 +239,29 @@ export const acceptInvitationFn = createServerFn({ method: 'POST' })
           where: eq(principal.userId, userId),
         })
 
+        // A custom-role invite (row.roleId) rides role='member'; the role
+        // writer records the workspace assignment in the same transaction.
+        // SET NULL on role deletion means a stale invite degrades to its
+        // plain legacy role.
+        // Defense-in-depth: a roleId only ever rides a member invite (send
+        // enforces it); drop it for any other stored role.
+        const assignRoleId =
+          role === 'member' ? ((row.roleId as RoleId | null) ?? undefined) : undefined
+
         if (existingPrincipal) {
           // Promote only when the invite grants a strictly higher role. An
-          // unrankable stored role sorts lowest, so it always upgrades.
+          // unrankable stored role sorts lowest, so it always upgrades. A
+          // custom grant also applies to an existing member (the inviter
+          // chose that role for them) — but never demotes an admin.
           const existingRank = ROLE_RANK[existingPrincipal.role as Role] ?? -1
-          if (ROLE_RANK[role] > existingRank) {
+          const promotes = ROLE_RANK[role] > existingRank
+          const grantsCustom =
+            assignRoleId != null && role === 'member' && existingPrincipal.role !== 'admin'
+          if (promotes || grantsCustom) {
             const { cacheKeysToBust: keys } = await setPrincipalRole(
               { principalId: existingPrincipal.id as PrincipalId },
-              role,
-              { executor: tx }
+              promotes ? role : 'member',
+              { executor: tx, assignRoleId }
             )
             cacheKeysToBust.push(...keys)
           }
@@ -258,7 +272,18 @@ export const acceptInvitationFn = createServerFn({ method: 'POST' })
           // Create new principal (the user row already exists from magic-link).
           // Plain create — NOT ensure — so a racing lazy 'user' create can't
           // silently swallow the invited member/admin role.
-          await createPrincipal({ userId, role, displayName: displayName ?? null }, tx)
+          const created = await createPrincipal(
+            { userId, role, displayName: displayName ?? null },
+            tx
+          )
+          if (assignRoleId) {
+            const { cacheKeysToBust: keys } = await setPrincipalRole(
+              { principalId: created.id as PrincipalId },
+              role,
+              { executor: tx, assignRoleId, knownUserId: userId }
+            )
+            cacheKeysToBust.push(...keys)
+          }
         }
 
         // Update user name if provided

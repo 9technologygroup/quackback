@@ -18,9 +18,10 @@ import {
   user,
   type Principal,
 } from '@/lib/server/db'
-import type { PrincipalId, UserId } from '@quackback/ids'
-import { InternalError, ForbiddenError, NotFoundError } from '@/lib/shared/errors'
+import type { PrincipalId, RoleId, UserId } from '@quackback/ids'
+import { InternalError, ForbiddenError, NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { isTeamMember, isAdmin } from '@/lib/shared/roles'
+import type { PermissionKey } from '@/lib/shared/permissions'
 import { recordAuditEvent, type AuditActor } from '@/lib/server/audit/log'
 import type { TeamMember } from './principal.types'
 import { logger } from '@/lib/server/logger'
@@ -216,7 +217,12 @@ export async function countMembers(): Promise<number> {
 }
 
 /**
- * Update a team member's role
+ * Update a team member's role. `opts.assignRoleId` grants a specific role
+ * from the roles table instead of the legacy preset mapping — the member's
+ * legacy column stays 'member' (the teammate wall and seat predicates key on
+ * it) while the workspace assignment carries the actual grant. Owner is
+ * excluded: that tier rides the legacy 'admin' role and its promotion path.
+ *
  * @throws ForbiddenError if trying to modify own role
  * @throws ForbiddenError if this would leave no admins
  * @throws NotFoundError if principal not found or not a team member
@@ -226,11 +232,30 @@ export async function updateMemberRole(
   newRole: 'admin' | 'member',
   actingPrincipalId: PrincipalId,
   actor: AuditActor | null = null,
-  headers?: Headers
+  headers?: Headers,
+  opts?: { assignRoleId?: RoleId; granterPermissions?: readonly PermissionKey[] }
 ): Promise<void> {
   // Cannot modify own role
   if (principalId === actingPrincipalId) {
     throw new ForbiddenError('CANNOT_MODIFY_SELF', 'You cannot change your own role')
+  }
+
+  let assignedRoleName: string | null = null
+  if (opts?.assignRoleId) {
+    if (newRole !== 'member') {
+      throw new ValidationError(
+        'VALIDATION_ERROR',
+        'Custom role grants ride the member role; use role admin without a roleId to promote'
+      )
+    }
+    // Assignment is a grant: fail closed if the caller didn't supply its own
+    // resolved set for the ceiling check.
+    if (!opts.granterPermissions) {
+      throw new ForbiddenError('GRANT_CEILING', 'Assigner permission set is required')
+    }
+    const { assertGrantableRole } = await import('@/lib/server/domains/roles/role.grants')
+    const target = await assertGrantableRole(opts.assignRoleId, opts.granterPermissions)
+    assignedRoleName = target.name
   }
 
   try {
@@ -262,8 +287,13 @@ export async function updateMemberRole(
 
     const previousRole = targetMember.role
 
-    // Update the role (the factory busts PRINCIPAL_BY_USER from the row's userId)
-    await setPrincipalRole({ principalId }, newRole, { knownUserId: targetMember.userId })
+    // Update the role (the factory busts PRINCIPAL_BY_USER from the row's
+    // userId and reconciles the workspace assignment in the same transaction).
+    await setPrincipalRole({ principalId }, newRole, {
+      knownUserId: targetMember.userId,
+      assignRoleId: opts?.assignRoleId,
+      assignGrantedBy: actingPrincipalId,
+    })
 
     // Audit the role change. Already audited from the SSO/JIT path
     // (`auth/hooks.ts` emits user.role.changed there). Admin manual
@@ -276,7 +306,10 @@ export async function updateMemberRole(
         headers,
         target: { type: 'principal', id: principalId },
         before: { role: previousRole },
-        after: { role: newRole },
+        after: {
+          role: newRole,
+          ...(assignedRoleName ? { assignedRole: assignedRoleName } : {}),
+        },
       })
     }
   } catch (error) {

@@ -23,6 +23,7 @@ import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackbac
 import { apiKeys } from './api-keys'
 import { integrations } from './integrations'
 import { companies } from './companies'
+import { roles } from './rbac'
 
 export interface StoredAssistantVoice {
   tone: string
@@ -671,6 +672,15 @@ export const invitation = pgTable(
     email: text('email').notNull(),
     name: text('name'),
     role: text('role'),
+    /**
+     * Custom-role grant carried by a team invite: accept maps it onto
+     * role='member' plus a workspace assignment. Null = the legacy role text
+     * alone. SET NULL on role deletion, so a pending invite degrades to its
+     * plain legacy role.
+     */
+    roleId: typeIdColumnNullable('role')('role_id').references(() => roles.id, {
+      onDelete: 'set null',
+    }),
     status: text('status').default('pending').notNull(),
     /**
      * Discriminates team invitations from portal-access invitations.

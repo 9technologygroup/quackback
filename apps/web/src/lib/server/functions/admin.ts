@@ -8,7 +8,7 @@ import {
   type PrincipalId,
   type SegmentId,
 } from '@quackback/ids'
-import type { BoardId, PostTagId } from '@quackback/ids'
+import type { BoardId, PostTagId, RoleId } from '@quackback/ids'
 import {
   getSetupState,
   isOnboardingComplete as checkComplete,
@@ -293,6 +293,8 @@ const principalIdSchema = z.object({
 const updatePrincipalRoleSchema = z.object({
   principalId: z.string(),
   role: z.enum(['admin', 'member']),
+  // Custom-role grant; rides role='member'. Validated in the service.
+  roleId: z.string().optional(),
 })
 
 /**
@@ -311,7 +313,11 @@ export const updateMemberRoleFn = createServerFn({ method: 'POST' })
         data.role,
         auth.principal.id,
         actorFromAuth(auth),
-        getRequestHeaders()
+        getRequestHeaders(),
+        {
+          assignRoleId: data.roleId as RoleId | undefined,
+          granterPermissions: auth.permissions,
+        }
       )
 
       log.info({ principal_id: data.principalId, role: data.role }, 'member role updated')
@@ -1115,6 +1121,8 @@ const sendInvitationSchema = z.object({
   email: z.string().email(),
   name: z.string().optional(),
   role: z.enum(['admin', 'member']),
+  // Custom-role grant carried to accept; rides role='member'.
+  roleId: z.string().optional(),
 })
 
 const invitationByIdSchema = z.object({
@@ -1172,6 +1180,17 @@ export const sendInvitationFn = createServerFn({ method: 'POST' })
         // Portal users (role='user' or no member record) can be invited to become team members
       }
 
+      // A custom-role grant rides role='member', never points at the Owner
+      // preset, and is capped by the inviter's own permission set (assignment
+      // is a grant — same ceiling as authoring).
+      if (data.roleId) {
+        if (data.role !== 'member') {
+          throw new Error('Custom role invites use the member role')
+        }
+        const { assertGrantableRole } = await import('@/lib/server/domains/roles/role.grants')
+        await assertGrantableRole(data.roleId as RoleId, auth.permissions)
+      }
+
       const invitationId = generateId('invite')
       const expiresAt = new Date(Date.now() + INVITATION_EXPIRY_MS)
       const now = new Date()
@@ -1192,6 +1211,7 @@ export const sendInvitationFn = createServerFn({ method: 'POST' })
         email,
         name: data.name || null,
         role: data.role,
+        roleId: (data.roleId as RoleId | undefined) ?? null,
         status: 'pending',
         expiresAt,
         lastSentAt: now,

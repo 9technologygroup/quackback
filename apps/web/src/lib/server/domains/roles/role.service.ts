@@ -146,13 +146,16 @@ export async function listRoles(): Promise<RoleWithMeta[]> {
   })
 }
 
-async function loadRole(roleId: RoleId) {
+export async function loadRole(roleId: RoleId) {
   const [role] = await db.select().from(roles).where(eq(roles.id, roleId)).limit(1)
   if (!role) throw new NotFoundError('ROLE_NOT_FOUND', 'Role not found')
   return role
 }
 
-async function permissionKeysForRole(exec: Executor, roleId: RoleId): Promise<Set<PermissionKey>> {
+export async function permissionKeysForRole(
+  exec: Executor,
+  roleId: RoleId
+): Promise<Set<PermissionKey>> {
   const rows = await exec
     .select({ key: permissions.key })
     .from(rolePermissions)

@@ -368,6 +368,40 @@ describe('acceptInvitationFn — atomic claim + side effects', () => {
     expect(hoisted.mockSetPrincipalRole).not.toHaveBeenCalled()
   })
 
+  it('applies a custom-role invite to a brand-new principal via the role writer', async () => {
+    hoisted.mockClaimReturning.mockResolvedValue([{ ...CLAIMED_ROW, roleId: 'role_custom1' }])
+
+    await acceptHandler({ data: { invitationId: 'invite_1' } })
+
+    expect(hoisted.mockCreatePrincipal).toHaveBeenCalledWith(
+      { userId: 'user_1', role: 'member', displayName: null },
+      hoisted.tx
+    )
+    expect(hoisted.mockSetPrincipalRole).toHaveBeenCalledWith(
+      { principalId: 'principal_new' },
+      'member',
+      expect.objectContaining({ executor: hoisted.tx, assignRoleId: 'role_custom1' })
+    )
+  })
+
+  it('applies a custom-role invite to an existing member without touching an admin', async () => {
+    hoisted.mockClaimReturning.mockResolvedValue([{ ...CLAIMED_ROW, roleId: 'role_custom1' }])
+    hoisted.mockTxQuery.principal.findFirst.mockResolvedValue({ id: 'principal_1', role: 'member' })
+
+    await acceptHandler({ data: { invitationId: 'invite_1' } })
+    expect(hoisted.mockSetPrincipalRole).toHaveBeenCalledWith(
+      { principalId: 'principal_1' },
+      'member',
+      expect.objectContaining({ assignRoleId: 'role_custom1' })
+    )
+
+    // An existing admin is never demoted onto the member-tier custom role.
+    hoisted.mockSetPrincipalRole.mockClear()
+    hoisted.mockTxQuery.principal.findFirst.mockResolvedValue({ id: 'principal_1', role: 'admin' })
+    await acceptHandler({ data: { invitationId: 'invite_1' } })
+    expect(hoisted.mockSetPrincipalRole).not.toHaveBeenCalled()
+  })
+
   it('busts the principal cache after the transaction commits', async () => {
     hoisted.mockTxQuery.principal.findFirst.mockResolvedValue({ id: 'principal_1', role: 'user' })
     hoisted.mockSetPrincipalRole.mockResolvedValue({ cacheKeysToBust: ['principal:user:user_1'] })

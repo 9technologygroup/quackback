@@ -171,10 +171,47 @@ export const fetchTeamMembersAndInvitations = createServerFn({ method: 'GET' }).
       // `max()` aggregate as a string, plain timestamp selects come
       // back as Date.
       const { toIsoStringOrNull } = await import('@/lib/shared/utils/date')
-      const members = membersRaw.map((m) => ({
-        ...m,
-        lastSignInAt: toIsoStringOrNull(m.lastSignInAt),
-      }))
+      // Resolved workspace assignment (one per member post-reconcile) so the
+      // table can show the real role name — a custom role, or a preset that
+      // differs from the legacy column's implied one. Fetched separately to
+      // avoid fanning out the member rows on a join.
+      const { principalRoleAssignments, roles, isNull, inArray } = await import('@/lib/server/db')
+      const memberIds = membersRaw.map((m) => m.id)
+      const assignmentRows = memberIds.length
+        ? await db
+            .select({
+              principalId: principalRoleAssignments.principalId,
+              roleId: roles.id,
+              roleKey: roles.key,
+              roleName: roles.name,
+              isSystem: roles.isSystem,
+            })
+            .from(principalRoleAssignments)
+            .innerJoin(roles, eq(roles.id, principalRoleAssignments.roleId))
+            .where(
+              and(
+                inArray(principalRoleAssignments.principalId, memberIds),
+                isNull(principalRoleAssignments.teamId)
+              )
+            )
+        : []
+      const assignmentByPrincipal = new Map(assignmentRows.map((a) => [a.principalId, a]))
+
+      const members = membersRaw.map((m) => {
+        const assigned = assignmentByPrincipal.get(m.id)
+        return {
+          ...m,
+          lastSignInAt: toIsoStringOrNull(m.lastSignInAt),
+          assignedRole: assigned
+            ? {
+                id: assigned.roleId,
+                key: assigned.roleKey,
+                name: assigned.roleName,
+                isSystem: assigned.isSystem,
+              }
+            : null,
+        }
+      })
 
       const pendingInvitations = await db.query.invitation.findMany({
         where: and(eq(invitation.status, 'pending'), eq(invitation.kind, 'team')),
@@ -190,11 +227,28 @@ export const fetchTeamMembersAndInvitations = createServerFn({ method: 'GET' }).
         }
       }
 
+      const inviteRoleIds = [
+        ...new Set(
+          pendingInvitations
+            .map((i) => i.roleId)
+            .filter((v): v is NonNullable<typeof v> => v != null)
+        ),
+      ]
+      const inviteRoles = inviteRoleIds.length
+        ? await db
+            .select({ id: roles.id, name: roles.name })
+            .from(roles)
+            .where(inArray(roles.id, inviteRoleIds))
+        : []
+      const inviteRoleNameById = new Map(inviteRoles.map((r) => [r.id, r.name]))
+
       const formattedInvitations = pendingInvitations.map((inv) => ({
         id: inv.id,
         email: inv.email,
         name: inv.name,
         role: inv.role,
+        roleId: inv.roleId,
+        roleName: inv.roleId ? (inviteRoleNameById.get(inv.roleId) ?? null) : null,
         createdAt: inv.createdAt.toISOString(),
         lastSentAt: inv.lastSentAt?.toISOString() ?? null,
         expiresAt: inv.expiresAt.toISOString(),
