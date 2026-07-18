@@ -58,7 +58,10 @@ const OWNER_PRESET = {
 
 function renderEditor(roleId = CUSTOM_ROLE.id) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  client.setQueryData(['settings', 'roles'], [OWNER_PRESET, CUSTOM_ROLE])
+  client.setQueryData(['settings', 'roles'], {
+    roles: [OWNER_PRESET, CUSTOM_ROLE],
+    maxCustomRoles: null,
+  })
   return render(
     <QueryClientProvider client={client}>
       <RoleEditor roleId={roleId} />
@@ -94,6 +97,7 @@ describe('RoleEditor', () => {
 
   it('renders above-ceiling keys disabled', () => {
     renderEditor()
+    fireEvent.click(screen.getByRole('button', { name: /Workspace/ }))
     const billing = screen.getByLabelText(PERMISSIONS.BILLING_MANAGE)
     expect((billing as HTMLButtonElement).disabled).toBe(true)
     expect(screen.getByText("You don't hold this")).toBeTruthy()
@@ -113,17 +117,26 @@ describe('RoleEditor', () => {
 
   it('badges keys added since the last edit', () => {
     renderEditor()
-    expect(screen.getByText('New')).toBeTruthy()
+    // One badge on the category header, one on the key row.
+    expect(screen.getAllByText('New').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText(/added since last edit/)).toBeTruthy()
   })
 
-  it('search filters the visible keys', () => {
+  it('search filters the visible keys and expands matches', () => {
     renderEditor()
+    // Collapsed by default: billing.manage (workspace) isn't rendered yet.
+    expect(screen.queryByLabelText(PERMISSIONS.BILLING_MANAGE)).toBeNull()
     fireEvent.change(screen.getByPlaceholderText(/Filter \d+ permissions/), {
       target: { value: 'billing' },
     })
     expect(screen.queryByLabelText(PERMISSIONS.TICKET_VIEW)).toBeNull()
     expect(screen.getByLabelText(PERMISSIONS.BILLING_MANAGE)).toBeTruthy()
+  })
+
+  it('opens categories carrying newly-shipped keys by default', () => {
+    renderEditor()
+    // ticket.export-style New key: its category (support) starts expanded.
+    expect(screen.getByLabelText(PERMISSIONS.TICKET_VIEW)).toBeTruthy()
   })
 
   it('shows the read-only notice for system presets', () => {

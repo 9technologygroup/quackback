@@ -17,6 +17,8 @@ import { Button } from '@/components/ui/button'
 import { FormError } from '@/components/shared/form-error'
 import { useCopyToClipboard } from '@/lib/client/hooks/use-copy-to-clipboard'
 import {
+  SelectGroup,
+  SelectLabel,
   Select,
   SelectContent,
   SelectItem,
@@ -99,9 +101,13 @@ export function InviteMemberDialog({ open, onClose, onSuccess }: InviteMemberDia
     },
   })
 
-  // Custom roles for the select; empty until any exist.
-  const { data: allRoles } = useQuery(settingsQueries.roles())
-  const customRoles = (allRoles ?? []).filter((r) => !r.isSystem)
+  // Custom roles for the select; empty until any exist. The team query
+  // (already cached by the members tab behind this dialog) carries the seat
+  // usage for the seat line.
+  const { data: rolesData } = useQuery(settingsQueries.roles())
+  const customRoles = (rolesData?.roles ?? []).filter((r) => !r.isSystem)
+  const { data: teamData } = useQuery(settingsQueries.teamMembersAndInvitations())
+  const seatUsage = teamData?.seatUsage
 
   async function onSubmit(data: InviteInput) {
     setError('')
@@ -224,23 +230,54 @@ export function InviteMemberDialog({ open, onClose, onSuccess }: InviteMemberDia
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="member">
-                          Member - Can view and create feedback
-                        </SelectItem>
-                        <SelectItem value="admin">
-                          Admin - Can manage settings and members
-                        </SelectItem>
-                        {customRoles.map((r) => (
-                          <SelectItem key={r.id} value={r.id}>
-                            {r.name} - Custom role
+                        <SelectGroup>
+                          <SelectLabel>Presets</SelectLabel>
+                          <SelectItem value="member">
+                            Member - Can view and create feedback
                           </SelectItem>
-                        ))}
+                          <SelectItem value="admin">
+                            Admin - Can manage settings and members
+                          </SelectItem>
+                        </SelectGroup>
+                        {customRoles.length > 0 && (
+                          <SelectGroup>
+                            <SelectLabel>Custom</SelectLabel>
+                            {customRoles.map((r) => (
+                              <SelectItem key={r.id} value={r.id}>
+                                {r.name} · {r.permissionKeys.length} permissions
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
                       </SelectContent>
                     </Select>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+
+              {seatUsage && (
+                <div className="flex items-center gap-3 rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  <span className="shrink-0 font-medium text-foreground/80">Team seats</span>
+                  {seatUsage.limit != null ? (
+                    <>
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary/70"
+                          style={{
+                            width: `${Math.min(100, (seatUsage.used / Math.max(1, seatUsage.limit)) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <span className="shrink-0 font-mono tabular-nums">
+                        {seatUsage.used} / {seatUsage.limit}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="ml-auto font-mono tabular-nums">{seatUsage.used} used</span>
+                  )}
+                </div>
+              )}
 
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={onClose}>

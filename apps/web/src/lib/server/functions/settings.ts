@@ -254,7 +254,20 @@ export const fetchTeamMembersAndInvitations = createServerFn({ method: 'GET' }).
         expiresAt: inv.expiresAt.toISOString(),
       }))
 
-      return { members, avatarMap, formattedInvitations }
+      // Seat line data: same predicate as enforceSeatLimit / the usage report
+      // (human admin/member principals), plus the plan cap (null = unlimited).
+      const { getTierLimits } = await import('@/lib/server/domains/settings/tier-limits.service')
+      const limits = await getTierLimits()
+      const [seatRow] = await db
+        .select({ count: sqlOp<number>`count(*)`.as('count') })
+        .from(principal)
+        .where(and(inArray(principal.role, ['admin', 'member']), eq(principal.type, 'user')))
+      const seatUsage = {
+        used: Number(seatRow?.count ?? 0),
+        limit: limits.maxTeamSeats,
+      }
+
+      return { members, avatarMap, formattedInvitations, seatUsage }
     } catch (error) {
       log.error({ err: error }, 'fetch team members and invitations failed')
       throw error

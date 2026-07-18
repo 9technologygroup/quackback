@@ -2,16 +2,12 @@ import { useState } from 'react'
 import { useSuspenseQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import { ChevronDownIcon } from '@heroicons/react/24/solid'
 import type { RoleId } from '@quackback/ids'
 import { PERMISSIONS, PERMISSION_CATALOGUE, PERMISSION_CATEGORIES } from '@/lib/shared/permissions'
 import { CATEGORY_LABELS } from '@/lib/client/permission-labels'
 import { useHasPermission } from '@/lib/client/use-permissions'
 import { settingsQueries } from '@/lib/client/queries/settings'
 import { createRoleFn, deleteRoleFn, listRolesFn } from '@/lib/server/functions/roles'
-
-/** The serialized shape the roles server fn returns across the boundary. */
-type RoleWithMeta = Awaited<ReturnType<typeof listRolesFn>>[number]
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -33,21 +29,38 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/shared/utils'
 
+/** The serialized shape the roles server fn returns across the boundary. */
+type RolesPayload = Awaited<ReturnType<typeof listRolesFn>>
+type RoleWithMeta = RolesPayload['roles'][number]
+
 /**
- * Roles tab — DB-backed: the four seeded presets (read-only, duplicatable)
- * plus custom roles (editable, deletable). Every affordance that writes is
- * gated on role.manage, render-only; the server functions enforce for real.
+ * Roles tab — a card grid over the roles table: the seeded presets
+ * (read-only, duplicatable) plus custom roles (editable, deletable), a
+ * dashed new-role tile, and the plan-cap banner when the operator set a
+ * finite maxCustomRoles. Selecting a card opens its permission listing in a
+ * full-width panel below the grid. Write affordances are gated on
+ * role.manage (render-only; the server functions enforce for real).
  */
 export function RolesTab() {
-  const { data: roles } = useSuspenseQuery(settingsQueries.roles())
+  const { data } = useSuspenseQuery(settingsQueries.roles())
+  const { roles, maxCustomRoles } = data
   const canManage = useHasPermission(PERMISSIONS.ROLE_MANAGE)
   const [openRoleId, setOpenRoleId] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [duplicateFrom, setDuplicateFrom] = useState<RoleWithMeta | null>(null)
   const [deleting, setDeleting] = useState<RoleWithMeta | null>(null)
 
+  const customCount = roles.filter((r) => !r.isSystem).length
+  const capReached = maxCustomRoles != null && customCount >= maxCustomRoles
+  const openRole = roles.find((r) => r.id === openRoleId) ?? null
+
+  const startCreate = (source: RoleWithMeta | null) => {
+    setDuplicateFrom(source)
+    setCreateOpen(true)
+  }
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div className="flex items-start justify-between gap-3">
         <p className="text-sm text-muted-foreground">
           Built-in roles are read-only — duplicate one to customize it. Custom roles can grant any
@@ -56,115 +69,157 @@ export function RolesTab() {
         {canManage && (
           <Button
             size="sm"
-            onClick={() => {
-              setDuplicateFrom(null)
-              setCreateOpen(true)
-            }}
+            className="shrink-0"
+            disabled={capReached}
+            onClick={() => startCreate(null)}
           >
             New role
           </Button>
         )}
       </div>
 
-      {roles.map((role) => {
-        const granted = new Set(role.permissionKeys)
-        const isOpen = openRoleId === role.id
-        return (
-          <div key={role.id} className="rounded-lg border">
-            <div className="flex w-full items-start justify-between gap-3 p-4">
-              <button
-                type="button"
-                onClick={() => setOpenRoleId(isOpen ? null : role.id)}
-                className="min-w-0 flex-1 text-left"
-                aria-expanded={isOpen}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">{role.name}</span>
-                  <Badge size="sm" variant={role.isSystem ? 'secondary' : 'outline'}>
+      {maxCustomRoles != null && (
+        <div className="rounded-lg border border-amber-300/50 bg-amber-50 px-3.5 py-2.5 text-[13px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+          <strong>
+            {customCount} of {maxCustomRoles}
+          </strong>{' '}
+          custom role{maxCustomRoles === 1 ? '' : 's'} used.
+          {capReached && ' Your plan is at its custom-role limit.'}
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {roles.map((role) => {
+          const isOpen = openRoleId === role.id
+          return (
+            <div
+              key={role.id}
+              className={cn(
+                'flex flex-col rounded-lg border bg-card p-3.5 transition-colors',
+                isOpen && 'border-foreground/30'
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  onClick={() => setOpenRoleId(isOpen ? null : role.id)}
+                  aria-expanded={isOpen}
+                >
+                  <span className="truncate text-[13.5px] font-semibold">{role.name}</span>
+                  <Badge
+                    size="sm"
+                    variant={role.isSystem ? 'secondary' : 'outline'}
+                    className={cn(
+                      'uppercase tracking-wide',
+                      !role.isSystem &&
+                        'border-amber-300/60 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+                    )}
+                  >
                     {role.isSystem ? 'Preset' : 'Custom'}
                   </Badge>
-                  <Badge size="sm" variant="secondary">
-                    {granted.size} permissions
-                  </Badge>
-                  {!role.isSystem && role.memberCount > 0 && (
-                    <Badge size="sm" variant="secondary">
-                      {role.memberCount} member{role.memberCount === 1 ? '' : 's'}
-                    </Badge>
-                  )}
-                  {role.newPermissionKeys.length > 0 && (
-                    <Badge size="sm" variant="outline">
-                      {role.newPermissionKeys.length} new since last edit
-                    </Badge>
-                  )}
-                </div>
-                {role.description && (
-                  <p className="mt-1 text-sm text-muted-foreground">{role.description}</p>
-                )}
-              </button>
-              <div className="flex shrink-0 items-center gap-1.5">
-                {canManage && (
-                  <>
+                </button>
+                {canManage &&
+                  (role.isSystem ? (
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => {
-                        setDuplicateFrom(role)
-                        setCreateOpen(true)
-                      }}
+                      className="shrink-0"
+                      disabled={capReached}
+                      onClick={() => startCreate(role)}
                     >
                       Duplicate
                     </Button>
-                    {!role.isSystem && (
-                      <>
-                        <EditRoleButton roleId={role.id} />
-                        <Button variant="outline" size="sm" onClick={() => setDeleting(role)}>
-                          Delete
-                        </Button>
-                      </>
-                    )}
+                  ) : (
+                    <EditRoleButton roleId={role.id as RoleId} />
+                  ))}
+              </div>
+              {role.description && (
+                <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground">
+                  {role.description}
+                </p>
+              )}
+              <p className="mt-auto pt-2 font-mono text-[11px] text-muted-foreground/80">
+                {role.permissionKeys.length} permissions
+                {!role.isSystem && (
+                  <>
+                    {' · '}
+                    {role.memberCount} member{role.memberCount === 1 ? '' : 's'}
                   </>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setOpenRoleId(isOpen ? null : role.id)}
-                  aria-label={isOpen ? 'Collapse permissions' : 'Expand permissions'}
-                >
-                  <ChevronDownIcon
-                    className={cn(
-                      'mt-1 h-4 w-4 shrink-0 text-muted-foreground transition-transform',
-                      isOpen && 'rotate-180'
-                    )}
-                  />
-                </button>
-              </div>
+                {role.newPermissionKeys.length > 0 && (
+                  <>
+                    {' · '}
+                    <span className="font-semibold text-foreground/70">
+                      {role.newPermissionKeys.length} new
+                    </span>
+                  </>
+                )}
+              </p>
             </div>
-            {isOpen && (
-              <div className="grid gap-4 border-t p-4 sm:grid-cols-2">
-                {PERMISSION_CATEGORIES.map((category) => {
-                  const permsInCategory = PERMISSION_CATALOGUE.filter(
-                    (p) => p.category === category && granted.has(p.key)
-                  )
-                  if (permsInCategory.length === 0) return null
-                  return (
-                    <div key={category}>
-                      <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        {CATEGORY_LABELS[category]}
-                      </h4>
-                      <ul className="space-y-0.5">
-                        {permsInCategory.map((p) => (
-                          <li key={p.key} className="font-mono text-xs text-foreground/80">
-                            {p.key}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+          )
+        })}
+        {canManage && !capReached && (
+          <button
+            type="button"
+            className="flex min-h-24 items-center justify-center rounded-lg border-[1.5px] border-dashed text-xs font-semibold text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+            onClick={() => startCreate(null)}
+          >
+            + New role
+          </button>
+        )}
+      </div>
+
+      {openRole && (
+        <div className="rounded-lg border">
+          <div className="flex flex-wrap items-center gap-2 border-b bg-muted/40 px-4 py-2.5">
+            <span className="text-sm font-semibold">{openRole.name}</span>
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {openRole.permissionKeys.length} of {PERMISSION_CATALOGUE.length} permissions
+            </span>
+            <div className="ml-auto flex items-center gap-1.5">
+              {canManage && !openRole.isSystem && (
+                <Button variant="outline" size="sm" onClick={() => setDeleting(openRole)}>
+                  Delete
+                </Button>
+              )}
+              {canManage && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={capReached}
+                  onClick={() => startCreate(openRole)}
+                >
+                  Duplicate
+                </Button>
+              )}
+            </div>
           </div>
-        )
-      })}
+          <div className="grid gap-4 p-4 sm:grid-cols-2">
+            {PERMISSION_CATEGORIES.map((category) => {
+              const granted = new Set(openRole.permissionKeys)
+              const permsInCategory = PERMISSION_CATALOGUE.filter(
+                (p) => p.category === category && granted.has(p.key)
+              )
+              if (permsInCategory.length === 0) return null
+              return (
+                <div key={category}>
+                  <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    {CATEGORY_LABELS[category]}
+                  </h4>
+                  <ul className="space-y-0.5">
+                    {permsInCategory.map((p) => (
+                      <li key={p.key} className="font-mono text-xs text-foreground/80">
+                        {p.key}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       <CreateRoleDialog
         open={createOpen}
@@ -188,6 +243,7 @@ function EditRoleButton({ roleId }: { roleId: RoleId }) {
     <Button
       variant="outline"
       size="sm"
+      className="shrink-0"
       onClick={() => navigate({ to: '/admin/settings/members/roles/$roleId', params: { roleId } })}
     >
       Edit

@@ -32,7 +32,8 @@ test.describe('Admin Roles Settings', () => {
     await expect(page.getByDisplayValue(roleName)).toBeVisible({ timeout: 15000 })
     await expect(page.getByText(/of \d+ granted/).first()).toBeVisible()
 
-    // Toggle one permission off and save.
+    // Toggle one permission off and save (categories are collapsed by default).
+    await page.getByRole('button', { name: /Feedback/ }).click()
     await page.getByLabel('post.view_private', { exact: true }).click()
     await page.getByRole('button', { name: 'Save role' }).click()
 

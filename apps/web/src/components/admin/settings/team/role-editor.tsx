@@ -25,8 +25,8 @@ import { cn } from '@/lib/shared/utils'
  * disabled rows (the server enforces it independently).
  */
 export function RoleEditor({ roleId }: { roleId: string }) {
-  const { data: roles } = useSuspenseQuery(settingsQueries.roles())
-  const role = roles.find((r) => r.id === roleId)
+  const { data } = useSuspenseQuery(settingsQueries.roles())
+  const role = data.roles.find((r) => r.id === roleId)
   const held = usePermissions()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -37,6 +37,16 @@ export function RoleEditor({ roleId }: { roleId: string }) {
     () => new Set((role?.permissionKeys ?? []) as PermissionKey[])
   )
   const [search, setSearch] = useState('')
+  // Collapsed by default; categories carrying newly-shipped keys start open
+  // so the New badges are seen. Searching expands every matching category.
+  const [openCats, setOpenCats] = useState<Set<string>>(
+    () =>
+      new Set(
+        PERMISSION_CATALOGUE.filter((p) => (role?.newPermissionKeys ?? []).includes(p.key)).map(
+          (p) => p.category
+        )
+      )
+  )
 
   const newKeys = useMemo(
     () => new Set((role?.newPermissionKeys ?? []) as PermissionKey[]),
@@ -89,13 +99,16 @@ export function RoleEditor({ roleId }: { roleId: string }) {
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-6">
       <div>
-        <button
-          type="button"
-          className="text-xs text-muted-foreground hover:text-foreground"
-          onClick={() => navigate({ to: '/admin/settings/members', search: { tab: 'roles' } })}
-        >
-          ← Members / Roles
-        </button>
+        <nav className="font-mono text-[11px] text-muted-foreground">
+          <button
+            type="button"
+            className="hover:text-foreground"
+            onClick={() => navigate({ to: '/admin/settings/members', search: { tab: 'roles' } })}
+          >
+            Members / Roles
+          </button>
+          <span> / {role?.name ?? '…'}</span>
+        </nav>
         <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-3">
             <div className="space-y-1.5">
@@ -121,8 +134,14 @@ export function RoleEditor({ roleId }: { roleId: string }) {
             </div>
           </div>
           <div className="flex flex-col items-end gap-1.5 text-right">
-            <Badge variant="outline">Custom</Badge>
-            <span className="font-mono text-xs text-muted-foreground">
+            <Badge
+              variant="outline"
+              className="border-amber-300/60 bg-amber-50 uppercase tracking-wide text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+              size="sm"
+            >
+              Custom
+            </Badge>
+            <span className="rounded-md bg-muted px-2 py-1 font-mono text-[11px] text-muted-foreground">
               {selected.size} of {PERMISSION_CATALOGUE.length} granted
             </span>
           </div>
@@ -144,9 +163,15 @@ export function RoleEditor({ roleId }: { roleId: string }) {
           const togglable = inCategory.filter((p) => held.has(p.key) || selected.has(p.key))
           const allOn = togglable.length > 0 && togglable.every((p) => selected.has(p.key))
 
+          const isOpen = query ? true : openCats.has(category)
           return (
             <div key={category} className="rounded-lg border">
-              <div className="flex items-center gap-2.5 border-b bg-muted/40 px-3.5 py-2">
+              <div
+                className={cn(
+                  'flex items-center gap-2.5 bg-muted/40 px-3.5 py-2',
+                  isOpen && 'border-b'
+                )}
+              >
                 <Checkbox
                   checked={grantedCount === 0 ? false : allOn ? true : 'indeterminate'}
                   disabled={togglable.length === 0}
@@ -167,47 +192,68 @@ export function RoleEditor({ roleId }: { roleId: string }) {
                     })
                   }}
                 />
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  {CATEGORY_LABELS[category]}
-                </span>
-                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                  {grantedCount} of {inCategory.length}
-                </span>
+                <button
+                  type="button"
+                  className="flex flex-1 items-center gap-2 text-left"
+                  aria-expanded={isOpen}
+                  onClick={() =>
+                    setOpenCats((prev) => {
+                      const next = new Set(prev)
+                      if (next.has(category)) next.delete(category)
+                      else next.add(category)
+                      return next
+                    })
+                  }
+                >
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    {CATEGORY_LABELS[category]}
+                  </span>
+                  {inCategory.some((p) => newKeys.has(p.key)) && (
+                    <Badge size="sm" variant="outline">
+                      New
+                    </Badge>
+                  )}
+                  <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                    {grantedCount} of {inCategory.length}
+                  </span>
+                </button>
               </div>
-              <ul>
-                {inCategory.map((p) => {
-                  // Above the editor's ceiling: can't be granted here. Still
-                  // removable when already on the role (de-escalation is free).
-                  const aboveCeiling = !held.has(p.key) && !selected.has(p.key)
-                  return (
-                    <li
-                      key={p.key}
-                      className={cn(
-                        'flex items-center gap-2.5 border-b px-3.5 py-1.5 text-[13px] last:border-b-0',
-                        aboveCeiling && 'opacity-50'
-                      )}
-                    >
-                      <Checkbox
-                        checked={selected.has(p.key)}
-                        disabled={aboveCeiling}
-                        aria-label={p.key}
-                        onCheckedChange={() => toggle(p.key)}
-                      />
-                      <span className="font-mono text-xs">{p.key}</span>
-                      {newKeys.has(p.key) && (
-                        <Badge size="sm" variant="outline">
-                          New
-                        </Badge>
-                      )}
-                      {aboveCeiling && (
-                        <span className="ml-auto hidden text-right text-xs text-muted-foreground sm:block">
-                          You don't hold this
-                        </span>
-                      )}
-                    </li>
-                  )
-                })}
-              </ul>
+              {isOpen && (
+                <ul>
+                  {inCategory.map((p) => {
+                    // Above the editor's ceiling: can't be granted here. Still
+                    // removable when already on the role (de-escalation is free).
+                    const aboveCeiling = !held.has(p.key) && !selected.has(p.key)
+                    return (
+                      <li
+                        key={p.key}
+                        className={cn(
+                          'flex items-center gap-2.5 border-b px-3.5 py-1.5 text-[13px] last:border-b-0',
+                          aboveCeiling && 'opacity-50'
+                        )}
+                      >
+                        <Checkbox
+                          checked={selected.has(p.key)}
+                          disabled={aboveCeiling}
+                          aria-label={p.key}
+                          onCheckedChange={() => toggle(p.key)}
+                        />
+                        <span className="font-mono text-xs">{p.key}</span>
+                        {newKeys.has(p.key) && (
+                          <Badge size="sm" variant="outline">
+                            New
+                          </Badge>
+                        )}
+                        {aboveCeiling && (
+                          <span className="ml-auto hidden text-right text-xs text-muted-foreground sm:block">
+                            You don't hold this
+                          </span>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
             </div>
           )
         })}

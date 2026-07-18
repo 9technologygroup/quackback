@@ -4,11 +4,11 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
+  CheckIcon,
   EllipsisVerticalIcon,
   ShieldCheckIcon,
   ShieldExclamationIcon,
   UserIcon,
-  UserGroupIcon,
   UserMinusIcon,
   ArrowRightOnRectangleIcon,
 } from '@heroicons/react/24/solid'
@@ -18,11 +18,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuPortal,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
@@ -66,9 +62,9 @@ export function MemberActions({
   const [resetTfaDialogOpen, setResetTfaDialogOpen] = useState(false)
   const [forceSignOutDialogOpen, setForceSignOutDialogOpen] = useState(false)
 
-  // Custom roles for the submenu. Cached alongside the roles tab query.
-  const { data: roles } = useQuery(settingsQueries.roles())
-  const customRoles = (roles ?? []).filter((r) => !r.isSystem)
+  // Custom roles for the role section. Cached alongside the roles tab query.
+  const { data: rolesData } = useQuery(settingsQueries.roles())
+  const customRoles = (rolesData?.roles ?? []).filter((r) => !r.isSystem)
 
   const canChangeRole = !(memberRole === 'admin' && isLastAdmin)
   const canRemove = !(memberRole === 'admin' && isLastAdmin)
@@ -152,49 +148,45 @@ export function MemberActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger disabled={!canChangeRole} className="gap-2">
-              <UserGroupIcon className="h-4 w-4" />
-              Change role
-            </DropdownMenuSubTrigger>
-            <DropdownMenuPortal>
-              <DropdownMenuSubContent>
+          <DropdownMenuLabel>Change role</DropdownMenuLabel>
+          <DropdownMenuItem
+            className="gap-2"
+            disabled={!canChangeRole || isCurrent({ role: 'admin' })}
+            onClick={() => setPendingRole({ role: 'admin', label: 'Admin' })}
+          >
+            <ShieldCheckIcon className="h-4 w-4" />
+            Admin
+            {isCurrent({ role: 'admin' }) && <CheckIcon className="ml-auto h-3.5 w-3.5" />}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="gap-2"
+            disabled={!canChangeRole || isCurrent({ role: 'member' })}
+            onClick={() => setPendingRole({ role: 'member', label: 'Member' })}
+          >
+            <UserIcon className="h-4 w-4" />
+            Member
+            {isCurrent({ role: 'member' }) && <CheckIcon className="ml-auto h-3.5 w-3.5" />}
+          </DropdownMenuItem>
+          {customRoles.length > 0 && (
+            <>
+              <DropdownMenuLabel className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                Custom
+              </DropdownMenuLabel>
+              {customRoles.map((r) => (
                 <DropdownMenuItem
-                  className="gap-2"
-                  disabled={isCurrent({ role: 'admin' })}
-                  onClick={() => setPendingRole({ role: 'admin', label: 'Admin' })}
+                  key={r.id}
+                  disabled={!canChangeRole || isCurrent({ role: 'member', roleId: r.id })}
+                  onClick={() => setPendingRole({ role: 'member', roleId: r.id, label: r.name })}
                 >
-                  <ShieldCheckIcon className="h-4 w-4" />
-                  Admin
+                  {r.name}
+                  {isCurrent({ role: 'member', roleId: r.id }) && (
+                    <CheckIcon className="ml-auto h-3.5 w-3.5" />
+                  )}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="gap-2"
-                  disabled={isCurrent({ role: 'member' })}
-                  onClick={() => setPendingRole({ role: 'member', label: 'Member' })}
-                >
-                  <UserIcon className="h-4 w-4" />
-                  Member
-                </DropdownMenuItem>
-                {customRoles.length > 0 && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel>Custom</DropdownMenuLabel>
-                    {customRoles.map((r) => (
-                      <DropdownMenuItem
-                        key={r.id}
-                        disabled={isCurrent({ role: 'member', roleId: r.id })}
-                        onClick={() =>
-                          setPendingRole({ role: 'member', roleId: r.id, label: r.name })
-                        }
-                      >
-                        {r.name}
-                      </DropdownMenuItem>
-                    ))}
-                  </>
-                )}
-              </DropdownMenuSubContent>
-            </DropdownMenuPortal>
-          </DropdownMenuSub>
+              ))}
+            </>
+          )}
+          <DropdownMenuSeparator />
           {userId ? (
             <DropdownMenuItem onClick={() => setResetTfaDialogOpen(true)} className="gap-2">
               <ShieldExclamationIcon className="h-4 w-4" />
