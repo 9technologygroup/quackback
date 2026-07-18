@@ -1,4 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import { settingsQueries } from '@/lib/client/queries/settings'
@@ -31,7 +32,9 @@ export const Route = createFileRoute('/admin/settings/security/authentication')(
   validateSearch: searchSchema,
   loader: async ({ context }) => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
-    await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })
+    await requireWorkspaceRole({
+      data: { allowedRoles: ['admin', 'member'], permission: PERMISSIONS.AUTH_MANAGE },
+    })
 
     const { queryClient } = context
     // Both tabs are loaded up front so switching tabs doesn't trigger

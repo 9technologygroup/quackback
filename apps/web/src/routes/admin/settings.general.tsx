@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { Cog6ToothIcon, ArrowPathIcon } from '@heroicons/react/24/solid'
@@ -24,7 +25,9 @@ import { Switch } from '@/components/ui/switch'
 export const Route = createFileRoute('/admin/settings/general')({
   loader: async () => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
-    await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })
+    await requireWorkspaceRole({
+      data: { allowedRoles: ['admin', 'member'], permission: PERMISSIONS.SETTINGS_MANAGE },
+    })
     return {}
   },
   component: GeneralSettingsPage,

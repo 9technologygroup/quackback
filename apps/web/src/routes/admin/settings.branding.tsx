@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { createFileRoute, useBlocker, useRouter } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -159,7 +160,9 @@ export const Route = createFileRoute('/admin/settings/branding')({
     // team roles lack — gate the page like the old Portal page did instead
     // of letting managers land on a shell full of 403s.
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
-    await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })
+    await requireWorkspaceRole({
+      data: { allowedRoles: ['admin', 'member'], permission: PERMISSIONS.SETTINGS_BRANDING },
+    })
 
     await Promise.all([
       context.queryClient.ensureQueryData(settingsQueries.branding()),

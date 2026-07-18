@@ -23,7 +23,8 @@ function isActiveRunConflict(error: unknown): boolean {
  */
 export async function handleStartWorkspaceExport(request: Request): Promise<Response> {
   const { validateApiWorkspaceAccess } = await import('@/lib/server/functions/workspace')
-  const { canAccess } = await import('@/lib/server/auth')
+  const { permissionsForPrincipal } = await import('@/lib/server/policy/permissions')
+  const { PERMISSIONS } = await import('@/lib/shared/permissions')
   const { findActiveExportRun, createExportRun, failExportRun } =
     await import('@/lib/server/domains/export/export-run.service')
   const { enqueueWorkspaceExportJob } = await import('@/lib/server/domains/export/export-queue')
@@ -36,7 +37,11 @@ export async function handleStartWorkspaceExport(request: Request): Promise<Resp
       return Response.json({ error: validation.error }, { status: validation.status })
     }
 
-    if (!canAccess(validation.principal.role as Role, ['admin'])) {
+    const held = await permissionsForPrincipal(
+      validation.principal.id,
+      validation.principal.role as Role
+    )
+    if (!held.has(PERMISSIONS.SETTINGS_MANAGE)) {
       log.warn({ role: validation.principal.role }, 'workspace export access denied')
       return Response.json({ error: 'Only admins can export data' }, { status: 403 })
     }

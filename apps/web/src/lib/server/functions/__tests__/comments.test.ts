@@ -118,6 +118,8 @@ const MOCK_AUTH_CONTEXT = {
   },
   user: { id: 'user_test123', email: 'test@test.com', name: 'Test', image: null },
   settings: { id: 'ws_test', slug: 'test', name: 'Test Workspace' },
+  // Gate-resolved set the fns now consume (an admin holds comment.pin).
+  permissions: ['comment.pin'],
 }
 
 // ============================================

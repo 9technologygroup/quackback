@@ -1,4 +1,5 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { DocumentDuplicateIcon } from '@heroicons/react/24/solid'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { BackLink } from '@/components/ui/back-link'
@@ -8,7 +9,9 @@ import { MacrosManager } from '@/components/admin/conversation/macros-manager'
 export const Route = createFileRoute('/admin/settings/macros')({
   loader: async () => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
-    await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })
+    await requireWorkspaceRole({
+      data: { allowedRoles: ['admin', 'member'], permission: PERMISSIONS.CONVERSATION_MANAGE },
+    })
     return {}
   },
   component: MacrosSettingsRoute,

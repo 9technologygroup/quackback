@@ -22,6 +22,18 @@ vi.mock('@/lib/server/auth', () => ({
   canAccess: (role: string, allowed: string[]) => allowed.includes(role),
 }))
 
+// The gate resolves the caller's assignment-derived set; model it with the
+// legacy preset expansion (equivalent for preset holders).
+vi.mock('@/lib/server/policy/permissions', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/lib/server/policy/permissions')>()
+  return {
+    ...original,
+    permissionsForPrincipal: vi.fn(async (_id: unknown, role: 'admin' | 'member' | 'user') =>
+      original.permissionsForLegacyRole(role)
+    ),
+  }
+})
+
 vi.mock('@/lib/server/domains/export/export-run.service', () => ({
   findActiveExportRun: hoisted.mockFindActiveExportRun,
   createExportRun: hoisted.mockCreateExportRun,

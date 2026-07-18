@@ -168,13 +168,13 @@ export const setConversationAttributeValueFn = createServerFn({ method: 'POST' }
         if (!isValidTypeId(data.conversationId, 'conversation')) {
           throw new ValidationError('VALIDATION_ERROR', 'Invalid conversation id')
         }
-        assertPermission(ctx.principal.role, PERMISSIONS.CONVERSATION_SET_ATTRIBUTES)
+        assertPermission(ctx, PERMISSIONS.CONVERSATION_SET_ATTRIBUTES)
         target = { conversationId: data.conversationId as ConversationId }
       } else {
         if (!data.ticketId || !isValidTypeId(data.ticketId, 'ticket')) {
           throw new ValidationError('VALIDATION_ERROR', 'Invalid ticket id')
         }
-        assertPermission(ctx.principal.role, PERMISSIONS.TICKET_SET_STATUS)
+        assertPermission(ctx, PERMISSIONS.TICKET_SET_STATUS)
         target = { ticketId: data.ticketId as TicketId }
       }
 

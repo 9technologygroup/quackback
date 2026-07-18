@@ -20,8 +20,8 @@ import {
 } from './auth-helpers'
 import { NotFoundError } from '@/lib/shared/errors'
 import { isTeamMember } from '@/lib/shared/roles'
+import { can } from '@/lib/server/policy/authorize'
 import { PERMISSIONS } from '@/lib/shared/permissions'
-import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { db, principal as principalTable, user as userTable, eq, inArray } from '@/lib/server/db'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
 import {
@@ -167,8 +167,7 @@ export const fetchPortalData = createServerFn({ method: 'GET' })
     // portal permission bootstrap. Everyone else has these params dropped, so
     // a crafted request can never surface owner/segment structure or widen the
     // public feed. `owner: 'unassigned'` maps to a null owner match.
-    const callerPermissions = resolveActorPermissions(auth?.principal.role ?? null)
-    const canViewPrivate = callerPermissions.has(PERMISSIONS.POST_VIEW_PRIVATE)
+    const canViewPrivate = can(actor, PERMISSIONS.POST_VIEW_PRIVATE)
     const ownerId = canViewPrivate
       ? data.owner === 'unassigned'
         ? null

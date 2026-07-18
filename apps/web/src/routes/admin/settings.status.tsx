@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { SignalIcon } from '@heroicons/react/24/solid'
@@ -22,7 +23,9 @@ export const Route = createFileRoute('/admin/settings/status')({
   },
   loader: async ({ context }) => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
-    await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })
+    await requireWorkspaceRole({
+      data: { allowedRoles: ['admin', 'member'], permission: PERMISSIONS.STATUS_PAGE_MANAGE },
+    })
     await context.queryClient.ensureQueryData(statusSettingsQueries.get())
     return {}
   },

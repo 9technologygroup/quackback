@@ -65,6 +65,15 @@ function buildAuth(overrides: {
       role: overrides.role,
       type: overrides.principalType ?? 'user',
     },
+    // Model getOptionalAuth's contract: it attaches the gate-resolved
+    // (assignment-derived) set, which for preset holders equals the preset.
+    permissions: [
+      ...(overrides.role === 'admin'
+        ? SYSTEM_ROLE_PERMISSIONS.owner
+        : overrides.role === 'member'
+          ? SYSTEM_ROLE_PERMISSIONS.manager
+          : []),
+    ],
   }
 }
 

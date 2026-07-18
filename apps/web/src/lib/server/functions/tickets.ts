@@ -283,7 +283,7 @@ export const bulkUpdateTicketsFn = createServerFn({ method: 'POST' })
   .validator(bulkUpdateTicketsSchema)
   .handler(async ({ data }) => {
     const ctx = await requireAuth()
-    assertPermission(ctx.principal.role, permissionForBulkTicketAction(data.action.type))
+    assertPermission(ctx, permissionForBulkTicketAction(data.action.type))
     const actor = await policyActorFromAuth(ctx)
     const { bulkUpdateTickets } = await import('@/lib/server/domains/tickets/ticket.service')
 

@@ -11,11 +11,7 @@ import { getRequestHeaders } from '@tanstack/react-start/server'
 import { getSettings } from './workspace'
 import { db, principal, eq, type PermissionKey } from '@/lib/server/db'
 import { ensurePrincipalForUser } from '@/lib/server/domains/principals/principal.factory'
-import {
-  permissionsForLegacyRole,
-  permissionsForPrincipal,
-  resolveActorPermissions,
-} from '@/lib/server/policy/permissions'
+import { permissionsForPrincipal } from '@/lib/server/policy/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'auth-helpers' })
@@ -80,7 +76,13 @@ export interface AuthContext {
     role: Role
     type: string
   }
-  permissions?: PermissionKey[]
+  /**
+   * The caller's resolved (assignment-derived) permission set. Required so no
+   * consumer ever falls back to the wider legacy preset expansion for a
+   * context that skipped resolution — with custom roles the resolved set can
+   * be narrower than the preset, and a fallback would silently widen.
+   */
+  permissions: PermissionKey[]
 }
 
 /**
@@ -158,15 +160,22 @@ export async function requireAuth(options?: { permission?: PermissionKey }): Pro
 export { isAuthDenialError } from './auth-errors'
 
 /**
- * Assert a role holds a permission, throwing the same canonical message
- * `requireAuth({ permission })` uses. For the rare gate whose required
- * permission is computed at runtime (a field- or action-scoped write), so the
- * gate must stay a bare `requireAuth()` for the authz scanner while the
- * per-action permission is still enforced.
+ * Assert the authenticated caller holds a permission, throwing the same
+ * canonical message `requireAuth({ permission })` uses. For the rare gate
+ * whose required permission is computed at runtime (a field- or action-scoped
+ * write), so the gate must stay a bare `requireAuth()` for the authz scanner
+ * while the per-action permission is still enforced. Consumes the gate's
+ * already-resolved (assignment-derived) permission set — never a legacy
+ * fallback, which could be wider than a custom role's actual grant.
  */
-export function assertPermission(role: Role, permission: PermissionKey): void {
-  if (!permissionsForLegacyRole(role).has(permission)) {
-    throw new Error(`Access denied: Requires permission '${permission}', role ${role} lacks it`)
+export function assertPermission(
+  auth: Pick<AuthContext, 'permissions' | 'principal'>,
+  permission: PermissionKey
+): void {
+  if (!auth.permissions.includes(permission)) {
+    throw new Error(
+      `Access denied: Requires permission '${permission}', role ${auth.principal.role} lacks it`
+    )
   }
 }
 
@@ -200,6 +209,19 @@ export async function getOptionalAuth(): Promise<AuthContext | null> {
       avatarUrl: session.user.image ?? null,
     })
 
+    // Same assignment-derived resolution as requireAuth, so portal/public
+    // surfaces that gate on the optional context honour custom roles too.
+    // End users (role 'user') never carry workspace assignments — the role
+    // reconcile and seed heal enforce that — so the dominant portal case
+    // skips the join instead of paying a guaranteed-empty DB read.
+    const resolvedPermissions =
+      principalRecord.role === 'user'
+        ? new Set<PermissionKey>()
+        : await permissionsForPrincipal(
+            principalRecord.id as PrincipalId,
+            principalRecord.role as Role
+          )
+
     return {
       settings: {
         id: appSettings.id as WorkspaceId,
@@ -218,6 +240,7 @@ export async function getOptionalAuth(): Promise<AuthContext | null> {
         role: principalRecord.role as Role,
         type: principalRecord.type,
       },
+      permissions: [...resolvedPermissions],
     }
   } catch (error) {
     log.error({ err: error }, 'get optional auth failed')
@@ -261,8 +284,6 @@ export async function policyActorFromAuth(auth: AuthContext | null): Promise<Act
     role: auth.principal.role,
     principalType: normalizePrincipalType(auth.principal.type),
     segmentIds,
-    permissions: auth.permissions
-      ? new Set(auth.permissions)
-      : resolveActorPermissions(auth.principal.role),
+    permissions: new Set(auth.permissions),
   }
 }

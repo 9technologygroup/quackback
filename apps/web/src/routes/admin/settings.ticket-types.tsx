@@ -1,4 +1,5 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { TicketIcon } from '@heroicons/react/24/solid'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { BackLink } from '@/components/ui/back-link'
@@ -9,7 +10,9 @@ import { ticketFormsQuery } from '@/components/admin/settings/tickets/queries'
 export const Route = createFileRoute('/admin/settings/ticket-types')({
   loader: async ({ context }) => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
-    await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })
+    await requireWorkspaceRole({
+      data: { allowedRoles: ['admin', 'member'], permission: PERMISSIONS.TICKET_MANAGE_TYPES },
+    })
     await context.queryClient.ensureQueryData(ticketFormsQuery)
     return {}
   },

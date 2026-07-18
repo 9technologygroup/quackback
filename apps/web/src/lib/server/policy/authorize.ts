@@ -7,12 +7,11 @@ import type { PermissionKey } from '@/lib/shared/permissions'
  * The single permission predicate. Every converted route gate and policy branch
  * funnels through `can` / `authorize` instead of reading a role string.
  *
- * Uses the actor's resolved `permissions` when present (real request actors set
- * it via policyActorFromAuth); otherwise falls back to resolving from the actor's
- * role. In v1 permissions are a pure function of role, so both paths agree — this
- * keeps `can` correct for the inline actor fixtures the policy layer builds
- * without threading a permission set through every one. When resolution becomes
- * assignment-derived, populated actors take precedence and the seams populate.
+ * Uses the actor's resolved (assignment-derived) `permissions` when present —
+ * real request actors set it via policyActorFromAuth, so custom roles are
+ * honoured here. The role fallback covers the inline actor fixtures the policy
+ * layer builds without threading a permission set through every one; those are
+ * preset-shaped by construction, so the legacy expansion is exact for them.
  *
  * This is a capability-level guard only: deciding WHICH rows an actor may act on
  * ('own' / 'team' / 'all') is the job of the SQL `xFilter(actor)` predicates (see

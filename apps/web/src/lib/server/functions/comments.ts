@@ -7,7 +7,6 @@ import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { type PostCommentId, type PostId, type PostStatusId, type UserId } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
-import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { createActivity } from '@/lib/server/domains/activity/activity.service'
 import { logger } from '@/lib/server/logger'
 
@@ -219,7 +218,11 @@ export const getCommentPermissionsFn = createServerFn({ method: 'GET' })
         return { canEdit: false, canDelete: false }
       }
 
-      const actor = { principalId: ctx.principal.id, role: ctx.principal.role }
+      const actor = {
+        principalId: ctx.principal.id,
+        role: ctx.principal.role,
+        permissions: ctx.permissions,
+      }
       const [editResult, deleteResult] = await Promise.all([
         canEditComment(data.commentId as PostCommentId, actor),
         canDeleteComment(data.commentId as PostCommentId, actor),
@@ -264,7 +267,11 @@ export const userEditCommentFn = createServerFn({ method: 'POST' })
       const policyActor = await policyActorFromAuth(ctx)
       await assertCommentViewable(data.commentId as PostCommentId, policyActor)
 
-      const actor = { principalId: ctx.principal.id, role: ctx.principal.role }
+      const actor = {
+        principalId: ctx.principal.id,
+        role: ctx.principal.role,
+        permissions: ctx.permissions,
+      }
 
       const result = await userEditComment(data.commentId as PostCommentId, data.content, actor, {
         contentJson: (data.contentJson ?? undefined) as
@@ -294,7 +301,11 @@ export const userDeleteCommentFn = createServerFn({ method: 'POST' })
       const policyActor = await policyActorFromAuth(ctx)
       await assertCommentViewable(data.commentId as PostCommentId, policyActor)
 
-      const actor = { principalId: ctx.principal.id, role: ctx.principal.role }
+      const actor = {
+        principalId: ctx.principal.id,
+        role: ctx.principal.role,
+        permissions: ctx.permissions,
+      }
 
       await softDeleteComment(data.commentId as PostCommentId, actor)
       log.info({ comment_id: data.commentId }, 'comment deleted')
@@ -414,10 +425,8 @@ export const canPinCommentFn = createServerFn({ method: 'GET' })
 
       const ctx = await getOptionalAuth()
       // Must hold comment.pin to pin
-      if (
-        !ctx?.principal ||
-        !resolveActorPermissions(ctx.principal.role).has(PERMISSIONS.COMMENT_PIN)
-      ) {
+      // Gate-resolved (assignment-derived) permissions from getOptionalAuth.
+      if (!ctx?.principal || !(ctx.permissions ?? []).includes(PERMISSIONS.COMMENT_PIN)) {
         return { canPin: false, reason: 'Only team members can pin comments' }
       }
 

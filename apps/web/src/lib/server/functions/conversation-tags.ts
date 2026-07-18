@@ -9,7 +9,6 @@ import { createServerFn } from '@tanstack/react-start'
 import type { ConversationTagId, ConversationId } from '@quackback/ids'
 import { requireAuth } from './auth-helpers'
 import { PERMISSIONS } from '@/lib/shared/permissions'
-import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { ForbiddenError } from '@/lib/shared/errors'
 import {
   listConversationTags,
@@ -150,7 +149,7 @@ export const addConversationTagFn = createServerFn({ method: 'POST' })
     let tagId = data.tagId as ConversationTagId | undefined
     if (data.name?.trim()) {
       // Inline-create mints new taxonomy, so it additionally requires manage_tags.
-      if (!resolveActorPermissions(auth.principal.role).has(PERMISSIONS.CONVERSATION_MANAGE_TAGS)) {
+      if (!(auth.permissions ?? []).includes(PERMISSIONS.CONVERSATION_MANAGE_TAGS)) {
         throw new ForbiddenError(
           'FORBIDDEN',
           `Requires the '${PERMISSIONS.CONVERSATION_MANAGE_TAGS}' permission`

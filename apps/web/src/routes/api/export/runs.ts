@@ -10,7 +10,8 @@ const log = logger.child({ component: 'export-runs' })
  */
 export async function handleListExportRuns(): Promise<Response> {
   const { validateApiWorkspaceAccess } = await import('@/lib/server/functions/workspace')
-  const { canAccess } = await import('@/lib/server/auth')
+  const { permissionsForPrincipal } = await import('@/lib/server/policy/permissions')
+  const { PERMISSIONS } = await import('@/lib/shared/permissions')
   const { listExportRuns } = await import('@/lib/server/domains/export/export-run.service')
 
   try {
@@ -19,7 +20,11 @@ export async function handleListExportRuns(): Promise<Response> {
       return Response.json({ error: validation.error }, { status: validation.status })
     }
 
-    if (!canAccess(validation.principal.role as Role, ['admin'])) {
+    const held = await permissionsForPrincipal(
+      validation.principal.id,
+      validation.principal.role as Role
+    )
+    if (!held.has(PERMISSIONS.SETTINGS_MANAGE)) {
       return Response.json({ error: 'Only admins can view export history' }, { status: 403 })
     }
 

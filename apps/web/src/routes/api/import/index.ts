@@ -31,7 +31,8 @@ const MAX_ROWS = 10000
  */
 export async function handleImportPost(request: Request): Promise<Response> {
   const { validateApiWorkspaceAccess } = await import('@/lib/server/functions/workspace')
-  const { canAccess } = await import('@/lib/server/auth')
+  const { permissionsForPrincipal } = await import('@/lib/server/policy/permissions')
+  const { PERMISSIONS } = await import('@/lib/shared/permissions')
   const { previewImport } = await import('@/lib/server/domains/import/import-preview')
   const { createImportRun } = await import('@/lib/server/domains/import/import-run.service')
   const { enqueueImportCommitJob } = await import('@/lib/server/domains/import/import-queue')
@@ -45,7 +46,11 @@ export async function handleImportPost(request: Request): Promise<Response> {
     }
 
     // Check role - only admin can import
-    if (!canAccess(validation.principal.role as Role, ['admin'])) {
+    const held = await permissionsForPrincipal(
+      validation.principal.id,
+      validation.principal.role as Role
+    )
+    if (!held.has(PERMISSIONS.SETTINGS_MANAGE)) {
       log.warn({ role: validation.principal.role }, 'import access denied')
       return Response.json({ error: 'Only admins can import data' }, { status: 403 })
     }

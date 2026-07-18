@@ -18,8 +18,25 @@ import {
 import { type PostCommentId, type PrincipalId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
 import { Role } from '@/lib/shared/roles'
-import { PERMISSIONS } from '@/lib/shared/permissions'
+import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import { resolveActorPermissions } from '@/lib/server/policy/permissions'
+
+/**
+ * Minimal actor shape the comment policy consumes. `permissions` is the
+ * gate-resolved (assignment-derived) set from requireAuth/getOptionalAuth;
+ * when absent the checks fall back to the legacy preset expansion.
+ */
+export interface CommentActor {
+  principalId: PrincipalId
+  role: Role
+  permissions?: readonly PermissionKey[]
+}
+
+function actorHolds(actor: CommentActor, permission: PermissionKey): boolean {
+  return actor.permissions
+    ? actor.permissions.includes(permission)
+    : resolveActorPermissions(actor.role).has(permission)
+}
 import { createActivity } from '@/lib/server/domains/activity/activity.service'
 import { dispatchCommentUpdated, buildEventActor } from '@/lib/server/events/dispatch'
 import { commentMarkdownToTiptapJson } from '@/lib/server/markdown-tiptap'
@@ -69,7 +86,7 @@ export async function hasTeamMemberReply(commentId: PostCommentId): Promise<bool
  */
 export async function canEditComment(
   commentId: PostCommentId,
-  actor: { principalId: PrincipalId; role: Role }
+  actor: CommentActor
 ): Promise<CommentPermissionCheckResult> {
   log.debug({ comment_id: commentId }, 'can edit comment check')
   // Get the comment
@@ -87,7 +104,7 @@ export async function canEditComment(
   }
 
   // Operators holding comment.edit can edit any comment.
-  if (resolveActorPermissions(actor.role).has(PERMISSIONS.COMMENT_EDIT)) {
+  if (actorHolds(actor, PERMISSIONS.COMMENT_EDIT)) {
     return { allowed: true }
   }
 
@@ -118,7 +135,7 @@ export async function canEditComment(
  */
 export async function canDeleteComment(
   commentId: PostCommentId,
-  actor: { principalId: PrincipalId; role: Role }
+  actor: CommentActor
 ): Promise<CommentPermissionCheckResult> {
   log.debug({ comment_id: commentId }, 'can delete comment check')
   // Get the comment
@@ -136,7 +153,7 @@ export async function canDeleteComment(
   }
 
   // Operators holding comment.edit can delete any comment.
-  if (resolveActorPermissions(actor.role).has(PERMISSIONS.COMMENT_EDIT)) {
+  if (actorHolds(actor, PERMISSIONS.COMMENT_EDIT)) {
     return { allowed: true }
   }
 
@@ -173,7 +190,7 @@ export async function canDeleteComment(
 export async function userEditComment(
   commentId: PostCommentId,
   content: string,
-  actor: { principalId: PrincipalId; role: Role },
+  actor: CommentActor,
   options?: { contentJson?: TiptapContent | null }
 ): Promise<PostComment> {
   log.debug({ comment_id: commentId }, 'user edit comment')
@@ -261,7 +278,7 @@ export async function userEditComment(
  */
 export async function softDeleteComment(
   commentId: PostCommentId,
-  actor: { principalId: PrincipalId; role: Role }
+  actor: CommentActor
 ): Promise<void> {
   log.info({ comment_id: commentId }, 'soft delete comment')
   // Check permission first

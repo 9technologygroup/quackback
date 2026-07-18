@@ -1,7 +1,6 @@
 import { createServerFn } from '@tanstack/react-start'
 import type { PermissionKey } from '@/lib/shared/permissions'
 import { isTeamMember } from '@/lib/shared/roles'
-import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { getOptionalAuth, hasSessionCookie } from './auth-helpers'
 import { logger } from '@/lib/server/logger'
 
@@ -17,9 +16,8 @@ const log = logger.child({ component: 'portal-permissions' })
  *
  * Returns [] for end users, anonymous principals, and unauthenticated
  * requests — the portal is a public surface and this must never throw for a
- * logged-out visitor. Resolution goes through the policy layer's
- * resolveActorPermissions seam (not a client-side preset expansion) so it
- * stays correct when assignment-derived custom roles land.
+ * logged-out visitor. Returns the gate-resolved (assignment-derived) set from
+ * getOptionalAuth, so custom roles are honoured here too.
  */
 export const getMyPortalPermissionsFn = createServerFn({ method: 'GET' }).handler(
   async (): Promise<PermissionKey[]> => {
@@ -32,7 +30,8 @@ export const getMyPortalPermissionsFn = createServerFn({ method: 'GET' }).handle
       // (role 'user') have no team permissions either.
       if (auth.principal.type === 'anonymous') return []
       if (!isTeamMember(auth.principal.role)) return []
-      return [...resolveActorPermissions(auth.principal.role)]
+      // Gate-resolved (assignment-derived) set from getOptionalAuth.
+      return auth.permissions ?? []
     } catch (error) {
       // Fail open to "no permissions" — this only hides UI affordances, and
       // throwing would take down the whole portal layout loader.

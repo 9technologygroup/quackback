@@ -61,9 +61,15 @@ vi.mock('@/lib/server/functions/auth-helpers', async () => {
   return {
     requireAuth: hoisted.requireAuth,
     policyActorFromAuth: hoisted.policyActorFromAuth,
-    assertPermission: (role: Role, permission: PermissionKey) => {
-      if (!permissionsForLegacyRole(role).has(permission)) {
-        throw new Error(`Access denied: Requires permission '${permission}', role ${role} lacks it`)
+    assertPermission: (
+      auth: { permissions?: PermissionKey[]; principal: { role: Role } },
+      permission: PermissionKey
+    ) => {
+      const held = auth.permissions ?? [...permissionsForLegacyRole(auth.principal.role)]
+      if (!held.includes(permission)) {
+        throw new Error(
+          `Access denied: Requires permission '${permission}', role ${auth.principal.role} lacks it`
+        )
       }
     },
   }

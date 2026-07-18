@@ -56,7 +56,15 @@ vi.mock('@/lib/server/functions/auth-helpers', () => ({
   getOptionalAuth: vi.fn(),
   requireAuth: vi.fn(),
   hasAuthCredentials: vi.fn().mockReturnValue(false),
-  policyActorFromAuth: vi.fn(),
+  // The gate now consults can(actor, ...) — resolve to an anonymous-shaped
+  // actor so the permission read has something real to look at.
+  policyActorFromAuth: vi.fn().mockResolvedValue({
+    principalId: null,
+    role: null,
+    principalType: 'anonymous',
+    segmentIds: new Set(),
+    permissions: new Set(),
+  }),
 }))
 
 vi.mock('@/lib/server/functions/workspace', () => ({ getSettings: vi.fn() }))

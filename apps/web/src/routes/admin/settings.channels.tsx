@@ -1,4 +1,5 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { EnvelopeIcon } from '@heroicons/react/24/outline'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { BackLink } from '@/components/ui/back-link'
@@ -8,7 +9,9 @@ import { EmailChannelSettings } from '@/components/admin/channels/email-channel-
 export const Route = createFileRoute('/admin/settings/channels')({
   loader: async () => {
     const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
-    await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })
+    await requireWorkspaceRole({
+      data: { allowedRoles: ['admin', 'member'], permission: PERMISSIONS.CHANNEL_ACCOUNT_MANAGE },
+    })
     return {}
   },
   component: ChannelsSettingsRoute,

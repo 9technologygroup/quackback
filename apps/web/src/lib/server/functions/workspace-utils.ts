@@ -16,15 +16,28 @@ import { logger } from '@/lib/server/logger'
 import { buildSigninRedirect } from '@/lib/shared/auth-prompt'
 import { permissionsForPrincipal } from '@/lib/server/policy/permissions'
 import type { Role } from '@/lib/shared/roles'
+import { ALL_PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 
 const log = logger.child({ component: 'workspace-utils' })
 
 const requireWorkspaceRoleSchema = z.object({
   allowedRoles: z.array(z.string()),
+  /**
+   * Additionally require this permission from the caller's resolved
+   * (assignment-derived) set. Admin-area pages gate on `allowedRoles:
+   * ['admin', 'member']` (the teammate wall) plus the permission their server
+   * functions actually enforce, so a custom role holding the page's
+   * capability can reach the page.
+   */
+  permission: z
+    .string()
+    .refine((v) => (ALL_PERMISSIONS as readonly string[]).includes(v), 'Unknown permission key')
+    .optional(),
 })
 
 /**
- * Route guard: require authenticated user with specific workspace role.
+ * Route guard: require authenticated user with specific workspace role, and
+ * optionally a resolved permission.
  * Unauthenticated callers on team-only routes are sent to the portal
  * sign-in dialog with `callbackUrl=/admin`. Callers on routes that also
  * allow role='user' (public portal) fall back to '/'.
@@ -33,7 +46,7 @@ const requireWorkspaceRoleSchema = z.object({
  * @example
  * beforeLoad: async () => {
  *   const { user, member } = await requireWorkspaceRole({
- *     data: { allowedRoles: ['admin', 'member'] }
+ *     data: { allowedRoles: ['admin', 'member'], permission: PERMISSIONS.SETTINGS_MANAGE }
  *   })
  *   return { user, member }
  * }
@@ -75,6 +88,10 @@ export const requireWorkspaceRole = createServerFn({ method: 'GET' })
         principalRecord.id,
         principalRecord.role as Role
       )
+
+      if (data.permission && !resolvedPermissions.has(data.permission as PermissionKey)) {
+        throw redirect(buildSigninRedirect('/admin', { error: 'not_team_member' }))
+      }
 
       return {
         settings: appSettings,

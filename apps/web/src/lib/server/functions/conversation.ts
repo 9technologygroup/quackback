@@ -1479,7 +1479,7 @@ export const bulkUpdateConversationsFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     try {
       const ctx = await requireAuth()
-      assertPermission(ctx.principal.role, permissionForBulkAction(data.action.type))
+      assertPermission(ctx, permissionForBulkAction(data.action.type))
       const actor = await policyActorFromAuth(ctx)
       const {
         assignConversation,
