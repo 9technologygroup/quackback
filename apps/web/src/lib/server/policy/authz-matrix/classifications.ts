@@ -167,6 +167,20 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
     'requester unwatches their own ticket (flag-gated)'
   ),
 
+  // Widget tickets: the same ownership-gated requester surface reached from the
+  // embed widget over a Bearer session; each fn additionally consults the
+  // isWidgetTicketsEnabled() choke point and the two-tier identity guard.
+  'lib/server/functions/widget-tickets.ts::getWidgetTicketFormFn': END_USER(
+    'widget visitor reads the customer intake form shape (choke-point-gated)'
+  ),
+  // list/get/thread/reply/create all authenticate through this shared helper
+  // (the scanner attributes the gate to the call site, not the five callers):
+  // choke point + requireAuth + two-tier identity check + ownership in the
+  // requester service.
+  'lib/server/functions/widget-tickets.ts::requireWidgetTicketActor': END_USER(
+    'widget visitor acts on their own tickets (choke-point + identity-tier gated; ownership in requester.service)'
+  ),
+
   // Comments / reactions: end-user create + own-edit/delete.
   'lib/server/functions/comments.ts::createCommentFn': END_USER('end-user posts a comment'),
   'lib/server/functions/comments.ts::addReactionFn': END_USER('end-user adds a reaction'),

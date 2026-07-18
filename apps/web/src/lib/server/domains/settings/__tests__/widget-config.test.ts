@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   DEFAULT_WIDGET_CONFIG,
   DEFAULT_MESSENGER_CONFIG,
@@ -7,8 +7,30 @@ import {
   type UpdateWidgetConfigInput,
   type PublicWidgetConfig,
 } from '../settings.types'
-import { generateWidgetSecret, publicMessengerConfig } from '../settings.widget'
+
+// Partial-mock the helpers so getPublicWidgetConfig reads a fixture settings row
+// while deepMerge/parseJsonConfig (used by the tests below) stay real.
+const settingsRow = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }))
+vi.mock('../settings.helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../settings.helpers')>()),
+  requireSettings: async () => settingsRow.current,
+}))
+
+import {
+  generateWidgetSecret,
+  publicMessengerConfig,
+  getPublicWidgetConfig,
+} from '../settings.widget'
 import { deepMerge } from '../settings.helpers'
+
+function fixtureRow(widget: WidgetConfig, featureFlags?: Record<string, boolean>) {
+  return {
+    widgetConfig: JSON.stringify(widget),
+    assistantConfig: null,
+    helpCenterConfig: null,
+    featureFlags: featureFlags ? JSON.stringify(featureFlags) : null,
+  }
+}
 
 describe('Widget Config Types', () => {
   describe('DEFAULT_MESSENGER_CONFIG', () => {
@@ -158,6 +180,33 @@ describe('Widget Config Types', () => {
         'latest_updates',
       ])
     })
+  })
+})
+
+describe('getPublicWidgetConfig — tickets projection', () => {
+  it('projects tabs.tickets true only when the toggle AND the flag are on', async () => {
+    settingsRow.current = fixtureRow({ enabled: true, tabs: { feedback: false, tickets: true } })
+    const projected = await getPublicWidgetConfig()
+    // supportTickets defaults on, so the toggle alone is enough here.
+    expect(projected.tabs?.tickets).toBe(true)
+    // Tickets can be the sole enabled surface.
+    expect(projected.enabled).toBe(true)
+  })
+
+  it('projects tabs.tickets false when the flag is off, even with the toggle on', async () => {
+    settingsRow.current = fixtureRow(
+      { enabled: true, tabs: { feedback: false, tickets: true } },
+      { supportTickets: false }
+    )
+    const projected = await getPublicWidgetConfig()
+    expect(projected.tabs?.tickets).toBe(false)
+    expect(projected.enabled).toBe(false)
+  })
+
+  it('projects tabs.tickets false for the default config (toggle absent)', async () => {
+    settingsRow.current = fixtureRow(DEFAULT_WIDGET_CONFIG)
+    const projected = await getPublicWidgetConfig()
+    expect(projected.tabs?.tickets).toBe(false)
   })
 })
 

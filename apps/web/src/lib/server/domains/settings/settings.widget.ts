@@ -230,11 +230,15 @@ export async function getPublicWidgetConfig(): Promise<PublicWidgetConfig> {
         (config.tabs?.messenger ?? false) &&
         flags.supportInbox &&
         (config.messenger?.enabled ?? false),
+      // Tickets: the tab toggle IS the module toggle (no sub-config master
+      // switch, unlike messenger), ANDed with the experimental supportTickets flag.
+      tickets: (config.tabs?.tickets ?? false) && flags.supportTickets,
       home: config.tabs?.home,
     }
     return {
       enabled:
-        config.enabled && [tabs.feedback, tabs.changelog, tabs.help, tabs.messenger].some(Boolean),
+        config.enabled &&
+        [tabs.feedback, tabs.changelog, tabs.help, tabs.messenger, tabs.tickets].some(Boolean),
       defaultBoard: config.defaultBoard,
       position: config.position,
       launcherGreeting: config.launcherGreeting,

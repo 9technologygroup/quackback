@@ -5,7 +5,7 @@
  * permissions. Internal notes are stripped from the requester's thread, and a
  * requester reply posts as a customer-visible visitor message.
  */
-import { db, tickets, eq, and, isNull, desc, type Ticket } from '@/lib/server/db'
+import { db, tickets, principal, eq, and, isNull, desc, type Ticket } from '@/lib/server/db'
 import type { TicketId, PrincipalId } from '@quackback/ids'
 import type { Actor, PrincipalType } from '@/lib/server/policy/types'
 import type { TiptapContent, ConversationAttachment } from '@/lib/shared/db-types'
@@ -28,6 +28,73 @@ const LIST_LIMIT = 100
 function requireRequester(actor: Actor): PrincipalId {
   if (!actor.principalId) throw new ForbiddenError('FORBIDDEN', 'You must be signed in')
   return actor.principalId
+}
+
+/** Normalize a contact email; returns undefined when it isn't plausibly one. */
+function normalizeContactEmail(raw: string | undefined | null): string | undefined {
+  const email = raw?.trim().toLowerCase() ?? ''
+  if (!email || email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return undefined
+  return email
+}
+
+/** Whether a raw string is a plausible contact email — the single predicate the
+ *  widget fn gate and the capture path both use, so the two can't drift. */
+export function isPlausibleContactEmail(raw: string | undefined | null): boolean {
+  return normalizeContactEmail(raw) !== undefined
+}
+
+/**
+ * Whether the requester has a durable contact channel that survives their
+ * session. A verified (`user`) principal carries an account email, so it always
+ * qualifies. An `anonymous` principal (a widget visitor whose 7-day token can
+ * expire) qualifies only once a `contactEmail` has been captured onto their
+ * principal. Discriminates on the resolved `Actor.principalType`, never a raw
+ * principal string (auth-helpers warns that collapsing anonymous is a security
+ * bug). `service` principals never reach these requester paths.
+ */
+export async function requesterHasContactChannel(actor: Actor): Promise<boolean> {
+  if (actor.principalType !== 'anonymous') return true
+  if (!actor.principalId) return false
+  const [row] = await db
+    .select({ contactEmail: principal.contactEmail })
+    .from(principal)
+    .where(eq(principal.id, actor.principalId))
+    .limit(1)
+  return Boolean(row?.contactEmail)
+}
+
+/**
+ * Refuse a requester write when there is no durable contact channel — otherwise
+ * an anonymous visitor's ticket has no way to reach them once the 7-day token
+ * expires. Refused with a discriminable `EMAIL_REQUIRED`.
+ */
+async function assertRequesterContactChannel(actor: Actor): Promise<void> {
+  if (await requesterHasContactChannel(actor)) return
+  throw new ForbiddenError(
+    'EMAIL_REQUIRED',
+    'An email address is required to file or reply to a ticket'
+  )
+}
+
+/**
+ * Overwrite-once capture of a requester's contact email onto their principal —
+ * the same pattern pre-chat capture uses (`UPDATE ... WHERE contact_email IS
+ * NULL`), so a later ticket can never silently replace an address already on
+ * file. A non-plausible email is a no-op (`captured: false`). Returns whether a
+ * new address was written.
+ */
+export async function captureRequesterEmail(
+  principalId: PrincipalId,
+  rawEmail: string
+): Promise<{ captured: boolean }> {
+  const email = normalizeContactEmail(rawEmail)
+  if (!email) return { captured: false }
+  const res = await db
+    .update(principal)
+    .set({ contactEmail: email })
+    .where(and(eq(principal.id, principalId), isNull(principal.contactEmail)))
+    .returning({ id: principal.id })
+  return { captured: res.length > 0 }
 }
 
 /**
@@ -92,9 +159,15 @@ export async function createMyTicket(
     description?: string
     descriptionJson?: TiptapContent | null
     attachments?: ConversationAttachment[]
+    /** Validated intake-form answers, stored on the ticket's customAttributes. */
+    customAttributes?: Record<string, unknown>
   }
 ): Promise<TicketDTO> {
   const principalId = requireRequester(actor)
+  // Anonymous requesters must have a durable contact channel (email) on file —
+  // the widget email-capture tier writes it before calling this (defense in
+  // depth: the fn layer enforces the same guard).
+  await assertRequesterContactChannel(actor)
   return createTicketCore(
     {
       type: 'customer',
@@ -102,6 +175,7 @@ export async function createMyTicket(
       description: input.description,
       descriptionJson: input.descriptionJson,
       attachments: input.attachments,
+      customAttributes: input.customAttributes,
       requesterPrincipalId: principalId,
     },
     actor
@@ -140,6 +214,7 @@ export async function replyToMyTicket(
   input: SendTicketMessageInput
 ): Promise<{ message: ConversationMessageDTO }> {
   const principalId = requireRequester(actor)
+  await assertRequesterContactChannel(actor)
   await loadOwnedTicketOr404(input.ticketId, principalId)
   return appendRequesterReply(input.ticketId, principalId, input, actor)
 }

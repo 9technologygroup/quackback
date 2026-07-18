@@ -35,3 +35,20 @@ export async function isSupportTicketsEnabled(): Promise<boolean> {
   const { isFeatureEnabled } = await import('./settings.service')
   return isFeatureEnabled('supportTickets')
 }
+
+/**
+ * Whether the widget Tickets tab is enabled: the experimental `supportTickets`
+ * feature flag AND the widget master switch AND the explicit `tabs.tickets`
+ * toggle. Fail-closed. This is the single choke point every widget-facing
+ * ticket path consults (list, read, create, reply), so flipping the flag or the
+ * toggle off fails them all closed — the messenger `isMessengerEnabled` analog.
+ */
+export async function isWidgetTicketsEnabled(): Promise<boolean> {
+  const { isFeatureEnabled } = await import('./settings.service')
+  const { getWidgetConfig } = await import('./settings.widget')
+  const [flagOn, widget] = await Promise.all([
+    isFeatureEnabled('supportTickets'),
+    getWidgetConfig(),
+  ])
+  return Boolean(flagOn && widget.enabled && widget.tabs?.tickets)
+}

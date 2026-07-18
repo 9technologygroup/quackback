@@ -28,8 +28,11 @@ import { WidgetHelp } from '@/components/widget/widget-help'
 import { WidgetHelpCategory } from '@/components/widget/widget-help-category'
 import { WidgetHelpDetail } from '@/components/widget/widget-help-detail'
 import { WidgetMessenger } from '@/components/widget/widget-messenger'
-import type { ConversationId } from '@quackback/ids'
+import type { ConversationId, TicketId } from '@quackback/ids'
 import { WidgetMessages } from '@/components/widget/widget-messages'
+import { WidgetTickets } from '@/components/widget/widget-tickets'
+import { WidgetTicketNew } from '@/components/widget/widget-ticket-new'
+import { WidgetTicketDetail } from '@/components/widget/widget-ticket-detail'
 import { useWidgetAuth } from '@/components/widget/widget-auth-provider'
 import { portalQueries } from '@/lib/client/queries/portal'
 import { publicChangelogQueries } from '@/lib/client/queries/changelog'
@@ -93,6 +96,14 @@ export const Route = createFileRoute('/widget/')({
       ((settings?.featureFlags as { supportInbox?: boolean } | undefined)?.supportInbox ?? false) &&
       (settings?.publicWidgetConfig?.messenger?.enabled ?? false) &&
       (settings?.publicWidgetConfig?.tabs?.messenger ?? false)
+
+    // Tickets triple-gate: the experimental supportTickets flag + the tab
+    // toggle. The public projection already ANDs the flag into tabs.tickets, but
+    // the loader recomputes it defensively (mirrors messengerTabEnabled).
+    const ticketsTabEnabled =
+      ((settings?.featureFlags as { supportTickets?: boolean } | undefined)?.supportTickets ??
+        false) &&
+      (settings?.publicWidgetConfig?.tabs?.tickets ?? false)
 
     // Presence is tenant-global (not visitor-specific), so the anonymous SSR
     // baseline value is exactly correct for every visitor — seed the shared
@@ -206,6 +217,8 @@ export const Route = createFileRoute('/widget/')({
         // Support Inbox flag + Messenger enabled + tab on (computed above). The
         // persisted config names this `messenger`; the widget speaks `messages`.
         messages: messengerTabEnabled,
+        // Support Tickets flag + tab on (computed above).
+        tickets: ticketsTabEnabled,
         // Admin opt-out for the aggregated Home tab (defaults to shown).
         home: settings?.publicWidgetConfig?.tabs?.home ?? true,
       },
@@ -385,6 +398,7 @@ function WidgetPage() {
   const [backTarget, setBackTarget] = useState<{ tab: WidgetTab; view: WidgetView } | null>(null)
 
   const [successPost, setSuccessPost] = useState<SuccessPost | null>(null)
+  const [selectedTicketId, setSelectedTicketId] = useState<TicketId | null>(null)
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null)
   const [selectedChangelogId, setSelectedChangelogId] = useState<string | null>(null)
   const [selectedHelpSlug, setSelectedHelpSlug] = useState<string | null>(null)
@@ -404,6 +418,18 @@ function WidgetPage() {
     setConversationTarget(target ?? null)
     setActiveTab('messages')
     setView('messenger')
+  }, [])
+
+  // Open a ticket: an id opens its thread, 'new' opens the create form. Both
+  // are pushed on top of the Tickets list (like the messenger thread).
+  const openTicket = useCallback((target: TicketId | 'new') => {
+    setActiveTab('tickets')
+    if (target === 'new') {
+      setView('ticket-new')
+    } else {
+      setSelectedTicketId(target)
+      setView('ticket-detail')
+    }
   }, [])
 
   // Long-form content reads better wide: ask the host SDK to grow the panel
@@ -442,6 +468,9 @@ function WidgetPage() {
         tabs.messages
       ) {
         openMessenger()
+      } else if (opts.view === 'tickets' && tabs.tickets) {
+        setActiveTab('tickets')
+        setView('tickets')
       } else if ((opts.view === 'home' || opts.view === 'overview') && homeEnabled(tabs)) {
         setActiveTab('home')
         setView('overview')
@@ -497,6 +526,12 @@ function WidgetPage() {
       setView('messages')
       return
     }
+    if (view === 'ticket-detail' || view === 'ticket-new') {
+      // Ticket views open from the Tickets tab; back returns to the ticket list.
+      setSelectedTicketId(null)
+      setView('tickets')
+      return
+    }
     // Root views only show a back arrow after a cross-navigation (e.g. a Home
     // card jumped here); back returns to that origin and consumes it.
     if (
@@ -523,6 +558,9 @@ function WidgetPage() {
     } else if (tab === 'messages') {
       setConversationTarget(null)
       setView('messages')
+    } else if (tab === 'tickets') {
+      setSelectedTicketId(null)
+      setView('tickets')
     } else if (tab === 'feedback') {
       setSelectedPostId(null)
       setView('feedback')
@@ -587,7 +625,8 @@ function WidgetPage() {
     view === 'feedback' ||
     view === 'changelog' ||
     view === 'help' ||
-    view === 'messages'
+    view === 'messages' ||
+    view === 'tickets'
   const shellOnBack = !isRootView || backTarget ? handleBack : undefined
 
   // Messenger thread header lives in the SHELL's top bar (single header row):
@@ -634,9 +673,15 @@ function WidgetPage() {
       headerContent={messengerHeader}
       // The hero backdrop belongs to Home only; detail views keep a plain panel.
       backdrop={view === 'overview' ? <WidgetHeroBackdrop home={home} /> : undefined}
-      // Immersive views: the conversation thread and single-item reading views
-      // (post/article/changelog) drop the tab bar; the back chevron handles exit.
-      hideTabBar={view === 'messenger' || isExpandedView(view)}
+      // Immersive views: the conversation thread, the ticket thread/create form,
+      // and single-item reading views (post/article/changelog) drop the tab bar;
+      // the back chevron handles exit.
+      hideTabBar={
+        view === 'messenger' ||
+        view === 'ticket-detail' ||
+        view === 'ticket-new' ||
+        isExpandedView(view)
+      }
       panelExpanded={panelExpanded}
       expandControl={
         isExpandedView(view) && !hostIsMobile
@@ -703,6 +748,24 @@ function WidgetPage() {
             assistant={assistant}
             onOpenMessenger={openMessenger}
           />
+        </ViewTransition>
+      )}
+
+      {view === 'tickets' && (
+        <ViewTransition id="tickets" kind="root">
+          <WidgetTickets onOpenTicket={openTicket} />
+        </ViewTransition>
+      )}
+
+      {view === 'ticket-new' && (
+        <ViewTransition id="ticket-new" kind="push">
+          <WidgetTicketNew onCreated={(id) => openTicket(id)} />
+        </ViewTransition>
+      )}
+
+      {view === 'ticket-detail' && selectedTicketId && (
+        <ViewTransition id={`ticket-${selectedTicketId}`} kind="push">
+          <WidgetTicketDetail ticketId={selectedTicketId} />
         </ViewTransition>
       )}
 

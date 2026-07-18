@@ -16,6 +16,7 @@ interface ServerConfig {
     changelog?: boolean
     help?: boolean
     messenger?: boolean
+    tickets?: boolean
     home?: boolean
   }
   hmacRequired?: boolean

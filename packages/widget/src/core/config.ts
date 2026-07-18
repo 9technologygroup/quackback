@@ -12,7 +12,13 @@ export interface ServerConfig {
     darkPrimaryForeground?: string
     themeMode?: 'light' | 'dark' | 'user'
   }
-  tabs?: { feedback?: boolean; changelog?: boolean; help?: boolean; chat?: boolean }
+  tabs?: {
+    feedback?: boolean
+    changelog?: boolean
+    help?: boolean
+    chat?: boolean
+    tickets?: boolean
+  }
   imageUploadsInWidget?: boolean
   hmacRequired?: boolean
   /** Host-page pageview tracking; the SDK starts the tracker only when true. */

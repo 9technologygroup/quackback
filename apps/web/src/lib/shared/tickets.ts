@@ -122,3 +122,107 @@ export const DEFAULT_TICKET_FORMS: TicketForms = {
   back_office: [],
   tracker: [],
 }
+
+/** Upper bound on a stored text/long_text intake answer. Custom answers land in
+ *  the ticket's `customAttributes` JSON, so — like the 4000-char description cap —
+ *  a bound keeps an anonymous email-capture-tier visitor from writing unbounded
+ *  blobs into the column. */
+export const TICKET_INTAKE_TEXT_MAX_LENGTH = 4000
+
+/** One field-level validation failure from `validateTicketIntakeValues`. */
+export interface TicketIntakeError {
+  key: string
+  message: string
+}
+
+/**
+ * Validate customer-submitted intake values against a ticket form and return the
+ * cleaned, whitelisted value map. The single source both the client (inline
+ * validation on the New-Ticket form) and the server write path run, so the two
+ * never drift (mirrors the `ticketFormSchema` contract for the same reason).
+ *
+ * Only fields that are BOTH on the form AND `visibleToCustomer` are accepted;
+ * any other key in `values` is dropped, never trusted (a hidden/admin-only or
+ * unknown key can't be smuggled into `customAttributes`). Per-type rules: a
+ * required field must be present and non-empty; `select` must be one of its
+ * `options`; `number` must be finite; `date` must be an ISO date; `checkbox`
+ * must be a boolean. Coerces to the field's canonical stored type.
+ */
+export function validateTicketIntakeValues(
+  form: TicketFormField[],
+  values: Record<string, unknown>
+): { ok: true; values: Record<string, unknown> } | { ok: false; errors: TicketIntakeError[] } {
+  const errors: TicketIntakeError[] = []
+  const cleaned: Record<string, unknown> = {}
+
+  for (const field of form) {
+    if (!field.visibleToCustomer) continue
+    const raw = values[field.key]
+    const missing =
+      raw === undefined || raw === null || (typeof raw === 'string' && raw.trim().length === 0)
+
+    if (missing) {
+      if (field.required && field.type !== 'checkbox') {
+        errors.push({ key: field.key, message: `${field.label} is required` })
+      }
+      // A required checkbox means "must be checked" — handled in its case below.
+      if (field.type !== 'checkbox') continue
+    }
+
+    switch (field.type) {
+      case 'text':
+      case 'long_text': {
+        const str = typeof raw === 'string' ? raw : String(raw ?? '')
+        if (str.length > TICKET_INTAKE_TEXT_MAX_LENGTH) {
+          errors.push({
+            key: field.key,
+            message: `${field.label} must be ${TICKET_INTAKE_TEXT_MAX_LENGTH} characters or less`,
+          })
+          break
+        }
+        cleaned[field.key] = str
+        break
+      }
+      case 'number': {
+        const num = typeof raw === 'number' ? raw : Number(raw)
+        if (!Number.isFinite(num)) {
+          errors.push({ key: field.key, message: `${field.label} must be a number` })
+          break
+        }
+        cleaned[field.key] = num
+        break
+      }
+      case 'select': {
+        const str = typeof raw === 'string' ? raw : String(raw ?? '')
+        if (!(field.options ?? []).includes(str)) {
+          errors.push({ key: field.key, message: `${field.label} is not a valid option` })
+          break
+        }
+        cleaned[field.key] = str
+        break
+      }
+      case 'date': {
+        const str = typeof raw === 'string' ? raw : ''
+        // ISO date (YYYY-MM-DD) or full ISO datetime; must parse to a real date.
+        if (!/^\d{4}-\d{2}-\d{2}/.test(str) || Number.isNaN(Date.parse(str))) {
+          errors.push({ key: field.key, message: `${field.label} must be a valid date` })
+          break
+        }
+        cleaned[field.key] = str
+        break
+      }
+      case 'checkbox': {
+        const bool = raw === true || raw === 'true'
+        if (field.required && !bool) {
+          errors.push({ key: field.key, message: `${field.label} is required` })
+          break
+        }
+        cleaned[field.key] = bool
+        break
+      }
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors }
+  return { ok: true, values: cleaned }
+}

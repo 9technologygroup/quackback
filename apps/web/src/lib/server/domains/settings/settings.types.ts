@@ -636,6 +636,8 @@ export interface WidgetConfig {
     help?: boolean
     /** Messenger (the "Messages" tab). */
     messenger?: boolean
+    /** Support tickets (the "Tickets" tab). */
+    tickets?: boolean
     /** Show the aggregated Home tab (defaults to on; only appears with 2+ sections) */
     home?: boolean
   }
@@ -696,6 +698,7 @@ export interface UpdateWidgetConfigInput {
     changelog?: boolean
     help?: boolean
     messenger?: boolean
+    tickets?: boolean
     home?: boolean
   }
   messenger?: Partial<MessengerConfig>

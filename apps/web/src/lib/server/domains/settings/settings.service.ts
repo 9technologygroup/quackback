@@ -935,6 +935,10 @@ export async function getTenantSettings(): Promise<TenantSettings | null> {
           changelog: (widgetConfig.tabs?.changelog ?? false) && featureFlags.changelog,
           help: (widgetConfig.tabs?.help ?? false) && featureFlags.helpCenter,
           messenger: (widgetConfig.tabs?.messenger ?? false) && featureFlags.supportInbox,
+          // Fail-closed like its siblings: the Tickets tab is only ever exposed
+          // publicly when the experimental supportTickets flag is on (gate (a) of
+          // the triple gate), so no consumer can surface it with the flag off.
+          tickets: (widgetConfig.tabs?.tickets ?? false) && featureFlags.supportTickets,
         },
         // Identify is verified-only (backend-signed ssoToken; GH issue #300).
         hmacRequired: true,

@@ -100,7 +100,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 587 surfaces
+### Server functions (`requireAuth`) — 589 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -631,6 +631,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/webhooks.ts`::updateWebhookFn | webhook.manage |
 | `lib/server/functions/webhooks.ts`::deleteWebhookFn | webhook.manage |
 | `lib/server/functions/webhooks.ts`::rotateWebhookSecretFn | webhook.manage |
+| `lib/server/functions/widget-tickets.ts`::requireWidgetTicketActor | END_USER (any authenticated) |
+| `lib/server/functions/widget-tickets.ts`::getWidgetTicketFormFn | END_USER (any authenticated) |
 | `lib/server/functions/workflow-reporting.ts`::workflowEffectivenessFn | routing.manage |
 | `lib/server/functions/workflow-reporting.ts`::workflowRunsFn | routing.manage |
 | `lib/server/functions/workflow-reporting.ts`::workflowRunTimelineFn | routing.manage |
@@ -692,7 +694,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/integrations/zendesk/functions.ts`::getZendeskConnectUrl | integration.manage |
 | `lib/server/integrations/zendesk/functions.ts`::searchZendeskUserFn | integration.view |
 
-### Public REST API (`withApiKeyAuth`) — 103 surfaces
+### Public REST API (`withApiKeyAuth`) — 123 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -719,7 +721,15 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `routes/api/v1/comments/$commentId.ts`::GET | post.view_private |
 | `routes/api/v1/comments/$commentId.ts`::PATCH | comment.edit |
 | `routes/api/v1/comments/$commentId.ts`::DELETE | comment.edit |
+| `routes/api/v1/conversations/$conversationId.assign.ts`::POST | conversation.assign |
 | `routes/api/v1/conversations/$conversationId.messages.ts`::GET | conversation.view |
+| `routes/api/v1/conversations/$conversationId.note.ts`::POST | conversation.note |
+| `routes/api/v1/conversations/$conversationId.priority.ts`::POST | conversation.set_status |
+| `routes/api/v1/conversations/$conversationId.read.ts`::POST | conversation.set_status |
+| `routes/api/v1/conversations/$conversationId.reply.ts`::POST | conversation.reply |
+| `routes/api/v1/conversations/$conversationId.status.ts`::POST | conversation.set_status |
+| `routes/api/v1/conversations/$conversationId.tags.ts`::POST | conversation.set_tags |
+| `routes/api/v1/conversations/$conversationId.tags.ts`::DELETE | conversation.set_tags |
 | `routes/api/v1/conversations/$conversationId.ts`::GET | conversation.view |
 | `routes/api/v1/conversations/index.ts`::GET | conversation.view |
 | `routes/api/v1/help-center/articles/$articleId.feedback.ts`::POST | PUBLIC (any valid key) |
@@ -733,6 +743,11 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `routes/api/v1/help-center/categories/$categoryId.ts`::DELETE | help_center.manage |
 | `routes/api/v1/help-center/categories/index.ts`::GET | PUBLIC (any valid key) |
 | `routes/api/v1/help-center/categories/index.ts`::POST | help_center.manage |
+| `routes/api/v1/moderation/comments.$commentId.approve.ts`::POST | post.approve |
+| `routes/api/v1/moderation/comments.$commentId.reject.ts`::POST | post.approve |
+| `routes/api/v1/moderation/pending.ts`::GET | post.approve |
+| `routes/api/v1/moderation/posts.$postId.approve.ts`::POST | post.approve |
+| `routes/api/v1/moderation/posts.$postId.reject.ts`::POST | post.approve |
 | `routes/api/v1/posts/$postId.activity.ts`::GET | post.view_private |
 | `routes/api/v1/posts/$postId.comments.ts`::GET | post.view_private |
 | `routes/api/v1/posts/$postId.comments.ts`::POST | comment.moderate |
@@ -784,9 +799,16 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `routes/api/v1/tags/$tagId.ts`::DELETE | tag.manage |
 | `routes/api/v1/tags/index.ts`::GET | PUBLIC (any valid key) |
 | `routes/api/v1/tags/index.ts`::POST | tag.manage |
+| `routes/api/v1/ticket-statuses/index.ts`::GET | ticket.view |
+| `routes/api/v1/tickets/$ticketId.assign.ts`::POST | ticket.assign |
 | `routes/api/v1/tickets/$ticketId.messages.ts`::GET | ticket.view |
+| `routes/api/v1/tickets/$ticketId.note.ts`::POST | ticket.note |
+| `routes/api/v1/tickets/$ticketId.priority.ts`::POST | ticket.set_status |
+| `routes/api/v1/tickets/$ticketId.reply.ts`::POST | ticket.reply |
+| `routes/api/v1/tickets/$ticketId.status.ts`::POST | ticket.set_status |
 | `routes/api/v1/tickets/$ticketId.ts`::GET | ticket.view |
 | `routes/api/v1/tickets/index.ts`::GET | ticket.view |
+| `routes/api/v1/tickets/index.ts`::POST | ticket.create |
 | `routes/api/v1/users/$principalId.ts`::GET | people.view |
 | `routes/api/v1/users/$principalId.ts`::PATCH | people.manage |
 | `routes/api/v1/users/$principalId.ts`::DELETE | people.manage |
@@ -870,7 +892,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-186 of 863 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+191 of 889 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
@@ -971,6 +993,11 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `lib/server/functions/user.ts`::updateProfileNameFn | server-fn |
 | `lib/server/functions/version.ts`::getLatestVersion | server-fn |
 | `lib/server/functions/widget-capabilities.ts`::getWidgetCapabilitiesFn | server-fn |
+| `lib/server/functions/widget-tickets.ts`::createMyWidgetTicketFn | server-fn |
+| `lib/server/functions/widget-tickets.ts`::getMyWidgetTicketFn | server-fn |
+| `lib/server/functions/widget-tickets.ts`::getMyWidgetTicketThreadFn | server-fn |
+| `lib/server/functions/widget-tickets.ts`::listMyWidgetTicketsFn | server-fn |
+| `lib/server/functions/widget-tickets.ts`::replyToMyWidgetTicketFn | server-fn |
 | `lib/server/functions/workspace-utils.ts`::requireWorkspaceRole | server-fn |
 | `lib/server/functions/workspace.ts`::getCurrentUserRole | server-fn |
 | `lib/server/functions/workspace.ts`::getSettings | server-fn |

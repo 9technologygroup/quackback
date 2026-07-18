@@ -4,14 +4,15 @@
  * config. Kept as a pure module (no React) so the routing rules are unit-tested
  * directly rather than through the route component.
  *
- * Each surface is independent: Messages (conversations), Feedback, Help
- * (articles), and Changelog each own a bottom-bar tab. A "content surface" is
- * any of those four; the aggregated Home appears only when 2+ are enabled. The
- * bottom bar carries, in order: home | messages | feedback | help | changelog.
+ * Each surface is independent: Messages (conversations), Tickets (support
+ * requests), Feedback, Help (articles), and Changelog each own a bottom-bar tab.
+ * A "content surface" is any of those five; the aggregated Home appears only when
+ * 2+ are enabled. The bottom bar carries, in order:
+ * home | messages | tickets | feedback | help | changelog.
  */
 
 /** Bottom-bar tabs. "messages" is the messenger (conversations) surface. */
-export type WidgetTab = 'home' | 'messages' | 'feedback' | 'help' | 'changelog'
+export type WidgetTab = 'home' | 'messages' | 'tickets' | 'feedback' | 'help' | 'changelog'
 
 /**
  * Discrete views the widget can render. Each surface's root is its own view;
@@ -31,6 +32,9 @@ export type WidgetView =
   | 'help-detail'
   | 'messenger'
   | 'messages'
+  | 'tickets'
+  | 'ticket-new'
+  | 'ticket-detail'
 
 /**
  * Which surfaces the workspace has enabled for this widget (from the loader).
@@ -43,6 +47,8 @@ export interface EnabledTabs {
   help?: boolean
   /** Messenger conversations (the "Messages" tab). */
   messages?: boolean
+  /** Support tickets (the "Tickets" tab). */
+  tickets?: boolean
   /**
    * Admin opt-out for the aggregated Home tab. Defaults to shown; when false,
    * the widget skips Home and lands directly on the first surface even with 2+
@@ -51,9 +57,10 @@ export interface EnabledTabs {
   home?: boolean
 }
 
-/** Number of distinct content surfaces enabled (Messages, Feedback, Help, Changelog). */
+/** Number of distinct content surfaces enabled (Messages, Tickets, Feedback, Help, Changelog). */
 export function contentSurfaceCount(tabs: EnabledTabs): number {
-  return [tabs.messages, tabs.feedback, tabs.help, tabs.changelog].filter(Boolean).length
+  return [tabs.messages, tabs.tickets, tabs.feedback, tabs.help, tabs.changelog].filter(Boolean)
+    .length
 }
 
 /**
@@ -69,6 +76,7 @@ export function visibleTabs(tabs: EnabledTabs): WidgetTab[] {
   const out: WidgetTab[] = []
   if (homeEnabled(tabs)) out.push('home')
   if (tabs.messages) out.push('messages')
+  if (tabs.tickets) out.push('tickets')
   if (tabs.feedback) out.push('feedback')
   if (tabs.help) out.push('help')
   if (tabs.changelog) out.push('changelog')
@@ -89,6 +97,7 @@ export function isExpandedView(view: WidgetView): boolean {
 export function resolveInitialTab(tabs: EnabledTabs): WidgetTab {
   if (homeEnabled(tabs)) return 'home'
   if (tabs.messages) return 'messages'
+  if (tabs.tickets) return 'tickets'
   if (tabs.feedback) return 'feedback'
   if (tabs.help) return 'help'
   if (tabs.changelog) return 'changelog'
@@ -99,6 +108,7 @@ export function resolveInitialTab(tabs: EnabledTabs): WidgetTab {
 export function resolveInitialView(tabs: EnabledTabs): WidgetView {
   if (homeEnabled(tabs)) return 'overview'
   if (tabs.messages) return 'messages'
+  if (tabs.tickets) return 'tickets'
   if (tabs.feedback) return 'feedback'
   if (tabs.help) return 'help'
   if (tabs.changelog) return 'changelog'

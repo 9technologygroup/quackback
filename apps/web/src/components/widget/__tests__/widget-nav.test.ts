@@ -25,6 +25,20 @@ describe('contentSurfaceCount', () => {
     ).toBe(4)
     expect(contentSurfaceCount({})).toBe(0)
   })
+
+  it('counts tickets as its own content surface', () => {
+    expect(contentSurfaceCount({ tickets: true })).toBe(1)
+    expect(contentSurfaceCount({ tickets: true, feedback: true })).toBe(2)
+    expect(
+      contentSurfaceCount({
+        tickets: true,
+        messages: true,
+        feedback: true,
+        help: true,
+        changelog: true,
+      })
+    ).toBe(5)
+  })
 })
 
 describe('homeEnabled', () => {
@@ -69,6 +83,13 @@ describe('visibleTabs', () => {
     expect(visibleTabs({ messages: true })).toEqual(['messages'])
     expect(visibleTabs({ help: true, messages: true })).toEqual(['home', 'messages', 'help'])
   })
+  it('orders tickets after messages and before feedback', () => {
+    expect(visibleTabs({ tickets: true })).toEqual(['tickets'])
+    expect(
+      visibleTabs({ messages: true, tickets: true, feedback: true, help: true, changelog: true })
+    ).toEqual(['home', 'messages', 'tickets', 'feedback', 'help', 'changelog'])
+    expect(visibleTabs({ tickets: true, feedback: true })).toEqual(['home', 'tickets', 'feedback'])
+  })
   it('drops Home when the admin disables it', () => {
     expect(visibleTabs({ feedback: true, changelog: true, home: false })).toEqual([
       'feedback',
@@ -87,6 +108,7 @@ describe('resolveInitialTab', () => {
     expect(resolveInitialTab({ changelog: true })).toBe('changelog')
     expect(resolveInitialTab({ help: true })).toBe('help')
     expect(resolveInitialTab({ messages: true })).toBe('messages')
+    expect(resolveInitialTab({ tickets: true })).toBe('tickets')
   })
   it('lands on the first surface (messages first) when the admin disables Home', () => {
     expect(resolveInitialTab({ feedback: true, changelog: true, home: false })).toBe('feedback')
@@ -104,6 +126,7 @@ describe('resolveInitialView', () => {
     expect(resolveInitialView({ changelog: true })).toBe('changelog')
     expect(resolveInitialView({ help: true })).toBe('help')
     expect(resolveInitialView({ messages: true })).toBe('messages')
+    expect(resolveInitialView({ tickets: true })).toBe('tickets')
   })
   it('lands on the first surface root when the admin disables Home', () => {
     expect(resolveInitialView({ feedback: true, changelog: true, home: false })).toBe('feedback')

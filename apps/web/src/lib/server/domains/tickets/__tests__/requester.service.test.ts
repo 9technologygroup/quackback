@@ -59,6 +59,8 @@ import {
   replyToMyTicket,
   createMyTicket,
   appendInboundTicketReply,
+  captureRequesterEmail,
+  requesterHasContactChannel,
 } from '../requester.service'
 import { sendTicketMessage, addTicketNote } from '../ticket-message.service'
 
@@ -83,6 +85,27 @@ async function seedPrincipal(): Promise<PrincipalId> {
 
 function requesterActor(principalId: PrincipalId): Actor {
   return { ...ANONYMOUS_ACTOR, principalId, principalType: 'user' }
+}
+
+/** A widget visitor: a real principal but an anonymous-tier actor (the tier the
+ *  email-capture guard gates on). */
+function anonymousActor(principalId: PrincipalId): Actor {
+  return { ...ANONYMOUS_ACTOR, principalId, principalType: 'anonymous' }
+}
+
+/** Seed a workspace + a single default status the create path resolves to. */
+async function seedDefaultStatusWorld(): Promise<PrincipalId> {
+  await testDb
+    .insert(settings)
+    .values({ name: 'WS', slug: `ws_${suffix()}`, createdAt: new Date() })
+  await testDb
+    .update(ticketStatuses)
+    .set({ isDefault: false })
+    .where(eq(ticketStatuses.isDefault, true))
+  await testDb
+    .insert(ticketStatuses)
+    .values({ name: 'New', slug: `def_${suffix()}`, isDefault: true })
+  return seedPrincipal()
 }
 
 /** An agent actor with reply/note perms, to seed thread messages on a ticket. */
@@ -365,6 +388,50 @@ describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled b
     expect(page.messages[0].content).toBe('Rich description.')
     expect(page.messages[0].contentJson?.content?.[0]?.type).toBe('paragraph')
     expect(page.messages[0].attachments).toHaveLength(1)
+  })
+
+  it('createMyTicket persists customAttributes, readable via getMyTicket', async () => {
+    const me = await seedDefaultStatusWorld()
+    const dto = await createMyTicket(requesterActor(me), {
+      title: 'Broken',
+      customAttributes: { severity: 'high', count: 3 },
+    })
+    const read = await getMyTicket(requesterActor(me), dto.id)
+    expect(read.customAttributes.severity).toBe('high')
+    expect(read.customAttributes.count).toBe(3)
+  })
+
+  it('createMyTicket without customAttributes stores an empty object (unchanged behavior)', async () => {
+    const me = await seedDefaultStatusWorld()
+    const dto = await createMyTicket(requesterActor(me), { title: 'Plain' })
+    const read = await getMyTicket(requesterActor(me), dto.id)
+    expect(read.customAttributes).toEqual({})
+  })
+
+  it('refuses an anonymous requester with no contact email (EMAIL_REQUIRED)', async () => {
+    const me = await seedDefaultStatusWorld()
+    expect(await requesterHasContactChannel(anonymousActor(me))).toBe(false)
+    await expect(createMyTicket(anonymousActor(me), { title: 'X' })).rejects.toThrow(/email/i)
+  })
+
+  it('captureRequesterEmail (overwrite-once) unlocks create for an anonymous requester', async () => {
+    const me = await seedDefaultStatusWorld()
+    const first = await captureRequesterEmail(me, 'Visitor@Example.com')
+    expect(first.captured).toBe(true)
+    // Normalized + on file now.
+    expect(await requesterHasContactChannel(anonymousActor(me))).toBe(true)
+    // A second capture never overwrites the address already on file.
+    const second = await captureRequesterEmail(me, 'other@example.com')
+    expect(second.captured).toBe(false)
+    const dto = await createMyTicket(anonymousActor(me), { title: 'X' })
+    expect(dto.type).toBe('customer')
+  })
+
+  it('a verified (user) requester never needs a captured email', async () => {
+    const me = await seedDefaultStatusWorld()
+    expect(await requesterHasContactChannel(requesterActor(me))).toBe(true)
+    const dto = await createMyTicket(requesterActor(me), { title: 'X' })
+    expect(dto.type).toBe('customer')
   })
 
   it('a requester reply reopens an awaiting-requester ticket to the first open status', async () => {
