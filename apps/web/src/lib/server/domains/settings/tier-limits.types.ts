@@ -60,6 +60,8 @@ export interface TierLimits {
   maxTeamSeats: TierLimit<number>
   /** Active (non-deleted) status page components. */
   maxStatusComponents: TierLimit<number>
+  /** Custom (non-system) roles. Null = unlimited, the OSS default. */
+  maxCustomRoles: TierLimit<number>
 
   /**
    * Monthly LLM token budget (input + output combined). All AI features
@@ -82,6 +84,7 @@ export const OSS_TIER_LIMITS: TierLimits = {
   maxPosts: null,
   maxTeamSeats: null,
   maxStatusComponents: null,
+  maxCustomRoles: null,
 
   aiTokensPerMonth: null,
 

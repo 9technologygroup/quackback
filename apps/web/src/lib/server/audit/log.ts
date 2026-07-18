@@ -69,6 +69,10 @@ export type AuditEventType =
   | 'user.role.changed'
   | 'user.invited'
   | 'user.removed'
+  // Custom-role CRUD (role.manage)
+  | 'role.created'
+  | 'role.updated'
+  | 'role.deleted'
   | 'two_factor.reset_by_admin'
   | 'two_factor.enabled'
   | 'two_factor.disabled'
