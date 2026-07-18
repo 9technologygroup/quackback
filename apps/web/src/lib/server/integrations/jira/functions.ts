@@ -64,48 +64,8 @@ export const getJiraConnectUrl = createServerFn({ method: 'GET' }).handler(
   }
 )
 
-/** Refresh Jira token if expired or about to expire (within 5 minutes). Returns current access token. */
-async function getJiraAccessToken(integration: { secrets: unknown; config: unknown }) {
-  const { decryptSecrets, encryptSecrets } = await import('../encryption')
-  const { db, integrations, eq } = await import('@/lib/server/db')
-  const { logger } = await import('@/lib/server/logger')
-  const log = logger.child({ component: 'jira' })
-
-  const secrets = decryptSecrets<{ accessToken: string; refreshToken?: string }>(
-    integration.secrets as string
-  )
-  const cfg = (integration.config ?? {}) as JiraIntegrationConfig
-
-  if (secrets.refreshToken && cfg.tokenExpiresAt) {
-    const expiresAt = new Date(cfg.tokenExpiresAt).getTime()
-    const bufferMs = 5 * 60 * 1000
-    if (Date.now() >= expiresAt - bufferMs) {
-      log.info('access token expired, refreshing')
-      const { refreshJiraToken } = await import('./oauth')
-      const { getPlatformCredentials } =
-        await import('@/lib/server/domains/platform-credentials/platform-credential.service')
-      const credentials = await getPlatformCredentials('jira')
-      const refreshed = await refreshJiraToken(secrets.refreshToken, credentials ?? undefined)
-
-      const newExpiry = new Date(Date.now() + refreshed.expiresIn * 1000).toISOString()
-      await db
-        .update(integrations)
-        .set({
-          secrets: encryptSecrets({
-            accessToken: refreshed.accessToken,
-            refreshToken: refreshed.refreshToken,
-          }),
-          config: { ...cfg, tokenExpiresAt: newExpiry },
-          updatedAt: new Date(),
-        })
-        .where(eq(integrations.integrationType, 'jira'))
-
-      return refreshed.accessToken
-    }
-  }
-
-  return secrets.accessToken
-}
+// Token refresh lives in ./token so the issues capability (service-side
+// create) can share it with these server functions.
 
 export const fetchJiraProjectsFn = createServerFn({ method: 'GET' }).handler(
   async (): Promise<JiraProject[]> => {
@@ -128,6 +88,7 @@ export const fetchJiraProjectsFn = createServerFn({ method: 'GET' }).handler(
       throw new Error('Jira cloud ID not found in integration config')
     }
 
+    const { getJiraAccessToken } = await import('./token')
     const accessToken = await getJiraAccessToken(integration)
     return listJiraProjects(accessToken, cloudId)
   }
@@ -159,6 +120,7 @@ export const fetchJiraIssueTypesFn = createServerFn({ method: 'POST' })
       throw new Error('Jira cloud ID not found in integration config')
     }
 
+    const { getJiraAccessToken } = await import('./token')
     const accessToken = await getJiraAccessToken(integration)
     return listJiraIssueTypes(accessToken, cloudId, data.projectId)
   })

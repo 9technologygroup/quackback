@@ -7,11 +7,10 @@ import type { HookHandler, HookResult } from '../../events/hook-types'
 import type { EventData } from '../../events/types'
 import { isRetryableError } from '../../events/hook-utils'
 import { buildGitHubIssueBody } from './message'
+import { githubIssues } from './issues'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'github' })
-
-const GITHUB_API = 'https://api.github.com'
 
 export interface GitHubTarget {
   channelId: string // "owner/repo" stored as channelId for consistency
@@ -37,75 +36,29 @@ export const githubHook: HookHandler = {
     const { title, body } = buildGitHubIssueBody(event, rootUrl)
 
     try {
-      const response = await fetch(`${GITHUB_API}/repos/${ownerRepo}/issues`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: 'application/vnd.github+json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'quackback',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-        body: JSON.stringify({ title, body }),
+      // The capability owns the API call + error classification; this hook
+      // maps its thrown errors back onto the HookResult retry contract.
+      const created = await githubIssues.create!({
+        auth: { channelId: ownerRepo, accessToken },
+        title,
+        bodyMarkdown: body,
       })
 
-      if (!response.ok) {
-        const status = response.status
-        const errorBody = await response.text()
-
-        if (status === 401) {
-          return {
-            success: false,
-            error: 'Authentication failed. Please reconnect GitHub.',
-            shouldRetry: false,
-          }
-        }
-
-        if (status === 404) {
-          return {
-            success: false,
-            error: `Repository "${ownerRepo}" not found or not accessible.`,
-            shouldRetry: false,
-          }
-        }
-
-        if (status === 422) {
-          return {
-            success: false,
-            error: `Validation error: ${errorBody}`,
-            shouldRetry: false,
-          }
-        }
-
-        if (status === 429) {
-          return {
-            success: false,
-            error: 'Rate limited by GitHub API.',
-            shouldRetry: true,
-          }
-        }
-
-        throw Object.assign(new Error(`HTTP ${status}: ${errorBody}`), { status })
-      }
-
-      const issue = (await response.json()) as {
-        number: number
-        html_url: string
-      }
-
-      log.info({ issue_number: issue.number, repo: ownerRepo }, 'issue created')
+      log.info({ issue_ref: created.externalDisplayId, repo: ownerRepo }, 'issue created')
       return {
         success: true,
-        externalId: String(issue.number),
-        externalUrl: issue.html_url,
+        externalId: created.externalId,
+        externalDisplayId: created.externalDisplayId,
+        externalUrl: created.externalUrl ?? undefined,
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+      const retryable = (error as { retryable?: boolean }).retryable
 
       return {
         success: false,
         error: errorMsg,
-        shouldRetry: isRetryableError(error),
+        shouldRetry: retryable ?? isRetryableError(error),
       }
     }
   },

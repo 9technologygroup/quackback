@@ -11,9 +11,24 @@
  * `issues.parseRef` (e.g. Linear, whose inbound externalId is an internal
  * UUID a pasted URL cannot supply) simply offers no manual linking.
  */
-import { db, eq, and, asc, integrations, ticketExternalLinks } from '@/lib/server/db'
-import type { TicketId, TicketExternalLinkId } from '@quackback/ids'
+import {
+  db,
+  eq,
+  and,
+  asc,
+  ne,
+  isNull,
+  integrations,
+  conversationMessages,
+  ticketExternalLinks,
+} from '@/lib/server/db'
+import type { TicketId, TicketExternalLinkId, IntegrationId } from '@quackback/ids'
 import { getIntegration } from '@/lib/server/integrations'
+import { decryptSecrets } from '@/lib/server/integrations/encryption'
+import type { ParsedIssueRef } from '@/lib/server/integrations/types'
+import { getBaseUrl } from '@/lib/server/config'
+import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
+import { truncate } from '@/lib/shared/utils/string'
 import { can } from '@/lib/server/policy/authorize'
 import type { Actor } from '@/lib/server/policy/types'
 import { PERMISSIONS } from '@/lib/shared/permissions'
@@ -58,10 +73,14 @@ function toDTO(row: LinkRow): TicketExternalLinkDTO {
   }
 }
 
-/** A connected tracker the panel can offer manual linking for. */
+/** A connected tracker the panel can offer manual linking / creation for. */
 export interface LinkableTrackerDTO {
   integrationType: string
   name: string
+  /** issues.parseRef present — "Link existing issue" is offered. */
+  canLink: boolean
+  /** issues.create present — "Create new issue" is offered. */
+  canCreate: boolean
 }
 
 // ------------------------------------------------------------------------ service
@@ -79,20 +98,77 @@ export async function getActiveTrackerIntegration(integrationType: string) {
 }
 
 /**
- * Connected trackers that support manual issue linking — active integration
- * row AND a registry `issues.parseRef` capability. Drives the ticket panel's
- * per-tracker sections and its link affordance.
+ * Connected trackers that support manual issue linking or creation — active
+ * integration row AND a registry `issues` capability member. Drives the
+ * ticket panel's per-tracker sections and their affordances.
  */
 export async function listLinkableTrackers(): Promise<LinkableTrackerDTO[]> {
   const rows = await db.query.integrations.findMany({
     where: eq(integrations.status, 'active'),
   })
   return rows
-    .filter((row) => getIntegration(row.integrationType)?.issues?.parseRef)
-    .map((row) => ({
-      integrationType: row.integrationType,
-      name: providerName(row.integrationType),
-    }))
+    .map((row) => {
+      const issues = getIntegration(row.integrationType)?.issues
+      return {
+        integrationType: row.integrationType,
+        name: providerName(row.integrationType),
+        canLink: Boolean(issues?.parseRef),
+        canCreate: Boolean(issues?.create),
+      }
+    })
+    .filter((t) => t.canLink || t.canCreate)
+}
+
+/** The link row for a (ticket, provider, externalId) triple, or undefined. */
+function findLink(ticketId: TicketId, integrationType: string, externalId: string) {
+  return db.query.ticketExternalLinks.findFirst({
+    where: and(
+      eq(ticketExternalLinks.ticketId, ticketId),
+      eq(ticketExternalLinks.integrationType, integrationType),
+      eq(ticketExternalLinks.externalId, externalId)
+    ),
+  })
+}
+
+/** Insert the link row + team-only audit note in one transaction. Returns the
+ *  row, or null when the (ticket, provider, externalId) link already exists
+ *  (onConflictDoNothing guards the concurrent-duplicate race). */
+async function insertLinkWithNote(
+  ticketId: TicketId,
+  integrationId: IntegrationId,
+  integrationType: string,
+  ref: ParsedIssueRef,
+  noteVerb: 'Linked' | 'Created'
+): Promise<LinkRow | null> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(ticketExternalLinks)
+      .values({
+        ticketId,
+        integrationId,
+        integrationType,
+        externalId: ref.externalId,
+        externalDisplayId: ref.externalDisplayId,
+        externalUrl: ref.externalUrl,
+      })
+      .onConflictDoNothing()
+      .returning()
+    if (!row) return null
+    // Team-only audit note on the ticket thread (never customer-visible).
+    await emitTicketSystemMessage(
+      ticketId,
+      'external_linked',
+      `${noteVerb} ${providerName(integrationType)} issue ${ref.externalDisplayId}`,
+      {
+        metadata: {
+          externalReference: ref.externalDisplayId,
+          externalUrl: ref.externalUrl ?? undefined,
+        },
+        exec: tx,
+      }
+    )
+    return row
+  })
 }
 
 /**
@@ -135,51 +211,12 @@ export async function linkTicketToIssue(
     )
   }
 
-  const findExisting = () =>
-    db.query.ticketExternalLinks.findFirst({
-      where: and(
-        eq(ticketExternalLinks.ticketId, ticketId),
-        eq(ticketExternalLinks.integrationType, integrationType),
-        eq(ticketExternalLinks.externalId, ref.externalId)
-      ),
-    })
-  const existing = await findExisting()
+  const existing = await findLink(ticketId, integrationType, ref.externalId)
   if (existing) return toDTO(existing) // idempotent re-link
 
-  const created = await db.transaction(async (tx) => {
-    // onConflictDoNothing guards the pre-check race: a concurrent re-link of
-    // the same issue yields no row (and writes no duplicate audit note)
-    // instead of surfacing a unique-constraint error.
-    const [row] = await tx
-      .insert(ticketExternalLinks)
-      .values({
-        ticketId,
-        integrationId: integration.id,
-        integrationType,
-        externalId: ref.externalId,
-        externalDisplayId: ref.externalDisplayId,
-        externalUrl: ref.externalUrl,
-      })
-      .onConflictDoNothing()
-      .returning()
-    if (!row) return null
-    // Team-only audit note on the ticket thread (never customer-visible).
-    await emitTicketSystemMessage(
-      ticketId,
-      'external_linked',
-      `Linked ${providerName(integrationType)} issue ${ref.externalDisplayId}`,
-      {
-        metadata: {
-          externalReference: ref.externalDisplayId,
-          externalUrl: ref.externalUrl ?? undefined,
-        },
-        exec: tx,
-      }
-    )
-    return row
-  })
+  const created = await insertLinkWithNote(ticketId, integration.id, integrationType, ref, 'Linked')
   if (!created) {
-    const winner = await findExisting()
+    const winner = await findLink(ticketId, integrationType, ref.externalId)
     if (winner) return toDTO(winner) // lost the race to an identical link
     throw new ValidationError('LINK_FAILED', 'Could not link the issue. Please try again.')
   }
@@ -187,6 +224,113 @@ export async function linkTicketToIssue(
   log.info(
     { ticket_id: ticketId, external_id: ref.externalId, integration_id: integration.id },
     'ticket linked to external issue'
+  )
+  return toDTO(created)
+}
+
+/**
+ * Create a NEW issue on the connected tracker from a ticket, and link it
+ * (team-only, TICKET_ASSIGN — the same gate as link/unlink; creating an
+ * external issue is the same association-management act). Capability-gated on
+ * `issues.create`. Title = the ticket title; body = the first thread message
+ * rendered to markdown (the provider capability down-converts) plus a
+ * back-link footer. The external create is NOT idempotent — a retry after a
+ * failed link lands a second issue — so the link insert happens immediately
+ * after, in one transaction with the audit note.
+ */
+export async function createIssueForTicket(
+  ticketId: TicketId,
+  integrationType: string,
+  actor: Actor
+): Promise<TicketExternalLinkDTO> {
+  assertCan(actor, PERMISSIONS.TICKET_ASSIGN, 'create an issue for this ticket')
+  const ticket = await loadTicketOr404(ticketId)
+
+  const issues = getIntegration(integrationType)?.issues
+  const create = issues?.create
+  if (!create) {
+    throw new ValidationError('NOT_SUPPORTED', 'This integration does not support issue creation')
+  }
+
+  const integration = await getActiveTrackerIntegration(integrationType)
+  if (!integration) {
+    throw new ValidationError(
+      'NOT_CONFIGURED',
+      `Connect the ${providerName(integrationType)} integration first`
+    )
+  }
+
+  // The merged bag the event-bus hooks receive: row config + decrypted
+  // secrets — or the provider's own prepareAuth when credentials need more
+  // than a merge (Jira's expiring OAuth token).
+  const auth: Record<string, unknown> = issues.prepareAuth
+    ? await issues.prepareAuth(integration)
+    : {
+        ...((integration.config ?? {}) as Record<string, unknown>),
+        ...(integration.secrets ? decryptSecrets(integration.secrets) : {}),
+      }
+
+  // Body: the first CUSTOMER-VISIBLE thread message (the requester's report),
+  // rendered to markdown via the ticket idiom — tickets have no description
+  // column. Internal notes are structurally excluded: they must never reach
+  // an external tracker.
+  const [firstMessage] = await db
+    .select({
+      content: conversationMessages.content,
+      contentJson: conversationMessages.contentJson,
+    })
+    .from(conversationMessages)
+    .where(
+      and(
+        eq(conversationMessages.ticketId, ticketId),
+        ne(conversationMessages.senderType, 'system'),
+        eq(conversationMessages.isInternal, false),
+        isNull(conversationMessages.deletedAt)
+      )
+    )
+    .orderBy(asc(conversationMessages.createdAt))
+    .limit(1)
+  const narrative = firstMessage
+    ? truncate(contentJsonToMarkdown(firstMessage.contentJson, firstMessage.content), 2000)
+    : ''
+  const bodyMarkdown = [
+    narrative,
+    `---`,
+    `Created from Quackback ticket #${ticket.number}: ${getBaseUrl()}/admin/inbox?i=${ticketId}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+  let ref: ParsedIssueRef
+  try {
+    ref = await create({ auth, title: ticket.title, bodyMarkdown })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error'
+    log.error(
+      { err: error, ticket_id: ticketId, integration_type: integrationType },
+      'issue create failed'
+    )
+    throw new ValidationError('CREATE_FAILED', message)
+  }
+
+  const created = await insertLinkWithNote(
+    ticketId,
+    integration.id,
+    integrationType,
+    ref,
+    'Created'
+  )
+  if (!created) {
+    // The issue exists on the tracker but an identical link already did too —
+    // surface the existing link rather than failing the whole action.
+    const existing = await findLink(ticketId, integrationType, ref.externalId)
+    if (existing) return toDTO(existing)
+    throw new ValidationError('LINK_FAILED', 'Issue created but could not be linked.')
+  }
+
+  log.info(
+    { ticket_id: ticketId, external_id: ref.externalId, integration_id: integration.id },
+    'issue created from ticket'
   )
   return toDTO(created)
 }

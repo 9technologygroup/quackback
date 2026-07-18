@@ -37,11 +37,18 @@ vi.mock('../ticket.webhooks', () => ({
 // exercise it.
 vi.mock('@/lib/server/realtime/conversation-channels', () => ({ publishTicketEvent: vi.fn() }))
 
+// The create path decrypts integration secrets; supply a fixed token so
+// seeded rows don't need real AES blobs.
+vi.mock('@/lib/server/integrations/encryption', () => ({
+  decryptSecrets: vi.fn(() => ({ accessToken: 'test-token' })),
+}))
+
 import { createTicket } from '../ticket.service'
 import {
   linkTicketToIssue,
   unlinkTicketIssue,
   listTicketExternalLinks,
+  createIssueForTicket,
 } from '../ticket-external-links.service'
 import { githubIssues } from '@/lib/server/integrations/github/issues'
 import { jiraIssues } from '@/lib/server/integrations/jira/issues'
@@ -198,23 +205,51 @@ describe('jiraIssues.parseRef', () => {
       expect(parse(input)).toBeNull()
     }
   })
+
+  it('pins the connected site when configured (bare-key collision guard)', () => {
+    expect(() =>
+      parse('https://evil.atlassian.net/browse/PROJ-1', { siteUrl: 'https://acme.atlassian.net' })
+    ).toThrowError(/connected jira site/i)
+    expect(
+      parse('https://acme.atlassian.net/browse/PROJ-1', {
+        siteUrl: 'https://acme.atlassian.net',
+      })?.externalId
+    ).toBe('PROJ-1')
+  })
 })
 
 describe('azureDevOpsIssues.parseRef', () => {
-  const parse = (input: string) => azureDevOpsIssues.parseRef!(input, {})
+  const parse = (input: string, config: Record<string, unknown> = {}) =>
+    azureDevOpsIssues.parseRef!(input, config)
 
-  it('parses a work item URL (URL-only by design)', () => {
+  it('parses a work item URL (URL-only by design), dev.azure.com and legacy hosts', () => {
     expect(parse('https://dev.azure.com/acme/widgets/_workitems/edit/123')).toEqual({
       externalId: '123',
       externalDisplayId: '#123',
       externalUrl: 'https://dev.azure.com/acme/widgets/_workitems/edit/123',
     })
+    expect(parse('https://acme.visualstudio.com/widgets/_workitems/edit/9')?.externalId).toBe('9')
   })
 
-  it('rejects bare numbers and foreign URLs', () => {
-    for (const input of ['123', '#123', 'https://dev.azure.com/acme/widgets/_boards/board/1']) {
+  it('rejects bare numbers, foreign hosts, and non-workitem URLs', () => {
+    for (const input of [
+      '123',
+      '#123',
+      'https://dev.azure.com/acme/widgets/_boards/board/1',
+      'https://example.com/acme/widgets/_workitems/edit/123',
+    ]) {
       expect(parse(input)).toBeNull()
     }
+  })
+
+  it('pins the connected organization when configured', () => {
+    expect(() =>
+      parse('https://dev.azure.com/evil/widgets/_workitems/edit/1', { organizationName: 'acme' })
+    ).toThrowError(/connected organization/i)
+    expect(
+      parse('https://dev.azure.com/ACME/widgets/_workitems/edit/1', { organizationName: 'acme' })
+        ?.externalId
+    ).toBe('1')
   })
 })
 
@@ -376,6 +411,156 @@ describe.skipIf(!fixture.available)('ticket-external-links.service (real DB, rol
     await expect(
       unlinkTicketIssue(ticketId, createId('ticket_external_link'), actor)
     ).resolves.toBeUndefined()
+  })
+
+  it('creates a GitHub issue from the ticket, links it, and notes "Created"', async () => {
+    await seedSettings()
+    await seedDefaultStatus()
+    await seedGitHubIntegration({}) // channelId acme/widgets; secrets mocked
+    await testDb
+      .update(integrations)
+      .set({ secrets: 'encrypted-blob' })
+      .where(eq(integrations.integrationType, 'github'))
+    const actor = await seedActor()
+    const ticketId = await makeTicket(actor)
+    // The requester's first message becomes the issue body narrative.
+    const { conversationMessages } = await import('@/lib/server/db')
+    await testDb.insert(conversationMessages).values({
+      ticketId,
+      principalId: actor.principalId,
+      senderType: 'visitor',
+      isInternal: false,
+      content: 'It breaks when exporting large CSVs.',
+    })
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ number: 77, html_url: 'https://github.com/acme/widgets/issues/77' }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+    try {
+      const link = await createIssueForTicket(ticketId, 'github', actor)
+
+      expect(link.externalId).toBe('77')
+      expect(link.externalDisplayId).toBe('acme/widgets#77')
+      expect(link.externalUrl).toBe('https://github.com/acme/widgets/issues/77')
+
+      // The API received the ticket title + first-message narrative + footer.
+      const [url, init] = fetchSpy.mock.calls[0]
+      expect(String(url)).toBe('https://api.github.com/repos/acme/widgets/issues')
+      const sent = JSON.parse((init as RequestInit).body as string)
+      expect(sent.body).toContain('It breaks when exporting large CSVs.')
+      expect(sent.body).toContain('Created from Quackback ticket')
+
+      const page = await listTicketMessages(ticketId, { includeInternal: true })
+      const note = page.messages.find((m) => m.systemEvent?.kind === 'external_linked')
+      expect(note?.content).toBe('Created GitHub issue acme/widgets#77')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('never puts an internal note into the external issue body', async () => {
+    await seedSettings()
+    await seedDefaultStatus()
+    await seedGitHubIntegration({})
+    await testDb
+      .update(integrations)
+      .set({ secrets: 'encrypted-blob' })
+      .where(eq(integrations.integrationType, 'github'))
+    const actor = await seedActor()
+    const ticketId = await makeTicket(actor)
+    // Only an INTERNAL agent note exists — it must not leak to the tracker.
+    const { conversationMessages } = await import('@/lib/server/db')
+    await testDb.insert(conversationMessages).values({
+      ticketId,
+      principalId: actor.principalId,
+      senderType: 'agent',
+      isInternal: true,
+      content: 'PRIVATE: customer is on the churn list, comp them a month.',
+    })
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ number: 78, html_url: 'https://github.com/acme/widgets/issues/78' }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+    try {
+      await createIssueForTicket(ticketId, 'github', actor)
+      const sent = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string) as {
+        body: string
+      }
+      expect(sent.body).not.toContain('PRIVATE')
+      expect(sent.body).toContain('Created from Quackback ticket')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('jira create splits the composite channelId into project and issue type', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ key: 'PROJ-9' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    try {
+      const ref = await jiraIssues.create!({
+        auth: { channelId: '10000:10001', cloudId: 'cloud-1', accessToken: 'tok' },
+        title: 'T',
+        bodyMarkdown: 'B',
+      })
+      expect(ref.externalId).toBe('PROJ-9')
+      const sent = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string) as {
+        fields: { project: { id: string }; issuetype?: { id: string } }
+      }
+      expect(sent.fields.project.id).toBe('10000')
+      expect(sent.fields.issuetype?.id).toBe('10001')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('surfaces a create failure as a validation error and writes no link', async () => {
+    await seedSettings()
+    await seedDefaultStatus()
+    await seedGitHubIntegration({})
+    await testDb
+      .update(integrations)
+      .set({ secrets: 'encrypted-blob' })
+      .where(eq(integrations.integrationType, 'github'))
+    const actor = await seedActor()
+    const ticketId = await makeTicket(actor)
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('nope', { status: 401 }))
+    try {
+      await expect(createIssueForTicket(ticketId, 'github', actor)).rejects.toThrow(
+        /authentication failed/i
+      )
+      expect(await listTicketExternalLinks(ticketId)).toEqual([])
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('rejects creation for a provider without the create capability', async () => {
+    await seedSettings()
+    await seedDefaultStatus()
+    const actor = await seedActor()
+    const ticketId = await makeTicket(actor)
+
+    // Shortcut has parseRef-less issues? No — it has neither capability today.
+    await expect(createIssueForTicket(ticketId, 'shortcut', actor)).rejects.toThrow(
+      /does not support/i
+    )
   })
 
   it('links a Jira issue by key through the same generic path', async () => {

@@ -6,9 +6,19 @@ import { PlusIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { toast } from 'sonner'
 import type { TicketId, TicketExternalLinkId } from '@quackback/ids'
 import { ticketQueries, ticketKeys } from '@/lib/client/queries/inbox'
-import { linkTicketIssueFn, unlinkTicketIssueFn } from '@/lib/server/functions/tickets'
+import {
+  createTicketIssueFn,
+  linkTicketIssueFn,
+  unlinkTicketIssueFn,
+} from '@/lib/server/functions/tickets'
 import { INTEGRATION_ICON_MAP } from '@/components/icons/integration-icons'
 import { Input } from '@/components/ui/input'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 interface TrackerLink {
   id: TicketExternalLinkId
@@ -19,12 +29,13 @@ interface TrackerLink {
 }
 
 /**
- * The tracker section of the ticket detail panel: link the ticket to an
- * existing issue on any connected tracker whose integration supports manual
- * ref parsing (GitHub, Jira, Azure DevOps today), list the linked issues,
- * unlink. One section per tracker; hidden entirely when nothing is connected
- * and nothing is linked. Issue state changes flow back via the inbound
- * webhook's ticket status mapping, not this panel.
+ * The tracker section of the ticket detail panel: per connected tracker, link
+ * the ticket to an existing issue (integrations with an `issues.parseRef`
+ * capability) and/or create a new issue from the ticket (integrations with an
+ * `issues.create` capability), list the linked issues, unlink. One section per
+ * tracker; hidden entirely when nothing is connected and nothing is linked.
+ * Issue state changes flow back via the inbound webhook's ticket status
+ * mapping, not this panel.
  */
 export function TicketTrackerLinks({
   ticketId,
@@ -45,16 +56,18 @@ export function TicketTrackerLinks({
 
   // One section per connected linkable tracker, plus orphan sections for
   // links whose integration was later disconnected (still visible/removable).
-  const sections: Array<{ type: string; name: string; canLink: boolean }> = data.trackers.map(
-    (t: { integrationType: string; name: string }) => ({
-      type: t.integrationType,
-      name: t.name,
-      canLink: true,
-    })
-  )
+  const sections: Array<{ type: string; name: string; canLink: boolean; canCreate: boolean }> =
+    data.trackers.map(
+      (t: { integrationType: string; name: string; canLink: boolean; canCreate: boolean }) => ({
+        type: t.integrationType,
+        name: t.name,
+        canLink: t.canLink,
+        canCreate: t.canCreate,
+      })
+    )
   for (const type of linksByType.keys()) {
     if (!sections.some((s) => s.type === type)) {
-      sections.push({ type, name: type, canLink: false })
+      sections.push({ type, name: type, canLink: false, canCreate: false })
     }
   }
   if (sections.length === 0) return null
@@ -68,6 +81,7 @@ export function TicketTrackerLinks({
           type={s.type}
           name={s.name}
           canLink={s.canLink}
+          canCreate={s.canCreate}
           links={linksByType.get(s.type) ?? []}
           onChanged={onChanged}
         />
@@ -81,6 +95,7 @@ function TrackerSection({
   type,
   name,
   canLink,
+  canCreate,
   links,
   onChanged,
 }: {
@@ -88,6 +103,7 @@ function TrackerSection({
   type: string
   name: string
   canLink: boolean
+  canCreate: boolean
   links: TrackerLink[]
   onChanged: () => void
 }) {
@@ -118,6 +134,11 @@ function TrackerSection({
     onSuccess: settle,
     onError,
   })
+  const create = useMutation({
+    mutationFn: () => createTicketIssueFn({ data: { ticketId, integrationType: type } }),
+    onSuccess: settle,
+    onError,
+  })
 
   const Icon = INTEGRATION_ICON_MAP[type]
 
@@ -126,21 +147,44 @@ function TrackerSection({
     if (value && !link.isPending) link.mutate(value)
   }
 
+  // Both affordances → a two-item menu; a single affordance renders directly.
+  const addBtnClass =
+    'inline-flex items-center gap-1 text-[13px] font-medium text-primary hover:underline'
+  const addAffordance =
+    canLink && canCreate ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button type="button" className={addBtnClass} disabled={create.isPending}>
+            <PlusIcon className="size-4" /> {create.isPending ? 'Creating…' : 'Add issue'}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={() => setAdding(true)}>Link existing issue…</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => create.mutate()}>Create new issue</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : canLink ? (
+      <button type="button" onClick={() => setAdding(true)} className={addBtnClass}>
+        <PlusIcon className="size-4" /> Link issue
+      </button>
+    ) : canCreate ? (
+      <button
+        type="button"
+        onClick={() => create.mutate()}
+        disabled={create.isPending}
+        className={addBtnClass}
+      >
+        <PlusIcon className="size-4" /> {create.isPending ? 'Creating…' : 'Create issue'}
+      </button>
+    ) : null
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           {Icon && <Icon className="h-4 w-4" />} {name}
         </span>
-        {canLink && !adding && (
-          <button
-            type="button"
-            onClick={() => setAdding(true)}
-            className="inline-flex items-center gap-1 text-[13px] font-medium text-primary hover:underline"
-          >
-            <PlusIcon className="size-4" /> Link issue
-          </button>
-        )}
+        {!adding && addAffordance}
       </div>
 
       {adding && (

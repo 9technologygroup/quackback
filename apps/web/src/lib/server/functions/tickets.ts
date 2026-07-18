@@ -394,6 +394,19 @@ export const linkTicketIssueFn = createServerFn({ method: 'POST' })
     return linkTicketToIssue(data.ticketId as TicketId, data.issue, actor, data.integrationType)
   })
 
+/** Create a NEW issue on a connected tracker from this ticket and link it.
+ *  Gated on TICKET_ASSIGN — the same association-management gate as
+ *  link/unlink. Capability-gated on the provider's issues.create. */
+export const createTicketIssueFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ ticketId: z.string(), integrationType: z.string().min(1).max(50) }))
+  .handler(async ({ data }) => {
+    const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_ASSIGN })
+    const actor = await policyActorFromAuth(ctx)
+    const { createIssueForTicket } =
+      await import('@/lib/server/domains/tickets/ticket-external-links.service')
+    return createIssueForTicket(data.ticketId as TicketId, data.integrationType, actor)
+  })
+
 /** Remove a ticket's tracker issue link. Gated on TICKET_ASSIGN. */
 export const unlinkTicketIssueFn = createServerFn({ method: 'POST' })
   .validator(z.object({ ticketId: z.string(), linkId: z.string() }))

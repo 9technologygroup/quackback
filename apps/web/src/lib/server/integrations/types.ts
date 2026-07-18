@@ -158,6 +158,28 @@ export interface IssueTrackerCapability {
    * the integration pins one).
    */
   parseRef?(input: string, config: Record<string, unknown>): ParsedIssueRef | null
+  /**
+   * Create an issue/work item on the connected channel. Abstracts the CALL,
+   * not the body format: `bodyMarkdown` is GitHub-flavored markdown and each
+   * provider down-converts to its native format (Markdown passthrough for
+   * GitHub/Linear, plain-paragraph ADF for Jira, escaped HTML for Azure
+   * DevOps). `auth` is the merged integration config + decrypted secrets —
+   * the same bag the event-bus hook receives (accessToken/PAT, channelId,
+   * cloudId, organizationName, …). Throws an Error with a user-facing
+   * message and optional `{ retryable?: boolean }` on failure.
+   */
+  create?(args: {
+    auth: Record<string, unknown>
+    title: string
+    bodyMarkdown: string
+  }): Promise<ParsedIssueRef>
+  /**
+   * Build the `auth` bag for `create` from the raw integration row, for
+   * providers whose credentials need more than a config+secrets merge —
+   * Jira's expiring OAuth token, refreshed and persisted before use. Absent =
+   * the caller merges `{ ...config, ...decryptSecrets(secrets) }`.
+   */
+  prepareAuth?(integration: { secrets: unknown; config: unknown }): Promise<Record<string, unknown>>
 }
 
 export interface IntegrationDefinition {

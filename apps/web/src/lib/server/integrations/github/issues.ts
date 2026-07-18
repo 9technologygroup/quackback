@@ -4,7 +4,10 @@
  * `githubInboundHandler.parseStatusChange` emits for reverse lookup.
  */
 import type { IssueTrackerCapability, ParsedIssueRef } from '../types'
+import { issueError } from '../message-utils'
 import { ValidationError } from '@/lib/shared/errors'
+
+const GITHUB_API = 'https://api.github.com'
 
 // A full issue URL (query/hash/trailing-slash tolerated) or the
 // owner/repo#number shorthand. Owner/repo segments follow GitHub's charset.
@@ -39,6 +42,54 @@ export const githubIssues: IssueTrackerCapability = {
       externalId: String(number),
       externalDisplayId: `${issueRepo}#${number}`,
       externalUrl: `https://github.com/${issueRepo}/issues/${number}`,
+    }
+  },
+
+  async create({ auth, title, bodyMarkdown }): Promise<ParsedIssueRef> {
+    const ownerRepo = auth.channelId as string
+    const accessToken = auth.accessToken as string
+
+    const response = await fetch(`${GITHUB_API}/repos/${ownerRepo}/issues`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'quackback',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({ title, body: bodyMarkdown }),
+    })
+
+    if (!response.ok) {
+      const status = response.status
+      const errorBody = await response.text()
+      if (status === 401) {
+        throw issueError('Authentication failed. Please reconnect GitHub.', {
+          retryable: false,
+          status,
+        })
+      }
+      if (status === 404) {
+        throw issueError(`Repository "${ownerRepo}" not found or not accessible.`, {
+          retryable: false,
+          status,
+        })
+      }
+      if (status === 422) {
+        throw issueError(`Validation error: ${errorBody}`, { retryable: false, status })
+      }
+      if (status === 429) {
+        throw issueError('Rate limited by GitHub API.', { retryable: true, status })
+      }
+      throw issueError(`HTTP ${status}: ${errorBody}`, { status })
+    }
+
+    const issue = (await response.json()) as { number: number; html_url: string }
+    return {
+      externalId: String(issue.number),
+      externalDisplayId: `${ownerRepo}#${issue.number}`,
+      externalUrl: issue.html_url,
     }
   },
 }
