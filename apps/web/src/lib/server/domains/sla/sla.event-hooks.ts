@@ -79,8 +79,17 @@ export async function recordSlaFromEvent(event: EventData): Promise<void> {
           await recordFirstResponse(conversationId, at)
           await recordNextResponse(conversationId, at)
         } else {
+          // Resume BEFORE re-arming: a visitor message on a snoozed
+          // conversation flips it back to open inside the message transaction
+          // (applyVisitorReopenStatus) WITHOUT emitting
+          // conversation.status_changed — the only other resume trigger — so
+          // without this the stamp would keep pausedAt forever: the sweep
+          // skips paused stamps and every later settle would exclude the
+          // whole post-reopen span. No-op when the stamp isn't paused.
+          await resumeSlaFromSnooze(conversationId, at)
           // A visitor message (re-)arms the next-response clock for the fresh
-          // customer-message cycle; it never settles anything itself.
+          // customer-message cycle; it never settles anything itself. Runs
+          // after the resume so it reads the post-shift stamp.
           await rearmNextResponse(conversationId, at)
         }
         break

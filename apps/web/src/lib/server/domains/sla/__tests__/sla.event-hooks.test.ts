@@ -108,6 +108,20 @@ describe('recordSlaFromEvent', () => {
     expect(recordNextResponse).not.toHaveBeenCalled()
   })
 
+  it('resumes a snooze-paused stamp on a visitor message BEFORE re-arming (the visitor-reopen path emits no status_changed)', async () => {
+    await recordSlaFromEvent(messageCreated('conversation_1', 'visitor'))
+    expect(resumeSlaFromSnooze).toHaveBeenCalledWith('conversation_1', new Date(at))
+    // Resume first so the re-arm reads the post-shift stamp (and so the FRT/TTC
+    // deadlines get their paused-span shift before the NRT cycle recomputes).
+    const resumeOrder = resumeSlaFromSnooze.mock.invocationCallOrder[0]
+    const rearmOrder = rearmNextResponse.mock.invocationCallOrder[0]
+    expect(resumeOrder).toBeLessThan(rearmOrder)
+    // The agent branch never resumes — status_changed owns that transition.
+    vi.clearAllMocks()
+    await recordSlaFromEvent(messageCreated('conversation_1', 'agent'))
+    expect(resumeSlaFromSnooze).not.toHaveBeenCalled()
+  })
+
   it('settles time-to-close when a conversation closes', async () => {
     await recordSlaFromEvent(statusChanged('conversation_2', 'open', 'closed'))
     // Not a snoozed -> closed move, so no resume ran: the preloaded arg is

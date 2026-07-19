@@ -13,14 +13,14 @@ import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
 import { NotFoundError, ForbiddenError } from '@/lib/shared/errors'
 import { loadTicketOr404, createTicketCore, autoReopenOnRequesterReply } from './ticket.service'
 import { emitTicketReplied } from './ticket.webhooks'
-import { buildTicketContext, ticketToDTO } from './ticket.dto'
+import { buildTicketContext, ticketToDTO, toRequesterTicketDTO } from './ticket.dto'
 import {
   insertTicketMessage,
   listTicketMessages,
   type SendTicketMessageInput,
   type TicketMessagePage,
 } from './ticket-message.service'
-import type { TicketDTO } from './ticket.types'
+import type { RequesterTicketDTO } from './ticket.types'
 
 const LIST_LIMIT = 100
 
@@ -110,7 +110,7 @@ async function loadOwnedTicketOr404(ticketId: TicketId, principalId: PrincipalId
 }
 
 /** Every `customer` ticket the actor filed, newest activity first. */
-export async function listMyTickets(actor: Actor): Promise<TicketDTO[]> {
+export async function listMyTickets(actor: Actor): Promise<RequesterTicketDTO[]> {
   const principalId = requireRequester(actor)
   const rows = await db
     .select()
@@ -125,15 +125,15 @@ export async function listMyTickets(actor: Actor): Promise<TicketDTO[]> {
     .orderBy(desc(tickets.updatedAt), desc(tickets.id))
     .limit(LIST_LIMIT)
   const ctx = await buildTicketContext(rows)
-  return rows.map((r) => ticketToDTO(r, ctx))
+  return rows.map((r) => ticketToDTO(r, ctx, 'requester'))
 }
 
 /** A single ticket the actor owns as requester. */
-export async function getMyTicket(actor: Actor, ticketId: TicketId): Promise<TicketDTO> {
+export async function getMyTicket(actor: Actor, ticketId: TicketId): Promise<RequesterTicketDTO> {
   const principalId = requireRequester(actor)
   const ticket = await loadOwnedTicketOr404(ticketId, principalId)
   const ctx = await buildTicketContext([ticket])
-  return ticketToDTO(ticket, ctx)
+  return ticketToDTO(ticket, ctx, 'requester')
 }
 
 /** The customer-visible thread of a ticket the actor owns (internal notes stripped). */
@@ -162,13 +162,13 @@ export async function createMyTicket(
     /** Validated intake-form answers, stored on the ticket's customAttributes. */
     customAttributes?: Record<string, unknown>
   }
-): Promise<TicketDTO> {
+): Promise<RequesterTicketDTO> {
   const principalId = requireRequester(actor)
   // Anonymous requesters must have a durable contact channel (email) on file —
   // the widget email-capture tier writes it before calling this (defense in
   // depth: the fn layer enforces the same guard).
   await assertRequesterContactChannel(actor)
-  return createTicketCore(
+  const created = await createTicketCore(
     {
       type: 'customer',
       title: input.title,
@@ -180,6 +180,7 @@ export async function createMyTicket(
     },
     actor
   )
+  return toRequesterTicketDTO(created)
 }
 
 /**

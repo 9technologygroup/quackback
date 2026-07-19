@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/shared/page-header'
 import { CopilotUsageCard } from '@/components/admin/automation/copilot-usage-card'
 import { QuinnPerformanceCard } from '@/components/admin/automation/quinn-performance-card'
 import { QuinnToolsCard } from '@/components/admin/automation/quinn-tools-card'
+import { SupportPerformanceCard } from '@/components/admin/automation/support-performance-card'
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import type { FeatureFlags } from '@/lib/shared/types/settings'
 
@@ -51,6 +52,7 @@ function AutomationPerformancePage() {
           showSuggestions={Boolean(flags.assistantProactiveSuggestions)}
         />
       )}
+      <SupportPerformanceCard />
     </div>
   )
 }

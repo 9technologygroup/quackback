@@ -182,6 +182,20 @@ export interface TicketDTO {
   lastMessageAt: string | null
 }
 
+/**
+ * The requester-audience twin of `TicketDTO` (portal/widget requester fns):
+ * everything the agent DTO carries EXCEPT the two internal-only fields.
+ * `status` (internal name/category — a null-`publicStage` status must never
+ * leak, per the ticket_statuses contract) and `sla` (policy name + resolve
+ * deadline — internal commitments, stripped from conversation visitor DTOs
+ * for the same reason, see conversation.query.ts's `side` split) are nulled.
+ * The requester-facing projection remains `stage`.
+ */
+export type RequesterTicketDTO = Omit<TicketDTO, 'status' | 'sla'> & {
+  status: null
+  sla: null
+}
+
 /** A page of `listTickets`: the rows plus whether an older page follows. */
 export interface TicketListPage {
   tickets: TicketDTO[]

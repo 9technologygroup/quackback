@@ -55,6 +55,7 @@ import {
 } from '@/lib/server/db/keyset'
 import { PRIORITY_RANK } from '@/lib/shared/conversation/priority-meta'
 import { getStageLabels } from '../settings/settings.tickets'
+import { resumeTicketSlaFromPending } from '../sla/ticket-sla.service'
 import { publishTicketEvent } from '@/lib/server/realtime/conversation-channels'
 import { emitTicketCreated, emitTicketStatusChanged, emitTicketAssigned } from './ticket.webhooks'
 import { buildTicketContext, ticketToDTO, ticketRowToDTO } from './ticket.dto'
@@ -664,6 +665,22 @@ export async function autoReopenOnRequesterReply(
     patch.reopenedCount = sql`${tickets.reopenedCount} + 1` as unknown as number
   }
   await db.update(tickets).set(patch).where(eq(tickets.id, id))
+
+  // SLA: a pending -> open reopen never emits ticket.status_changed (this path
+  // bypasses the bus), so the SLA event hook's resume never fires and the TTR
+  // stamp would keep pausedAt forever — the sweep skips paused stamps and a
+  // later close would settle against a deadline shifted by the whole
+  // post-reply span. Run the resume here instead. Best-effort: the reopen
+  // already landed, and resumeTicketSlaFromPending no-ops when no SLA stamp is
+  // paused. (Closed -> open needs nothing: the first resolution settled TTR
+  // permanently, so a settled stamp carries no pause.)
+  if (current.category === 'pending') {
+    try {
+      await resumeTicketSlaFromPending(id, now)
+    } catch (err) {
+      logger.error({ err, ticketId: id }, 'resume ticket SLA on requester-reply reopen failed')
+    }
+  }
 
   // Durable timeline record (fire-and-forget): a distinct 'ticket.reopened'
   // type — not 'status.changed' — so the timeline reads honestly ("reopened by

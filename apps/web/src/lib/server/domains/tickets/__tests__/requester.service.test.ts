@@ -532,4 +532,84 @@ describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled b
     await replyToMyTicket(requesterActor(me), { ticketId, content: 'thanks' })
     expect((await readTicketRow(ticketId)).statusId).toBe(s.firstOpen.id)
   })
+
+  it('requester DTOs strip the internal status and the SLA sliver', async () => {
+    await testDb
+      .insert(settings)
+      .values({ name: 'WS', slug: `ws_${suffix()}`, createdAt: new Date() })
+    const me = await seedPrincipal()
+    const statusId = createId('ticket_status') as TicketStatusId
+    await testDb
+      .insert(ticketStatuses)
+      .values({ id: statusId, name: 'Escalated', slug: `esc_${suffix()}` })
+    const ticketId = createId('ticket') as TicketId
+    await testDb.insert(tickets).values({
+      id: ticketId,
+      title: 'T',
+      statusId,
+      type: 'customer',
+      requesterPrincipalId: me,
+      slaApplied: {
+        policyId: 'sla_policy_x',
+        policyName: 'Enterprise VIP',
+        appliedAt: new Date().toISOString(),
+        timeToResolveDueAt: new Date(Date.now() + 86_400_000).toISOString(),
+      },
+    })
+    const listed = (await listMyTickets(requesterActor(me))).find((t) => t.id === ticketId)
+    expect(listed?.status).toBeNull()
+    expect(listed?.sla).toBeNull()
+    // The requester-facing projection (stage) survives the strip.
+    expect(listed?.stage).toBeDefined()
+    const fetched = await getMyTicket(requesterActor(me), ticketId)
+    expect(fetched.status).toBeNull()
+    expect(fetched.sla).toBeNull()
+  })
+
+  it('createMyTicket returns the requester-audience DTO (no internal status/SLA)', async () => {
+    await seedDefaultStatusWorld()
+    const me = await seedPrincipal()
+    const created = await createMyTicket(requesterActor(me), { title: 'New one' })
+    expect(created.status).toBeNull()
+    expect(created.sla).toBeNull()
+  })
+
+  it('a requester reply that reopens a pending ticket resumes its paused TTR clock', async () => {
+    await testDb
+      .insert(settings)
+      .values({ name: 'WS', slug: `ws_${suffix()}`, createdAt: new Date() })
+    const s = await seedStagedStatuses()
+    const me = await seedPrincipal()
+    const ticketId = createId('ticket') as TicketId
+    // Paused 2h ago with 1h of resolve clock left at the pause.
+    const pausedAt = new Date(Date.now() - 2 * 3_600_000)
+    const dueAt = new Date(Date.now() - 3_600_000)
+    await testDb.insert(tickets).values({
+      id: ticketId,
+      title: 'T',
+      statusId: s.awaiting.id,
+      type: 'customer',
+      requesterPrincipalId: me,
+      slaApplied: {
+        policyId: 'sla_policy_x',
+        policyName: 'VIP',
+        appliedAt: pausedAt.toISOString(),
+        timeToResolveDueAt: dueAt.toISOString(),
+        pauseOnPending: true,
+        pausedAt: pausedAt.toISOString(),
+      },
+    })
+    await replyToMyTicket(requesterActor(me), { ticketId, content: 'here is the info' })
+    expect(await currentStatusCategory(ticketId)).toBe('open')
+    // This path emits no ticket.status_changed, so the resume must have run
+    // inside autoReopenOnRequesterReply: pausedAt cleared, deadline shifted
+    // forward by the paused span.
+    const stamp = (await readTicketRow(ticketId)).slaApplied as {
+      pausedAt?: string | null
+      timeToResolveDueAt: string
+    }
+    expect(stamp.pausedAt ?? null).toBeNull()
+    const expected = dueAt.getTime() + (Date.now() - pausedAt.getTime())
+    expect(Math.abs(new Date(stamp.timeToResolveDueAt).getTime() - expected)).toBeLessThan(60_000)
+  })
 })
