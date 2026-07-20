@@ -77,3 +77,32 @@ describe('PortalTicketsList — unread badges (shared pair watermark)', () => {
     expect(readRow?.querySelector('.bg-primary.rounded-full')).toBeNull()
   })
 })
+
+describe('PortalTicketsList — B22 generic-close chip', () => {
+  it('a null-stage closed ticket gets a muted "Closed" chip; a null-stage open ticket gets none', async () => {
+    fns.listMyTicketsFn.mockResolvedValue([
+      {
+        id: 'ticket_1',
+        title: 'Closed as duplicate',
+        reference: '#1',
+        updatedAt: new Date().toISOString(),
+        stage: { slot: null, label: null, closed: true },
+        unreadCount: 0,
+      },
+      {
+        id: 'ticket_2',
+        title: 'Quiet internal move',
+        reference: '#2',
+        updatedAt: new Date().toISOString(),
+        stage: { slot: null, label: null, closed: false },
+        unreadCount: 0,
+      },
+    ])
+    render(<PortalTicketsList isLoggedIn />, { wrapper: wrapper() })
+
+    const closedRow = (await screen.findByText('Closed as duplicate')).closest('a')
+    expect(closedRow?.textContent).toContain('Closed')
+    const openRow = (await screen.findByText('Quiet internal move')).closest('a')
+    expect(openRow?.textContent).not.toContain('Closed')
+  })
+})

@@ -28,6 +28,7 @@ import { portalTicketQueries, portalTicketKeys } from '@/lib/client/queries/port
 import { PORTAL_MY_CONVERSATIONS_QUERY_KEY } from '@/lib/client/queries/portal-support'
 import { useAuthPopoverSafe } from '@/components/auth/auth-popover-context'
 import { VisitorMessageBubble } from '@/components/conversation/message-bubble'
+import { SystemEventNotice } from '@/components/shared/conversation/system-event-notice'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import { VISITOR_CONVERSATION_FEATURES } from '@/components/conversation/conversation-editor-features'
 import { usePortalImageUpload } from '@/lib/client/hooks/use-image-upload'
@@ -47,9 +48,35 @@ export const Route = createFileRoute('/_portal/support/ticket/$ticketId')({
 /** The received -> in_progress -> awaiting_requester -> resolved progress bar,
  *  with every stage labeled under its segment (Featurebase/Intercom show the
  *  full progression, not just the current stop). Mobile keeps only the current
- *  label — four labels don't fit a phone row. */
-function StageTracker({ slot }: { slot: string | null }) {
-  if (!slot) return null
+ *  label — four labels don't fit a phone row.
+ *
+ *  `labels` are the workspace's CUSTOMIZED stage labels (B19 — the chips and
+ *  emails always used them; the tracker hardcoded the defaults). `closed`
+ *  drives the B22 generic-close projection: a status with no public stage
+ *  ("Won't do", "Duplicate") used to render no tracker at all — a silent dead
+ *  end — so a closed ticket with no stage slot shows a single quiet "Closed"
+ *  bar instead. The internal status name is never shown (that is the point of
+ *  the null stage). */
+function StageTracker({
+  slot,
+  closed = false,
+  labels,
+}: {
+  slot: string | null
+  closed?: boolean
+  labels: Record<string, string>
+}) {
+  if (!slot && !closed) return null
+  if (!slot) {
+    return (
+      <div aria-label="Ticket progress">
+        <span className="block h-1.5 rounded-full bg-muted-foreground/30" />
+        <span className="mt-1.5 block text-[11px] font-semibold text-muted-foreground">
+          <FormattedMessage id="portal.tickets.stage.closed" defaultMessage="Closed" />
+        </span>
+      </div>
+    )
+  }
   const currentIndex = TICKET_STAGES.indexOf(slot as (typeof TICKET_STAGES)[number])
   return (
     <ol className="flex items-start gap-1.5" aria-label="Ticket progress">
@@ -72,7 +99,7 @@ function StageTracker({ slot }: { slot: string | null }) {
                   : 'hidden text-muted-foreground/70 sm:block'
               )}
             >
-              {DEFAULT_TICKET_STAGE_LABELS[stage]}
+              {labels[stage] ?? DEFAULT_TICKET_STAGE_LABELS[stage]}
             </span>
           </li>
         )
@@ -133,6 +160,12 @@ function PortalTicketPage() {
     enabled: supportTicketsEnabled && isLoggedIn,
   })
   const watching = watchStatus?.watching ?? false
+  // B19: the tracker's stage labels come from the workspace's customized set
+  // (same source as the chips/emails); the defaults stand in until they land.
+  const { data: stageLabels } = useQuery({
+    ...portalTicketQueries.stageLabels(),
+    enabled: supportTicketsEnabled && isLoggedIn,
+  })
 
   // Read-through (convergence Phase 2): viewing the ticket page marks the
   // pair's SHARED watermark read — on a linked pair the server writes the
@@ -287,7 +320,11 @@ function PortalTicketPage() {
             </Tooltip>
           </div>
           <div className="mt-5">
-            <StageTracker slot={ticket.stage.slot} />
+            <StageTracker
+              slot={ticket.stage.slot}
+              closed={ticket.stage.closed}
+              labels={stageLabels ?? DEFAULT_TICKET_STAGE_LABELS}
+            />
           </div>
 
           <div className="mt-6 flex flex-col gap-3">
@@ -299,19 +336,27 @@ function PortalTicketPage() {
                 />
               </p>
             ) : (
-              messages.map((m) => (
-                <VisitorMessageBubble
-                  key={m.id}
-                  content={m.content}
-                  contentJson={m.contentJson}
-                  side={m.senderType === 'visitor' ? 'self' : 'peer'}
-                  authorName={m.author?.displayName ?? undefined}
-                  isAssistant={m.isAssistant}
-                  attachments={m.attachments}
-                  citations={m.citations}
-                  time={formatMessageTime(m.createdAt)}
-                />
-              ))
+              messages.map((m) =>
+                // B25: a system event (stage crossing, the ticket_created
+                // conversion marker, pair-conversation chat events) renders as
+                // the centered muted notice, localized from its structured
+                // event — never as an agent-authored bubble of frozen English.
+                m.senderType === 'system' ? (
+                  <SystemEventNotice key={m.id} event={m.systemEvent} fallback={m.content} />
+                ) : (
+                  <VisitorMessageBubble
+                    key={m.id}
+                    content={m.content}
+                    contentJson={m.contentJson}
+                    side={m.senderType === 'visitor' ? 'self' : 'peer'}
+                    authorName={m.author?.displayName ?? undefined}
+                    isAssistant={m.isAssistant}
+                    attachments={m.attachments}
+                    citations={m.citations}
+                    time={formatMessageTime(m.createdAt)}
+                  />
+                )
+              )
             )}
           </div>
 

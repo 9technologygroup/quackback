@@ -867,13 +867,28 @@ export async function setTicketStatus(
   // A public_stage crossing to a visible stage is the single customer-facing
   // signal (§4.2): post a status event into the ticket thread. Null-stage and
   // same-stage churn stay silent (customers hear stage progress, not internal
-  // churn). The requester bell now rides the ticket.status_changed event/hook
-  // pipeline above (WO-3 slice 4) — the system-1 email (§4.8) and the
-  // conversation echo ride the same crossing later.
+  // churn) — with one exception (B22): closing a CUSTOMER ticket via a
+  // null-stage status ("Won't do", "Duplicate") posts the generic "Ticket
+  // closed" marker (`stageLabel` null + `closed: true`), so the requester
+  // gets the same in-thread close signal a resolved close gives, without the
+  // internal status name ever leaking. Back-office/tracker tickets keep the
+  // old silence: their threads are internal surfaces that already show the
+  // raw internal status, so a generic marker would be noise (pinned by
+  // ticket-links.service.test.ts's null-stage cascade test). The requester
+  // bell now rides the ticket.status_changed event/hook pipeline above (WO-3
+  // slice 4) — the system-1 email (§4.8) and the conversation echo ride the
+  // same crossing later.
   const newStage = resolveStage(target)
   if (newStage && newStage !== previousStage) {
     const stageLabels = await getStageLabels()
     await postTicketStatusEvent(id, stageLabels[newStage])
+  } else if (
+    !newStage &&
+    existing.type === 'customer' &&
+    previousCategory !== 'closed' &&
+    target.category === 'closed'
+  ) {
+    await postTicketStatusEvent(id, null)
   }
 
   // A tracker fans its status onto the customer tickets it tracks (§4.9),
@@ -932,6 +947,11 @@ async function cascadeTrackerStatus(
 /** Post a customer-visible status event into a ticket's thread (never the raw
  *  internal status name — only the public stage label).
  *
+ *  `stageLabel` null is the B22 generic close: the ticket was closed via a
+ *  null-`publicStage` status ("Won't do", "Duplicate"), so the marker is the
+ *  localized-at-render "Ticket closed" projection (`closed: true`, no label)
+ *  — the customer hears the close without the internal status name leaking.
+ *
  *  CONVERGENCE PHASE 1a (three-path contract, see ticket-message.service.ts's
  *  module doc): on a linked customer pair the stage event re-parents to the
  *  CONVERSATION via the conversation domain's own `emitSystemMessage`, so it
@@ -939,23 +959,28 @@ async function cascadeTrackerStatus(
  *  state-change-in-thread) and publishes on the conversation channel.
  *  Back-office/tracker tickets and standalone customer tickets stay
  *  ticket-parented (the resolve call is customer-link-scoped). */
-async function postTicketStatusEvent(ticketId: TicketId, stageLabel: string): Promise<void> {
+async function postTicketStatusEvent(ticketId: TicketId, stageLabel: string | null): Promise<void> {
+  // The stored content stays the English fallback for agent surfaces and
+  // legacy readers; portal/widget clients localize from the structured event
+  // (B25), so the sentence is never frozen-at-write English on customer
+  // surfaces. The generic close stores no label at all.
+  const systemEvent = stageLabel
+    ? { kind: 'ticket_status_changed' as const, stageLabel }
+    : { kind: 'ticket_status_changed' as const, closed: true }
+  const content = stageLabel ? `Status updated to ${stageLabel}` : 'Ticket closed'
   const pairConversationId = await resolvePairConversationId(ticketId)
   if (pairConversationId) {
     const { emitSystemMessage } =
       await import('@/lib/server/domains/conversation/conversation.service')
-    await emitSystemMessage(pairConversationId, `Status updated to ${stageLabel}`, {
-      kind: 'ticket_status_changed',
-      stageLabel,
-    })
+    await emitSystemMessage(pairConversationId, content, systemEvent)
     return
   }
   await db.insert(conversationMessages).values({
     ticketId,
     principalId: null,
     senderType: 'system',
-    content: `Status updated to ${stageLabel}`,
-    metadata: { systemEvent: { kind: 'ticket_status_changed', stageLabel } },
+    content,
+    metadata: { systemEvent },
   })
 }
 

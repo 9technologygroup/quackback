@@ -800,10 +800,24 @@ export function getConversationNoteMentionedTargets(event: EventData): HookTarge
  * when the new stage is non-null and differs from the previous stage (a
  * same-stage or null-stage move stays silent for EVERYONE — the requester
  * must never see internal status names, and agent watchers get stage moves,
- * not churn). Watchers are actor-excluded; the requester keeps the original
- * unconditional bell semantics. Stage labels are resolved HERE, not carried
- * in the payload, so a later workspace label edit doesn't retroactively
- * change historical event data.
+ * not churn) — plus the one deliberate exception: a fresh crossing INTO
+ * `closed` via a null-stage status ("Won't do", "Duplicate") fires with the
+ * generic label 'Closed', so the requester is never left at a silent dead
+ * end (the internal status name still never leaks). Watchers are
+ * actor-excluded.
+ *
+ * STOP-WATCHING HONORED (B18): the requester is reached THROUGH the
+ * subscription row like any other watcher — it is no longer added
+ * unconditionally. `getTicketWatchersForEvent` already returns the requester
+ * exactly when their row exists and is unmuted (they are auto-subscribed at
+ * ticket creation with reason 'requester'), so deleting the row via the
+ * portal's "Stop watching" toggle quiets this bell; a later requester reply
+ * re-subscribes them (appendRequesterReply's re-opt-in rule). The
+ * `requesterPrincipalId` carried in config is NOT a recipient hint — it only
+ * routes the bell's deep link (portal thread vs admin inbox) in the
+ * notification handler. Stage labels are resolved HERE, not carried in the
+ * payload, so a later workspace label edit doesn't retroactively change
+ * historical event data.
  */
 /**
  * Active watchers to notify for a ticket event, actor-excluded. `agentsOnly`
@@ -825,18 +839,25 @@ async function actorExcludedTicketWatchers(
 
 export async function getTicketStatusChangedTargets(event: EventData): Promise<HookTarget | null> {
   if (event.type !== 'ticket.status_changed') return null
-  const { ticket, stage, previousStage, requesterPrincipalId, title } = event.data
-  if (!stage || stage === previousStage) return null
+  const { ticket, previousStatus, newStatus, stage, previousStage, requesterPrincipalId, title } =
+    event.data
+  // The generic-close exception to the null-stage silence (see the doc): a
+  // fresh crossing into `closed` whose status projects no public stage still
+  // tells the customer the ticket was closed — as 'Closed', never the
+  // internal status name. Every other same-stage/null-stage move stays silent.
+  const genericClose = !stage && newStatus === 'closed' && previousStatus !== 'closed'
+  if ((!stage || stage === previousStage) && !genericClose) return null
 
+  // The requester rides the subscription row (B18): present + unmuted ⇔ in
+  // this watcher set already, so "Stop watching" quiets the bell.
   const recipients = new Set<PrincipalId>(
     await actorExcludedTicketWatchers(ticket.id as TicketId, event.actor.principalId)
   )
-  if (requesterPrincipalId) recipients.add(requesterPrincipalId as PrincipalId)
   if (recipients.size === 0) return null
 
   const { getStageLabels } = await import('@/lib/server/domains/settings/settings.tickets')
   const stageLabels = await getStageLabels()
-  const stageLabel = stageLabels[stage as keyof typeof stageLabels] ?? stage
+  const stageLabel = stage ? (stageLabels[stage as keyof typeof stageLabels] ?? stage) : 'Closed'
   const previousStageLabel = previousStage
     ? (stageLabels[previousStage as keyof typeof stageLabels] ?? previousStage)
     : null
@@ -1125,6 +1146,9 @@ interface BaseTicketConfigParams {
   messageBody?: string
   authorName?: string
   statusChange?: { previousLabel: string | null; newLabel: string }
+  /** B22: a null-stage close ("Won't do"/"Duplicate") renders generic "was
+   *  closed" copy instead of the "was resolved" copy (see ticketEventCopy). */
+  closedGeneric?: boolean
 }
 
 /** The TicketEmailConfig fields every kind shares; the two audience wrappers
@@ -1143,6 +1167,7 @@ function baseTicketConfig(params: BaseTicketConfigParams): Record<string, unknow
     messageBody: params.messageBody,
     authorName: params.authorName,
     statusChange: params.statusChange,
+    closedGeneric: params.closedGeneric,
   }
 }
 
@@ -1190,6 +1215,8 @@ async function buildRequesterOrAgentTargets(params: {
   messageBody?: string
   authorName?: string
   statusChange?: { previousLabel: string | null; newLabel: string }
+  /** B22: forwarded onto the email config (see BaseTicketConfigParams). */
+  closedGeneric?: boolean
 }): Promise<HookTarget[]> {
   const { recipients, emailMap, requesterPrincipalId, context } = params
   const facts = {
@@ -1200,6 +1227,7 @@ async function buildRequesterOrAgentTargets(params: {
     messageBody: params.messageBody,
     authorName: params.authorName,
     statusChange: params.statusChange,
+    closedGeneric: params.closedGeneric,
   }
   const targets: HookTarget[] = []
   for (const id of recipients) {
@@ -1336,9 +1364,19 @@ export async function getTicketRepliedEmailTargets(
  * `ticket.status_changed` → a resolution email, but only on a genuine category
  * crossing INTO `closed` (deliberately narrower than the bell, which fires on
  * any public stage crossing; both ride the `ticket_status_changed` matrix key).
- * Recipients = the watcher set minus the actor, with the requester included
- * unconditionally (matching the bell's semantics). Stage labels resolve at build
- * time via getStageLabels.
+ * Recipients = the watcher set minus the actor — the requester INCLUDED ONLY
+ * THROUGH their subscription row (B18: auto-subscribed at creation with reason
+ * 'requester', so the portal's "Stop watching" toggle — which deletes the row —
+ * also quiets this email; a later requester reply re-subscribes them).
+ * `emailableRequester` below is NOT recipient sourcing: it only splits the
+ * watching requester's config onto the requester-facing shape (portal CTA,
+ * reply-by-email) vs the agent-facing one.
+ *
+ * Null-stage closes (B22): a status with no `publicStage` ("Won't do",
+ * "Duplicate") still emails on the closed crossing, but with the generic
+ * 'Closed' label and `closedGeneric` copy — the internal status name never
+ * leaks, and the email no longer claims a won't-do ticket was "resolved".
+ * Stage labels resolve at build time via getStageLabels.
  */
 export async function getTicketResolvedEmailTargets(
   event: EventData,
@@ -1360,10 +1398,10 @@ export async function getTicketResolvedEmailTargets(
   const ticketId = ticket.id as TicketId
   const { getTicketWatchersForEvent } =
     await import('@/lib/server/domains/tickets/ticket-subscription.service')
+  // B18: no unconditional requester add — the row decides (see the doc).
   const recipientIds = new Set<PrincipalId>(
     (await getTicketWatchersForEvent(ticketId)).filter((id) => id !== event.actor.principalId)
   )
-  if (emailableRequester) recipientIds.add(emailableRequester as PrincipalId)
   if (recipientIds.size === 0) return []
 
   const ids = [...recipientIds]
@@ -1376,7 +1414,7 @@ export async function getTicketResolvedEmailTargets(
 
   const { getStageLabels } = await import('@/lib/server/domains/settings/settings.tickets')
   const stageLabels = await getStageLabels()
-  const newLabel = stage ? (stageLabels[stage as keyof typeof stageLabels] ?? stage) : 'Resolved'
+  const newLabel = stage ? (stageLabels[stage as keyof typeof stageLabels] ?? stage) : 'Closed'
   const previousLabel = previousStage
     ? (stageLabels[previousStage as keyof typeof stageLabels] ?? previousStage)
     : null
@@ -1395,6 +1433,8 @@ export async function getTicketResolvedEmailTargets(
     assignedTeamId,
     context,
     statusChange: { previousLabel, newLabel },
+    // B22: the generic-close copy branch ("was closed", not "was resolved").
+    closedGeneric: stage == null,
   })
 }
 

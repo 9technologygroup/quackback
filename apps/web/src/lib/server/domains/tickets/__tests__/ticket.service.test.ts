@@ -405,6 +405,34 @@ describe.skipIf(!fixture.available)('ticket.service (real DB, rolled back)', () 
     ).toBeUndefined()
   })
 
+  it('B22: closing a CUSTOMER ticket via a null-stage status posts the generic "Ticket closed" event', async () => {
+    await seedSettings()
+    await seedStatuses() // default open projects 'received'
+    const actor = adminActor()
+    // A closed status with no public stage — the "Won't do"/"Duplicate" shape.
+    const [wontDo] = await testDb
+      .insert(ticketStatuses)
+      .values({
+        name: "Won't do",
+        slug: `wd_${suffix()}`,
+        category: 'closed',
+        position: 9,
+        publicStage: null,
+      })
+      .returning()
+    const created = await createTicket({ type: 'customer', title: 'Not planned' }, actor)
+    await setTicketStatus(created.id, wontDo.id, actor)
+    const page = await listTicketMessages(created.id, { includeInternal: true })
+    const event = page.messages.find((m) => m.systemEvent?.kind === 'ticket_status_changed')
+    expect(event).toBeDefined()
+    // The generic-close marker: `closed`, NO stage label, and the internal
+    // status name appears nowhere (not even in the stored English fallback).
+    expect(event?.systemEvent?.closed).toBe(true)
+    expect(event?.systemEvent?.stageLabel).toBeUndefined()
+    expect(event?.content).toBe('Ticket closed')
+    expect(event?.content).not.toContain("Won't do")
+  })
+
   // WO-3 slice 4: the requester bell itself (previously a direct
   // createNotification call here, asserted against inAppNotifications) now
   // rides the ticket.status_changed event/hook pipeline — see

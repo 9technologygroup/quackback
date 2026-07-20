@@ -15,6 +15,7 @@ import {
   listMyWidgetTicketsFn,
   getMyWidgetTicketFn,
   getMyWidgetTicketThreadFn,
+  getMyWidgetTicketStageLabelsFn,
 } from '@/lib/server/functions/widget-tickets'
 import { getWidgetAuthHeaders } from '@/lib/client/widget-auth'
 
@@ -26,6 +27,8 @@ export const widgetTicketKeys = {
   thread: (sessionVersion: number, id: TicketId) =>
     [...widgetTicketKeys.all(), 'thread', sessionVersion, id] as const,
   form: (sessionVersion: number) => [...widgetTicketKeys.all(), 'form', sessionVersion] as const,
+  stageLabels: (sessionVersion: number) =>
+    [...widgetTicketKeys.all(), 'stage-labels', sessionVersion] as const,
 }
 
 export const widgetTicketQueries = {
@@ -64,6 +67,16 @@ export const widgetTicketQueries = {
       queryFn: () =>
         getMyWidgetTicketThreadFn({ data: { ticketId: id }, headers: getWidgetAuthHeaders() }),
       staleTime: 10_000,
+      retry: false,
+    }),
+
+  /** The workspace's stage labels for the StageTracker (B19). Edited rarely
+   *  (ticket settings), so a long stale window is fine. */
+  stageLabels: (sessionVersion: number) =>
+    queryOptions({
+      queryKey: widgetTicketKeys.stageLabels(sessionVersion),
+      queryFn: () => getMyWidgetTicketStageLabelsFn({ headers: getWidgetAuthHeaders() }),
+      staleTime: 300_000,
       retry: false,
     }),
 }

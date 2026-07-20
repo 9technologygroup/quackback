@@ -144,10 +144,20 @@ export interface TicketStatusRef {
 /**
  * The requester-facing stage the status projects to. `slot` is null and `label`
  * is null when the status is hidden from the requester (internal-only).
+ *
+ * `closed` is the category signal for the GENERIC-CLOSE projection (B22): a
+ * status with a null `publicStage` whose category is `closed` ("Won't do",
+ * "Duplicate") projects no stage, but the customer must still see the ticket
+ * as closed — portal/widget surfaces render a localized "Closed" chip/tracker
+ * state from this flag instead of going silent. It deliberately carries no
+ * status detail: which internal status closed the ticket never leaks (that is
+ * the point of the null stage). Optional so pre-existing DTO fixtures stay
+ * valid; the builder always sets it, and readers treat absent as false.
  */
 export interface TicketStageRef {
   slot: TicketStage | null
   label: string | null
+  closed?: boolean
 }
 
 /** Polymorphic assignee: a teammate, a team, both, or neither. */

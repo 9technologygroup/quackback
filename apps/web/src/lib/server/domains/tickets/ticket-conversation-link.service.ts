@@ -2,10 +2,21 @@
  * Link a ticket to the conversation it was created from (unified inbox §M5's
  * create-ticket flow): inserts the `ticket_conversations` join row, announces
  * the ticket on the conversation thread as a system event (mirrors
- * ticket-links.service.ts's tracker-link note, but on the CONVERSATION side —
- * `emitSystemMessage`'s content is agent-facing plain English, never sent to
- * the customer), and lets that same insert/publish keep any open inbox tab in
- * sync. Customer tickets only, and the pair is 1:1 (convergence Phase 0): the
+ * ticket-links.service.ts's tracker-link note, but on the CONVERSATION side),
+ * and lets that same insert/publish keep any open inbox tab in sync.
+ *
+ * AUDIENCE (B17, decided with the convergence): the announcement is for BOTH
+ * sides. On the converged shared thread it is the in-thread conversion
+ * marker (Intercom-style) — the conversation's visitor IS the ticket's
+ * requester, so "Ticket #N created from this conversation" tells them where
+ * their thread went. Customer-facing clients (messenger, portal/widget
+ * ticket threads) therefore LOCALIZE it from `metadata.systemEvent`
+ * (`kind: 'ticket_created'` + `ticketReference`) via SystemEventNotice; the
+ * stored English `content` is only the fallback for agent surfaces, email
+ * transcripts, and legacy/unknown-kind rendering — never the display string
+ * a customer sees.
+ *
+ * Customer tickets only, and the pair is 1:1 (convergence Phase 0): the
  * partial-unique indexes (`ticket_conversations_customer_uq`,
  * `ticket_conversations_customer_ticket_uq`) allow at most one CUSTOMER ticket
  * per conversation AND at most one conversation per CUSTOMER ticket — a

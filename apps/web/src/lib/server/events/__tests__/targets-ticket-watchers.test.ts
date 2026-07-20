@@ -254,12 +254,23 @@ describe('getTicketStatusChangedTargets (watchers union)', () => {
     expect(target?.config).toMatchObject({ requesterPrincipalId: null })
   })
 
-  it('null-stage and same-stage moves stay silent regardless of watchers', async () => {
+  it('B22: a null-stage crossing INTO CLOSED fires for watchers with the generic Closed label', async () => {
     getTicketWatchersForEvent.mockResolvedValue(['principal_agent_1'])
-    expect(await getTicketStatusChangedTargets(statusEvent({ stage: null }))).toBeNull()
+    const target = await getTicketStatusChangedTargets(statusEvent({ stage: null }))
+    expect(target?.target).toEqual({ principalIds: ['principal_agent_1'] })
+    expect(target?.config).toMatchObject({ stageLabel: 'Closed' })
+  })
+
+  it('a null-stage move that is not a closed crossing, and same-stage moves, stay silent regardless of watchers', async () => {
+    getTicketWatchersForEvent.mockResolvedValue(['principal_agent_1'])
     expect(
       await getTicketStatusChangedTargets(
-        statusEvent({ stage: 'received', previousStage: 'received' })
+        statusEvent({ stage: null, newStatus: 'open', previousStatus: 'pending' })
+      )
+    ).toBeNull()
+    expect(
+      await getTicketStatusChangedTargets(
+        statusEvent({ stage: 'received', previousStage: 'received', newStatus: 'open' })
       )
     ).toBeNull()
   })

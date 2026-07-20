@@ -26,6 +26,7 @@ import { widgetTicketKeys, widgetTicketQueries } from '@/lib/client/queries/widg
 import { conversationKeys } from '@/lib/client/queries/conversation-keys'
 import { useWidgetAuth } from './widget-auth-provider'
 import { VisitorMessageBubble } from '@/components/conversation/message-bubble'
+import { SystemEventNotice } from '@/components/shared/conversation/system-event-notice'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
 import { VISITOR_CONVERSATION_FEATURES } from '@/components/conversation/conversation-editor-features'
 import { useWidgetImageUpload } from '@/lib/client/hooks/use-image-upload'
@@ -41,9 +42,30 @@ interface WidgetTicketDetailProps {
 }
 
 /** The received -> in_progress -> awaiting_requester -> resolved progress bar
- *  (ported from the portal thread). */
-function StageTracker({ slot }: { slot: string | null }) {
-  if (!slot) return null
+ *  (ported from the portal thread). `labels` are the workspace's CUSTOMIZED
+ *  stage labels (B19); `closed` drives the B22 generic-close projection — a
+ *  null-stage close ("Won't do", "Duplicate") shows a quiet "Closed" bar
+ *  instead of vanishing, and the internal status name never renders. */
+function StageTracker({
+  slot,
+  closed = false,
+  labels,
+}: {
+  slot: string | null
+  closed?: boolean
+  labels: Record<string, string>
+}) {
+  if (!slot && !closed) return null
+  if (!slot) {
+    return (
+      <div aria-label="Ticket progress">
+        <span className="block h-1.5 rounded-full bg-muted-foreground/30" />
+        <span className="mt-1.5 block text-[11px] font-semibold text-muted-foreground">
+          <FormattedMessage id="widget.tickets.stage.closed" defaultMessage="Closed" />
+        </span>
+      </div>
+    )
+  }
   const currentIndex = TICKET_STAGES.indexOf(slot as (typeof TICKET_STAGES)[number])
   return (
     <ol className="flex items-start gap-1.5" aria-label="Ticket progress">
@@ -66,7 +88,7 @@ function StageTracker({ slot }: { slot: string | null }) {
                   : 'hidden text-muted-foreground/70 sm:block'
               )}
             >
-              {DEFAULT_TICKET_STAGE_LABELS[stage]}
+              {labels[stage] ?? DEFAULT_TICKET_STAGE_LABELS[stage]}
             </span>
           </li>
         )
@@ -103,6 +125,9 @@ export function WidgetTicketDetail({ ticketId }: WidgetTicketDetailProps) {
     isError,
   } = useQuery(widgetTicketQueries.detail(sessionVersion, ticketId))
   const { data: thread } = useQuery(widgetTicketQueries.thread(sessionVersion, ticketId))
+  // B19: the tracker's stage labels come from the workspace's customized set
+  // (same source as the chips/emails); the defaults stand in until they land.
+  const { data: stageLabels } = useQuery(widgetTicketQueries.stageLabels(sessionVersion))
 
   // Read-through (convergence Phase 2): viewing the ticket marks the pair's
   // SHARED watermark read — on a linked pair the server writes the
@@ -202,7 +227,11 @@ export function WidgetTicketDetail({ ticketId }: WidgetTicketDetailProps) {
           </div>
           <h1 className="text-base font-semibold leading-tight text-foreground">{ticket.title}</h1>
           <div className="mt-4">
-            <StageTracker slot={ticket.stage.slot} />
+            <StageTracker
+              slot={ticket.stage.slot}
+              closed={ticket.stage.closed}
+              labels={stageLabels ?? DEFAULT_TICKET_STAGE_LABELS}
+            />
           </div>
 
           <div className="mt-5 flex flex-col gap-3">
@@ -214,20 +243,27 @@ export function WidgetTicketDetail({ ticketId }: WidgetTicketDetailProps) {
                 />
               </p>
             ) : (
-              messages.map((m) => (
-                <VisitorMessageBubble
-                  key={m.id}
-                  content={m.content}
-                  contentJson={m.contentJson}
-                  side={m.senderType === 'visitor' ? 'self' : 'peer'}
-                  authorName={m.author?.displayName ?? undefined}
-                  isAssistant={m.isAssistant}
-                  attachments={m.attachments}
-                  citations={m.citations}
-                  time={formatMessageTime(m.createdAt)}
-                  getAuthHeaders={getWidgetAuthHeaders}
-                />
-              ))
+              messages.map((m) =>
+                // B25: system events render as the centered muted notice,
+                // localized from their structured event — never as an
+                // agent-authored bubble of frozen English.
+                m.senderType === 'system' ? (
+                  <SystemEventNotice key={m.id} event={m.systemEvent} fallback={m.content} />
+                ) : (
+                  <VisitorMessageBubble
+                    key={m.id}
+                    content={m.content}
+                    contentJson={m.contentJson}
+                    side={m.senderType === 'visitor' ? 'self' : 'peer'}
+                    authorName={m.author?.displayName ?? undefined}
+                    isAssistant={m.isAssistant}
+                    attachments={m.attachments}
+                    citations={m.citations}
+                    time={formatMessageTime(m.createdAt)}
+                    getAuthHeaders={getWidgetAuthHeaders}
+                  />
+                )
+              )
             )}
           </div>
 

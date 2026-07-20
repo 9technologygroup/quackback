@@ -65,8 +65,26 @@ const STAGE_CHIP_CLASS: Record<string, string> = {
   resolved: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
 }
 
-function StageChip({ slot, label }: { slot: string | null; label: string | null }) {
-  if (!label) return null
+function StageChip({
+  slot,
+  label,
+  closed = false,
+}: {
+  slot: string | null
+  label: string | null
+  closed?: boolean
+}) {
+  if (!label) {
+    // B22 generic-close projection: a null-stage closed status ("Won't do",
+    // "Duplicate") used to render no chip at all — a silent dead end. Show a
+    // muted localized "Closed" instead; the internal status name never leaks.
+    if (!closed) return null
+    return (
+      <span className="inline-flex shrink-0 items-center rounded-full bg-muted/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+        <FormattedMessage id="portal.tickets.stage.closed" defaultMessage="Closed" />
+      </span>
+    )
+  }
   return (
     <span
       className={cn(
@@ -250,7 +268,7 @@ export function PortalTicketsList({ isLoggedIn }: { isLoggedIn: boolean }) {
                     {t.unreadCount}
                   </span>
                 )}
-                <StageChip slot={t.stage.slot} label={t.stage.label} />
+                <StageChip slot={t.stage.slot} label={t.stage.label} closed={t.stage.closed} />
                 <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground/50 rtl:rotate-180" />
               </Link>
             </li>

@@ -354,7 +354,7 @@ describe.skipIf(!fixture.available)('convergence Phase 1a (real DB, rolled back)
       expect(emittedConversation.id).toBe(conversationId)
       expect(isFirstMessage).toBe(false)
       // …and the matrix's ticket-side `ticket.replied` fired ALONGSIDE it
-      // (watcher fan-out + the requester's always-on email).
+      // (watcher fan-out — the requester rides their subscription row, B18).
       expect(ticketEmit.emitTicketReplied).toHaveBeenCalledTimes(1)
       expect(ticketEmit.emitTicketReplied.mock.calls[0][2].id).toBe(message.id)
       // The presence-gated requester email on the conversation side also

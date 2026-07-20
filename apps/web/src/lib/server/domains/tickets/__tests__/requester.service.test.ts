@@ -340,6 +340,41 @@ describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled b
     expect(message.ticketId).toBe(w.mine)
   })
 
+  it('B18: a requester reply re-subscribes the requester (re-opt-in on interaction after "Stop watching")', async () => {
+    const w = await seedWorld()
+    // The portal's "Stop watching" toggle deletes the subscription row — the
+    // state this test starts from (seedWorld's direct inserts create no row).
+    await replyToMyTicket(requesterActor(w.me), { ticketId: w.mine, content: 'following up' })
+    const rows = await testDb
+      .select()
+      .from(ticketSubscriptions)
+      .where(
+        and(eq(ticketSubscriptions.ticketId, w.mine), eq(ticketSubscriptions.principalId, w.me))
+      )
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ principalId: w.me, reason: 'requester' })
+  })
+
+  it('B18: a requester reply leaves an existing (muted) subscription untouched — a mute still wins', async () => {
+    const w = await seedWorld()
+    const mutedUntil = new Date(Date.now() + 7 * 86_400_000)
+    await testDb.insert(ticketSubscriptions).values({
+      ticketId: w.mine,
+      principalId: w.me,
+      reason: 'requester',
+      mutedUntil,
+    })
+    await replyToMyTicket(requesterActor(w.me), { ticketId: w.mine, content: 'one more thing' })
+    const rows = await testDb
+      .select()
+      .from(ticketSubscriptions)
+      .where(
+        and(eq(ticketSubscriptions.ticketId, w.mine), eq(ticketSubscriptions.principalId, w.me))
+      )
+    expect(rows).toHaveLength(1)
+    expect(rows[0].mutedUntil?.getTime()).toBe(mutedUntil.getTime())
+  })
+
   it('replyToMyTicket publishes a ticket_message realtime event (unified inbox §3.2, M3)', async () => {
     const w = await seedWorld()
     realtime.publishTicketEvent.mockClear()

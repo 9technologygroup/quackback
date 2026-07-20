@@ -363,7 +363,14 @@ export function ticketToDTO(
     status: status
       ? { id: status.id, name: status.name, color: status.color, category: status.category }
       : { id: row.statusId, name: 'Unknown', color: '#6b7280', category: 'open' },
-    stage: { slot, label: slot ? ctx.stageLabels[slot] : null },
+    // `closed` feeds the generic-close projection (B22, see TicketStageRef):
+    // a null-stage closed status shows the customer a localized "Closed",
+    // never the internal status name.
+    stage: {
+      slot,
+      label: slot ? ctx.stageLabels[slot] : null,
+      closed: status?.category === 'closed',
+    },
     priority: row.priority,
     requester: requester
       ? {

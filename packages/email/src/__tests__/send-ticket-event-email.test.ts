@@ -80,6 +80,18 @@ describe('sendTicketEventEmail', () => {
     )
   })
 
+  it('B22: status_resolved with closedGeneric says "closed", never "resolved"', async () => {
+    const result = await sendTicketEventEmail({
+      ...baseParams,
+      kind: 'status_resolved',
+      statusChange: { previousLabel: 'In progress', newLabel: 'Closed' },
+      closedGeneric: true,
+    })
+    expect(result.sent).toBe(true)
+    const call = sendMailMock.mock.calls[0][0]
+    expect(call.subject).toBe('Your ticket #142 was closed')
+  })
+
   it('forwards threading headers, replyTo, and the from override when provided', async () => {
     await sendTicketEventEmail({
       ...baseParams,

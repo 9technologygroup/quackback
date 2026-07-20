@@ -18,6 +18,7 @@ import {
   BlockReplyTimeCaption,
 } from './block-affordance'
 import { ConversationPresenceBadge } from './conversation-presence-badge'
+import { SystemEventNotice } from './system-event-notice'
 import { conversationAvailable } from '@/lib/shared/conversation/presence'
 import { ArrowUpIcon, ChevronDownIcon } from '@heroicons/react/24/solid'
 import { ChatBubbleLeftRightIcon, PaperClipIcon, BookOpenIcon } from '@heroicons/react/24/outline'
@@ -972,41 +973,9 @@ export function VisitorConversationThread({
         )
       }
       case 'system': {
-        // Localize from the structured event; fall back to the stored (English)
-        // content for legacy rows or unknown kinds.
-        const event = row.message.systemEvent
-        const notice =
-          event?.kind === 'chat_ended' ? (
-            <FormattedMessage
-              id="widget.messenger.system.ended"
-              defaultMessage="Conversation ended"
-            />
-          ) : event?.kind === 'chat_reopened' ? (
-            <FormattedMessage
-              id="widget.messenger.system.reopened"
-              defaultMessage="Conversation reopened"
-            />
-          ) : event?.kind === 'assigned' ? (
-            <FormattedMessage
-              id="widget.messenger.system.assigned"
-              defaultMessage="Assigned to {name}"
-              values={{ name: event.agentName ?? 'an agent' }}
-            />
-          ) : event?.kind === 'assistant_handoff' ? (
-            <FormattedMessage
-              id="widget.messenger.system.handoff"
-              defaultMessage="Connecting you to the team"
-            />
-          ) : (
-            row.message.content
-          )
-        return (
-          <div className="flex items-center gap-2 py-1" role="status">
-            <span className="h-px flex-1 bg-border/50" />
-            <span className="text-center text-[11px] text-muted-foreground">{notice}</span>
-            <span className="h-px flex-1 bg-border/50" />
-          </div>
-        )
+        // Localized from the structured event by the shared notice (the stored
+        // English content is only the legacy/unknown-kind fallback).
+        return <SystemEventNotice event={row.message.systemEvent} fallback={row.message.content} />
       }
       case 'empty':
         return (

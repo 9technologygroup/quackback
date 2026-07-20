@@ -27,6 +27,10 @@ afterEach(cleanup)
 const routeContextState = {
   session: { user: { name: 'Agent Smith' } },
   settings: { featureFlags: {} },
+  // The admin shell's resolved permissions, read by usePermissions (B24 gates
+  // the linked-ticket affordances on these). Default = both ticket
+  // permissions; individual tests narrow it.
+  permissions: ['ticket.view', 'ticket.set_status'] as string[],
 }
 vi.mock('@tanstack/react-router', () => ({
   useRouteContext: () => routeContextState,
@@ -140,6 +144,9 @@ vi.mock('@/components/admin/inbox/ticket-chips', () => ({
     <span data-testid="ticket-type-badge">{type}</span>
   ),
   TicketStageChip: () => null,
+  TicketStatusChip: ({ status }: { status: { name: string } }) => (
+    <span data-testid="ticket-status-chip">{status.name}</span>
+  ),
 }))
 vi.mock('@/components/admin/inbox/ticket-controls', () => ({
   TicketStatusControl: () => <div data-testid="ticket-status-control" />,
@@ -329,6 +336,7 @@ import { setTicketStatusFn } from '@/lib/server/functions/tickets'
 afterEach(() => {
   mockTicketLink.value = null
   mockTicketStatuses.value = []
+  routeContextState.permissions = ['ticket.view', 'ticket.set_status']
   vi.clearAllMocks()
 })
 
@@ -711,6 +719,46 @@ describe('AgentConversationThread — close with a linked ticket', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Close' }))
     await waitFor(() => expect(setConversationStatusFn).toHaveBeenCalled())
     expect(screen.queryByText(/is still open/)).not.toBeInTheDocument()
+    expect(setTicketStatusFn).not.toHaveBeenCalled()
+  })
+})
+
+describe('AgentConversationThread — B24 ticket-permission gating', () => {
+  const openLink: LinkedTicketSummary = {
+    id: 'ticket_9' as LinkedTicketSummary['id'],
+    number: 1042,
+    statusName: 'Open',
+    statusCategory: 'open',
+  }
+
+  it('a view-only agent (no ticket.set_status) gets the inert status chip, not the dropdown', async () => {
+    routeContextState.permissions = ['ticket.view']
+    renderThread({ kind: 'ticket', id: 'ticket_1' })
+    expect(await screen.findByTestId('ticket-status-chip')).toBeInTheDocument()
+    expect(screen.queryByTestId('ticket-status-control')).not.toBeInTheDocument()
+  })
+
+  it('an agent without ticket.view sees no linked-ticket pill on a conversation (the 403-bound detail fetch stays disabled)', async () => {
+    routeContextState.permissions = []
+    mockTicketLink.value = openLink
+    renderThread({ kind: 'conversation', id: 'conversation_1' })
+    // The thread itself renders fine — only the ticket affordance is gone.
+    await screen.findByRole('button', { name: 'Reply' })
+    expect(screen.queryByTestId('ticket-status-control')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('ticket-status-chip')).not.toBeInTheDocument()
+  })
+
+  it('the close confirm hides "Resolve ticket and close" without ticket.set_status', async () => {
+    routeContextState.permissions = ['ticket.view']
+    mockTicketLink.value = openLink
+    renderThread({ kind: 'conversation', id: 'conversation_1' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Close' }))
+    expect(await screen.findByText('Ticket #1042 is still open')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Resolve ticket and close' })
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation only' }))
+    await waitFor(() => expect(setConversationStatusFn).toHaveBeenCalled())
     expect(setTicketStatusFn).not.toHaveBeenCalled()
   })
 })

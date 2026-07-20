@@ -166,6 +166,9 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/tickets.ts::getMyTicketWatchStatusFn': END_USER(
     'requester reads the watch state of their own ticket (flag-gated)'
   ),
+  'lib/server/functions/tickets.ts::getMyTicketStageLabelsFn': END_USER(
+    'requester reads the workspace stage labels shown on their own tickets (B19 StageTracker)'
+  ),
   'lib/server/functions/tickets.ts::watchMyTicketFn': END_USER(
     'requester watches their own ticket (flag-gated)'
   ),

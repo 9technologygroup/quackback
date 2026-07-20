@@ -237,6 +237,16 @@ export async function createMyTicket(
  * agent/integration-facing `ticket.replied` signal (fire-and-forget). `actor` is
  * the requester, threaded through so the reopen timeline and the event actor read
  * as the requester, never as an anonymous system flip.
+ *
+ * RE-OPT-IN ON REPLY (B18): replying re-subscribes the requester (reason
+ * 'requester') — the interaction-based watch rule that lets "Stop watching"
+ * be honored honestly everywhere else. `subscribeToTicket` is
+ * insert-if-absent, so this only recreates a row the requester deleted via
+ * the portal toggle (an existing row, muted or not, is untouched — a mute
+ * still wins). Both reply channels funnel through here, so portal and email
+ * replies re-opt in identically. The requester is the ACTOR of the
+ * reopen/`ticket.replied` signals below, so they never bell/email themselves
+ * for their own reply regardless.
  */
 async function appendRequesterReply(
   ticketId: TicketId,
@@ -253,6 +263,8 @@ async function appendRequesterReply(
     stampFirstResponse: false,
     actor,
   })
+  const { safeSubscribeToTicket } = await import('./ticket-subscription.service')
+  await safeSubscribeToTicket(requesterPrincipalId, ticketId, 'requester')
   await autoReopenOnRequesterReply(ticketId, requesterPrincipalId)
   void emitTicketReplied(actor, ticket, message)
   return { message }
@@ -323,7 +335,14 @@ export async function watchMyTicket(actor: Actor, ticketId: TicketId): Promise<v
   await subscribeToTicket(principalId, ticketId, 'manual')
 }
 
-/** Stop watching the requester's own ticket. */
+/**
+ * Stop watching the requester's own ticket. Honored everywhere (B18): with
+ * the row gone, the requester drops out of the status-change bell and the
+ * resolved email (the two resolvers reach the requester THROUGH this row),
+ * exactly as they already dropped out of reply emails. Replies re-subscribe
+ * them (appendRequesterReply's re-opt-in rule), so the escape hatch is never
+ * a one-way door.
+ */
 export async function unwatchMyTicket(actor: Actor, ticketId: TicketId): Promise<void> {
   const principalId = requireRequester(actor)
   await loadOwnedTicketOr404(ticketId, principalId)

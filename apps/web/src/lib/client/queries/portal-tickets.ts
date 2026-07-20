@@ -10,6 +10,7 @@ import {
   getMyTicketFn,
   getMyTicketThreadFn,
   getMyTicketWatchStatusFn,
+  getMyTicketStageLabelsFn,
 } from '@/lib/server/functions/tickets'
 
 export const portalTicketKeys = {
@@ -19,6 +20,8 @@ export const portalTicketKeys = {
   thread: (id: TicketId) => [...portalTicketKeys.all(), 'thread', id] as const,
   /** The requester's own watch status on one of their tickets (the bell toggle). */
   watch: (id: TicketId) => [...portalTicketKeys.all(), 'watch', id] as const,
+  /** The workspace's (customized) requester-facing stage labels. */
+  stageLabels: () => [...portalTicketKeys.all(), 'stage-labels'] as const,
 }
 
 export const portalTicketQueries = {
@@ -52,5 +55,14 @@ export const portalTicketQueries = {
       queryKey: portalTicketKeys.watch(id),
       queryFn: () => getMyTicketWatchStatusFn({ data: { ticketId: id } }),
       staleTime: 30_000,
+    }),
+
+  /** The workspace's stage labels for the StageTracker (B19). Edited rarely
+   *  (ticket settings), so a long stale window is fine. */
+  stageLabels: () =>
+    queryOptions({
+      queryKey: portalTicketKeys.stageLabels(),
+      queryFn: () => getMyTicketStageLabelsFn(),
+      staleTime: 300_000,
     }),
 }

@@ -158,6 +158,10 @@ export interface TicketEmailConfig {
   messageBody?: string
   authorName?: string
   statusChange?: { previousLabel: string | null; newLabel: string }
+  /** B22: kind 'status_resolved' — a null-publicStage close ("Won't do",
+   *  "Duplicate") renders generic "was closed" copy (the internal status name
+   *  never reaches the customer). Absent/false keeps the resolved copy. */
+  closedGeneric?: boolean
   clockLabel?: string
   dueLabel?: string
   /** Per-team From (resolveSendingAddress result); absent = EMAIL_FROM. */

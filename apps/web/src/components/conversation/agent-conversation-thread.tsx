@@ -131,7 +131,11 @@ import { ChannelBadge } from '@/components/admin/conversation/channel-badge'
 import { SlaChip } from '@/components/admin/conversation/sla-chip'
 import { ConversationTagsEditor } from '@/components/admin/conversation/conversation-tags-editor'
 import { StatusControl } from '@/components/admin/conversation/status-control'
-import { TicketTypeBadge, TicketStageChip } from '@/components/admin/inbox/ticket-chips'
+import {
+  TicketTypeBadge,
+  TicketStageChip,
+  TicketStatusChip,
+} from '@/components/admin/inbox/ticket-chips'
 import {
   TicketStatusControl,
   TicketAssigneeControl,
@@ -168,6 +172,8 @@ import { useImageUpload } from '@/lib/client/hooks/use-image-upload'
 import { useConversationComposerAttachments } from '@/lib/client/hooks/use-conversation-composer-attachments'
 import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
 import { useCopilotInsert } from '@/lib/client/hooks/use-copilot-insert'
+import { usePermissions } from '@/lib/client/use-permissions'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   EMPTY_DRAFT,
   answerToDraft,
@@ -286,6 +292,16 @@ export function AgentConversationThread({
   const myName = session?.user?.name ?? 'You'
   const flags = settings?.featureFlags as FeatureFlags | undefined
   const showTickets = flags?.supportTickets ?? false
+  // B24: the linked-ticket affordances (the header's ticket-status pill, the
+  // linked-ticket detail fetch) gate on the resolved ticket permissions, not
+  // just the feature flag. `ticket.view` decides whether the ticket is fetched
+  // at all (getTicketFn 403s without it, so the query is disabled rather than
+  // left to error); `ticket.set_status` decides whether the pill is the
+  // interactive dropdown or an inert read-only chip (the mutation 403s without
+  // it). Render-only gating — the server fns enforce both regardless.
+  const permissions = usePermissions()
+  const canViewTickets = permissions.has(PERMISSIONS.TICKET_VIEW)
+  const canSetTicketStatus = permissions.has(PERMISSIONS.TICKET_SET_STATUS)
 
   // Reply and Note each hold an independent draft (the rich doc persisted as
   // contentJson + its markdown mirror), so toggling modes preserves each mode's
@@ -376,7 +392,9 @@ export function AgentConversationThread({
   const linkedTicketId = linkedTicketSummary?.id ?? null
   const { data: linkedTicketFull } = useQuery({
     ...inboxQueries.ticketDetail(linkedTicketId ?? INACTIVE_TICKET_ID),
-    enabled: !!linkedTicketId,
+    // No `ticket.view` → the detail fn can only 403 (B24): skip the fetch and
+    // let the header/panel render no ticket affordance at all.
+    enabled: !!linkedTicketId && canViewTickets,
   })
   // The ticket in scope for both the header pill and the detail panel: the
   // item's own ticket (a ticket item), or the conversation's linked one.
@@ -385,10 +403,12 @@ export function AgentConversationThread({
   // The ticket status catalogue, needed to resolve "Resolve" -> the default
   // closed-category status (§3.4), and the close-confirm's "Resolve ticket
   // and close" -> the 'resolved' closed status. Shared cache key with the
-  // route's own read, so mounting both costs one request, not two.
+  // route's own read, so mounting both costs one request, not two. The
+  // statuses fn reads on `ticket.view`, so a linked ticket the agent can't
+  // view (B24) keeps it disabled.
   const { data: ticketStatusList } = useQuery({
     ...ticketQueries.statuses(),
-    enabled: isTicket || !!linkedTicketId,
+    enabled: isTicket || (!!linkedTicketId && canViewTickets),
   })
 
   const conversation = convThread?.conversation
@@ -1450,7 +1470,18 @@ export function AgentConversationThread({
   // identical JSX for both kinds, gated internally by `isTicket`/capabilities.
   const headerActions = (
     <div className="flex shrink-0 items-center gap-1">
-      {panelTicket && <TicketStatusControl ticket={panelTicket} onChanged={refreshThread} />}
+      {/* B24: the ticket-status pill's interactivity follows the resolved
+          permissions — the full dropdown with `ticket.set_status`, an inert
+          read-only chip with view-only, and nothing at all without
+          `ticket.view` (panelTicket is then unfetchable anyway). */}
+      {panelTicket &&
+        (canSetTicketStatus ? (
+          <TicketStatusControl ticket={panelTicket} onChanged={refreshThread} />
+        ) : (
+          <span className="inline-flex items-center px-1.5 py-1">
+            <TicketStatusChip status={panelTicket.status} />
+          </span>
+        ))}
       {!isTicket && showTickets && !panelTicket && (
         <button
           type="button"
@@ -2042,13 +2073,18 @@ export function AgentConversationThread({
                 >
                   Close conversation only
                 </Button>
-                <Button
-                  type="button"
-                  disabled={closeConfirmPending}
-                  onClick={() => void resolveTicketAndClose()}
-                >
-                  Resolve ticket and close
-                </Button>
+                {/* Resolving the linked ticket requires `ticket.set_status`
+                    (B24) — without it the mutation can only 403, so the
+                    combined action is hidden rather than left to error. */}
+                {canSetTicketStatus && (
+                  <Button
+                    type="button"
+                    disabled={closeConfirmPending}
+                    onClick={() => void resolveTicketAndClose()}
+                  >
+                    Resolve ticket and close
+                  </Button>
+                )}
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>

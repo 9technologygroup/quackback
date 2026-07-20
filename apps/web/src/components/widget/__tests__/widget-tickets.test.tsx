@@ -16,6 +16,7 @@ const fns = vi.hoisted(() => ({
   getMyWidgetTicketFn: vi.fn(),
   getMyWidgetTicketThreadFn: vi.fn(),
   getWidgetTicketFormFn: vi.fn(),
+  getMyWidgetTicketStageLabelsFn: vi.fn(),
   replyToMyWidgetTicketFn: vi.fn(),
   markMyWidgetTicketReadFn: vi.fn().mockResolvedValue({ ok: true }),
 }))
@@ -51,6 +52,13 @@ beforeEach(() => {
   fns.listMyWidgetTicketsFn.mockReset()
   fns.getMyWidgetTicketFn.mockReset()
   fns.getMyWidgetTicketThreadFn.mockReset()
+  fns.getMyWidgetTicketStageLabelsFn.mockReset()
+  fns.getMyWidgetTicketStageLabelsFn.mockResolvedValue({
+    received: 'Queued',
+    in_progress: 'Being fixed',
+    awaiting_requester: 'Waiting on you',
+    resolved: 'Done',
+  })
   fns.markMyWidgetTicketReadFn.mockClear()
   fns.markMyWidgetTicketReadFn.mockResolvedValue({ ok: true })
 })
@@ -110,6 +118,33 @@ describe('WidgetTickets — list tiers', () => {
     expect(row?.textContent).toContain('3')
     const quietRow = (await screen.findByText('Quiet thing')).closest('button')
     expect(quietRow?.textContent).not.toContain('0')
+  })
+
+  it('B22: a null-stage closed ticket gets a muted "Closed" chip; a null-stage open ticket gets none', async () => {
+    fns.listMyWidgetTicketsFn.mockResolvedValue([
+      {
+        id: 'ticket_1',
+        title: 'Closed as wont-do',
+        reference: '#20',
+        updatedAt: new Date().toISOString(),
+        stage: { slot: null, label: null, closed: true },
+        unreadCount: 0,
+      },
+      {
+        id: 'ticket_2',
+        title: 'Quiet internal move',
+        reference: '#21',
+        updatedAt: new Date().toISOString(),
+        stage: { slot: null, label: null, closed: false },
+        unreadCount: 0,
+      },
+    ])
+    render(<WidgetTickets onOpenTicket={vi.fn()} />, { wrapper: wrapper() })
+
+    const closedRow = (await screen.findByText('Closed as wont-do')).closest('button')
+    expect(closedRow?.textContent).toContain('Closed')
+    const openRow = (await screen.findByText('Quiet internal move')).closest('button')
+    expect(openRow?.textContent).not.toContain('Closed')
   })
 })
 
@@ -218,5 +253,61 @@ describe('WidgetTicketDetail — thread', () => {
 
     expect(await screen.findByText('Thanks! Tracking this as a ticket now')).toBeTruthy()
     expect(screen.queryByText(/no replies yet/i)).toBeNull()
+  })
+
+  it('B19: the StageTracker renders the workspace-customized stage labels, not the defaults', async () => {
+    fns.getMyWidgetTicketFn.mockResolvedValue({
+      id: 'ticket_1',
+      title: 'Broken thing',
+      reference: '#12',
+      stage: { slot: 'in_progress', label: 'In progress', closed: false },
+    })
+    fns.getMyWidgetTicketThreadFn.mockResolvedValue({ messages: [] })
+    render(<WidgetTicketDetail ticketId={'ticket_1' as never} />, { wrapper: wrapper() })
+
+    expect(await screen.findByText('Being fixed')).toBeTruthy()
+    expect(screen.queryByText('In progress')).toBeNull()
+  })
+
+  it('B22: a null-stage closed ticket shows the generic "Closed" tracker state', async () => {
+    fns.getMyWidgetTicketFn.mockResolvedValue({
+      id: 'ticket_1',
+      title: 'Not planned',
+      reference: '#15',
+      stage: { slot: null, label: null, closed: true },
+    })
+    fns.getMyWidgetTicketThreadFn.mockResolvedValue({ messages: [] })
+    render(<WidgetTicketDetail ticketId={'ticket_1' as never} />, { wrapper: wrapper() })
+
+    expect(await screen.findByText('Closed')).toBeTruthy()
+  })
+
+  it('B25: a ticket_status_changed system message renders as the localized notice, not a bubble', async () => {
+    fns.getMyWidgetTicketFn.mockResolvedValue({
+      id: 'ticket_1',
+      title: 'Broken thing',
+      reference: '#12',
+      stage: { slot: 'resolved', label: 'Done', closed: true },
+    })
+    fns.getMyWidgetTicketThreadFn.mockResolvedValue({
+      messages: [
+        {
+          id: 'm1',
+          content: 'Status updated to Resolved',
+          contentJson: null,
+          senderType: 'system',
+          author: null,
+          isAssistant: false,
+          attachments: [],
+          citations: [],
+          createdAt: new Date().toISOString(),
+          systemEvent: { kind: 'ticket_status_changed', stageLabel: 'Resolved' },
+        },
+      ],
+    })
+    render(<WidgetTicketDetail ticketId={'ticket_1' as never} />, { wrapper: wrapper() })
+
+    const notice = await screen.findByRole('status')
+    expect(notice.textContent).toBe('Status updated to Resolved')
   })
 })

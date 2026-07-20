@@ -385,8 +385,8 @@ export async function sendTicketMessage(
   await safeSubscribeToTicket(principalId, input.ticketId, 'replier')
   // Agent/integration-facing signal, fire-and-forget after the write commits.
   // On a linked pair this rides ALONGSIDE the delegate's `message.created`
-  // (notification matrix: the watcher fan-out + the requester's always-on
-  // email are ticket-side, unchanged by the redirect).
+  // (notification matrix: the watcher fan-out — the requester included through
+  // their subscription row, B18 — is ticket-side, unchanged by the redirect).
   void emitTicketReplied(actor, ticket, message)
   return { message }
 }

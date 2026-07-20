@@ -111,6 +111,23 @@ export const getMyWidgetTicketFn = createServerFn({ method: 'GET' })
     return getMyTicket(actor, data.ticketId as TicketId)
   })
 
+/**
+ * The workspace's requester-facing stage labels (customized via ticket
+ * settings) for the widget ticket StageTracker — the same `getStageLabels()`
+ * the stage chips and emails already read (B19: the tracker hardcoded the
+ * DEFAULT labels while chips/emails used the customized ones). The labels are
+ * customer-visible content the visitor already sees on their own tickets'
+ * chips, so the standard widget-ticket gate (feature flag + identity tier) is
+ * the whole check.
+ */
+export const getMyWidgetTicketStageLabelsFn = createServerFn({ method: 'GET' }).handler(
+  async () => {
+    await requireWidgetTicketActor()
+    const { getStageLabels } = await import('@/lib/server/domains/settings/settings.tickets')
+    return getStageLabels()
+  }
+)
+
 /** The customer-visible thread of a ticket the visitor owns (internal notes stripped). */
 export const getMyWidgetTicketThreadFn = createServerFn({ method: 'GET' })
   .validator(z.object({ ticketId: z.string(), before: z.string().optional() }))

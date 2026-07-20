@@ -10,6 +10,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { SettingsCard } from '@/components/admin/settings/settings-card'
 import { MetricTile, useLast30DaysRange, pct } from './metric-tile'
+import { Skeleton } from '@/components/ui/skeleton'
 import { supportReportingQuery } from '@/lib/client/queries/support-reporting'
 import { formatSlaCountdown } from '@/lib/shared/conversation/sla'
 import type { SlaAttainment, SlaBreachHeatmapCell } from '@/lib/server/domains/sla/sla-reporting'
@@ -70,7 +71,7 @@ function BreachHeatmap({ cells }: { cells: SlaBreachHeatmapCell[] }) {
 
 export function SupportPerformanceCard() {
   const range = useLast30DaysRange()
-  const { data } = useQuery(supportReportingQuery(range.from, range.to))
+  const { data, isLoading } = useQuery(supportReportingQuery(range.from, range.to))
 
   const runs = (data?.workflows ?? []).reduce(
     (acc, w) => ({
@@ -88,24 +89,39 @@ export function SupportPerformanceCard() {
       title="Performance"
       description="SLA attainment and workflow outcomes over the last 30 days."
     >
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {CLOCKS.map((c) => {
-          const clock = data?.sla[c.key]
-          return (
-            <MetricTile
-              key={c.key}
-              label={`${c.label} SLA`}
-              value={pct(clock?.rate)}
-              sub={clock ? `${clock.met} met / ${clock.breached} breached` : undefined}
-            />
-          )
-        })}
-        <MetricTile
-          label="Workflow runs"
-          value={String(runs.started)}
-          sub={`${runs.completed} completed, ${runs.interrupted} interrupted`}
-        />
-      </div>
+      {isLoading ? (
+        // Loading skeleton in the tiles' own grid (B33): without it the tiles
+        // render "—" while fetching, indistinguishable from "no clocks
+        // tracked". The shapes mirror MetricTile (value / label / sub).
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3" aria-hidden>
+          {Array.from({ length: 5 }, (_, i) => (
+            <div key={i} className="rounded-lg border p-3">
+              <Skeleton className="h-8 w-14" />
+              <Skeleton className="mt-2 h-4 w-24" />
+              <Skeleton className="mt-1 h-3 w-20" />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {CLOCKS.map((c) => {
+            const clock = data?.sla[c.key]
+            return (
+              <MetricTile
+                key={c.key}
+                label={`${c.label} SLA`}
+                value={pct(clock?.rate)}
+                sub={clock ? `${clock.met} met / ${clock.breached} breached` : undefined}
+              />
+            )
+          })}
+          <MetricTile
+            label="Workflow runs"
+            value={String(runs.started)}
+            sub={`${runs.completed} completed, ${runs.interrupted} interrupted`}
+          />
+        </div>
+      )}
 
       {data && data.slaByPolicy.length > 0 && (
         <div className="mt-4">

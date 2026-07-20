@@ -822,6 +822,22 @@ export const getMyTicketFn = createServerFn({ method: 'GET' })
     return getMyTicket(actor, data.ticketId as TicketId)
   })
 
+/**
+ * The workspace's requester-facing stage labels (customized via ticket
+ * settings) for the portal ticket StageTracker — the same `getStageLabels()`
+ * the stage chips and emails already read (B19: the tracker hardcoded the
+ * DEFAULT labels while chips/emails used the customized ones). Gated only on
+ * a signed-in principal: the labels are customer-visible content the
+ * requester already sees on their own tickets' chips, so there is no
+ * ownership dimension to enforce (unlike the agent-gated
+ * `getTicketStageLabelsFn`, which reads on `ticket.view`).
+ */
+export const getMyTicketStageLabelsFn = createServerFn({ method: 'GET' }).handler(async () => {
+  await requireAuth()
+  const { getStageLabels } = await import('@/lib/server/domains/settings/settings.tickets')
+  return getStageLabels()
+})
+
 export const getMyTicketThreadFn = createServerFn({ method: 'GET' })
   .validator(z.object({ ticketId: z.string(), before: z.string().optional() }))
   .handler(async ({ data }) => {

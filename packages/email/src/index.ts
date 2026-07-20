@@ -772,6 +772,10 @@ export interface SendTicketEventEmailParams {
   authorName?: string
   /** Stage labels (kind 'status_resolved'). */
   statusChange?: { previousLabel: string | null; newLabel: string }
+  /** B22: kind 'status_resolved' — a null-publicStage close ("Won't do",
+   *  "Duplicate") renders generic "was closed" copy instead of "was resolved",
+   *  so the internal status name never reaches the customer. */
+  closedGeneric?: boolean
   /** SLA kinds: which clock and when it is/was due. */
   clockLabel?: string
   dueLabel?: string
@@ -821,6 +825,19 @@ function ticketEventCopy(p: SendTicketEventEmailParams): TicketEmailCopy {
         reason: requesterReason,
       }
     case 'status_resolved':
+      // B22: a null-publicStage close ("Won't do", "Duplicate") says "closed",
+      // never "resolved" — the internal status name must not leak, and the
+      // customer story for a won't-do close is a plain close.
+      if (p.closedGeneric) {
+        return {
+          subject: `Your ticket ${p.ticketLabel} was closed`,
+          heading: 'Your ticket was closed',
+          intro: `${p.ticketLabel} "${p.title}" has been closed by the ${p.workspaceName} team.`,
+          note: 'If you have a follow-up, reply on the ticket thread — replying reopens it.',
+          ctaLabel: 'View your ticket',
+          reason: requesterReason,
+        }
+      }
       return {
         subject: `Your ticket ${p.ticketLabel} was resolved`,
         heading: 'Your ticket was resolved',

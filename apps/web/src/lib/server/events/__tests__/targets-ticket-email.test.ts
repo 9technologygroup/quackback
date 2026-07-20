@@ -318,7 +318,8 @@ function statusEvent(overrides: Record<string, unknown> = {}): EventData {
 }
 
 describe('getTicketResolvedEmailTargets', () => {
-  it('fires on open→closed and emails the requester with stage labels', async () => {
+  it('fires on open→closed and emails the watching requester with stage labels', async () => {
+    getTicketWatchersForEvent.mockResolvedValue(['principal_requester'])
     queueSelect([{ id: 'principal_requester', email: 'req@example.com', contactEmail: null }])
     const targets = await getTicketResolvedEmailTargets(statusEvent(), context)
     expect(targets).toHaveLength(1)
@@ -326,6 +327,25 @@ describe('getTicketResolvedEmailTargets', () => {
       kind: 'status_resolved',
       ctaUrl: 'https://p/support/ticket/ticket_1',
       statusChange: { previousLabel: 'Received', newLabel: 'Resolved' },
+    })
+    // A staged (resolved) close is not the generic-close copy branch.
+    expect(targets[0].config.closedGeneric).not.toBe(true)
+  })
+
+  it('B18: an unwatched requester (row deleted via "Stop watching") is NOT emailed', async () => {
+    // Watcher set stays empty (the default) even though the payload names a requester.
+    expect(await getTicketResolvedEmailTargets(statusEvent(), context)).toEqual([])
+  })
+
+  it('B22: a null-stage close emails with the generic Closed label + closedGeneric copy', async () => {
+    getTicketWatchersForEvent.mockResolvedValue(['principal_requester'])
+    queueSelect([{ id: 'principal_requester', email: 'req@example.com', contactEmail: null }])
+    const targets = await getTicketResolvedEmailTargets(statusEvent({ stage: null }), context)
+    expect(targets).toHaveLength(1)
+    expect(targets[0].config).toMatchObject({
+      kind: 'status_resolved',
+      statusChange: { previousLabel: 'Received', newLabel: 'Closed' },
+      closedGeneric: true,
     })
   })
 
