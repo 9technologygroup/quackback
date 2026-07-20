@@ -11,9 +11,32 @@ interface LinearWebhookResult {
 }
 
 /**
- * Register a webhook with Linear to receive issue updates.
+ * Register a webhook with Linear to receive issue updates. Self-healing: if
+ * Linear rejects the create because a webhook already exists at this callback
+ * URL (a prior registration whose id we failed to persist), the stale webhook
+ * is deleted and the create retried once, so re-enabling status sync recovers
+ * instead of dead-ending on "url not unique".
  */
 export async function registerLinearWebhook(
+  accessToken: string,
+  callbackUrl: string,
+  secret: string,
+  teamId?: string
+): Promise<LinearWebhookResult> {
+  try {
+    return await createLinearWebhook(accessToken, callbackUrl, secret, teamId)
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : ''
+    if (!/not unique|already exists/i.test(msg)) throw error
+    // Reclaim the orphaned webhook at this URL, then retry the create once.
+    const staleId = await findLinearWebhookByUrl(accessToken, callbackUrl)
+    if (!staleId) throw error
+    await deleteLinearWebhook(accessToken, staleId)
+    return createLinearWebhook(accessToken, callbackUrl, secret, teamId)
+  }
+}
+
+async function createLinearWebhook(
   accessToken: string,
   callbackUrl: string,
   secret: string,
@@ -68,6 +91,26 @@ export async function registerLinearWebhook(
   return { webhookId: webhook.id }
 }
 
+/** Find the id of an existing Linear webhook whose url matches, if any. */
+async function findLinearWebhookByUrl(
+  accessToken: string,
+  callbackUrl: string
+): Promise<string | null> {
+  const response = await fetch(LINEAR_API, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ query: LIST_WEBHOOKS_QUERY }),
+  })
+  if (!response.ok) return null
+  const result = (await response.json()) as {
+    data?: { webhooks?: { nodes?: Array<{ id: string; url: string }> } }
+  }
+  return result.data?.webhooks?.nodes?.find((w) => w.url === callbackUrl)?.id ?? null
+}
+
 /**
  * Delete a webhook from Linear.
  */
@@ -100,6 +143,17 @@ const DELETE_WEBHOOK_MUTATION = `
   mutation DeleteWebhook($id: String!) {
     webhookDelete(id: $id) {
       success
+    }
+  }
+`
+
+const LIST_WEBHOOKS_QUERY = `
+  query Webhooks {
+    webhooks {
+      nodes {
+        id
+        url
+      }
     }
   }
 `
