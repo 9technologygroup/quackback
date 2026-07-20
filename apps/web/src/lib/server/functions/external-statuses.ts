@@ -9,28 +9,23 @@ import { z } from 'zod'
 import { requireAuth } from './auth-helpers'
 import { db, integrations, eq } from '@/lib/server/db'
 import { decryptSecrets } from '@/lib/server/integrations/encryption'
-import { getIntegration, listIntegrationTypes } from '@/lib/server/integrations'
 import type { ExternalStatusItem } from '@/lib/server/integrations/types'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'external-statuses' })
 
+// NOTE: the registry is imported DYNAMICALLY inside the handler — a top-level
+// import pulls the whole provider graph (db/redis/bullmq) into the client
+// bundle via the createServerFn stub, which import-protection rejects. The
+// status-source provider set is derived from the registry in the coverage
+// test, so nothing outside the handler references it here.
+
 const fetchExternalStatusesSchema = z.object({
   integrationType: z.string(),
 })
 
 export type { ExternalStatusItem }
-
-/**
- * Providers with a status source, DERIVED from each provider's registered
- * `listExternalStatuses` capability. Kept as an export for the
- * registry-capability-coverage suite; the registry is the source of truth —
- * an inbound provider without the capability fails CI there, not silently.
- */
-export const EXTERNAL_STATUS_PROVIDERS: ReadonlySet<string> = new Set(
-  listIntegrationTypes().filter((t) => getIntegration(t)?.listExternalStatuses)
-)
 
 /**
  * Fetch available statuses from an external platform via the provider's
@@ -43,6 +38,7 @@ export const fetchExternalStatusesFn = createServerFn({ method: 'POST' })
     try {
       await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
+      const { getIntegration } = await import('@/lib/server/integrations')
       const listExternalStatuses = getIntegration(data.integrationType)?.listExternalStatuses
       if (!listExternalStatuses) return []
 

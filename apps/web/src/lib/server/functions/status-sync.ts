@@ -16,26 +16,15 @@ import {
 import type { IntegrationId } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
-import { getIntegration, listIntegrationTypes } from '@/lib/server/integrations'
 
 const log = logger.child({ component: 'status-sync' })
 
-/**
- * Webhook-setup split, DERIVED from each provider's registered
- * `webhookRegistration` capability (an object = auto-registered via the
- * provider API; 'manual' = the admin pastes the callback URL on the external
- * platform). The sets are kept as exports for the UI and the
- * registry-capability-coverage suite, but the registry is the source of
- * truth — a provider without the capability fails CI there, not silently.
- */
-export const AUTO_WEBHOOK_REGISTRATION_PROVIDERS: ReadonlySet<string> = new Set(
-  listIntegrationTypes().filter((t) => typeof getIntegration(t)?.webhookRegistration === 'object')
-)
-/** Inbound-capable providers whose webhook must be configured by hand on the
- *  external platform (no registration API used; the UI shows the callback URL). */
-export const MANUAL_WEBHOOK_PROVIDERS: ReadonlySet<string> = new Set(
-  listIntegrationTypes().filter((t) => getIntegration(t)?.webhookRegistration === 'manual')
-)
+// NOTE: the registry (`@/lib/server/integrations`) is imported DYNAMICALLY
+// inside the handlers below — a top-level import would pull the whole
+// provider graph (and its db/redis/bullmq packages) into the client bundle
+// via the createServerFn client stub, which import-protection rejects. The
+// webhook-setup split is derived from the registry directly in the coverage
+// test, so nothing outside a handler references it here.
 
 const enableStatusSyncSchema = z.object({
   integrationId: z.string(),
@@ -96,6 +85,7 @@ export const enableStatusSyncFn = createServerFn({ method: 'POST' })
       // callback URL instead).
       if (accessToken) {
         try {
+          const { getIntegration } = await import('@/lib/server/integrations')
           const registration = getIntegration(data.integrationType)?.webhookRegistration
           if (registration && registration !== 'manual') {
             const result = await registration.register({
@@ -160,6 +150,7 @@ export const disableStatusSyncFn = createServerFn({ method: 'POST' })
         try {
           const secrets = decryptSecrets<{ accessToken?: string }>(integration.secrets)
           if (secrets.accessToken) {
+            const { getIntegration } = await import('@/lib/server/integrations')
             const registration = getIntegration(data.integrationType)?.webhookRegistration
             if (registration && registration !== 'manual') {
               await registration.unregister({

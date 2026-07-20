@@ -12,13 +12,21 @@
  */
 import { describe, it, expect } from 'vitest'
 import { getIntegration, listIntegrationTypes } from '../index'
-import {
-  AUTO_WEBHOOK_REGISTRATION_PROVIDERS,
-  MANUAL_WEBHOOK_PROVIDERS,
-} from '@/lib/server/functions/status-sync'
-import { EXTERNAL_STATUS_PROVIDERS } from '@/lib/server/functions/external-statuses'
 
 const inboundProviders = listIntegrationTypes().filter((t) => getIntegration(t)?.inbound)
+
+// Webhook-setup split, derived from the registry (the server-fn bridges must
+// not export these — a module-level registry read there poisons the client
+// bundle via import-protection; see status-sync.ts / external-statuses.ts).
+const AUTO_WEBHOOK_REGISTRATION_PROVIDERS = new Set(
+  listIntegrationTypes().filter((t) => typeof getIntegration(t)?.webhookRegistration === 'object')
+)
+const MANUAL_WEBHOOK_PROVIDERS = new Set(
+  listIntegrationTypes().filter((t) => getIntegration(t)?.webhookRegistration === 'manual')
+)
+const EXTERNAL_STATUS_PROVIDERS = new Set(
+  listIntegrationTypes().filter((t) => getIntegration(t)?.listExternalStatuses)
+)
 
 describe('registry capability coverage', () => {
   it('has inbound providers to check (guard against a silently empty registry)', () => {
