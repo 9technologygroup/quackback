@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { archiveLinearIssue } from './archive'
 import { linearHook } from './hook'
 import { linearInboundHandler } from './inbound'
 import { linearIssues } from './issues'
@@ -16,6 +17,7 @@ export const linearIntegration: IntegrationDefinition = {
   hook: linearHook,
   inbound: linearInboundHandler,
   issues: linearIssues,
+  archive: archiveLinearIssue,
   platformCredentials: [
     {
       key: 'clientId',

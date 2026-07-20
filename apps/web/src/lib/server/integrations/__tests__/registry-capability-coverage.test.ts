@@ -71,6 +71,37 @@ describe('registry capability coverage', () => {
     }
   })
 
+  it('every tracker provider declares archive (WO-1: archive dispatch lives in the registry)', () => {
+    // The exact set that lived in archive.ts's hand-keyed archiveFns table.
+    const ARCHIVE_PROVIDERS = new Set([
+      'linear',
+      'github',
+      'jira',
+      'gitlab',
+      'clickup',
+      'asana',
+      'shortcut',
+      'azure_devops',
+      'trello',
+      'notion',
+      'monday',
+    ])
+    for (const type of ARCHIVE_PROVIDERS) {
+      expect(
+        getIntegration(type)?.archive,
+        `${type} must declare .archive (close/archive the linked item on post delete)`
+      ).toBeTypeOf('function')
+    }
+    for (const type of listIntegrationTypes()) {
+      if (getIntegration(type)?.archive) {
+        expect(
+          ARCHIVE_PROVIDERS.has(type),
+          `${type} declares .archive — add it to ARCHIVE_PROVIDERS so the set stays exact`
+        ).toBe(true)
+      }
+    }
+  })
+
   it('issue capabilities keep their inbound-namespace contract', () => {
     // A provider offering parseRef must have inbound (the parsed externalId
     // exists to serve inbound reverse lookup); create-only providers (e.g.

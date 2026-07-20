@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { archiveNotionPage } from './archive'
 import { notionHook } from './hook'
 import { getNotionOAuthUrl, exchangeNotionCode } from './oauth'
 import { notionCatalog } from './catalog'
@@ -12,6 +13,7 @@ export const notionIntegration: IntegrationDefinition = {
     exchangeCode: exchangeNotionCode,
   },
   hook: notionHook,
+  archive: archiveNotionPage,
   platformCredentials: [
     {
       key: 'clientId',

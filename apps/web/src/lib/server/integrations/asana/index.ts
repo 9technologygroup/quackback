@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { completeAsanaTask } from './archive'
 import { asanaHook } from './hook'
 import { asanaInboundHandler } from './inbound'
 import { getAsanaOAuthUrl, exchangeAsanaCode, revokeAsanaToken } from './oauth'
@@ -14,6 +15,7 @@ export const asanaIntegration: IntegrationDefinition = {
   },
   hook: asanaHook,
   inbound: asanaInboundHandler,
+  archive: completeAsanaTask,
   platformCredentials: [
     {
       key: 'clientId',

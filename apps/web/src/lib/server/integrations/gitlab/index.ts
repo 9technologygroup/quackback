@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { closeGitLabIssue } from './archive'
 import { gitlabHook } from './hook'
 import { getGitLabOAuthUrl, exchangeGitLabCode } from './oauth'
 import { gitlabCatalog } from './catalog'
@@ -14,6 +15,7 @@ export const gitlabIntegration: IntegrationDefinition = {
   },
   hook: gitlabHook,
   inbound: gitlabInboundHandler,
+  archive: closeGitLabIssue,
   platformCredentials: [
     {
       key: 'clientId',

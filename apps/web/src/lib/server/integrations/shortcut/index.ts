@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { archiveShortcutStory } from './archive'
 import { shortcutHook } from './hook'
 import { shortcutInboundHandler } from './inbound'
 import { shortcutCatalog } from './catalog'
@@ -8,5 +9,6 @@ export const shortcutIntegration: IntegrationDefinition = {
   catalog: shortcutCatalog,
   hook: shortcutHook,
   inbound: shortcutInboundHandler,
+  archive: archiveShortcutStory,
   platformCredentials: [],
 }

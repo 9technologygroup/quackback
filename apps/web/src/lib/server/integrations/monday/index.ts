@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { archiveMondayItem } from './archive'
 import { mondayHook } from './hook'
 import { getMondayOAuthUrl, exchangeMondayCode } from './oauth'
 import { mondayCatalog } from './catalog'
@@ -12,6 +13,7 @@ export const mondayIntegration: IntegrationDefinition = {
     exchangeCode: exchangeMondayCode,
   },
   hook: mondayHook,
+  archive: archiveMondayItem,
   platformCredentials: [
     {
       key: 'clientId',

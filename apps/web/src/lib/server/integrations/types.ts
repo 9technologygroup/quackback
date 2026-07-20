@@ -197,6 +197,12 @@ export interface IntegrationDefinition {
    * segment membership sync (evaluation → external platform).
    */
   userSync?: UserSyncHandler
+  /**
+   * Close/archive the linked external item on cascading post delete. Never
+   * throws — failures are warnings, not blockers (see archive.ts semantics:
+   * 404 means already-gone and counts as success).
+   */
+  archive?: (ctx: import('./archive').ArchiveContext) => Promise<import('./archive').ArchiveResult>
   /** Platform-level credential fields required to enable this integration. Use `[]` if none needed. */
   platformCredentials: PlatformCredentialField[]
   /** Feedback source connector for ingesting feedback from this platform */

@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { closeClickUpTask } from './archive'
 import { clickupHook } from './hook'
 import { clickupInboundHandler } from './inbound'
 import { getClickUpOAuthUrl, exchangeClickUpCode } from './oauth'
@@ -17,6 +18,7 @@ export const clickupIntegration: IntegrationDefinition = {
   },
   hook: clickupHook,
   inbound: clickupInboundHandler,
+  archive: closeClickUpTask,
   platformCredentials: [
     {
       key: 'clientId',

@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { archiveTrelloCard } from './archive'
 import { trelloHook } from './hook'
 import { getTrelloOAuthUrl, exchangeTrelloCode } from './oauth'
 import { trelloCatalog } from './catalog'
@@ -14,6 +15,7 @@ export const trelloIntegration: IntegrationDefinition = {
   },
   hook: trelloHook,
   inbound: trelloInboundHandler,
+  archive: archiveTrelloCard,
   platformCredentials: [
     {
       key: 'clientId',

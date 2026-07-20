@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { closeGitHubIssue } from './archive'
 import { githubHook } from './hook'
 import { githubInboundHandler } from './inbound'
 import { githubIssues } from './issues'
@@ -16,6 +17,7 @@ export const githubIntegration: IntegrationDefinition = {
   hook: githubHook,
   inbound: githubInboundHandler,
   issues: githubIssues,
+  archive: closeGitHubIssue,
   platformCredentials: [
     {
       key: 'clientId',

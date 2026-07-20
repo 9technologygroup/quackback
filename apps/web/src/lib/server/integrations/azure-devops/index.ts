@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { closeAzureDevOpsWorkItem } from './archive'
 import { azureDevOpsHook } from './hook'
 import { azureDevOpsInboundHandler } from './inbound'
 import { azureDevOpsIssues } from './issues'
@@ -11,5 +12,6 @@ export const azureDevOpsIntegration: IntegrationDefinition = {
   hook: azureDevOpsHook,
   inbound: azureDevOpsInboundHandler,
   issues: azureDevOpsIssues,
+  archive: closeAzureDevOpsWorkItem,
   platformCredentials: [],
 }

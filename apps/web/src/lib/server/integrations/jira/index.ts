@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from '../types'
+import { closeJiraIssue } from './archive'
 import { jiraHook } from './hook'
 import { jiraInboundHandler } from './inbound'
 import { jiraIssues } from './issues'
@@ -19,6 +20,7 @@ export const jiraIntegration: IntegrationDefinition = {
   hook: jiraHook,
   inbound: jiraInboundHandler,
   issues: jiraIssues,
+  archive: closeJiraIssue,
   platformCredentials: [
     {
       key: 'clientId',
