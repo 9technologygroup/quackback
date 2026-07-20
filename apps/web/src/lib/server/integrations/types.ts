@@ -203,6 +203,29 @@ export interface IntegrationDefinition {
    * 404 means already-gone and counts as success).
    */
   archive?: (ctx: import('./archive').ArchiveContext) => Promise<import('./archive').ArchiveResult>
+  /**
+   * How the inbound status-sync webhook gets set up with the provider.
+   * `'manual'` = the admin configures the webhook by hand on the external
+   * platform (the UI shows the callback URL); an object = the framework
+   * auto-registers/deregisters via the provider API when status sync is
+   * toggled. Expected alongside `inbound` — pinned by
+   * registry-capability-coverage so provider #12 can't silently no-op.
+   */
+  webhookRegistration?:
+    | 'manual'
+    | {
+        register(params: {
+          accessToken: string
+          config: Record<string, unknown>
+          callbackUrl: string
+          secret: string
+        }): Promise<{ externalWebhookId?: string }>
+        unregister(params: {
+          accessToken: string
+          config: Record<string, unknown>
+          externalWebhookId: string
+        }): Promise<void>
+      }
   /** Platform-level credential fields required to enable this integration. Use `[]` if none needed. */
   platformCredentials: PlatformCredentialField[]
   /** Feedback source connector for ingesting feedback from this platform */

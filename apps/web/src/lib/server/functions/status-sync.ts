@@ -16,33 +16,26 @@ import {
 import type { IntegrationId } from '@quackback/ids'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
+import { getIntegration, listIntegrationTypes } from '@/lib/server/integrations'
 
 const log = logger.child({ component: 'status-sync' })
 
 /**
- * Providers the enable/disable switches below auto-register webhooks for.
- * These switch statements sit OUTSIDE the IntegrationDefinition registry, and
- * a provider missing a case silently no-ops — so the split is declared here
- * and pinned against the registry by registry-capability-coverage.test.ts:
- * every inbound-capable tracker must appear in exactly one of these sets, and
- * adding provider #12 without deciding its webhook-setup story fails CI
- * instead of silently doing nothing.
+ * Webhook-setup split, DERIVED from each provider's registered
+ * `webhookRegistration` capability (an object = auto-registered via the
+ * provider API; 'manual' = the admin pastes the callback URL on the external
+ * platform). The sets are kept as exports for the UI and the
+ * registry-capability-coverage suite, but the registry is the source of
+ * truth — a provider without the capability fails CI there, not silently.
  */
-export const AUTO_WEBHOOK_REGISTRATION_PROVIDERS: ReadonlySet<string> = new Set([
-  'linear',
-  'github',
-  'jira',
-  'clickup',
-  'asana',
-])
+export const AUTO_WEBHOOK_REGISTRATION_PROVIDERS: ReadonlySet<string> = new Set(
+  listIntegrationTypes().filter((t) => typeof getIntegration(t)?.webhookRegistration === 'object')
+)
 /** Inbound-capable providers whose webhook must be configured by hand on the
  *  external platform (no registration API used; the UI shows the callback URL). */
-export const MANUAL_WEBHOOK_PROVIDERS: ReadonlySet<string> = new Set([
-  'azure_devops',
-  'gitlab',
-  'shortcut',
-  'trello',
-])
+export const MANUAL_WEBHOOK_PROVIDERS: ReadonlySet<string> = new Set(
+  listIntegrationTypes().filter((t) => getIntegration(t)?.webhookRegistration === 'manual')
+)
 
 const enableStatusSyncSchema = z.object({
   integrationId: z.string(),
@@ -98,60 +91,20 @@ export const enableStatusSyncFn = createServerFn({ method: 'POST' })
         accessToken = secrets.accessToken
       }
 
-      // Auto-register webhook for platforms that support it
+      // Auto-register webhook for platforms whose definition provides a
+      // registration capability; 'manual' providers skip (the UI shows the
+      // callback URL instead).
       if (accessToken) {
         try {
-          switch (data.integrationType) {
-            case 'linear': {
-              const { registerLinearWebhook } =
-                await import('@/lib/server/integrations/linear/webhook-registration')
-              const teamId = config.channelId as string | undefined
-              const result = await registerLinearWebhook(accessToken, callbackUrl, secret, teamId)
-              externalWebhookId = result.webhookId
-              break
-            }
-            case 'github': {
-              const { registerGitHubWebhook } =
-                await import('@/lib/server/integrations/github/webhook-registration')
-              const ownerRepo = config.channelId as string
-              if (!ownerRepo) throw new Error('No repository configured')
-              const result = await registerGitHubWebhook(
-                accessToken,
-                ownerRepo,
-                callbackUrl,
-                secret
-              )
-              externalWebhookId = result.webhookId
-              break
-            }
-            case 'jira': {
-              const { registerJiraWebhook } =
-                await import('@/lib/server/integrations/jira/webhook-registration')
-              const cloudId = config.cloudId as string
-              if (!cloudId) throw new Error('No Jira Cloud ID configured')
-              const result = await registerJiraWebhook(accessToken, cloudId, callbackUrl, secret)
-              externalWebhookId = result.webhookId
-              break
-            }
-            case 'clickup': {
-              const { registerClickUpWebhook } =
-                await import('@/lib/server/integrations/clickup/webhook-registration')
-              const teamId = config.teamId as string
-              if (!teamId) throw new Error('No ClickUp team configured')
-              const result = await registerClickUpWebhook(accessToken, teamId, callbackUrl, secret)
-              externalWebhookId = result.webhookId
-              break
-            }
-            case 'asana': {
-              const { registerAsanaWebhook } =
-                await import('@/lib/server/integrations/asana/webhook-registration')
-              const projectGid = config.channelId as string
-              if (!projectGid) throw new Error('No Asana project configured')
-              const result = await registerAsanaWebhook(accessToken, projectGid, callbackUrl)
-              externalWebhookId = result.webhookId
-              break
-            }
-            // shortcut, azure_devops: manual webhook setup — no auto-registration
+          const registration = getIntegration(data.integrationType)?.webhookRegistration
+          if (registration && registration !== 'manual') {
+            const result = await registration.register({
+              accessToken,
+              config,
+              callbackUrl,
+              secret,
+            })
+            externalWebhookId = result.externalWebhookId
           }
         } catch (error) {
           log.error(
@@ -207,43 +160,13 @@ export const disableStatusSyncFn = createServerFn({ method: 'POST' })
         try {
           const secrets = decryptSecrets<{ accessToken?: string }>(integration.secrets)
           if (secrets.accessToken) {
-            switch (data.integrationType) {
-              case 'linear': {
-                const { deleteLinearWebhook } =
-                  await import('@/lib/server/integrations/linear/webhook-registration')
-                await deleteLinearWebhook(secrets.accessToken, externalWebhookId)
-                break
-              }
-              case 'github': {
-                const { deleteGitHubWebhook } =
-                  await import('@/lib/server/integrations/github/webhook-registration')
-                const ownerRepo = config.channelId as string
-                if (ownerRepo) {
-                  await deleteGitHubWebhook(secrets.accessToken, ownerRepo, externalWebhookId)
-                }
-                break
-              }
-              case 'jira': {
-                const { deleteJiraWebhook } =
-                  await import('@/lib/server/integrations/jira/webhook-registration')
-                const cloudId = config.cloudId as string
-                if (cloudId) {
-                  await deleteJiraWebhook(secrets.accessToken, cloudId, externalWebhookId)
-                }
-                break
-              }
-              case 'clickup': {
-                const { deleteClickUpWebhook } =
-                  await import('@/lib/server/integrations/clickup/webhook-registration')
-                await deleteClickUpWebhook(secrets.accessToken, externalWebhookId)
-                break
-              }
-              case 'asana': {
-                const { deleteAsanaWebhook } =
-                  await import('@/lib/server/integrations/asana/webhook-registration')
-                await deleteAsanaWebhook(secrets.accessToken, externalWebhookId)
-                break
-              }
+            const registration = getIntegration(data.integrationType)?.webhookRegistration
+            if (registration && registration !== 'manual') {
+              await registration.unregister({
+                accessToken: secrets.accessToken,
+                config,
+                externalWebhookId,
+              })
             }
           }
         } catch (error) {

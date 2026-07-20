@@ -16,6 +16,7 @@ export const trelloIntegration: IntegrationDefinition = {
   hook: trelloHook,
   inbound: trelloInboundHandler,
   archive: archiveTrelloCard,
+  webhookRegistration: 'manual',
   platformCredentials: [
     {
       key: 'clientId',

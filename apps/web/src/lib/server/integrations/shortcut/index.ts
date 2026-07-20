@@ -10,5 +10,6 @@ export const shortcutIntegration: IntegrationDefinition = {
   hook: shortcutHook,
   inbound: shortcutInboundHandler,
   archive: archiveShortcutStory,
+  webhookRegistration: 'manual',
   platformCredentials: [],
 }

@@ -1,5 +1,6 @@
 import type { IntegrationDefinition } from '../types'
 import { completeAsanaTask } from './archive'
+import { registerAsanaWebhook, deleteAsanaWebhook } from './webhook-registration'
 import { asanaHook } from './hook'
 import { asanaInboundHandler } from './inbound'
 import { getAsanaOAuthUrl, exchangeAsanaCode, revokeAsanaToken } from './oauth'
@@ -16,6 +17,16 @@ export const asanaIntegration: IntegrationDefinition = {
   hook: asanaHook,
   inbound: asanaInboundHandler,
   archive: completeAsanaTask,
+  webhookRegistration: {
+    register: async ({ accessToken, config, callbackUrl }) => {
+      const projectGid = config.channelId as string
+      if (!projectGid) throw new Error('No Asana project configured')
+      const result = await registerAsanaWebhook(accessToken, projectGid, callbackUrl)
+      return { externalWebhookId: result.webhookId }
+    },
+    unregister: async ({ accessToken, externalWebhookId }) =>
+      deleteAsanaWebhook(accessToken, externalWebhookId),
+  },
   platformCredentials: [
     {
       key: 'clientId',

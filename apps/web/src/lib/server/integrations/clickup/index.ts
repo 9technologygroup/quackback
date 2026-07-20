@@ -1,5 +1,6 @@
 import type { IntegrationDefinition } from '../types'
 import { closeClickUpTask } from './archive'
+import { registerClickUpWebhook, deleteClickUpWebhook } from './webhook-registration'
 import { clickupHook } from './hook'
 import { clickupInboundHandler } from './inbound'
 import { getClickUpOAuthUrl, exchangeClickUpCode } from './oauth'
@@ -19,6 +20,16 @@ export const clickupIntegration: IntegrationDefinition = {
   hook: clickupHook,
   inbound: clickupInboundHandler,
   archive: closeClickUpTask,
+  webhookRegistration: {
+    register: async ({ accessToken, config, callbackUrl, secret }) => {
+      const teamId = config.teamId as string
+      if (!teamId) throw new Error('No ClickUp team configured')
+      const result = await registerClickUpWebhook(accessToken, teamId, callbackUrl, secret)
+      return { externalWebhookId: result.webhookId }
+    },
+    unregister: async ({ accessToken, externalWebhookId }) =>
+      deleteClickUpWebhook(accessToken, externalWebhookId),
+  },
   platformCredentials: [
     {
       key: 'clientId',

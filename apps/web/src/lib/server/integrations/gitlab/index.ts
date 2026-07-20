@@ -16,6 +16,7 @@ export const gitlabIntegration: IntegrationDefinition = {
   hook: gitlabHook,
   inbound: gitlabInboundHandler,
   archive: closeGitLabIssue,
+  webhookRegistration: 'manual',
   platformCredentials: [
     {
       key: 'clientId',

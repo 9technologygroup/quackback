@@ -13,5 +13,6 @@ export const azureDevOpsIntegration: IntegrationDefinition = {
   inbound: azureDevOpsInboundHandler,
   issues: azureDevOpsIssues,
   archive: closeAzureDevOpsWorkItem,
+  webhookRegistration: 'manual',
   platformCredentials: [],
 }

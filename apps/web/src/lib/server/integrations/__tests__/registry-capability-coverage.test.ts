@@ -30,26 +30,35 @@ describe('registry capability coverage', () => {
     expect(inboundProviders.length).toBeGreaterThanOrEqual(9)
   })
 
-  it('every inbound provider has a declared webhook-setup story (auto XOR manual)', () => {
+  it('every inbound provider declares webhookRegistration (WO-2: setup story lives in the registry)', () => {
     for (const type of inboundProviders) {
-      const auto = AUTO_WEBHOOK_REGISTRATION_PROVIDERS.has(type)
-      const manual = MANUAL_WEBHOOK_PROVIDERS.has(type)
+      const registration = getIntegration(type)?.webhookRegistration
       expect(
-        auto || manual,
-        `${type} has inbound but no declared webhook-setup story — add it to ` +
-          `AUTO_WEBHOOK_REGISTRATION_PROVIDERS (and the switch cases) or MANUAL_WEBHOOK_PROVIDERS`
-      ).toBe(true)
-      expect(auto && manual, `${type} is declared both auto and manual`).toBe(false)
+        registration,
+        `${type} has inbound but no webhookRegistration — declare 'manual' or { register, unregister }`
+      ).toBeTruthy()
     }
   })
 
-  it('the webhook-setup sets contain no provider the registry lacks inbound for', () => {
-    for (const type of [...AUTO_WEBHOOK_REGISTRATION_PROVIDERS, ...MANUAL_WEBHOOK_PROVIDERS]) {
-      expect(
-        getIntegration(type)?.inbound,
-        `${type} is declared in a webhook-setup set but has no inbound handler`
-      ).toBeTruthy()
+  it('webhookRegistration is declared only by inbound providers', () => {
+    for (const type of listIntegrationTypes()) {
+      if (getIntegration(type)?.webhookRegistration) {
+        expect(
+          getIntegration(type)?.inbound,
+          `${type} declares webhookRegistration but has no inbound handler`
+        ).toBeTruthy()
+      }
     }
+  })
+
+  it('the derived auto/manual sets match the expected split', () => {
+    // The exact split that lived in status-sync.ts's hand-maintained sets.
+    expect([...AUTO_WEBHOOK_REGISTRATION_PROVIDERS].sort()).toEqual(
+      ['asana', 'clickup', 'github', 'jira', 'linear'].sort()
+    )
+    expect([...MANUAL_WEBHOOK_PROVIDERS].sort()).toEqual(
+      ['azure_devops', 'gitlab', 'shortcut', 'trello'].sort()
+    )
   })
 
   it('every inbound provider has an external-status source or a documented gap', () => {

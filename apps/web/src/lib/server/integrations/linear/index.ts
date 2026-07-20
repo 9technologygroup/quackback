@@ -1,5 +1,6 @@
 import type { IntegrationDefinition } from '../types'
 import { archiveLinearIssue } from './archive'
+import { registerLinearWebhook, deleteLinearWebhook } from './webhook-registration'
 import { linearHook } from './hook'
 import { linearInboundHandler } from './inbound'
 import { linearIssues } from './issues'
@@ -18,6 +19,15 @@ export const linearIntegration: IntegrationDefinition = {
   inbound: linearInboundHandler,
   issues: linearIssues,
   archive: archiveLinearIssue,
+  webhookRegistration: {
+    register: async ({ accessToken, config, callbackUrl, secret }) => {
+      const teamId = config.channelId as string | undefined
+      const result = await registerLinearWebhook(accessToken, callbackUrl, secret, teamId)
+      return { externalWebhookId: result.webhookId }
+    },
+    unregister: async ({ accessToken, externalWebhookId }) =>
+      deleteLinearWebhook(accessToken, externalWebhookId),
+  },
   platformCredentials: [
     {
       key: 'clientId',
