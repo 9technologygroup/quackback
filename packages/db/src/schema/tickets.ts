@@ -8,12 +8,18 @@
  * CUSTOMER ticket SHARES its linked conversation's thread — the pair is 1:1
  * (the two partial unique indexes on `ticket_conversations` below) and its
  * customer-visible thread is the read-path UNION of the conversation's
- * messages and the ticket's own legacy `ticket_id` rows (both parents live in
+ * messages and the ticket's own `ticket_id` rows (both parents live in
  * `conversation_messages`, strictly XOR — see conversation.ts). All new
- * customer-visible writes land on the conversation; ticket-scoped messages
- * are internal notes (team-only) plus legacy rows, which are never migrated.
- * Back-office and tracker tickets keep their own ticket-scoped internal-notes
- * thread and are never conversation-linked.
+ * customer-visible writes land on the conversation, and migration 0218
+ * (convergence Phase 6 — literal convergence) re-parented every legacy
+ * pre-convergence customer-visible row the same way: post-0218,
+ * customer-visible messages are conversation-parented ALWAYS; ticket-scoped
+ * messages on a customer ticket are internal notes (team-only). The one
+ * customer-visible exception is the inert legacy edge 0218 deliberately
+ * skipped (standalone customer tickets with no requester, or soft-deleted),
+ * which the union loader keeps reading forever. Back-office and tracker
+ * tickets keep their own ticket-scoped internal-notes thread and are never
+ * conversation-linked.
  *
  * Three kinds share one table (`type`): a `customer` ticket is the
  * customer-visible request (at most one per conversation); a `back_office`
@@ -128,11 +134,11 @@ export const tickets = pgTable(
     // scratchpad/convergence-design.md): a conversation-linked customer
     // ticket's unread truth is the CONVERSATION's watermark pair — nothing
     // writes these columns for a linked pair, and any pre-link values stay
-    // frozen forever. They are still READ by the standalone-ticket unread
-    // fallback (a not-yet-linked pre-1b customer ticket counts against them,
-    // and mark-read keeps updating them while the ticket stays standalone),
-    // and they stay fully live for back-office/tracker tickets, which kept
-    // their own ticket-scoped threads. No column drop, no migration.
+    // frozen forever. Post-0218 (Phase 6) every requester-holding customer
+    // ticket is a pair, so the only standalone customer tickets left are the
+    // inert no-requester legacy edge; the columns stay fully live for
+    // back-office/tracker tickets, which kept their own ticket-scoped
+    // threads. No column drop, no migration.
     requesterLastReadAt: timestamp('requester_last_read_at', { withTimezone: true }),
     assigneeLastReadAt: timestamp('assignee_last_read_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

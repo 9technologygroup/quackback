@@ -227,10 +227,15 @@ export const conversations = pgTable(
  * of both parents' rows (pair-thread.service.ts merges two keyset pages in
  * code; `is_internal` filters both parents alike for requester audiences).
  * New customer-visible writes for a linked pair land on the CONVERSATION
- * parent; `ticket_id` rows are internal notes (team-only) plus legacy rows
- * written before convergence — legacy rows are never migrated, the union
- * reads them forever. Back-office/tracker tickets keep a purely
- * ticket-parented internal-notes thread.
+ * parent, and migration 0218 (convergence Phase 6 — literal convergence)
+ * re-parented every legacy pre-convergence customer-visible row the same
+ * way: post-0218, customer-visible messages are conversation-parented
+ * ALWAYS. Ticket-parented rows are internal notes (team-only) plus
+ * back-office/tracker threads — the one customer-visible exception is the
+ * inert legacy edge 0218 deliberately skipped (standalone customer tickets
+ * with no requester, or soft-deleted), which the union loader keeps reading
+ * forever. Back-office/tracker tickets keep a purely ticket-parented
+ * internal-notes thread.
  */
 export const conversationMessages = pgTable(
   'conversation_messages',
