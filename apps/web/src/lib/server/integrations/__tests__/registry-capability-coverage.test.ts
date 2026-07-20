@@ -106,6 +106,48 @@ describe('registry capability coverage', () => {
     }
   })
 
+  it('every tracker provider declares destinations (WO-7: routing targets live in the registry)', () => {
+    // The 11 trackers that can receive created work — same set as archive.
+    const TRACKER_PROVIDERS = [
+      'linear',
+      'github',
+      'jira',
+      'gitlab',
+      'clickup',
+      'asana',
+      'shortcut',
+      'azure_devops',
+      'trello',
+      'notion',
+      'monday',
+    ]
+    // Providers whose destinations include a dependent (parent → child) kind.
+    const TWO_LEVEL = new Set(['trello', 'jira', 'clickup', 'azure_devops'])
+
+    for (const type of TRACKER_PROVIDERS) {
+      const destinations = getIntegration(type)?.destinations
+      expect(destinations, `${type} must declare destinations`).toBeTruthy()
+      const kinds = Object.entries(destinations ?? {})
+      expect(kinds.length, `${type} destinations must have at least one kind`).toBeGreaterThan(0)
+      for (const [kind, dest] of kinds) {
+        expect(dest.list, `${type}.${kind}.list`).toBeTypeOf('function')
+        expect(dest.label, `${type}.${kind}.label`).toBeTruthy()
+        // A childOf must name a sibling kind on the same provider.
+        if (dest.childOf) {
+          expect(
+            destinations![dest.childOf],
+            `${type}.${kind}.childOf='${dest.childOf}' must be a declared kind`
+          ).toBeTruthy()
+        }
+      }
+      const hasDependent = kinds.some(([, d]) => d.childOf)
+      expect(
+        hasDependent,
+        `${type} ${TWO_LEVEL.has(type) ? 'must' : 'must not'} have a dependent (childOf) kind`
+      ).toBe(TWO_LEVEL.has(type))
+    }
+  })
+
   it('issue capabilities keep their inbound-namespace contract', () => {
     // A provider offering parseRef must have inbound (the parsed externalId
     // exists to serve inbound reverse lookup); create-only providers (e.g.

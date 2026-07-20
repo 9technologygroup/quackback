@@ -5,6 +5,7 @@ import { registerJiraWebhook, deleteJiraWebhook } from './webhook-registration'
 import { jiraHook } from './hook'
 import { jiraInboundHandler } from './inbound'
 import { jiraIssues } from './issues'
+import { listJiraProjects, listJiraIssueTypes } from './projects'
 import { getJiraOAuthUrl, exchangeJiraCode, refreshJiraToken } from './oauth'
 import { jiraCatalog } from './catalog'
 import { logger } from '@/lib/server/logger'
@@ -36,6 +37,26 @@ export const jiraIntegration: IntegrationDefinition = {
     },
   },
   listExternalStatuses: fetchJiraStatuses,
+  destinations: {
+    project: {
+      label: 'Project',
+      list: async ({ accessToken, config }) => {
+        const cloudId = config.cloudId as string
+        const projects = await listJiraProjects(accessToken, cloudId)
+        return projects.map((p) => ({ id: p.id, name: p.name }))
+      },
+    },
+    'issue-type': {
+      label: 'Issue type',
+      childOf: 'project',
+      list: async ({ accessToken, config, parentId }) => {
+        if (!parentId) return []
+        const cloudId = config.cloudId as string
+        const issueTypes = await listJiraIssueTypes(accessToken, cloudId, parentId)
+        return issueTypes.map((it) => ({ id: it.id, name: it.name }))
+      },
+    },
+  },
   refreshToken: refreshJiraToken,
   platformCredentials: [
     {

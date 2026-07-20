@@ -7,6 +7,7 @@ import { githubInboundHandler } from './inbound'
 import { githubIssues } from './issues'
 import { getGitHubOAuthUrl, exchangeGitHubCode, revokeGitHubToken } from './oauth'
 import { githubCatalog } from './catalog'
+import { listGitHubRepos } from './repos'
 
 export const githubIntegration: IntegrationDefinition = {
   id: 'github',
@@ -15,6 +16,15 @@ export const githubIntegration: IntegrationDefinition = {
     stateType: 'github_oauth',
     buildAuthUrl: getGitHubOAuthUrl,
     exchangeCode: exchangeGitHubCode,
+  },
+  destinations: {
+    repo: {
+      label: 'Repository',
+      list: async ({ accessToken }) => {
+        const repos = await listGitHubRepos(accessToken)
+        return repos.map((r) => ({ id: r.fullName, name: r.fullName }))
+      },
+    },
   },
   hook: githubHook,
   inbound: githubInboundHandler,

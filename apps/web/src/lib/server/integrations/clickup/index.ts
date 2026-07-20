@@ -4,6 +4,7 @@ import { fetchClickUpStatuses } from './statuses'
 import { registerClickUpWebhook, deleteClickUpWebhook } from './webhook-registration'
 import { clickupHook } from './hook'
 import { clickupInboundHandler } from './inbound'
+import { listClickUpSpaces, listClickUpLists } from './lists'
 import { getClickUpOAuthUrl, exchangeClickUpCode } from './oauth'
 import { clickupCatalog } from './catalog'
 import { logger } from '@/lib/server/logger'
@@ -32,6 +33,23 @@ export const clickupIntegration: IntegrationDefinition = {
       deleteClickUpWebhook(accessToken, externalWebhookId),
   },
   listExternalStatuses: fetchClickUpStatuses,
+  destinations: {
+    space: {
+      label: 'Space',
+      list: async ({ accessToken, config }) => {
+        const teamId = config.teamId as string
+        return listClickUpSpaces(accessToken, teamId)
+      },
+    },
+    list: {
+      label: 'List',
+      childOf: 'space',
+      list: async ({ accessToken, parentId }) => {
+        if (!parentId) return []
+        return listClickUpLists(accessToken, parentId)
+      },
+    },
+  },
   platformCredentials: [
     {
       key: 'clientId',

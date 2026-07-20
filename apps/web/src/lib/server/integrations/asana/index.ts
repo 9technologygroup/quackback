@@ -6,6 +6,7 @@ import { asanaHook } from './hook'
 import { asanaInboundHandler } from './inbound'
 import { getAsanaOAuthUrl, exchangeAsanaCode, revokeAsanaToken, refreshAsanaToken } from './oauth'
 import { asanaCatalog } from './catalog'
+import { listAsanaProjects } from './projects'
 
 export const asanaIntegration: IntegrationDefinition = {
   id: 'asana',
@@ -14,6 +15,17 @@ export const asanaIntegration: IntegrationDefinition = {
     stateType: 'asana_oauth',
     buildAuthUrl: getAsanaOAuthUrl,
     exchangeCode: exchangeAsanaCode,
+  },
+  destinations: {
+    project: {
+      label: 'Project',
+      list: async ({ accessToken, config }) => {
+        const workspaceGid = config.workspaceId as string | undefined
+        if (!workspaceGid) throw new Error('No Asana workspace configured')
+        const projects = await listAsanaProjects(accessToken, workspaceGid)
+        return projects.map((p) => ({ id: p.id, name: p.name }))
+      },
+    },
   },
   hook: asanaHook,
   inbound: asanaInboundHandler,

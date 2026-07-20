@@ -3,6 +3,7 @@ import { archiveNotionPage } from './archive'
 import { notionHook } from './hook'
 import { getNotionOAuthUrl, exchangeNotionCode } from './oauth'
 import { notionCatalog } from './catalog'
+import { listNotionDatabases } from './databases'
 
 export const notionIntegration: IntegrationDefinition = {
   id: 'notion',
@@ -11,6 +12,15 @@ export const notionIntegration: IntegrationDefinition = {
     stateType: 'notion_oauth',
     buildAuthUrl: getNotionOAuthUrl,
     exchangeCode: exchangeNotionCode,
+  },
+  destinations: {
+    database: {
+      label: 'Database',
+      list: async ({ accessToken }) => {
+        const databases = await listNotionDatabases(accessToken)
+        return databases.map((d) => ({ id: d.id, name: d.name }))
+      },
+    },
   },
   hook: notionHook,
   archive: archiveNotionPage,

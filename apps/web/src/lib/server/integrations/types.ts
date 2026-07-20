@@ -198,6 +198,16 @@ export interface ExternalStatusItem {
   name: string
 }
 
+/**
+ * One selectable destination for routing created work — a Trello list, a Jira
+ * project, a GitHub repo, a Linear team, etc. As shown in the destination
+ * picker.
+ */
+export interface DestinationItem {
+  id: string
+  name: string
+}
+
 /** A single labelled fact on a customer-context card. */
 export interface EnrichmentField {
   label: string
@@ -281,6 +291,26 @@ export interface IntegrationDefinition {
     accessToken: string
     config: Record<string, unknown>
   }) => Promise<ExternalStatusItem[]>
+  /**
+   * Selectable destinations for routing created work, keyed by `kind` (e.g.
+   * `board`, `list`, `project`, `repo`, `team`). `childOf` names a parent kind
+   * whose current selection scopes this one — the parent's chosen id is passed
+   * to `list` as `parentId` (e.g. Trello `list` is `childOf: 'board'`). No
+   * deeper nesting than one parent level. Dispatched by
+   * `fetchIntegrationDestinationsFn`.
+   */
+  destinations?: Record<
+    string,
+    {
+      label: string
+      childOf?: string
+      list(params: {
+        accessToken: string
+        config: Record<string, unknown>
+        parentId?: string
+      }): Promise<DestinationItem[]>
+    }
+  >
   webhookRegistration?:
     | 'manual'
     | {

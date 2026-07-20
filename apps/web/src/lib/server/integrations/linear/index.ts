@@ -12,6 +12,7 @@ import {
   refreshLinearToken,
 } from './oauth'
 import { linearCatalog } from './catalog'
+import { listLinearTeams } from './teams'
 
 export const linearIntegration: IntegrationDefinition = {
   id: 'linear',
@@ -20,6 +21,15 @@ export const linearIntegration: IntegrationDefinition = {
     stateType: 'linear_oauth',
     buildAuthUrl: getLinearOAuthUrl,
     exchangeCode: exchangeLinearCode,
+  },
+  destinations: {
+    team: {
+      label: 'Team',
+      list: async ({ accessToken }) => {
+        const teams = await listLinearTeams(accessToken)
+        return teams.map((t) => ({ id: t.id, name: t.name }))
+      },
+    },
   },
   hook: linearHook,
   inbound: linearInboundHandler,
