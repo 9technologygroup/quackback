@@ -744,6 +744,14 @@ export const fetchIntegrationByType = createServerFn({ method: 'GET' })
             enabled: m.enabled,
           })),
           notificationChannels,
+          // Per-integration health telemetry (IF WO-14 columns): last successful
+          // outbound delivery, last inbound webhook, and last recorded error.
+          health: {
+            lastOutboundAt: integration.lastOutboundAt?.toISOString() ?? null,
+            lastInboundAt: integration.lastInboundAt?.toISOString() ?? null,
+            lastError: integration.lastError ?? null,
+            lastErrorAt: integration.lastErrorAt?.toISOString() ?? null,
+          },
         },
         platformCredentialFields,
         platformCredentialsConfigured,
