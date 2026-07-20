@@ -159,6 +159,12 @@ export async function getMyTicketThread(
  * The requester opens their own ticket. Forced to the `customer` type and to the
  * caller as requester, so it can never file for someone else or raise an internal
  * type. The opt-in enablement (support tickets on) is gated at the fn layer.
+ *
+ * CONVERGENCE PHASE 1b: this is a customer-intake path, so the ticket is born
+ * with its backing conversation + pair link in one transaction
+ * (`withBackingConversation` — see createTicketCore's doc for the transaction
+ * contract and the side-effect gating table). Both the portal fn and the
+ * widget fn funnel here, so one flag covers both surfaces.
  */
 export async function createMyTicket(
   actor: Actor,
@@ -185,6 +191,7 @@ export async function createMyTicket(
       attachments: input.attachments,
       customAttributes: input.customAttributes,
       requesterPrincipalId: principalId,
+      withBackingConversation: true,
     },
     actor
   )

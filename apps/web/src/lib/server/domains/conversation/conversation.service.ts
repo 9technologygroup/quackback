@@ -19,6 +19,7 @@ import {
   sql,
   conversations,
   conversationMessages,
+  ticketConversations,
   principal,
   user,
   type Conversation,
@@ -469,9 +470,22 @@ export async function sendVisitorMessage(
   // Fire-and-forget with full error isolation so it never blocks or fails the
   // customer's send; the deep gate (respond flag, AI configured, silence rule)
   // lives inside the orchestration, which the assistant domain owns.
+  // CONVERGENCE PHASE 1b: pair conversations are gated OUT of the assistant
+  // (isPairedWithCustomerTicket — the doc there carries the rule). The probe
+  // rides the same fire-and-forget chain, so the send path stays sync-cheap
+  // and the gate applies identically to the intake opening message and every
+  // later visitor message on the pair. The workflow engine's explicit
+  // `let_assistant_answer` action is NOT gated — a graph that deliberately
+  // hands a thread to Quinn is the workspace's own choice, and the intake
+  // table's "workflows FIRE" row keeps those graphs working.
   if (shouldConsiderAssistant(txResult.conversation, priorStatus)) {
-    void import('@/lib/server/domains/assistant/assistant.orchestrator')
-      .then((m) => m.runAssistantTurnForConversation(txResult.conversation.id))
+    void isPairedWithCustomerTicket(txResult.conversation.id)
+      .then((paired) => {
+        if (paired) return undefined
+        return import('@/lib/server/domains/assistant/assistant.orchestrator').then((m) =>
+          m.runAssistantTurnForConversation(txResult.conversation.id)
+        )
+      })
       .catch((err) => log.warn({ err }, 'assistant turn failed'))
   }
 
@@ -1654,6 +1668,13 @@ function assistantActor(principalId: PrincipalId): Actor {
  * Cheap synchronous gate before spending on an assistant turn: only the widget
  * channel triggers Quinn today (email + other sources join later phases), and a
  * thread a human deliberately closed must not summon Quinn on the reopen.
+ *
+ * CONVERGENCE PHASE 1b: a conversation PAIRED with a customer ticket (a
+ * "backing conversation") is additionally gated out at the dispatch site via
+ * `isPairedWithCustomerTicket` — an async probe, so it can't live in this sync
+ * gate. Intake-created backing conversations also carry source 'web_form',
+ * which fails the check above on its own; the pair probe is what covers LEGACY
+ * widget-source pairs (a messenger conversation linked after the fact).
  */
 export function shouldConsiderAssistant(
   conversation: Conversation,
@@ -1662,6 +1683,37 @@ export function shouldConsiderAssistant(
   if (conversation.source !== 'widget') return false
   if (priorStatus === 'closed') return false
   return true
+}
+
+/**
+ * CONVERGENCE PHASE 1b (convergence-design.md, side-effect model): whether
+ * this conversation is PAIRED with a CUSTOMER ticket — one `ticket_conversations`
+ * row, ticket_type 'customer' (at most one can exist, per the partial unique
+ * index). Pair conversations are gated OUT of the assistant turn: the thread
+ * is the ticket's, governed by the ticket workflow, and Quinn fronting it
+ * would double up. This is the PRIMARY Quinn gate (the intake-time source
+ * label only covers 1b-created rows) and it applies to every visitor message
+ * on the pair, which closes the Phase 1a flag — a portal/widget requester
+ * reply redirected onto the pair conversation no longer summons Quinn.
+ *
+ * The probe lives here rather than in the tickets domain's pair-thread.service
+ * because conversation.service.ts imports nothing from the tickets domain
+ * (the Phase 1a redirect deliberately keeps that edge one-directional);
+ * `ticketConversations` is schema, not the domain. events/targets.ts carries
+ * the identical probe for the team-bell suppression.
+ */
+export async function isPairedWithCustomerTicket(conversationId: ConversationId): Promise<boolean> {
+  const [link] = await db
+    .select({ ticketId: ticketConversations.ticketId })
+    .from(ticketConversations)
+    .where(
+      and(
+        eq(ticketConversations.conversationId, conversationId),
+        eq(ticketConversations.ticketType, 'customer')
+      )
+    )
+    .limit(1)
+  return !!link
 }
 
 /**

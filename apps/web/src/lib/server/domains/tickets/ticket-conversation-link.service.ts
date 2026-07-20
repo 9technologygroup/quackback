@@ -150,10 +150,35 @@ export async function linkTicketToConversation(
   // under the conversation's active policy. Only ever fires for the customer
   // ticket this function accepts — a back-office/tracker ticket can never be
   // conversation-linked through here (the type guard above rejects them), so
-  // there is no non-customer branch to skip. A conversation with no SLA skips
-  // silently; a policy without a TTR target no-ops inside applySlaToTicket,
-  // which keeps the "does this policy even track TTR" check in ONE place
-  // rather than duplicated here. Best-effort: the link already landed.
+  // there is no non-customer branch to skip. Best-effort: the link already
+  // landed.
+  await handoffConversationSlaToTicket(ticketId, conversationId)
+
+  log.info(
+    { ticket_id: ticketId, conversation_id: conversationId },
+    'ticket linked to conversation'
+  )
+}
+
+/**
+ * The SLA handoff itself (support platform §4.6, "applied first time"
+ * semantics): when the conversation has an active SLA whose policy tracks
+ * time-to-resolve, the ticket starts its OWN TTR clock under that same policy,
+ * ticking from the LINK instant. Shared by `linkTicketToConversation` (the
+ * create-from-a-conversation flow) and the Phase 1b intake transaction
+ * (`createTicketCore`'s backing-conversation path) so the handoff rule lives
+ * in ONE place — a conversation with no SLA skips silently (the intake case:
+ * a fresh backing conversation is born SLA-free, so this is a no-op there by
+ * construction, and the same-TICKET handoff later fires off the conversation's
+ * own SLA application), and a policy without a TTR target no-ops inside
+ * applySlaToTicket, which keeps the "does this policy even track TTR" check in
+ * ONE place rather than duplicated at the call sites. Best-effort: the link
+ * already landed, so a failure is logged, never surfaced.
+ */
+export async function handoffConversationSlaToTicket(
+  ticketId: TicketId,
+  conversationId: ConversationId
+): Promise<void> {
   try {
     const slaApplied = await loadSlaApplied(conversationId)
     if (slaApplied) {
@@ -171,9 +196,4 @@ export async function linkTicketToConversation(
       'ticket SLA handoff failed (link already landed)'
     )
   }
-
-  log.info(
-    { ticket_id: ticketId, conversation_id: conversationId },
-    'ticket linked to conversation'
-  )
 }

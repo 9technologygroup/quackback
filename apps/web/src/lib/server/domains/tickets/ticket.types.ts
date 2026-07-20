@@ -54,6 +54,17 @@ export interface CreateTicketInput {
    *  still written by the separate link step (`linkTicketToConversation`). */
   sourceConversationId?: ConversationId | null
   customAttributes?: Record<string, unknown>
+  /** CONVERGENCE PHASE 1b opt-in, set ONLY by the four customer-intake paths
+   *  (portal `createMyTicket`, the widget fn, API v1, MCP `create_ticket`):
+   *  on a CUSTOMER ticket with a requester, `createTicketCore` creates the
+   *  pair's backing conversation + the `ticket_conversations` link in the same
+   *  transaction (see createTicketCore's doc for the contract). Deliberately
+   *  NOT derived from (type, requester) alone: agent-shaped flows that create
+   *  a customer ticket WITH a requester — the admin create dialog, the
+   *  create-from-a-conversation flow, `convert_to_ticket`, Quinn's own
+   *  create_ticket tool — leave this unset and stay standalone/explicitly
+   *  linked exactly as before. */
+  withBackingConversation?: boolean
 }
 
 /** Polymorphic, independent assignment: an absent key leaves that side as-is. */

@@ -45,9 +45,11 @@
  * emission (sendTicketMessage / appendRequesterReply) fires alongside the
  * delegate's `message.created` — the notification matrix's watcher fan-out.
  *
- * PHASE 1a BOUNDARY: intake-time BACKING conversations (every standalone
- * customer ticket getting a conversation at creation) are Phase 1b and NOT
- * here — the redirect only governs writes on already-linked pairs.
+ * PHASE 1a/1b BOUNDARY: the redirect only governs writes on already-linked
+ * pairs. Phase 1b (createTicketCore's `withBackingConversation` intake path)
+ * creates the backing conversation + link in the intake transaction itself
+ * and writes the opening message through this module, riding the same
+ * redirect — nothing in this module changes for it.
  */
 import {
   db,

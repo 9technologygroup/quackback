@@ -115,6 +115,11 @@ export const Route = createFileRoute('/api/v1/tickets/')({
               requesterPrincipalId,
               companyId,
               attachments: toAttachments(parsed.data.attachments),
+              // CONVERGENCE PHASE 1b: a customer-intake path — a CUSTOMER ticket
+              // created WITH a requester gets its backing conversation + link in
+              // the same transaction (createTicketCore's doc carries the
+              // contract). Requester-less and non-customer creates are unchanged.
+              withBackingConversation: true,
             },
             actor
           )

@@ -129,7 +129,12 @@ function delay(ms: number): Promise<void> {
  * event emit to fire after the link is not an option either: the portal's
  * create-ticket dialog creates the ticket and links the conversation via two
  * SEPARATE server functions, so there is no single call site to move the
- * emit past.
+ * emit past. (CONVERGENCE PHASE 1b narrows the race's blast radius: the
+ * customer-intake paths — portal/widget requester intake, API v1, MCP — now
+ * write the link IN createTicketCore's own transaction via
+ * `withBackingConversation`, so their ticket.created always dispatches
+ * link-visible. The poll remains for the dialog + convert_to_ticket flows,
+ * which still link post-create.)
  *
  * `ticket.status_changed` is unaffected — it fires well after a ticket
  * already exists and is normally linked long before any status changes, so

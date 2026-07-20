@@ -250,6 +250,11 @@ Example: create_ticket({ type: "customer", title: "Refund not received", descrip
           priority: args.priority,
           requesterPrincipalId: args.requesterPrincipalId as PrincipalId | undefined,
           companyId: args.companyId as CompanyId | undefined,
+          // CONVERGENCE PHASE 1b: a customer-intake path — a CUSTOMER ticket
+          // created WITH a requester gets its backing conversation + link in
+          // the same transaction (createTicketCore's doc carries the
+          // contract). Requester-less and non-customer creates are unchanged.
+          withBackingConversation: true,
         },
         mcpAgentActor(auth)
       )
