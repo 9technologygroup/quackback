@@ -253,6 +253,14 @@ export async function processEvent(event: EventData): Promise<void> {
     .then((m) => m.recordSlaFromEvent(event))
     .catch((err) => log.error({ err, event_type: event.type }, 'SLA hook failed to load'))
 
+  // Convergence Phase 1a: a visitor message on a conversation paired with a
+  // customer ticket reopens that ticket (dealbreaker 3 — a Messenger reply
+  // must not leave the ticket stuck in "Waiting on customer"). Same
+  // fire-and-forget + lazy-import isolation as the SLA hook above.
+  void import('@/lib/server/domains/tickets/ticket.event-hooks')
+    .then((m) => m.autoReopenPairTicketFromEvent(event))
+    .catch((err) => log.error({ err, event_type: event.type }, 'ticket event hook failed to load'))
+
   // Confirm the assistant's resolution off a positive first CSAT rating. The
   // event only fires on the first submission, so the confirm runs at most once
   // per survey. Same fire-and-forget + lazy-import isolation as above.

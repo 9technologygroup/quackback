@@ -198,6 +198,107 @@ describe.skipIf(!fixture.available)('linkTicketToConversation (real DB, rolled b
     expect((err as Error).message).toMatch(/already linked/i)
   })
 
+  // --- Phase 1a firstResponseAt rule (convergence-design.md, mechanics
+  // appendix "Write (Phase 1)"): backfill at link time from the conversation's
+  // first agent message; afterwards the conversation owns the timeline. ---
+
+  it("backfills the ticket's first_response_at from the conversation's first agent message at link time", async () => {
+    await seedSettings()
+    await seedStatuses()
+    const actor = await seedAdminActor()
+    const conversationId = await seedConversation()
+    // Two agent messages: the EARLIEST is the first response (internal notes
+    // don't count, but both here are customer-visible).
+    const firstAt = new Date('2026-07-01T10:00:00Z')
+    const secondAt = new Date('2026-07-02T10:00:00Z')
+    await testDb.insert(conversationMessages).values([
+      {
+        conversationId,
+        principalId: actor.principalId,
+        senderType: 'agent',
+        content: 'first reply',
+        createdAt: firstAt,
+      },
+      {
+        conversationId,
+        principalId: actor.principalId,
+        senderType: 'agent',
+        content: 'second reply',
+        createdAt: secondAt,
+      },
+    ])
+    const ticket = await createTicket({ type: 'customer', title: 'Linked after replies' }, actor)
+    expect(ticket.firstResponseAt).toBeNull()
+
+    await linkTicketToConversation(ticket.id, conversationId, actor)
+
+    const [row] = await testDb
+      .select({ firstResponseAt: tickets.firstResponseAt })
+      .from(tickets)
+      .where(eq(tickets.id, ticket.id))
+    expect(row.firstResponseAt).toEqual(firstAt)
+  })
+
+  it('ignores internal notes and visitor messages when backfilling first_response_at', async () => {
+    await seedSettings()
+    await seedStatuses()
+    const actor = await seedAdminActor()
+    const conversationId = await seedConversation()
+    await testDb.insert(conversationMessages).values([
+      {
+        conversationId,
+        principalId: actor.principalId,
+        senderType: 'agent',
+        isInternal: true,
+        content: 'a private note',
+        createdAt: new Date('2026-07-01T09:00:00Z'),
+      },
+      {
+        conversationId,
+        principalId: null,
+        senderType: 'visitor',
+        content: 'customer ask',
+        createdAt: new Date('2026-07-01T09:30:00Z'),
+      },
+    ])
+    const ticket = await createTicket({ type: 'customer', title: 'Only notes so far' }, actor)
+
+    await linkTicketToConversation(ticket.id, conversationId, actor)
+
+    const [row] = await testDb
+      .select({ firstResponseAt: tickets.firstResponseAt })
+      .from(tickets)
+      .where(eq(tickets.id, ticket.id))
+    expect(row.firstResponseAt).toBeNull()
+  })
+
+  it('never overwrites an existing first_response_at at link time', async () => {
+    await seedSettings()
+    await seedStatuses()
+    const actor = await seedAdminActor()
+    const conversationId = await seedConversation()
+    await testDb.insert(conversationMessages).values({
+      conversationId,
+      principalId: actor.principalId,
+      senderType: 'agent',
+      content: 'earlier conversation reply',
+      createdAt: new Date('2026-07-01T10:00:00Z'),
+    })
+    const ticket = await createTicket({ type: 'customer', title: 'Already answered' }, actor)
+    // The ticket got its own agent response before being linked (stamped once,
+    // never overwritten — ticket.lifecycle's firstResponseStamp rule).
+    const stamped = new Date('2026-07-03T12:00:00Z')
+    await testDb.update(tickets).set({ firstResponseAt: stamped }).where(eq(tickets.id, ticket.id))
+
+    await linkTicketToConversation(ticket.id, conversationId, actor)
+
+    const [row] = await testDb
+      .select({ firstResponseAt: tickets.firstResponseAt })
+      .from(tickets)
+      .where(eq(tickets.id, ticket.id))
+    expect(row.firstResponseAt).toEqual(stamped)
+  })
+
   // --- SLA handoff (support platform §4.6, "applied first time" semantics) ---
 
   it("starts the linked customer ticket's TTR clock when the conversation has a TTR-tracking SLA", async () => {

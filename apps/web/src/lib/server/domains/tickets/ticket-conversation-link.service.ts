@@ -21,7 +21,17 @@
  * announcement: the link already landed, so a handoff failure is logged,
  * never surfaced to the caller.
  */
-import { db, eq, conversations, ticketConversations } from '@/lib/server/db'
+import {
+  db,
+  eq,
+  and,
+  asc,
+  isNull,
+  conversations,
+  conversationMessages,
+  ticketConversations,
+  tickets,
+} from '@/lib/server/db'
 import type { ConversationId, TicketId } from '@quackback/ids'
 import { can } from '@/lib/server/policy/authorize'
 import type { Actor } from '@/lib/server/policy/types'
@@ -91,6 +101,38 @@ export async function linkTicketToConversation(
       throw new ConflictError('ALREADY_LINKED', 'This conversation already has a linked ticket')
     }
     throw err
+  }
+
+  // CONVERGENCE PHASE 1a firstResponseAt rule (convergence-design.md,
+  // mechanics appendix "Write (Phase 1)"): when the ticket has no
+  // first_response_at yet and the conversation already carries an agent reply,
+  // backfill the ticket's column from the conversation's FIRST agent message —
+  // the response happened before the pair existed, and the ticket's timeline
+  // must not pretend otherwise. After the link, the conversation's
+  // first-response machinery owns the timeline (the Phase 1a write redirect
+  // never stamps the ticket's column). Internal notes don't count as a
+  // response, mirroring insertTicketMessage's stamp rule; senderType 'agent'
+  // includes Quinn's replies, matching the conversation SLA's own FRT settle.
+  if (!ticket.firstResponseAt) {
+    const [firstAgentMessage] = await db
+      .select({ createdAt: conversationMessages.createdAt })
+      .from(conversationMessages)
+      .where(
+        and(
+          eq(conversationMessages.conversationId, conversationId),
+          eq(conversationMessages.senderType, 'agent'),
+          eq(conversationMessages.isInternal, false),
+          isNull(conversationMessages.deletedAt)
+        )
+      )
+      .orderBy(asc(conversationMessages.createdAt), asc(conversationMessages.id))
+      .limit(1)
+    if (firstAgentMessage) {
+      await db
+        .update(tickets)
+        .set({ firstResponseAt: firstAgentMessage.createdAt })
+        .where(eq(tickets.id, ticketId))
+    }
   }
 
   // Best-effort announcement: the link itself already landed, so a failure

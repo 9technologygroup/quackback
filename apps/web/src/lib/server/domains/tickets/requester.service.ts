@@ -207,10 +207,14 @@ async function appendRequesterReply(
   input: SendTicketMessageInput,
   actor: Actor
 ): Promise<{ message: ConversationMessageDTO }> {
+  // CONVERGENCE PHASE 1a: on a linked pair the insert redirects to the
+  // conversation (the full conversation write pipeline runs there); the
+  // reopen + `ticket.replied` below are ticket-side and fire either way.
   const { message, ticket } = await insertTicketMessage(input, requesterPrincipalId, {
     senderType: 'visitor',
     isInternal: false,
     stampFirstResponse: false,
+    actor,
   })
   await autoReopenOnRequesterReply(ticketId, requesterPrincipalId)
   void emitTicketReplied(actor, ticket, message)

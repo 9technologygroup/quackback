@@ -2,17 +2,52 @@
  * Ticket thread messages (support platform §4.2). A `customer` ticket is a
  * repliable two-way thread that reuses the polymorphic conversation_messages
  * table (a row with `ticket_id` set instead of `conversation_id`, since 0151).
- * The write path mirrors the conversation agent-reply but with a far lighter
- * denormalization: a ticket carries no last-message columns, so an agent reply
- * only stamps `first_response_at` (once) and bumps `updated_at`.
  *
- * CONVERGENCE PHASE 0 (scratchpad/convergence-design.md): the READ path for a
- * customer ticket's thread is the pair union — `listTicketMessages` delegates
- * to pair-thread.service.ts, merging legacy ticket-parented rows with the
- * linked conversation's messages (internal notes stay ticket-scoped and out of
- * requester views, whichever parent they hang off). The write path here is
- * UNCHANGED in Phase 0 — Phase 1a's redirect re-parents new customer-visible
- * writes to the conversation at the `insertTicketMessage` choke point.
+ * CONVERGENCE (scratchpad/convergence-design.md). A customer ticket and the
+ * conversation it was created from are ONE thread. Phase 0 made the READ path
+ * the pair union (`listTicketMessages` delegates to pair-thread.service.ts,
+ * merging legacy ticket-parented rows with the linked conversation's
+ * messages). Phase 1a — THIS module — converges the WRITE path at the
+ * `insertTicketMessage` choke point. The three-path contract (mechanics
+ * appendix "Write (Phase 1)"):
+ *
+ *   1. `insertTicketMessage` (agent reply, requester reply):
+ *      - `isInternal` → stays `ticket_id`-parented (internal notes are
+ *        Intercom's ticket notes — `addTicketNote` never redirects).
+ *      - a CUSTOMER ticket with a linked conversation (resolved via
+ *        `ticket_conversations`, ticket_type='customer') → the write lands on
+ *        the CONVERSATION (`conversation_id`), running the FULL conversation
+ *        write pipeline — not a bare row insert. The redirect delegates to the
+ *        conversation domain's own send functions (`sendVisitorMessage` /
+ *        `sendAgentMessage`, conversation.service.ts), which own
+ *        `lastMessageAt`/`lastMessagePreview`, `waitingSince`, the read
+ *        stamps, `emitMessageCreated` (so sla.event-hooks.ts settles FRT/NRT
+ *        and resumes/re-arms on visitor messages), `publishConversationEvent`
+ *        realtime, and notification dispatch. conversation.service.ts imports
+ *        nothing from the tickets domain, so this delegation creates no cycle.
+ *      - anything else (back-office/tracker, or a standalone customer ticket
+ *        with no linked conversation — the pre-1b legacy case) → `ticket_id`
+ *        as before.
+ *   2. `postTicketStatusEvent` (ticket.service.ts, customer-visible stage
+ *      system messages) — re-parents to the conversation on linked pairs;
+ *      stays ticket-parented elsewhere.
+ *   3. `emitTicketSystemMessage` (team-only internal system notes) — STAYS
+ *      ticket-parented by definition; untouched by the redirect.
+ *
+ * Redirect invariants (all three hold whichever parent the row lands on):
+ * `tickets.updatedAt` is still bumped (listMyTickets orders by it), the
+ * realtime `ticket_message` still publishes on the team-only ticket channel
+ * (dual-publish — the conversation channel copy is the delegate's), and the
+ * ticket's `firstResponseAt` column is deliberately NOT stamped by redirected
+ * agent replies: at link time `linkTicketToConversation` backfills it from the
+ * conversation's first agent message, and afterwards the conversation's
+ * first-response machinery owns the timeline. The caller-side `ticket.replied`
+ * emission (sendTicketMessage / appendRequesterReply) fires alongside the
+ * delegate's `message.created` — the notification matrix's watcher fan-out.
+ *
+ * PHASE 1a BOUNDARY: intake-time BACKING conversations (every standalone
+ * customer ticket getting a conversation at creation) are Phase 1b and NOT
+ * here — the redirect only governs writes on already-linked pairs.
  */
 import {
   db,
@@ -21,8 +56,9 @@ import {
   eq,
   type Ticket,
   type ConversationSystemEventKind,
+  type ConversationMessageMetadata,
 } from '@/lib/server/db'
-import type { TicketId, PrincipalId } from '@quackback/ids'
+import type { TicketId, PrincipalId, ConversationId } from '@quackback/ids'
 import type { Executor } from '@/lib/server/domains/principals/principal.factory'
 import type { ConversationAttachment, TiptapContent } from '@/lib/shared/db-types'
 import type {
@@ -45,7 +81,7 @@ import { loadAuthors, fallbackAuthor } from '../principals/principal-display'
 // re-querying those tables here. Safe to import statically: conversation.query.ts
 // has no import edge back into this domain (verified — no cycle).
 import { enrichMessagesForAgent } from '../conversation/conversation.query'
-import { listPairThreadMessages } from './pair-thread.service'
+import { listPairThreadMessages, resolvePairConversationId } from './pair-thread.service'
 import { firstResponseStamp } from './ticket.lifecycle'
 import { loadTicketOr404 } from './ticket.service'
 import { emitTicketReplied, emitTicketNoteAdded } from './ticket.webhooks'
@@ -133,12 +169,25 @@ interface InsertTicketMessageOpts {
   isInternal: boolean
   /** Stamp first_response_at (once) — true only for an agent reply. */
   stampFirstResponse: boolean
+  /** The acting principal's policy actor, threaded through so the Phase 1a
+   *  redirect can hand the conversation domain's send functions an actor to
+   *  re-authorize (the caller still owns the primary authorization — an agent
+   *  reply passed TICKET_REPLY, a requester reply passed ownership). Unused on
+   *  the ticket-parented paths. */
+  actor: Actor
 }
 
 /**
  * Low-level ticket-message write, shared by the agent reply/note paths and the
  * requester reply path. The CALLER owns authorization (agent permission vs
  * requester ownership); this only validates, inserts, and lightly denormalizes.
+ *
+ * CONVERGENCE PHASE 1a (see the module doc for the full three-path contract):
+ * a non-internal write on a CUSTOMER ticket with a linked conversation is
+ * redirected to the pair's conversation via `sendViaPairConversation` below —
+ * the row lands conversation-parented and the conversation write pipeline owns
+ * every side effect from there. Internal notes, back-office/tracker tickets,
+ * and standalone customer tickets keep the legacy ticket-parented insert here.
  *
  * Returns the loaded ticket alongside the message so a caller can fire the
  * matching webhook event without a second read; its ref fields (number, type,
@@ -165,6 +214,22 @@ export async function insertTicketMessage(
   // Validate existence + read first_response_at before the write; the stamp is
   // idempotent (set once), so a read-before-update race is harmless.
   const existing = await loadTicketOr404(input.ticketId)
+
+  // THE PHASE 1a REDIRECT. The internal-note guard comes first (notes stay
+  // ticket-scoped whichever parent the pair has), then the pair resolution
+  // (resolvePairConversationId is itself customer-link-scoped, so a
+  // back-office/tracker ticket or a standalone customer ticket falls through
+  // to the legacy ticket-parented insert below).
+  if (!opts.isInternal && existing.type === 'customer') {
+    const pairConversationId = await resolvePairConversationId(input.ticketId)
+    if (pairConversationId) {
+      return sendViaPairConversation(input, principalId, opts, existing, pairConversationId, {
+        content,
+        contentJson: safeContentJson,
+        attachments,
+      })
+    }
+  }
 
   const messageRow = await db.transaction(async (tx) => {
     const [row] = await tx
@@ -208,6 +273,87 @@ export async function insertTicketMessage(
   return { message, ticket: existing }
 }
 
+/**
+ * The Phase 1a redirect itself (the module doc carries the three-path
+ * contract): land a customer-visible ticket-thread write on the pair's
+ * conversation by DELEGATING to the conversation domain's own send functions —
+ * `sendVisitorMessage` for a requester reply, `sendAgentMessage` for an agent
+ * reply (conversation.service.ts; dynamically imported, the same precedent
+ * ticket-conversation-link.service.ts sets for emitSystemMessage). This is
+ * deliberately not a parent-id swap: the delegate runs the FULL conversation
+ * write pipeline — `lastMessageAt`/`lastMessagePreview`, `waitingSince`
+ * (a requester reply arms the NRT clock; an agent reply stops it), the read
+ * stamps and status transitions, `emitMessageCreated` (sla.event-hooks.ts's
+ * FRT/NRT settle/resume/re-arm rides it), the conversation-channel realtime,
+ * and the notification dispatch (presence-gated requester email on an agent
+ * reply — the matrix keeps it alongside the ticket-side email, no cross-channel
+ * dedupe in v1). The already-validated/sanitized write inputs are threaded
+ * through; the delegates' own validation passes are idempotent over them.
+ *
+ * Redirect invariants the delegate does NOT own (they're ticket-side):
+ * `tickets.updatedAt` keeps being bumped (listMyTickets orders by it), and the
+ * `ticket_message` realtime is dual-published on the team-only ticket channel
+ * so agent ticket-thread views update live (the conversation-channel publish
+ * is the delegate's). The ticket's `firstResponseAt` column is deliberately
+ * NOT stamped: `linkTicketToConversation` backfills it at link time and the
+ * conversation's first-response machinery owns the pair's timeline afterwards.
+ */
+async function sendViaPairConversation(
+  input: SendTicketMessageInput,
+  principalId: PrincipalId,
+  opts: InsertTicketMessageOpts,
+  ticket: Ticket,
+  conversationId: ConversationId,
+  prepared: {
+    content: string
+    contentJson: TiptapContent | null
+    attachments: ConversationAttachment[]
+  }
+): Promise<{ message: ConversationMessageDTO; ticket: Ticket }> {
+  const { sendVisitorMessage, sendAgentMessage } =
+    await import('@/lib/server/domains/conversation/conversation.service')
+  // ConversationAuthorDTO and ConversationAuthorInput share one shape
+  // (principalId + optional displayName/avatarUrl/email), so the display
+  // resolution every ticket-thread write already does doubles as the author.
+  const author = (await loadAuthors([principalId])).get(principalId) ?? fallbackAuthor(principalId)
+  const message =
+    opts.senderType === 'visitor'
+      ? (
+          await sendVisitorMessage(
+            {
+              conversationId,
+              content: prepared.content,
+              attachments: prepared.attachments,
+              // Provenance/dedup metadata (the reply-by-email path's
+              // emailMessageId) rides along onto the conversation-parented row
+              // — the metadata->>'emailMessageId' dedupe is parent-agnostic.
+              metadata: input.metadata as ConversationMessageMetadata | undefined,
+            },
+            author,
+            opts.actor,
+            prepared.contentJson
+          )
+        ).message
+      : (
+          await sendAgentMessage(
+            conversationId,
+            prepared.content,
+            author,
+            opts.actor,
+            prepared.attachments,
+            prepared.contentJson,
+            input.metadata as ConversationMessageMetadata | undefined
+          )
+        ).message
+
+  await db
+    .update(tickets)
+    .set({ updatedAt: new Date(message.createdAt) })
+    .where(eq(tickets.id, input.ticketId))
+  publishTicketEvent(input.ticketId, { kind: 'ticket_message', ticketId: input.ticketId, message })
+  return { message, ticket }
+}
+
 /** Agent reply on a customer ticket thread (customer-visible). */
 export async function sendTicketMessage(
   actor: Actor,
@@ -219,11 +365,15 @@ export async function sendTicketMessage(
     senderType: 'agent',
     isInternal: false,
     stampFirstResponse: true,
+    actor,
   })
   // Replying opts the agent in as a watcher (reason 'replier'). Must never
   // fail the send itself; note authors and visitor replies subscribe nobody.
   await safeSubscribeToTicket(principalId, input.ticketId, 'replier')
   // Agent/integration-facing signal, fire-and-forget after the write commits.
+  // On a linked pair this rides ALONGSIDE the delegate's `message.created`
+  // (notification matrix: the watcher fan-out + the requester's always-on
+  // email are ticket-side, unchanged by the redirect).
   void emitTicketReplied(actor, ticket, message)
   return { message }
 }
@@ -239,6 +389,7 @@ export async function addTicketNote(
     senderType: 'agent',
     isInternal: true,
     stampFirstResponse: false,
+    actor,
   })
   void emitTicketNoteAdded(actor, ticket, message)
   return { message }

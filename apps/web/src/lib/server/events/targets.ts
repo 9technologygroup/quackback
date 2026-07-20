@@ -25,6 +25,7 @@ import {
   userSegments,
   conversations,
   tickets,
+  ticketConversations,
 } from '@/lib/server/db'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import { formatTicketNumber } from '@/lib/shared/tickets'
@@ -972,6 +973,26 @@ export async function getTicketExternalStatusChangedTargets(
 export async function getMessageCreatedTargets(event: EventData): Promise<HookTarget | null> {
   if (event.type !== 'message.created') return null
   if (event.data.message.senderType !== 'visitor') return null
+
+  // CONVERGENCE PHASE 1a (the one behavior change the changelog flags):
+  // suppress the team-wide bell for a conversation paired with a CUSTOMER
+  // ticket. The write redirect (ticket-message.service.ts) emits
+  // `ticket.replied` ALONGSIDE `message.created` on a linked pair, and the
+  // watcher-scoped fan-out that rides it (getTicketRepliedTargets +
+  // getTicketRepliedEmailTargets) replaces the team-wide bell — non-watcher
+  // teammates no longer get belled for pair-conversation visitor messages.
+  // Pair-less conversations are untouched.
+  const [pairLink] = await db
+    .select({ ticketId: ticketConversations.ticketId })
+    .from(ticketConversations)
+    .where(
+      and(
+        eq(ticketConversations.conversationId, event.data.message.conversationId as ConversationId),
+        eq(ticketConversations.ticketType, 'customer')
+      )
+    )
+    .limit(1)
+  if (pairLink) return null
 
   const team = await db
     .select({ principalId: principal.id })

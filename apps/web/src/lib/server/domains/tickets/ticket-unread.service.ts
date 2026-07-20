@@ -23,6 +23,7 @@ import type { TicketId, ConversationMessageId } from '@quackback/ids'
 import { publishTicketEvent } from '@/lib/server/realtime/conversation-channels'
 import { unreadWatermarkFromAnchor } from '@/lib/server/domains/conversation/conversation.lifecycle'
 import { assertTicketVisible } from './ticket.service'
+import { resolvePairConversationId } from './pair-thread.service'
 import { canActAsAgent } from '@/lib/server/policy/conversation'
 import type { Actor } from '@/lib/server/policy/types'
 import { NotFoundError, ForbiddenError } from '@/lib/shared/errors'
@@ -147,12 +148,21 @@ export async function markTicketReadForRequester(
  * Agent-gated (`canActAsAgent` — only a team member can move their own read
  * watermark) and ticket-visibility-gated (`assertTicketVisible` — a
  * `ticket.view`-holding agent may only rewind a watermark on a ticket they can
- * actually see, not any ticket in the workspace); the anchor message must
- * belong to `ticketId` and not be soft-deleted. Reuses the shared, pure
- * `unreadWatermarkFromAnchor` (backward-only) so the date logic isn't
- * duplicated between the conversation and ticket domains. Published on the
- * ticket channel as `ticket_read` (unified inbox §3.2, M3) — the same event
- * kind `markTicketReadForAgent` already emits, so no new SSE contract.
+ * actually see, not any ticket in the workspace); the anchor message must not
+ * be soft-deleted. Reuses the shared, pure `unreadWatermarkFromAnchor`
+ * (backward-only) so the date logic isn't duplicated between the conversation
+ * and ticket domains. Published on the ticket channel as `ticket_read`
+ * (unified inbox §3.2, M3) — the same event kind `markTicketReadForAgent`
+ * already emits, so no new SSE contract.
+ *
+ * CONVERGENCE PHASE 1a: the pair-thread union loader (pair-thread.service.ts)
+ * surfaces CONVERSATION-parented rows in the ticket thread, so the anchor an
+ * agent picks can belong to the linked conversation rather than to the ticket.
+ * Those rows fall back to the conversation's own unread mechanism — the pair's
+ * watermark truth (ticket watermark columns retire for customer tickets under
+ * convergence; they stay live for back-office/standalone threads, whose rows
+ * are all ticket-parented and never reach the fallback). An anchor that
+ * belongs to neither parent of the pair 404s exactly as before.
  */
 export async function markTicketUnreadFromMessage(
   ticketId: TicketId,
@@ -163,16 +173,35 @@ export async function markTicketUnreadFromMessage(
   const decision = canActAsAgent(actor)
   if (!decision.allowed) throw new ForbiddenError('FORBIDDEN', decision.reason)
 
-  // The anchor must belong to this ticket and not be soft-deleted.
+  // The anchor lookup is parent-UNSCOPED: a union-sourced row hangs off the
+  // pair's conversation, not the ticket (see the doc comment), so scoping by
+  // ticket_id here would 404 a legitimate pick.
   const [message] = await db
     .select({
       createdAt: conversationMessages.createdAt,
       deletedAt: conversationMessages.deletedAt,
+      ticketId: conversationMessages.ticketId,
+      conversationId: conversationMessages.conversationId,
     })
     .from(conversationMessages)
-    .where(and(eq(conversationMessages.id, messageId), eq(conversationMessages.ticketId, ticketId)))
+    .where(eq(conversationMessages.id, messageId))
     .limit(1)
   if (!message || message.deletedAt) {
+    throw new NotFoundError('MESSAGE_NOT_FOUND', 'Message not found')
+  }
+
+  if (message.ticketId !== ticketId) {
+    // Conversation-parented anchor: valid only when it hangs off THIS ticket's
+    // pair conversation — then the conversation watermark is the pair's truth
+    // and its own mechanism moves it (it re-gates on canActAsAgent and
+    // re-validates the anchor against the conversation; both already hold).
+    const pairConversationId = await resolvePairConversationId(ticketId)
+    if (message.conversationId && message.conversationId === pairConversationId) {
+      const { markConversationUnreadFromMessage } =
+        await import('@/lib/server/domains/conversation/conversation.service')
+      await markConversationUnreadFromMessage(message.conversationId, messageId, actor)
+      return
+    }
     throw new NotFoundError('MESSAGE_NOT_FOUND', 'Message not found')
   }
 

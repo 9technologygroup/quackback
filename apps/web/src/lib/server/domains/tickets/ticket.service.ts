@@ -63,6 +63,7 @@ import { recordTicketActivity } from './ticket-activity.service'
 import { subscribeToTicket, safeSubscribeToTicket } from './ticket-subscription.service'
 import { ticketFtsMatch } from './ticket-search.service'
 import { statusTransition, firstResponseStamp, resolveStage } from './ticket.lifecycle'
+import { resolvePairConversationId } from './pair-thread.service'
 import type {
   CreateTicketInput,
   AssignTicketInput,
@@ -702,8 +703,26 @@ async function cascadeTrackerStatus(
 }
 
 /** Post a customer-visible status event into a ticket's thread (never the raw
- *  internal status name — only the public stage label). */
+ *  internal status name — only the public stage label).
+ *
+ *  CONVERGENCE PHASE 1a (three-path contract, see ticket-message.service.ts's
+ *  module doc): on a linked customer pair the stage event re-parents to the
+ *  CONVERSATION via the conversation domain's own `emitSystemMessage`, so it
+ *  renders as the in-thread status event on the shared thread (Intercom's
+ *  state-change-in-thread) and publishes on the conversation channel.
+ *  Back-office/tracker tickets and standalone customer tickets stay
+ *  ticket-parented (the resolve call is customer-link-scoped). */
 async function postTicketStatusEvent(ticketId: TicketId, stageLabel: string): Promise<void> {
+  const pairConversationId = await resolvePairConversationId(ticketId)
+  if (pairConversationId) {
+    const { emitSystemMessage } =
+      await import('@/lib/server/domains/conversation/conversation.service')
+    await emitSystemMessage(pairConversationId, `Status updated to ${stageLabel}`, {
+      kind: 'ticket_status_changed',
+      stageLabel,
+    })
+    return
+  }
   await db.insert(conversationMessages).values({
     ticketId,
     principalId: null,

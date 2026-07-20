@@ -11,13 +11,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { EventData } from '../types'
 
 let teamRows: Array<{ principalId: string }> = []
+// Convergence Phase 1a: the resolver first probes for a customer-ticket link
+// on the message's conversation and suppresses the team-wide bell on a hit.
+let pairRows: Array<{ ticketId: string }> = []
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
-    select: () => ({
+    // Discriminate by the selected columns: the pair probe selects
+    // { ticketId } from ticket_conversations (and is awaited via .limit(1));
+    // the team query selects { principalId } from principal (awaited
+    // directly). Both get a thenable with a `limit` tail.
+    select: (cols: Record<string, unknown>) => ({
       from: () => ({
-        where: async () => teamRows,
+        where: () => {
+          const rows = cols && 'ticketId' in cols ? pairRows : teamRows
+          return Object.assign(Promise.resolve(rows), {
+            limit: async (n: number) => rows.slice(0, n),
+          })
+        },
       }),
     }),
   },
@@ -27,6 +39,7 @@ const { getMessageCreatedTargets } = await import('../targets')
 
 beforeEach(() => {
   teamRows = []
+  pairRows = []
 })
 
 const conversationRef = {
@@ -110,5 +123,23 @@ describe('getMessageCreatedTargets', () => {
     teamRows = [{ principalId: 'principal_admin' }]
     const target = await getMessageCreatedTargets(makeEvent({}, false))
     expect(target?.config).toMatchObject({ isFirstMessage: false })
+  })
+
+  // CONVERGENCE PHASE 1a (changelog-flagged behavior change): the team-wide
+  // bell is suppressed for pair conversations — the watcher-scoped
+  // `ticket.replied` fan-out replaces it.
+  it('suppresses the team-wide bell for a conversation paired with a customer ticket', async () => {
+    teamRows = [{ principalId: 'principal_admin' }, { principalId: 'principal_member' }]
+    pairRows = [{ ticketId: 'ticket_1' }]
+
+    expect(await getMessageCreatedTargets(makeEvent())).toBeNull()
+  })
+
+  it('still bells the team for a pair-less conversation', async () => {
+    teamRows = [{ principalId: 'principal_admin' }]
+    pairRows = []
+
+    const target = await getMessageCreatedTargets(makeEvent())
+    expect(target?.type).toBe('notification')
   })
 })
