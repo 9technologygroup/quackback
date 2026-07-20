@@ -46,6 +46,16 @@ const updateTicketStatusMappingsSchema = z.object({
   ticketStatusMappings: z.record(z.string(), z.string().nullable()),
 })
 
+// Outbound (IF WO-15): Quackback statusId -> remote status name to push. Keyed
+// by Quackback status id (stable) rather than name; unmapped statuses (value
+// omitted) simply don't push.
+const updatePushStatusMappingsSchema = z.object({
+  integrationId: z.string(),
+  /** posts: `pushStatusMappings`; tickets: `ticketPushStatusMappings`. */
+  target: z.enum(['post', 'ticket']),
+  pushStatusMappings: z.record(z.string(), z.string()),
+})
+
 /**
  * Enable status sync by registering an inbound webhook with the external platform.
  */
@@ -264,6 +274,46 @@ export const updateTicketStatusMappingsFn = createServerFn({ method: 'POST' })
       return { success: true }
     } catch (error) {
       log.error({ err: error }, 'update ticket status mappings failed')
+      throw error
+    }
+  })
+
+/**
+ * Update the OUTBOUND push mappings for an integration (IF WO-15, two-way
+ * status sync). Stores the per-Quackback-status → remote-status map under
+ * `pushStatusMappings` (posts) or `ticketPushStatusMappings` (tickets); the
+ * remote-status-push resolver reads it when an entity status changes.
+ */
+export const updatePushStatusMappingsFn = createServerFn({ method: 'POST' })
+  .validator(updatePushStatusMappingsSchema)
+  .handler(async ({ data }) => {
+    log.debug(
+      { integration_id: data.integrationId, target: data.target },
+      'update push status mappings'
+    )
+    try {
+      await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
+
+      const integrationId = data.integrationId as IntegrationId
+      const integration = await db.query.integrations.findFirst({
+        where: eq(integrations.id, integrationId),
+        columns: { config: true },
+      })
+      if (!integration) throw new Error('Integration not found')
+
+      const key = data.target === 'ticket' ? 'ticketPushStatusMappings' : 'pushStatusMappings'
+      const existingConfig = (integration.config ?? {}) as Record<string, unknown>
+      await db
+        .update(integrations)
+        .set({
+          config: { ...existingConfig, [key]: data.pushStatusMappings },
+          updatedAt: new Date(),
+        })
+        .where(eq(integrations.id, integrationId))
+
+      return { success: true }
+    } catch (error) {
+      log.error({ err: error }, 'update push status mappings failed')
       throw error
     }
   })

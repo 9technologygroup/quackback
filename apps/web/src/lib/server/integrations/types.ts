@@ -208,6 +208,18 @@ export interface DestinationItem {
   name: string
 }
 
+/** A matching remote item returned by `externalLinks.search` (IF WO-15). */
+export interface RemoteItemMatch {
+  /** Stable remote id used to create the link (issue key, card id, ...). */
+  externalId: string
+  /** Human title shown in the picker. */
+  title: string
+  /** Deep link to the remote item, if known. */
+  url?: string
+  /** Display id (e.g. `#42`, `PROJ-17`), if distinct from externalId. */
+  displayId?: string
+}
+
 /** A single labelled fact on a customer-context card. */
 export interface EnrichmentField {
   label: string
@@ -311,6 +323,33 @@ export interface IntegrationDefinition {
       }): Promise<DestinationItem[]>
     }
   >
+  /**
+   * Operations on the generic external-link records this provider backs
+   * (IF WO-15). `search` powers type-a-title link-existing; the UI degrades to
+   * paste-a-URL where it's absent.
+   */
+  externalLinks?: {
+    search?(params: {
+      accessToken: string
+      config: Record<string, unknown>
+      query: string
+    }): Promise<RemoteItemMatch[]>
+  }
+  /**
+   * Two-way status sync (IF WO-15). `push` writes a Quackback status change out
+   * to the linked remote item. The framework owns the trigger (a linked-entity
+   * status-change consumer on the event spine), loop-safety (never re-pushes to
+   * the integration that reported the change), and the `pushStatusMappings`
+   * config lookup; the provider only performs the remote write.
+   */
+  remoteStatus?: {
+    push(params: {
+      accessToken: string
+      config: Record<string, unknown>
+      externalId: string
+      remoteStatus: string
+    }): Promise<{ success: boolean; error?: string }>
+  }
   webhookRegistration?:
     | 'manual'
     | {
