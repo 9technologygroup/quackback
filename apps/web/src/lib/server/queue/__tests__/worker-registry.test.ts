@@ -20,8 +20,6 @@ const WORKER_MODULES = [
   'domains/conversation/conversation.email-imap-queue.ts',
   'domains/conversation/snooze-sweep-queue.ts',
   'domains/export/export-queue.ts',
-  'domains/feedback/queues/feedback-ai-queue.ts',
-  'domains/feedback/queues/feedback-ingest-queue.ts',
   'domains/help-center/help-center-translate-queue.ts',
   'domains/import/import-queue.ts',
   'domains/principals/anon-sweep-queue.ts',
@@ -39,11 +37,7 @@ const WORKER_MODULES = [
  * only, e.g. Job). Anything else importing bullmq is a new chokepoint
  * bypass and must be adjudicated here or in WORKER_MODULES.
  */
-const TYPE_ONLY_MODULES = [
-  'domains/feedback/pipeline/embedding.service.ts',
-  'domains/feedback/pipeline/extraction.service.ts',
-  'domains/feedback/pipeline/interpretation.service.ts',
-]
+const TYPE_ONLY_MODULES: string[] = []
 
 const SERVER_ROOT = path.resolve(__dirname, '../..')
 

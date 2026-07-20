@@ -28,11 +28,8 @@ const builtinHooks = new Map<string, HookHandler>([
 
 /**
  * Lazy-loaded hooks resolved via dynamic import to avoid circular dependencies.
- * (feedback-pipeline → db → ... → events → registry)
  */
 const lazyHooks: Record<string, () => Promise<HookHandler>> = {
-  feedback_pipeline: () =>
-    import('./handlers/feedback-pipeline').then((m) => m.feedbackPipelineHook),
   summary: () => import('./handlers/summary').then((m) => m.summaryHook),
   // EVENTING-V2 WO-8e: workflow triggers ride the outbox → relay → this hook.
   workflow: () => import('./handlers/workflow').then((m) => m.workflowHook),

@@ -23,8 +23,6 @@ async function ensureConcurrentIndexes(sql: ReturnType<typeof postgres>): Promis
   await sql`CREATE EXTENSION IF NOT EXISTS pg_trgm`
   const statements = [
     'CREATE INDEX CONCURRENTLY IF NOT EXISTS posts_embedding_hnsw_idx ON posts USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
-    'CREATE INDEX CONCURRENTLY IF NOT EXISTS feedback_signals_embedding_hnsw_idx ON feedback_signals USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
-    'CREATE INDEX CONCURRENTLY IF NOT EXISTS feedback_suggestions_embedding_hnsw_idx ON feedback_suggestions USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
     'CREATE INDEX CONCURRENTLY IF NOT EXISTS kb_articles_embedding_hnsw_idx ON kb_articles USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
     'CREATE INDEX CONCURRENTLY IF NOT EXISTS assistant_snippets_embedding_hnsw_idx ON assistant_snippets USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',
     'CREATE INDEX CONCURRENTLY IF NOT EXISTS conversation_summaries_embedding_hnsw_idx ON conversation_summaries USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL',

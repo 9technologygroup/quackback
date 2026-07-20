@@ -28,11 +28,7 @@ import { getModerationStatus } from '@/lib/server/functions/moderation'
 import { fetchApiKeys } from '@/lib/server/functions/api-keys'
 import { fetchWebhooks } from '@/lib/server/functions/webhooks'
 import { fetchRoadmaps } from '@/lib/server/functions/roadmaps'
-import {
-  fetchPostWithDetails,
-  fetchPostVotersFn,
-  fetchPostFeedbackSourceFn,
-} from '@/lib/server/functions/posts'
+import { fetchPostWithDetails, fetchPostVotersFn } from '@/lib/server/functions/posts'
 import { fetchMergePreviewFn } from '@/lib/server/functions/post-merge'
 import { fetchPublicStatuses } from '@/lib/server/functions/portal'
 import type { PortalUserListParams } from '@/lib/shared/types'
@@ -313,14 +309,6 @@ export const adminQueries = {
       queryKey: ['inbox', 'voters', postId],
       queryFn: () => fetchPostVotersFn({ data: { id: postId } }),
       staleTime: 30 * 1000,
-    }),
-
-  /** Feedback source for a post (if created from the feedback pipeline) */
-  postFeedbackSource: (postId: PostId) =>
-    queryOptions({
-      queryKey: ['inbox', 'feedback-source', postId],
-      queryFn: () => fetchPostFeedbackSourceFn({ data: { id: postId } }),
-      staleTime: 60 * 1000,
     }),
 
   /**

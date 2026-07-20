@@ -25,7 +25,6 @@ import { getMemberById } from '@/lib/server/domains/principals/principal.service
 import { createPost, updatePost } from '@/lib/server/domains/posts/post.service'
 import { listInboxPosts } from '@/lib/server/domains/posts/post.inbox'
 import { getPostWithDetails, getCommentsWithReplies } from '@/lib/server/domains/posts/post.query'
-import { getPostFeedbackSource } from '@/lib/server/domains/posts/post.export'
 import { changeStatus } from '@/lib/server/domains/posts/post.status'
 import { changeBoard } from '@/lib/server/domains/posts/post.board'
 import { softDeletePost, restorePost } from '@/lib/server/domains/posts/post.user-actions'
@@ -316,21 +315,6 @@ export const fetchPostVotersFn = createServerFn({ method: 'GET' })
       ...v,
       createdAt: toIsoString(v.createdAt as Date | string),
     }))
-  })
-
-/**
- * Get feedback source for a post (if created from feedback pipeline)
- */
-export const fetchPostFeedbackSourceFn = createServerFn({ method: 'GET' })
-  .validator(z.object({ id: z.string() }))
-  .handler(async ({ data }) => {
-    await requireAuth({ permission: PERMISSIONS.POST_VIEW_PRIVATE })
-    const source = await getPostFeedbackSource(data.id as PostId)
-    if (!source) return null
-    return {
-      ...source,
-      createdAt: toIsoString(source.createdAt),
-    }
   })
 
 // ============================================
@@ -677,7 +661,6 @@ export const proxyVoteFn = createServerFn({ method: 'POST' })
       postId,
       voterPrincipalId,
       { type: 'proxy', externalUrl: '' },
-      null,
       auth.principal.id
     )
 

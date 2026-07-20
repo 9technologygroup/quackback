@@ -17,7 +17,7 @@ const featureFlagsUpdateSchema = z.object(
 
 // Admin-only: feature flags toggle whole subsystems that change the
 // public surface (helpCenter exposes a public subdomain) and the data
-// flow (aiFeedbackExtraction routes customer text through an LLM).
+// flow (inboxAi routes customer text through an LLM).
 // Without a role gate any unauthenticated RPC caller could flip these.
 export const updateFeatureFlagsFn = createServerFn({ method: 'POST' })
   .validator(featureFlagsUpdateSchema)

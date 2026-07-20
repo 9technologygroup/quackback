@@ -17,7 +17,6 @@ import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackbac
 import { boards, postTags } from './boards'
 import { postStatuses } from './statuses'
 import { postExternalLinks } from './external-links'
-import { feedbackSuggestions } from './feedback'
 import { principal } from './auth'
 import { MODERATION_STATES } from '../types'
 import type { TiptapContent } from '../types'
@@ -216,10 +215,6 @@ export const postVotes = pgTable(
     // Source tracking for integration-created votes (e.g. Zendesk sidebar)
     sourceType: varchar('source_type', { length: 40 }),
     sourceExternalUrl: text('source_external_url'),
-    // Provenance: which feedback suggestion triggered this proxy vote
-    feedbackSuggestionId: typeIdColumnNullable('feedback_suggestion')(
-      'feedback_suggestion_id'
-    ).references(() => feedbackSuggestions.id, { onDelete: 'set null' }),
     // Which admin/member added this vote on behalf of the voter
     addedByPrincipalId: typeIdColumnNullable('principal')('added_by_principal_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -239,13 +234,10 @@ export const postVotes = pgTable(
     index('post_votes_source_type_idx')
       .on(table.sourceType)
       .where(sql`source_type IS NOT NULL`),
-    // RI-lookup protection for principal / suggestion deletion
+    // RI-lookup protection for principal deletion
     index('post_votes_added_by_principal_idx')
       .on(table.addedByPrincipalId)
       .where(sql`"added_by_principal_id" IS NOT NULL`),
-    index('post_votes_feedback_suggestion_idx')
-      .on(table.feedbackSuggestionId)
-      .where(sql`"feedback_suggestion_id" IS NOT NULL`),
   ]
 )
 
@@ -451,18 +443,12 @@ export const postsRelations = relations(posts, ({ one, many }) => ({
   tags: many(postTagAssignments),
   notes: many(postNotes),
   externalLinks: many(postExternalLinks),
-  incomingSuggestions: many(feedbackSuggestions, { relationName: 'suggestionResult' }),
 }))
 
 export const postVotesRelations = relations(postVotes, ({ one }) => ({
   post: one(posts, {
     fields: [postVotes.postId],
     references: [posts.id],
-  }),
-  feedbackSuggestion: one(feedbackSuggestions, {
-    fields: [postVotes.feedbackSuggestionId],
-    references: [feedbackSuggestions.id],
-    relationName: 'feedbackSuggestionVotes',
   }),
 }))
 

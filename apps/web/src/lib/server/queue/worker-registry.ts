@@ -40,25 +40,6 @@ export const WORKER_REGISTRY: readonly WorkerEntry[] = [
       import('@/lib/server/events/segment-scheduler').then((m) => m.closeSegmentScheduler()),
   },
   {
-    name: 'feedback-ai',
-    init: () =>
-      import('@/lib/server/domains/feedback/queues/feedback-ai-queue').then((m) =>
-        m.initFeedbackAiWorker()
-      ),
-    close: () =>
-      import('@/lib/server/domains/feedback/queues/feedback-ai-queue').then((m) =>
-        m.closeFeedbackAiQueue()
-      ),
-  },
-  {
-    // Feedback ingestion. Initializes on first enqueue.
-    name: 'feedback-ingest',
-    close: () =>
-      import('@/lib/server/domains/feedback/queues/feedback-ingest-queue').then((m) =>
-        m.closeFeedbackIngestQueue()
-      ),
-  },
-  {
     // Help-center auto-translate (domains/languages §H3). Initializes on
     // first enqueue (article publish with autoTranslate.enabled).
     name: 'help-center-translate',

@@ -986,8 +986,6 @@ export interface FeatureFlags {
   helpCenter: boolean
   /** AI answers with citations on help-center search surfaces */
   helpCenterAiAnswers: boolean
-  /** AI-powered feedback extraction from external sources */
-  aiFeedbackExtraction: boolean
   /** Support inbox: messenger widget channel + unified admin inbox. Also
    *  covers conversation niceties like external link preview cards. */
   supportInbox: boolean
@@ -1085,7 +1083,6 @@ export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   statusPage: true,
   // AI / privacy-sensitive — opt-in
   helpCenterAiAnswers: false,
-  aiFeedbackExtraction: false,
   visitorAnalytics: false,
   visitorDeviceTracking: false,
   inboxAi: false,
@@ -1117,10 +1114,6 @@ export const FEATURE_FLAG_REGISTRY: Record<
     label: 'Help Center AI Answers',
     description:
       'Let customers ask a question and get an instant AI answer with citations, built only from your published help articles. Requires an AI model to be configured.',
-  },
-  aiFeedbackExtraction: {
-    label: 'AI Feedback Extraction',
-    description: 'Automatically pull in and categorize feedback from your connected sources.',
   },
   supportInbox: {
     label: 'Conversations',
@@ -1285,7 +1278,6 @@ export const LAB_SECTIONS: Array<{
       'Optional AI capabilities. Require a configured model; off by default until you opt in.',
     flags: [
       { key: 'helpCenterAiAnswers' },
-      { key: 'aiFeedbackExtraction' },
       { key: 'inboxAi', subFlags: ['assistantProactiveSuggestions'] },
       { key: 'assistantTools' },
       { key: 'assistantCustomActions' },

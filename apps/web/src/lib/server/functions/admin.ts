@@ -680,7 +680,6 @@ export const fetchIntegrationByType = createServerFn({ method: 'GET' })
         where: eq(integrations.integrationType, data.type),
         with: {
           eventMappings: true,
-          slackChannelMonitors: true,
         },
       })
 
@@ -733,14 +732,6 @@ export const fetchIntegrationByType = createServerFn({ method: 'GET' })
 
       const notificationChannels = [...channelMap.values()]
 
-      // Map monitored channels for Slack
-      const monitoredChannels = (integration.slackChannelMonitors ?? []).map((m) => ({
-        channelId: m.channelId,
-        channelName: m.channelName,
-        boardId: m.boardId,
-        enabled: m.enabled,
-      }))
-
       return {
         integration: {
           id: integration.id,
@@ -753,7 +744,6 @@ export const fetchIntegrationByType = createServerFn({ method: 'GET' })
             enabled: m.enabled,
           })),
           notificationChannels,
-          monitoredChannels,
         },
         platformCredentialFields,
         platformCredentialsConfigured,

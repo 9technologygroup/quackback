@@ -99,7 +99,6 @@ function PostModalContent({
   const { data: tags = [] } = useQuery(adminQueries.tags())
   const { data: statuses = [] } = useQuery(adminQueries.statuses())
   const { data: boards = [] } = useQuery(adminQueries.boards())
-  const { data: feedbackSource } = useQuery(adminQueries.postFeedbackSource(postId))
 
   // Owner (assignee) control — gated on post.set_owner. The roster is fetched
   // via the same post.set_owner-gated fn the portal uses; the current owner is
@@ -517,7 +516,6 @@ function PostModalContent({
               hideSubscribe
               variant="card"
               manageActions={manageActions}
-              feedbackSource={feedbackSource}
             />
           </Suspense>
 

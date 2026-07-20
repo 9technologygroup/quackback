@@ -254,7 +254,6 @@ Examples:
         args.postId as PostId,
         args.voterPrincipalId as PrincipalId,
         source,
-        null,
         auth.principalId
       )
       if (result.voted) {

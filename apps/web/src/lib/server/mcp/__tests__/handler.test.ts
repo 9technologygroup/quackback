@@ -150,13 +150,6 @@ vi.mock('@/lib/server/domains/activity/activity.service', () => ({
   createActivity: vi.fn(),
 }))
 
-vi.mock('@/lib/server/domains/feedback/pipeline/suggestion.service', () => ({
-  acceptCreateSuggestion: vi.fn().mockResolvedValue({ success: true, resultPostId: 'post_new' }),
-  acceptVoteSuggestion: vi.fn().mockResolvedValue({ success: true, resultPostId: 'post_test' }),
-  dismissSuggestion: vi.fn().mockResolvedValue(undefined),
-  restoreSuggestion: vi.fn().mockResolvedValue(undefined),
-}))
-
 vi.mock('@/lib/server/domains/merge-suggestions/merge-suggestion.service', () => ({
   acceptMergeSuggestion: vi.fn().mockResolvedValue(undefined),
   dismissMergeSuggestion: vi.fn().mockResolvedValue(undefined),
@@ -679,7 +672,7 @@ describe('MCP HTTP Handler', () => {
       expect(toolNames).toContain('add_ticket_note')
       expect(toolNames).toContain('link_ticket')
       expect(toolNames).toContain('unlink_ticket')
-      expect(toolNames).toHaveLength(39)
+      expect(toolNames).toHaveLength(38)
     })
 
     it('should handle resources/list request', async () => {
@@ -1085,7 +1078,6 @@ describe('MCP HTTP Handler', () => {
         'post_test',
         'principal_voter',
         expect.any(Object),
-        null,
         expect.any(String)
       )
       // ...without running the per-target vote-tier chokepoint.

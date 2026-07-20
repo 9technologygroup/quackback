@@ -238,14 +238,13 @@ describe('createPostFromConversation upvote-existing path', () => {
 
     expect(createPost).not.toHaveBeenCalled()
     expect(addVoteOnBehalf).toHaveBeenCalledTimes(1)
-    const [postIdArg, principalArg, sourceArg, fourthArg, agentArg] = addVoteOnBehalf.mock.calls[0]
+    const [postIdArg, principalArg, sourceArg, agentArg] = addVoteOnBehalf.mock.calls[0]
     expect(postIdArg).toBe(existingPostId)
     expect(principalArg).toBe(visitorPrincipalId)
     expect(sourceArg).toMatchObject({
       type: 'live_chat',
       externalUrl: `http://localhost:3000/admin/inbox?i=${conversationId}`,
     })
-    expect(fourthArg).toBeNull()
     expect(agentArg).toBe(agentPrincipalId)
 
     expect(result).toEqual({

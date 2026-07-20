@@ -6,7 +6,6 @@ import {
   CalendarIcon,
   ChevronUpIcon,
   FolderIcon,
-  LinkIcon,
   PlusIcon,
   TagIcon,
   UserIcon,
@@ -21,7 +20,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { portalDetailQueries } from '@/lib/client/queries/portal-detail'
 import { StatusDropdown } from '@/components/shared/status-dropdown'
 import { StatusBadge } from '@/components/ui/status-badge'
@@ -37,7 +35,6 @@ import {
   VotersAvatarStack,
   type VotersQuerySource,
 } from '@/components/admin/feedback/voters-avatar-stack'
-import { SOURCE_TYPE_LABELS, SourceTypeIcon } from '@/components/admin/feedback/source-type-icon'
 import { cn, getInitials, formatMonthYear } from '@/lib/shared/utils'
 import type { PostStatusEntity } from '@/lib/shared/db-types'
 import type { OwnerRef } from '@/lib/server/functions/post-owner-context'
@@ -317,14 +314,6 @@ interface MetadataSidebarProps {
   onVotersInvalidate?: () => void
   /** Admin manage actions (renders icon row at top of sidebar) */
   manageActions?: MetadataSidebarManageActions
-  /** Feedback source info (if post was created from the feedback pipeline) */
-  feedbackSource?: {
-    sourceType: string
-    authorName: string | null
-    quote: string
-    externalUrl: string | null
-    createdAt: string
-  } | null
 }
 
 export function MetadataSidebar({
@@ -361,14 +350,12 @@ export function MetadataSidebar({
   votersCanCreateUser,
   onVotersInvalidate,
   manageActions,
-  feedbackSource,
 }: MetadataSidebarProps) {
   const intl = useIntl()
   const [tagOpen, setTagOpen] = useState(false)
   const [boardOpen, setBoardOpen] = useState(false)
   const [ownerOpen, setOwnerOpen] = useState(false)
   const [etaOpen, setEtaOpen] = useState(false)
-  const [sourceQuoteOpen, setSourceQuoteOpen] = useState(false)
 
   const etaLabel = formatMonthYear(eta)
   // Month input value ("YYYY-MM"), derived in UTC to match the stored ETA.
@@ -878,85 +865,6 @@ export function MetadataSidebar({
           </div>
           <TimeAgo date={createdAt} className="text-sm text-foreground" />
         </div>
-
-        {/* Source (only for posts created from the feedback pipeline) */}
-        {feedbackSource && (
-          <>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <LinkIcon className="h-4 w-4" />
-                <span>
-                  <FormattedMessage
-                    id="portal.postDetail.metadata.source"
-                    defaultMessage="Source"
-                  />
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSourceQuoteOpen(true)}
-                className="inline-flex items-center gap-1.5 text-sm font-medium text-foreground hover:text-primary transition-colors"
-              >
-                <SourceTypeIcon sourceType={feedbackSource.sourceType} size="xs" />
-                <span>
-                  {SOURCE_TYPE_LABELS[feedbackSource.sourceType] ?? feedbackSource.sourceType}
-                </span>
-              </button>
-            </div>
-            <Dialog open={sourceQuoteOpen} onOpenChange={setSourceQuoteOpen}>
-              <DialogContent className="sm:max-w-2xl">
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2">
-                    <SourceTypeIcon sourceType={feedbackSource.sourceType} size="sm" />
-                    <FormattedMessage
-                      id="portal.postDetail.metadata.sourceOriginalFeedback"
-                      defaultMessage="Original feedback"
-                    />
-                  </DialogTitle>
-                </DialogHeader>
-                <ScrollArea className="max-h-[50vh] -mx-6 px-6">
-                  <blockquote className="border-s-2 border-muted-foreground/20 ps-3 text-sm text-muted-foreground/70 italic leading-relaxed whitespace-pre-wrap">
-                    {feedbackSource.quote}
-                  </blockquote>
-                </ScrollArea>
-                <div className="space-y-2 pt-3 border-t border-border/30">
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>
-                      {feedbackSource.authorName ??
-                        intl.formatMessage({
-                          id: 'portal.postDetail.metadata.sourceUnknownAuthor',
-                          defaultMessage: 'Unknown author',
-                        })}
-                    </span>
-                    <TimeAgo date={feedbackSource.createdAt} />
-                  </div>
-                  {feedbackSource.externalUrl && (
-                    <a
-                      href={feedbackSource.externalUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      <SourceTypeIcon sourceType={feedbackSource.sourceType} size="xs" />
-                      {intl.formatMessage(
-                        {
-                          id: 'portal.postDetail.metadata.sourceOpenIn',
-                          defaultMessage: 'Open in {name}',
-                        },
-                        {
-                          name:
-                            SOURCE_TYPE_LABELS[feedbackSource.sourceType] ??
-                            feedbackSource.sourceType,
-                        }
-                      )}
-                      <span aria-hidden>&rarr;</span>
-                    </a>
-                  )}
-                </div>
-              </DialogContent>
-            </Dialog>
-          </>
-        )}
 
         {/* Author */}
         <div className="flex items-center justify-between">

@@ -1016,12 +1016,6 @@ export async function isCopilotCapabilityEnabled(
  * Update feature flags (partial update, merges with existing)
  */
 export async function updateFeatureFlags(input: Partial<FeatureFlags>): Promise<FeatureFlags> {
-  // Tier gate: enabling AI feedback extraction is plan-entitled (Scale on
-  // cloud). Checked only on enable so a downgrade can still switch it off.
-  if (input.aiFeedbackExtraction === true) {
-    const { assertTierFeature } = await import('@/lib/server/domains/settings/tier-enforce')
-    await assertTierFeature('aiFeedbackExtraction', 'AI feedback extraction')
-  }
   const org = await requireSettings()
   // resolveFeatureFlags drops legacy pre-consolidation keys (after coalescing
   // them into their umbrella flag), so this write persists a clean shape.

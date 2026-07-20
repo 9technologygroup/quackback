@@ -168,7 +168,6 @@ export async function addVoteOnBehalf(
   postId: PostId,
   principalId: PrincipalId,
   source?: { type: string; externalUrl: string },
-  feedbackSuggestionId?: string | null,
   addedByPrincipalId?: PrincipalId,
   createdAt?: Date
 ): Promise<VoteResult> {
@@ -179,7 +178,6 @@ export async function addVoteOnBehalf(
 
   const sourceType = source?.type ?? null
   const sourceExternalUrl = source?.externalUrl ?? null
-  const suggestionUuid = feedbackSuggestionId ? toUuid(feedbackSuggestionId) : null
   const addedByUuid = addedByPrincipalId ? toUuid(addedByPrincipalId) : null
   const createdAtSql = createdAt ? sql`${createdAt.toISOString()}::timestamptz` : sql`NOW()`
 
@@ -200,8 +198,8 @@ export async function addVoteOnBehalf(
         AND deleted_at IS NULL
     ),
     inserted AS (
-      INSERT INTO ${postVotes} (id, post_id, principal_id, source_type, source_external_url, feedback_suggestion_id, added_by_principal_id, created_at, updated_at)
-      SELECT ${voteId}::uuid, ${postUuid}::uuid, ${principalUuid}::uuid, ${sourceType}, ${sourceExternalUrl}, ${suggestionUuid}::uuid, ${addedByUuid}::uuid, ${createdAtSql}, ${createdAtSql}
+      INSERT INTO ${postVotes} (id, post_id, principal_id, source_type, source_external_url, added_by_principal_id, created_at, updated_at)
+      SELECT ${voteId}::uuid, ${postUuid}::uuid, ${principalUuid}::uuid, ${sourceType}, ${sourceExternalUrl}, ${addedByUuid}::uuid, ${createdAtSql}, ${createdAtSql}
       WHERE EXISTS (SELECT 1 FROM post_check)
         AND EXISTS (SELECT 1 FROM board_check)
       ON CONFLICT (post_id, principal_id) DO NOTHING

@@ -145,7 +145,6 @@ describe('addVoteOnBehalf', () => {
       POST_ID,
       PRINCIPAL_ID,
       { type: 'proxy', externalUrl: '' },
-      null,
       ADMIN_ID
     )
 
@@ -189,7 +188,6 @@ describe('addVoteOnBehalf', () => {
       POST_ID,
       PRINCIPAL_ID,
       { type: 'zendesk', externalUrl: 'https://zendesk.com/ticket/123' },
-      null,
       ADMIN_ID
     )
 

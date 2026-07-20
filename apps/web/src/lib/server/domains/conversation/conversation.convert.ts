@@ -53,7 +53,6 @@ export async function createPostFromConversation(
       input.asUpvoteOfPostId,
       visitorPrincipalId,
       { type: 'live_chat', externalUrl },
-      null,
       ctx.agentPrincipalId
     )
     if (input.sourceMessageContent?.trim()) {

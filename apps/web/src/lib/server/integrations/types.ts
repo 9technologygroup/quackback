@@ -1,6 +1,5 @@
 import type { HookHandler } from '../events/hook-types'
 import type { InboundWebhookHandler } from './inbound-types'
-import type { FeedbackConnector } from './feedback-source-types'
 import type { UserSyncHandler } from './user-sync-types'
 
 /**
@@ -299,8 +298,6 @@ export interface IntegrationDefinition {
       }
   /** Platform-level credential fields required to enable this integration. Use `[]` if none needed. */
   platformCredentials: PlatformCredentialField[]
-  /** Feedback source connector for ingesting feedback from this platform */
-  feedbackSource?: FeedbackConnector
   /** Called after an integration is saved (connect or reconnect). Receives the integration ID to provision dependent resources. */
   onConnect?(integrationId: import('@quackback/ids').IntegrationId): Promise<void>
   /** Called before an integration is deleted. Receives decrypted secrets, config, and platform credentials to revoke tokens or clean up. */

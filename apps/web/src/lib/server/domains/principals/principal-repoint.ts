@@ -448,7 +448,6 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
   'assistant_events.principal_id':
     'assistant event attribution is the acting teammate; customer subjects are carried by conversation or ticket instead',
   'post_merge_suggestions.resolved_by_principal_id': 'suggestion resolution is a team action',
-  'feedback_suggestions.resolved_by_principal_id': 'suggestion resolution is a team action',
   'principal_role_assignments.principal_id':
     'role assignments are team-only; anonymous principals hold none',
   'principal_role_assignments.granted_by_principal_id': 'grant actor is a team member',
@@ -461,11 +460,10 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
   'integrations.connected_by_principal_id': 'integration connector is a team member',
   'integration_platform_credentials.configured_by_principal_id':
     'credential configurator is a team member',
-  // Import/pipeline attribution (identified or service principals only)
-  'raw_feedback_items.principal_id':
-    'pipeline attribution comes from import/integration actors, never anonymous visitors',
-  'external_user_mappings.principal_id':
-    'external identities map to identified principals created by import; the merge source is always anonymous',
+  'post_external_links.created_by_principal_id':
+    'external links are created by team members or service integrations, never anonymous visitors',
+  'ticket_external_links.created_by_principal_id':
+    'external links are created by team members or service integrations, never anonymous visitors',
   // Derived state that is recreated on demand; deleting with the anon identity is intended
   'notification_preferences.principal_id':
     'derived preference state; cascades with the anon principal by design (target keeps its own)',

@@ -53,9 +53,6 @@ export {
   useAddNotificationChannel,
   useUpdateNotificationChannel,
   useRemoveNotificationChannel,
-  useAddMonitoredChannel,
-  useUpdateMonitoredChannel,
-  useRemoveMonitoredChannel,
 } from './integrations'
 
 // Status sync mutations

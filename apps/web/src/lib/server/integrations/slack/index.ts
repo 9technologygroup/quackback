@@ -1,7 +1,6 @@
 import type { IntegrationDefinition } from '../types'
 import { slackHook } from './hook'
 import { getSlackOAuthUrl, exchangeSlackCode, revokeSlackToken } from './oauth'
-import { ensureSlackFeedbackSource } from './feedback-source'
 import { slackCatalog } from './catalog'
 
 export const slackIntegration: IntegrationDefinition = {
@@ -34,6 +33,5 @@ export const slackIntegration: IntegrationDefinition = {
       helpUrl: 'https://api.slack.com/apps',
     },
   ],
-  onConnect: (integrationId) => ensureSlackFeedbackSource(integrationId),
   onDisconnect: (secrets) => revokeSlackToken(secrets.accessToken as string),
 }

@@ -113,11 +113,6 @@ export function logStartupBanner(): void {
   // any of them start so a fast Ctrl-C in dev still gets a clean exit.
   wireGracefulShutdown()
 
-  // Ensure quackback feedback source exists (idempotent, creates on first startup)
-  import('./domains/feedback/sources/quackback.source')
-    .then(({ ensureQuackbackFeedbackSource }) => ensureQuackbackFeedbackSource())
-    .catch((err) => log.error({ err }, 'failed to ensure quackback feedback source'))
-
   // One-time in-place data backfills (idempotent, advisory-locked). Runs the
   // custom-oidc → identity_provider migration that needs SECRET_KEY to decrypt
   // its credential and so can't live in the SQL migration bundle.
@@ -169,45 +164,6 @@ function startBackgroundProcessing(): void {
     .then(({ startOutboxRelay }) => startOutboxRelay())
     .catch((err) => log.error({ err }, 'failed to start outbox relay'))
 
-  // Periodic feedback maintenance (stuck-item recovery every 15min, suggestion expiry daily).
-  // Runs under a cross-instance lock so only one replica executes per tick.
-  Promise.all([
-    import('./domains/feedback/pipeline/stuck-recovery.service'),
-    import('./domains/feedback/pipeline/suggestion.service'),
-    import('@/lib/server/sweep-lock'),
-  ])
-    .then(([{ recoverStuckItems }, { expireStaleSuggestions }, { withSweepLock }]) => {
-      const ONE_HOUR = 60 * 60 * 1000
-      setTimeout(() => {
-        void withSweepLock('stuck_recovery', ONE_HOUR, () =>
-          recoverStuckItems().catch((err: unknown) =>
-            log.error({ err }, 'initial stuck-item recovery failed')
-          )
-        )
-      }, 20_000) // 20s delay
-      setInterval(
-        () => {
-          void withSweepLock('stuck_recovery', ONE_HOUR, () =>
-            recoverStuckItems().catch((err: unknown) =>
-              log.error({ err }, 'stuck-item recovery failed')
-            )
-          )
-        },
-        15 * 60 * 1000
-      ) // Every 15 minutes
-      setInterval(
-        () => {
-          void withSweepLock('suggestion_expiry', ONE_HOUR, async () => {
-            await expireStaleSuggestions().catch((err: unknown) =>
-              log.error({ err }, 'suggestion expiry failed')
-            )
-          })
-        },
-        24 * 60 * 60 * 1000
-      ) // Daily
-    })
-    .catch((err) => log.error({ err }, 'failed to init feedback maintenance'))
-
   // Audit-log retention sweep + expired portal/team invite sweep.
   // Daily maintenance runs under a cross-instance lock so only one
   // replica executes per tick in multi-instance deployments.
@@ -215,6 +171,9 @@ function startBackgroundProcessing(): void {
     import('@/lib/server/audit/log'),
     import('@/lib/server/audit/invite-sweep'),
     import('./events/events-sweep'),
+    import('./domains/ai/usage-log'),
+    import('./domains/assistant/tool-audit'),
+    import('./domains/conversation/conversation-translation.service'),
     import('@/lib/server/sweep-lock'),
   ])
     .then(
@@ -222,6 +181,9 @@ function startBackgroundProcessing(): void {
         { pruneAuditLog },
         { sweepExpiredPortalInvites },
         { pruneEventsOutbox },
+        { cleanupExpiredLogs },
+        { cleanupExpiredToolCalls, cleanupExpiredAssistantEvents },
+        { cleanupExpiredMessageTranslations },
         { withSweepLock },
       ]) => {
         const runDailyAuditMaintenance = async () => {
@@ -242,6 +204,17 @@ function startBackgroundProcessing(): void {
             await pruneEventsOutbox().catch((err) =>
               log.error({ err }, 'events outbox prune failed')
             )
+          })
+          // Log/telemetry retention: ai_usage_log + operational tables
+          // (hook deliveries, unsubscribe tokens, in-app notifications),
+          // assistant tool-audit + events, and message translations.
+          await withSweepLock('logs_retention', ONE_HOUR, async () => {
+            await Promise.all([
+              cleanupExpiredLogs(),
+              cleanupExpiredToolCalls(),
+              cleanupExpiredAssistantEvents(),
+              cleanupExpiredMessageTranslations(),
+            ]).catch((err) => log.error({ err }, 'logs retention cleanup failed'))
           })
         }
         setTimeout(() => {

@@ -14,7 +14,6 @@ import {
 import { relations, sql } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
 import { principal } from './auth'
-import { boards } from './boards'
 import { postExternalLinks } from './external-links'
 import type { IntegrationConfig, EventMappingActionConfig, EventMappingFilters } from '../types'
 
@@ -140,37 +139,6 @@ export const integrationEventMappings = pgTable(
   ]
 )
 
-/**
- * Slack channel monitors.
- * Each row represents a Slack channel that Quackback monitors for automatic feedback ingestion.
- */
-export const slackChannelMonitors = pgTable(
-  'slack_channel_monitors',
-  {
-    id: typeIdWithDefault('slack_monitor')('id').primaryKey(),
-    integrationId: typeIdColumn('integration')('integration_id').notNull(),
-    channelId: varchar('channel_id', { length: 20 }).notNull(),
-    channelName: text('channel_name').notNull(),
-    boardId: typeIdColumnNullable('board')('board_id').references(() => boards.id, {
-      onDelete: 'set null',
-    }),
-    enabled: boolean('enabled').notNull().default(true),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    foreignKey({
-      name: 'slack_monitors_integration_fk',
-      columns: [table.integrationId],
-      foreignColumns: [integrations.id],
-    }).onDelete('cascade'),
-    // Alphabetical for the drift check; see mapping_unique above.
-    unique('slack_monitor_channel_unique').on(table.channelId, table.integrationId),
-    // idx_slack_monitors_lookup was dropped by migration 0207 as a redundant
-    // prefix of slack_monitor_channel_unique; no separate index is declared.
-  ]
-)
-
 // Relations
 export const integrationsRelations = relations(integrations, ({ one, many }) => ({
   connectedBy: one(principal, {
@@ -185,23 +153,11 @@ export const integrationsRelations = relations(integrations, ({ one, many }) => 
   }),
   eventMappings: many(integrationEventMappings),
   externalLinks: many(postExternalLinks),
-  slackChannelMonitors: many(slackChannelMonitors),
 }))
 
 export const integrationEventMappingsRelations = relations(integrationEventMappings, ({ one }) => ({
   integration: one(integrations, {
     fields: [integrationEventMappings.integrationId],
     references: [integrations.id],
-  }),
-}))
-
-export const slackChannelMonitorsRelations = relations(slackChannelMonitors, ({ one }) => ({
-  integration: one(integrations, {
-    fields: [slackChannelMonitors.integrationId],
-    references: [integrations.id],
-  }),
-  board: one(boards, {
-    fields: [slackChannelMonitors.boardId],
-    references: [boards.id],
   }),
 }))

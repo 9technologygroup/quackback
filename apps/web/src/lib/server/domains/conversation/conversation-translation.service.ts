@@ -560,8 +560,8 @@ export async function dismissInboxTranslationSuggestion(
 export const CONVERSATION_MESSAGE_TRANSLATIONS_RETENTION_DAYS = 180
 
 /** Sweep conversation_message_translations rows past retention. Registered
- *  alongside tool-audit.ts's cleanupExpiredToolCalls on the same daily BullMQ
- *  job (feedback-ai-queue.ts's 'retention-cleanup' job type). Deleting an old
+ *  alongside tool-audit.ts's cleanupExpiredToolCalls on the daily maintenance
+ *  sweep in startup.ts (the 'logs_retention' sweep lock). Deleting an old
  *  row is loss-free: the next time a teammate views that message translated,
  *  translateIncomingMessage just recomputes and re-caches it. */
 export async function cleanupExpiredMessageTranslations(

@@ -58,7 +58,6 @@ export const Route = createFileRoute('/api/v1/posts/$postId/vote/proxy')({
             postId,
             voterPrincipalId,
             { type: 'proxy', externalUrl: '' },
-            null,
             addedByPrincipalId,
             createdAt
           )

@@ -1,8 +1,9 @@
 /**
  * AI usage logging — records token usage, timing, and retry counts
- * for every AI API call in the feedback pipeline.
+ * for every AI API call.
  *
- * Also handles retention cleanup for ai_usage_log and pipeline_log tables.
+ * Also handles retention cleanup for the ai_usage_log table and a few
+ * operational tables.
  */
 
 import { db, aiUsageLog, sql } from '@/lib/server/db'
@@ -134,23 +135,16 @@ export async function withUsageLogging<T>(
 // ---------------------------------------------------------------------------
 
 export const AI_USAGE_RETENTION_DAYS = 90
-const PIPELINE_LOG_RETENTION_DAYS = 180
 
 export async function cleanupExpiredLogs(): Promise<{
   aiUsageDeleted: number
-  pipelineDeleted: number
   operationalDeleted: number
 }> {
   const aiResult = await db.execute(
     sql`DELETE FROM ai_usage_log WHERE created_at < now() - interval '${sql.raw(String(AI_USAGE_RETENTION_DAYS))} days'`
   )
 
-  const pipelineResult = await db.execute(
-    sql`DELETE FROM pipeline_log WHERE created_at < now() - interval '${sql.raw(String(PIPELINE_LOG_RETENTION_DAYS))} days'`
-  )
-
   const aiUsageDeleted = (aiResult as { count: number }).count ?? 0
-  const pipelineDeleted = (pipelineResult as { count: number }).count ?? 0
   const operationalResult = await db.execute(sql`
     WITH deleted_hooks AS (
       DELETE FROM hook_deliveries WHERE processed_at < now() - interval '7 days' RETURNING 1
@@ -172,18 +166,16 @@ export async function cleanupExpiredLogs(): Promise<{
   const [operationalRow] = Array.from(operationalResult as Iterable<{ count: number }>)
   const operationalDeleted = Number(operationalRow?.count ?? 0)
 
-  if (aiUsageDeleted > 0 || pipelineDeleted > 0 || operationalDeleted > 0) {
+  if (aiUsageDeleted > 0 || operationalDeleted > 0) {
     log.info(
       {
         ai_usage_deleted: aiUsageDeleted,
-        pipeline_deleted: pipelineDeleted,
         operational_deleted: operationalDeleted,
         ai_usage_retention_days: AI_USAGE_RETENTION_DAYS,
-        pipeline_log_retention_days: PIPELINE_LOG_RETENTION_DAYS,
       },
       'retention cleanup completed'
     )
   }
 
-  return { aiUsageDeleted, pipelineDeleted, operationalDeleted }
+  return { aiUsageDeleted, operationalDeleted }
 }

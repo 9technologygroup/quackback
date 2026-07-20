@@ -143,8 +143,8 @@ async function sweepExpired(
 }
 
 /** Sweep assistant_tool_calls rows past retention. Registered alongside
- *  usage-log.ts's cleanupExpiredLogs on the same daily BullMQ job
- *  (feedback-ai-queue.ts's 'retention-cleanup' job type). */
+ *  usage-log.ts's cleanupExpiredLogs on the daily maintenance sweep in
+ *  startup.ts (the 'logs_retention' sweep lock). */
 export async function cleanupExpiredToolCalls(exec: Executor = db): Promise<{ deleted: number }> {
   return sweepExpired(
     'assistant_tool_calls',
@@ -155,8 +155,8 @@ export async function cleanupExpiredToolCalls(exec: Executor = db): Promise<{ de
 }
 
 /** Sweep assistant_events rows past retention. Registered alongside
- *  cleanupExpiredToolCalls above on the same daily BullMQ job
- *  (feedback-ai-queue.ts's 'retention-cleanup' job type). */
+ *  cleanupExpiredToolCalls above on the daily maintenance sweep in
+ *  startup.ts (the 'logs_retention' sweep lock). */
 export async function cleanupExpiredAssistantEvents(
   exec: Executor = db
 ): Promise<{ deleted: number }> {

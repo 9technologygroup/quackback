@@ -210,8 +210,6 @@ export {
   integrationPlatformCredentialsRelations,
   integrations,
   integrationsRelations,
-  slackChannelMonitors,
-  slackChannelMonitorsRelations,
   // Schema tables - external links
   postExternalLinks,
   postExternalLinksRelations,
@@ -316,17 +314,6 @@ export {
   userAttributeDefinitions,
   // Schema tables - company attributes
   companyAttributeDefinitions,
-  // Schema tables - feedback aggregation
-  feedbackSources,
-  feedbackSourcesRelations,
-  rawFeedbackItems,
-  rawFeedbackItemsRelations,
-  feedbackSignals,
-  feedbackSignalsRelations,
-  feedbackSuggestions,
-  feedbackSuggestionsRelations,
-  externalUserMappings,
-  externalUserMappingsRelations,
   // Schema tables - merge suggestions
   mergeSuggestions,
   mergeSuggestionsRelations,
@@ -335,8 +322,6 @@ export {
   postActivityRelations,
   // Schema tables - ai usage log
   aiUsageLog,
-  // Schema tables - pipeline log
-  pipelineLog,
   // Schema tables - analytics
   analyticsDailyStats,
   analyticsTopPosts,

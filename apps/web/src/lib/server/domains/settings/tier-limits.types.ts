@@ -24,10 +24,6 @@ export interface TierFeatureFlags {
   /** Connecting external tools (GitHub, Slack, Linear, Jira, etc.).
    *  All paid tiers on cloud; always on for self-hosters. */
   integrations: boolean
-  /** AI auto-capture: the feedback-extraction pipeline that turns
-   *  conversations from connected sources into structured feedback.
-   *  All paid tiers on cloud; always on for self-hosters. */
-  aiFeedbackExtraction: boolean
 }
 
 /**
@@ -101,6 +97,5 @@ export const OSS_TIER_LIMITS: TierLimits = {
     customColors: true,
     customCss: true,
     integrations: true,
-    aiFeedbackExtraction: true,
   },
 }
