@@ -1,4 +1,4 @@
-import type { IntegrationDefinition, IntegrationCatalogEntry } from './types'
+import type { IntegrationDefinition, IntegrationCatalogEntry, IntegrationCapability } from './types'
 import type { HookHandler } from '../events/hook-types'
 import { slackIntegration } from './slack'
 import { discordIntegration } from './discord'
@@ -63,16 +63,91 @@ export function listIntegrationTypes(): string[] {
   return [...registry.keys()]
 }
 
+/**
+ * Capability badges derived from the definition's slots, flavored by the
+ * catalog category (taxonomy, not a capability claim) — so the catalog
+ * cannot advertise what a provider does not implement (IF WO-4). Providers
+ * with no capability slots yet (enrichment-only: zendesk/intercom/hubspot)
+ * fall back to their hand-written copy until the context capability lands.
+ */
+function deriveCapabilities(i: IntegrationDefinition): IntegrationCapability[] {
+  const name = i.catalog.name
+  const caps: IntegrationCapability[] = []
+
+  if (i.hook) {
+    switch (i.catalog.category) {
+      case 'issue_tracking':
+        caps.push({
+          label: 'Create items from feedback',
+          description: `Automatically create ${name} items when new feedback is submitted`,
+        })
+        break
+      case 'notifications':
+        caps.push({
+          label: 'Channel notifications',
+          description: `Send feedback updates to ${name}`,
+        })
+        break
+      case 'automation':
+        caps.push({
+          label: 'Event triggers',
+          description: `Send feedback events to ${name} to power your automations`,
+        })
+        break
+      default:
+        // support_crm hooks are enrichment lookups, not deliveries.
+        caps.push({
+          label: 'Customer context',
+          description: `Look up customer details in ${name} when feedback arrives`,
+        })
+    }
+  }
+
+  if (i.inbound && i.webhookRegistration) {
+    caps.push({
+      label: 'Two-way status sync',
+      description: `Status changes in ${name} update linked feedback in Quackback`,
+    })
+  }
+
+  if (i.issues) {
+    caps.push({
+      label: 'Link existing items',
+      description: `Link posts and tickets to existing ${name} items`,
+    })
+  }
+
+  if (i.archive) {
+    caps.push({
+      label: 'Clean up on delete',
+      description: `Close or archive linked ${name} items when feedback is deleted`,
+    })
+  }
+
+  if (i.userSync) {
+    caps.push({
+      label: 'User data sync',
+      description: `Sync user attributes and segment membership with ${name}`,
+    })
+  }
+
+  return caps
+}
+
 export async function getIntegrationCatalog(): Promise<IntegrationCatalogEntry[]> {
   const { getConfiguredIntegrationTypes } =
     await import('@/lib/server/domains/platform-credentials/platform-credential.service')
   const configuredTypes = await getConfiguredIntegrationTypes()
-  return Array.from(registry.values()).map((i) => ({
-    ...i.catalog,
-    available: i.platformCredentials.length === 0 || configuredTypes.has(i.id),
-    configurable: i.platformCredentials.length > 0,
-    platformCredentialFields: i.platformCredentials,
-  }))
+  return Array.from(registry.values()).map((i) => {
+    const derived = deriveCapabilities(i)
+    return {
+      ...i.catalog,
+      capabilities: derived.length > 0 ? derived : (i.catalog.capabilities ?? []),
+      available: i.platformCredentials.length === 0 || configuredTypes.has(i.id),
+      configurable: i.platformCredentials.length > 0,
+      platformCredentialFields: i.platformCredentials,
+    }
+  })
 }
 
 export function getIntegrationHook(type: string): HookHandler | undefined {

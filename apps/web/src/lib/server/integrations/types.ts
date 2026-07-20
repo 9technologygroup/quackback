@@ -117,7 +117,14 @@ export interface IntegrationCatalogEntry {
   name: string
   description: string
   category: IntegrationCategory
-  capabilities: IntegrationCapability[]
+  /**
+   * Capability badges. DERIVED from the definition's slots at
+   * getIntegrationCatalog() so the catalog cannot drift from what a
+   * provider implements (IF WO-4). Hand-written entries are honored ONLY
+   * as a fallback for providers with no capability slots yet (the
+   * enrichment-only providers, until the context capability lands).
+   */
+  capabilities?: IntegrationCapability[]
   iconBg: string
   settingsPath: string
   available: boolean

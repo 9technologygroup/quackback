@@ -5,18 +5,6 @@ export const segmentCatalog: IntegrationCatalogEntry = {
   name: 'Segment',
   description: 'Sync user attributes from Segment into Quackback and push segment membership back.',
   category: 'user_data',
-  capabilities: [
-    {
-      label: 'Inbound attribute sync',
-      description:
-        'Receive Segment identify events and write user attributes to Quackback automatically',
-    },
-    {
-      label: 'Segment membership sync',
-      description:
-        'After dynamic segment evaluation, push membership changes back to Segment as user attributes',
-    },
-  ],
   iconBg: 'bg-[#52BD94]',
   settingsPath: '/admin/settings/integrations/segment',
   available: true,
