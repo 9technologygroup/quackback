@@ -31,6 +31,18 @@ export const TicketSchema = z.object({
   number: z.number().meta({ description: 'Per-workspace sequential ticket number', example: 42 }),
   reference: z.string().meta({ description: 'Human reference, "#" + number', example: '#42' }),
   type: z.enum(TICKET_TYPES).meta({ description: 'Ticket object type', example: 'customer' }),
+  // The Phase 4 registry type — `type` above stays the behavior-axis category.
+  ticketType: z
+    .object({
+      id: TypeIdSchema.meta({ example: 'ticket_type_01h455vb4pex5vsknk084sn02q' }),
+      name: z.string().meta({ example: 'Bug report' }),
+      slug: z.string().meta({ example: 'bug_report' }),
+      category: z.enum(TICKET_TYPES).meta({ example: 'customer' }),
+      icon: z.string().nullable().meta({ example: '🐛' }),
+      color: z.string().meta({ example: '#eab308' }),
+    })
+    .nullable()
+    .meta({ description: 'Workspace-defined registry type, null on legacy typeless tickets' }),
   title: z.string().meta({ example: 'Cannot log in' }),
   status: z
     .object({
@@ -176,6 +188,12 @@ registerPath('/tickets', {
         in: 'query',
         schema: { type: 'string', enum: [...TICKET_TYPES] },
         description: 'Filter by ticket type',
+      },
+      {
+        name: 'ticketTypeId',
+        in: 'query',
+        schema: { type: 'string' },
+        description: 'Filter by registry ticket-type ID (see the ticketType field on tickets)',
       },
       {
         name: 'statusCategory',

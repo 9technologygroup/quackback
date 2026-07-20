@@ -182,6 +182,13 @@ interface ConversationListColumnProps {
   onFacet: (value: InboxTriageFacet) => void
   priorityFilter: ConversationPriority | 'all'
   onPriorityFilter: (value: ConversationPriority | 'all') => void
+  /** The tickets-branch registry-type dropdown (convergence Phase 4): the
+   *  active `ticket_type` id (undefined = all), its setter, and the options
+   *  for the active scope (undefined off the Tickets-section scopes — the
+   *  dropdown renders only when options are provided). */
+  ticketTypeFilter?: string
+  onTicketTypeFilter?: (id: string | undefined) => void
+  ticketTypeOptions?: Array<{ id: string; name: string; icon: string | null; color: string }>
   sort: ConversationSort
   onSort: (value: ConversationSort) => void
   loading: boolean
@@ -221,6 +228,9 @@ export function ConversationListColumn({
   onFacet,
   priorityFilter,
   onPriorityFilter,
+  ticketTypeFilter,
+  onTicketTypeFilter,
+  ticketTypeOptions,
   sort,
   onSort,
   loading,
@@ -367,6 +377,52 @@ export function ConversationListColumn({
                 />
               </DropdownMenuContent>
             </DropdownMenu>
+
+            {/* Registry-type filter (Phase 4) — the Tickets-section scopes
+                only; the route scopes the options to the view's category. */}
+            {ticketTypeOptions && onTicketTypeFilter && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Filter by ticket type"
+                    className={cn(
+                      'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-[13px] font-medium transition-colors',
+                      ticketTypeFilter
+                        ? 'bg-primary/10 text-primary'
+                        : 'text-muted-foreground hover:bg-muted'
+                    )}
+                  >
+                    {(() => {
+                      const active = ticketTypeOptions.find((t) => t.id === ticketTypeFilter)
+                      return active ? (
+                        <>
+                          <span aria-hidden>{active.icon}</span>
+                          {active.name}
+                        </>
+                      ) : (
+                        'Type'
+                      )
+                    })()}
+                    <ChevronDownIcon className="size-3.5" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuItem onClick={() => onTicketTypeFilter(undefined)}>
+                    All types
+                  </DropdownMenuItem>
+                  {ticketTypeOptions.map((t) => (
+                    <DropdownMenuItem
+                      key={t.id}
+                      onClick={() => onTicketTypeFilter(t.id)}
+                      className={cn(t.id === ticketTypeFilter && 'text-primary')}
+                    >
+                      <span aria-hidden>{t.icon}</span> {t.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </>
         )}
       </div>

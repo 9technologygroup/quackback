@@ -2332,6 +2332,9 @@ export interface EntityLabels {
   /** Ticket status id -> display name, for set_ticket_status step summaries —
    *  same role as `tags`/`slaPolicies` above. */
   ticketStatuses?: ReadonlyMap<string, string>
+  /** Ticket-type id -> display name, for convert_to_ticket step summaries
+   *  (convergence Phase 4). */
+  ticketTypes?: ReadonlyMap<string, string>
 }
 
 const shortId = (id: string): string => (id.length > 14 ? `${id.slice(0, 14)}…` : id)
@@ -2372,7 +2375,9 @@ export function actionSummary(action: GraphAction, labels: EntityLabels = {}): s
     case 'set_ticket_status':
       return `Set ticket status to ${named(action.statusId, labels.ticketStatuses, 'a status…')}`
     case 'convert_to_ticket':
-      return 'Convert to a ticket'
+      return action.ticketTypeId
+        ? `Convert to a ${named(action.ticketTypeId, labels.ticketTypes, 'ticket')}`
+        : 'Convert to a ticket'
     case 'send_webhook':
       return action.url ? `Send webhook to ${truncate(action.url, 40)}` : 'Send a webhook…'
   }

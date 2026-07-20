@@ -217,6 +217,7 @@ const { mockTicket, mockTicketThread, mockTicketVariants, mockTicketLink, mockTi
       number: 1,
       reference: '#1',
       type: 'customer',
+      ticketType: null,
       title: 'Cannot log in',
       status: { id: 'ticket_status_1', name: 'Open', color: '#22c55e', category: 'open' },
       stage: { slot: null, label: null },

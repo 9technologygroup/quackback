@@ -50,6 +50,7 @@ function ticketRef(t: Ticket): EventTicketRef {
     id: t.id,
     number: t.number,
     type: t.type,
+    ticketTypeId: t.ticketTypeId ?? null,
     priority: t.priority,
     assignedPrincipalId: t.assigneePrincipalId ?? null,
     assignedTeamId: t.assigneeTeamId ?? null,

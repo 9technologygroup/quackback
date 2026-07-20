@@ -7,6 +7,7 @@
 import type {
   TicketId,
   TicketStatusId,
+  TicketTypeId,
   PrincipalId,
   TeamId,
   CompanyId,
@@ -29,7 +30,14 @@ import type { JsonValue } from '@/lib/shared/json'
 
 /** Fields accepted when opening a ticket. Status + number are resolved server-side. */
 export interface CreateTicketInput {
-  type: TicketType
+  /** The behavior-axis category. OPTIONAL when `ticketTypeId` is given: the
+   *  type's category is derived onto `tickets.type` at write time
+   *  (convergence Phase 4) and a mismatched explicit category is rejected.
+   *  With neither, the column default ('customer') stands. */
+  type?: TicketType
+  /** The workspace-defined registry type (Phase 4). Drives the category
+   *  derivation above; null/absent = the legacy typeless shape. */
+  ticketTypeId?: TicketTypeId | null
   title: string
   /** Optional opening message that seeds the ticket thread (the basic-form
    *  "description"). Authored by the requester when they file it themselves,
@@ -82,6 +90,9 @@ export type TicketAssigneeFilter = 'me' | 'unassigned' | PrincipalId
 /** List query filters. All optional; omitted filters do not constrain the result. */
 export interface TicketListFilter {
   type?: TicketType
+  /** Registry-type filter (convergence Phase 4) — the inbox tickets-branch
+   *  type dropdown. Independent of `type` (the category axis). */
+  ticketTypeId?: TicketTypeId
   statusCategory?: TicketStatusCategory
   stage?: TicketStage
   priority?: ConversationPriority
@@ -154,6 +165,23 @@ export interface TicketCompanyRef {
 }
 
 /**
+ * The ticket's registry type (convergence Phase 4), flattened for display —
+ * the type chip (icon + name + color) on the ticket card and list rows. Null
+ * for legacy typeless rows; the chip falls back to the bare category there.
+ * The type's `fields[]` are deliberately NOT carried on every ticket DTO —
+ * the card joins them client-side from the registry query
+ * (listTicketTypesFn), which it needs for the editor anyway.
+ */
+export interface TicketTypeRef {
+  id: TicketTypeId
+  name: string
+  slug: string
+  category: TicketType
+  icon: string | null
+  color: string
+}
+
+/**
  * The ticket's active SLA (support platform §4.6's ticket-anchored TTR clock),
  * projected from the `tickets.sla_applied` stamp — null when no SLA is
  * applied. Only the display fields the inbox chip needs are carried; the full
@@ -182,6 +210,9 @@ export interface TicketDTO {
   number: number
   reference: string
   type: TicketType
+  /** The registry type this ticket was filed under (Phase 4), or null for
+   *  legacy typeless rows. */
+  ticketType: TicketTypeRef | null
   title: string
   status: TicketStatusRef
   stage: TicketStageRef

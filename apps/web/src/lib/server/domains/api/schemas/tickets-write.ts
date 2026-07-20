@@ -28,7 +28,16 @@ const TicketWriteAttachmentSchema = z.object({
 
 // Request bodies for the ticket write routes.
 const CreateTicketBodySchema = createRequestBodySchema({
-  type: z.enum(TICKET_TYPES).meta({ description: 'Ticket object type', example: 'customer' }),
+  // Optional: derivable from ticketTypeId (a mismatch is rejected); 'customer'
+  // stands when neither is given.
+  type: z
+    .enum(TICKET_TYPES)
+    .optional()
+    .meta({ description: 'Ticket object type', example: 'customer' }),
+  ticketTypeId: z.string().optional().meta({
+    description: 'Registry ticket-type ID — its category becomes the ticket type',
+    example: 'ticket_type_01h455vb4pex5vsknk084sn02q',
+  }),
   title: z.string().min(1).max(300).meta({ example: 'Cannot log in' }),
   description: z
     .string()

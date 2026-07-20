@@ -5,7 +5,7 @@ import type { FeatureFlags } from '@/lib/shared/types/settings'
 import { BackLink } from '@/components/ui/back-link'
 import { PageHeader } from '@/components/shared/page-header'
 import { TicketTypesManager } from '@/components/admin/settings/tickets/ticket-types-manager'
-import { ticketFormsQuery } from '@/components/admin/settings/tickets/queries'
+import { ticketTypesQuery } from '@/components/admin/settings/tickets/queries'
 
 export const Route = createFileRoute('/admin/settings/ticket-types')({
   loader: async ({ context }) => {
@@ -13,7 +13,7 @@ export const Route = createFileRoute('/admin/settings/ticket-types')({
     await requireWorkspaceRole({
       data: { allowedRoles: ['admin', 'member'], permission: PERMISSIONS.TICKET_MANAGE_TYPES },
     })
-    await context.queryClient.ensureQueryData(ticketFormsQuery)
+    await context.queryClient.ensureQueryData(ticketTypesQuery)
     return {}
   },
   component: TicketTypesRoute,
@@ -38,7 +38,7 @@ function TicketTypesPage() {
       <PageHeader
         icon={TicketIcon}
         title="Ticket types"
-        description="Customer, back-office and tracker tickets each have their own intake form."
+        description="Types define the fields a ticket captures. Each type belongs to a category — customer, back-office or tracker — which drives its behavior."
       />
       <TicketTypesManager />
     </div>

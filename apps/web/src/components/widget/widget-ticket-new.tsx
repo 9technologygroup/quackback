@@ -6,6 +6,11 @@
  * editor, followed by any admin-configured customer intake fields. Answers are
  * validated inline with the same shared validator the server enforces, so the
  * two never drift. On success it opens the created ticket's thread.
+ *
+ * CONVERGENCE PHASE 4: when the workspace offers more than one intake-visible
+ * customer type, a type picker leads the form and the chosen type's field set
+ * renders below; a single-type workspace behaves exactly like the legacy fixed
+ * form. Swapping types resets the draft answers.
  */
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -14,22 +19,17 @@ import { toast } from 'sonner'
 import type { JSONContent } from '@tiptap/react'
 import type { TicketId } from '@quackback/ids'
 import type { TiptapContent } from '@/lib/shared/db-types'
-import {
-  validateTicketIntakeValues,
-  type TicketFormField,
-  type TicketIntakeError,
-} from '@/lib/shared/tickets'
+import { validateTicketIntakeValues, type TicketIntakeError } from '@/lib/shared/tickets'
 import { createMyWidgetTicketFn } from '@/lib/server/functions/widget-tickets'
 import { getWidgetAuthHeaders } from '@/lib/client/widget-auth'
 import { widgetTicketKeys, widgetTicketQueries } from '@/lib/client/queries/widget-tickets'
 import { useWidgetAuth } from './widget-auth-provider'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
+import { TicketFormFields } from '@/components/shared/ticket-form-fields'
 import { VISITOR_CONVERSATION_FEATURES } from '@/components/conversation/conversation-editor-features'
 import { isEmptyTiptapDoc } from '@/lib/shared/utils/is-empty-tiptap-doc'
 import { useWidgetImageUpload } from '@/lib/client/hooks/use-image-upload'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/shared/spinner'
@@ -48,15 +48,6 @@ interface WidgetTicketNewProps {
   onCreated: (id: TicketId) => void
 }
 
-function FieldLabel({ field }: { field: TicketFormField }) {
-  return (
-    <label className="text-xs font-medium text-muted-foreground">
-      {field.label}
-      {field.required && <span className="ms-0.5 text-destructive">*</span>}
-    </label>
-  )
-}
-
 export function WidgetTicketNew({ onCreated }: WidgetTicketNewProps) {
   const intl = useIntl()
   const queryClient = useQueryClient()
@@ -67,13 +58,22 @@ export function WidgetTicketNew({ onCreated }: WidgetTicketNewProps) {
   const [title, setTitle] = useState('')
   const [descriptionJson, setDescriptionJson] = useState<JSONContent | undefined>(undefined)
   const [descriptionMarkdown, setDescriptionMarkdown] = useState('')
+  const [selectedTypeId, setSelectedTypeId] = useState<string | null>(null)
   const [fieldValues, setFieldValues] = useState<Record<string, unknown>>({})
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
   const { data: formData, isLoading: formLoading } = useQuery(
     widgetTicketQueries.form(sessionVersion)
   )
-  const fields = useMemo(() => formData?.fields ?? [], [formData])
+  const types = useMemo(() => formData?.types ?? [], [formData])
+  // No explicit selection = the workspace default type (else the only/first
+  // offered type) — the picker reflects the resolved choice.
+  const selectedType =
+    types.find((t) => t.id === selectedTypeId) ??
+    types.find((t) => t.isDefault) ??
+    (types.length === 1 ? types[0] : null) ??
+    null
+  const fields = selectedType?.fields ?? []
 
   const setFieldValue = (key: string, value: unknown) => {
     setFieldValues((prev) => ({ ...prev, [key]: value }))
@@ -85,11 +85,19 @@ export function WidgetTicketNew({ onCreated }: WidgetTicketNewProps) {
     })
   }
 
+  /** Type swap: change the field set and drop the old type's draft answers. */
+  const selectType = (id: string) => {
+    setSelectedTypeId(id)
+    setFieldValues({})
+    setFieldErrors({})
+  }
+
   const create = useMutation({
     mutationFn: (vars: {
       title: string
       description?: string
       descriptionJson?: TiptapContent | null
+      ticketTypeId?: string
       fieldValues?: Record<string, unknown>
       email?: string
     }) => createMyWidgetTicketFn({ data: vars, headers: getWidgetAuthHeaders() }),
@@ -139,6 +147,7 @@ export function WidgetTicketNew({ onCreated }: WidgetTicketNewProps) {
       descriptionJson: isEmptyTiptapDoc(descriptionJson as TiptapContent | undefined)
         ? null
         : (descriptionJson as TiptapContent),
+      ticketTypeId: selectedType?.id,
       fieldValues: Object.keys(result.values).length > 0 ? result.values : undefined,
       email: emailRequired ? email.trim() : undefined,
     })
@@ -184,6 +193,34 @@ export function WidgetTicketNew({ onCreated }: WidgetTicketNewProps) {
             </div>
           )}
 
+          {types.length > 1 && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                <FormattedMessage id="widget.tickets.new.type" defaultMessage="Type" />
+              </label>
+              <Select value={selectedType?.id ?? ''} onValueChange={selectType}>
+                <SelectTrigger size="sm" className="w-full">
+                  <SelectValue
+                    placeholder={intl.formatMessage({
+                      id: 'widget.tickets.new.typePlaceholder',
+                      defaultMessage: 'Select…',
+                    })}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {types.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      <span className="flex items-center gap-2">
+                        <span aria-hidden>{t.icon}</span>
+                        <span>{t.name}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">
               <FormattedMessage id="widget.tickets.new.subject" defaultMessage="Subject" />
@@ -226,75 +263,12 @@ export function WidgetTicketNew({ onCreated }: WidgetTicketNewProps) {
               <Spinner />
             </div>
           ) : (
-            fields.map((field) => (
-              <div key={field.key} className="space-y-1.5">
-                {field.type !== 'checkbox' && <FieldLabel field={field} />}
-                {field.type === 'text' && (
-                  <Input
-                    value={(fieldValues[field.key] as string) ?? ''}
-                    onChange={(e) => setFieldValue(field.key, e.target.value)}
-                  />
-                )}
-                {field.type === 'long_text' && (
-                  <Textarea
-                    value={(fieldValues[field.key] as string) ?? ''}
-                    onChange={(e) => setFieldValue(field.key, e.target.value)}
-                    rows={3}
-                  />
-                )}
-                {field.type === 'number' && (
-                  <Input
-                    type="number"
-                    value={(fieldValues[field.key] as string) ?? ''}
-                    onChange={(e) => setFieldValue(field.key, e.target.value)}
-                  />
-                )}
-                {field.type === 'date' && (
-                  <Input
-                    type="date"
-                    value={(fieldValues[field.key] as string) ?? ''}
-                    onChange={(e) => setFieldValue(field.key, e.target.value)}
-                  />
-                )}
-                {field.type === 'select' && (
-                  <Select
-                    value={(fieldValues[field.key] as string) ?? ''}
-                    onValueChange={(v) => setFieldValue(field.key, v)}
-                  >
-                    <SelectTrigger size="sm" className="w-full">
-                      <SelectValue
-                        placeholder={intl.formatMessage({
-                          id: 'widget.tickets.new.selectPlaceholder',
-                          defaultMessage: 'Select…',
-                        })}
-                      />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(field.options ?? []).map((opt) => (
-                        <SelectItem key={opt} value={opt}>
-                          {opt}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-                {field.type === 'checkbox' && (
-                  <label className="flex items-center gap-2">
-                    <Checkbox
-                      checked={fieldValues[field.key] === true}
-                      onCheckedChange={(v) => setFieldValue(field.key, v === true)}
-                    />
-                    <span className="text-xs font-medium text-muted-foreground">
-                      {field.label}
-                      {field.required && <span className="ms-0.5 text-destructive">*</span>}
-                    </span>
-                  </label>
-                )}
-                {fieldErrors[field.key] && (
-                  <p className="text-[11px] text-destructive">{fieldErrors[field.key]}</p>
-                )}
-              </div>
-            ))
+            <TicketFormFields
+              fields={fields}
+              values={fieldValues}
+              onChange={setFieldValue}
+              errors={fieldErrors}
+            />
           )}
         </div>
       </ScrollArea>

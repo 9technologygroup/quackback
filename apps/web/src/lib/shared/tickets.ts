@@ -132,11 +132,55 @@ export const ticketFormSchema = z.array(ticketFormFieldSchema).superRefine((fiel
 /** The intake form for each ticket type (empty array = no custom fields). */
 export type TicketForms = Record<TicketType, TicketFormField[]>
 
+/**
+ * The wire shape of a `ticket_types` registry row (convergence Phase 4 —
+ * user-defined types). A type is a label + icon + color + typed field set
+ * WITHIN one of the three fixed categories; the category drives behavior, the
+ * type defines the fields a ticket captures. Client-safe: the settings
+ * registry, the create-dialog picker, the intake pickers, and the ticket-card
+ * chip all code against this shape.
+ */
+export interface TicketTypeDTO {
+  id: string
+  name: string
+  slug: string
+  category: TicketType
+  icon: string | null
+  color: string
+  fields: TicketFormField[]
+  isDefault: boolean
+  position: number
+  /** Whether the type appears in the customer-category intake picker
+   *  (portal + Messenger). Meaningful only for customer-category types. */
+  intakeVisible: boolean
+  /** Soft-deleted (archived): kept on ticket history, hidden from pickers. */
+  archived: boolean
+  /** Live tickets referencing the type; present only when the caller asked
+   *  for usage (the manager's category-lock notice). */
+  ticketCount?: number
+}
+
 /** An empty form for every ticket type — the read-time default. */
 export const DEFAULT_TICKET_FORMS: TicketForms = {
   customer: [],
   back_office: [],
   tracker: [],
+}
+
+/**
+ * One intake-visible customer type as served to the portal + Messenger
+ * New-Ticket forms (convergence Phase 4): the picker options and their
+ * per-type field sets. `fields` carries only `visibleToCustomer` fields,
+ * order-sorted — the shape `validateTicketIntakeValues` runs against.
+ */
+export interface TicketIntakeType {
+  id: string
+  name: string
+  icon: string | null
+  color: string
+  /** Preselected in the intake picker (the customer-category default). */
+  isDefault: boolean
+  fields: TicketFormField[]
 }
 
 /** Upper bound on a stored text/long_text intake answer. Custom answers land in
@@ -159,20 +203,23 @@ export interface TicketIntakeError {
  *
  * Only fields that are BOTH on the form AND `visibleToCustomer` are accepted;
  * any other key in `values` is dropped, never trusted (a hidden/admin-only or
- * unknown key can't be smuggled into `customAttributes`). Per-type rules: a
+ * unknown key can't be smuggled into `customAttributes`). Pass
+ * `opts.includeInternal` on the AGENT path (the create dialog fills every field
+ * of the chosen type, including customer-hidden ones). Per-type rules: a
  * required field must be present and non-empty; `select` must be one of its
  * `options`; `number` must be finite; `date` must be an ISO date; `checkbox`
  * must be a boolean. Coerces to the field's canonical stored type.
  */
 export function validateTicketIntakeValues(
   form: TicketFormField[],
-  values: Record<string, unknown>
+  values: Record<string, unknown>,
+  opts?: { includeInternal?: boolean }
 ): { ok: true; values: Record<string, unknown> } | { ok: false; errors: TicketIntakeError[] } {
   const errors: TicketIntakeError[] = []
   const cleaned: Record<string, unknown> = {}
 
   for (const field of form) {
-    if (!field.visibleToCustomer) continue
+    if (!field.visibleToCustomer && !opts?.includeInternal) continue
     const raw = values[field.key]
     const missing =
       raw === undefined || raw === null || (typeof raw === 'string' && raw.trim().length === 0)

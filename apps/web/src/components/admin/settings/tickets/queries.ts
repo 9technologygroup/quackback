@@ -1,9 +1,6 @@
 import { queryOptions } from '@tanstack/react-query'
-import {
-  listTicketStatusesFn,
-  getTicketStageLabelsFn,
-  getTicketFormsFn,
-} from '@/lib/server/functions/tickets'
+import { listTicketStatusesFn, getTicketStageLabelsFn } from '@/lib/server/functions/tickets'
+import { listTicketTypesFn } from '@/lib/server/functions/ticket-types'
 
 /**
  * Shared query options for the ticket settings pages. Route loaders prefetch
@@ -22,8 +19,14 @@ export const ticketStageLabelsQuery = queryOptions({
   staleTime: 60_000,
 })
 
-export const ticketFormsQuery = queryOptions({
-  queryKey: ['settings', 'ticket-forms'],
-  queryFn: () => getTicketFormsFn(),
+/**
+ * The ticket-types registry (convergence Phase 4) for the settings manager:
+ * live + archived rows with per-type usage counts (the manager's category-lock
+ * notice). `includeArchived`/`withUsage` gate the read on `ticket.manage_types`
+ * server-side, which the route loader already requires.
+ */
+export const ticketTypesQuery = queryOptions({
+  queryKey: ['settings', 'ticket-types'],
+  queryFn: () => listTicketTypesFn({ data: { includeArchived: true, withUsage: true } }),
   staleTime: 60_000,
 })

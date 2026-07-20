@@ -54,6 +54,8 @@ export const ticketRef = z.object({
   id,
   number: z.number(),
   type: z.string(),
+  // The Phase 4 registry type; absent on pre-Phase-4 historical payloads.
+  ticketTypeId: z.string().nullable().optional(),
   priority: z.string(),
   assignedPrincipalId: z.string().nullable().optional(),
   assignedTeamId: z.string().nullable().optional(),

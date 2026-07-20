@@ -1387,6 +1387,13 @@
       "when": 1784773561000,
       "tag": "0214_ticket_conversations_customer_ticket_uq",
       "breakpoints": true
+    },
+    {
+      "idx": 215,
+      "version": "7",
+      "when": 1784773621000,
+      "tag": "0215_ticket_types",
+      "breakpoints": true
     }
   ]
 }

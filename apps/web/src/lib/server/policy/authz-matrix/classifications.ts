@@ -157,6 +157,9 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/tickets.ts::createMyTicketFn': END_USER(
     'requester opens their own customer ticket (gated on the support-tickets flag)'
   ),
+  'lib/server/functions/tickets.ts::getMyTicketFormFn': END_USER(
+    'requester reads the customer intake type/form shape (gated on the support-tickets flag)'
+  ),
   'lib/server/functions/tickets.ts::searchMyTicketsFn': END_USER(
     'requester searches their own customer tickets'
   ),

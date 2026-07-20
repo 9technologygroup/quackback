@@ -65,6 +65,7 @@ import { recordTicketActivity } from './ticket-activity.service'
 import { subscribeToTicket, safeSubscribeToTicket } from './ticket-subscription.service'
 import { loadAuthors, fallbackAuthor } from '../principals/principal-display'
 import { ticketFtsMatch } from './ticket-search.service'
+import { resolveTicketTypeForCreate } from './ticket-type.service'
 import { statusTransition, firstResponseStamp, resolveStage } from './ticket.lifecycle'
 import { resolvePairConversationId } from './pair-thread.service'
 import type {
@@ -287,6 +288,7 @@ export async function listTickets(filter: TicketListFilter, actor: Actor): Promi
         // ticketFilter(actor) already excludes soft-deleted rows in every branch.
         ticketFilter(actor),
         filter.type ? eq(tickets.type, filter.type) : undefined,
+        filter.ticketTypeId ? eq(tickets.ticketTypeId, filter.ticketTypeId) : undefined,
         filter.priority ? eq(tickets.priority, filter.priority) : undefined,
         filter.excludeConversationLinked ? excludeConversationLinkedCondition() : undefined,
         filter.statusCategory
@@ -428,6 +430,14 @@ export async function createTicketCore(input: CreateTicketInput, actor: Actor): 
     throw new InternalError('NO_DEFAULT_STATUS', 'No default ticket status is configured')
   }
 
+  // CONVERGENCE PHASE 4 derivation: when a registry type is chosen, its
+  // category IS tickets.type (a mismatched explicit category is rejected);
+  // without one the legacy explicit-category path stands.
+  const resolvedType = await resolveTicketTypeForCreate({
+    ticketTypeId: input.ticketTypeId,
+    category: input.type,
+  })
+
   // Same sanitize/validate idioms as insertTicketMessage (ticket-message.service):
   // sanitize the doc, cap/validate attachments, derive the plaintext mirror from
   // the doc when the raw description is blank, and let a text-less rich doc
@@ -455,7 +465,7 @@ export async function createTicketCore(input: CreateTicketInput, actor: Actor): 
   // takes the legacy shape unchanged.
   const wantsBackingConversation =
     input.withBackingConversation === true &&
-    input.type === 'customer' &&
+    resolvedType.category === 'customer' &&
     !!input.requesterPrincipalId
   // The opening message rides the Phase 1a redirect onto the backing
   // conversation AFTER commit — except the un-attributable edge: an
@@ -501,7 +511,8 @@ export async function createTicketCore(input: CreateTicketInput, actor: Actor): 
     const [ticket] = await tx
       .insert(tickets)
       .values({
-        type: input.type,
+        type: resolvedType.category,
+        ticketTypeId: resolvedType.ticketTypeId,
         title,
         statusId: defaultStatus.id,
         priority: input.priority ?? 'none',

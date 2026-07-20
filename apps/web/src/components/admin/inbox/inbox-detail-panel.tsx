@@ -13,6 +13,7 @@ import {
   FaceSmileIcon,
   FlagIcon,
   InboxArrowDownIcon,
+  PuzzlePieceIcon,
   SparklesIcon,
   TagIcon,
   TicketIcon,
@@ -47,7 +48,7 @@ import { TONE_CLASSES } from '@/components/admin/conversation/sla-chip'
 import { CompanyCard } from '@/components/admin/conversation/company-card'
 import { CopilotPanel } from '@/components/admin/conversation/copilot-panel'
 import { usePersonBlockStatus } from '@/components/admin/users/block-person-control'
-import { TicketStageChip } from '@/components/admin/inbox/ticket-chips'
+import { TicketStageChip, TicketTypeBadge } from '@/components/admin/inbox/ticket-chips'
 import {
   TicketStatusControl,
   TicketAssigneeControl,
@@ -57,6 +58,7 @@ import {
 import { TicketLinks } from '@/components/admin/inbox/ticket-links'
 import { TicketActivityTimeline } from '@/components/admin/inbox/ticket-activity-timeline'
 import { TicketTrackerLinks } from '@/components/admin/inbox/ticket-tracker-links'
+import { ticketQueries } from '@/lib/client/queries/inbox'
 import { Badge } from '@/components/ui/badge'
 import { Avatar } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -311,6 +313,17 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
     enabled: isVisible && !isTicketItem && !!conversation,
     staleTime: 30_000,
   })
+  // The live registry (convergence Phase 4): the ticket card joins the type's
+  // fields[] client-side to render the ticket's custom-field answers.
+  const { data: registryTypes } = useQuery({
+    ...ticketQueries.types(),
+    enabled: isVisible && !!ticket,
+  })
+  const ticketTypeFields = useMemo(() => {
+    if (!ticket?.ticketType) return []
+    const match = (registryTypes ?? []).find((t) => t.id === ticket.ticketType!.id)
+    return [...(match?.fields ?? [])].sort((a, b) => a.order - b.order)
+  }, [registryTypes, ticket?.ticketType])
 
   const email = detail?.email ?? (isTicketItem ? null : (conversation?.visitorEmail ?? null))
   const currentConversationId = !isTicketItem ? conversation?.id : undefined
@@ -487,6 +500,25 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
                 </button>
               )}
             </div>
+            {/* The type chip leads the card (convergence Phase 4): the
+                registry type's icon + name, tinted its color. Typeless legacy
+                rows fall back to the bare category badge. */}
+            <Row label="Type">
+              {ticket.ticketType ? (
+                <span
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium"
+                  style={{
+                    backgroundColor: `${ticket.ticketType.color}1f`,
+                    color: ticket.ticketType.color,
+                  }}
+                >
+                  {ticket.ticketType.icon && <span aria-hidden>{ticket.ticketType.icon}</span>}
+                  <span className="truncate">{ticket.ticketType.name}</span>
+                </span>
+              ) : (
+                <TicketTypeBadge type={ticket.type} />
+              )}
+            </Row>
             {!isTicketItem && (
               <>
                 <Row label="Status">
@@ -530,6 +562,23 @@ export const InboxDetailPanel = memo(function InboxDetailPanel({
                 </span>
               </Row>
             )}
+            {/* Custom-field rows (Phase 4): the type's fields render the
+                ticket's customAttributes answers under the standard
+                properties. Orphaned answers (their field left the schema) stay
+                stored but hidden — the retype rule never rewrites them. The
+                join is against the LIVE registry: an archived type keeps its
+                chip above but its field rows return with a restore. */}
+            {ticketTypeFields.map((field) => {
+              const raw = ticket.customAttributes[field.key]
+              if (raw === undefined || raw === null || raw === '') return null
+              const display =
+                field.type === 'checkbox' ? (raw === true ? 'Yes' : 'No') : String(raw)
+              return (
+                <Row key={field.key} icon={PuzzlePieceIcon} label={field.label}>
+                  <span className="text-sm font-medium text-foreground break-words">{display}</span>
+                </Row>
+              )
+            })}
           </div>
         ) : (
           showCreateTicketSlot && (

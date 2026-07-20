@@ -10,6 +10,9 @@ export function serializeTicket(dto: TicketDTO) {
     number: dto.number,
     reference: dto.reference,
     type: dto.type,
+    // The Phase 4 registry type (name/slug/category/icon/color), null on
+    // legacy typeless rows. `type` above stays the behavior-axis category.
+    ticketType: dto.ticketType,
     title: dto.title,
     status: { name: dto.status.name, category: dto.status.category },
     stage: dto.stage.slot,

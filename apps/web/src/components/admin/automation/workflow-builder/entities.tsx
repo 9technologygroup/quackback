@@ -41,6 +41,10 @@ export interface WorkflowEntities {
    *  extension) — reuses the same query the ticket workspace's own status
    *  picker reads (lib/client/queries/inbox.ts's ticketQueries.statuses). */
   ticketStatuses: EntityOption[]
+  /** The live ticket-types registry (convergence Phase 4), for the
+   *  convert_to_ticket action's optional type picker — customer-category
+   *  types only (the action files customer tickets). */
+  ticketTypes: EntityOption[]
   /** Live attribute definitions (full shape: the value editor needs field
    *  type + options, not just id/name). */
   attributes: ConversationAttributeItem[]
@@ -76,6 +80,7 @@ export function WorkflowEntitiesProvider({ children }: { children: ReactNode }) 
     staleTime: 60_000,
   })
   const { data: ticketStatuses } = useQuery(ticketQueries.statuses())
+  const { data: registryTicketTypes } = useQuery(ticketQueries.types())
   const { data: attributes } = useQuery(conversationAttributeQueries.live())
   // Gated per their own domain's view permission (USER_ATTRIBUTE_VIEW /
   // COMPANY_VIEW respectively — see listUserAttributesFn/listCompanyAttributesFn),
@@ -91,12 +96,19 @@ export function WorkflowEntitiesProvider({ children }: { children: ReactNode }) 
     const tagOptions = (tags ?? []).map((t) => ({ id: t.id, name: t.name }))
     const slaOptions = slaPolicies ?? []
     const ticketStatusOptions = (ticketStatuses ?? []).map((s) => ({ id: s.id, name: s.name }))
+    // convert_to_ticket files CUSTOMER tickets — the picker offers only
+    // customer-category types (a back-office/tracker type would fail the
+    // executor's category guard at run time).
+    const ticketTypeOptions = (registryTicketTypes ?? [])
+      .filter((t) => t.category === 'customer')
+      .map((t) => ({ id: t.id, name: t.icon ? `${t.icon} ${t.name}` : t.name }))
     return {
       members: memberOptions,
       teams: teamOptions,
       tags: tagOptions,
       slaPolicies: slaOptions,
       ticketStatuses: ticketStatusOptions,
+      ticketTypes: ticketTypeOptions,
       attributes: attributes ?? [],
       personAttributes: personAttributeDefs ?? [],
       companyAttributes: companyAttributeDefs ?? [],
@@ -109,6 +121,7 @@ export function WorkflowEntitiesProvider({ children }: { children: ReactNode }) 
         personAttributes: toPersonCompanyAttributeFieldDefs(personAttributeDefs ?? []),
         companyAttributes: toPersonCompanyAttributeFieldDefs(companyAttributeDefs ?? []),
         ticketStatuses: toMap(ticketStatusOptions),
+        ticketTypes: toMap(ticketTypeOptions),
       },
     }
   }, [
@@ -117,6 +130,7 @@ export function WorkflowEntitiesProvider({ children }: { children: ReactNode }) 
     tags,
     slaPolicies,
     ticketStatuses,
+    registryTicketTypes,
     attributes,
     personAttributeDefs,
     companyAttributeDefs,

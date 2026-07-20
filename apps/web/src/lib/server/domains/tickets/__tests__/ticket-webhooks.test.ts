@@ -115,6 +115,8 @@ describe('ticket.webhooks emit helpers', () => {
       id: 'ticket_1',
       number: 42,
       type: 'customer',
+      // Phase 4: the registry type rides every ticket ref; null on typeless rows.
+      ticketTypeId: null,
       priority: 'high',
       assignedPrincipalId: null,
       assignedTeamId: null,
@@ -155,6 +157,7 @@ describe('ticket.webhooks reply + note emit helpers', () => {
       id: 'ticket_1',
       number: 42,
       type: 'customer',
+      ticketTypeId: null,
       priority: 'high',
       assignedPrincipalId: null,
       assignedTeamId: null,
@@ -248,5 +251,17 @@ describe('ticket.webhooks reply + note emit helpers', () => {
     await emitTicketCreated(agentActor, baseTicket, { category: 'open', stage: 'received' })
     expect(dispatch.dispatchTicketReplied).not.toHaveBeenCalled()
     expect(dispatch.dispatchTicketNoteAdded).not.toHaveBeenCalled()
+  })
+
+  it('carries the registry ticketTypeId on created + status_changed payloads (Phase 4)', async () => {
+    const typed = { ...baseTicket, ticketTypeId: 'ticket_type_bug' } as unknown as Ticket
+
+    await emitTicketCreated(agentActor, typed, { category: 'open', stage: 'received' })
+    const [, createdData] = dispatch.dispatchTicketCreated.mock.calls[0]
+    expect(createdData.ticketTypeId).toBe('ticket_type_bug')
+
+    await emitTicketStatusChanged(agentActor, typed, 'open', 'closed', 'resolved', 'received', null)
+    const [, ref] = dispatch.dispatchTicketStatusChanged.mock.calls[0]
+    expect(ref).toMatchObject({ ticketTypeId: 'ticket_type_bug' })
   })
 })

@@ -90,4 +90,46 @@ describe('validateTicketIntakeValues', () => {
       expect('rogue' in res.values).toBe(false)
     }
   })
+
+  // Phase 4: the AGENT path (the create dialog fills the type's full field
+  // set, customer-hidden fields included) passes includeInternal.
+  it('includeInternal accepts + validates customer-hidden fields (the agent path)', () => {
+    const form = [
+      field({ key: 'severity', type: 'text', required: true }),
+      field({
+        key: 'internal',
+        type: 'select',
+        required: true,
+        visibleToCustomer: false,
+        options: ['a', 'b'],
+      }),
+    ]
+    // Customer-hidden fields are validated like any other on the agent path…
+    const res = validateTicketIntakeValues(
+      form,
+      { severity: 'high', internal: 'b' },
+      {
+        includeInternal: true,
+      }
+    )
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.values).toEqual({ severity: 'high', internal: 'b' })
+
+    // …including their required + enum rules.
+    expect(
+      validateTicketIntakeValues(form, { severity: 'high' }, { includeInternal: true }).ok
+    ).toBe(false)
+    expect(
+      validateTicketIntakeValues(
+        form,
+        { severity: 'high', internal: 'c' },
+        { includeInternal: true }
+      ).ok
+    ).toBe(false)
+
+    // Without the flag the hidden field stays dropped (customer intake).
+    const customer = validateTicketIntakeValues(form, { severity: 'high', internal: 'b' })
+    expect(customer.ok).toBe(true)
+    if (customer.ok) expect('internal' in customer.values).toBe(false)
+  })
 })

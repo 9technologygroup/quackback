@@ -82,6 +82,26 @@ describe('GET /api/v1/tickets', () => {
     expect(actor.principalType).toBe('service')
   })
 
+  it('passes the registry ticketTypeId filter through; a junk id is dropped (Phase 4)', async () => {
+    mockListTickets.mockResolvedValue({ tickets: [], hasMore: false })
+    const res = await getHandler(ListRoute)({
+      request: new Request(
+        'https://x.test/api/v1/tickets?ticketTypeId=ticket_type_01h455vb4pex5vsknk084sn02q'
+      ),
+      params: {},
+    })
+    expect(res.status).toBe(200)
+    const [filter] = mockListTickets.mock.calls[0]
+    expect(filter.ticketTypeId).toBe('ticket_type_01h455vb4pex5vsknk084sn02q')
+
+    mockListTickets.mockClear()
+    await getHandler(ListRoute)({
+      request: new Request('https://x.test/api/v1/tickets?ticketTypeId=not-a-typeid'),
+      params: {},
+    })
+    expect(mockListTickets.mock.calls[0][0].ticketTypeId).toBeUndefined()
+  })
+
   it('propagates an auth failure as an error response', async () => {
     mockAuth.mockRejectedValue(Object.assign(new Error('nope'), { status: 401 }))
     const res = await getHandler(ListRoute)({

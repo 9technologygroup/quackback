@@ -809,6 +809,18 @@ describe('ticket actions (set_ticket_status / convert_to_ticket)', () => {
       workflowGraphSchema.safeParse(graphWithAction({ type: 'convert_to_ticket' })).success
     ).toBe(true)
   })
+
+  it('accepts convert_to_ticket with an optional ticketTypeId (Phase 4)', () => {
+    const parsed = workflowGraphSchema.safeParse(
+      graphWithAction({ type: 'convert_to_ticket', ticketTypeId: 'ticket_type_1' })
+    )
+    expect(parsed.success).toBe(true)
+    if (parsed.success) {
+      expect(parsed.data.nodes[0]).toMatchObject({
+        action: { type: 'convert_to_ticket', ticketTypeId: 'ticket_type_1' },
+      })
+    }
+  })
 })
 
 // Phase C, slice C-6: the class rule for parking blocks.

@@ -8,7 +8,7 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import type { TicketId, PrincipalId, CompanyId } from '@quackback/ids'
+import type { TicketId, TicketTypeId, PrincipalId, CompanyId } from '@quackback/ids'
 import type {
   TicketType,
   TicketStatusCategory,
@@ -61,6 +61,7 @@ function withAttachmentsSummary(content: string, attachments: ConversationAttach
 export function registerTicketTools(server: McpServer, auth: McpAuthContext) {
   registerTool<{
     type?: TicketType
+    ticketTypeId?: string
     statusCategory?: TicketStatusCategory
     stage?: TicketStage
     requesterPrincipalId?: string
@@ -69,13 +70,18 @@ export function registerTicketTools(server: McpServer, auth: McpAuthContext) {
     limit?: number
   }>(server, auth, {
     name: 'list_tickets',
-    description: `List support tickets. Filter by type, internal status category, customer-facing stage, requester, or company; sort and cap with limit. A service key sees every ticket; a human caller sees the tickets their role can view.
+    description: `List support tickets. Filter by type, registry ticket-type, internal status category, customer-facing stage, requester, or company; sort and cap with limit. A service key sees every ticket; a human caller sees the tickets their role can view.
 
 Examples:
 - Open customer tickets: list_tickets({ type: "customer", statusCategory: "open" })
+- Tickets of one registry type: list_tickets({ ticketTypeId: "ticket_type_01abc..." })
 - A company's tickets: list_tickets({ companyId: "company_01abc..." })`,
     schema: {
       type: z.enum(TICKET_TYPES).optional().describe('Filter by ticket type'),
+      ticketTypeId: z
+        .string()
+        .optional()
+        .describe('Filter by registry ticket-type (ticket_type TypeID)'),
       statusCategory: z
         .enum(TICKET_CATEGORIES)
         .optional()
@@ -99,6 +105,7 @@ Examples:
       const { tickets } = await listTickets(
         {
           type: args.type,
+          ticketTypeId: args.ticketTypeId as TicketTypeId | undefined,
           statusCategory: args.statusCategory,
           stage: args.stage,
           requesterPrincipalId: args.requesterPrincipalId as PrincipalId | undefined,
@@ -114,6 +121,9 @@ Examples:
           number: t.number,
           reference: t.reference,
           type: t.type,
+          ticketType: t.ticketType
+            ? { id: t.ticketType.id, name: t.ticketType.name, slug: t.ticketType.slug }
+            : null,
           title: t.title,
           status: t.status.name,
           statusCategory: t.status.category,
@@ -171,6 +181,7 @@ Example: get_ticket({ ticketId: "ticket_01abc...", includeInternal: true })`,
           number: dto.number,
           reference: dto.reference,
           type: dto.type,
+          ticketType: dto.ticketType,
           title: dto.title,
           status: { name: dto.status.name, category: dto.status.category },
           stage: dto.stage.slot,
@@ -204,7 +215,8 @@ Example: get_ticket({ ticketId: "ticket_01abc...", includeInternal: true })`,
   })
 
   registerTool<{
-    type: TicketType
+    type?: TicketType
+    ticketTypeId?: string
     title: string
     description?: string
     priority?: 'none' | 'low' | 'medium' | 'high' | 'urgent'
@@ -212,11 +224,18 @@ Example: get_ticket({ ticketId: "ticket_01abc...", includeInternal: true })`,
     companyId?: string
   }>(server, auth, {
     name: 'create_ticket',
-    description: `Open a support ticket. type is customer (a requester's request), back_office (an internal task), or tracker (an umbrella others link to). A description opens the thread. Returns the created ticket.
+    description: `Open a support ticket. type is customer (a requester's request), back_office (an internal task), or tracker (an umbrella others link to). Pass ticketTypeId to file under a workspace-defined registry type instead — its category then determines type (discover ids via list_tickets' ticketType field). A description opens the thread. Returns the created ticket.
 
 Example: create_ticket({ type: "customer", title: "Refund not received", description: "Customer reports a missing refund from last week." })`,
     schema: {
-      type: z.enum(TICKET_TYPES).describe('Ticket object type'),
+      type: z
+        .enum(TICKET_TYPES)
+        .optional()
+        .describe('Ticket object type (default customer; derived when ticketTypeId is given)'),
+      ticketTypeId: z
+        .string()
+        .optional()
+        .describe('Registry ticket-type (ticket_type TypeID); its category becomes the type'),
       title: z.string().min(1).max(300).describe('Short summary'),
       description: z
         .string()
@@ -244,6 +263,7 @@ Example: create_ticket({ type: "customer", title: "Refund not received", descrip
       const dto = await createTicket(
         {
           type: args.type,
+          ticketTypeId: args.ticketTypeId as TicketTypeId | undefined,
           title: args.title,
           description: args.description,
           descriptionJson,

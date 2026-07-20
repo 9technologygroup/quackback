@@ -34,6 +34,9 @@ export interface UseInboxListSourceParams {
   search: string
   companyId?: CompanyId
   sort: ConversationSort
+  /** The tickets-branch registry-type dropdown (Phase 4) — only applied on the
+   *  Tickets-section scopes (see buildInboxListParams). */
+  ticketTypeId?: string
   /** The active custom view's saved rule set, once loaded (undefined while a
    *  `nav.kind === 'custom'` view's rules haven't arrived yet from the views
    *  list — the legacy query stays disabled until then, mirroring the
@@ -63,6 +66,7 @@ export function useInboxListSource({
   search,
   companyId,
   sort,
+  ticketTypeId,
   activeViewFilters,
   aiBucket,
   isSaved,
@@ -78,7 +82,16 @@ export function useInboxListSource({
 
   const { data: unifiedData, isLoading: unifiedLoading } = useQuery({
     ...inboxQueries.itemList(
-      buildInboxListParams(nav, facet, priorityFilter, search, companyId, sort, activeViewFilters)
+      buildInboxListParams(
+        nav,
+        facet,
+        priorityFilter,
+        search,
+        companyId,
+        sort,
+        activeViewFilters,
+        ticketTypeId
+      )
     ),
     // Ticket SSE has landed (M3) and drives real-time updates via
     // `patchTicketInInboxLists` — this is now just the safety-net cadence for

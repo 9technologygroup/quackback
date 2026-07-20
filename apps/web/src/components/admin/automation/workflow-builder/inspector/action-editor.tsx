@@ -39,6 +39,10 @@ type SnoozeMode = 'reply' | 'duration' | 'datetime'
  *  wait step's own default (createStep's 'wait' case, workflow-graph.ts). */
 const DEFAULT_SNOOZE_SECONDS = 3600
 
+/** Sentinel for convert_to_ticket's unset type: the customer-category default
+ *  (Radix Select items can't carry an empty value, so "clear" is an item). */
+const CATEGORY_DEFAULT_TYPE = '__category_default__'
+
 function snoozeMode(action: SnoozeAction): SnoozeMode {
   if ('seconds' in action) return 'duration'
   return action.untilIso === null ? 'reply' : 'datetime'
@@ -51,7 +55,8 @@ export function ActionEditor({
   action: GraphAction
   onChange: (action: GraphAction) => void
 }) {
-  const { members, teams, tags, slaPolicies, ticketStatuses, attributes } = useWorkflowEntities()
+  const { members, teams, tags, slaPolicies, ticketStatuses, ticketTypes, attributes } =
+    useWorkflowEntities()
 
   const setSnoozeMode = (mode: SnoozeMode) => {
     if (mode === 'reply') return onChange({ type: 'snooze', untilIso: null })
@@ -333,10 +338,24 @@ export function ActionEditor({
       )}
 
       {action.type === 'convert_to_ticket' && (
-        <p className="text-xs text-muted-foreground">
-          Creates a customer ticket from this conversation and links it. Already linked to a ticket?
-          Does nothing.
-        </p>
+        <Field label="Ticket type">
+          <EntitySelect
+            value={action.ticketTypeId ?? CATEGORY_DEFAULT_TYPE}
+            placeholder="Category default"
+            items={[{ id: CATEGORY_DEFAULT_TYPE, name: 'Category default' }, ...ticketTypes]}
+            onChange={(ticketTypeId) =>
+              onChange({
+                ...action,
+                ticketTypeId: ticketTypeId === CATEGORY_DEFAULT_TYPE ? undefined : ticketTypeId,
+              })
+            }
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Creates a customer ticket from this conversation and links it. Already linked to a
+            ticket? Does nothing. &quot;Category default&quot; files the customer-category default
+            type.
+          </p>
+        </Field>
       )}
 
       {action.type === 'send_webhook' && (

@@ -6,7 +6,7 @@
  * requester reply posts as a customer-visible visitor message.
  */
 import { db, tickets, principal, eq, and, isNull, desc, type Ticket } from '@/lib/server/db'
-import type { TicketId, PrincipalId } from '@quackback/ids'
+import type { TicketId, TicketTypeId, PrincipalId } from '@quackback/ids'
 import type { Actor, PrincipalType } from '@/lib/server/policy/types'
 import type { TiptapContent, ConversationAttachment } from '@/lib/shared/db-types'
 import type { ConversationMessageDTO } from '@/lib/shared/conversation/types'
@@ -198,6 +198,10 @@ export async function createMyTicket(
     description?: string
     descriptionJson?: TiptapContent | null
     attachments?: ConversationAttachment[]
+    /** The registry type filed under (convergence Phase 4) — already resolved
+     *  + intake-eligibility-checked by the fn layer (live, customer category,
+     *  intake-visible). Null/absent = the legacy typeless shape. */
+    ticketTypeId?: TicketTypeId | null
     /** Validated intake-form answers, stored on the ticket's customAttributes. */
     customAttributes?: Record<string, unknown>
   }
@@ -210,6 +214,7 @@ export async function createMyTicket(
   const created = await createTicketCore(
     {
       type: 'customer',
+      ticketTypeId: input.ticketTypeId,
       title: input.title,
       description: input.description,
       descriptionJson: input.descriptionJson,

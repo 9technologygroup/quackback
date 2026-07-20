@@ -15,7 +15,7 @@ import type {
   SlaPolicyId,
 } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
-import { NotFoundError } from '@/lib/shared/errors'
+import { NotFoundError, ValidationError } from '@/lib/shared/errors'
 
 // vi.hoisted so the fns exist when the (statically-imported) mock factories run
 // at module load, before the top-level consts would otherwise initialize.
@@ -95,16 +95,28 @@ vi.mock('@/lib/server/content/ssrf-guard', () => ({ safeFetch }))
 // Ticket actions (set_ticket_status / convert_to_ticket) — each mocked at its
 // own seam so this stays a unit test of action.executor.ts's dispatch/
 // resolution logic, not an integration test of the tickets domain.
-const { setTicketStatus, createTicketCore, linkTicketToConversation, getLinkedCustomerTicket } =
-  vi.hoisted(() => ({
-    setTicketStatus: vi.fn(),
-    createTicketCore: vi.fn(),
-    linkTicketToConversation: vi.fn(),
-    getLinkedCustomerTicket: vi.fn(),
-  }))
+const {
+  setTicketStatus,
+  createTicketCore,
+  linkTicketToConversation,
+  getLinkedCustomerTicket,
+  resolveTicketTypeForCreate,
+  resolveCategoryDefaultType,
+} = vi.hoisted(() => ({
+  setTicketStatus: vi.fn(),
+  createTicketCore: vi.fn(),
+  linkTicketToConversation: vi.fn(),
+  getLinkedCustomerTicket: vi.fn(),
+  resolveTicketTypeForCreate: vi.fn(),
+  resolveCategoryDefaultType: vi.fn(),
+}))
 vi.mock('@/lib/server/domains/tickets/ticket.service', () => ({
   setTicketStatus,
   createTicketCore,
+}))
+vi.mock('@/lib/server/domains/tickets/ticket-type.service', () => ({
+  resolveTicketTypeForCreate,
+  resolveCategoryDefaultType,
 }))
 vi.mock('@/lib/server/domains/tickets/ticket-conversation-link.service', () => ({
   linkTicketToConversation,
@@ -169,6 +181,15 @@ beforeEach(() => {
   })
   appendAssistantReply.mockResolvedValue({ id: 'conversation_message_block_1' })
   safeFetch.mockResolvedValue({ ok: true, status: 200 })
+  // convert_to_ticket's Phase 4 type resolution: the customer-category default
+  // exists (the 0215 seed) and an explicit type resolves to itself.
+  resolveCategoryDefaultType.mockResolvedValue({ id: 'ticket_type_cust_default' })
+  resolveTicketTypeForCreate.mockImplementation(
+    async ({ ticketTypeId, category }: { ticketTypeId: string; category?: string }) => ({
+      category: category ?? 'customer',
+      ticketTypeId,
+    })
+  )
 
   // A generic chainable stub satisfying every raw db.select shape this file's
   // code under test can produce. Individual tests below override it with
@@ -803,6 +824,9 @@ describe('applyAction', () => {
   })
 
   describe('convert_to_ticket', () => {
+    // The deriveTicketOpeningFields stub shared by the create-path cases.
+    const subjectRow = [{ subject: 'Cannot log in', visitorPrincipalId: 'principal_visitor' }]
+
     it('is a no-op when the conversation already has a linked customer ticket', async () => {
       getLinkedCustomerTicket.mockResolvedValue({
         id: 'ticket_1',
@@ -818,9 +842,7 @@ describe('applyAction', () => {
 
     it('creates a customer ticket from the conversation subject and links it, when unlinked', async () => {
       getLinkedCustomerTicket.mockResolvedValue(null)
-      mockDbSelect.mockImplementationOnce(() =>
-        selectChainOnce([{ subject: 'Cannot log in', visitorPrincipalId: 'principal_visitor' }])
-      )
+      mockDbSelect.mockImplementationOnce(() => selectChainOnce(subjectRow))
       createTicketCore.mockResolvedValue({ id: 'ticket_2' })
 
       const engineActor = {
@@ -833,14 +855,64 @@ describe('applyAction', () => {
         { conversationId, actor: engineActor }
       )
       expect(result).toMatchObject({ label: 'converted to ticket' })
+      // Absent ticketTypeId = the customer-category default type (Phase 4) —
+      // existing graphs convert exactly as before.
       expect(createTicketCore).toHaveBeenCalledWith(
-        { type: 'customer', title: 'Cannot log in', requesterPrincipalId: 'principal_visitor' },
+        {
+          ticketTypeId: 'ticket_type_cust_default',
+          title: 'Cannot log in',
+          requesterPrincipalId: 'principal_visitor',
+        },
         expect.objectContaining({ principalType: 'service' })
       )
       expect(linkTicketToConversation).toHaveBeenCalledWith(
         'ticket_2',
         conversationId,
         expect.objectContaining({ principalType: 'service' })
+      )
+    })
+
+    it('files the configured registry type when ticketTypeId is set (category checked server-side)', async () => {
+      getLinkedCustomerTicket.mockResolvedValue(null)
+      mockDbSelect.mockImplementationOnce(() => selectChainOnce(subjectRow))
+      createTicketCore.mockResolvedValue({ id: 'ticket_4' })
+
+      await applyAction({ type: 'convert_to_ticket', ticketTypeId: 'ticket_type_bug' }, ctx)
+      // The type is validated against the customer category before the create.
+      expect(resolveTicketTypeForCreate).toHaveBeenCalledWith({
+        ticketTypeId: 'ticket_type_bug',
+        category: 'customer',
+      })
+      expect(createTicketCore).toHaveBeenCalledWith(
+        expect.objectContaining({ ticketTypeId: 'ticket_type_bug' }),
+        expect.anything()
+      )
+    })
+
+    it('fails the run loudly when the configured type is not a live customer type', async () => {
+      getLinkedCustomerTicket.mockResolvedValue(null)
+      mockDbSelect.mockImplementationOnce(() => selectChainOnce(subjectRow))
+      resolveTicketTypeForCreate.mockRejectedValue(
+        new ValidationError('TICKET_TYPE_CATEGORY_MISMATCH', 'belongs to back_office')
+      )
+
+      await expect(
+        applyAction({ type: 'convert_to_ticket', ticketTypeId: 'ticket_type_internal' }, ctx)
+      ).rejects.toThrow(ValidationError)
+      expect(createTicketCore).not.toHaveBeenCalled()
+      expect(linkTicketToConversation).not.toHaveBeenCalled()
+    })
+
+    it('converts legacy-typeless when the workspace has no customer-category default type', async () => {
+      getLinkedCustomerTicket.mockResolvedValue(null)
+      resolveCategoryDefaultType.mockResolvedValue(null)
+      mockDbSelect.mockImplementationOnce(() => selectChainOnce(subjectRow))
+      createTicketCore.mockResolvedValue({ id: 'ticket_5' })
+
+      await applyAction({ type: 'convert_to_ticket' }, ctx)
+      expect(createTicketCore).toHaveBeenCalledWith(
+        expect.objectContaining({ ticketTypeId: null }),
+        expect.anything()
       )
     })
 

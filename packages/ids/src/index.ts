@@ -127,6 +127,7 @@ export type {
   AssistantSnippetId,
   TicketId,
   TicketStatusId,
+  TicketTypeId,
   TicketActivityId,
   TicketSummaryId,
   ChannelAccountId,

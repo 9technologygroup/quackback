@@ -14,6 +14,7 @@ import { isValidTypeId } from '@quackback/ids'
 import type {
   TicketId,
   TicketStatusId,
+  TicketTypeId,
   TicketExternalLinkId,
   PrincipalId,
   TeamId,
@@ -28,7 +29,11 @@ import {
   TICKET_STAGES,
   CONVERSATION_PRIORITIES,
 } from '@/lib/shared/db-types'
-import { ticketFormSchema, type TicketFormField } from '@/lib/shared/tickets'
+import {
+  ticketFormSchema,
+  validateTicketIntakeValues,
+  type TicketFormField,
+} from '@/lib/shared/tickets'
 import type {
   AssignTicketInput,
   TicketListFilter,
@@ -37,7 +42,7 @@ import type {
 } from '@/lib/server/domains/tickets'
 import { requireAuth, policyActorFromAuth, assertPermission } from './auth-helpers'
 import type { ConversationAttachment } from '@/lib/shared/db-types'
-import { ForbiddenError } from '@/lib/shared/errors'
+import { ForbiddenError, ValidationError } from '@/lib/shared/errors'
 
 const ticketTypeSchema = z.enum(TICKET_TYPES)
 const statusCategorySchema = z.enum(TICKET_STATUS_CATEGORIES)
@@ -61,6 +66,8 @@ const ticketAttachmentSchema = z.object({
 
 const listTicketsSchema = z.object({
   type: ticketTypeSchema.optional(),
+  // The Phase 4 registry-type filter (the inbox tickets-branch type dropdown).
+  ticketTypeId: z.string().optional(),
   statusCategory: statusCategorySchema.optional(),
   stage: stageSchema.optional(),
   assignee: z.string().optional(),
@@ -91,6 +98,10 @@ export const listTicketsFn = createServerFn({ method: 'GET' })
 
     const filter: TicketListFilter = {
       type: data.type,
+      ticketTypeId:
+        data.ticketTypeId && isValidTypeId(data.ticketTypeId, 'ticket_type')
+          ? (data.ticketTypeId as TicketTypeId)
+          : undefined,
       statusCategory: data.statusCategory,
       stage: data.stage,
       assignee,
@@ -146,7 +157,11 @@ export const fetchTicketActivityFn = createServerFn({ method: 'GET' })
   })
 
 const createTicketSchema = z.object({
-  type: ticketTypeSchema,
+  // Optional since Phase 4: derivable from ticketTypeId (a mismatch is
+  // rejected by the service); the column default stands when neither is given.
+  type: ticketTypeSchema.optional(),
+  // The Phase 4 registry type; drives the category derivation + dynamic fields.
+  ticketTypeId: z.string().optional(),
   title: z.string().min(1).max(300),
   description: z.string().max(4000).optional(),
   // Empty is valid for an image/embed-only opening message; the service re-validates.
@@ -168,10 +183,37 @@ export const createTicketFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const ctx = await requireAuth({ permission: PERMISSIONS.TICKET_CREATE })
     const actor = await policyActorFromAuth(ctx)
+    const ticketTypeId =
+      data.ticketTypeId && isValidTypeId(data.ticketTypeId, 'ticket_type')
+        ? (data.ticketTypeId as TicketTypeId)
+        : undefined
+
+    // Phase 4: with a registry type chosen, the field answers are validated
+    // into customAttributes against the type's form — the same shared
+    // validator intake runs, with internal (customer-hidden) fields included
+    // because the agent dialog renders the type's full field set. Without a
+    // type the legacy passthrough stands.
+    let customAttributes = data.customAttributes
+    if (ticketTypeId) {
+      const svc = await import('@/lib/server/domains/tickets/ticket-type.service')
+      const type = await svc.getTicketType(ticketTypeId)
+      const result = validateTicketIntakeValues(type.fields, customAttributes ?? {}, {
+        includeInternal: true,
+      })
+      if (!result.ok) {
+        throw new ValidationError(
+          'INVALID_TICKET_FIELDS',
+          result.errors.map((e) => e.message).join('; ')
+        )
+      }
+      customAttributes = Object.keys(result.values).length > 0 ? result.values : undefined
+    }
+
     const { createTicket } = await import('@/lib/server/domains/tickets/ticket.service')
     return createTicket(
       {
         type: data.type,
+        ticketTypeId,
         title: data.title,
         description: data.description,
         descriptionJson: data.descriptionJson ?? null,
@@ -193,7 +235,7 @@ export const createTicketFn = createServerFn({ method: 'POST' })
           data.companyId && isValidTypeId(data.companyId, 'company')
             ? (data.companyId as CompanyId)
             : undefined,
-        customAttributes: data.customAttributes,
+        customAttributes,
       },
       actor
     )
@@ -776,6 +818,25 @@ export const replyToMyTicketFn = createServerFn({ method: 'POST' })
     })
   })
 
+/**
+ * The portal New-Ticket form's intake shape (convergence Phase 4): the live,
+ * intake-visible customer types, each carrying its customer-visible fields.
+ * The dialog shows a type picker when more than one type is offered; a
+ * single-type workspace behaves exactly like the legacy fixed form. Read
+ * shape only — same audience as `createMyTicketFn` (any signed-in requester
+ * while the support-tickets flag is on).
+ */
+export const getMyTicketFormFn = createServerFn({ method: 'GET' }).handler(async () => {
+  await requireAuth()
+  const { isSupportTicketsEnabled } = await import('@/lib/server/domains/settings/settings.support')
+  if (!(await isSupportTicketsEnabled())) {
+    throw new ForbiddenError('FORBIDDEN', 'Tickets are not available')
+  }
+  const svc = await import('@/lib/server/domains/tickets/ticket-type-intake.service')
+  const types = await svc.listIntakeTypes()
+  return { types: types.map((t) => svc.ticketTypeToIntakeDTO(t)) }
+})
+
 export const createMyTicketFn = createServerFn({ method: 'POST' })
   .validator(
     z.object({
@@ -784,6 +845,11 @@ export const createMyTicketFn = createServerFn({ method: 'POST' })
       // Empty is valid for an image/embed-only opening message; the service re-validates.
       descriptionJson: z.any().nullable().optional(),
       attachments: z.array(ticketAttachmentSchema).optional(),
+      // The registry type filed under (Phase 4); absent = the customer-category
+      // default type. Must be live + intake-visible (enforced server-side).
+      ticketTypeId: z.string().optional(),
+      // Custom intake-form answers; validated against the chosen type's form.
+      fieldValues: z.record(z.string(), z.unknown()).optional(),
     })
   )
   .handler(async ({ data }) => {
@@ -795,12 +861,18 @@ export const createMyTicketFn = createServerFn({ method: 'POST' })
       throw new ForbiddenError('FORBIDDEN', 'Ticket creation is not available')
     }
     const actor = await policyActorFromAuth(ctx)
+    // Resolve the type + validate the answers against its customer form (the
+    // same helper the widget create runs, so portal and Messenger can't drift).
+    const svc = await import('@/lib/server/domains/tickets/ticket-type-intake.service')
+    const intake = await svc.resolveIntakeCreate(data.ticketTypeId, data.fieldValues)
     const { createMyTicket } = await import('@/lib/server/domains/tickets/requester.service')
     return createMyTicket(actor, {
       title: data.title,
       description: data.description,
       descriptionJson: data.descriptionJson ?? null,
       attachments: data.attachments as ConversationAttachment[] | undefined,
+      ticketTypeId: intake.ticketTypeId,
+      customAttributes: intake.customAttributes,
     })
   })
 

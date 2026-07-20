@@ -79,6 +79,7 @@ import {
   facetToStatusFilter,
   buildInboxListParams,
   usesUnifiedInboxList,
+  ticketTypeForView,
   PRIORITY_VALUES,
   type InboxNavItem,
   type InboxSearch,
@@ -217,6 +218,13 @@ export const Route = createFileRoute('/admin/inbox')({
       priority: PRIORITY_VALUES.includes(search.priority as ConversationPriority | 'all')
         ? (search.priority as ConversationPriority | 'all')
         : undefined,
+      // The tickets-branch registry-type dropdown — only a well-formed
+      // ticket_type id is accepted (a junk value is dropped, never reaching
+      // the uuid-backed ticket query).
+      ttype:
+        typeof search.ttype === 'string' && isValidTypeId(search.ttype, 'ticket_type')
+          ? search.ttype
+          : undefined,
       // Quinn-view sub-filter by involvement outcome; only the canonical buckets.
       ai:
         search.ai === 'resolved' || search.ai === 'escalated' || search.ai === 'pending'
@@ -256,6 +264,7 @@ export const Route = createFileRoute('/admin/inbox')({
     sort: search.sort,
     status: search.status,
     priority: search.priority,
+    ttype: search.ttype,
     ai: search.ai,
     q: search.q,
     i: search.i,
@@ -299,7 +308,9 @@ export const Route = createFileRoute('/admin/inbox')({
     } else if (useUnified) {
       listPrefetch = warm(
         queryClient.ensureQueryData(
-          inboxQueries.itemList(buildInboxListParams(nav, facet, priority, search, company, sort))
+          inboxQueries.itemList(
+            buildInboxListParams(nav, facet, priority, search, company, sort, undefined, deps.ttype)
+          )
         )
       )
     } else {
@@ -425,6 +436,7 @@ function InboxPage() {
     sort: urlSort,
     status: urlStatus,
     priority: urlPriority,
+    ttype: urlTicketType,
     q: urlQ,
     company: urlCompany,
     ai: urlAi,
@@ -495,6 +507,13 @@ function InboxPage() {
   const priorityFilter: ConversationPriority | 'all' = urlPriority ?? 'all'
   const setPriorityFilter = useCallback(
     (p: ConversationPriority | 'all') => updateSearch({ priority: p === 'all' ? undefined : p }),
+    [updateSearch]
+  )
+  // The tickets-branch registry-type dropdown (Phase 4). Selecting a type
+  // clears the open item (it may fall outside the filtered list), mirroring
+  // the company filter's `i: undefined` behavior.
+  const setTicketTypeFilter = useCallback(
+    (id: string | undefined) => updateSearch({ ttype: id, i: undefined, m: undefined }),
     [updateSearch]
   )
   const setSort = useCallback(
@@ -606,6 +625,7 @@ function InboxPage() {
     search,
     companyId: urlCompany as CompanyId | undefined,
     sort,
+    ticketTypeId: urlTicketType,
     activeViewFilters: activeView?.filters,
     aiBucket: nav.kind === 'view' && nav.view === 'quinn' ? urlAi : undefined,
     isSaved,
@@ -629,6 +649,24 @@ function InboxPage() {
     ...ticketQueries.statuses(),
     enabled: showTickets,
   })
+
+  // The tickets-branch registry-type dropdown (convergence Phase 4): options
+  // come from the live registry, scoped to the active tickets view's category
+  // (the "All tickets" scope offers every type). Only fetched on a tickets
+  // scope — the dropdown renders nowhere else.
+  const isTicketScope = nav.kind === 'view' && isTicketNavView(nav.view)
+  const { data: registryTypes } = useQuery({
+    ...ticketQueries.types(),
+    enabled: showTickets && isTicketScope,
+  })
+  const ticketTypeOptions = useMemo(() => {
+    if (!isTicketScope) return undefined
+    const scopeCategory =
+      nav.kind === 'view' && nav.view !== 'tickets_all' && isTicketNavView(nav.view)
+        ? ticketTypeForView(nav.view)
+        : undefined
+    return (registryTypes ?? []).filter((t) => !scopeCategory || t.category === scopeCategory)
+  }, [isTicketScope, nav, registryTypes])
 
   // Whether the detail panel's Copilot tab exists for this viewer right now —
   // the SAME gate InboxDetailPanel renders the tab from (useCopilotTabGate:
@@ -1307,7 +1345,6 @@ function InboxPage() {
   // The floating bar shows for a real multi-selection, or when a value menu was
   // popped for the single open item.
   const bulkBarVisible = hasSelection || (bulkMenu !== null && hasActiveConversation)
-  const isTicketScope = nav.kind === 'view' && isTicketNavView(nav.view)
 
   return (
     <div className="flex h-full">
@@ -1367,6 +1404,9 @@ function InboxPage() {
           onFacet={setFacet}
           priorityFilter={priorityFilter}
           onPriorityFilter={setPriorityFilter}
+          ticketTypeFilter={urlTicketType}
+          onTicketTypeFilter={setTicketTypeFilter}
+          ticketTypeOptions={ticketTypeOptions}
           sort={sort}
           onSort={setSort}
           loading={listLoading}

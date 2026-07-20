@@ -78,6 +78,7 @@ import type {
   SlaPolicyId,
   ConversationMessageId,
   TicketStatusId,
+  TicketTypeId,
 } from '@quackback/ids'
 import type {
   ConversationPriority,
@@ -116,6 +117,10 @@ import { tiptapJsonToText } from '@/lib/server/markdown-tiptap'
 import { logger } from '@/lib/server/logger'
 import { NotFoundError } from '@/lib/shared/errors'
 import * as ticketService from '@/lib/server/domains/tickets/ticket.service'
+import {
+  resolveTicketTypeForCreate,
+  resolveCategoryDefaultType,
+} from '@/lib/server/domains/tickets/ticket-type.service'
 import { linkTicketToConversation } from '@/lib/server/domains/tickets/ticket-conversation-link.service'
 import { getLinkedCustomerTicket } from '@/lib/server/domains/inbox/inbox.query'
 
@@ -245,7 +250,9 @@ export type WorkflowAction =
   // the resolve-the-linked-ticket-then-throw-if-none policy both share, and
   // ticketActionActor's doc for why they run under a locally widened actor.
   | { type: 'set_ticket_status'; statusId: TicketStatusId }
-  | { type: 'convert_to_ticket' }
+  // Optional ticketTypeId (Phase 4): absent = the customer-category default
+  // type; existing graphs convert exactly as before.
+  | { type: 'convert_to_ticket'; ticketTypeId?: string }
 
 export interface ActionResult {
   /** A short label of what happened, or null for a deferred no-op. */
@@ -595,8 +602,22 @@ export async function applyAction(
 
       const linkActor = ticketActionActor(actor)
       const { title, requesterPrincipalId } = await deriveTicketOpeningFields(conversationId)
+      // CONVERGENCE PHASE 4: the configured registry type, else the
+      // customer-category default (a workspace with no customer types converts
+      // legacy-typeless, exactly as before). A misconfigured id — archived,
+      // unknown, or NOT a customer-category type — fails the run loudly via
+      // resolveTicketTypeForCreate rather than silently filing a
+      // wrong-category ticket against the pair rule.
+      const ticketTypeId = action.ticketTypeId
+        ? (
+            await resolveTicketTypeForCreate({
+              ticketTypeId: action.ticketTypeId as TicketTypeId,
+              category: 'customer',
+            })
+          ).ticketTypeId
+        : ((await resolveCategoryDefaultType('customer'))?.id ?? null)
       const ticket = await ticketService.createTicketCore(
-        { type: 'customer', title, requesterPrincipalId },
+        { ticketTypeId, title, requesterPrincipalId },
         linkActor
       )
       await linkTicketToConversation(ticket.id, conversationId, linkActor)

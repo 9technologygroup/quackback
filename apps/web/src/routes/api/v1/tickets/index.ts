@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
+import { isValidTypeId } from '@quackback/ids'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
 import {
   successResponse,
@@ -20,10 +21,14 @@ import {
 } from './-validation'
 import type { TicketType, TicketStatusCategory, TicketStage } from '@/lib/server/db'
 import type { TicketSort } from '@/lib/server/domains/tickets/ticket.types'
-import type { PrincipalId, CompanyId, SegmentId } from '@quackback/ids'
+import type { PrincipalId, CompanyId, SegmentId, TicketTypeId } from '@quackback/ids'
 
 const createTicketSchema = z.object({
-  type: z.enum(TICKET_TYPES),
+  // Optional since Phase 4: derivable from ticketTypeId (a mismatched explicit
+  // category is rejected by the service); 'customer' stands when neither is given.
+  type: z.enum(TICKET_TYPES).optional(),
+  // The Phase 4 registry type; drives the category derivation + dynamic fields.
+  ticketTypeId: z.string().optional(),
   title: z.string().min(1).max(300),
   description: z.string().max(4000).optional(),
   priority: priorityEnum.optional(),
@@ -47,6 +52,13 @@ export const Route = createFileRoute('/api/v1/tickets/')({
             Math.max(1, parseInt(url.searchParams.get('limit') ?? '20', 10) || 20)
           )
           const type = (url.searchParams.get('type') as TicketType | null) ?? undefined
+          // The Phase 4 registry-type filter — the TypeID check keeps a junk
+          // value out of the uuid-backed query (mirrors listTicketsFn).
+          const rawTicketTypeId = url.searchParams.get('ticketTypeId')
+          const ticketTypeId =
+            rawTicketTypeId && isValidTypeId(rawTicketTypeId, 'ticket_type')
+              ? (rawTicketTypeId as TicketTypeId)
+              : undefined
           const statusCategory =
             (url.searchParams.get('statusCategory') as TicketStatusCategory | null) ?? undefined
           const stage = (url.searchParams.get('stage') as TicketStage | null) ?? undefined
@@ -66,7 +78,16 @@ export const Route = createFileRoute('/api/v1/tickets/')({
           // The wire contract stays a bare array (no cursor param exposed here
           // yet); `hasMore` is dropped, mirroring the admin ticket list fn.
           const { tickets } = await listTickets(
-            { type, statusCategory, stage, requesterPrincipalId, companyId, sort, limit },
+            {
+              type,
+              ticketTypeId,
+              statusCategory,
+              stage,
+              requesterPrincipalId,
+              companyId,
+              sort,
+              limit,
+            },
             actor
           )
 
@@ -98,12 +119,18 @@ export const Route = createFileRoute('/api/v1/tickets/')({
             'company',
             'company ID'
           )
+          const ticketTypeId = parseOptionalTypeId<TicketTypeId>(
+            parsed.data.ticketTypeId,
+            'ticket_type',
+            'ticket type ID'
+          )
 
           const actor = serviceActorFromApiAuth(auth)
           const { createTicket } = await import('@/lib/server/domains/tickets/ticket.service')
           const dto = await createTicket(
             {
               type: parsed.data.type,
+              ticketTypeId,
               title: parsed.data.title,
               description: parsed.data.description,
               // Derive a sanitized rich doc from the markdown description so the

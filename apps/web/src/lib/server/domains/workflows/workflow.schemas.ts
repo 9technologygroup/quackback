@@ -155,9 +155,10 @@ export const actionSchema = z.union([
   // action.executor.ts's WorkflowAction doc for the resolve-the-linked-ticket
   // + throw-if-none policy both share.
   z.object({ type: z.literal('set_ticket_status'), statusId: z.string().min(1) }),
-  // No settings: a no-op when the conversation already has a linked customer
+  // Optional ticketTypeId (convergence Phase 4): absent = the customer-category
+  // default type. A no-op when the conversation already has a linked customer
   // ticket, else creates one and links it.
-  z.object({ type: z.literal('convert_to_ticket') }),
+  z.object({ type: z.literal('convert_to_ticket'), ticketTypeId: z.string().optional() }),
 ])
 
 // Conversational block kinds (Phase C, slice C-1). `blockBodySchema` is a

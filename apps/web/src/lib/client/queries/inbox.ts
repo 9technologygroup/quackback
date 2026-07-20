@@ -29,6 +29,7 @@ import {
   getTicketWatchStatusFn,
   listTicketWatchersFn,
 } from '@/lib/server/functions/tickets'
+import { listTicketTypesFn } from '@/lib/server/functions/ticket-types'
 import type { TicketListFilter } from '@/lib/server/domains/tickets'
 import { asAgentMessage } from '@/lib/shared/conversation/types'
 import type { InboxListParams } from '@/lib/client/conversation/inbox-scope'
@@ -38,6 +39,7 @@ import type { InboxListParams } from '@/lib/client/conversation/inbox-scope'
 export function ticketListKey(filter: TicketListFilter): string {
   return [
     filter.type ?? 'all',
+    filter.ticketTypeId ?? '',
     filter.statusCategory ?? 'all',
     filter.stage ?? 'all',
     filter.assignee ?? 'all',
@@ -60,6 +62,8 @@ export const ticketKeys = {
   detail: (id: TicketId) => [...ticketKeys.all(), 'detail', id] as const,
   /** The workspace's status catalogue (drives the status picker). */
   statuses: () => [...ticketKeys.all(), 'statuses'] as const,
+  /** The workspace's ticket-types registry (live rows — drives pickers). */
+  types: () => [...ticketKeys.all(), 'types'] as const,
   /** The workspace's customer-facing stage labels. */
   stageLabels: () => [...ticketKeys.all(), 'stage-labels'] as const,
   /** A single ticket's message thread. */
@@ -89,6 +93,16 @@ export const ticketQueries = {
     queryOptions({
       queryKey: ticketKeys.statuses(),
       queryFn: () => listTicketStatusesFn(),
+      staleTime: 60_000,
+    }),
+
+  /** The live ticket-types registry (convergence Phase 4) — the create-dialog
+   *  type picker, the inbox filter dropdown, and the ticket card's field join.
+   *  Live rows read under `ticket.view`. */
+  types: () =>
+    queryOptions({
+      queryKey: ticketKeys.types(),
+      queryFn: () => listTicketTypesFn(),
       staleTime: 60_000,
     }),
 
@@ -151,6 +165,7 @@ function inboxListParamsKey(params: InboxListParams): string {
     params.facet,
     (params.kinds ?? []).join(','),
     params.ticketType ?? '',
+    params.ticketTypeId ?? '',
     params.priority ?? '',
     params.search ?? '',
     params.assignee ?? '',

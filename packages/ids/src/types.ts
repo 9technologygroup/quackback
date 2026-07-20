@@ -211,6 +211,9 @@ export type TicketId = TypeId<'ticket'>
 /** Ticket status ID - e.g., ticket_status_01h455vb4pex5vsknk084sn02q */
 export type TicketStatusId = TypeId<'ticket_status'>
 
+/** Ticket type (registry) ID - e.g., ticket_type_01h455vb4pex5vsknk084sn02q */
+export type TicketTypeId = TypeId<'ticket_type'>
+
 /** Ticket activity log ID - e.g., ticket_activity_01h455vb4pex5vsknk084sn02q */
 export type TicketActivityId = TypeId<'ticket_activity'>
 
@@ -411,6 +414,7 @@ export interface EntityIdMap {
   assistant_event: AssistantEventId
   ticket: TicketId
   ticket_status: TicketStatusId
+  ticket_type: TicketTypeId
   ticket_activity: TicketActivityId
   ticket_summary: TicketSummaryId
   ticket_sub: TicketSubscriptionId

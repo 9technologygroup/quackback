@@ -10,7 +10,7 @@
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { isValidTypeId } from '@quackback/ids'
-import type { PrincipalId, TeamId, CompanyId, ConversationId } from '@quackback/ids'
+import type { PrincipalId, TeamId, CompanyId, ConversationId, TicketTypeId } from '@quackback/ids'
 import { TICKET_TYPES, TICKET_STAGES, CONVERSATION_PRIORITIES } from '@/lib/shared/db-types'
 import { INBOX_TRIAGE_FACETS } from '@/lib/shared/inbox/items'
 import { PERMISSIONS } from '@/lib/shared/permissions'
@@ -30,6 +30,9 @@ export const listInboxItemsSchema = z.object({
     .max(2)
     .optional(),
   ticketType: ticketTypeSchema.optional(),
+  /** The Phase 4 registry-type filter (the tickets-branch type dropdown);
+   *  validated to a `ticket_type` TypeID in the handler. */
+  ticketTypeId: z.string().optional(),
   /** A saved view's `ticket_stage` rule (unified inbox §2.8); no chip sets
    *  this directly. */
   ticketStage: ticketStageSchema.optional(),
@@ -74,6 +77,10 @@ export const listInboxItemsFn = createServerFn({ method: 'GET' })
       facet: data.facet,
       kinds: data.kinds,
       ticketType: data.ticketType,
+      ticketTypeId:
+        data.ticketTypeId && isValidTypeId(data.ticketTypeId, 'ticket_type')
+          ? (data.ticketTypeId as TicketTypeId)
+          : undefined,
       ticketStage: data.ticketStage,
       linkedPairsOnly: data.linkedPairsOnly,
       priority: data.priority,

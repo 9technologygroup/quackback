@@ -181,6 +181,7 @@ export {
   ticketsRelations,
   ticketStatuses,
   ticketStatusesRelations,
+  ticketTypes,
   ticketConversations,
   ticketConversationsRelations,
   ticketLinks,

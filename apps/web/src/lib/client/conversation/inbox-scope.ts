@@ -128,6 +128,9 @@ export interface InboxSearch {
    *  `normalizeTriageFacet`). */
   status?: InboxTriageFacet
   priority?: ConversationPriority | 'all'
+  /** The tickets-branch registry-type dropdown (convergence Phase 4): a
+   *  `ticket_type` TypeID. Only applied on the Tickets-section scopes. */
+  ttype?: string
   /** Inbox ordering; omitted = the default 'recent'. */
   sort?: ConversationSort
   q?: string
@@ -276,6 +279,9 @@ export interface InboxListParams {
   facet: InboxTriageFacet
   kinds?: Array<'conversation' | 'ticket'>
   ticketType?: TicketType
+  /** The Phase 4 registry-type filter (the tickets-branch type dropdown's
+   *  URL param) — independent of `ticketType` (the category axis). */
+  ticketTypeId?: string
   /** A saved view's `ticket_stage` rule (unified inbox §2.8) — no URL/chip
    *  equivalent, only ever set when a custom view carries the rule. */
   ticketStage?: TicketStage
@@ -331,7 +337,10 @@ export function buildInboxListParams(
   search: string,
   companyId?: CompanyId,
   sort?: ConversationSort,
-  activeViewFilters?: ConversationViewFilters
+  activeViewFilters?: ConversationViewFilters,
+  /** The tickets-branch registry-type dropdown (Phase 4); only meaningful on
+   *  the Tickets-section scopes, ignored elsewhere. */
+  ticketTypeId?: string
 ): InboxListParams {
   const priority = priorityFilter === 'all' ? undefined : priorityFilter
   const searchParam = search || undefined
@@ -379,6 +388,7 @@ export function buildInboxListParams(
       facet,
       kinds: customerCategory ? ['conversation', 'ticket'] : ['ticket'],
       ticketType: nav.view === 'tickets_all' ? undefined : ticketTypeForView(nav.view),
+      ticketTypeId: ticketTypeId || undefined,
       linkedPairsOnly: customerCategory || undefined,
       priority,
       search: searchParam,

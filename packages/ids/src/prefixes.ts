@@ -84,6 +84,7 @@ export const ID_PREFIXES = {
   // Tickets (support platform §4.2)
   ticket: 'ticket',
   ticket_status: 'ticket_status',
+  ticket_type: 'ticket_type',
   ticket_activity: 'ticket_activity',
   ticket_summary: 'ticket_summary',
   ticket_sub: 'ticket_sub',

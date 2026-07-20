@@ -23,6 +23,7 @@ import type {
 } from './schema/conversation'
 import type { teams, teamMembers } from './schema/teams'
 import type { tickets, ticketStatuses, ticketConversations, ticketLinks } from './schema/tickets'
+import type { ticketTypes } from './schema/ticket-types'
 import type { ticketActivity } from './schema/ticket-activity'
 import type { principal } from './schema/auth'
 
@@ -865,6 +866,8 @@ export type Ticket = InferSelectModel<typeof tickets>
 export type NewTicket = InferInsertModel<typeof tickets>
 export type TicketStatusEntity = InferSelectModel<typeof ticketStatuses>
 export type NewTicketStatusEntity = InferInsertModel<typeof ticketStatuses>
+export type TicketTypeEntity = InferSelectModel<typeof ticketTypes>
+export type NewTicketTypeEntity = InferInsertModel<typeof ticketTypes>
 export type TicketConversation = InferSelectModel<typeof ticketConversations>
 export type NewTicketConversation = InferInsertModel<typeof ticketConversations>
 export type TicketLink = InferSelectModel<typeof ticketLinks>

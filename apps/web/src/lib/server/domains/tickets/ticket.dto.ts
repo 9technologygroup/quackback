@@ -14,13 +14,22 @@ import {
   inArray,
   desc,
   ticketStatuses,
+  ticketTypes,
   teams,
   companies,
   conversationMessages,
   type Ticket,
   type TicketStatusEntity,
+  type TicketTypeEntity,
 } from '@/lib/server/db'
-import type { TicketId, TicketStatusId, PrincipalId, TeamId, CompanyId } from '@quackback/ids'
+import type {
+  TicketId,
+  TicketStatusId,
+  TicketTypeId,
+  PrincipalId,
+  TeamId,
+  CompanyId,
+} from '@quackback/ids'
 import type { ConversationId } from '@quackback/ids'
 import type { TicketStatusCategory } from '@/lib/shared/db-types'
 import type { JsonValue } from '@/lib/shared/json'
@@ -35,11 +44,13 @@ import type {
   TicketDTO,
   TicketPrincipalRef,
   TicketSlaRef,
+  TicketTypeRef,
   RequesterTicketDTO,
 } from './ticket.types'
 
 interface TicketDTOContext {
   statuses: Map<TicketStatusId, TicketStatusEntity>
+  ticketTypes: Map<TicketTypeId, TicketTypeEntity>
   principals: Map<PrincipalId, TicketPrincipalRef>
   teams: Map<TeamId, string>
   companies: Map<CompanyId, string>
@@ -270,34 +281,45 @@ function ticketSlaRefFor(slaApplied: unknown, category: TicketStatusCategory): T
 /** Resolve every reference a page of tickets needs in one batch per table. */
 export async function buildTicketContext(rows: Ticket[]): Promise<TicketDTOContext> {
   const statusIds = uniqueIds(rows.map((r) => r.statusId))
+  const ticketTypeIds = uniqueIds(rows.map((r) => r.ticketTypeId))
   const teamIds = uniqueIds(rows.map((r) => r.assigneeTeamId))
   const companyIds = uniqueIds(rows.map((r) => r.companyId))
 
-  const [statusRows, principals, teamRows, companyRows, stageLabels, activity] = await Promise.all([
-    statusIds.length
-      ? db.select().from(ticketStatuses).where(inArray(ticketStatuses.id, statusIds))
-      : Promise.resolve([] as TicketStatusEntity[]),
-    // Reuse the inbox's principal loader so the avatar-precedence rule
-    // (user.image → uploaded key → principal copy) stays in one place.
-    loadAuthors([
-      ...rows.map((r) => r.requesterPrincipalId),
-      ...rows.map((r) => r.assigneePrincipalId),
-    ]),
-    teamIds.length
-      ? db.select({ id: teams.id, name: teams.name }).from(teams).where(inArray(teams.id, teamIds))
-      : Promise.resolve([] as Array<{ id: TeamId; name: string }>),
-    companyIds.length
-      ? db
-          .select({ id: companies.id, name: companies.name })
-          .from(companies)
-          .where(inArray(companies.id, companyIds))
-      : Promise.resolve([] as Array<{ id: CompanyId; name: string }>),
-    getStageLabels(),
-    loadTicketActivity(rows),
-  ])
+  const [statusRows, ticketTypeRows, principals, teamRows, companyRows, stageLabels, activity] =
+    await Promise.all([
+      statusIds.length
+        ? db.select().from(ticketStatuses).where(inArray(ticketStatuses.id, statusIds))
+        : Promise.resolve([] as TicketStatusEntity[]),
+      // Archived types included deliberately: an archived type still renders
+      // its chip on ticket history (archive keeps history — Phase 4).
+      ticketTypeIds.length
+        ? db.select().from(ticketTypes).where(inArray(ticketTypes.id, ticketTypeIds))
+        : Promise.resolve([] as TicketTypeEntity[]),
+      // Reuse the inbox's principal loader so the avatar-precedence rule
+      // (user.image → uploaded key → principal copy) stays in one place.
+      loadAuthors([
+        ...rows.map((r) => r.requesterPrincipalId),
+        ...rows.map((r) => r.assigneePrincipalId),
+      ]),
+      teamIds.length
+        ? db
+            .select({ id: teams.id, name: teams.name })
+            .from(teams)
+            .where(inArray(teams.id, teamIds))
+        : Promise.resolve([] as Array<{ id: TeamId; name: string }>),
+      companyIds.length
+        ? db
+            .select({ id: companies.id, name: companies.name })
+            .from(companies)
+            .where(inArray(companies.id, companyIds))
+        : Promise.resolve([] as Array<{ id: CompanyId; name: string }>),
+      getStageLabels(),
+      loadTicketActivity(rows),
+    ])
 
   return {
     statuses: new Map(statusRows.map((s) => [s.id, s])),
+    ticketTypes: new Map(ticketTypeRows.map((t) => [t.id, t])),
     principals,
     teams: new Map(teamRows.map((t) => [t.id, t.name])),
     companies: new Map(companyRows.map((c) => [c.id, c.name])),
@@ -336,6 +358,7 @@ export function ticketToDTO(
     number: row.number,
     reference: formatTicketNumber(row.number),
     type: row.type,
+    ticketType: row.ticketTypeId ? toTicketTypeRef(ctx.ticketTypes.get(row.ticketTypeId)) : null,
     title: row.title,
     status: status
       ? { id: status.id, name: status.name, color: status.color, category: status.category }
@@ -371,6 +394,20 @@ export function ticketToDTO(
   }
   if (audience === 'requester') return toRequesterTicketDTO(dto)
   return dto
+}
+
+/** Project a registry type row to its DTO ref (null when the id didn't
+ *  resolve — a hard-deleted type via the FK escape hatch). */
+function toTicketTypeRef(row: TicketTypeEntity | undefined): TicketTypeRef | null {
+  if (!row) return null
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    category: row.category,
+    icon: row.icon,
+    color: row.color,
+  }
 }
 
 /** Load + map a single ticket row (used by the write paths + getTicket). */

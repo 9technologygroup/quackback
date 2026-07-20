@@ -61,6 +61,7 @@ const ticketDTO = {
   number: 42,
   reference: '#42',
   type: 'customer',
+  ticketType: null,
   title: 'Cannot log in',
   status: { id: 's1', name: 'In progress', color: '#000', category: 'open' },
   stage: { slot: 'in_progress', label: 'In progress' },
@@ -108,6 +109,7 @@ describe('ticket MCP tools', () => {
       number: 42,
       reference: '#42',
       type: 'customer',
+      ticketType: null,
       title: 'Cannot log in',
       status: 'In progress',
       statusCategory: 'open',
@@ -117,6 +119,22 @@ describe('ticket MCP tools', () => {
       assigneePrincipalId: 'principal_a',
       assigneeTeamId: null,
       updatedAt: '2026-07-04T00:00:00.000Z',
+    })
+  })
+
+  it('list_tickets passes the registry ticketTypeId filter and maps the type ref (Phase 4)', async () => {
+    const typed = {
+      ...ticketDTO,
+      ticketType: { id: 'ticket_type_bug', name: 'Bug report', slug: 'bug_report' },
+    }
+    mockListTickets.mockResolvedValue({ tickets: [typed], hasMore: false })
+    const out = await collect(teamAuth).get('list_tickets')!({ ticketTypeId: 'ticket_type_bug' })
+    const [filter] = mockListTickets.mock.calls[0]
+    expect(filter).toMatchObject({ ticketTypeId: 'ticket_type_bug' })
+    expect(parse(out).tickets[0].ticketType).toEqual({
+      id: 'ticket_type_bug',
+      name: 'Bug report',
+      slug: 'bug_report',
     })
   })
 
@@ -261,6 +279,18 @@ describe('ticket MCP tools', () => {
     const [input] = mockCreateTicket.mock.calls[0]
     expect(input.description).toBeUndefined()
     expect(input.descriptionJson).toBeUndefined()
+  })
+
+  it('create_ticket passes a registry ticketTypeId through (Phase 4; category derived)', async () => {
+    mockCreateTicket.mockResolvedValue(ticketDTO)
+    await collect(teamAuth).get('create_ticket')!({
+      ticketTypeId: 'ticket_type_bug',
+      title: 'Refund not received',
+    })
+    const [input] = mockCreateTicket.mock.calls[0]
+    expect(input).toMatchObject({ ticketTypeId: 'ticket_type_bug', title: 'Refund not received' })
+    // No bare category is required alongside a registry type.
+    expect(input.type).toBeUndefined()
   })
 
   it('reply_to_ticket sends a visitor-visible message with a minimal contentJson doc for plain text', async () => {

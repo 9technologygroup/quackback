@@ -384,6 +384,9 @@ export interface EventTicketRef {
   id: string
   number: number
   type: EventTicketType
+  /** The registry type (convergence Phase 4), null for legacy typeless rows.
+   *  Optional on the wire: pre-Phase-4 historical payloads lack the key. */
+  ticketTypeId?: string | null
   priority: 'none' | 'low' | 'medium' | 'high' | 'urgent'
   assignedPrincipalId?: string | null
   assignedTeamId?: string | null

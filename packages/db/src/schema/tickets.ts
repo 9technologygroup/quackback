@@ -40,6 +40,7 @@ import { principal } from './auth'
 import { teams } from './teams'
 import { companies } from './companies'
 import { conversations } from './conversation'
+import { ticketTypes } from './ticket-types'
 import {
   CONVERSATION_PRIORITIES,
   TICKET_TYPES,
@@ -88,6 +89,11 @@ export const tickets = pgTable(
     // is inherently NOT NULL; the unique index enforces no two tickets share one.
     number: bigserial('number', { mode: 'number' }),
     type: text('type', { enum: TICKET_TYPES }).notNull().default('customer'),
+    // The workspace-defined type (convergence Phase 4, see ticket-types.ts).
+    // `type` (the category) is derived from it at write time; nullable because
+    // legacy rows predate the registry and archived types stay on history.
+    // `set null` is the hard-delete escape hatch only — the service archives.
+    ticketTypeId: typeIdColumnNullable('ticket_type')('ticket_type_id'),
     title: text('title').notNull(),
     statusId: typeIdColumn('ticket_status')('status_id').notNull(),
     // Reuses the conversation priority scale. 'none' = unset (the default).
@@ -169,6 +175,14 @@ export const tickets = pgTable(
       columns: [table.companyId],
       foreignColumns: [companies.id],
     }).onDelete('set null'),
+    // set null: a hard-deleted type leaves the ticket typeless (legacy shape)
+    // rather than orphaned. The service archives instead of deleting, so this
+    // only fires on the escape hatch.
+    foreignKey({
+      name: 'tickets_ticket_type_id_fkey',
+      columns: [table.ticketTypeId],
+      foreignColumns: [ticketTypes.id],
+    }).onDelete('set null'),
     // Ticket #N lookups + the sequence guarantee.
     uniqueIndex('tickets_number_uq').on(table.number),
     index('tickets_status_id_idx').on(table.statusId),
@@ -181,6 +195,8 @@ export const tickets = pgTable(
     index('tickets_company_id_idx').on(table.companyId),
     // Type-scoped status boards (e.g. all open customer tickets).
     index('tickets_type_status_id_idx').on(table.type, table.statusId),
+    // Registry-type filter for the inbox tickets branch (Phase 4).
+    index('tickets_ticket_type_id_idx').on(table.ticketTypeId),
     // Keyset support for the unified inbox's cross-status feed (§3.3), mirroring
     // conversations_last_message_at_id_idx. nullsFirst matches the migration's
     // plain DESC (postgres default).
@@ -406,6 +422,10 @@ export const ticketsRelations = relations(tickets, ({ one, many }) => ({
   status: one(ticketStatuses, {
     fields: [tickets.statusId],
     references: [ticketStatuses.id],
+  }),
+  ticketType: one(ticketTypes, {
+    fields: [tickets.ticketTypeId],
+    references: [ticketTypes.id],
   }),
   company: one(companies, {
     fields: [tickets.companyId],

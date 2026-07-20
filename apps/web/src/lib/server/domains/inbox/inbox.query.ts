@@ -34,7 +34,14 @@ import {
   ticketConversations,
   type TicketType,
 } from '@/lib/server/db'
-import type { ConversationId, TicketId, PrincipalId, TeamId, CompanyId } from '@quackback/ids'
+import type {
+  ConversationId,
+  TicketId,
+  TicketTypeId,
+  PrincipalId,
+  TeamId,
+  CompanyId,
+} from '@quackback/ids'
 import type { ConversationPriority, TicketStage } from '@/lib/shared/db-types'
 import { PRIORITY_RANK } from '@/lib/shared/conversation/priority-meta'
 import { can } from '@/lib/server/policy/authorize'
@@ -64,6 +71,9 @@ export interface InboxListFilter {
   /** Restrict to one or both kinds. Omitted = both (subject to RBAC). */
   kinds?: Array<'conversation' | 'ticket'>
   ticketType?: TicketType
+  /** The Phase 4 registry-type filter (the tickets-branch type dropdown) —
+   *  independent of `ticketType` (the category axis). */
+  ticketTypeId?: TicketTypeId
   /** A saved view's `ticket_stage` rule (unified inbox §2.8) — no chip sets
    *  this directly. */
   ticketStage?: TicketStage
@@ -365,6 +375,7 @@ async function fetchTicketBranch(
   const page = await listTickets(
     {
       type: filter.ticketType,
+      ticketTypeId: filter.ticketTypeId,
       statusCategory: facetToTicketStatusCategory(filter.facet),
       stage: filter.ticketStage,
       priority: filter.priority,

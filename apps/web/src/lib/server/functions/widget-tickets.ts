@@ -18,8 +18,7 @@ import { createServerFn } from '@tanstack/react-start'
 import type { TicketId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
 import type { ConversationAttachment } from '@/lib/shared/db-types'
-import { ForbiddenError, ValidationError } from '@/lib/shared/errors'
-import { validateTicketIntakeValues } from '@/lib/shared/tickets'
+import { ForbiddenError } from '@/lib/shared/errors'
 import { requireAuth, policyActorFromAuth } from './auth-helpers'
 
 // Redefined identically to the agent-facing `sendTicketMessageSchema`
@@ -76,8 +75,11 @@ async function requireWidgetTicketActor(opts?: {
 }
 
 /**
- * The customer intake form shape (visibleToCustomer fields only, sorted by
- * `order`) the New-Ticket form renders. Read shape only — no stored values.
+ * The customer intake shape the New-Ticket form renders (convergence Phase 4):
+ * the live, intake-visible customer types, each carrying its customer-visible
+ * fields (sorted by `order`). The form shows a type picker when more than one
+ * type is offered; a single-type workspace behaves exactly like the legacy
+ * fixed form. Read shape only — no stored values.
  */
 export const getWidgetTicketFormFn = createServerFn({ method: 'GET' }).handler(async () => {
   // The form shape must be reachable by an anonymous visitor who has not yet
@@ -88,10 +90,9 @@ export const getWidgetTicketFormFn = createServerFn({ method: 'GET' }).handler(a
     throw new ForbiddenError('FORBIDDEN', 'Tickets are not available')
   }
   await requireAuth()
-  const { getTicketForms } = await import('@/lib/server/domains/settings/settings.tickets')
-  const forms = await getTicketForms()
-  const fields = forms.customer.filter((f) => f.visibleToCustomer).sort((a, b) => a.order - b.order)
-  return { fields }
+  const svc = await import('@/lib/server/domains/tickets/ticket-type-intake.service')
+  const types = await svc.listIntakeTypes()
+  return { types: types.map((t) => svc.ticketTypeToIntakeDTO(t)) }
 })
 
 /** The current widget visitor's own customer tickets, newest activity first. */
@@ -152,7 +153,10 @@ const createSchema = z.object({
   // Empty is valid for an image/embed-only opening message; the service re-validates.
   descriptionJson: z.any().nullable().optional(),
   attachments: z.array(ticketAttachmentSchema).optional(),
-  // Custom intake-form answers; validated against the stored customer form.
+  // The registry type filed under (Phase 4); absent = the customer-category
+  // default type. Must be live + intake-visible (enforced server-side).
+  ticketTypeId: z.string().optional(),
+  // Custom intake-form answers; validated against the chosen type's form.
   fieldValues: z.record(z.string(), z.unknown()).optional(),
   // Email-capture tier: an anonymous visitor supplies the address the ticket's
   // updates will reach; captured overwrite-once onto their principal.
@@ -177,18 +181,12 @@ export const createMyWidgetTicketFn = createServerFn({ method: 'POST' })
       await captureRequesterEmail(actor.principalId, data.email)
     }
 
-    // Re-load the stored customer form and validate the submitted answers
-    // server-side (client inline validation and this share the one validator, so
-    // they can't drift). Keys not on the form or not visibleToCustomer are dropped.
-    const { getTicketForms } = await import('@/lib/server/domains/settings/settings.tickets')
-    const forms = await getTicketForms()
-    const result = validateTicketIntakeValues(forms.customer, data.fieldValues ?? {})
-    if (!result.ok) {
-      throw new ValidationError(
-        'INVALID_TICKET_FIELDS',
-        result.errors.map((e) => e.message).join('; ')
-      )
-    }
+    // Resolve the type (explicit or the customer-category default) and
+    // validate the submitted answers server-side against its customer form
+    // (client inline validation and this share the one validator, so they
+    // can't drift). Keys not on the form or not visibleToCustomer are dropped.
+    const svc = await import('@/lib/server/domains/tickets/ticket-type-intake.service')
+    const intake = await svc.resolveIntakeCreate(data.ticketTypeId, data.fieldValues)
 
     const { createMyTicket } = await import('@/lib/server/domains/tickets/requester.service')
     return createMyTicket(actor, {
@@ -196,6 +194,7 @@ export const createMyWidgetTicketFn = createServerFn({ method: 'POST' })
       description: data.description,
       descriptionJson: data.descriptionJson ?? null,
       attachments: data.attachments as ConversationAttachment[] | undefined,
-      customAttributes: Object.keys(result.values).length > 0 ? result.values : undefined,
+      ticketTypeId: intake.ticketTypeId,
+      customAttributes: intake.customAttributes,
     })
   })

@@ -1,18 +1,24 @@
 /**
- * Portal "New Ticket" form (support platform §4.2, 7C): the basic fixed form
- * (title + description) a requester uses to open their own customer ticket. On
- * success it navigates to the new ticket's thread.
+ * Portal "New Ticket" form (support platform §4.2, 7C): the requester's own
+ * intake dialog. Subject + Details lead; when the workspace offers more than
+ * one intake-visible customer type a type picker joins (convergence Phase 4)
+ * and the chosen type's field set renders below, validated inline with the
+ * same shared validator the server enforces. A single-type workspace behaves
+ * exactly like the legacy fixed form. On success it navigates to the new
+ * ticket's thread.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FormattedMessage, useIntl } from 'react-intl'
 import { toast } from 'sonner'
 import type { JSONContent } from '@tiptap/react'
 import type { TiptapContent } from '@/lib/shared/db-types'
-import { createMyTicketFn } from '@/lib/server/functions/tickets'
+import { validateTicketIntakeValues, type TicketIntakeError } from '@/lib/shared/tickets'
+import { createMyTicketFn, getMyTicketFormFn } from '@/lib/server/functions/tickets'
 import { portalTicketKeys } from '@/lib/client/queries/portal-tickets'
 import { RichTextEditor } from '@/components/ui/rich-text-editor'
+import { TicketFormFields } from '@/components/shared/ticket-form-fields'
 import { VISITOR_CONVERSATION_FEATURES } from '@/components/conversation/conversation-editor-features'
 import { isEmptyTiptapDoc } from '@/lib/shared/utils/is-empty-tiptap-doc'
 import { usePortalImageUpload } from '@/lib/client/hooks/use-image-upload'
@@ -26,6 +32,13 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 // Native `<textarea maxLength>` used to silently cap this field; a rich doc
 // can't be truncated mid-node without corrupting it, so the cap is now
@@ -46,22 +59,65 @@ export function NewPortalTicketDialog({
   const [title, setTitle] = useState('')
   const [descriptionJson, setDescriptionJson] = useState<JSONContent | undefined>(undefined)
   const [descriptionMarkdown, setDescriptionMarkdown] = useState('')
+  const [selectedTypeId, setSelectedTypeId] = useState<string | null>(null)
+  const [fieldValues, setFieldValues] = useState<Record<string, unknown>>({})
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+
+  // The intake types this portal offers (live, intake-visible customer types,
+  // customer-visible fields only). Fetched lazily while the dialog is open.
+  const { data: formData } = useQuery({
+    queryKey: [...portalTicketKeys.all(), 'intake-form'],
+    queryFn: () => getMyTicketFormFn(),
+    enabled: open,
+    staleTime: 60_000,
+  })
+  const types = useMemo(() => formData?.types ?? [], [formData])
+  // No explicit selection = the workspace default type (else the only offered
+  // type) — the picker reflects the resolved choice.
+  const selectedType =
+    types.find((t) => t.id === selectedTypeId) ??
+    types.find((t) => t.isDefault) ??
+    (types.length === 1 ? types[0] : null) ??
+    null
+  const fields = selectedType?.fields ?? []
 
   useEffect(() => {
     if (open) {
       setTitle('')
       setDescriptionJson(undefined)
       setDescriptionMarkdown('')
+      setSelectedTypeId(null)
+      setFieldValues({})
+      setFieldErrors({})
     }
   }, [open])
 
   const { upload: uploadImage } = usePortalImageUpload()
+
+  const setFieldValue = (key: string, value: unknown) => {
+    setFieldValues((prev) => ({ ...prev, [key]: value }))
+    setFieldErrors((prev) => {
+      if (!prev[key]) return prev
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+  }
+
+  /** Type swap: change the field set and drop the old type's draft answers. */
+  const selectType = (id: string) => {
+    setSelectedTypeId(id)
+    setFieldValues({})
+    setFieldErrors({})
+  }
 
   const create = useMutation({
     mutationFn: (vars: {
       title: string
       description?: string
       descriptionJson?: TiptapContent | null
+      ticketTypeId?: string
+      fieldValues?: Record<string, unknown>
     }) => createMyTicketFn({ data: vars }),
     onSuccess: (ticket) => {
       void queryClient.invalidateQueries({ queryKey: portalTicketKeys.list() })
@@ -83,18 +139,33 @@ export function NewPortalTicketDialog({
       toast.error(`Details are too long (max ${DESCRIPTION_MAX_LENGTH} characters).`)
       return
     }
+
+    // Client inline validation via the same validator the server enforces.
+    const result = validateTicketIntakeValues(fields, fieldValues)
+    if (!result.ok) {
+      setFieldErrors(
+        result.errors.reduce<Record<string, string>>((acc, e: TicketIntakeError) => {
+          acc[e.key] = e.message
+          return acc
+        }, {})
+      )
+      return
+    }
+
     create.mutate({
       title: title.trim(),
       description: description || undefined,
       descriptionJson: isEmptyTiptapDoc(descriptionJson as TiptapContent | undefined)
         ? null
         : (descriptionJson as TiptapContent),
+      ticketTypeId: selectedType?.id,
+      fieldValues: Object.keys(result.values).length > 0 ? result.values : undefined,
     })
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             <FormattedMessage id="portal.tickets.new.title" defaultMessage="New ticket" />
@@ -108,6 +179,34 @@ export function NewPortalTicketDialog({
         </DialogHeader>
 
         <div className="space-y-4">
+          {types.length > 1 && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                <FormattedMessage id="portal.tickets.new.type" defaultMessage="Type" />
+              </label>
+              <Select value={selectedType?.id ?? ''} onValueChange={selectType}>
+                <SelectTrigger className="w-full">
+                  <SelectValue
+                    placeholder={intl.formatMessage({
+                      id: 'portal.tickets.new.typePlaceholder',
+                      defaultMessage: 'Select…',
+                    })}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {types.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      <span className="flex items-center gap-2">
+                        <span aria-hidden>{t.icon}</span>
+                        <span>{t.name}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">
               <FormattedMessage id="portal.tickets.new.subject" defaultMessage="Subject" />
@@ -142,6 +241,13 @@ export function NewPortalTicketDialog({
               })}
             />
           </div>
+
+          <TicketFormFields
+            fields={fields}
+            values={fieldValues}
+            onChange={setFieldValue}
+            errors={fieldErrors}
+          />
         </div>
 
         <DialogFooter>

@@ -130,7 +130,7 @@ describe('POST /api/v1/tickets (create)', () => {
 
   it('400s an invalid body without calling the service', async () => {
     const res = await post(ListRoute)({
-      request: jsonReq('https://x.test/api/v1/tickets', { title: 'no type' }),
+      request: jsonReq('https://x.test/api/v1/tickets', { type: 'customer' }),
       params: {},
     })
     expect(res.status).toBe(400)
@@ -147,6 +147,33 @@ describe('POST /api/v1/tickets (create)', () => {
       params: {},
     })
     expect(res.status).toBe(400)
+    expect(mockCreateTicket).not.toHaveBeenCalled()
+  })
+
+  it('accepts a registry ticketTypeId (Phase 4); 400s a malformed one', async () => {
+    mockCreateTicket.mockResolvedValue(ticketDTO)
+    const res = await post(ListRoute)({
+      request: jsonReq('https://x.test/api/v1/tickets', {
+        ticketTypeId: 'ticket_type_01h455vb4pex5vsknk084sn02q',
+        title: 'Cannot log in',
+      }),
+      params: {},
+    })
+    expect(res.status).toBe(201)
+    const [input] = mockCreateTicket.mock.calls[0]
+    expect(input).toMatchObject({ ticketTypeId: 'ticket_type_01h455vb4pex5vsknk084sn02q' })
+    // No bare category is required alongside a registry type.
+    expect(input.type).toBeUndefined()
+
+    mockCreateTicket.mockClear()
+    const bad = await post(ListRoute)({
+      request: jsonReq('https://x.test/api/v1/tickets', {
+        ticketTypeId: 'not-a-typeid',
+        title: 'x',
+      }),
+      params: {},
+    })
+    expect(bad.status).toBe(400)
     expect(mockCreateTicket).not.toHaveBeenCalled()
   })
 })

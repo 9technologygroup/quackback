@@ -73,6 +73,7 @@ export function useCreateTicket() {
       createTicketFn({
         data: {
           type: input.type,
+          ticketTypeId: input.ticketTypeId ?? undefined,
           title: input.title,
           description: input.description,
           descriptionJson: input.descriptionJson,
@@ -82,6 +83,7 @@ export function useCreateTicket() {
           conversationId: input.sourceConversationId ?? undefined,
           priority: input.priority,
           companyId: input.companyId ?? undefined,
+          customAttributes: input.customAttributes,
         },
       }),
     onSuccess: (ticket) => applyTicket(queryClient, ticket),
