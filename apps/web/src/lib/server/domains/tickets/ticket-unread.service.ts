@@ -17,20 +17,19 @@
  * `conversations.agent_last_read_at` / `visitor_last_read_at` and publishes
  * the conversation 'read' event) instead of touching the legacy ticket
  * columns. The legacy `tickets.*_last_read_at` columns stay live ONLY for
- * threads that kept their own ticket-scoped messages: back-office/tracker
- * tickets and not-yet-linked standalone customer tickets. Unread COUNTS for a
- * linked pair likewise read the conversation watermark (the requester list
- * badge — `requesterTicketUnreadMap` below); the accepted cutover glitch is
- * that an in-flight pair's legacy ticket-parented rows stop counting toward
- * unread the moment the conversation watermark wins.
+ * back-office/tracker tickets, which kept their own ticket-scoped threads —
+ * post-0218 (Phase 6) every requester-holding customer ticket is a pair, so
+ * the only standalone customer tickets left are the inert no-requester legacy
+ * edge. Unread COUNTS for a linked pair likewise read the conversation
+ * watermark (the requester list badge — `requesterTicketUnreadMap` below).
  *
  * CONVERGENCE PHASE 3 — WRITER CLEANUP COMPLETE: nothing writes the legacy
  * ticket watermark columns for a linked customer ticket anymore. The one
  * remaining writer Phase 2 left behind — `markTicketUnreadFromMessage` with a
  * legacy ticket-parented anchor on a pair — now moves the CONVERSATION's agent
  * watermark instead. The columns are legacy-READ only on the customer axis
- * (a standalone ticket's fallback counts against them; a pair's frozen pre-link
- * values are simply never consulted) and remain live for back-office/tracker.
+ * (a pair's frozen pre-link values are simply never consulted) and remain
+ * live for back-office/tracker.
  */
 import {
   db,
@@ -117,8 +116,9 @@ export async function ticketUnreadMapForAgent(
  *  the conversation 'read' event) instead of touching the legacy ticket
  *  columns. The delegate derives the side from the actor and re-gates on
  *  conversation visibility. The legacy ticket columns keep being written
- *  ONLY for unlinked threads (back-office/tracker, standalone customer),
- *  which kept their own thread. */
+ *  ONLY for unlinked threads — back-office/tracker tickets, which kept their
+ *  own thread (post-0218 the only standalone customer tickets are the inert
+ *  no-requester legacy edge). */
 async function markTicketRead(ticketId: TicketId, actor: Actor, side: TicketReadSide) {
   const pairConversationId = await resolvePairConversationId(ticketId)
   if (pairConversationId) {
@@ -158,13 +158,14 @@ export async function markTicketReadForRequester(ticketId: TicketId, actor: Acto
 
 /**
  * Batched AGENT-authored unread count for a page of a requester's own tickets
- * (the portal/widget Tickets-space row badges), CONVERGENCE PHASE 2: a linked
- * pair's unread reads the CONVERSATION's visitor watermark and counts only the
- * conversation parent's agent messages (the pair's shared thread is authored
- * there post-1a; legacy ticket-parented rows stop counting — the accepted
- * cutover glitch the module doc notes). An unlinked standalone ticket keeps
- * the legacy ticket-parented count against `tickets.requesterLastReadAt`.
- * Only tickets with at least one unread message appear in the returned map.
+ * (the portal/widget Tickets-space row badges). CONVERGENCE PHASE 6 (migration
+ * 0218): every requester-holding customer ticket is a pair, so the unread
+ * truth is ALWAYS the linked conversation's visitor watermark, counting the
+ * conversation parent's agent messages (the pair's shared thread lives there —
+ * 0218 re-parented the last legacy ticket-parented customer-visible rows). A
+ * ticket with no pair is the inert no-requester legacy edge — it has no
+ * requester to ever reach this map — and simply contributes no unread. Only
+ * tickets with at least one unread message appear in the returned map.
  */
 export async function requesterTicketUnreadMap(
   ticketIds: TicketId[]
@@ -172,71 +173,40 @@ export async function requesterTicketUnreadMap(
   const map = new Map<TicketId, number>()
   if (ticketIds.length === 0) return map
 
-  // Split the page into linked (pair) tickets and standalone ones — each group
-  // counts against a different parent + watermark (see the doc comment).
   const linkedPairs = await resolvePairConversationIds(ticketIds)
+  if (linkedPairs.size === 0) return map
   const linkedByConversation = new Map<ConversationId, TicketId>()
   for (const [ticketId, conversationId] of linkedPairs) {
     linkedByConversation.set(conversationId, ticketId)
   }
-  const standaloneIds = ticketIds.filter((id) => !linkedPairs.has(id))
 
-  // Linked pairs: agent messages on the conversation parent, newer than the
-  // conversation's visitor watermark (null watermark == never read == all).
-  if (linkedByConversation.size > 0) {
-    const rows = await db
-      .select({
-        conversationId: conversationMessages.conversationId,
-        c: sql<number>`count(*)::int`,
-      })
-      .from(conversationMessages)
-      .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
-      .where(
-        and(
-          inArray(conversationMessages.conversationId, [...linkedByConversation.keys()]),
-          eq(conversationMessages.senderType, 'agent'),
-          isNull(conversationMessages.deletedAt),
-          // Internal notes never count toward the requester's unread.
-          eq(conversationMessages.isInternal, false),
-          or(
-            isNull(conversations.visitorLastReadAt),
-            sql`${conversationMessages.createdAt} > ${conversations.visitorLastReadAt}`
-          )
+  // Agent messages on the conversation parent, newer than the conversation's
+  // visitor watermark (null watermark == never read == all).
+  const rows = await db
+    .select({
+      conversationId: conversationMessages.conversationId,
+      c: sql<number>`count(*)::int`,
+    })
+    .from(conversationMessages)
+    .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
+    .where(
+      and(
+        inArray(conversationMessages.conversationId, [...linkedByConversation.keys()]),
+        eq(conversationMessages.senderType, 'agent'),
+        isNull(conversationMessages.deletedAt),
+        // Internal notes never count toward the requester's unread.
+        eq(conversationMessages.isInternal, false),
+        or(
+          isNull(conversations.visitorLastReadAt),
+          sql`${conversationMessages.createdAt} > ${conversations.visitorLastReadAt}`
         )
       )
-      .groupBy(conversationMessages.conversationId)
-    for (const row of rows) {
-      // The inner join on conversations guarantees a non-null conversation_id.
-      const ticketId = linkedByConversation.get(row.conversationId as ConversationId)
-      if (ticketId) map.set(ticketId, row.c)
-    }
-  }
-
-  // Standalone tickets: the legacy ticket-parented count (the same rule the
-  // linked branch applies, batched against the ticket parent + watermark).
-  if (standaloneIds.length > 0) {
-    const rows = await db
-      .select({
-        ticketId: conversationMessages.ticketId,
-        c: sql<number>`count(*)::int`,
-      })
-      .from(conversationMessages)
-      .innerJoin(tickets, eq(tickets.id, conversationMessages.ticketId))
-      .where(
-        and(
-          inArray(conversationMessages.ticketId, standaloneIds),
-          eq(conversationMessages.senderType, 'agent'),
-          isNull(conversationMessages.deletedAt),
-          eq(conversationMessages.isInternal, false),
-          or(
-            isNull(tickets.requesterLastReadAt),
-            sql`${conversationMessages.createdAt} > ${tickets.requesterLastReadAt}`
-          )
-        )
-      )
-      .groupBy(conversationMessages.ticketId)
-    // The inner join on tickets guarantees a non-null ticket_id.
-    for (const row of rows) map.set(row.ticketId as TicketId, row.c)
+    )
+    .groupBy(conversationMessages.conversationId)
+  for (const row of rows) {
+    // The inner join on conversations guarantees a non-null conversation_id.
+    const ticketId = linkedByConversation.get(row.conversationId as ConversationId)
+    if (ticketId) map.set(ticketId, row.c)
   }
 
   return map
@@ -269,8 +239,9 @@ export async function requesterTicketUnreadMap(
  * `markConversationUnreadAt`) — the ticket watermark columns are legacy-read
  * only for customer tickets, so writing one would move nothing any reader
  * consults. The ticket-column write below therefore remains ONLY for unlinked
- * threads (back-office/tracker, standalone customer), whose rows are all
- * ticket-parented. An anchor that belongs to neither parent of the pair 404s
+ * threads — back-office/tracker tickets, whose rows are all ticket-parented
+ * (post-0218 the only standalone customer tickets are the inert no-requester
+ * legacy edge). An anchor that belongs to neither parent of the pair 404s
  * exactly as before.
  */
 export async function markTicketUnreadFromMessage(
@@ -319,8 +290,9 @@ export async function markTicketUnreadFromMessage(
   // is the conversation's agent watermark — so "unread from here" moves THAT
   // watermark to just before the anchor instead of writing the retired column
   // (which no reader of a pair consults anymore). The ticket-column write
-  // below stays live ONLY for unlinked threads (back-office/tracker,
-  // standalone customer), which kept their own ticket-scoped thread.
+  // below stays live ONLY for unlinked threads — back-office/tracker tickets,
+  // which kept their own ticket-scoped thread (post-0218 the only standalone
+  // customer tickets are the inert no-requester legacy edge).
   const pairConversationId = await resolvePairConversationId(ticketId)
   if (pairConversationId) {
     const { markConversationUnreadAt } =

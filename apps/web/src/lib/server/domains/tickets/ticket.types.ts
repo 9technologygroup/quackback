@@ -262,11 +262,11 @@ export interface TicketDTO {
  * The requester-facing projection remains `stage`.
  *
  * `unreadCount` is the requester-side unread badge (agent-authored messages
- * newer than the pair's shared watermark). CONVERGENCE PHASE 2: a linked
- * pair's count reads the CONVERSATION's `visitorLastReadAt` (one shared
- * watermark — Messages and Tickets dual-list with read-through); an unlinked
- * standalone ticket's reads the legacy `requesterLastReadAt`. Set by the
- * list/detail reads (`requesterTicketUnreadMap`); `toRequesterTicketDTO`
+ * newer than the pair's shared watermark). CONVERGENCE PHASE 6 (0218): every
+ * requester-holding customer ticket is a pair, so the count always reads the
+ * CONVERSATION's `visitorLastReadAt` (one shared watermark — Messages and
+ * Tickets dual-list with read-through). Set by the list/detail reads
+ * (`requesterTicketUnreadMap`); `toRequesterTicketDTO`
  * defaults it to 0 for the create path (a just-filed ticket has nothing
  * unread).
  */

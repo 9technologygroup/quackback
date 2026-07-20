@@ -16,8 +16,8 @@
  *  - THE REQUESTER LIST BADGE (`requesterTicketUnreadMap`): a linked pair
  *    counts agent messages on the CONVERSATION parent against the
  *    conversation's visitor watermark (legacy ticket-parented rows on the
- *    pair no longer count — the accepted cutover glitch); a standalone
- *    ticket keeps the legacy ticket-parented count.
+ *    pair no longer count — the accepted cutover glitch); post-0218 an
+ *    unpaired ticket (the inert no-requester edge) contributes no unread.
  *  - END-TO-END READ-THROUGH: an agent reply on the pair makes the ticket
  *    row unread for the requester; the requester opening the ticket page
  *    (markTicketReadForRequester) clears it — and the same watermark is what
@@ -326,7 +326,13 @@ describe.skipIf(!fixture.available)(
         expect(map.get(ticketId)).toBe(1)
       })
 
-      it('a standalone ticket keeps the legacy ticket-parented count + watermark', async () => {
+      it('an unpaired ticket (the post-0218 no-requester edge) contributes no unread', async () => {
+        // Migration 0218 backfilled a pair for every requester-holding customer
+        // ticket, so the legacy standalone ticket-parented count is gone from
+        // this map: the only unpaired customer tickets left are the inert
+        // no-requester legacy edge, which has no requester to badge. Seeded
+        // here with a requester anyway to prove the count reads 0, not the
+        // legacy ticket-parented rows.
         const visitorP = await seedPrincipal('user')
         const agentP = await seedPrincipal()
         const ticketId = await seedTicket({ requesterPrincipalId: visitorP })
@@ -342,7 +348,7 @@ describe.skipIf(!fixture.available)(
         await post({ ticketId }, { senderType: 'agent', principalId: agentP })
 
         const map = await requesterTicketUnreadMap([ticketId])
-        expect(map.get(ticketId)).toBe(1)
+        expect(map.get(ticketId)).toBeUndefined()
       })
     })
 

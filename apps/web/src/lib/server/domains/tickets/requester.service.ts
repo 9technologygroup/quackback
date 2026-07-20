@@ -111,9 +111,9 @@ async function loadOwnedTicketOr404(ticketId: TicketId, principalId: PrincipalId
 }
 
 /** Every `customer` ticket the actor filed, newest activity first. Each row
- *  carries the requester's unread count — CONVERGENCE PHASE 2: a linked pair's
- *  count reads the CONVERSATION's visitor watermark (the pair's shared truth),
- *  an unlinked standalone ticket's reads the legacy ticket column (see
+ *  carries the requester's unread count — CONVERGENCE PHASE 6 (0218): every
+ *  requester-holding customer ticket is a pair, so the count always reads the
+ *  CONVERSATION's visitor watermark (the pair's shared truth; see
  *  requesterTicketUnreadMap). */
 export async function listMyTickets(actor: Actor): Promise<RequesterTicketDTO[]> {
   const principalId = requireRequester(actor)
@@ -152,8 +152,10 @@ export async function getMyTicket(actor: Actor, ticketId: TicketId): Promise<Req
  * CONVERGENCE PHASE 2 (read-through): `markTicketReadForRequester` resolves
  * the pair and, for a linked customer ticket, writes the CONVERSATION's
  * visitor watermark — the Messages space lists the pair natively off that
- * watermark, so reading the ticket page clears both spaces' badges. A
- * standalone ticket keeps the legacy ticket-column write.
+ * watermark, so reading the ticket page clears both spaces' badges. Post-0218
+ * every requester-holding customer ticket is a pair, so the legacy
+ * ticket-column write is unreachable from here (it stays for
+ * back-office/tracker mark-reads).
  */
 export async function markMyTicketRead(actor: Actor, ticketId: TicketId): Promise<void> {
   const principalId = requireRequester(actor)

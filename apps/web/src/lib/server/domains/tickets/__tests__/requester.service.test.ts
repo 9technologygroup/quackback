@@ -262,7 +262,10 @@ describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled b
       senderType: 'agent',
       content: 'legacy',
     })
-    // A standalone ticket of mine with a legacy agent reply — still counts.
+    // Post-0218 an unpaired customer ticket is only the inert no-requester
+    // legacy edge — it contributes NO unread even with legacy ticket-parented
+    // rows (the standalone ticket-parented count is gone). Seeded with a
+    // requester anyway to prove the badge reads 0, not the legacy rows.
     const standalone = createId('ticket') as TicketId
     const mineRow = await readTicketRow(w.mine)
     await testDb.insert(tickets).values({
@@ -281,7 +284,7 @@ describe.skipIf(!fixture.available)('requester ticket service (real DB, rolled b
 
     const list = await listMyTickets(requesterActor(w.me))
     expect(list.find((t) => t.id === w.mine)?.unreadCount).toBe(1)
-    expect(list.find((t) => t.id === standalone)?.unreadCount).toBe(1)
+    expect(list.find((t) => t.id === standalone)?.unreadCount ?? 0).toBe(0)
   })
 
   it('markMyTicketRead marks the pair shared watermark read (read-through), ownership-gated', async () => {

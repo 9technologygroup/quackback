@@ -33,7 +33,12 @@
  * Every returned DTO carries a `source` provenance hint
  * ('ticket' | 'conversation'); the DTO's conversationId/ticketId fields already
  * discriminate the parent — `source` just makes it explicit for renderers and
- * tests. It is additive: pre-union renderers ignore it.
+ * tests. It is additive: pre-union renderers ignore it. POST-0218 (Phase 6
+ * literal convergence), `source: 'ticket'` on a CUSTOMER pair can only be an
+ * internal note (agent audience) — every customer-visible row there is
+ * conversation-parented; a customer-visible 'ticket' row survives only in the
+ * inert no-requester/soft-deleted legacy edge 0218 deliberately skipped, and
+ * on back-office/tracker threads (all ticket-parented).
  *
  * AUDIENCE RULE. `includeInternal: false` (requester portal/widget, summaries,
  * public surfaces) applies `is_internal = false` to BOTH parents — an internal
@@ -44,9 +49,12 @@
  *
  * PHASE 0 vs 1a BOUNDARY. This loader is read-only: it changes NOTHING about
  * where new writes land. Phase 1a's write redirect re-parents new
- * customer-visible writes to the conversation; legacy ticket-parented rows are
- * never migrated, so this union read is load-bearing from the moment it ships
- * (reverting Phase 1a's redirect never reverts this loader). Agent-view
+ * customer-visible writes to the conversation, and migration 0218 (Phase 6)
+ * re-parented the legacy pre-convergence customer-visible rows the same way —
+ * the union stays load-bearing forever regardless (reverting Phase 1a's
+ * redirect never reverts this loader): it is what serves internal notes
+ * (ticket-parented always), back-office/tracker threads, and the inert
+ * no-requester/soft-deleted legacy edge. Agent-view
  * enrichment (reactions/flags) stays layered in ticket-message.service's
  * `listTicketMessagesForAgent`.
  *
