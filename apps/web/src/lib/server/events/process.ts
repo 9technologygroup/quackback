@@ -12,7 +12,7 @@ import { getHook } from './registry'
 import { isRetryableError } from './hook-utils'
 import type { HookResult } from './hook-types'
 import type { EventData } from './types'
-import type { ConversationId, TicketId, WebhookId } from '@quackback/ids'
+import type { ConversationId, IntegrationId, TicketId, WebhookId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'event-process' })
@@ -118,6 +118,37 @@ async function initializeQueue() {
           } catch (error) {
             if (isRetryableError(error)) throw error
             throw new UnrecoverableError(error instanceof Error ? error.message : 'Unknown error')
+          }
+
+          // One-shot refresh + retry when the provider reports an expired
+          // token and the resolver attributed the target to an integration
+          // (WO-13: the outbound path previously 401'd until reconnect).
+          if (!result.success && result.authExpired) {
+            const integrationId = (hookConfig as { integrationId?: string }).integrationId
+            if (integrationId) {
+              const { getValidAccessToken } =
+                await import('@/lib/server/integrations/token-refresh')
+              const fresh = await getValidAccessToken(integrationId as IntegrationId)
+              if (fresh) {
+                log.info(
+                  { hook_type: hookType, integration_id: integrationId },
+                  'token expired mid-delivery; refreshed and retrying once'
+                )
+                try {
+                  result = await hook.run(
+                    event,
+                    target,
+                    { ...hookConfig, accessToken: fresh },
+                    { jobId: job.id }
+                  )
+                } catch (error) {
+                  if (isRetryableError(error)) throw error
+                  throw new UnrecoverableError(
+                    error instanceof Error ? error.message : 'Unknown error'
+                  )
+                }
+              }
+            }
           }
 
           if (result.success) {

@@ -23,6 +23,13 @@ export interface HookResult {
   error?: string
   /** Whether this error is retryable (network issues, rate limits) */
   shouldRetry?: boolean
+  /**
+   * The provider's API rejected the stored access token (401). When the
+   * target config carries an integrationId, the worker refreshes the token
+   * via the provider's refreshToken capability and retries the hook ONCE
+   * (WO-13 outbound-path refresh).
+   */
+  authExpired?: boolean
 }
 
 /**

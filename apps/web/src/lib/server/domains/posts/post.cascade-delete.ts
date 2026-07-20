@@ -7,11 +7,8 @@
 
 import type { PostId, PostExternalLinkId, IntegrationId } from '@quackback/ids'
 import { db, eq, and, inArray, postExternalLinks, integrations } from '@/lib/server/db'
-import { decryptSecrets, encryptSecrets } from '@/lib/server/integrations/encryption'
 import { archiveExternalIssue } from '@/lib/server/integrations/archive'
-import { logger } from '@/lib/server/logger'
-
-const log = logger.child({ component: 'post-cascade-delete' })
+import { getValidAccessToken } from '@/lib/server/integrations/token-refresh'
 
 // ============================================================================
 // Types
@@ -79,79 +76,6 @@ export async function getPostExternalLinks(postId: PostId): Promise<PostExternal
 }
 
 // ============================================================================
-// Token refresh
-// ============================================================================
-
-/** Platform-specific token refresh functions, keyed by integration type. */
-type RefreshFn = (
-  refreshToken: string,
-  credentials?: Record<string, string>
-) => Promise<{ accessToken: string; refreshToken?: string; expiresIn: number }>
-
-const REFRESH_IMPORTS: Record<string, () => Promise<RefreshFn>> = {
-  linear: async () => (await import('@/lib/server/integrations/linear/oauth')).refreshLinearToken,
-  jira: async () => (await import('@/lib/server/integrations/jira/oauth')).refreshJiraToken,
-  asana: async () => (await import('@/lib/server/integrations/asana/oauth')).refreshAsanaToken,
-  teams: async () => (await import('@/lib/server/integrations/teams/oauth')).refreshTeamsToken,
-}
-
-/**
- * Get a valid access token for an integration, refreshing if needed.
- * Returns the current token if no refresh is needed or no refresh is available.
- */
-async function getValidAccessToken(
-  integrationId: IntegrationId,
-  integrationType: string,
-  secrets: Record<string, string>,
-  config: Record<string, unknown>
-): Promise<string> {
-  const token = secrets.accessToken || secrets.access_token || ''
-  const refreshToken = secrets.refreshToken || secrets.refresh_token
-  const tokenExpiresAt = config.tokenExpiresAt as string | undefined
-
-  // No refresh support for this platform or no refresh token stored
-  const refreshImport = REFRESH_IMPORTS[integrationType]
-  if (!refreshImport || !refreshToken || !tokenExpiresAt) {
-    return token
-  }
-
-  // Check if token is expired or about to expire (5 minute buffer)
-  const expiresAt = new Date(tokenExpiresAt).getTime()
-  const bufferMs = 5 * 60 * 1000
-  if (Date.now() < expiresAt - bufferMs) {
-    return token // Still valid
-  }
-
-  // Refresh the token
-  try {
-    log.debug({ integration_type: integrationType }, 'refreshing integration token')
-    const refreshFn = await refreshImport()
-    const { getPlatformCredentials } =
-      await import('@/lib/server/domains/platform-credentials/platform-credential.service')
-    const credentials = await getPlatformCredentials(integrationType)
-    const refreshed = await refreshFn(refreshToken, credentials ?? undefined)
-
-    const newExpiry = new Date(Date.now() + refreshed.expiresIn * 1000).toISOString()
-    await db
-      .update(integrations)
-      .set({
-        secrets: encryptSecrets({
-          accessToken: refreshed.accessToken,
-          refreshToken: refreshed.refreshToken ?? refreshToken,
-        }),
-        config: { ...config, tokenExpiresAt: newExpiry },
-        updatedAt: new Date(),
-      })
-      .where(eq(integrations.id, integrationId))
-
-    return refreshed.accessToken
-  } catch (err) {
-    log.error({ err, integration_type: integrationType }, 'integration token refresh failed')
-    return token // Fall back to existing token; the API call may still 401
-  }
-}
-
-// ============================================================================
 // Execute
 // ============================================================================
 
@@ -197,14 +121,7 @@ export async function executeCascadeDelete(
     const integrationId = row.integrationId as string
     let promise = tokenCache.get(integrationId)
     if (!promise) {
-      const secrets = decryptSecrets<Record<string, string>>(row.integrationSecrets!)
-      const config = (row.integrationConfig ?? {}) as Record<string, unknown>
-      promise = getValidAccessToken(
-        integrationId as IntegrationId,
-        row.integrationType,
-        secrets,
-        config
-      )
+      promise = getValidAccessToken(integrationId as IntegrationId)
       tokenCache.set(integrationId, promise)
     }
     return promise

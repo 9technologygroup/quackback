@@ -21,6 +21,8 @@ const log = logger.child({ component: 'integration-resolver' })
 export interface CachedMapping {
   eventType: string
   integrationType: string
+  /** Integration row id — lets the worker refresh an expired token by id. */
+  integrationId?: string
   secrets: string | null
   integrationConfig: unknown
   actionConfig: unknown
@@ -34,6 +36,7 @@ async function loadMappings(): Promise<CachedMapping[]> {
     .select({
       eventType: integrationEventMappings.eventType,
       integrationType: integrations.integrationType,
+      integrationId: integrations.id,
       secrets: integrations.secrets,
       integrationConfig: integrations.config,
       actionConfig: integrationEventMappings.actionConfig,
@@ -101,7 +104,11 @@ export function buildIntegrationTargets(
     targets.push({
       type: m.integrationType,
       target: { channelId },
-      config: { accessToken, rootUrl },
+      config: {
+        accessToken,
+        rootUrl,
+        ...(m.integrationId ? { integrationId: m.integrationId } : {}),
+      },
     })
   }
 

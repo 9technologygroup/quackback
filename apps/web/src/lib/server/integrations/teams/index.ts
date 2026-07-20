@@ -1,6 +1,6 @@
 import type { IntegrationDefinition } from '../types'
 import { teamsHook } from './hook'
-import { getTeamsOAuthUrl, exchangeTeamsCode } from './oauth'
+import { getTeamsOAuthUrl, exchangeTeamsCode, refreshTeamsToken } from './oauth'
 import { teamsCatalog } from './catalog'
 import { logger } from '@/lib/server/logger'
 
@@ -15,6 +15,7 @@ export const teamsIntegration: IntegrationDefinition = {
     exchangeCode: exchangeTeamsCode,
   },
   hook: teamsHook,
+  refreshToken: refreshTeamsToken,
   platformCredentials: [
     {
       key: 'clientId',

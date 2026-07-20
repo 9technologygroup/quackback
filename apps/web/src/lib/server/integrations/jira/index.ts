@@ -5,7 +5,7 @@ import { registerJiraWebhook, deleteJiraWebhook } from './webhook-registration'
 import { jiraHook } from './hook'
 import { jiraInboundHandler } from './inbound'
 import { jiraIssues } from './issues'
-import { getJiraOAuthUrl, exchangeJiraCode } from './oauth'
+import { getJiraOAuthUrl, exchangeJiraCode, refreshJiraToken } from './oauth'
 import { jiraCatalog } from './catalog'
 import { logger } from '@/lib/server/logger'
 
@@ -36,6 +36,7 @@ export const jiraIntegration: IntegrationDefinition = {
     },
   },
   listExternalStatuses: fetchJiraStatuses,
+  refreshToken: refreshJiraToken,
   platformCredentials: [
     {
       key: 'clientId',

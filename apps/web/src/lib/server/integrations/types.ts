@@ -179,7 +179,11 @@ export interface IssueTrackerCapability {
    * Jira's expiring OAuth token, refreshed and persisted before use. Absent =
    * the caller merges `{ ...config, ...decryptSecrets(secrets) }`.
    */
-  prepareAuth?(integration: { secrets: unknown; config: unknown }): Promise<Record<string, unknown>>
+  prepareAuth?(integration: {
+    id: import('@quackback/ids').IntegrationId
+    secrets: unknown
+    config: unknown
+  }): Promise<Record<string, unknown>>
 }
 
 /** One selectable external status/state, as shown in the status-mapping UI. */
@@ -217,6 +221,16 @@ export interface IntegrationDefinition {
    * toggled. Expected alongside `inbound` — pinned by
    * registry-capability-coverage so provider #12 can't silently no-op.
    */
+  /**
+   * Refresh an expiring OAuth access token — a thin wrapper over the
+   * provider's token endpoint. The framework's getValidAccessToken
+   * (token-refresh.ts) owns expiry checking, by-id persistence, and
+   * resolver-cache invalidation; providers never persist tokens themselves.
+   */
+  refreshToken?: (
+    refreshToken: string,
+    credentials?: Record<string, string>
+  ) => Promise<{ accessToken: string; refreshToken?: string; expiresIn: number }>
   /**
    * List the provider's statuses/states for the status-mapping UI. Any
    * scoping id (team, list, board, cloud) is read from `config` — it is

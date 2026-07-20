@@ -1,5 +1,10 @@
 import type { IntegrationDefinition } from '../types'
-import { getHubSpotOAuthUrl, exchangeHubSpotCode, revokeHubSpotToken } from './oauth'
+import {
+  getHubSpotOAuthUrl,
+  exchangeHubSpotCode,
+  revokeHubSpotToken,
+  refreshHubSpotToken,
+} from './oauth'
 import { hubspotCatalog } from './catalog'
 
 export const hubspotIntegration: IntegrationDefinition = {
@@ -11,6 +16,7 @@ export const hubspotIntegration: IntegrationDefinition = {
     exchangeCode: exchangeHubSpotCode,
   },
   // No hook — HubSpot is inbound (enrichment), not outbound (notifications)
+  refreshToken: refreshHubSpotToken,
   platformCredentials: [
     {
       key: 'clientId',

@@ -4,7 +4,7 @@ import { fetchAsanaSections } from './statuses'
 import { registerAsanaWebhook, deleteAsanaWebhook } from './webhook-registration'
 import { asanaHook } from './hook'
 import { asanaInboundHandler } from './inbound'
-import { getAsanaOAuthUrl, exchangeAsanaCode, revokeAsanaToken } from './oauth'
+import { getAsanaOAuthUrl, exchangeAsanaCode, revokeAsanaToken, refreshAsanaToken } from './oauth'
 import { asanaCatalog } from './catalog'
 
 export const asanaIntegration: IntegrationDefinition = {
@@ -29,6 +29,7 @@ export const asanaIntegration: IntegrationDefinition = {
       deleteAsanaWebhook(accessToken, externalWebhookId),
   },
   listExternalStatuses: fetchAsanaSections,
+  refreshToken: refreshAsanaToken,
   platformCredentials: [
     {
       key: 'clientId',

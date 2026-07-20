@@ -5,7 +5,12 @@ import { registerLinearWebhook, deleteLinearWebhook } from './webhook-registrati
 import { linearHook } from './hook'
 import { linearInboundHandler } from './inbound'
 import { linearIssues } from './issues'
-import { getLinearOAuthUrl, exchangeLinearCode, revokeLinearToken } from './oauth'
+import {
+  getLinearOAuthUrl,
+  exchangeLinearCode,
+  revokeLinearToken,
+  refreshLinearToken,
+} from './oauth'
 import { linearCatalog } from './catalog'
 
 export const linearIntegration: IntegrationDefinition = {
@@ -30,6 +35,7 @@ export const linearIntegration: IntegrationDefinition = {
       deleteLinearWebhook(accessToken, externalWebhookId),
   },
   listExternalStatuses: fetchLinearStatuses,
+  refreshToken: refreshLinearToken,
   platformCredentials: [
     {
       key: 'clientId',

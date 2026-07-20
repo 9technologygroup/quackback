@@ -96,6 +96,8 @@ export const jiraHook: HookHandler = {
           success: false,
           error: 'Authentication failed. Please reconnect Jira.',
           shouldRetry: false,
+          // Jira tokens expire ~hourly; let the worker refresh + retry once.
+          authExpired: true,
         }
       }
 
