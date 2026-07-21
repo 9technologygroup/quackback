@@ -49,7 +49,8 @@ export interface CreateConversationAttributeInput {
   options?: CreateAttributeOptionInput[]
   requiredToClose?: boolean
   sourceHint?: ConversationAttributeSourceHint | null
-  /** `select` field type only — validated at the service layer. */
+  /** `select` field type only — validated at the service layer. Defaults ON
+   *  for select, so Quinn classifies new attributes unless opted out. */
   aiDetect?: boolean
   /** `select` field type only — validated at the service layer. */
   detectOnClose?: boolean

@@ -122,7 +122,7 @@ function NavItem({
           to={href}
           onClick={onClick}
           className={cn(
-            'relative flex size-8 items-center justify-center rounded-lg transition-all duration-200',
+            'relative flex size-9 items-center justify-center rounded-lg transition-all duration-200',
             'text-muted-foreground/70 hover:text-foreground hover:bg-muted/50',
             isActive && 'bg-muted/80 text-foreground'
           )}
@@ -300,14 +300,14 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
               )}
 
               {/* Notifications */}
-              <NotificationBell className="size-8" />
+              <NotificationBell className="size-9" />
 
               {/* Portal Link */}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Link
                     to="/"
-                    className="flex size-8 items-center justify-center rounded-lg text-muted-foreground/70 transition-all duration-200 hover:bg-muted/50 hover:text-foreground"
+                    className="flex size-9 items-center justify-center rounded-lg text-muted-foreground/70 transition-all duration-200 hover:bg-muted/50 hover:text-foreground"
                   >
                     <GlobeAltIcon className="size-5" />
                     <span className="sr-only">View Portal</span>
@@ -323,7 +323,7 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <DropdownMenuTrigger asChild>
-                      <button className="relative flex size-8 items-center justify-center rounded-lg text-muted-foreground/70 transition-all duration-200 hover:bg-muted/50 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      <button className="relative flex size-9 items-center justify-center rounded-lg text-muted-foreground/70 transition-all duration-200 hover:bg-muted/50 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                         <QuestionMarkCircleIcon className="size-5" />
                         {latestVersion && (
                           <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-primary" />
@@ -379,7 +379,7 @@ export function AdminSidebar({ initialUserData, latestVersion }: AdminSidebarPro
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <DropdownMenuTrigger asChild>
-                      <button className="relative flex size-8 items-center justify-center rounded-full transition-all duration-200 hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      <button className="relative flex size-9 items-center justify-center rounded-full transition-all duration-200 hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                         <Avatar className="size-7" src={avatarUrl} name={name} />
                         {conversationsEnabled && (
                           <span

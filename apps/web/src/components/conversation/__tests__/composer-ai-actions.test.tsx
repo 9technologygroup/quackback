@@ -16,10 +16,6 @@ afterEach(cleanup)
 const hoisted = vi.hoisted(() => ({
   available: true,
   runTransform: vi.fn(),
-  summarizeConversationNowFn: vi.fn(),
-  summarizeTicketNowFn: vi.fn(),
-  recordCopilotEvent: vi.fn(),
-  toastError: vi.fn(),
 }))
 
 vi.mock('@/lib/client/hooks/use-copilot-tab-gate', () => ({
@@ -28,15 +24,6 @@ vi.mock('@/lib/client/hooks/use-copilot-tab-gate', () => ({
 vi.mock('@/lib/client/hooks/use-copilot-transform', () => ({
   useCopilotTransform: () => hoisted.runTransform,
 }))
-vi.mock('@/lib/server/functions/copilot-summary', () => ({
-  summarizeConversationNowFn: hoisted.summarizeConversationNowFn,
-  summarizeTicketNowFn: hoisted.summarizeTicketNowFn,
-}))
-vi.mock('@/lib/client/copilot-events', async () => ({
-  recordCopilotEvent: hoisted.recordCopilotEvent,
-  itemRefBody: (await import('@/test/copilot')).mockItemRefBody,
-}))
-vi.mock('sonner', () => ({ toast: { error: hoisted.toastError } }))
 
 import { ComposerAiActions, type ComposerMode } from '../composer-ai-actions'
 
@@ -62,8 +49,6 @@ function renderActions({
     restores.push(restore)
     return restore
   })
-  const onInsertNote = vi.fn()
-
   render(
     <div className="flex flex-wrap">
       <ComposerAiActions
@@ -72,12 +57,11 @@ function renderActions({
         activeDraftText={drafts[activeMode]}
         getDraftText={(mode) => drafts[mode]}
         onReplaceDraftText={onReplaceDraftText}
-        onInsertNote={onInsertNote}
       />
     </div>
   )
 
-  return { drafts, restores, onReplaceDraftText, onInsertNote }
+  return { drafts, restores, onReplaceDraftText }
 }
 
 async function chooseImprove(label: string) {
@@ -90,10 +74,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   hoisted.available = true
   hoisted.runTransform.mockResolvedValue('Improved draft.')
-  hoisted.summarizeConversationNowFn.mockResolvedValue({
-    question: 'Refund window',
-    bullets: ['Customer asked about refunds.', 'Explained the 30-day window.'],
-  })
 })
 
 describe('<ComposerAiActions>', () => {
@@ -102,7 +82,6 @@ describe('<ComposerAiActions>', () => {
     renderActions()
 
     expect(screen.queryByRole('button', { name: /improve/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /summarize into note/i })).not.toBeInTheDocument()
   })
 
   it('improves the visibly active draft and keeps Undo inline', async () => {
@@ -144,22 +123,5 @@ describe('<ComposerAiActions>', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Use improved draft' }))
     expect(onReplaceDraftText).toHaveBeenCalledWith('reply', 'Concise draft.')
-  })
-
-  it('creates a clearly targeted note and records the summary insertion', async () => {
-    const { onInsertNote } = renderActions()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Summarize into note' }))
-
-    await waitFor(() => {
-      expect(onInsertNote).toHaveBeenCalledWith(
-        'Question\nRefund window\n\nSummary\n- Customer asked about refunds.\n- Explained the 30-day window.'
-      )
-    })
-    expect(hoisted.recordCopilotEvent).toHaveBeenCalledWith({
-      item: { conversationId },
-      eventType: 'summary_inserted',
-      destination: 'note',
-    })
   })
 })

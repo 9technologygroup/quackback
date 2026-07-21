@@ -188,25 +188,25 @@ describe('ConversationAttributesList', () => {
     void user
   })
 
-  it('reveals the detect-on-close switch only once AI detect is enabled', async () => {
+  it('defaults AI detect ON for a new select attribute; disabling it hides detect-on-close', async () => {
     hoisted.listConversationAttributesFn.mockResolvedValue([])
     const user = await openCreateDialog()
     fireEvent.change(typeSelect(), { target: { value: 'select' } })
     await screen.findByText('Let AI detect this attribute')
 
-    expect(screen.queryByText('Re-check on close')).not.toBeInTheDocument()
-
-    await user.click(screen.getAllByRole('switch')[0]) // AI detect switch
-
+    // Default-on: the detect-on-close switch is revealed immediately.
     expect(await screen.findByText('Re-check on close')).toBeInTheDocument()
+
+    await user.click(screen.getAllByRole('switch')[0]) // AI detect off
+
+    expect(screen.queryByText('Re-check on close')).not.toBeInTheDocument()
   })
 
   it('shows a dismissable "Other" fallback hint when no option looks like a catch-all', async () => {
     hoisted.listConversationAttributesFn.mockResolvedValue([])
     const user = await openCreateDialog()
     fireEvent.change(typeSelect(), { target: { value: 'select' } })
-    await screen.findByText('Let AI detect this attribute')
-    await user.click(screen.getAllByRole('switch')[0]) // enable AI detect
+    await screen.findByText('Let AI detect this attribute') // AI detect defaults on
 
     await user.click(screen.getByRole('button', { name: /add option/i }))
     await user.type(screen.getByPlaceholderText('Option label'), 'Billing')
@@ -221,8 +221,7 @@ describe('ConversationAttributesList', () => {
     hoisted.listConversationAttributesFn.mockResolvedValue([])
     const user = await openCreateDialog()
     fireEvent.change(typeSelect(), { target: { value: 'select' } })
-    await screen.findByText('Let AI detect this attribute')
-    await user.click(screen.getAllByRole('switch')[0]) // enable AI detect
+    await screen.findByText('Let AI detect this attribute') // AI detect defaults on
 
     await user.click(screen.getByRole('button', { name: /add option/i }))
     await user.type(screen.getByPlaceholderText('Option label'), 'Other')
@@ -243,7 +242,7 @@ describe('ConversationAttributesList', () => {
     await user.click(screen.getByRole('button', { name: /add option/i }))
     await user.type(screen.getByPlaceholderText('Option label'), 'Billing')
 
-    await user.click(screen.getAllByRole('switch')[0]) // AI detect on
+    // AI detect defaults on for a new select attribute.
     await screen.findByText('Re-check on close')
     await user.click(screen.getAllByRole('switch')[1]) // Re-check on close on
 
@@ -276,15 +275,15 @@ describe('ConversationAttributesList', () => {
   // AI-ATTRIBUTES-PARITY-SPEC.md Phase 3: preview harness, draft-descriptions
   // assist, and the read-only monitoring breakdown.
   describe('preview harness ("Test detection")', () => {
-    it('only appears once AI detect is enabled on a select attribute', async () => {
+    it('appears by default on a new select attribute and hides when AI detect is turned off', async () => {
       hoisted.listConversationAttributesFn.mockResolvedValue([])
       const user = await openCreateDialog()
       fireEvent.change(typeSelect(), { target: { value: 'select' } })
       await screen.findByText('Let AI detect this attribute')
-      expect(screen.queryByRole('button', { name: /test detection/i })).not.toBeInTheDocument()
-
-      await user.click(screen.getAllByRole('switch')[0]) // AI detect on
       expect(await screen.findByRole('button', { name: /test detection/i })).toBeInTheDocument()
+
+      await user.click(screen.getAllByRole('switch')[0]) // AI detect off
+      expect(screen.queryByRole('button', { name: /test detection/i })).not.toBeInTheDocument()
     })
 
     it('calls previewAttributeDetectionFn with the draft definition + sample message and renders the result', async () => {

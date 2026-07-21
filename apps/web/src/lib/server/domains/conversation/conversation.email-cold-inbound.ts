@@ -119,10 +119,7 @@ export async function createEmailConversation(input: {
         channelAccountId,
         status: 'open',
         subject: parsed.subject?.slice(0, 200) ?? null,
-        lastMessagePreview: (content || (attachments[0] ? `📎 ${attachments[0].name}` : '')).slice(
-          0,
-          200
-        ),
+        lastMessagePreview: (content || (attachments[0] ? attachments[0].name : '')).slice(0, 200),
         lastMessageAt: now,
         // The customer is waiting on the first reply from the moment it lands.
         waitingSince: now,

@@ -205,8 +205,8 @@ export interface InboxDetailPanelProps {
   /** Open the create-ticket flow, prefilled from this conversation. Shown only
    *  on a plain conversation with no linked ticket. */
   onCreateTicket: () => void
-  /** Insert a Copilot answer into the reply composer or an internal note. */
-  onInsertFromCopilot: (text: string, mode: 'reply' | 'note') => void
+  /** Insert a Copilot answer into the reply composer. */
+  onInsertFromCopilot: (text: string) => void
   /** Bumped by the route's Ask Copilot action (the `q` shortcut / command
    *  bar) — a change switches to the Copilot tab and focuses its ask input.
    *  Same bump-a-counter ping as the thread's `createTicketToken`. No-op when

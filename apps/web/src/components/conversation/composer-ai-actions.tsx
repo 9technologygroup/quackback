@@ -1,11 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  ArrowPathIcon,
-  ChevronDownIcon,
-  ClipboardDocumentListIcon,
-  SparklesIcon,
-} from '@heroicons/react/24/outline'
-import { toast } from 'sonner'
+import { ArrowPathIcon, ChevronDownIcon, SparklesIcon } from '@heroicons/react/24/outline'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -17,12 +11,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useCopilotTabGate } from '@/lib/client/hooks/use-copilot-tab-gate'
 import { useCopilotTransform } from '@/lib/client/hooks/use-copilot-transform'
-import { itemRefBody, recordCopilotEvent } from '@/lib/client/copilot-events'
-import {
-  summarizeConversationNowFn,
-  summarizeTicketNowFn,
-} from '@/lib/server/functions/copilot-summary'
-import { formatConversationSummaryNote } from '@/lib/shared/assistant/copilot-format'
 import type { TransformKind } from '@/lib/shared/assistant/copilot-contract'
 import type { InboxItemRef } from '@/lib/shared/inbox/items'
 
@@ -70,7 +58,6 @@ export function ComposerAiActions({
   activeDraftText,
   getDraftText,
   onReplaceDraftText,
-  onInsertNote,
 }: {
   item: InboxItemRef
   activeMode: ComposerMode
@@ -78,17 +65,14 @@ export function ComposerAiActions({
   getDraftText: (mode: ComposerMode) => string
   /** Replace one mode's whole draft and return a full-fidelity restore action. */
   onReplaceDraftText: (mode: ComposerMode, text: string) => () => void
-  onInsertNote: (text: string) => void
 }) {
   const available = useCopilotTabGate()
   const runTransform = useCopilotTransform(item)
   const activeModeRef = useRef(activeMode)
   activeModeRef.current = activeMode
   const [transforming, setTransforming] = useState(false)
-  const [summarizing, setSummarizing] = useState(false)
   const [proposal, setProposal] = useState<ReplacementState | null>(null)
   const [undo, setUndo] = useState<UndoState | null>(null)
-  const busy = transforming || summarizing
 
   // Keep Undo until the transformed draft is deliberately edited again.
   useEffect(() => {
@@ -106,7 +90,7 @@ export function ComposerAiActions({
   const improve = async (transform: TransformKind) => {
     const mode = activeMode
     const source = getDraftText(mode)
-    if (busy || !source.trim()) return
+    if (transforming || !source.trim()) return
     setTransforming(true)
     setProposal(null)
     try {
@@ -122,27 +106,6 @@ export function ComposerAiActions({
       }
     } finally {
       setTransforming(false)
-    }
-  }
-
-  const summarizeIntoNote = async () => {
-    if (busy) return
-    setSummarizing(true)
-    try {
-      const result =
-        item.kind === 'conversation'
-          ? await summarizeConversationNowFn({ data: { conversationId: item.id } })
-          : await summarizeTicketNowFn({ data: { ticketId: item.id } })
-      onInsertNote(formatConversationSummaryNote(result.question, result.bullets))
-      recordCopilotEvent({
-        item: itemRefBody(item),
-        eventType: 'summary_inserted',
-        destination: 'note',
-      })
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to summarize the conversation')
-    } finally {
-      setSummarizing(false)
     }
   }
 
@@ -206,7 +169,7 @@ export function ComposerAiActions({
             variant="ghost"
             size="sm"
             shape="default"
-            disabled={busy || !activeDraftText.trim()}
+            disabled={transforming || !activeDraftText.trim()}
             title={!activeDraftText.trim() ? 'Write a draft first' : undefined}
           >
             {transforming ? (
@@ -232,21 +195,6 @@ export function ComposerAiActions({
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        shape="default"
-        onClick={() => void summarizeIntoNote()}
-        disabled={busy}
-      >
-        {summarizing ? (
-          <ArrowPathIcon className="size-4 animate-spin" />
-        ) : (
-          <ClipboardDocumentListIcon className="size-4" />
-        )}
-        {summarizing ? 'Summarizing…' : 'Summarize into note'}
-      </Button>
     </>
   )
 }

@@ -172,15 +172,36 @@ describe.skipIf(!fixture.available)(
       expect(created.detectOnClose).toBe(true)
     })
 
-    it('defaults aiDetect/detectOnClose to false when omitted', async () => {
+    it('defaults aiDetect ON (and detectOnClose off) for a select attribute when omitted', async () => {
       const created = await createConversationAttribute({
         key: 'issue_type_3',
         label: 'Issue type 3',
         fieldType: 'select',
         options: [{ label: 'Billing' }],
       })
+      expect(created.aiDetect).toBe(true)
+      expect(created.detectOnClose).toBe(false)
+    })
+
+    it('defaults aiDetect off for a non-select attribute when omitted', async () => {
+      const created = await createConversationAttribute({
+        key: 'plan_default',
+        label: 'Plan',
+        fieldType: 'text',
+      })
       expect(created.aiDetect).toBe(false)
       expect(created.detectOnClose).toBe(false)
+    })
+
+    it('an explicit aiDetect=false on a select attribute overrides the default', async () => {
+      const created = await createConversationAttribute({
+        key: 'issue_type_optout',
+        label: 'Issue type opt-out',
+        fieldType: 'select',
+        options: [{ label: 'Billing' }],
+        aiDetect: false,
+      })
+      expect(created.aiDetect).toBe(false)
     })
 
     it('rejects aiDetect on a non-select field type', async () => {

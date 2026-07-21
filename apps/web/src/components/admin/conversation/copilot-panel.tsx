@@ -7,8 +7,7 @@
  * AG-UI message history; RUN_FINISHED.result carries the post-processed
  * CopilotFinalPayload), reuses AssistantAnswer for citation
  * rendering, and gates any internal-sourced answer behind a hard confirm
- * before it can reach a customer-facing composer (B.4's leak gate) — "Add as
- * note" never confirms, from anywhere.
+ * before it can reach a customer-facing composer (B.4's leak gate).
  */
 import {
   useCallback,
@@ -23,8 +22,10 @@ import { useRouteContext } from '@tanstack/react-router'
 import {
   ArrowPathIcon,
   BoltIcon,
+  ClipboardDocumentListIcon,
   EllipsisHorizontalIcon,
   FunnelIcon,
+  PencilSquareIcon,
   HandThumbDownIcon,
   HandThumbUpIcon,
   LockClosedIcon,
@@ -98,8 +99,6 @@ export const COPILOT_PANEL_SHORTCUTS: ReadonlyArray<{ keys: string; label: strin
   { keys: '⌘↵', label: 'Insert last Copilot answer (with the ask box empty)' },
 ]
 
-type InsertMode = 'reply' | 'note'
-
 /** The answer card's "Add to composer & modify" menu rows (P2-C.1): the tone
  *  transforms offered before inserting an answer into the composer. */
 const MODIFY_ROWS: { transform: TransformKind; label: string }[] = [
@@ -109,13 +108,34 @@ const MODIFY_ROWS: { transform: TransformKind; label: string }[] = [
   { transform: 'more_concise', label: 'More concise' },
 ]
 
+/** The footer quick actions: each is nothing more than a canned question
+ *  submitted as an ordinary turn — the answer streams, classifies, and gains
+ *  affordances exactly like a typed ask. */
+const QUICK_ACTIONS: ReadonlyArray<{
+  label: string
+  icon: typeof ClipboardDocumentListIcon
+  question: string
+}> = [
+  {
+    label: 'Summarize',
+    icon: ClipboardDocumentListIcon,
+    question: 'Summarize this conversation and highlight the key points',
+  },
+  {
+    label: 'Draft reply',
+    icon: PencilSquareIcon,
+    question: 'Draft a reply to this conversation',
+  },
+]
+
 /** The usage event to record once an insert actually happens — carried
  *  alongside the text so the leak-gate confirm logs on proceed, never on the
  *  initial (possibly cancelled) click. Names the GESTURE kind (what was
- *  inserted); WHERE it lands is the destination axis performInsert adds from
- *  its own `mode`. `internalSourced` doubles as the leak-gate flag itself
- *  (requestInsert gates on it); it is absent on an unfinalized turn's events
- *  (no final frame ever carried the server-derived signal). */
+ *  inserted); the destination axis is always 'reply' now that the panel's
+ *  only insert target is the reply composer. `internalSourced` doubles as
+ *  the leak-gate flag itself (requestInsert gates on it); it is absent on an
+ *  unfinalized turn's events (no final frame ever carried the server-derived
+ *  signal). */
 type InsertEventMeta = Pick<CopilotEventInput, 'eventType' | 'answerType' | 'internalSourced'>
 
 /** An answer (or a transform of one) awaiting the internal-source leak-gate
@@ -232,7 +252,9 @@ export function CopilotPanel({
    *  Answer-sources picker no longer keys off a feature flag — source
    *  availability is per-agent config the runtime enforces. */
   flags?: FeatureFlags | undefined
-  onInsert: (text: string, mode: InsertMode) => void
+  /** Insert answer text into the host's reply composer — the panel's only
+   *  insert target (there is no note path). */
+  onInsert: (text: string) => void
   /** The ask textarea's DOM node, for hosts that focus it from outside
    *  (e.g. an inbox keyboard shortcut). */
   askInputRef?: Ref<HTMLTextAreaElement>
@@ -276,15 +298,14 @@ export function CopilotPanel({
     [item]
   )
 
-  // The single insert seam: route text into the host composer AND record the
-  // matching usage event, so the two can never be paired inconsistently
-  // across call sites. The event keeps its gesture kind (answer / transform /
-  // summary); WHERE it landed is the orthogonal `destination` axis, filled in
-  // here from the insert mode itself so the two can never disagree.
+  // The single insert seam: route text into the host's reply composer AND
+  // record the matching usage event, so the two can never be paired
+  // inconsistently across call sites. The event keeps its gesture kind
+  // (answer / transform); the destination is always the reply composer.
   const performInsert = useCallback(
-    (text: string, mode: InsertMode, event: InsertEventMeta) => {
-      onInsert(text, mode)
-      logEvent({ ...event, destination: mode })
+    (text: string, event: InsertEventMeta) => {
+      onInsert(text)
+      logEvent({ ...event, destination: 'reply' })
     },
     [onInsert, logEvent]
   )
@@ -299,7 +320,7 @@ export function CopilotPanel({
       if (event.internalSourced) {
         setPendingInsert({ text, event })
       } else {
-        performInsert(text, 'reply', event)
+        performInsert(text, event)
       }
     },
     [performInsert]
@@ -381,28 +402,36 @@ export function CopilotPanel({
     [item, sourceTypesParam, start]
   )
 
+  const submitQuestion = useCallback(
+    (raw: string) => {
+      const question = raw.trim().slice(0, MAX_QUESTION_CHARS)
+      if (!question || busy) return
+      const id = String(nextIdRef.current++)
+      setTurns((prev) => [
+        ...prev,
+        {
+          id,
+          question,
+          answer: '',
+          answerType: 'draft_reply',
+          citations: [],
+          internalSourced: false,
+          finalized: false,
+          proposedActions: [],
+          status: 'streaming',
+          activity: null,
+        },
+      ])
+      void runTurn(id, question)
+    },
+    [busy, runTurn]
+  )
+
   const ask = useCallback(() => {
-    const question = input.trim().slice(0, MAX_QUESTION_CHARS)
-    if (!question || busy) return
+    if (!input.trim() || busy) return
     setInput('')
-    const id = String(nextIdRef.current++)
-    setTurns((prev) => [
-      ...prev,
-      {
-        id,
-        question,
-        answer: '',
-        answerType: 'draft_reply',
-        citations: [],
-        internalSourced: false,
-        finalized: false,
-        proposedActions: [],
-        status: 'streaming',
-        activity: null,
-      },
-    ])
-    void runTurn(id, question)
-  }, [input, busy, runTurn])
+    submitQuestion(input)
+  }, [input, busy, submitQuestion])
 
   const retry = useCallback(
     (id: string) => {
@@ -450,28 +479,23 @@ export function CopilotPanel({
     [requestInsert]
   )
 
-  // Never leak-gated ("Add as note" never confirms, from anywhere);
-  // performInsert records the answer_inserted gesture with destination 'note'.
-  const handleAddAsNote = useCallback(
-    (turn: CopilotTurn) =>
-      performInsert(turn.answer, 'note', { eventType: 'answer_inserted', ...turnMeta(turn) }),
-    [performInsert]
-  )
-
   // Cmd/Ctrl+Enter anywhere inside the panel (COPILOT_PANEL_SHORTCUTS):
-  // trigger the LAST completed answer's primary action — the same handlers
-  // the buttons call, so the leak-gate confirm and usage logging apply
+  // trigger the LAST completed answer's primary action — the same handler
+  // the button calls, so the leak-gate confirm and usage logging apply
   // unchanged. The panel's dialogs (leak gate, save-as-macro) render in
   // portals outside this subtree, so their keydowns never reach this handler.
   const insertLastAnswer = useCallback(() => {
     if (busy || transforming) return // mirrors the buttons' disabled state
     const last = turns.findLast((t) => t.status === 'done' && !!t.answer && !t.suppressed)
     if (!last) return
-    // An unfinalized (aborted/truncated) turn fails closed alongside analysis
-    // answers: note-only, matching the card's own affordances.
-    if (!last.finalized || last.answerType === 'analysis') handleAddAsNote(last)
-    else handleAddToComposer(last)
-  }, [busy, transforming, turns, handleAddAsNote, handleAddToComposer])
+    // Mirrors the card's affordances: only a finalized draft_reply answer has
+    // a primary composer action. Analysis answers are read-only text, and an
+    // unfinalized (aborted/truncated) turn fails closed — the final frame
+    // carrying the server-derived leak-gate signal never arrived, so nothing
+    // may route toward the customer-facing composer.
+    if (!last.finalized || last.answerType === 'analysis') return
+    handleAddToComposer(last)
+  }, [busy, transforming, turns, handleAddToComposer])
 
   const onPanelKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -514,7 +538,6 @@ export function CopilotPanel({
                 key={turn.id}
                 turn={turn}
                 onAddToComposer={() => handleAddToComposer(turn)}
-                onAddAsNote={() => handleAddAsNote(turn)}
                 onSaveAsMacro={() => setSaveMacroTurnId(turn.id)}
                 onRetry={() => retry(turn.id)}
                 onModify={(transform) => void modifyAnswer(turn, transform)}
@@ -539,6 +562,7 @@ export function CopilotPanel({
         value={input}
         onChange={setInput}
         onSubmit={ask}
+        onQuickAction={submitQuestion}
         onStop={stop}
         busy={busy}
         hasAskedBefore={turns.length > 0}
@@ -557,14 +581,10 @@ export function CopilotPanel({
         noun="answer"
         confirmLabel="Add to composer anyway"
         onConfirm={() => {
-          if (pendingInsert) performInsert(pendingInsert.text, 'reply', pendingInsert.event)
+          if (pendingInsert) performInsert(pendingInsert.text, pendingInsert.event)
           setPendingInsert(null)
         }}
         onCancel={() => setPendingInsert(null)}
-        onAddAsNote={() => {
-          if (pendingInsert) performInsert(pendingInsert.text, 'note', pendingInsert.event)
-          setPendingInsert(null)
-        }}
       />
     </div>
   )
@@ -605,7 +625,6 @@ function CopilotEmptyState({ assistantName }: { assistantName: string }) {
 function CopilotTurnView({
   turn,
   onAddToComposer,
-  onAddAsNote,
   onSaveAsMacro,
   onRetry,
   onModify,
@@ -615,7 +634,6 @@ function CopilotTurnView({
 }: {
   turn: CopilotTurn
   onAddToComposer: () => void
-  onAddAsNote: () => void
   onSaveAsMacro: () => void
   onRetry: () => void
   /** Run a modify transform on this turn's answer (P2-C.1). */
@@ -631,12 +649,12 @@ function CopilotTurnView({
 }) {
   const streaming = turn.status === 'streaming'
   const actionsDisabled = streaming || transformBusy
-  // Analysis answers (guidance/reasoning about the conversation, not a reply to
-  // send) promote "Add as note" to the primary action and demote "Add to
-  // composer" into the overflow menu — inserting internal analysis into a
-  // customer-facing reply is the exact mismatch answerType exists to fix. A
-  // draft_reply answer (and every un-classified one, which defaults to it)
-  // keeps the historical layout: "Add to composer" primary.
+  // Analysis answers (guidance/reasoning about the conversation, not a reply
+  // to send) are read-only text: no primary action, with "Add to composer"
+  // demoted into the overflow menu as the escape hatch — inserting internal
+  // analysis into a customer-facing reply is the exact mismatch answerType
+  // exists to fix. A draft_reply answer (and every un-classified one, which
+  // defaults to it) keeps "Add to composer" primary.
   const isAnalysis = turn.answerType === 'analysis'
   return (
     <div className="space-y-2">
@@ -665,24 +683,23 @@ function CopilotTurnView({
               // Aborted/truncated turn: the final frame carrying the
               // server-derived internalSourced/answerType never arrived, so
               // there is nothing to gate a customer-facing insert on — fail
-              // closed to the one affordance that never needs the gate.
+              // closed: no insert action at all, feedback only.
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                <Button type="button" size="sm" onClick={onAddAsNote} disabled={actionsDisabled}>
-                  Add as note
-                </Button>
                 <CopilotTurnFeedback onFeedback={onFeedback} />
               </div>
             )}
             {!streaming && turn.answer && turn.finalized && (
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={isAnalysis ? onAddAsNote : onAddToComposer}
-                  disabled={actionsDisabled}
-                >
-                  {isAnalysis ? 'Add as note' : 'Add to composer'}
-                </Button>
+                {!isAnalysis && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={onAddToComposer}
+                    disabled={actionsDisabled}
+                  >
+                    Add to composer
+                  </Button>
+                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -713,8 +730,6 @@ function CopilotTurnView({
                             {row.label}
                           </DropdownMenuItem>
                         ))}
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={onAddAsNote}>Add as note</DropdownMenuItem>
                       </>
                     )}
                     <DropdownMenuSeparator />
@@ -867,6 +882,7 @@ function CopilotAskInput({
   value,
   onChange,
   onSubmit,
+  onQuickAction,
   onStop,
   busy,
   hasAskedBefore,
@@ -879,6 +895,8 @@ function CopilotAskInput({
   value: string
   onChange: (value: string) => void
   onSubmit: () => void
+  /** Submit a QUICK_ACTIONS canned question as an ordinary turn. */
+  onQuickAction: (question: string) => void
   onStop: () => void
   busy: boolean
   hasAskedBefore: boolean
@@ -889,6 +907,23 @@ function CopilotAskInput({
   const placeholder = hasAskedBefore ? 'Ask a follow-up question...' : 'Ask a question...'
   return (
     <div className="border-t border-border/50 p-3">
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        {QUICK_ACTIONS.map((action) => (
+          <Button
+            key={action.label}
+            type="button"
+            variant="outline"
+            size="sm"
+            shape="pill"
+            onClick={() => onQuickAction(action.question)}
+            disabled={busy}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <action.icon className="size-3.5" />
+            {action.label}
+          </Button>
+        ))}
+      </div>
       <div className="relative rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-primary/20">
         <Textarea
           ref={inputRef}

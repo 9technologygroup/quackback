@@ -11,8 +11,8 @@
  *   `assertTicketVisible`, whichever the parsed ref carries — unified inbox
  *   §2.9), each already mapped onto the route's error envelope
  *   (forbiddenResponse / errorResponse).
- * - `gateCopilotFn`, for the copilot server fns (copilot-events.ts,
- *   copilot-summary.ts): the same order minus parse and budget, every failure
+ * - `gateCopilotFn`, for the copilot server fns (copilot-events.ts): the
+ *   same order minus parse and budget, every failure
  *   left as its original throw (see its doc). The Response shape can't just
  *   wrap the throw shape: its parse and budget steps interleave the shared
  *   steps, so the two share `assertCopilotAvailable` and
@@ -133,7 +133,7 @@ async function resolveViewableItem(
 
 /**
  * Throw-shaped sibling of `gateCopilotAguiRequest` for the copilot server fns
- * (copilot-events.ts, copilot-summary.ts), which surface every failure as a
+ * (copilot-events.ts), which surface every failure as a
  * thrown rejection rather than a mapped Response. Same gate order, minus the
  * body parse (owned by each fn's validator) and the token budget — budget
  * enforcement lives at the model-invocation seam, not this auth gate: an fn

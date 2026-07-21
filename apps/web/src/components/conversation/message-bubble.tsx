@@ -265,9 +265,14 @@ interface VisitorMessageBubbleProps {
    *  place of the plain-text `content`; messages without it keep the text path. */
   contentJson?: TiptapContent | null
   /** 'peer' = agent/assistant (left, muted bubble + attribution below);
-   *  'self' = the visitor (right, brand bubble, no attribution). */
+   *  'self' = the visitor (right, brand bubble). */
   side?: 'peer' | 'self'
   authorName?: string
+  /** Attribution label for the visitor's OWN ('self') messages — e.g. a
+   *  localized "You". When set (with or without `time`), the self side gets a
+   *  right-aligned "You · time" line mirroring the peer side; omit it to keep
+   *  the self bubble bare (the live-messenger default). */
+  selfLabel?: string
   /** Marks the author as the AI assistant in the attribution line. */
   isAssistant?: boolean
   attachments?: ConversationAttachment[]
@@ -660,6 +665,7 @@ export function VisitorMessageBubble({
   contentJson,
   side = 'peer',
   authorName,
+  selfLabel,
   isAssistant = false,
   attachments,
   citations,
@@ -711,7 +717,10 @@ export function VisitorMessageBubble({
           />
         )}
       </div>
-      {/* Attribution below the bubble — team/assistant side only. */}
+      {/* Attribution below the bubble. Peer (team/assistant) shows name · time
+          plus an AI badge; self (the visitor) shows "You · time" only when a
+          `selfLabel` is supplied (ticket surfaces opt in; the live messenger
+          leaves its own bubbles bare). */}
       {!self && (authorName || time) && (
         <div className="mt-1 px-1 flex items-center gap-1">
           <p className="text-[11px] text-muted-foreground/70">
@@ -728,6 +737,19 @@ export function VisitorMessageBubble({
               AI
             </span>
           )}
+        </div>
+      )}
+      {self && selfLabel && (
+        <div className="mt-1 px-1">
+          <p className="text-[11px] text-muted-foreground/70">
+            {selfLabel}
+            {time && (
+              <>
+                {' · '}
+                {time}
+              </>
+            )}
+          </p>
         </div>
       )}
     </div>

@@ -200,6 +200,10 @@ export function WidgetTicketDetail({ ticketId }: WidgetTicketDetailProps) {
                     contentJson={m.contentJson}
                     side={m.senderType === 'visitor' ? 'self' : 'peer'}
                     authorName={m.author?.displayName ?? undefined}
+                    selfLabel={intl.formatMessage({
+                      id: 'widget.tickets.thread.you',
+                      defaultMessage: 'You',
+                    })}
                     isAssistant={m.isAssistant}
                     attachments={m.attachments}
                     citations={m.citations}

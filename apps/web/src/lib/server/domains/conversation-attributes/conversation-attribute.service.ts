@@ -139,7 +139,9 @@ export async function createConversationAttribute(
         options: SELECT_TYPES.has(input.fieldType) ? buildOptions(input.options!) : null,
         requiredToClose: input.requiredToClose ?? false,
         sourceHint: input.sourceHint ?? null,
-        aiDetect: input.aiDetect ?? false,
+        // AI classification is on by default where supported (select), so
+        // Quinn assigns attributes automatically unless the author opts out.
+        aiDetect: input.aiDetect ?? input.fieldType === 'select',
         detectOnClose: input.detectOnClose ?? false,
       })
       .returning()

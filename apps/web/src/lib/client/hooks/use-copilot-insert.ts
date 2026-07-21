@@ -1,71 +1,60 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 
-type InsertMode = 'reply' | 'note'
-
 // Structural rather than importing the composer's insert handle from
-// components/ — lib/ must not import from components/. The reply and note
-// composers each expose an object of this shape.
+// components/ — lib/ must not import from components/. The reply composer
+// exposes an object of this shape.
 interface InsertableHandle {
   insertText: (text: string) => void
 }
 
 /**
- * The Copilot sidebar's "Add to composer" / "Add as note" seam
- * (COPILOT-SIDEBAR-UX.md B.4), mirroring `insertMacroBody` but across BOTH
- * composer modes: the reply and note editors are mutually exclusive in the DOM
+ * The Copilot sidebar's "Add to composer" seam (COPILOT-SIDEBAR-UX.md B.4),
+ * mirroring `insertMacroBody` but robust to the composer being hidden: the
+ * reply and note editors are mutually exclusive in the DOM
  * (agent-conversation-thread.tsx swaps one for the other on `noteMode`), so
- * inserting into the "other" editor first requires flipping `noteMode` and
- * waiting for that editor to mount before its ref is live.
+ * inserting while the note editor is showing first requires flipping
+ * `noteMode` back and waiting for the reply composer to mount before its ref
+ * is live.
  *
- * `setNoteMode(...)` schedules a state update; the target editor doesn't exist
- * (its ref is still null/stale) until AFTER the resulting re-render commits.
- * A synchronous `insertText` call right after `setNoteMode` would race that
- * commit and silently no-op. Instead we queue the pending insert and flush it
- * from an effect that runs after every render, once the editor whose mode
- * matches the pending request has mounted.
+ * `setNoteMode(false)` schedules a state update; the reply composer doesn't
+ * exist (its ref is still null/stale) until AFTER the resulting re-render
+ * commits. A synchronous `insertText` call right after `setNoteMode` would
+ * race that commit and silently no-op. Instead we queue the pending insert
+ * and flush it from an effect once the reply composer has mounted.
  */
 export function useCopilotInsert({
   noteMode,
   setNoteMode,
   replyComposerRef,
-  noteEditorRef,
 }: {
   noteMode: boolean
   setNoteMode: (noteMode: boolean) => void
   replyComposerRef: RefObject<InsertableHandle | null>
-  noteEditorRef: RefObject<InsertableHandle | null>
-}): (text: string, mode: InsertMode) => void {
-  const pendingRef = useRef<{ text: string; mode: InsertMode } | null>(null)
+}): (text: string) => void {
+  const pendingRef = useRef<string | null>(null)
 
   // The queue is only ever populated right around a mode flip (see the
   // callback below), so this only needs to run when `noteMode` itself
-  // changes — not on every unrelated render. The editors assign their
-  // imperative-handle refs during render (not in an effect), so by the time
-  // this effect runs after a `noteMode` commit, the target editor's ref is
-  // already live.
+  // changes — not on every unrelated render. The composer assigns its
+  // imperative-handle ref during render (not in an effect), so by the time
+  // this effect runs after a `noteMode` commit, the ref is already live.
   useEffect(() => {
     const pending = pendingRef.current
-    if (!pending) return
-    // The target editor hasn't mounted yet — its mode flip hasn't committed.
-    if (pending.mode === 'reply' && noteMode) return
-    if (pending.mode === 'note' && !noteMode) return
+    if (pending === null || noteMode) return
     pendingRef.current = null
-    if (pending.mode === 'reply') replyComposerRef.current?.insertText(pending.text)
-    else noteEditorRef.current?.insertText(pending.text)
+    replyComposerRef.current?.insertText(pending)
   }, [noteMode])
 
   return useCallback(
-    (text: string, mode: InsertMode) => {
-      const alreadyInMode = mode === 'reply' ? !noteMode : noteMode
-      if (alreadyInMode) {
-        if (mode === 'reply') replyComposerRef.current?.insertText(text)
-        else noteEditorRef.current?.insertText(text)
+    (text: string) => {
+      if (!noteMode) {
+        replyComposerRef.current?.insertText(text)
         return
       }
-      pendingRef.current = { text, mode }
-      setNoteMode(mode === 'note')
+      pendingRef.current = text
+      setNoteMode(false)
     },
-    [noteMode, setNoteMode, replyComposerRef, noteEditorRef]
+    [noteMode, setNoteMode, replyComposerRef]
   )
 }

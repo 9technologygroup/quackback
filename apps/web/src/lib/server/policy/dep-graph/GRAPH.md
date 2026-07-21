@@ -24,19 +24,26 @@ Hard rule (test-enforced, not just snapshotted): no package imports app code.
 
 Top-level directories of src, with lib split one level deeper; root-level files form `(root)`. The components -> lib/server edge is the TanStack Start server-function pattern, recorded as reality.
 
-Nodes (9): (root), components, lib/client, lib/server, lib/shared, locales, routes, test, types
-Edges (18):
+Nodes (10): (root), components, integrations, lib/client, lib/server, lib/shared, locales, routes, test, types
+Edges (25):
 
 - (root) -> components
 - (root) -> lib/server
 - (root) -> routes
+- components -> integrations
 - components -> lib/client
 - components -> lib/server
 - components -> lib/shared
 - components -> routes
+- integrations -> components
+- integrations -> lib/client
+- integrations -> lib/server
+- integrations -> lib/shared
 - lib/client -> lib/server
 - lib/client -> lib/shared
+- lib/server -> integrations
 - lib/server -> lib/shared
+- lib/shared -> integrations
 - lib/shared -> lib/server
 - lib/shared -> locales
 - routes -> (root)
@@ -48,8 +55,8 @@ Edges (18):
 
 ## 3. Server domains (lib/server/domains)
 
-Nodes (47): activity, ai, analytics, api, api-keys, assistant, boards, changelog, channel-accounts, comments, companies, company-attributes, conversation, conversation-attributes, conversation-views, embeddings, export, feedback, help-center, import, inbox, macros, merge-suggestions, moderation, notifications, office-hours, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, roles, segments, sentiment, settings, sla, status, statuses, subscriptions, summary, teams, tickets, user-attributes, users, webhooks, workflows
-Edges (107):
+Nodes (46): activity, ai, analytics, api, api-keys, assistant, boards, changelog, channel-accounts, comments, companies, company-attributes, conversation, conversation-attributes, conversation-views, embeddings, export, help-center, import, inbox, macros, merge-suggestions, moderation, notifications, office-hours, platform-credentials, post-tags, posts, principals, push-devices, roadmaps, roles, segments, sentiment, settings, sla, status, statuses, subscriptions, summary, teams, tickets, user-attributes, users, webhooks, workflows
+Edges (96):
 
 - analytics -> api
 - analytics -> assistant
@@ -100,16 +107,6 @@ Edges (107):
 - export -> companies
 - export -> conversation
 - export -> users
-- feedback -> activity
-- feedback -> ai
-- feedback -> assistant
-- feedback -> conversation
-- feedback -> embeddings
-- feedback -> merge-suggestions
-- feedback -> posts
-- feedback -> principals
-- feedback -> settings
-- feedback -> subscriptions
 - help-center -> ai
 - help-center -> settings
 - import -> principals
@@ -123,7 +120,6 @@ Edges (107):
 - moderation -> posts
 - posts -> activity
 - posts -> embeddings
-- posts -> platform-credentials
 - posts -> settings
 - posts -> subscriptions
 - principals -> roles

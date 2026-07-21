@@ -87,7 +87,7 @@ export function validateContent(raw: string, hasAttachments = false): string {
 /** The list/notification preview line for a message (text, else an attachment). */
 export function preview(content: string, attachments: ConversationAttachment[] = []): string {
   if (content) return truncate(content, PREVIEW_LENGTH)
-  if (attachments.length > 0) return `📎 ${attachments[0].name || 'Attachment'}`
+  if (attachments.length > 0) return attachments[0].name || 'Attachment'
   return ''
 }
 
@@ -102,15 +102,15 @@ export function preview(content: string, attachments: ConversationAttachment[] =
  *  and requires a surviving `src`: the visitor image-origin sanitize clears an
  *  untrusted image's src to '', and a cleared image renders as nothing — so it
  *  must NOT satisfy the empty-content guard, else a blank bubble would store
- *  while the preview shows "📷 Image". */
+ *  while the preview shows "Image". */
 export function richMessageFallbackLabel(doc: TiptapContent | null | undefined): string {
   for (const node of doc?.content ?? []) {
     if (node.type === 'chatImage' || node.type === 'image' || node.type === 'resizableImage') {
-      if (typeof node.attrs?.src === 'string' && node.attrs.src.length > 0) return '📷 Image'
+      if (typeof node.attrs?.src === 'string' && node.attrs.src.length > 0) return 'Image'
       continue
     }
     if (node.type === 'quackbackEmbed') {
-      return node.attrs?.kind === 'changelog' ? '🔗 Shared an update' : '🔗 Shared a post'
+      return node.attrs?.kind === 'changelog' ? 'Shared an update' : 'Shared a post'
     }
     const nested = richMessageFallbackLabel(node)
     if (nested) return nested

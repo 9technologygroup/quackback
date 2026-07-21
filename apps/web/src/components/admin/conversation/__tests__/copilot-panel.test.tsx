@@ -3,9 +3,10 @@
  * <CopilotPanel>: the Quinn Copilot sidebar thread (COPILOT-SIDEBAR-UX.md
  * B.3/B.4). Covers the ask -> stream -> answer flow, the internal-source
  * leak gate on "Add to composer", the answerType button precedence (draft_reply
- * keeps "Add to composer" primary; analysis promotes "Add as note" and demotes
- * the composer), the Answer-sources popover (flag-gated rows, localStorage
- * persistence, sourceTypes on the request), the placeholder swap, and "New chat".
+ * keeps "Add to composer" primary; analysis is read-only text with the
+ * composer demoted to the "..." menu), the footer quick actions, the
+ * Answer-sources popover (flag-gated rows, localStorage persistence,
+ * sourceTypes on the request), the placeholder swap, and "New chat".
  */
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
@@ -82,7 +83,7 @@ const ALL_FLAGS_ON: FeatureFlags = {
 function renderPanel(
   props: Partial<{
     flags: FeatureFlags | undefined
-    onInsert: (t: string, m: 'reply' | 'note') => void
+    onInsert: (t: string) => void
   }> = {}
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -276,6 +277,81 @@ describe('<CopilotPanel> ask -> stream -> answer', () => {
     vi.unstubAllGlobals()
   })
 
+  it('the footer Summarize button sends the canned summarize question as a normal turn', async () => {
+    const frames = aguiRun({
+      result: { text: 'Summary of the thread.', citations: [], internalSourced: false },
+    })
+    const fetchMock = vi.fn().mockResolvedValue(mockStreamingResponse(frames))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: 'Summarize' }))
+
+    // The canned question renders as the user bubble; the answer streams in
+    // with the same affordances as any other ask.
+    expect(
+      await screen.findByText('Summarize this conversation and highlight the key points')
+    ).toBeInTheDocument()
+    expect(await screen.findByText('Summary of the thread.')).toBeInTheDocument()
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect((body.messages as Array<{ content: string }>).at(-1)?.content).toBe(
+      'Summarize this conversation and highlight the key points'
+    )
+    vi.unstubAllGlobals()
+  })
+
+  it('a summary turn is an ordinary turn: normal answerType precedence applies to its answer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          mockStreamingResponse(
+            finalFrame({ text: 'Summary of the thread.', answerType: 'analysis' })
+          )
+        )
+    )
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: 'Summarize' }))
+    await screen.findByText('Summary of the thread.')
+
+    // An analysis-classified answer is read-only text: no primary insert
+    // button, just the overflow menu and feedback — same as a typed ask.
+    expect(screen.queryByRole('button', { name: /add to composer/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /more answer actions/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Good answer' })).toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+
+  it('the footer Draft reply button sends its canned question as a normal turn', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockStreamingResponse(finalFrame()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: 'Draft reply' }))
+
+    expect(await screen.findByText('Draft a reply to this conversation')).toBeInTheDocument()
+    await screen.findByText(DEFAULT_ANSWER)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect((body.messages as Array<{ content: string }>).at(-1)?.content).toBe(
+      'Draft a reply to this conversation'
+    )
+    vi.unstubAllGlobals()
+  })
+
+  it('the Summarize button is disabled while a turn is streaming', async () => {
+    // A fetch that never settles keeps the turn in the streaming state.
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})))
+
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: 'Summarize' }))
+    await screen.findByText('Summarize this conversation and highlight the key points')
+
+    expect(screen.getByRole('button', { name: 'Summarize' })).toBeDisabled()
+    vi.unstubAllGlobals()
+  })
+
   it('"New chat" clears the thread back to the empty state', async () => {
     const frames = aguiRun({ result: { text: 'Answer.', citations: [], internalSourced: false } })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockStreamingResponse(frames)))
@@ -305,7 +381,7 @@ describe('<CopilotPanel> Cmd/Ctrl+Enter inserts the last answer', () => {
 
     modEnter()
 
-    expect(onInsert).toHaveBeenCalledWith('A public answer.', 'reply')
+    expect(onInsert).toHaveBeenCalledWith('A public answer.')
     expect(hoisted.recordCopilotEvent).toHaveBeenCalledWith({
       item: { conversationId: CONVERSATION_ID },
       eventType: 'answer_inserted',
@@ -323,7 +399,7 @@ describe('<CopilotPanel> Cmd/Ctrl+Enter inserts the last answer', () => {
 
     modEnter({ ctrlKey: true })
 
-    expect(onInsert).toHaveBeenCalledWith('A public answer.', 'reply')
+    expect(onInsert).toHaveBeenCalledWith('A public answer.')
     vi.unstubAllGlobals()
   })
 
@@ -344,12 +420,12 @@ describe('<CopilotPanel> Cmd/Ctrl+Enter inserts the last answer', () => {
     vi.unstubAllGlobals()
   })
 
-  it('triggers Add as note for an analysis answer', async () => {
+  it('is a no-op for an analysis answer (read-only text, no primary action to trigger)', async () => {
     const onInsert = await askAnswer({ answerType: 'analysis' }, 'What language is this?')
 
     modEnter()
 
-    expect(onInsert).toHaveBeenCalledWith('A public answer.', 'note')
+    expect(onInsert).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
 
@@ -378,7 +454,7 @@ describe('<CopilotPanel> Cmd/Ctrl+Enter inserts the last answer', () => {
 
     modEnter()
 
-    expect(onInsert).toHaveBeenCalledWith('Second answer.', 'reply')
+    expect(onInsert).toHaveBeenCalledWith('Second answer.')
     vi.unstubAllGlobals()
   })
 
@@ -423,34 +499,33 @@ describe('<CopilotPanel> unfinalized (aborted/truncated) turns fail closed', () 
     return onInsert
   }
 
-  it('offers ONLY "Add as note" — no composer button, no modify menu', async () => {
+  it('offers no insert action at all — no composer button, no modify menu, feedback only', async () => {
     await askAborted()
 
-    expect(screen.getByRole('button', { name: 'Add as note' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /add to composer/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /more answer actions/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Good answer' })).toBeInTheDocument()
     vi.unstubAllGlobals()
   })
 
-  it('"Add as note" inserts the partial text and logs WITHOUT internalSourced', async () => {
-    const onInsert = await askAborted()
+  it('feedback on the unfinalized turn logs WITHOUT internalSourced', async () => {
+    await askAborted()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add as note' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Good answer' }))
 
-    expect(onInsert).toHaveBeenCalledWith('A partial answer.', 'note')
     expect(hoisted.recordCopilotEvent).toHaveBeenCalledTimes(1)
     const event = hoisted.recordCopilotEvent.mock.calls[0][0] as Record<string, unknown>
     expect(event).toMatchObject({
       item: { conversationId: CONVERSATION_ID },
-      eventType: 'answer_inserted',
-      destination: 'note',
+      eventType: 'feedback',
+      rating: 'up',
     })
     // Omitted, never asserted false: the leak-gate signal never arrived.
     expect('internalSourced' in event).toBe(false)
     vi.unstubAllGlobals()
   })
 
-  it('Cmd+Enter treats the unfinalized turn as note-only', async () => {
+  it('Cmd+Enter is a no-op on an unfinalized turn (fails closed)', async () => {
     const onInsert = await askAborted()
 
     fireEvent.keyDown(screen.getByPlaceholderText(/ask a (follow-up )?question/i), {
@@ -458,8 +533,7 @@ describe('<CopilotPanel> unfinalized (aborted/truncated) turns fail closed', () 
       metaKey: true,
     })
 
-    expect(onInsert).toHaveBeenCalledWith('A partial answer.', 'note')
-    expect(onInsert).not.toHaveBeenCalledWith(expect.anything(), 'reply')
+    expect(onInsert).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
 
@@ -487,7 +561,7 @@ describe('<CopilotPanel> unfinalized (aborted/truncated) turns fail closed', () 
       key: 'Enter',
       metaKey: true,
     })
-    expect(onInsert).toHaveBeenCalledWith('Complete answer.', 'reply')
+    expect(onInsert).toHaveBeenCalledWith('Complete answer.')
     vi.unstubAllGlobals()
   })
 })
@@ -520,18 +594,17 @@ describe('<CopilotPanel> leak gate', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /add to composer anyway/i }))
 
-    expect(onInsert).toHaveBeenCalledWith('Here is the internal-flavored answer.', 'reply')
+    expect(onInsert).toHaveBeenCalledWith('Here is the internal-flavored answer.')
     vi.unstubAllGlobals()
   })
 
-  it('"Add as note" from the confirm dialog inserts as a note, no further confirm', async () => {
-    const onInsert = await askAnswer(INTERNAL_FINAL, 'What should I do?')
+  it('the confirm dialog offers no note escape — Cancel or proceed only', async () => {
+    await askAnswer(INTERNAL_FINAL, 'What should I do?')
     fireEvent.click(screen.getByRole('button', { name: /add to composer/i }))
     await screen.findByText('This answer uses internal sources')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add as note' }))
-
-    expect(onInsert).toHaveBeenCalledWith('Here is the internal-flavored answer.', 'note')
+    expect(screen.queryByRole('button', { name: 'Add as note' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
     vi.unstubAllGlobals()
   })
 
@@ -540,21 +613,7 @@ describe('<CopilotPanel> leak gate', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /add to composer/i }))
 
-    expect(onInsert).toHaveBeenCalledWith('A plain public answer.', 'reply')
-    expect(screen.queryByText('This answer uses internal sources')).not.toBeInTheDocument()
-    vi.unstubAllGlobals()
-  })
-
-  it('"Add as note" from the "..." menu always inserts as a note without any confirm', async () => {
-    const onInsert = await askAnswer(INTERNAL_FINAL, 'What should I do?')
-
-    // Radix DropdownMenuTrigger opens on pointerDown, not click.
-    fireEvent.pointerDown(screen.getByRole('button', { name: /more answer actions/i }), {
-      button: 0,
-    })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Add as note' }))
-
-    expect(onInsert).toHaveBeenCalledWith('Here is the internal-flavored answer.', 'note')
+    expect(onInsert).toHaveBeenCalledWith('A plain public answer.')
     expect(screen.queryByText('This answer uses internal sources')).not.toBeInTheDocument()
     vi.unstubAllGlobals()
   })
@@ -572,20 +631,15 @@ describe('<CopilotPanel> answerType button precedence', () => {
 
     // The visible primary button (not a menu item) is Add to composer.
     expect(screen.getByRole('button', { name: /add to composer/i })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Add as note' })).not.toBeInTheDocument()
     vi.unstubAllGlobals()
   })
 
-  it('analysis promotes "Add as note" to primary and inserts as a note directly', async () => {
-    const onInsert = await askWithAnswerType('analysis')
+  it('analysis has no primary action — the answer is read-only text', async () => {
+    await askWithAnswerType('analysis')
 
-    // Primary button is now Add as note; there is no primary Add to composer.
-    const primary = screen.getByRole('button', { name: 'Add as note' })
-    expect(primary).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^add to composer$/i })).not.toBeInTheDocument()
-
-    fireEvent.click(primary)
-    expect(onInsert).toHaveBeenCalledWith('The customer is writing in Swedish.', 'note')
+    expect(screen.queryByRole('button', { name: /add to composer/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /more answer actions/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Good answer' })).toBeInTheDocument()
     vi.unstubAllGlobals()
   })
 
@@ -605,7 +659,7 @@ describe('<CopilotPanel> answerType button precedence', () => {
     expect(screen.getByRole('menuitem', { name: 'Save as macro' })).toBeInTheDocument()
 
     fireEvent.click(demoted)
-    expect(onInsert).toHaveBeenCalledWith('The customer is writing in Swedish.', 'reply')
+    expect(onInsert).toHaveBeenCalledWith('The customer is writing in Swedish.')
     vi.unstubAllGlobals()
   })
 })
@@ -639,7 +693,7 @@ describe('<CopilotPanel> "Add to composer & modify" menu', () => {
     return { onInsert, fetchMock }
   }
 
-  it('lists the tone rows under the "Add to composer & modify" header, above Add as note / Save as macro', async () => {
+  it('lists the tone rows under the "Add to composer & modify" header, above Save as macro (no note row)', async () => {
     const frames = aguiRun({ result: { text: 'Answer.', citations: [], internalSourced: false } })
     stubFetchByUrl({ copilot: frames })
     renderPanel()
@@ -654,7 +708,7 @@ describe('<CopilotPanel> "Add to composer & modify" menu', () => {
     for (const label of ['My tone of voice', 'More friendly', 'More formal', 'More concise']) {
       expect(screen.getByRole('menuitem', { name: label })).toBeInTheDocument()
     }
-    expect(screen.getByRole('menuitem', { name: 'Add as note' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Add as note' })).not.toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Save as macro' })).toBeInTheDocument()
     vi.unstubAllGlobals()
   })
@@ -663,7 +717,7 @@ describe('<CopilotPanel> "Add to composer & modify" menu', () => {
     const { onInsert, fetchMock } = await askAndOpenModifyMenu(false)
 
     await waitFor(() => {
-      expect(onInsert).toHaveBeenCalledWith('Here is the FRIENDLIER answer.', 'reply')
+      expect(onInsert).toHaveBeenCalledWith('Here is the FRIENDLIER answer.')
     })
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/transform'))).toBe(true)
     vi.unstubAllGlobals()
@@ -676,7 +730,7 @@ describe('<CopilotPanel> "Add to composer & modify" menu', () => {
     expect(onInsert).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: /add to composer anyway/i }))
-    expect(onInsert).toHaveBeenCalledWith('Here is the FRIENDLIER answer.', 'reply')
+    expect(onInsert).toHaveBeenCalledWith('Here is the FRIENDLIER answer.')
     vi.unstubAllGlobals()
   })
 })
@@ -874,26 +928,6 @@ describe('<CopilotPanel> usage events', () => {
     vi.unstubAllGlobals()
   })
 
-  it('logs answer_inserted with destination note on Add as note from the "..." menu', async () => {
-    await askAnswer()
-
-    fireEvent.pointerDown(screen.getByRole('button', { name: /more answer actions/i }), {
-      button: 0,
-    })
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Add as note' }))
-
-    // Same gesture kind as the composer insert — the note landing is the
-    // destination axis, never a different event type.
-    expect(hoisted.recordCopilotEvent).toHaveBeenCalledWith({
-      item: { conversationId: CONVERSATION_ID },
-      eventType: 'answer_inserted',
-      destination: 'note',
-      answerType: 'draft_reply',
-      internalSourced: false,
-    })
-    vi.unstubAllGlobals()
-  })
-
   it('logs nothing until the leak-gate confirm, then answer_inserted on proceed', async () => {
     await askAnswer({ internalSourced: true })
 
@@ -907,23 +941,6 @@ describe('<CopilotPanel> usage events', () => {
       item: { conversationId: CONVERSATION_ID },
       eventType: 'answer_inserted',
       destination: 'reply',
-      answerType: 'draft_reply',
-      internalSourced: true,
-    })
-    vi.unstubAllGlobals()
-  })
-
-  it('logs destination note when the leak-gate confirm resolves to Add as note', async () => {
-    await askAnswer({ internalSourced: true })
-
-    fireEvent.click(screen.getByRole('button', { name: /add to composer/i }))
-    await screen.findByText('This answer uses internal sources')
-    fireEvent.click(screen.getByRole('button', { name: 'Add as note' }))
-
-    expect(hoisted.recordCopilotEvent).toHaveBeenCalledWith({
-      item: { conversationId: CONVERSATION_ID },
-      eventType: 'answer_inserted',
-      destination: 'note',
       answerType: 'draft_reply',
       internalSourced: true,
     })

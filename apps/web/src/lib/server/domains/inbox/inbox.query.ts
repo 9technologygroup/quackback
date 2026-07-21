@@ -294,6 +294,7 @@ export async function loadLinkedCustomerTicketSummaries(
       conversationId: ticketConversations.conversationId,
       ticketId: tickets.id,
       number: tickets.number,
+      title: tickets.title,
       statusName: ticketStatuses.name,
       statusCategory: ticketStatuses.category,
     })
@@ -310,6 +311,7 @@ export async function loadLinkedCustomerTicketSummaries(
     map.set(row.conversationId, {
       id: row.ticketId,
       number: row.number,
+      title: row.title,
       statusName: row.statusName,
       statusCategory: row.statusCategory,
     })

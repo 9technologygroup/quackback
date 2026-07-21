@@ -5,18 +5,29 @@
  * on the right, the team's on the left). Ownership + the internal-note strip are
  * enforced by the requester server fns.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { createFileRoute, Navigate, useRouteContext } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FormattedMessage, useIntl } from 'react-intl'
 import { PaperAirplaneIcon } from '@heroicons/react/24/solid'
-import { BellIcon as BellIconOutline } from '@heroicons/react/24/outline'
+import {
+  BellIcon as BellIconOutline,
+  HashtagIcon,
+  Squares2X2Icon,
+  CalendarIcon,
+  ClockIcon,
+} from '@heroicons/react/24/outline'
 import { BellIcon as BellIconSolid } from '@heroicons/react/24/solid'
 import { toast } from 'sonner'
 import type { JSONContent } from '@tiptap/core'
 import type { TicketId } from '@quackback/ids'
 import type { TiptapContent } from '@/lib/shared/db-types'
+import type { RequesterTicketDTO } from '@/lib/server/domains/tickets'
+import type { TicketFormField, TicketIntakeType, TicketStageLabels } from '@/lib/shared/tickets'
 import { DEFAULT_TICKET_STAGE_LABELS } from '@/lib/shared/tickets'
+import { readAttributeValue } from '@/lib/shared/conversation/attribute-values'
+import { TimeAgo } from '@/components/ui/time-ago'
+import { cn } from '@/lib/shared/utils'
 import {
   replyToMyTicketFn,
   watchMyTicketFn,
@@ -102,6 +113,13 @@ function PortalTicketPage() {
     ...portalTicketQueries.stageLabels(),
     enabled: supportTicketsEnabled && isLoggedIn,
   })
+  // The intake form resolves the ticket's stored answers back to their field
+  // labels for the details rail; reused across the requester's tickets, so it
+  // shares one cached read.
+  const { data: intakeForm } = useQuery({
+    ...portalTicketQueries.form(),
+    enabled: supportTicketsEnabled && isLoggedIn,
+  })
 
   // Read-through (convergence Phase 2): viewing the ticket page marks the
   // pair's SHARED watermark read — on a linked pair the server writes the
@@ -172,7 +190,7 @@ function PortalTicketPage() {
   const canSend = hasContent && !send.isPending
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col px-4 sm:px-6 py-6">
+    <div className="mx-auto flex w-full max-w-6xl flex-col px-4 sm:px-6 py-6">
       <BackLink to="/support" className="mb-4 self-start">
         <FormattedMessage id="portal.tickets.back" defaultMessage="All tickets" />
       </BackLink>
@@ -217,120 +235,310 @@ function PortalTicketPage() {
           })}
         />
       ) : (
-        <>
-          <div className="mb-1 flex items-center gap-2">
-            <span className="font-mono text-xs text-muted-foreground/70">{ticket.reference}</span>
-          </div>
-          <div className="flex items-start justify-between gap-3">
-            <h1 className="text-xl font-semibold leading-tight text-foreground">{ticket.title}</h1>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  shape="default"
-                  className="shrink-0"
-                  disabled={toggleWatch.isPending}
-                  onClick={() => toggleWatch.mutate()}
-                  aria-label={intl.formatMessage(
-                    watching
-                      ? { id: 'portal.tickets.watch.unwatch', defaultMessage: 'Stop watching' }
-                      : { id: 'portal.tickets.watch.watch', defaultMessage: 'Watch this ticket' }
-                  )}
-                  aria-pressed={watching}
-                >
-                  {watching ? (
-                    <BellIconSolid className="size-4 text-primary" />
-                  ) : (
-                    <BellIconOutline className="size-4" />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <FormattedMessage
-                  id={watching ? 'portal.tickets.watch.unwatch' : 'portal.tickets.watch.watch'}
-                  defaultMessage={watching ? 'Stop watching' : 'Watch this ticket'}
-                />
-              </TooltipContent>
-            </Tooltip>
-          </div>
-          <div className="mt-5">
-            <StageTracker
-              slot={ticket.stage.slot}
-              closed={ticket.stage.closed}
-              labels={stageLabels ?? DEFAULT_TICKET_STAGE_LABELS}
-              closedLabelId="portal.tickets.stage.closed"
-            />
-          </div>
-
-          <div className="mt-6 flex flex-col gap-3">
-            {messages.length === 0 ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">
-                <FormattedMessage
-                  id="portal.tickets.thread.empty"
-                  defaultMessage="No replies yet."
-                />
-              </p>
-            ) : (
-              messages.map((m) =>
-                // B25: a system event (stage crossing, the ticket_created
-                // conversion marker, pair-conversation chat events) renders as
-                // the centered muted notice, localized from its structured
-                // event — never as an agent-authored bubble of frozen English.
-                m.senderType === 'system' ? (
-                  <SystemEventNotice key={m.id} event={m.systemEvent} fallback={m.content} />
-                ) : (
-                  <VisitorMessageBubble
-                    key={m.id}
-                    content={m.content}
-                    contentJson={m.contentJson}
-                    side={m.senderType === 'visitor' ? 'self' : 'peer'}
-                    authorName={m.author?.displayName ?? undefined}
-                    isAssistant={m.isAssistant}
-                    attachments={m.attachments}
-                    citations={m.citations}
-                    time={formatMessageTime(m.createdAt)}
+        <div className="lg:flex lg:items-start lg:gap-8">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <h1 className="text-xl font-semibold leading-tight text-foreground">
+                {ticket.title}
+              </h1>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    shape="default"
+                    className="shrink-0"
+                    disabled={toggleWatch.isPending}
+                    onClick={() => toggleWatch.mutate()}
+                    aria-label={intl.formatMessage(
+                      watching
+                        ? { id: 'portal.tickets.watch.unwatch', defaultMessage: 'Stop watching' }
+                        : { id: 'portal.tickets.watch.watch', defaultMessage: 'Watch this ticket' }
+                    )}
+                    aria-pressed={watching}
+                  >
+                    {watching ? (
+                      <BellIconSolid className="size-4 text-primary" />
+                    ) : (
+                      <BellIconOutline className="size-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <FormattedMessage
+                    id={watching ? 'portal.tickets.watch.unwatch' : 'portal.tickets.watch.watch'}
+                    defaultMessage={watching ? 'Stop watching' : 'Watch this ticket'}
                   />
-                )
-              )
-            )}
-          </div>
-
-          {ticket.stage.slot === 'awaiting_requester' && (
-            <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.04] px-3 py-2 text-[13px] text-amber-700 dark:text-amber-400">
-              <ChatBubbleLeftRightIcon className="size-4 shrink-0" />
-              <FormattedMessage
-                id="portal.tickets.awaitingReply"
-                defaultMessage="The team is waiting on your reply."
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <div className="mt-5">
+              <StageTracker
+                slot={ticket.stage.slot}
+                closed={ticket.stage.closed}
+                labels={stageLabels ?? DEFAULT_TICKET_STAGE_LABELS}
+                closedLabelId="portal.tickets.stage.closed"
               />
             </div>
-          )}
 
-          <div className="mt-4 rounded-lg border border-border bg-background p-2 focus-within:ring-2 focus-within:ring-primary/20">
-            <RichTextEditor
-              key={editorKey}
-              borderless
-              minHeight="72px"
-              disabled={send.isPending}
-              features={VISITOR_CONVERSATION_FEATURES}
-              placeholder={intl.formatMessage({
-                id: 'portal.tickets.reply.placeholder',
-                defaultMessage: 'Reply to the team…',
-              })}
-              onChange={handleEditorChange}
-              onImageUpload={upload}
-              onSubmit={handleSend}
-            />
-            <div className="flex justify-end pt-1">
-              <Button size="sm" onClick={handleSend} disabled={!canSend}>
-                <PaperAirplaneIcon className="me-1.5 h-4 w-4 rtl:rotate-180" />
-                <FormattedMessage id="portal.tickets.reply.send" defaultMessage="Send" />
-              </Button>
+            <div className="mt-6 flex flex-col gap-3">
+              {messages.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  <FormattedMessage
+                    id="portal.tickets.thread.empty"
+                    defaultMessage="No replies yet."
+                  />
+                </p>
+              ) : (
+                messages.map((m) =>
+                  // B25: a system event (stage crossing, the ticket_created
+                  // conversion marker, pair-conversation chat events) renders as
+                  // the centered muted notice, localized from its structured
+                  // event — never as an agent-authored bubble of frozen English.
+                  m.senderType === 'system' ? (
+                    <SystemEventNotice key={m.id} event={m.systemEvent} fallback={m.content} />
+                  ) : (
+                    <VisitorMessageBubble
+                      key={m.id}
+                      content={m.content}
+                      contentJson={m.contentJson}
+                      side={m.senderType === 'visitor' ? 'self' : 'peer'}
+                      authorName={m.author?.displayName ?? undefined}
+                      selfLabel={intl.formatMessage({
+                        id: 'portal.tickets.thread.you',
+                        defaultMessage: 'You',
+                      })}
+                      isAssistant={m.isAssistant}
+                      attachments={m.attachments}
+                      citations={m.citations}
+                      time={formatMessageTime(m.createdAt)}
+                    />
+                  )
+                )
+              )}
+            </div>
+
+            {ticket.stage.slot === 'awaiting_requester' && (
+              <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.04] px-3 py-2 text-[13px] text-amber-700 dark:text-amber-400">
+                <ChatBubbleLeftRightIcon className="size-4 shrink-0" />
+                <FormattedMessage
+                  id="portal.tickets.awaitingReply"
+                  defaultMessage="The team is waiting on your reply."
+                />
+              </div>
+            )}
+
+            <div className="mt-4 rounded-lg border border-border bg-background p-2 focus-within:ring-2 focus-within:ring-primary/20">
+              <RichTextEditor
+                key={editorKey}
+                borderless
+                minHeight="72px"
+                disabled={send.isPending}
+                features={VISITOR_CONVERSATION_FEATURES}
+                placeholder={intl.formatMessage({
+                  id: 'portal.tickets.reply.placeholder',
+                  defaultMessage: 'Reply to the team…',
+                })}
+                onChange={handleEditorChange}
+                onImageUpload={upload}
+                onSubmit={handleSend}
+              />
+              <div className="flex justify-end pt-1">
+                <Button size="sm" onClick={handleSend} disabled={!canSend}>
+                  <PaperAirplaneIcon className="me-1.5 h-4 w-4 rtl:rotate-180" />
+                  <FormattedMessage id="portal.tickets.reply.send" defaultMessage="Send" />
+                </Button>
+              </div>
             </div>
           </div>
-        </>
+
+          <TicketDetailsRail
+            ticket={ticket}
+            stageLabels={stageLabels ?? DEFAULT_TICKET_STAGE_LABELS}
+            intakeTypes={intakeForm?.types ?? []}
+          />
+        </div>
       )}
     </div>
+  )
+}
+
+/** One label/value row in the details rail — the muted icon+label on the start,
+ *  the value on the end, matching the feedback-post metadata sidebar. */
+function RailRow({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: ComponentType<{ className?: string }>
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Icon className="h-4 w-4 shrink-0" />
+        <span>{label}</span>
+      </div>
+      <div className="min-w-0 text-end text-sm font-medium text-foreground">{children}</div>
+    </div>
+  )
+}
+
+/** Render one stored intake answer as customer-facing text, keyed off the
+ *  field's declared type (checkbox → Yes/No, date → localized day, lists →
+ *  comma-joined). Returns null for an empty/unset answer so the caller can skip
+ *  the row entirely. */
+function formatIntakeValue(
+  field: TicketFormField,
+  value: unknown,
+  intl: ReturnType<typeof useIntl>
+): string | null {
+  const read = readAttributeValue(value)
+  if (!read) return null
+  const v = read.v
+  if (v === null || v === undefined || v === '') return null
+  if (Array.isArray(v)) {
+    const joined = v.filter((x) => x !== null && x !== '').join(', ')
+    return joined || null
+  }
+  if (field.type === 'checkbox') {
+    return v
+      ? intl.formatMessage({ id: 'portal.tickets.details.yes', defaultMessage: 'Yes' })
+      : intl.formatMessage({ id: 'portal.tickets.details.no', defaultMessage: 'No' })
+  }
+  if (field.type === 'date' && typeof v === 'string') {
+    const d = new Date(v)
+    return Number.isNaN(d.getTime())
+      ? v
+      : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })
+  }
+  return String(v)
+}
+
+/**
+ * The customer-facing ticket details rail (the requester's twin of the
+ * feedback-post metadata sidebar): reference + status + dates up top, then the
+ * intake answers the requester themselves gave, resolved back to their field
+ * labels via the intake form. Mirrors the post sidebar's card aesthetic
+ * (`rounded-xl border bg-card` rows) and, like it, is desktop-only.
+ */
+function TicketDetailsRail({
+  ticket,
+  stageLabels,
+  intakeTypes,
+}: {
+  ticket: RequesterTicketDTO
+  stageLabels: TicketStageLabels
+  intakeTypes: TicketIntakeType[]
+}) {
+  const intl = useIntl()
+
+  const stageLabel = ticket.stage.closed
+    ? intl.formatMessage({ id: 'portal.tickets.stage.closed', defaultMessage: 'Closed' })
+    : ticket.stage.slot
+      ? stageLabels[ticket.stage.slot]
+      : ticket.stage.label
+
+  // Resolve the ticket's stored intake answers back to their field labels using
+  // the type this ticket was filed under. Only customer-visible fields with a
+  // real answer render (the form already carries only `visibleToCustomer` ones).
+  const intakeType = ticket.ticketType
+    ? intakeTypes.find((t) => t.id === ticket.ticketType?.id)
+    : undefined
+  const answers = (intakeType?.fields ?? [])
+    .map((field) => ({
+      field,
+      text: formatIntakeValue(field, ticket.customAttributes[field.key], intl),
+    }))
+    .filter((a): a is { field: TicketFormField; text: string } => a.text !== null)
+
+  const lastActivity = ticket.lastMessageAt ?? ticket.updatedAt
+
+  return (
+    <aside className="mt-8 lg:mt-0 lg:w-72 lg:shrink-0">
+      <div
+        className={cn(
+          'rounded-xl border border-border/20 bg-card p-4 shadow-sm',
+          'space-y-4 lg:sticky lg:top-6'
+        )}
+      >
+        <RailRow
+          icon={HashtagIcon}
+          label={intl.formatMessage({
+            id: 'portal.tickets.details.reference',
+            defaultMessage: 'Reference',
+          })}
+        >
+          <span className="font-mono">{ticket.reference}</span>
+        </RailRow>
+
+        {stageLabel && (
+          <RailRow
+            icon={ClockIcon}
+            label={intl.formatMessage({
+              id: 'portal.tickets.details.status',
+              defaultMessage: 'Status',
+            })}
+          >
+            {stageLabel}
+          </RailRow>
+        )}
+
+        {ticket.ticketType && (
+          <RailRow
+            icon={Squares2X2Icon}
+            label={intl.formatMessage({
+              id: 'portal.tickets.details.type',
+              defaultMessage: 'Type',
+            })}
+          >
+            <span className="truncate">{ticket.ticketType.name}</span>
+          </RailRow>
+        )}
+
+        <RailRow
+          icon={CalendarIcon}
+          label={intl.formatMessage({
+            id: 'portal.tickets.details.opened',
+            defaultMessage: 'Opened',
+          })}
+        >
+          <TimeAgo
+            date={new Date(ticket.createdAt)}
+            className="text-sm font-medium text-foreground"
+          />
+        </RailRow>
+
+        {lastActivity && (
+          <RailRow
+            icon={CalendarIcon}
+            label={intl.formatMessage({
+              id: 'portal.tickets.details.lastActivity',
+              defaultMessage: 'Last activity',
+            })}
+          >
+            <TimeAgo
+              date={new Date(lastActivity)}
+              className="text-sm font-medium text-foreground"
+            />
+          </RailRow>
+        )}
+
+        {answers.length > 0 && (
+          <div className="space-y-3 border-t border-border/30 pt-4">
+            {answers.map(({ field, text }) => (
+              <div key={field.key}>
+                <p className="text-xs text-muted-foreground">{field.label}</p>
+                <p className="mt-0.5 whitespace-pre-wrap break-words text-sm text-foreground">
+                  {text}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </aside>
   )
 }

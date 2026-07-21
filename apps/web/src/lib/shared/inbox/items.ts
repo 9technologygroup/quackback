@@ -22,11 +22,12 @@ export type InboxItemRef =
   | { kind: 'ticket'; id: TicketId }
 
 /** The linked customer ticket's summary, carried on a conversation item so the
- *  list row can render its chip (`#N · <status name>`) without a second fetch
+ *  list row can render its ticket line (`#N · <title>`) without a second fetch
  *  per row (batched in inbox.query.ts). */
 export interface LinkedTicketSummary {
   id: TicketId
   number: number
+  title: string
   statusName: string
   statusCategory: TicketStatusCategory
 }

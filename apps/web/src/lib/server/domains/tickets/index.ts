@@ -18,6 +18,8 @@ export type {
   TicketAssigneeRef,
   TicketCompanyRef,
   TicketDTO,
+  RequesterTicketDTO,
+  TicketTypeRef,
   TicketListPage,
   BulkTicketAction,
   BulkTicketResult,

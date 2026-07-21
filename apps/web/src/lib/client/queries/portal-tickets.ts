@@ -11,6 +11,7 @@ import {
   getMyTicketThreadFn,
   getMyTicketWatchStatusFn,
   getMyTicketStageLabelsFn,
+  getMyTicketFormFn,
 } from '@/lib/server/functions/tickets'
 
 export const portalTicketKeys = {
@@ -22,6 +23,9 @@ export const portalTicketKeys = {
   watch: (id: TicketId) => [...portalTicketKeys.all(), 'watch', id] as const,
   /** The workspace's (customized) requester-facing stage labels. */
   stageLabels: () => [...portalTicketKeys.all(), 'stage-labels'] as const,
+  /** The intake form (customer-visible types + fields) — used to resolve a
+   *  ticket's stored intake answers back to their field labels for display. */
+  form: () => [...portalTicketKeys.all(), 'form'] as const,
 }
 
 export const portalTicketQueries = {
@@ -63,6 +67,16 @@ export const portalTicketQueries = {
     queryOptions({
       queryKey: portalTicketKeys.stageLabels(),
       queryFn: () => getMyTicketStageLabelsFn(),
+      staleTime: 300_000,
+    }),
+
+  /** The intake form (customer-visible types + their fields). Edited rarely
+   *  (ticket settings) and reused across the requester's tickets to label the
+   *  stored intake answers, so a long stale window is fine. */
+  form: () =>
+    queryOptions({
+      queryKey: portalTicketKeys.form(),
+      queryFn: () => getMyTicketFormFn(),
       staleTime: 300_000,
     }),
 }

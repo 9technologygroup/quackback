@@ -13,18 +13,11 @@ import type { TicketType } from '@/lib/shared/db-types'
 import { NewConversationDialog } from '@/components/admin/conversation/new-conversation-dialog'
 import { priorityMeta } from '@/lib/shared/conversation/priority-meta'
 import { PriorityDot, PriorityMenuItems } from '@/components/admin/conversation/priority-control'
-import { ChannelBadge } from '@/components/admin/conversation/channel-badge'
-import { SlaChip } from '@/components/admin/conversation/sla-chip'
 import {
   InboxScopeMenu,
   type InboxNavItem,
 } from '@/components/admin/conversation/inbox-nav-sidebar'
-import {
-  TicketStatusChip,
-  CATEGORY_CHIP,
-  TICKET_TYPE_CLASS,
-} from '@/components/admin/inbox/ticket-chips'
-import { TagChip } from '@/components/shared/tag-chip'
+import { TicketStatusChip, TICKET_TYPE_CLASS } from '@/components/admin/inbox/ticket-chips'
 import { Spinner } from '@/components/shared/spinner'
 import { Avatar } from '@/components/ui/avatar'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -92,27 +85,6 @@ function emptyStateMessage(nav: InboxNavItem, facet: InboxTriageFacet, scopeLabe
   // Unscoped empty inbox — first-run friendly, not filter-blame.
   if (facet === 'all') return 'No conversations yet'
   return `No ${facet} conversations`
-}
-
-/** A minimal category-tinted chip for the linked-customer-ticket summary on a
- *  conversation row. `LinkedTicketSummary` carries no per-status color (unlike
- *  the full `TicketStatusRef`), so this doesn't reuse `TicketStatusChip` — but
- *  it shares `CATEGORY_CHIP`'s tint so the two surfaces can't drift apart. */
-function LinkedTicketChip({
-  ticket,
-}: {
-  ticket: NonNullable<Extract<InboxItemDTO, { kind: 'conversation' }>['linkedTicket']>
-}) {
-  return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
-        CATEGORY_CHIP[ticket.statusCategory] ?? CATEGORY_CHIP.closed
-      )}
-    >
-      #{ticket.number} · {ticket.statusName}
-    </span>
-  )
 }
 
 const TICKET_TYPE_ICON: Record<TicketType, typeof TicketIcon> = {
@@ -614,10 +586,13 @@ const ConversationRow = memo(function ConversationRow({
       ariaLabel={`Select conversation from ${c.visitor.displayName ?? 'Visitor'}`}
       onToggleSelect={(range) => onToggleSelect(id, { range })}
     >
+      {/* Rows keep a fixed anatomy (name / linked-ticket line / preview + time)
+          so the list scans uniformly — the sometimes-present decorations
+          (priority dot, SLA, channel, tags) live on the thread, not here. */}
       <button
         type="button"
         onClick={() => onSelect(id)}
-        className="flex min-w-0 flex-1 items-start gap-2.5 py-3 pl-1.5 pr-3 text-left"
+        className="flex min-w-0 flex-1 items-center gap-2.5 py-3 pl-1.5 pr-3 text-left"
       >
         <Avatar
           src={c.visitor.avatarUrl}
@@ -626,44 +601,31 @@ const ConversationRow = memo(function ConversationRow({
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
-            <span className="flex min-w-0 items-center gap-1.5">
-              <PriorityDot priority={c.priority} />
-              <span className="truncate text-sm font-medium">
-                {c.visitor.displayName ?? 'Visitor'}
-              </span>
+            <span className="truncate text-sm font-medium">
+              {c.visitor.displayName ?? 'Visitor'}
             </span>
+            {c.unreadCount > 0 && (
+              <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold text-primary-foreground">
+                {c.unreadCount}
+              </span>
+            )}
+          </div>
+          {item.linkedTicket && (
+            <div className="mt-0.5 flex items-center gap-1 text-xs">
+              <TicketIcon className="size-3.5 shrink-0 text-foreground/70" />
+              <span className="shrink-0 text-foreground/80">#{item.linkedTicket.number}</span>
+              <span className="truncate text-muted-foreground">· {item.linkedTicket.title}</span>
+            </div>
+          )}
+          <div className="mt-0.5 flex items-center justify-between gap-2">
+            <p className="min-w-0 truncate text-xs text-muted-foreground">
+              {c.lastMessagePreview ?? c.subject ?? 'No messages yet'}
+            </p>
             <span className="shrink-0 text-xs text-muted-foreground">
               {relativeTime(c.lastMessageAt)}
             </span>
           </div>
-          {item.linkedTicket && (
-            <div className="mt-1">
-              <LinkedTicketChip ticket={item.linkedTicket} />
-            </div>
-          )}
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {c.lastMessagePreview ?? c.subject ?? 'No messages yet'}
-          </p>
-          {(c.channel !== 'messenger' || c.tags.length > 0 || c.sla) && (
-            <div className="mt-1 flex flex-wrap items-center gap-1">
-              <SlaChip sla={c.sla} status={c.status} />
-              {c.channel !== 'messenger' && <ChannelBadge channel={c.channel} />}
-              {c.tags.map((t) => (
-                <TagChip
-                  key={t.id}
-                  name={t.name}
-                  color={t.color}
-                  className="px-1.5 py-0 text-[11px]"
-                />
-              ))}
-            </div>
-          )}
         </div>
-        {c.unreadCount > 0 && (
-          <span className="mt-1 inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold text-primary-foreground">
-            {c.unreadCount}
-          </span>
-        )}
       </button>
     </RowShell>
   )
@@ -695,37 +657,38 @@ const TicketRow = memo(function TicketRow({
       ariaLabel={`Select ticket ${t.reference}`}
       onToggleSelect={(range) => onToggleSelect(id, { range })}
     >
+      {/* Same fixed anatomy as ConversationRow (title / ticket line /
+          preview + time) so mixed lists scan as one column. */}
       <button
         type="button"
         onClick={() => onSelect(id)}
-        className="flex min-w-0 flex-1 items-start gap-2.5 py-3 pl-1.5 pr-3 text-left"
+        className="flex min-w-0 flex-1 items-center gap-2.5 py-3 pl-1.5 pr-3 text-left"
       >
         <TicketTypeGlyph type={t.type} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
-            <span className="flex min-w-0 items-center gap-1.5">
-              <PriorityDot priority={t.priority} />
-              <span className="truncate text-sm font-medium">{t.title}</span>
+            <span className="truncate text-sm font-medium">{t.title}</span>
+            <span className="flex shrink-0 items-center gap-1.5">
+              <TicketAssigneeGlyph assignee={t.assignee} />
+              {item.unreadCount > 0 && (
+                <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold text-primary-foreground">
+                  {item.unreadCount}
+                </span>
+              )}
             </span>
+          </div>
+          <div className="mt-0.5 flex items-center gap-1.5">
+            <span className="font-mono text-xs text-foreground/80">#{t.number}</span>
+            <TicketStatusChip status={t.status} />
+          </div>
+          <div className="mt-0.5 flex items-center justify-between gap-2">
+            <p className="min-w-0 truncate text-xs text-muted-foreground">
+              {t.lastMessagePreview ?? 'No messages yet'}
+            </p>
             <span className="shrink-0 text-xs text-muted-foreground">
               {relativeTime(t.updatedAt)}
             </span>
           </div>
-          <div className="mt-1 flex items-center gap-1.5">
-            <span className="font-mono text-xs text-muted-foreground">#{t.number}</span>
-            <TicketStatusChip status={t.status} />
-          </div>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {t.lastMessagePreview ?? 'No messages yet'}
-          </p>
-        </div>
-        <div className="mt-1 flex shrink-0 flex-col items-end gap-1">
-          <TicketAssigneeGlyph assignee={t.assignee} />
-          {item.unreadCount > 0 && (
-            <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold text-primary-foreground">
-              {item.unreadCount}
-            </span>
-          )}
         </div>
       </button>
     </RowShell>

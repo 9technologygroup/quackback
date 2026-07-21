@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
   stripCitationMarkers,
-  formatConversationSummaryNote,
   parseAnswerMarkdown,
   answerMarkdownForInsert,
 } from '../copilot-format'
@@ -48,28 +47,6 @@ describe('stripCitationMarkers', () => {
 
   it('trims surrounding whitespace', () => {
     expect(stripCitationMarkers('  padded text [1]  ')).toBe('padded text')
-  })
-})
-
-describe('formatConversationSummaryNote', () => {
-  it('formats a Question line and a Summary bullet list', () => {
-    const text = formatConversationSummaryNote('Duplicate March invoice charge', [
-      'Customer was charged twice for their March invoice.',
-      'Refunded the duplicate charge.',
-    ])
-    expect(text).toBe(
-      'Question\nDuplicate March invoice charge\n\nSummary\n- Customer was charged twice for their March invoice.\n- Refunded the duplicate charge.'
-    )
-  })
-
-  it('formats a single bullet with no trailing separator', () => {
-    const text = formatConversationSummaryNote('Refund window', ['Explained the 30-day window.'])
-    expect(text).toBe('Question\nRefund window\n\nSummary\n- Explained the 30-day window.')
-  })
-
-  it('renders an empty bullet list as a bare Summary heading', () => {
-    const text = formatConversationSummaryNote('Unresolved billing question', [])
-    expect(text).toBe('Question\nUnresolved billing question\n\nSummary\n')
   })
 })
 

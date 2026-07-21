@@ -205,11 +205,16 @@ function AttributeFormDialog({
   }, [open])
 
   // AI detection is select-only: clear it if the author switches away from
-  // select (only reachable pre-creation, since type locks after that).
+  // select (only reachable pre-creation, since type locks after that). On a
+  // NEW attribute it defaults ON when the type supports it, so Quinn assigns
+  // attributes automatically unless the author opts out; editing never
+  // overrides the stored choice.
   useEffect(() => {
     if (!supportsAiDetect(fieldType)) {
       setAiDetect(false)
       setDetectOnClose(false)
+    } else if (!isEditing) {
+      setAiDetect(initialValues?.aiDetect ?? true)
     }
   }, [fieldType])
 
