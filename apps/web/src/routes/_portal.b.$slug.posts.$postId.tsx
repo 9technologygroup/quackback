@@ -70,7 +70,17 @@ export const Route = createFileRoute('/_portal/b/$slug/posts/$postId')({
         queryFn: () => getPostPermissionsFn({ data: { postId } }),
         staleTime: 30_000,
       }),
-    ])
+    ]).catch((error: unknown) => {
+      // fetchPublicPostDetail returns null for a post the viewer can't see
+      // (missing, deleted, or board access denied) and the queryFn surfaces
+      // that as an error. Render it as the not-found page rather than the
+      // generic error boundary — a denied viewer must get the same page as
+      // a nonexistent post.
+      if (error instanceof Error && error.message === 'Post not found') {
+        throw notFound()
+      }
+      throw error
+    })
 
     if (!post || post.board.slug !== slug) {
       throw notFound()
