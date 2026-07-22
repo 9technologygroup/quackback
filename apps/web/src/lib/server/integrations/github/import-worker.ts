@@ -114,27 +114,36 @@ export async function processGitHubImportJob(
         )
       }
 
-      // Import the issue's comments.
-      const comments = await listGitHubIssueComments(accessToken, ownerRepo, row.number)
-      for (const c of comments) {
-        const cLogin = c.user?.login
-        const commenterPrincipal = cLogin
-          ? await resolveGitHubReporterPrincipal({
+      // Import the issue's comments (skip the fetch when there are none).
+      if ((row.comments ?? 1) > 0) {
+        const comments = await listGitHubIssueComments(accessToken, ownerRepo, row.number)
+        for (const c of comments) {
+          // Each comment is isolated: one bad comment must not error the whole
+          // issue, or a re-run would skip the (now-linked) issue and lose the rest.
+          try {
+            const cLogin = c.user?.login ?? 'ghost'
+            const commenterPrincipal = await resolveGitHubReporterPrincipal({
               githubId: c.user?.id ?? null,
               login: cLogin,
               name: cLogin,
             })
-          : authorPrincipalId
-        await createComment(
-          {
-            postId: created.id as PostId,
-            content: (c.body ?? '').slice(0, 5000),
-            createdAt: new Date(c.created_at),
-          },
-          { principalId: commenterPrincipal, role: 'user' },
-          teamActor(commenterPrincipal),
-          { skipDispatch: true }
-        )
+            await createComment(
+              {
+                postId: created.id as PostId,
+                content: (c.body ?? '').slice(0, 5000),
+                createdAt: new Date(c.created_at),
+              },
+              { principalId: commenterPrincipal, role: 'user' },
+              teamActor(commenterPrincipal),
+              { skipDispatch: true }
+            )
+          } catch (commentErr) {
+            log.warn(
+              { err: commentErr, issue: row.number, comment_id: c.id },
+              'failed to import a comment; continuing'
+            )
+          }
+        }
       }
 
       progress.imported++

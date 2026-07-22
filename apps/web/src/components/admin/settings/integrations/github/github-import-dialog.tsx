@@ -52,6 +52,7 @@ interface ImportRowPayload {
   title: string
   body: string
   url: string
+  comments?: number
   authorLogin: string | null
   authorId: number | null
   createdAt: string
@@ -84,20 +85,30 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
     staleTime: 60_000,
   })
 
-  // Seed local editable state whenever a page loads.
+  // Seed local editable state from suggestions. Merge (keyed by issue number)
+  // so an incidental refetch (window focus, post-import invalidate) never wipes
+  // the admin's manual edits; only unseen rows are seeded, and a freshly
+  // imported row is unchecked so it isn't re-sent.
   useEffect(() => {
     if (!issuesQ.data) return
-    const next: Record<number, RowState> = {}
-    for (const r of issuesQ.data.rows) {
-      next[r.number] = {
-        include: !r.alreadyImported && !!r.suggestedBoardId,
-        boardId: r.suggestedBoardId ?? '',
-        statusId: r.suggestedStatusId ?? '',
-        tagIds: r.suggestedTagIds,
-        roadmapId: NONE,
+    setRowStates((prev) => {
+      const next = { ...prev }
+      for (const r of issuesQ.data.rows) {
+        const existing = next[r.number]
+        if (!existing) {
+          next[r.number] = {
+            include: !r.alreadyImported && !!r.suggestedBoardId,
+            boardId: r.suggestedBoardId ?? '',
+            statusId: r.suggestedStatusId ?? '',
+            tagIds: r.suggestedTagIds,
+            roadmapId: NONE,
+          }
+        } else if (r.alreadyImported && existing.include) {
+          next[r.number] = { ...existing, include: false }
+        }
       }
-    }
-    setRowStates(next)
+      return next
+    })
   }, [issuesQ.data])
 
   const setRow = (num: number, patch: Partial<RowState>) =>
@@ -108,44 +119,59 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
     queryFn: () => getGitHubImportStatusFn({ data: { jobId: jobId as string } }),
     enabled: !!jobId,
     refetchInterval: (q) => {
-      const st = q.state.data?.state
+      const data = q.state.data
+      // null = job evicted/unknown → stop; completed/failed → stop.
+      if (data === null) return false
+      const st = data?.state
       return st === 'completed' || st === 'failed' ? false : 1500
     },
   })
 
-  // When a job finishes, refresh the current page so imported flags update.
+  const jobData = statusQ.data // GitHubImportStatus | null | undefined
+  const jobMissing = !!jobId && jobData === null
+  const jobState = jobData?.state
+  const jobFailed = jobState === 'failed'
+  const jobDone = jobState === 'completed'
+  const importing = !!jobId && !jobMissing && !jobFailed && !jobDone
+  const progress = jobData?.progress ?? null
+
+  // When a job reaches a terminal state, refresh the page so imported flags update.
   useEffect(() => {
-    const st = statusQ.data?.state
-    if (st === 'completed' || st === 'failed') {
+    if (jobDone || jobFailed || jobMissing) {
       queryClient.invalidateQueries({ queryKey: ['github-import', 'issues', page] })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusQ.data?.state])
+  }, [jobDone, jobFailed, jobMissing])
 
   const importMutation = useMutation({
     mutationFn: (rows: ImportRowPayload[]) => startGitHubImportFn({ data: { rows } }),
     onSuccess: (res) => setJobId(res.jobId),
   })
 
+  // A row is importable only if it's included AND has a board — the button
+  // count and the payload use this same predicate so they can't disagree.
+  const importableRows = (issuesQ.data?.rows ?? []).filter(
+    (r) => rowStates[r.number]?.include && rowStates[r.number]?.boardId
+  )
+
   const startImport = () => {
-    const rows: ImportRowPayload[] = (issuesQ.data?.rows ?? [])
-      .filter((r) => rowStates[r.number]?.include && rowStates[r.number]?.boardId)
-      .map((r) => {
-        const st = rowStates[r.number]
-        return {
-          number: r.number,
-          title: r.title,
-          body: r.body,
-          url: r.url,
-          authorLogin: r.authorLogin,
-          authorId: r.authorId,
-          createdAt: r.createdAt,
-          boardId: st.boardId,
-          statusId: st.statusId || undefined,
-          tagIds: st.tagIds,
-          roadmapId: st.roadmapId === NONE ? undefined : st.roadmapId,
-        }
-      })
+    const rows: ImportRowPayload[] = importableRows.map((r) => {
+      const st = rowStates[r.number]
+      return {
+        number: r.number,
+        title: r.title,
+        body: r.body,
+        url: r.url,
+        comments: r.comments,
+        authorLogin: r.authorLogin,
+        authorId: r.authorId,
+        createdAt: r.createdAt,
+        boardId: st.boardId,
+        statusId: st.statusId || undefined,
+        tagIds: st.tagIds,
+        roadmapId: st.roadmapId === NONE ? undefined : st.roadmapId,
+      }
+    })
     if (rows.length) importMutation.mutate(rows)
   }
 
@@ -153,13 +179,7 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
   const statuses = statusesQ.data ?? []
   const roadmaps = roadmapsQ.data ?? []
   const tagOptions = (tagsQ.data ?? []).map((t) => ({ value: t.id as string, label: t.name }))
-
-  const progress = statusQ.data?.progress
-  const jobState = statusQ.data?.state
-  const importing = !!jobId && jobState !== 'completed' && jobState !== 'failed'
-  const includedCount = (issuesQ.data?.rows ?? []).filter(
-    (r) => rowStates[r.number]?.include
-  ).length
+  const includedCount = importableRows.length
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -172,25 +192,42 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
           </DialogDescription>
         </DialogHeader>
 
-        {progress && (
+        {jobId && (progress || jobFailed || jobMissing) && (
           <div className="rounded-md border p-3 text-sm">
-            <div className="mb-1 flex justify-between">
-              <span>{importing ? 'Importing…' : 'Import complete'}</span>
-              <span>
-                {progress.done}/{progress.total}
+            {jobMissing ? (
+              <span className="text-destructive">
+                Import status is no longer available (the job was evicted). Some rows may have been
+                imported — the list below reflects the current state; anything not imported can be
+                run again.
               </span>
-            </div>
-            <div className="h-2 w-full overflow-hidden rounded bg-muted">
-              <div
-                className="h-full bg-primary transition-all"
-                style={{
-                  width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%`,
-                }}
-              />
-            </div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              {progress.imported} imported · {progress.skipped} skipped · {progress.errors} errors
-            </div>
+            ) : jobFailed ? (
+              <span className="text-destructive">
+                Import failed
+                {progress ? ` after ${progress.imported} imported` : ' before it started'}. Check
+                the repository and connection, then try again.
+              </span>
+            ) : progress ? (
+              <>
+                <div className="mb-1 flex justify-between">
+                  <span>{importing ? 'Importing…' : 'Import complete'}</span>
+                  <span>
+                    {progress.done}/{progress.total}
+                  </span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded bg-muted">
+                  <div
+                    className="h-full bg-primary transition-all"
+                    style={{
+                      width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%`,
+                    }}
+                  />
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {progress.imported} imported · {progress.skipped} skipped · {progress.errors}{' '}
+                  errors
+                </div>
+              </>
+            ) : null}
           </div>
         )}
 

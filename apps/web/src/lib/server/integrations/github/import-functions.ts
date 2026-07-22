@@ -21,6 +21,7 @@ export interface GitHubIssueImportRow {
   authorLogin: string | null
   authorId: number | null
   createdAt: string
+  comments: number
   alreadyImported: boolean
   suggestedBoardId: string | null
   suggestedStatusId: string | null
@@ -50,7 +51,9 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
     const { db, integrations, postExternalLinks, eq, and, inArray } = await import('@/lib/server/db')
     const { decryptSecrets } = await import('../encryption')
     const { listGitHubIssues, issueLabelNames } = await import('./issues')
-    const { routeBoardSlug, mapStatusSlug } = await import('./issue-mapping')
+    const { suggestBoardCategory, resolveSuggestedBoardId, mapStatusSlug } = await import(
+      './issue-mapping'
+    )
     const { listBoards } = await import('@/lib/server/domains/boards/board.service')
     const { listStatuses } = await import('@/lib/server/domains/statuses/status.service')
     const { listTags } = await import('@/lib/server/domains/tags/tag.service')
@@ -78,7 +81,7 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
 
     // Reference data for suggested mappings.
     const [boards, statuses, tags] = await Promise.all([listBoards(), listStatuses(), listTags()])
-    const boardBySlug = new Map(boards.map((b) => [b.slug, b.id as string]))
+    const boardList = boards.map((b) => ({ id: b.id as string, slug: b.slug, name: b.name }))
     const statusBySlug = new Map(
       statuses.map((s) => [slugKey((s as { slug?: string }).slug ?? s.name), s.id as string])
     )
@@ -113,8 +116,9 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
         authorLogin: issue.user?.login ?? null,
         authorId: issue.user?.id ?? null,
         createdAt: issue.created_at,
+        comments: issue.comments ?? 0,
         alreadyImported: importedNumbers.has(String(issue.number)),
-        suggestedBoardId: boardBySlug.get(routeBoardSlug(labels)) ?? null,
+        suggestedBoardId: resolveSuggestedBoardId(suggestBoardCategory(labels), boardList),
         suggestedStatusId: statusBySlug.get(mapStatusSlug(issue.state, issue.state_reason)) ?? null,
         suggestedTagIds,
       }
@@ -125,12 +129,13 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
 
 const importRowSchema = z.object({
   number: z.number().int(),
-  title: z.string(),
-  body: z.string(),
-  url: z.string(),
+  title: z.string().max(500),
+  body: z.string().max(65536),
+  url: z.string().url().startsWith('https://'),
+  comments: z.number().int().min(0).optional(),
   authorLogin: z.string().nullable(),
   authorId: z.number().int().nullable(),
-  createdAt: z.string(),
+  createdAt: z.string().datetime(),
   boardId: z.string().min(1),
   statusId: z.string().optional(),
   tagIds: z.array(z.string()),
