@@ -181,6 +181,26 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
   const tagOptions = (tagsQ.data ?? []).map((t) => ({ value: t.id as string, label: t.name }))
   const includedCount = importableRows.length
 
+  // Master select-all over the selectable (not already-imported) rows on this page.
+  const selectableRows = (issuesQ.data?.rows ?? []).filter((r) => !r.alreadyImported)
+  const allSelected =
+    selectableRows.length > 0 && selectableRows.every((r) => rowStates[r.number]?.include)
+  const someSelected = selectableRows.some((r) => rowStates[r.number]?.include)
+  const headerChecked: boolean | 'indeterminate' = allSelected
+    ? true
+    : someSelected
+      ? 'indeterminate'
+      : false
+
+  const toggleAll = (checked: boolean) =>
+    setRowStates((prev) => {
+      const next = { ...prev }
+      for (const r of selectableRows) {
+        if (next[r.number]) next[r.number] = { ...next[r.number], include: checked }
+      }
+      return next
+    })
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-5xl">
@@ -245,7 +265,14 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-8" />
+                  <TableHead className="w-8">
+                    <Checkbox
+                      checked={headerChecked}
+                      disabled={importing || selectableRows.length === 0}
+                      onCheckedChange={(c) => toggleAll(c === true)}
+                      aria-label="Select all"
+                    />
+                  </TableHead>
                   <TableHead>Issue</TableHead>
                   <TableHead>Board</TableHead>
                   <TableHead>Status</TableHead>
