@@ -299,6 +299,13 @@ export async function runApiImport(options: ApiImportOptions): Promise<ImportRes
           ...(tagIds.length > 0 && { tagIds }),
           ...(post.createdAt && { createdAt: new Date(post.createdAt).toISOString() }),
           ...(authorPrincipalId && { authorPrincipalId }),
+          ...(post.externalLink && {
+            link: {
+              integrationType: post.externalLink.integrationType,
+              externalId: post.id,
+              externalUrl: post.externalLink.externalUrl,
+            },
+          }),
         })
 
         idMap.posts.set(post.id, resp.data.id)

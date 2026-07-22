@@ -53,6 +53,15 @@ export interface IntermediatePost {
   responseBy?: string
   /** External post ID this post was merged into (for merge relationships) */
   mergedIntoId?: string
+  /**
+   * External tracker link to persist for this post (e.g. the GitHub issue).
+   * The post's `id` is used as the external id. Enables reverse-lookup status
+   * sync and idempotent re-imports via post_external_links.
+   */
+  externalLink?: {
+    integrationType: string
+    externalUrl?: string
+  }
 }
 
 /**
