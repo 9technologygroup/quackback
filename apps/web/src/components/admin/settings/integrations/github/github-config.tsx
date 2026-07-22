@@ -221,7 +221,9 @@ export function GitHubConfig({
 
       <div className="space-y-3">
         <Label className="text-base font-medium">Events</Label>
-        <p className="text-xs text-muted-foreground">Choose which events trigger issue creation</p>
+        <p className="text-xs text-muted-foreground">
+          Choose which events sync between Quackback and GitHub
+        </p>
         <div className="space-y-3 pt-2">
           {EVENT_CONFIG.map((event) => (
             <div

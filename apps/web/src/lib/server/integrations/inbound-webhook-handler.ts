@@ -212,23 +212,24 @@ async function handleInboundCreatePost(
     return new Response('OK', { status: 200 })
   }
 
-  const { resolveGitHubReporterPrincipal } = await import('./github/reporter-resolver')
   const { createPost } = await import('@/lib/server/domains/posts/post.service')
   const { linkTicketToPost } = await import('./apps/service')
   const { segmentIdsForPrincipal } = await import(
     '@/lib/server/domains/segments/segment-membership.service'
   )
 
-  // 4. Resolve author: the mapped reporter, else the integration service principal.
+  // 4. Resolve author. Reporter resolution is provider-specific, so it's gated
+  //    by integration type; other integrations fall back to the service principal.
   let authorPrincipalId: PrincipalId
-  if (intent.reporter) {
+  if (intent.reporter && integrationType === 'github') {
+    const { resolveGitHubReporterPrincipal } = await import('./github/reporter-resolver')
     authorPrincipalId = await resolveGitHubReporterPrincipal(intent.reporter)
   } else if (integration.principalId) {
     authorPrincipalId = integration.principalId
   } else {
     log.error(
       { integration_type: integrationType },
-      'no reporter and no service principal; skipping create'
+      'no resolvable reporter and no service principal; skipping create'
     )
     return new Response('OK', { status: 200 })
   }
@@ -241,35 +242,46 @@ async function handleInboundCreatePost(
     segmentIds,
   }
 
-  const created = await createPost(
-    {
-      boardId: boardId as BoardId,
-      title: intent.title.slice(0, 200),
-      content: (intent.body ?? '').slice(0, 10000),
-    },
-    { principalId: authorPrincipalId, actor },
-    { skipDispatch: true }
-  )
+  // Wrap create + link so a config error (e.g. a deleted board) returns 200
+  // rather than 500 — a 500 would flag the whole GitHub webhook as failing.
+  try {
+    const created = await createPost(
+      {
+        boardId: boardId as BoardId,
+        title: intent.title.slice(0, 200),
+        content: (intent.body ?? '').slice(0, 10000),
+      },
+      { principalId: authorPrincipalId, actor },
+      { skipDispatch: true }
+    )
 
-  // 5. Link the post to the external item so subsequent close/reopen webhooks
-  //    sync its status and repeat deliveries stay idempotent.
-  await linkTicketToPost(
-    {
-      postId: created.id as PostId,
-      integrationType,
-      externalId: intent.externalId,
-      externalUrl: intent.externalUrl,
-    },
-    authorPrincipalId
-  )
+    // 5. Link the post to the external item so subsequent close/reopen webhooks
+    //    sync its status and repeat deliveries stay idempotent.
+    await linkTicketToPost(
+      {
+        postId: created.id as PostId,
+        integrationId: integration.id,
+        integrationType,
+        externalId: intent.externalId,
+        externalUrl: intent.externalUrl,
+      },
+      authorPrincipalId
+    )
 
-  log.info(
-    {
-      post_id: created.id,
-      external_id: intent.externalId,
-      integration_type: integrationType,
-    },
-    'inbound create-post applied'
-  )
+    log.info(
+      {
+        post_id: created.id,
+        external_id: intent.externalId,
+        integration_type: integrationType,
+      },
+      'inbound create-post applied'
+    )
+  } catch (error) {
+    log.error(
+      { err: error, integration_type: integrationType, external_id: intent.externalId },
+      'inbound create-post failed'
+    )
+  }
+
   return new Response('OK', { status: 200 })
 }

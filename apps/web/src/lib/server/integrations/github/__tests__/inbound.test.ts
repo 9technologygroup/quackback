@@ -14,9 +14,14 @@ function makeRequest(headers: Record<string, string> = {}): Request {
   return new Request('https://example.com/webhook', { headers })
 }
 
-function issuePayload(action: string, issue: Record<string, unknown> = {}) {
+function issuePayload(
+  action: string,
+  issue: Record<string, unknown> = {},
+  repoFullName = 'acme/app'
+) {
   return JSON.stringify({
     action,
+    repository: { full_name: repoFullName },
     issue: {
       number: 142,
       title: 'Something is broken',
@@ -76,6 +81,32 @@ describe('githubInboundHandler.parseCreatePost', () => {
     const body = issuePayload('opened', { title: '' })
     const intent = await githubInboundHandler.parseCreatePost!(body, {}, {})
     expect(intent?.title).toBe('Issue #142')
+  })
+
+  it('skips issues Quackback itself created (echo prevention)', async () => {
+    const body = issuePayload('opened', {
+      body: 'Some feedback\n\n---\n\n[View in Quackback](https://feedback.acme.com/p/123)',
+    })
+    expect(await githubInboundHandler.parseCreatePost!(body, {}, {})).toBeNull()
+  })
+
+  it('rejects issues from a repo other than the configured one', async () => {
+    const body = issuePayload('opened', {}, 'someone-else/other-repo')
+    expect(
+      await githubInboundHandler.parseCreatePost!(body, { channelId: 'acme/app' }, {})
+    ).toBeNull()
+  })
+
+  it('accepts issues from the configured repo', async () => {
+    const body = issuePayload('opened', {}, 'acme/app')
+    const intent = await githubInboundHandler.parseCreatePost!(body, { channelId: 'acme/app' }, {})
+    expect(intent?.externalId).toBe('142')
+  })
+
+  it('omits the reporter when the user has no login', async () => {
+    const body = issuePayload('opened', { user: { id: 5 } })
+    const intent = await githubInboundHandler.parseCreatePost!(body, {}, {})
+    expect(intent?.reporter).toBeUndefined()
   })
 })
 
