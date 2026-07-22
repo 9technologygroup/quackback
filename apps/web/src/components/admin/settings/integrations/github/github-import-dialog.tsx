@@ -220,7 +220,7 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
         {issuesQ.data?.releaseScopeMissing && (
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
             Reconnect GitHub with project access to import each issue&rsquo;s{' '}
-            <span className="font-medium">Release version</span> as a tag.
+            <span className="font-medium">Release Version</span> as a tag.
           </div>
         )}
 

@@ -42,7 +42,8 @@ export async function fetchIssueReleaseVersions(
   accessToken: string,
   ownerRepo: string,
   numbers: number[],
-  fieldName = 'Release version'
+  // Case-sensitive: must match the GitHub project field name exactly.
+  fieldName = 'Release Version'
 ): Promise<ReleaseVersionResult> {
   const versions = new Map<number, string>()
   if (numbers.length === 0) return { versions, scopeMissing: false }
