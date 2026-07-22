@@ -50,9 +50,16 @@ export async function resolveGitHubReporterPrincipal(
     }
   }
 
-  // 2. Synthetic per-login portal user.
+  // 2. Synthetic per-login portal user. Sanitize the local part so bot logins
+  //    like `github-actions[bot]` don't produce an invalid email. Kept in sync
+  //    with the migration adapter's field-map (scripts/import/.../field-map.ts).
+  const local =
+    reporter.login
+      .replace(/\[bot\]$/i, '')
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'unknown'
   const identified = await identifyPortalUser({
-    email: `${reporter.login}@users.noreply.github.com`,
+    email: `${local}@users.noreply.github.com`,
     name: reporter.name || reporter.login,
   })
   return identified.principalId

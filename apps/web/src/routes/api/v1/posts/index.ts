@@ -32,7 +32,7 @@ const createPostSchema = z.object({
     .object({
       integrationType: z.string().min(1),
       externalId: z.string().min(1),
-      externalUrl: z.string().optional(),
+      externalUrl: z.string().url().optional(),
     })
     .optional(),
 })
@@ -246,20 +246,30 @@ export const Route = createFileRoute('/api/v1/posts/')({
             { skipDispatch: auth.importMode, headers: request.headers }
           )
 
-          // Optionally link the new post to an external tracker item.
+          // Optionally link the new post to an external tracker item. The post
+          // already exists, so a link failure must not fail the create —
+          // best-effort, logged, and the 201 still returns.
           if (parsed.data.link) {
-            const { linkTicketToPost } = await import(
-              '@/lib/server/integrations/apps/service'
-            )
-            await linkTicketToPost(
-              {
-                postId: result.id as PostId,
-                integrationType: parsed.data.link.integrationType,
-                externalId: parsed.data.link.externalId,
-                externalUrl: parsed.data.link.externalUrl,
-              },
-              targetPrincipalId
-            )
+            try {
+              const { linkTicketToPost } = await import(
+                '@/lib/server/integrations/apps/service'
+              )
+              await linkTicketToPost(
+                {
+                  postId: result.id as PostId,
+                  integrationType: parsed.data.link.integrationType,
+                  externalId: parsed.data.link.externalId,
+                  externalUrl: parsed.data.link.externalUrl,
+                },
+                targetPrincipalId
+              )
+            } catch (linkError) {
+              const { logger } = await import('@/lib/server/logger')
+              logger.error(
+                { err: linkError, post_id: result.id },
+                'post created but external link failed'
+              )
+            }
           }
 
           return createdResponse({

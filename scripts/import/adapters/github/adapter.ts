@@ -93,8 +93,10 @@ export async function convertGitHub(options: GitHubAdapterOptions): Promise<GitH
 
     posts.push({
       id: String(issue.number),
-      title: issue.title || `Issue #${issue.number}`,
-      body: issue.body || '',
+      // Match the API's limits (title ≤200, content ≤10000) so long issues
+      // don't 400 on create — which would also drop all their comments.
+      title: (issue.title || `Issue #${issue.number}`).slice(0, 200),
+      body: (issue.body || '').slice(0, 10000),
       authorEmail: login ? syntheticEmail(login) : undefined,
       authorName: login,
       board: routeBoard(labels),
@@ -117,7 +119,8 @@ export async function convertGitHub(options: GitHubAdapterOptions): Promise<GitH
           postId: String(issue.number),
           authorEmail: clogin ? syntheticEmail(clogin) : undefined,
           authorName: clogin,
-          body: c.body || '',
+          // Comment content limit is 5000 on the API.
+          body: (c.body || '').slice(0, 5000),
           isStaff: false,
           createdAt: c.created_at,
         })

@@ -97,6 +97,8 @@ GitHub Options:
                           Boards ('general' catch-all) and label tags must exist
                           on the target instance before importing. Backdating
                           issue dates + reporter authorship require an ADMIN key.
+                          Import ONE repo per instance: external ids are the bare
+                          issue number, so multiple repos would collide.
 
 UserVoice Options:
   --suggestions <file>    Full suggestions export CSV (denormalized, required)

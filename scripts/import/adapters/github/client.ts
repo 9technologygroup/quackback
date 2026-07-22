@@ -65,42 +65,66 @@ export class GitHubClient {
 
   /**
    * Fetch a single page. `path` may already contain a query string.
+   *
+   * Rate-limit waits (429, or 403 with a reset/Retry-After) sleep the FULL
+   * window and do NOT consume the retry budget — a real reset can be up to an
+   * hour away and must not abort the run. Transient failures (5xx, network
+   * errors) are retried with exponential backoff up to `maxAttempts`; 4xx
+   * (other than rate limits) throw immediately.
    */
   private async get<T>(path: string): Promise<T> {
-    await this.rateLimit()
-
     const url = `${BASE_URL}${path}`
-    let lastError: Error | null = null
+    const maxAttempts = 5
+    let attempt = 0
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) {
-        const backoff = Math.min(1000 * 2 ** attempt, 10000)
-        const jitter = backoff * (0.5 + Math.random())
-        await new Promise((r) => setTimeout(r, jitter))
-      }
+    while (true) {
+      await this.rateLimit()
 
-      const response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'quackback-import',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      })
-
-      // Primary/secondary rate limit: wait until the reset, then retry.
-      const remaining = response.headers.get('X-RateLimit-Remaining')
-      if (response.status === 403 && remaining === '0') {
-        const reset = Number(response.headers.get('X-RateLimit-Reset') ?? '0') * 1000
-        const waitMs = Math.max(0, reset - Date.now()) + 1000
-        await new Promise((r) => setTimeout(r, Math.min(waitMs, 60_000)))
-        lastError = new Error(`Rate limited on ${path}`)
+      let response: Response
+      try {
+        response = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'quackback-import',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        })
+      } catch (err) {
+        // Network-level failure — retry with backoff.
+        if (++attempt >= maxAttempts) {
+          throw err instanceof Error ? err : new Error(String(err))
+        }
+        await this.backoff(attempt)
         continue
       }
-      if (response.status === 429) {
-        const retryAfter = Number(response.headers.get('Retry-After') ?? '1')
-        await new Promise((r) => setTimeout(r, retryAfter * 1000))
-        lastError = new Error(`Rate limited (429) on ${path}`)
+
+      // Rate limits: primary (remaining=0) or secondary (Retry-After present).
+      const remaining = response.headers.get('X-RateLimit-Remaining')
+      const retryAfter = response.headers.get('Retry-After')
+      const isRateLimited =
+        response.status === 429 ||
+        (response.status === 403 && (remaining === '0' || retryAfter != null))
+      if (isRateLimited) {
+        let waitMs: number
+        if (retryAfter != null) {
+          waitMs = Number(retryAfter) * 1000
+        } else {
+          const reset = Number(response.headers.get('X-RateLimit-Reset') ?? '0') * 1000
+          waitMs = Math.max(0, reset - Date.now()) + 1000
+        }
+        // Full wait; capped at 1h as a sanity ceiling. Does not consume retries.
+        await new Promise((r) => setTimeout(r, Math.min(waitMs, 3_600_000)))
+        continue
+      }
+
+      // Transient server errors — retry.
+      if (response.status >= 500) {
+        if (++attempt >= maxAttempts) {
+          const text = await response.text()
+          throw new Error(`GitHub API error ${response.status} on ${path}: ${text}`)
+        }
+        await this.backoff(attempt)
         continue
       }
 
@@ -111,8 +135,12 @@ export class GitHubClient {
 
       return (await response.json()) as T
     }
+  }
 
-    throw lastError ?? new Error(`Failed after 3 attempts: ${path}`)
+  private async backoff(attempt: number): Promise<void> {
+    const base = Math.min(1000 * 2 ** attempt, 30_000)
+    const jitter = base * (0.5 + Math.random())
+    await new Promise((r) => setTimeout(r, jitter))
   }
 
   /**
