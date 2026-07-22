@@ -178,7 +178,12 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
   const boards = boardsQ.data ?? []
   const statuses = statusesQ.data ?? []
   const roadmaps = roadmapsQ.data ?? []
-  const tagOptions = (tagsQ.data ?? []).map((t) => ({ value: t.id as string, label: t.name }))
+  // Merge in the release-version tags the server ensured for this page so they
+  // show up (labeled + pre-selected) in the Tags cell.
+  const tagOptions = [
+    ...(tagsQ.data ?? []).map((t) => ({ value: t.id as string, label: t.name })),
+    ...(issuesQ.data?.releaseTags ?? []).map((t) => ({ value: t.id, label: t.name })),
+  ].filter((opt, i, arr) => arr.findIndex((o) => o.value === opt.value) === i)
   const includedCount = importableRows.length
 
   // Master select-all over the selectable (not already-imported) rows on this page.
@@ -211,6 +216,13 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
             issues are skipped.
           </DialogDescription>
         </DialogHeader>
+
+        {issuesQ.data?.releaseScopeMissing && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+            Reconnect GitHub with project access to import each issue&rsquo;s{' '}
+            <span className="font-medium">Release Version</span> as a tag.
+          </div>
+        )}
 
         {jobId && (progress || jobFailed || jobMissing) && (
           <div className="rounded-md border p-3 text-sm">

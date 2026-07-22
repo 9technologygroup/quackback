@@ -32,6 +32,10 @@ export interface GitHubIssuesPageResult {
   rows: GitHubIssueImportRow[]
   page: number
   hasNextPage: boolean
+  /** Tags ensured for the release versions on this page (to merge into options). */
+  releaseTags: Array<{ id: string; name: string }>
+  /** True when the token lacks `read:project` so release versions can't be read. */
+  releaseScopeMissing: boolean
 }
 
 function slugKey(s: string): string {
@@ -56,7 +60,8 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
     )
     const { listBoards } = await import('@/lib/server/domains/boards/board.service')
     const { listStatuses } = await import('@/lib/server/domains/statuses/status.service')
-    const { listTags } = await import('@/lib/server/domains/tags/tag.service')
+    const { listTags, createTag } = await import('@/lib/server/domains/tags/tag.service')
+    const { fetchIssueReleaseVersions } = await import('./project')
 
     await requireAuth({ roles: ['admin'] })
 
@@ -100,11 +105,43 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
       : []
     const importedNumbers = new Set(links.map((l) => l.externalId))
 
+    // Read the "Release version" project field (GraphQL) for the page's issues,
+    // and ensure a tag exists for each distinct version so it can be pre-selected.
+    const { versions: releaseVersions, scopeMissing: releaseScopeMissing } =
+      await fetchIssueReleaseVersions(
+        accessToken,
+        ownerRepo,
+        issues.map((i) => i.number)
+      )
+    const releaseTagByVersion = new Map<string, string>() // version -> tagId
+    const releaseTags: Array<{ id: string; name: string }> = []
+    for (const version of new Set(releaseVersions.values())) {
+      const existingId = tagByName.get(version.toLowerCase())
+      if (existingId) {
+        releaseTagByVersion.set(version, existingId)
+        releaseTags.push({ id: existingId, name: version })
+        continue
+      }
+      try {
+        const tag = await createTag({ name: version })
+        tagByName.set(version.toLowerCase(), tag.id as string)
+        releaseTagByVersion.set(version, tag.id as string)
+        releaseTags.push({ id: tag.id as string, name: tag.name })
+      } catch {
+        // Conflict/race or invalid name — skip; the release just won't pre-select.
+      }
+    }
+
     const rows: GitHubIssueImportRow[] = issues.map((issue) => {
       const labels = issueLabelNames(issue.labels)
       const suggestedTagIds = labels
         .map((name) => tagByName.get(name.toLowerCase()))
         .filter((id): id is string => Boolean(id))
+      const releaseVersion = releaseVersions.get(issue.number)
+      const releaseTagId = releaseVersion ? releaseTagByVersion.get(releaseVersion) : undefined
+      if (releaseTagId && !suggestedTagIds.includes(releaseTagId)) {
+        suggestedTagIds.push(releaseTagId)
+      }
       return {
         number: issue.number,
         title: issue.title || `Issue #${issue.number}`,
@@ -124,7 +161,7 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
       }
     })
 
-    return { rows, page: data.page, hasNextPage }
+    return { rows, page: data.page, hasNextPage, releaseTags, releaseScopeMissing }
   })
 
 const importRowSchema = z.object({
