@@ -26,7 +26,10 @@ export function getGitHubOAuthUrl(
     client_id: clientId,
     redirect_uri: redirectUri,
     state,
-    scope: 'repo',
+    // `read:project` is required to read Projects V2 custom fields (e.g. the
+    // "Release version" field) via GraphQL during issue import. Existing
+    // connections must reconnect to pick up the added scope.
+    scope: 'repo,read:project',
   })
 
   return `https://github.com/login/oauth/authorize?${params}`
