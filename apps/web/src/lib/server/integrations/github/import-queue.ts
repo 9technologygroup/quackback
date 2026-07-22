@@ -28,6 +28,8 @@ export interface GitHubImportRow {
   title: string
   body: string
   url: string
+  /** Comment count from the listing — lets the worker skip the fetch when 0. */
+  comments?: number
   authorLogin: string | null
   authorId: number | null
   createdAt: string

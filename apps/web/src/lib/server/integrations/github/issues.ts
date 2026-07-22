@@ -15,6 +15,49 @@ const HEADERS = (accessToken: string) => ({
   'X-GitHub-Api-Version': '2022-11-28',
 })
 
+/**
+ * GET a GitHub API URL, honoring rate limits (429 / 403 with a reset or
+ * Retry-After — wait the full window, capped at 60s) and retrying transient
+ * 5xx/network errors. Rate-limit waits don't consume the retry budget.
+ */
+async function ghGet(url: string, accessToken: string): Promise<Response> {
+  const maxAttempts = 4
+  let attempt = 0
+  while (true) {
+    let response: Response
+    try {
+      response = await fetch(url, { headers: HEADERS(accessToken) })
+    } catch (err) {
+      if (++attempt >= maxAttempts) throw err instanceof Error ? err : new Error(String(err))
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt))
+      continue
+    }
+
+    const remaining = response.headers.get('X-RateLimit-Remaining')
+    const retryAfter = response.headers.get('Retry-After')
+    const rateLimited =
+      response.status === 429 ||
+      (response.status === 403 && (remaining === '0' || retryAfter != null))
+    if (rateLimited) {
+      let waitMs: number
+      if (retryAfter != null) waitMs = Number(retryAfter) * 1000
+      else {
+        const reset = Number(response.headers.get('X-RateLimit-Reset') ?? '0') * 1000
+        waitMs = Math.max(0, reset - Date.now()) + 1000
+      }
+      await new Promise((r) => setTimeout(r, Math.min(waitMs, 60_000)))
+      continue
+    }
+
+    if (response.status >= 500 && ++attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt))
+      continue
+    }
+
+    return response
+  }
+}
+
 export interface GitHubIssueUser {
   id: number
   login: string
@@ -60,7 +103,7 @@ export async function listGitHubIssues(
   perPage: number
 ): Promise<GitHubIssuesPage> {
   const url = `${GITHUB_API}/repos/${ownerRepo}/issues?state=all&sort=created&direction=asc&per_page=${perPage}&page=${page}`
-  const response = await fetch(url, { headers: HEADERS(accessToken) })
+  const response = await ghGet(url, accessToken)
 
   if (!response.ok) {
     throw new Error(`Failed to list GitHub issues: HTTP ${response.status}`)
@@ -87,7 +130,7 @@ export async function listGitHubIssueComments(
 
   while (true) {
     const url = `${GITHUB_API}/repos/${ownerRepo}/issues/${issueNumber}/comments?per_page=${perPage}&page=${page}`
-    const response = await fetch(url, { headers: HEADERS(accessToken) })
+    const response = await ghGet(url, accessToken)
     if (!response.ok) {
       throw new Error(
         `Failed to list comments for issue #${issueNumber}: HTTP ${response.status}`
