@@ -7,7 +7,11 @@
  */
 
 import { timingSafeEqual, createHmac } from 'crypto'
-import type { InboundWebhookHandler, InboundWebhookResult } from '../inbound-types'
+import type {
+  InboundWebhookHandler,
+  InboundWebhookResult,
+  InboundCreatePostIntent,
+} from '../inbound-types'
 
 export const githubInboundHandler: InboundWebhookHandler = {
   async verifySignature(request: Request, body: string, secret: string): Promise<true | Response> {
@@ -44,6 +48,32 @@ export const githubInboundHandler: InboundWebhookHandler = {
     return {
       externalId: String(payload.issue.number),
       externalStatus,
+      eventType: `issues.${payload.action}`,
+    }
+  },
+
+  async parseCreatePost(body: string): Promise<InboundCreatePostIntent | null> {
+    const payload = JSON.parse(body)
+
+    // Only newly opened issues create posts.
+    if (payload.action !== 'opened') return null
+
+    const issue = payload.issue
+    if (!issue?.number) return null
+
+    // The `issues` webhook only delivers issues (PRs come on `pull_request`),
+    // but guard defensively in case GitHub ever includes a pull_request ref.
+    if (issue.pull_request) return null
+
+    const user = issue.user
+    return {
+      externalId: String(issue.number),
+      title: issue.title || `Issue #${issue.number}`,
+      body: issue.body || '',
+      externalUrl: issue.html_url,
+      reporter: user
+        ? { githubId: user.id ?? null, login: user.login, name: user.name ?? null }
+        : undefined,
       eventType: `issues.${payload.action}`,
     }
   },

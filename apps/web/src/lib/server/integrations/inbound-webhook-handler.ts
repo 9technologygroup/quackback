@@ -8,12 +8,20 @@
  * so the `post.status_changed` event dispatched here won't re-trigger them.
  */
 
-import { db, integrations, postExternalLinks, eq, and } from '@/lib/server/db'
+import {
+  db,
+  integrations,
+  postExternalLinks,
+  integrationEventMappings,
+  eq,
+  and,
+} from '@/lib/server/db'
 import { getIntegration } from './index'
 import { decryptSecrets } from './encryption'
 import { resolveStatusMapping, type StatusMappings } from './status-mapping'
 import { changeStatus } from '@/lib/server/domains/posts/post.status'
-import type { PostId, StatusId, PrincipalId } from '@quackback/ids'
+import type { PostId, StatusId, PrincipalId, BoardId, IntegrationId } from '@quackback/ids'
+import type { InboundCreatePostIntent } from './inbound-types'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'inbound-webhook' })
@@ -63,7 +71,20 @@ export async function handleInboundWebhook(
   // Parse the webhook payload for a status change
   const result = await definition.inbound.parseStatusChange(body, config, secrets)
   if (!result) {
-    // Not a status change event — acknowledge but ignore
+    // Not a status change — try the create-post path (e.g. a GitHub issue
+    // that was opened) for integrations that support inbound item creation.
+    if (definition.inbound.parseCreatePost) {
+      const createIntent = await definition.inbound.parseCreatePost(body, config, secrets)
+      if (createIntent) {
+        return handleInboundCreatePost(
+          { id: integration.id as IntegrationId, principalId: integration.principalId as PrincipalId | null },
+          integrationType,
+          config,
+          createIntent
+        )
+      }
+    }
+    // Nothing to do — acknowledge but ignore
     return new Response('OK', { status: 200 })
   }
 
@@ -126,5 +147,129 @@ export async function handleInboundWebhook(
     // Still return 200 to prevent the platform from retrying
   }
 
+  return new Response('OK', { status: 200 })
+}
+
+/**
+ * Create a Quackback post from a newly opened external item (e.g. a GitHub
+ * issue), governed by a per-integration event-mapping toggle.
+ *
+ * Loop prevention: the post is created with `skipDispatch: true`, so the
+ * `post.created` event never fires — the outbound issue-tracking hook (which
+ * would otherwise create a *new* external issue) is not triggered.
+ *
+ * The reporter is attributed as author, but the create runs with a team-role
+ * actor so the board's "signed-in only" submit gate and moderation approval
+ * are bypassed — a trusted server-side flow authenticated by the webhook HMAC.
+ */
+async function handleInboundCreatePost(
+  integration: { id: IntegrationId; principalId: PrincipalId | null },
+  integrationType: string,
+  config: Record<string, unknown>,
+  intent: InboundCreatePostIntent
+): Promise<Response> {
+  // 1. Toggle gate — only act when an admin has enabled this event mapping.
+  const mapping = await db.query.integrationEventMappings.findFirst({
+    where: and(
+      eq(integrationEventMappings.integrationId, integration.id),
+      eq(integrationEventMappings.eventType, intent.eventType),
+      eq(integrationEventMappings.enabled, true)
+    ),
+    columns: { id: true },
+  })
+  if (!mapping) {
+    log.debug(
+      { integration_type: integrationType, event_type: intent.eventType },
+      'inbound create-post disabled, ignoring'
+    )
+    return new Response('OK', { status: 200 })
+  }
+
+  // 2. Target board — required to create a post.
+  const boardId = config.inboundBoardId as string | undefined
+  if (!boardId) {
+    log.warn(
+      { integration_type: integrationType },
+      'inbound create-post enabled but no inboundBoardId configured, ignoring'
+    )
+    return new Response('OK', { status: 200 })
+  }
+
+  // 3. Idempotency — skip if this external item already maps to a post
+  //    (webhook redelivery, or already brought in by the migration).
+  const existing = await db.query.postExternalLinks.findFirst({
+    where: and(
+      eq(postExternalLinks.integrationType, integrationType),
+      eq(postExternalLinks.externalId, intent.externalId)
+    ),
+    columns: { id: true },
+  })
+  if (existing) {
+    log.debug(
+      { integration_type: integrationType, external_id: intent.externalId },
+      'external item already linked to a post, skipping create'
+    )
+    return new Response('OK', { status: 200 })
+  }
+
+  const { resolveGitHubReporterPrincipal } = await import('./github/reporter-resolver')
+  const { createPost } = await import('@/lib/server/domains/posts/post.service')
+  const { linkTicketToPost } = await import('./apps/service')
+  const { segmentIdsForPrincipal } = await import(
+    '@/lib/server/domains/segments/segment-membership.service'
+  )
+
+  // 4. Resolve author: the mapped reporter, else the integration service principal.
+  let authorPrincipalId: PrincipalId
+  if (intent.reporter) {
+    authorPrincipalId = await resolveGitHubReporterPrincipal(intent.reporter)
+  } else if (integration.principalId) {
+    authorPrincipalId = integration.principalId
+  } else {
+    log.error(
+      { integration_type: integrationType },
+      'no reporter and no service principal; skipping create'
+    )
+    return new Response('OK', { status: 200 })
+  }
+
+  const segmentIds = await segmentIdsForPrincipal(authorPrincipalId)
+  const actor = {
+    principalId: authorPrincipalId,
+    role: 'member' as const,
+    principalType: 'service' as const,
+    segmentIds,
+  }
+
+  const created = await createPost(
+    {
+      boardId: boardId as BoardId,
+      title: intent.title.slice(0, 200),
+      content: (intent.body ?? '').slice(0, 10000),
+    },
+    { principalId: authorPrincipalId, actor },
+    { skipDispatch: true }
+  )
+
+  // 5. Link the post to the external item so subsequent close/reopen webhooks
+  //    sync its status and repeat deliveries stay idempotent.
+  await linkTicketToPost(
+    {
+      postId: created.id as PostId,
+      integrationType,
+      externalId: intent.externalId,
+      externalUrl: intent.externalUrl,
+    },
+    authorPrincipalId
+  )
+
+  log.info(
+    {
+      post_id: created.id,
+      external_id: intent.externalId,
+      integration_type: integrationType,
+    },
+    'inbound create-post applied'
+  )
   return new Response('OK', { status: 200 })
 }

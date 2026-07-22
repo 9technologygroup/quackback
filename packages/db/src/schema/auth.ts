@@ -171,6 +171,11 @@ export const account = pgTable(
     // created_at ASC LIMIT 1`. Without the composite the ORDER BY
     // requires a sort even though the WHERE is index-satisfied.
     index('account_userId_createdAt_idx').on(table.userId, table.createdAt),
+    // Reverse lookup by external provider identity: maps a GitHub webhook's
+    // `issue.user.id` back to the linked Quackback user
+    // (`WHERE provider_id = 'github' AND account_id = $1`). Used by the
+    // GitHub inbound issue sync to attribute posts to real users.
+    index('account_provider_account_idx').on(table.providerId, table.accountId),
   ]
 )
 
