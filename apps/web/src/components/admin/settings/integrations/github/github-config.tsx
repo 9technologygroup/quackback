@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { useUpdateIntegration } from '@/lib/client/mutations'
 import { fetchGitHubReposFn, type GitHubRepo } from '@/lib/server/integrations/github/functions'
+import { fetchBoardsFn } from '@/lib/server/functions/boards'
 import { StatusSyncConfig } from '@/components/admin/settings/integrations/status-sync-config'
 import { OnDeleteConfig } from '@/components/admin/settings/integrations/on-delete-config'
 
@@ -41,6 +42,12 @@ const EVENT_CONFIG = [
     label: 'Sync status changes',
     description: 'Update linked issues when feedback status changes',
   },
+  {
+    id: 'issues.opened' as const,
+    label: 'Create post from new GitHub issue',
+    description:
+      'When someone opens an issue on GitHub, create a matching post in the inbound board below',
+  },
 ]
 
 export function GitHubConfig({
@@ -54,6 +61,10 @@ export function GitHubConfig({
   const [loadingRepos, setLoadingRepos] = useState(false)
   const [repoError, setRepoError] = useState<string | null>(null)
   const [selectedRepo, setSelectedRepo] = useState((initialConfig.channelId as string) || '')
+  const [boards, setBoards] = useState<Array<{ id: string; name: string }>>([])
+  const [selectedInboundBoard, setSelectedInboundBoard] = useState(
+    (initialConfig.inboundBoardId as string) || ''
+  )
   const [integrationEnabled, setIntegrationEnabled] = useState(enabled)
   const [eventSettings, setEventSettings] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(
@@ -81,14 +92,25 @@ export function GitHubConfig({
     fetchRepos()
   }, [fetchRepos])
 
+  useEffect(() => {
+    fetchBoardsFn()
+      .then((result) => setBoards(result.map((b) => ({ id: b.id, name: b.name }))))
+      .catch(() => setBoards([]))
+  }, [])
+
   const handleEnabledChange = (checked: boolean) => {
     setIntegrationEnabled(checked)
     updateMutation.mutate({ id: integrationId, enabled: checked })
   }
 
-  const handleRepoChange = (repoId: string) => {
-    setSelectedRepo(repoId)
-    updateMutation.mutate({ id: integrationId, config: { channelId: repoId } })
+  const handleRepoChange = (repoFullName: string) => {
+    setSelectedRepo(repoFullName)
+    updateMutation.mutate({ id: integrationId, config: { channelId: repoFullName } })
+  }
+
+  const handleInboundBoardChange = (boardId: string) => {
+    setSelectedInboundBoard(boardId)
+    updateMutation.mutate({ id: integrationId, config: { inboundBoardId: boardId } })
   }
 
   const handleEventToggle = (eventId: string, checked: boolean) => {
@@ -158,7 +180,7 @@ export function GitHubConfig({
             </SelectTrigger>
             <SelectContent>
               {repos.map((repo) => (
-                <SelectItem key={repo.id} value={repo.id.toString()}>
+                <SelectItem key={repo.id} value={repo.fullName}>
                   <div className="flex items-center gap-2">
                     <FolderIcon className="h-3.5 w-3.5 text-muted-foreground" />
                     <span>{repo.fullName}</span>
@@ -173,9 +195,35 @@ export function GitHubConfig({
         </p>
       </div>
 
+      <div className="space-y-2">
+        <Label htmlFor="inbound-board-select">Inbound issues board</Label>
+        <Select
+          value={selectedInboundBoard}
+          onValueChange={handleInboundBoardChange}
+          disabled={saving || !integrationEnabled}
+        >
+          <SelectTrigger id="inbound-board-select" className="w-full">
+            <SelectValue placeholder="Select a board" />
+          </SelectTrigger>
+          <SelectContent>
+            {boards.map((board) => (
+              <SelectItem key={board.id} value={board.id}>
+                {board.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          When &ldquo;Create post from new GitHub issue&rdquo; is on, new issues become posts in
+          this board.
+        </p>
+      </div>
+
       <div className="space-y-3">
         <Label className="text-base font-medium">Events</Label>
-        <p className="text-xs text-muted-foreground">Choose which events trigger issue creation</p>
+        <p className="text-xs text-muted-foreground">
+          Choose which events sync between Quackback and GitHub
+        </p>
         <div className="space-y-3 pt-2">
           {EVENT_CONFIG.map((event) => (
             <div

@@ -14,7 +14,7 @@ import {
   parseTypeIdArray,
 } from '@/lib/server/domains/api/validation'
 import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
-import type { BoardId, PrincipalId, StatusId, TagId } from '@quackback/ids'
+import type { BoardId, PostId, PrincipalId, StatusId, TagId } from '@quackback/ids'
 import { segmentIdsForPrincipal } from '@/lib/server/domains/segments/segment-membership.service'
 
 // Input validation schemas
@@ -26,6 +26,15 @@ const createPostSchema = z.object({
   tagIds: z.array(z.string()).optional(),
   createdAt: z.string().datetime().optional(),
   authorPrincipalId: z.string().optional(),
+  // Optional: link the created post to an external tracker item (e.g. a
+  // GitHub issue) so status-sync and idempotent re-imports work.
+  link: z
+    .object({
+      integrationType: z.string().min(1),
+      externalId: z.string().min(1),
+      externalUrl: z.string().url().optional(),
+    })
+    .optional(),
 })
 
 export const Route = createFileRoute('/api/v1/posts/')({
@@ -236,6 +245,32 @@ export const Route = createFileRoute('/api/v1/posts/')({
             },
             { skipDispatch: auth.importMode, headers: request.headers }
           )
+
+          // Optionally link the new post to an external tracker item. The post
+          // already exists, so a link failure must not fail the create —
+          // best-effort, logged, and the 201 still returns.
+          if (parsed.data.link) {
+            try {
+              const { linkTicketToPost } = await import(
+                '@/lib/server/integrations/apps/service'
+              )
+              await linkTicketToPost(
+                {
+                  postId: result.id as PostId,
+                  integrationType: parsed.data.link.integrationType,
+                  externalId: parsed.data.link.externalId,
+                  externalUrl: parsed.data.link.externalUrl,
+                },
+                targetPrincipalId
+              )
+            } catch (linkError) {
+              const { logger } = await import('@/lib/server/logger')
+              logger.error(
+                { err: linkError, post_id: result.id },
+                'post created but external link failed'
+              )
+            }
+          }
 
           return createdResponse({
             id: result.id,

@@ -247,6 +247,11 @@ export async function runApiImport(options: ApiImportOptions): Promise<ImportRes
   if (data.posts.length > 0) {
     progress.start(`Importing ${data.posts.length} posts`)
 
+    // One-time check: warn if the server silently ignored our createdAt
+    // (non-admin key). Left unnoticed, imported posts carry import-time dates,
+    // which corrupts backdating and breaks --incremental dedup on re-runs.
+    let createdAtChecked = false
+
     for (let i = 0; i < data.posts.length; i++) {
       const post = data.posts[i]
       try {
@@ -291,7 +296,7 @@ export async function runApiImport(options: ApiImportOptions): Promise<ImportRes
 
         const authorPrincipalId = await resolveAuthorPrincipal(post.authorEmail)
 
-        const resp = await qb.post<{ data: { id: string } }>('/api/v1/posts', {
+        const resp = await qb.post<{ data: { id: string; createdAt?: string } }>('/api/v1/posts', {
           boardId,
           title: post.title,
           content: post.body,
@@ -299,7 +304,29 @@ export async function runApiImport(options: ApiImportOptions): Promise<ImportRes
           ...(tagIds.length > 0 && { tagIds }),
           ...(post.createdAt && { createdAt: new Date(post.createdAt).toISOString() }),
           ...(authorPrincipalId && { authorPrincipalId }),
+          ...(post.externalLink && {
+            link: {
+              integrationType: post.externalLink.integrationType,
+              externalId: post.id,
+              externalUrl: post.externalLink.externalUrl,
+            },
+          }),
         })
+
+        // If we asked to backdate but the server returned a different day, the
+        // API key is not admin-role — dates and --incremental dedup are broken.
+        if (!createdAtChecked && post.createdAt && resp.data.createdAt) {
+          createdAtChecked = true
+          const sent = new Date(post.createdAt).toISOString().slice(0, 10)
+          const got = new Date(resp.data.createdAt).toISOString().slice(0, 10)
+          if (sent !== got) {
+            progress.warn(
+              `⚠️  Server did not honor createdAt (sent ${sent}, got ${got}). ` +
+                'Your API key is likely NOT admin-role — imported dates and ' +
+                '--incremental dedup will be wrong. Use an admin key.'
+            )
+          }
+        }
 
         idMap.posts.set(post.id, resp.data.id)
         result.posts.imported++
