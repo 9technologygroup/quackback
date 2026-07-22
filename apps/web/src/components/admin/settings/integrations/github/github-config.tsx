@@ -17,6 +17,7 @@ import { fetchGitHubReposFn, type GitHubRepo } from '@/lib/server/integrations/g
 import { fetchBoardsFn } from '@/lib/server/functions/boards'
 import { StatusSyncConfig } from '@/components/admin/settings/integrations/status-sync-config'
 import { OnDeleteConfig } from '@/components/admin/settings/integrations/on-delete-config'
+import { GitHubImportDialog } from './github-import-dialog'
 
 interface EventMapping {
   id: string
@@ -66,6 +67,7 @@ export function GitHubConfig({
     (initialConfig.inboundBoardId as string) || ''
   )
   const [integrationEnabled, setIntegrationEnabled] = useState(enabled)
+  const [importOpen, setImportOpen] = useState(false)
   const [eventSettings, setEventSettings] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(
       EVENT_CONFIG.map((event) => [
@@ -149,16 +151,27 @@ export function GitHubConfig({
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label htmlFor="repo-select">Repository</Label>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={fetchRepos}
-            disabled={loadingRepos}
-            className="h-8 gap-1.5 text-xs"
-          >
-            <ArrowPathIcon className={`h-3.5 w-3.5 ${loadingRepos ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setImportOpen(true)}
+              disabled={!selectedRepo || !integrationEnabled}
+              className="h-8 text-xs"
+            >
+              Import issues
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={fetchRepos}
+              disabled={loadingRepos}
+              className="h-8 gap-1.5 text-xs"
+            >
+              <ArrowPathIcon className={`h-3.5 w-3.5 ${loadingRepos ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
         {repoError ? (
           <p className="text-sm text-destructive">{repoError}</p>
@@ -274,6 +287,8 @@ export function GitHubConfig({
         config={initialConfig}
         enabled={integrationEnabled}
       />
+
+      <GitHubImportDialog open={importOpen} onOpenChange={setImportOpen} />
     </div>
   )
 }

@@ -50,6 +50,9 @@ function wireGracefulShutdown(): void {
           import('./domains/feedback/queues/feedback-ingest-queue').then(
             ({ closeFeedbackIngestQueue }) => closeFeedbackIngestQueue()
           ),
+          import('./integrations/github/import-queue').then(({ closeGitHubImportQueue }) =>
+            closeGitHubImportQueue()
+          ),
         ])
         for (const r of closes) {
           if (r.status === 'rejected') log.error({ err: r.reason }, 'queue close failed')
