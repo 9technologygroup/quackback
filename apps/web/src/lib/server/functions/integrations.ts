@@ -29,6 +29,12 @@ const updateIntegrationSchema = z.object({
       z.object({
         eventType: z.string(),
         enabled: z.boolean(),
+        /**
+         * Restrict this mapping to specific boards. Null/empty means "all
+         * boards" — the dispatcher only applies a board filter when
+         * `filters.boardIds` is a non-empty array (see events/targets.ts).
+         */
+        boardIds: z.array(z.string()).nullable().optional(),
       })
     )
     .optional(),
@@ -81,6 +87,12 @@ export const updateIntegrationFn = createServerFn({ method: 'POST' })
 
     // Batch upsert all event mappings in a single query
     if (data.eventMappings && data.eventMappings.length > 0) {
+      // Only overwrite `filters` when the caller is board-filter aware. Older
+      // config screens (and other integrations) send mappings without a
+      // `boardIds` key at all — for those, leave any existing filters intact
+      // rather than silently widening the mapping to every board.
+      const usesBoardFilters = data.eventMappings.some((m) => m.boardIds !== undefined)
+
       await db
         .insert(integrationEventMappings)
         .values(
@@ -89,6 +101,7 @@ export const updateIntegrationFn = createServerFn({ method: 'POST' })
             eventType: mapping.eventType,
             actionType: 'send_message' as const,
             enabled: mapping.enabled,
+            filters: mapping.boardIds?.length ? { boardIds: mapping.boardIds } : null,
           }))
         )
         .onConflictDoUpdate({
@@ -100,6 +113,7 @@ export const updateIntegrationFn = createServerFn({ method: 'POST' })
           ],
           set: {
             enabled: sql`excluded.enabled`,
+            ...(usesBoardFilters ? { filters: sql`excluded.filters` } : {}),
             updatedAt: new Date(),
           },
         })
