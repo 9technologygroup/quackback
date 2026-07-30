@@ -17,12 +17,14 @@ import { fetchGitHubReposFn, type GitHubRepo } from '@/lib/server/integrations/g
 import { fetchBoardsFn } from '@/lib/server/functions/boards'
 import { StatusSyncConfig } from '@/components/admin/settings/integrations/status-sync-config'
 import { OnDeleteConfig } from '@/components/admin/settings/integrations/on-delete-config'
+import { BoardFilterCombobox } from '@/components/admin/settings/integrations/shared/board-filter-combobox'
 import { GitHubImportDialog } from './github-import-dialog'
 
 interface EventMapping {
   id: string
   eventType: string
   enabled: boolean
+  boardIds?: string[] | null
 }
 
 interface GitHubConfigProps {
@@ -32,24 +34,46 @@ interface GitHubConfigProps {
   enabled: boolean
 }
 
+/**
+ * `direction: 'outbound'` events fire from Quackback domain events and honour
+ * the board scope below. Inbound events originate at GitHub and are governed by
+ * the inbound board setting instead, so they never carry a board filter.
+ */
 const EVENT_CONFIG = [
   {
     id: 'post.created' as const,
+    direction: 'outbound' as const,
     label: 'Create issue from new feedback',
     description: 'Automatically create a GitHub issue when new feedback is submitted',
   },
   {
     id: 'post.status_changed' as const,
+    direction: 'outbound' as const,
     label: 'Sync status changes',
     description: 'Update linked issues when feedback status changes',
   },
   {
+    id: 'comment.created' as const,
+    direction: 'outbound' as const,
+    label: 'Send comments to GitHub',
+    description: 'Post Quackback comments onto the linked issue. Private comments are never sent',
+  },
+  {
     id: 'issues.opened' as const,
+    direction: 'inbound' as const,
     label: 'Create post from new GitHub issue',
     description:
       'When someone opens an issue on GitHub, create a matching post in the inbound board below',
   },
+  {
+    id: 'issue_comment.created' as const,
+    direction: 'inbound' as const,
+    label: 'Show GitHub comments in Quackback',
+    description: 'Mirror comments made on a linked GitHub issue back onto the feedback post',
+  },
 ]
+
+const OUTBOUND_EVENT_IDS = EVENT_CONFIG.filter((e) => e.direction === 'outbound').map((e) => e.id)
 
 export function GitHubConfig({
   integrationId,
@@ -75,6 +99,14 @@ export function GitHubConfig({
         initialEventMappings.find((m) => m.eventType === event.id)?.enabled ?? false,
       ])
     )
+  )
+  // One board scope shared by every outbound event — "these boards talk to
+  // GitHub". Hydrated from whichever outbound mapping already carries a filter.
+  const [outboundBoardIds, setOutboundBoardIds] = useState<string[] | null>(
+    () =>
+      initialEventMappings.find(
+        (m) => OUTBOUND_EVENT_IDS.some((id) => id === m.eventType) && m.boardIds?.length
+      )?.boardIds ?? null
   )
 
   const fetchRepos = useCallback(async () => {
@@ -115,16 +147,31 @@ export function GitHubConfig({
     updateMutation.mutate({ id: integrationId, config: { inboundBoardId: boardId } })
   }
 
+  /**
+   * Persist every mapping on each change. Outbound mappings carry the shared
+   * board scope; inbound ones are always sent unfiltered so a stale filter can
+   * never survive on them.
+   */
+  const persistEventMappings = (settings: Record<string, boolean>, boardIds: string[] | null) => {
+    updateMutation.mutate({
+      id: integrationId,
+      eventMappings: Object.entries(settings).map(([eventType, enabled]) => ({
+        eventType,
+        enabled,
+        boardIds: OUTBOUND_EVENT_IDS.some((id) => id === eventType) ? boardIds : null,
+      })),
+    })
+  }
+
   const handleEventToggle = (eventId: string, checked: boolean) => {
     const newSettings = { ...eventSettings, [eventId]: checked }
     setEventSettings(newSettings)
-    updateMutation.mutate({
-      id: integrationId,
-      eventMappings: Object.entries(newSettings).map(([eventType, enabled]) => ({
-        eventType,
-        enabled,
-      })),
-    })
+    persistEventMappings(newSettings, outboundBoardIds)
+  }
+
+  const handleOutboundBoardsChange = (boardIds: string[] | null) => {
+    setOutboundBoardIds(boardIds)
+    persistEventMappings(eventSettings, boardIds)
   }
 
   const saving = updateMutation.isPending
@@ -254,6 +301,31 @@ export function GitHubConfig({
               />
             </div>
           ))}
+        </div>
+
+        {eventSettings['issue_comment.created'] && (
+          <p className="rounded-lg border border-border/50 bg-muted/40 p-3 text-xs text-muted-foreground">
+            Comment mirroring needs the repository webhook to listen for comment events. Connections
+            made before this feature shipped only listen for issues &mdash; turn status sync off and
+            on again below to refresh the webhook.
+          </p>
+        )}
+
+        <div className="space-y-2 pt-2">
+          <Label htmlFor="outbound-boards">Boards that sync to GitHub</Label>
+          <BoardFilterCombobox
+            boardIds={outboundBoardIds}
+            boards={boards}
+            onBoardIdsChange={handleOutboundBoardsChange}
+            disabled={saving || !integrationEnabled}
+            ariaLabel="Boards that sync to GitHub"
+          />
+          <p className="text-xs text-muted-foreground">
+            Limits the outbound events above. Leave as{' '}
+            <span className="font-medium text-foreground">All boards</span> and every new post opens
+            a GitHub issue &mdash; pick your bug board to keep feature requests out of the repo.
+            Does not affect issues or comments coming in from GitHub.
+          </p>
         </div>
       </div>
 

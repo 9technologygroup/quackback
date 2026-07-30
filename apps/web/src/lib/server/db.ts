@@ -175,6 +175,8 @@ export {
   // Schema tables - external links
   postExternalLinks,
   postExternalLinksRelations,
+  commentExternalLinks,
+  commentExternalLinksRelations,
   // Schema tables - changelog
   changelogEntries,
   changelogEntriesRelations,

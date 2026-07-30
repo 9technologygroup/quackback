@@ -1,7 +1,8 @@
 /**
  * GitHub inbound webhook handler.
  *
- * Receives webhook events from GitHub and extracts issue status changes.
+ * Receives `issues` and `issue_comment` events from GitHub and turns them into
+ * status changes, new posts, or mirrored comments.
  * Signature: HMAC-SHA256 with `sha256=` prefix in `X-Hub-Signature-256` header.
  * Status: `action` field — `closed` or `reopened` on `issues` events.
  */
@@ -11,15 +12,27 @@ import type {
   InboundWebhookHandler,
   InboundWebhookResult,
   InboundCreatePostIntent,
+  InboundCreateCommentIntent,
 } from '../inbound-types'
+import { QUACKBACK_MARKER } from './message'
 
 /**
- * Marker embedded in issue bodies created by our own outbound hook
- * (buildGitHubIssueBody). Used to ignore the `issues.opened` webhook that
- * GitHub delivers for issues Quackback itself created — otherwise an outbound
- * issue would echo back as a duplicate inbound post.
+ * Whether a webhook payload was authored by the GitHub account this
+ * integration is connected as — i.e. it is Quackback's own write echoing back.
+ *
+ * Note this means the connected account's genuine human comments are also
+ * ignored; connect with a dedicated machine account rather than a personal one.
+ * The link-table guard in the outbound hook is what makes loops structurally
+ * impossible, so a miss here costs a skipped mirror, never a loop.
  */
-const QUACKBACK_ISSUE_MARKER = '[View in Quackback]('
+function isOwnWrite(
+  author: { login?: string } | undefined,
+  config: Record<string, unknown>
+): boolean {
+  const connectedLogin = config.username as string | undefined
+  if (!connectedLogin || !author?.login) return false
+  return author.login.toLowerCase() === connectedLogin.toLowerCase()
+}
 
 /**
  * Whether the webhook's repository matches the integration's configured repo
@@ -102,7 +115,8 @@ export const githubInboundHandler: InboundWebhookHandler = {
 
     // Ignore issues Quackback itself created via the outbound hook — otherwise
     // an outbound issue echoes back as a duplicate inbound post.
-    if (typeof issue.body === 'string' && issue.body.includes(QUACKBACK_ISSUE_MARKER)) {
+    if (isOwnWrite(issue.user, config)) return null
+    if (typeof issue.body === 'string' && issue.body.includes(QUACKBACK_MARKER)) {
       return null
     }
 
@@ -118,6 +132,45 @@ export const githubInboundHandler: InboundWebhookHandler = {
         ? { githubId: user.id ?? null, login: user.login, name: user.name ?? null }
         : undefined,
       eventType: `issues.${payload.action}`,
+    }
+  },
+
+  async parseCreateComment(
+    body: string,
+    config: Record<string, unknown> = {}
+  ): Promise<InboundCreateCommentIntent | null> {
+    const payload = JSON.parse(body)
+
+    // Only newly created comments mirror. Edits and deletes are deliberately
+    // out of scope — a stale mirrored comment is cheaper than the
+    // reconciliation machinery two-way edit sync would need.
+    if (payload.action !== 'created') return null
+
+    const comment = payload.comment
+    const issue = payload.issue
+    if (!comment?.id || !issue?.number) return null
+
+    // Comments on pull requests arrive on this same event; PRs aren't mirrored.
+    if (issue.pull_request) return null
+
+    if (!repoMatches(payload, config)) return null
+
+    // Ignore comments Quackback itself posted, by author and by marker.
+    if (isOwnWrite(comment.user, config)) return null
+    if (typeof comment.body === 'string' && comment.body.includes(QUACKBACK_MARKER)) {
+      return null
+    }
+
+    const user = comment.user
+    return {
+      externalId: String(comment.id),
+      externalParentId: String(issue.number),
+      body: comment.body || '',
+      externalUrl: comment.html_url,
+      reporter: user?.login
+        ? { githubId: user.id ?? null, login: user.login, name: user.name ?? null }
+        : undefined,
+      eventType: 'issue_comment.created',
     }
   },
 }

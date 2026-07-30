@@ -12,6 +12,7 @@ import {
   db,
   integrations,
   postExternalLinks,
+  commentExternalLinks,
   integrationEventMappings,
   eq,
   and,
@@ -21,7 +22,7 @@ import { decryptSecrets } from './encryption'
 import { resolveStatusMapping, type StatusMappings } from './status-mapping'
 import { changeStatus } from '@/lib/server/domains/posts/post.status'
 import type { PostId, StatusId, PrincipalId, BoardId, IntegrationId } from '@quackback/ids'
-import type { InboundCreatePostIntent } from './inbound-types'
+import type { InboundCreatePostIntent, InboundCreateCommentIntent } from './inbound-types'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'inbound-webhook' })
@@ -77,10 +78,27 @@ export async function handleInboundWebhook(
       const createIntent = await definition.inbound.parseCreatePost(body, config, secrets)
       if (createIntent) {
         return handleInboundCreatePost(
-          { id: integration.id as IntegrationId, principalId: integration.principalId as PrincipalId | null },
+          {
+            id: integration.id as IntegrationId,
+            principalId: integration.principalId as PrincipalId | null,
+          },
           integrationType,
           config,
           createIntent
+        )
+      }
+    }
+    // Then the mirror-comment path (e.g. someone replied on a linked issue).
+    if (definition.inbound.parseCreateComment) {
+      const commentIntent = await definition.inbound.parseCreateComment(body, config, secrets)
+      if (commentIntent) {
+        return handleInboundCreateComment(
+          {
+            id: integration.id as IntegrationId,
+            principalId: integration.principalId as PrincipalId | null,
+          },
+          integrationType,
+          commentIntent
         )
       }
     }
@@ -214,9 +232,8 @@ async function handleInboundCreatePost(
 
   const { createPost } = await import('@/lib/server/domains/posts/post.service')
   const { linkTicketToPost } = await import('./apps/service')
-  const { segmentIdsForPrincipal } = await import(
-    '@/lib/server/domains/segments/segment-membership.service'
-  )
+  const { segmentIdsForPrincipal } =
+    await import('@/lib/server/domains/segments/segment-membership.service')
 
   // 4. Resolve author. Reporter resolution is provider-specific, so it's gated
   //    by integration type; other integrations fall back to the service principal.
@@ -280,6 +297,148 @@ async function handleInboundCreatePost(
     log.error(
       { err: error, integration_type: integrationType, external_id: intent.externalId },
       'inbound create-post failed'
+    )
+  }
+
+  return new Response('OK', { status: 200 })
+}
+
+/**
+ * Mirror a comment made on an external item onto the Quackback post linked to
+ * that item, governed by a per-integration event-mapping toggle.
+ *
+ * Loop prevention hinges on ordering. The comment is created with
+ * `skipDispatch: true`, its external link (direction `inbound`) is written,
+ * and only *then* is `comment.created` announced. Dispatching first would let
+ * the outbound hook run before the link exists, see no inbound marker, and
+ * push the comment straight back to the platform it came from.
+ *
+ * Announcing rather than staying silent is deliberate: subscribers watching
+ * the post in Quackback still get notified about replies made on GitHub, which
+ * is the whole point of mirroring. `skipDispatch` also suppresses
+ * auto-subscribing the author, which is right here — synthetic
+ * `@users.noreply.github.com` addresses would only bounce.
+ */
+async function handleInboundCreateComment(
+  integration: { id: IntegrationId; principalId: PrincipalId | null },
+  integrationType: string,
+  intent: InboundCreateCommentIntent
+): Promise<Response> {
+  // 1. Toggle gate — only act when an admin has enabled this event mapping.
+  const mapping = await db.query.integrationEventMappings.findFirst({
+    where: and(
+      eq(integrationEventMappings.integrationId, integration.id),
+      eq(integrationEventMappings.eventType, intent.eventType),
+      eq(integrationEventMappings.enabled, true)
+    ),
+    columns: { id: true },
+  })
+  if (!mapping) {
+    log.debug(
+      { integration_type: integrationType, event_type: intent.eventType },
+      'inbound create-comment disabled, ignoring'
+    )
+    return new Response('OK', { status: 200 })
+  }
+
+  // 2. Idempotency — GitHub redelivers on timeout; the unique constraint on
+  //    (integration_type, external_id) is the backstop, this is the fast path.
+  const alreadyMirrored = await db.query.commentExternalLinks.findFirst({
+    where: and(
+      eq(commentExternalLinks.integrationType, integrationType),
+      eq(commentExternalLinks.externalId, intent.externalId)
+    ),
+    columns: { id: true },
+  })
+  if (alreadyMirrored) {
+    log.debug(
+      { integration_type: integrationType, external_id: intent.externalId },
+      'external comment already mirrored, skipping'
+    )
+    return new Response('OK', { status: 200 })
+  }
+
+  // 3. Resolve the post from the external item the comment belongs to. No
+  //    link means the issue was never brought into Quackback — nothing to do.
+  const link = await db.query.postExternalLinks.findFirst({
+    where: and(
+      eq(postExternalLinks.integrationType, integrationType),
+      eq(postExternalLinks.externalId, intent.externalParentId)
+    ),
+    columns: { postId: true },
+  })
+  if (!link) {
+    log.debug(
+      { integration_type: integrationType, external_parent_id: intent.externalParentId },
+      'no linked post for external item, ignoring comment'
+    )
+    return new Response('OK', { status: 200 })
+  }
+
+  // 4. Resolve author, same tiering as the create-post path.
+  let authorPrincipalId: PrincipalId
+  if (intent.reporter && integrationType === 'github') {
+    const { resolveGitHubReporterPrincipal } = await import('./github/reporter-resolver')
+    authorPrincipalId = await resolveGitHubReporterPrincipal(intent.reporter)
+  } else if (integration.principalId) {
+    authorPrincipalId = integration.principalId
+  } else {
+    log.error(
+      { integration_type: integrationType },
+      'no resolvable commenter and no service principal; skipping comment'
+    )
+    return new Response('OK', { status: 200 })
+  }
+
+  const { createComment } = await import('@/lib/server/domains/comments/comment.service')
+  const { announcePublishedComment } =
+    await import('@/lib/server/domains/comments/comment.announce')
+  const { recordCommentLink } = await import('./github/comment-sync')
+  const { segmentIdsForPrincipal } =
+    await import('@/lib/server/domains/segments/segment-membership.service')
+
+  const segmentIds = await segmentIdsForPrincipal(authorPrincipalId)
+
+  try {
+    const created = await createComment(
+      {
+        postId: link.postId as PostId,
+        content: (intent.body ?? '').slice(0, 5000),
+      },
+      { principalId: authorPrincipalId, role: 'user' },
+      {
+        principalId: authorPrincipalId,
+        role: 'member',
+        principalType: 'service',
+        segmentIds,
+      },
+      { skipDispatch: true }
+    )
+
+    // Write the link BEFORE announcing — see the note above.
+    await recordCommentLink({
+      commentId: created.comment.id,
+      integrationId: integration.id,
+      externalId: intent.externalId,
+      externalUrl: intent.externalUrl,
+      direction: 'inbound',
+    })
+
+    await announcePublishedComment(created.comment.id)
+
+    log.info(
+      {
+        comment_id: created.comment.id,
+        post_id: link.postId,
+        external_id: intent.externalId,
+        integration_type: integrationType,
+      },
+      'inbound comment mirrored'
+    )
+  } catch (error) {
+    log.error(
+      { err: error, integration_type: integrationType, external_id: intent.externalId },
+      'inbound create-comment failed'
     )
   }
 

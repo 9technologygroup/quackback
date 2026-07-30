@@ -33,6 +33,26 @@ function issuePayload(
   })
 }
 
+function commentPayload(
+  action: string,
+  comment: Record<string, unknown> = {},
+  issue: Record<string, unknown> = {},
+  repoFullName = 'acme/app'
+) {
+  return JSON.stringify({
+    action,
+    repository: { full_name: repoFullName },
+    issue: { number: 142, ...issue },
+    comment: {
+      id: 5001,
+      body: 'I can reproduce this too.',
+      html_url: 'https://github.com/acme/app/issues/142#issuecomment-5001',
+      user: { id: 999, login: 'octocat', name: 'The Octocat' },
+      ...comment,
+    },
+  })
+}
+
 describe('githubInboundHandler.verifySignature', () => {
   const secret = 'webhook-secret'
   const body = '{"test": true}'
@@ -106,6 +126,77 @@ describe('githubInboundHandler.parseCreatePost', () => {
   it('omits the reporter when the user has no login', async () => {
     const body = issuePayload('opened', { user: { id: 5 } })
     const intent = await githubInboundHandler.parseCreatePost!(body, {}, {})
+    expect(intent?.reporter).toBeUndefined()
+  })
+})
+
+describe('githubInboundHandler.parseCreateComment', () => {
+  it('produces a mirror intent for a new issue comment', async () => {
+    const intent = await githubInboundHandler.parseCreateComment!(commentPayload('created'), {}, {})
+    expect(intent).toEqual({
+      externalId: '5001',
+      externalParentId: '142',
+      body: 'I can reproduce this too.',
+      externalUrl: 'https://github.com/acme/app/issues/142#issuecomment-5001',
+      reporter: { githubId: 999, login: 'octocat', name: 'The Octocat' },
+      eventType: 'issue_comment.created',
+    })
+  })
+
+  it('ignores edited and deleted comments', async () => {
+    expect(
+      await githubInboundHandler.parseCreateComment!(commentPayload('edited'), {}, {})
+    ).toBeNull()
+    expect(
+      await githubInboundHandler.parseCreateComment!(commentPayload('deleted'), {}, {})
+    ).toBeNull()
+  })
+
+  it('skips comments on pull requests', async () => {
+    const body = commentPayload('created', {}, { pull_request: { url: 'https://api…/pulls/1' } })
+    expect(await githubInboundHandler.parseCreateComment!(body, {}, {})).toBeNull()
+  })
+
+  it('skips comments Quackback itself posted, by marker', async () => {
+    const body = commentPayload('created', {
+      body: '**Alice** commented in Quackback:\n\nhi\n\n---\n\n[View in Quackback](https://f.acme.com/p/1)',
+    })
+    expect(await githubInboundHandler.parseCreateComment!(body, {}, {})).toBeNull()
+  })
+
+  it('skips comments authored by the connected account, by login', async () => {
+    const body = commentPayload('created', { user: { id: 1, login: 'quackback-bot' } })
+    expect(
+      await githubInboundHandler.parseCreateComment!(body, { username: 'quackback-bot' }, {})
+    ).toBeNull()
+  })
+
+  it('matches the connected login case-insensitively', async () => {
+    const body = commentPayload('created', { user: { id: 1, login: 'Quackback-Bot' } })
+    expect(
+      await githubInboundHandler.parseCreateComment!(body, { username: 'quackback-bot' }, {})
+    ).toBeNull()
+  })
+
+  it('still mirrors comments from other authors when a connected login is set', async () => {
+    const intent = await githubInboundHandler.parseCreateComment!(
+      commentPayload('created'),
+      { username: 'quackback-bot' },
+      {}
+    )
+    expect(intent?.externalId).toBe('5001')
+  })
+
+  it('rejects comments from a repo other than the configured one', async () => {
+    const body = commentPayload('created', {}, {}, 'someone-else/other-repo')
+    expect(
+      await githubInboundHandler.parseCreateComment!(body, { channelId: 'acme/app' }, {})
+    ).toBeNull()
+  })
+
+  it('omits the reporter when the commenter has no login', async () => {
+    const body = commentPayload('created', { user: { id: 5 } })
+    const intent = await githubInboundHandler.parseCreateComment!(body, {}, {})
     expect(intent?.reporter).toBeUndefined()
   })
 })
