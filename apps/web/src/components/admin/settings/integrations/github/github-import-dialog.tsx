@@ -419,8 +419,8 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
               Close the GitHub issues after importing
             </label>
             <p className="text-xs text-muted-foreground">
-              Comments on each issue with a link to its new post, then closes it as &ldquo;not
-              planned&rdquo;.{' '}
+              Comments on each issue with a link to its new post, then closes it as
+              &ldquo;duplicate&rdquo; so it reads as moved rather than rejected.{' '}
               {handoff && openSelectedCount === 0
                 ? 'Nothing selected is still open, so no issue will be touched.'
                 : `Applies to the ${openSelectedCount} open ${

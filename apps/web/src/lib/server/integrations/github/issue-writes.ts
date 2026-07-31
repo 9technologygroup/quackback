@@ -99,17 +99,20 @@ export async function createGitHubIssue(
 }
 
 /**
- * Close an issue, optionally recording why.
+ * Close an issue, recording why.
  *
- * `not_planned` is the right reason for an issue whose tracking moved to
- * Quackback: it renders as a grey icon rather than the purple "completed" tick,
- * so the issue reads as "handled elsewhere" instead of "shipped".
+ * `duplicate` is the right reason for an issue whose tracking moved elsewhere.
+ * GitHub offers no "migrated" — the enum is completed / not_planned / duplicate
+ * / reopened — and of those, duplicate is the only one that means "the
+ * canonical record for this is somewhere else", which is exactly what a
+ * migration is. `not_planned` reads as a rejection to the person who filed it,
+ * and `completed` claims something shipped when nothing has been built.
  */
 export async function closeGitHubIssue(
   accessToken: string,
   ownerRepo: string,
   issueNumber: string | number,
-  stateReason: 'completed' | 'not_planned' = 'not_planned'
+  stateReason: 'completed' | 'not_planned' | 'duplicate' = 'duplicate'
 ): Promise<void> {
   const response = await ghWrite(
     `${GITHUB_API}/repos/${ownerRepo}/issues/${issueNumber}`,

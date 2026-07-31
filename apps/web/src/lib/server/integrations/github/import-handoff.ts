@@ -150,9 +150,10 @@ export async function handoffGitHubIssue(input: {
   if (input.close === false) return
 
   try {
-    // not_planned, so the issue shows GitHub's grey "closed as not planned"
-    // icon rather than the tick that means shipped.
-    await closeGitHubIssue(input.accessToken, input.ownerRepo, input.issueNumber, 'not_planned')
+    // duplicate, so the issue reads as "tracked elsewhere now" — the closest
+    // GitHub offers to "migrated". not_planned would tell the reporter their
+    // request was rejected, which is the opposite of what happened.
+    await closeGitHubIssue(input.accessToken, input.ownerRepo, input.issueNumber, 'duplicate')
     log.info(
       { issue_number: input.issueNumber, post_id: input.postId },
       'imported issue handed off'
