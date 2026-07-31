@@ -328,18 +328,18 @@ export function GitHubConfig({
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="import-labels">Only import issues labelled</Label>
+        <Label htmlFor="import-labels">Only import issues labelled or typed</Label>
         <Input
           id="import-labels"
           value={importLabels}
           onChange={(e) => setImportLabels(e.target.value)}
           onBlur={handleImportLabelsBlur}
-          placeholder="enhancement, feature request"
+          placeholder="enhancement, Feature"
           disabled={saving || !integrationEnabled}
         />
         <p className="text-xs text-muted-foreground">
-          Comma-separated, case-insensitive. An issue is imported when it carries any one of these
-          labels. Leave empty to import every new issue.
+          Comma-separated, case-insensitive. An issue is imported when any one of these matches
+          either a label or its GitHub issue type. Leave empty to import every new issue.
         </p>
       </div>
 

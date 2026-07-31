@@ -179,6 +179,52 @@ describe('githubInboundHandler.parseCreatePost', () => {
       expect(intent?.externalId).toBe('142')
     })
 
+    it('matches a GitHub issue type, not just labels', async () => {
+      // Newer repos use the org-level Type field instead of type labels.
+      const body = issuePayload('opened', { type: { name: 'Feature' }, labels: [] })
+      const intent = await githubInboundHandler.parseCreatePost!(
+        body,
+        { importLabels: ['Feature'] },
+        {}
+      )
+      expect(intent?.externalId).toBe('142')
+    })
+
+    it('matches an issue type case-insensitively', async () => {
+      const body = issuePayload('opened', { type: { name: 'Feature' }, labels: [] })
+      const intent = await githubInboundHandler.parseCreatePost!(
+        body,
+        { importLabels: ['feature'] },
+        {}
+      )
+      expect(intent?.externalId).toBe('142')
+    })
+
+    it('skips an issue whose type is not allowed', async () => {
+      const body = issuePayload('opened', { type: { name: 'Bug' }, labels: [] })
+      expect(
+        await githubInboundHandler.parseCreatePost!(body, { importLabels: ['Feature'] }, {})
+      ).toBeNull()
+    })
+
+    it('accepts a match on either the label or the type', async () => {
+      const byLabel = issuePayload('opened', { type: { name: 'Bug' }, labels: ['enhancement'] })
+      const byType = issuePayload('opened', { type: { name: 'Feature' }, labels: ['bug'] })
+      const allow = { importLabels: ['enhancement', 'Feature'] }
+      expect((await githubInboundHandler.parseCreatePost!(byLabel, allow, {}))?.externalId).toBe(
+        '142'
+      )
+      expect((await githubInboundHandler.parseCreatePost!(byType, allow, {}))?.externalId).toBe(
+        '142'
+      )
+    })
+
+    it('tolerates a null or absent type', async () => {
+      const nullType = issuePayload('opened', { type: null, labels: [{ name: 'enhancement' }] })
+      const intent = await githubInboundHandler.parseCreatePost!(nullType, config, {})
+      expect(intent?.externalId).toBe('142')
+    })
+
     it('imports everything when the allowlist is empty or blank', async () => {
       const body = issuePayload('opened', { labels: [{ name: 'bug' }] })
       expect(
