@@ -130,8 +130,19 @@ export const githubInboundHandler: InboundWebhookHandler = {
     // ever the original reporter, so it can't answer this question.
     if (isOwnWrite(payload.sender, config)) return null
 
-    // Map GitHub actions to status names
-    const externalStatus = payload.action === 'closed' ? 'Closed' : 'Open'
+    // Map GitHub actions to status names. A close is split by reason so
+    // "we're not doing this" can land somewhere other than "this shipped" —
+    // mapping both to one Closed would show an abandoned feature as delivered.
+    // Anything other than not_planned (including the null that every issue
+    // closed before GitHub added state_reason carries) stays on plain Closed.
+    let externalStatus: string
+    if (payload.action === 'reopened') {
+      externalStatus = 'Open'
+    } else if (payload.issue.state_reason === 'not_planned') {
+      externalStatus = 'Closed (not planned)'
+    } else {
+      externalStatus = 'Closed'
+    }
 
     return {
       externalId: String(payload.issue.number),

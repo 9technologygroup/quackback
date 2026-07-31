@@ -31,6 +31,28 @@ import type { JSONContent } from '@tiptap/core'
 import type { TiptapContent } from '@/lib/shared/db-types'
 
 /**
+ * Minimal read for integrations that need a post's body and demand signal.
+ *
+ * Separate from {@link getPostWithDetails}, which joins author, board, tags and
+ * comments — none of which an issue body uses, and whose doc rightly warns it is
+ * team-authed. This returns nothing that isn't already going into an external
+ * issue the integration was configured to create.
+ *
+ * Returns null when the post is missing or soft-deleted, so a status change
+ * racing a delete is a no-op rather than a thrown error inside a hook.
+ */
+export async function getPostForPromotion(
+  postId: PostId
+): Promise<{ content: string; voteCount: number } | null> {
+  const post = await db.query.posts.findFirst({
+    columns: { content: true, voteCount: true, deletedAt: true },
+    where: eq(posts.id, postId),
+  })
+  if (!post || post.deletedAt) return null
+  return { content: post.content ?? '', voteCount: post.voteCount ?? 0 }
+}
+
+/**
  * Get a post with full details including board, tags, and comment count.
  * Uses Drizzle query builder with parallel queries for compatibility across drivers.
  *

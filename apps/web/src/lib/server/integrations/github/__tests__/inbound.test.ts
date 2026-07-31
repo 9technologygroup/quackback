@@ -274,6 +274,31 @@ describe('githubInboundHandler.parseStatusChange', () => {
     expect(result).toMatchObject({ externalId: '142', externalStatus: 'Open' })
   })
 
+  it('separates a not-planned close so it can map somewhere other than shipped', async () => {
+    const body = issuePayload('closed', { state_reason: 'not_planned' })
+    const result = await githubInboundHandler.parseStatusChange(body, {}, {})
+    expect(result).toMatchObject({ externalStatus: 'Closed (not planned)' })
+  })
+
+  it('treats an explicitly completed close as Closed', async () => {
+    const body = issuePayload('closed', { state_reason: 'completed' })
+    const result = await githubInboundHandler.parseStatusChange(body, {}, {})
+    expect(result).toMatchObject({ externalStatus: 'Closed' })
+  })
+
+  it('treats a missing close reason as Closed, not not-planned', async () => {
+    // Every issue closed before GitHub added state_reason carries null.
+    const body = issuePayload('closed', { state_reason: null })
+    const result = await githubInboundHandler.parseStatusChange(body, {}, {})
+    expect(result).toMatchObject({ externalStatus: 'Closed' })
+  })
+
+  it('ignores state_reason on reopen', async () => {
+    const body = issuePayload('reopened', { state_reason: 'not_planned' })
+    const result = await githubInboundHandler.parseStatusChange(body, {}, {})
+    expect(result).toMatchObject({ externalStatus: 'Open' })
+  })
+
   it('ignores opened (handled by parseCreatePost instead)', async () => {
     expect(await githubInboundHandler.parseStatusChange(issuePayload('opened'), {}, {})).toBeNull()
   })

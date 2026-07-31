@@ -84,7 +84,8 @@ export async function handleInboundWebhook(
           },
           integrationType,
           config,
-          createIntent
+          createIntent,
+          secrets
         )
       }
     }
@@ -184,7 +185,8 @@ async function handleInboundCreatePost(
   integration: { id: IntegrationId; principalId: PrincipalId | null },
   integrationType: string,
   config: Record<string, unknown>,
-  intent: InboundCreatePostIntent
+  intent: InboundCreatePostIntent,
+  secrets: Record<string, unknown> = {}
 ): Promise<Response> {
   // 1. Toggle gate — only act when an admin has enabled this event mapping.
   const mapping = await db.query.integrationEventMappings.findFirst({
@@ -293,6 +295,22 @@ async function handleInboundCreatePost(
       },
       'inbound create-post applied'
     )
+
+    // 6. Hand the conversation over on the source platform: point the reporter
+    //    at the post and close the original, so the request is tracked in one
+    //    place. Deliberately after the link is written — a failure here leaves
+    //    a working post with a still-open issue, which is recoverable by hand,
+    //    whereas closing first could strand a closed issue with no post.
+    if (integrationType === 'github') {
+      const { handoffImportedGitHubIssue } = await import('./github/import-handoff')
+      await handoffImportedGitHubIssue({
+        config,
+        secrets,
+        issueNumber: intent.externalId,
+        postId: created.id as PostId,
+        boardSlug: created.boardSlug,
+      })
+    }
   } catch (error) {
     log.error(
       { err: error, integration_type: integrationType, external_id: intent.externalId },

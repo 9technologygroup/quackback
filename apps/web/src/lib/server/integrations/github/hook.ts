@@ -10,7 +10,8 @@
 import type { HookHandler, HookResult } from '../../events/hook-types'
 import type { EventData } from '../../events/types'
 import { isRetryableError } from '../../events/hook-utils'
-import { buildGitHubIssueBody, buildGitHubCommentBody } from './message'
+import { buildGitHubIssueBody, buildGitHubCommentBody, buildPromotedIssueBody } from './message'
+import { createGitHubIssue } from './issue-writes'
 import {
   githubHeaders,
   isInboundComment,
@@ -32,6 +33,15 @@ export interface GitHubTarget {
 export interface GitHubConfig {
   accessToken: string
   rootUrl: string
+  /**
+   * Status name that promotes a post to a GitHub work item. When unset, no
+   * status change creates an issue — the promotion flow is opt-in, because a
+   * workspace that already creates an issue on `post.created` would otherwise
+   * get a second one the first time anything is scheduled.
+   */
+  promoteOnStatus?: string
+  /** Labels applied to a promoted work item, e.g. ['enhancement']. */
+  promoteLabels?: string[]
 }
 
 /**
@@ -125,6 +135,82 @@ async function syncCommentToGitHub(
   }
 }
 
+/**
+ * Create a GitHub work item for a post that has just reached the configured
+ * promotion status.
+ *
+ * This is what lets the tracker hold only scheduled work: an idea gathers votes
+ * in Quackback, and only when it is actually committed to does it become an
+ * issue a developer can pick up and a PR can close.
+ *
+ * No-ops when the post already has a linked issue. Re-entering the promotion
+ * status — a post moved back to Planned after slipping a sprint, or a status
+ * corrected by hand — must not mint a second issue for the same work.
+ */
+async function promotePostToIssue(
+  event: Extract<EventData, { type: 'post.status_changed' }>,
+  ownerRepo: string,
+  config: GitHubConfig
+): Promise<HookResult> {
+  const { post, newStatus } = event.data
+
+  const promoteOn = config.promoteOnStatus?.trim()
+  if (!promoteOn || newStatus.toLowerCase() !== promoteOn.toLowerCase()) {
+    return { success: true }
+  }
+
+  const existing = await findLinkedIssueNumber(post.id as PostId)
+  if (existing) {
+    log.debug(
+      { post_id: post.id, issue_number: existing },
+      'post already linked to an issue, not promoting again'
+    )
+    return { success: true }
+  }
+
+  // status_changed carries only a post reference, so the body content and vote
+  // count — the two things that make the issue worth reading — are read here.
+  const { getPostForPromotion } = await import('@/lib/server/domains/posts/post.query')
+  const detail = await getPostForPromotion(post.id as PostId)
+  if (!detail) {
+    log.warn({ post_id: post.id }, 'post vanished before promotion, skipping')
+    return { success: true }
+  }
+
+  const { title, body } = buildPromotedIssueBody({
+    title: post.title,
+    content: detail.content,
+    voteCount: detail.voteCount,
+    boardSlug: post.boardSlug,
+    postId: post.id,
+    status: newStatus,
+    rootUrl: config.rootUrl,
+  })
+
+  try {
+    const issue = await createGitHubIssue(config.accessToken, ownerRepo, {
+      title,
+      body,
+      labels: config.promoteLabels,
+    })
+    log.info(
+      { post_id: post.id, issue_number: issue.number, repo: ownerRepo, status: newStatus },
+      'post promoted to github issue'
+    )
+    return { success: true, externalId: String(issue.number), externalUrl: issue.htmlUrl }
+  } catch (error) {
+    const status = (error as { status?: number }).status
+    if (typeof status === 'number') {
+      return mapGitHubError(status, error instanceof Error ? error.message : '', ownerRepo)
+    }
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      shouldRetry: isRetryableError(error),
+    }
+  }
+}
+
 export const githubHook: HookHandler = {
   async run(event: EventData, target: unknown, config: unknown): Promise<HookResult> {
     const { channelId: ownerRepo } = target as GitHubTarget
@@ -132,6 +218,10 @@ export const githubHook: HookHandler = {
 
     if (event.type === 'comment.created') {
       return syncCommentToGitHub(event, ownerRepo, githubConfig)
+    }
+
+    if (event.type === 'post.status_changed') {
+      return promotePostToIssue(event, ownerRepo, githubConfig)
     }
 
     // Only create issues for new feedback
