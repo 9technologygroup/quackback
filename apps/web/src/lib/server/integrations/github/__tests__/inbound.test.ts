@@ -179,6 +179,52 @@ describe('githubInboundHandler.parseCreatePost', () => {
       expect(intent?.externalId).toBe('142')
     })
 
+    it('matches a GitHub issue type, not just labels', async () => {
+      // Newer repos use the org-level Type field instead of type labels.
+      const body = issuePayload('opened', { type: { name: 'Feature' }, labels: [] })
+      const intent = await githubInboundHandler.parseCreatePost!(
+        body,
+        { importLabels: ['Feature'] },
+        {}
+      )
+      expect(intent?.externalId).toBe('142')
+    })
+
+    it('matches an issue type case-insensitively', async () => {
+      const body = issuePayload('opened', { type: { name: 'Feature' }, labels: [] })
+      const intent = await githubInboundHandler.parseCreatePost!(
+        body,
+        { importLabels: ['feature'] },
+        {}
+      )
+      expect(intent?.externalId).toBe('142')
+    })
+
+    it('skips an issue whose type is not allowed', async () => {
+      const body = issuePayload('opened', { type: { name: 'Bug' }, labels: [] })
+      expect(
+        await githubInboundHandler.parseCreatePost!(body, { importLabels: ['Feature'] }, {})
+      ).toBeNull()
+    })
+
+    it('accepts a match on either the label or the type', async () => {
+      const byLabel = issuePayload('opened', { type: { name: 'Bug' }, labels: ['enhancement'] })
+      const byType = issuePayload('opened', { type: { name: 'Feature' }, labels: ['bug'] })
+      const allow = { importLabels: ['enhancement', 'Feature'] }
+      expect((await githubInboundHandler.parseCreatePost!(byLabel, allow, {}))?.externalId).toBe(
+        '142'
+      )
+      expect((await githubInboundHandler.parseCreatePost!(byType, allow, {}))?.externalId).toBe(
+        '142'
+      )
+    })
+
+    it('tolerates a null or absent type', async () => {
+      const nullType = issuePayload('opened', { type: null, labels: [{ name: 'enhancement' }] })
+      const intent = await githubInboundHandler.parseCreatePost!(nullType, config, {})
+      expect(intent?.externalId).toBe('142')
+    })
+
     it('imports everything when the allowlist is empty or blank', async () => {
       const body = issuePayload('opened', { labels: [{ name: 'bug' }] })
       expect(
@@ -272,6 +318,31 @@ describe('githubInboundHandler.parseStatusChange', () => {
   it('maps reopened → Open', async () => {
     const result = await githubInboundHandler.parseStatusChange(issuePayload('reopened'), {}, {})
     expect(result).toMatchObject({ externalId: '142', externalStatus: 'Open' })
+  })
+
+  it('separates a not-planned close so it can map somewhere other than shipped', async () => {
+    const body = issuePayload('closed', { state_reason: 'not_planned' })
+    const result = await githubInboundHandler.parseStatusChange(body, {}, {})
+    expect(result).toMatchObject({ externalStatus: 'Closed (not planned)' })
+  })
+
+  it('treats an explicitly completed close as Closed', async () => {
+    const body = issuePayload('closed', { state_reason: 'completed' })
+    const result = await githubInboundHandler.parseStatusChange(body, {}, {})
+    expect(result).toMatchObject({ externalStatus: 'Closed' })
+  })
+
+  it('treats a missing close reason as Closed, not not-planned', async () => {
+    // Every issue closed before GitHub added state_reason carries null.
+    const body = issuePayload('closed', { state_reason: null })
+    const result = await githubInboundHandler.parseStatusChange(body, {}, {})
+    expect(result).toMatchObject({ externalStatus: 'Closed' })
+  })
+
+  it('ignores state_reason on reopen', async () => {
+    const body = issuePayload('reopened', { state_reason: 'not_planned' })
+    const result = await githubInboundHandler.parseStatusChange(body, {}, {})
+    expect(result).toMatchObject({ externalStatus: 'Open' })
   })
 
   it('ignores opened (handled by parseCreatePost instead)', async () => {

@@ -60,6 +60,8 @@ interface ImportRowPayload {
   statusId?: string
   tagIds: string[]
   roadmapId?: string
+  /** Passed through so the worker only hands back issues that are still open. */
+  state?: 'open' | 'closed'
 }
 
 interface GitHubImportDialogProps {
@@ -72,6 +74,9 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
   const [page, setPage] = useState(1)
   const [rowStates, setRowStates] = useState<Record<number, RowState>>({})
   const [jobId, setJobId] = useState<string | null>(null)
+  // Off by default: importing is additive and reversible, whereas commenting on
+  // and closing someone's issue is neither. Ticking it is a deliberate act.
+  const [handoff, setHandoff] = useState(false)
 
   const boardsQ = useQuery(adminQueries.boards())
   const statusesQ = useQuery(adminQueries.statuses())
@@ -140,11 +145,11 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
     if (jobDone || jobFailed || jobMissing) {
       queryClient.invalidateQueries({ queryKey: ['github-import', 'issues', page] })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobDone, jobFailed, jobMissing])
 
   const importMutation = useMutation({
-    mutationFn: (rows: ImportRowPayload[]) => startGitHubImportFn({ data: { rows } }),
+    mutationFn: (vars: { rows: ImportRowPayload[]; handoff: boolean }) =>
+      startGitHubImportFn({ data: vars }),
     onSuccess: (res) => setJobId(res.jobId),
   })
 
@@ -170,10 +175,14 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
         statusId: st.statusId || undefined,
         tagIds: st.tagIds,
         roadmapId: st.roadmapId === NONE ? undefined : st.roadmapId,
+        state: r.state === 'open' || r.state === 'closed' ? r.state : undefined,
       }
     })
-    if (rows.length) importMutation.mutate(rows)
+    if (rows.length) importMutation.mutate({ rows, handoff })
   }
+
+  /** Open issues in the selection — the only ones a handoff would touch. */
+  const openSelectedCount = importableRows.filter((r) => r.state === 'open').length
 
   const boards = boardsQ.data ?? []
   const statuses = statusesQ.data ?? []
@@ -395,6 +404,30 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
               </TableBody>
             </Table>
           )}
+        </div>
+
+        <div className="flex items-start gap-2 rounded-lg border border-border/50 p-3">
+          <Checkbox
+            id="handoff-open-issues"
+            checked={handoff}
+            onCheckedChange={(c) => setHandoff(c === true)}
+            disabled={importing}
+            className="mt-0.5"
+          />
+          <div className="space-y-1">
+            <label htmlFor="handoff-open-issues" className="cursor-pointer font-medium text-sm">
+              Close the GitHub issues after importing
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Comments on each issue with a link to its new post, then closes it as &ldquo;not
+              planned&rdquo;.{' '}
+              {handoff && openSelectedCount === 0
+                ? 'Nothing selected is still open, so no issue will be touched.'
+                : `Applies to the ${openSelectedCount} open ${
+                    openSelectedCount === 1 ? 'issue' : 'issues'
+                  } in this selection — already-closed issues are left alone.`}
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center justify-between pt-2">

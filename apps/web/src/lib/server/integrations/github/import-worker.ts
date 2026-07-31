@@ -37,10 +37,18 @@ function teamActor(principalId: PrincipalId): Actor {
   return { principalId, role: 'member', principalType: 'service', segmentIds: new Set() }
 }
 
+/**
+ * Pause between handoffs. GitHub's secondary rate limits fire on bursts of
+ * content creation, and its own guidance is to leave a second between mutating
+ * requests — cheap insurance on a job that may run for hundreds of issues and
+ * whose whole purpose is a tidy tracker.
+ */
+const HANDOFF_PACING_MS = 1000
+
 export async function processGitHubImportJob(
   job: Job<GitHubImportJobData>
 ): Promise<GitHubImportProgress> {
-  const { integrationId, rows } = job.data
+  const { integrationId, rows, handoff } = job.data
   const progress: GitHubImportProgress = {
     total: rows.length,
     done: 0,
@@ -144,6 +152,31 @@ export async function processGitHubImportJob(
             )
           }
         }
+      }
+
+      // Hand the issue back to its reporter: comment with the post link, then
+      // close it. Only open issues — a closed one is already finished, and
+      // reopening the conversation on years of archived issues would notify
+      // everyone who ever participated for no benefit.
+      if (handoff && row.state === 'open') {
+        const { handoffGitHubIssue } = await import('./import-handoff')
+        const handoffLabels = Array.isArray(
+          (integration.config as Record<string, unknown> | null)?.handoffLabels
+        )
+          ? ((integration.config as Record<string, unknown>).handoffLabels as unknown[]).filter(
+              (l): l is string => typeof l === 'string' && l.length > 0
+            )
+          : []
+
+        await handoffGitHubIssue({
+          accessToken,
+          ownerRepo,
+          issueNumber: externalId,
+          postId: created.id as PostId,
+          boardSlug: created.boardSlug,
+          labels: handoffLabels,
+        })
+        await new Promise((r) => setTimeout(r, HANDOFF_PACING_MS))
       }
 
       progress.imported++

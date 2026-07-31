@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { ArrowPathIcon, FolderIcon } from '@heroicons/react/24/solid'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -92,6 +93,16 @@ export function GitHubConfig({
   )
   const [integrationEnabled, setIntegrationEnabled] = useState(enabled)
   const [importOpen, setImportOpen] = useState(false)
+  const [importLabels, setImportLabels] = useState(() =>
+    Array.isArray(initialConfig.importLabels) ? initialConfig.importLabels.join(', ') : ''
+  )
+  const [handoffImported, setHandoffImported] = useState(initialConfig.handoffImported === true)
+  const [handoffLabels, setHandoffLabels] = useState(() =>
+    Array.isArray(initialConfig.handoffLabels) ? initialConfig.handoffLabels.join(', ') : ''
+  )
+  const [promoteOnStatus, setPromoteOnStatus] = useState(
+    (initialConfig.promoteOnStatus as string) || ''
+  )
   const [eventSettings, setEventSettings] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(
       EVENT_CONFIG.map((event) => [
@@ -145,6 +156,43 @@ export function GitHubConfig({
   const handleInboundBoardChange = (boardId: string) => {
     setSelectedInboundBoard(boardId)
     updateMutation.mutate({ id: integrationId, config: { inboundBoardId: boardId } })
+  }
+
+  /** Comma-separated input → trimmed, de-duplicated list; empty means "no filter". */
+  const parseLabelList = (raw: string): string[] =>
+    Array.from(
+      new Set(
+        raw
+          .split(',')
+          .map((label) => label.trim())
+          .filter(Boolean)
+      )
+    )
+
+  const handleImportLabelsBlur = () => {
+    updateMutation.mutate({
+      id: integrationId,
+      config: { importLabels: parseLabelList(importLabels) },
+    })
+  }
+
+  const handleHandoffChange = (checked: boolean) => {
+    setHandoffImported(checked)
+    updateMutation.mutate({ id: integrationId, config: { handoffImported: checked } })
+  }
+
+  const handleHandoffLabelsBlur = () => {
+    updateMutation.mutate({
+      id: integrationId,
+      config: { handoffLabels: parseLabelList(handoffLabels) },
+    })
+  }
+
+  const handlePromoteStatusBlur = () => {
+    updateMutation.mutate({
+      id: integrationId,
+      config: { promoteOnStatus: promoteOnStatus.trim() },
+    })
   }
 
   /**
@@ -279,6 +327,59 @@ export function GitHubConfig({
         </p>
       </div>
 
+      <div className="space-y-2">
+        <Label htmlFor="import-labels">Only import issues labelled or typed</Label>
+        <Input
+          id="import-labels"
+          value={importLabels}
+          onChange={(e) => setImportLabels(e.target.value)}
+          onBlur={handleImportLabelsBlur}
+          placeholder="enhancement, Feature"
+          disabled={saving || !integrationEnabled}
+        />
+        <p className="text-xs text-muted-foreground">
+          Comma-separated, case-insensitive. An issue is imported when any one of these matches
+          either a label or its GitHub issue type. Leave empty to import every new issue.
+        </p>
+      </div>
+
+      <div className="space-y-3 rounded-lg border border-border/50 p-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <Label htmlFor="handoff-toggle" className="font-medium text-sm">
+              Close issues after importing
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Comment with a link to the new post, then close the GitHub issue so the request is
+              tracked in one place
+            </p>
+          </div>
+          <Switch
+            id="handoff-toggle"
+            checked={handoffImported}
+            onCheckedChange={handleHandoffChange}
+            disabled={saving || !integrationEnabled}
+          />
+        </div>
+        {handoffImported && (
+          <div className="space-y-2">
+            <Label htmlFor="handoff-labels">Label the closed issue with</Label>
+            <Input
+              id="handoff-labels"
+              value={handoffLabels}
+              onChange={(e) => setHandoffLabels(e.target.value)}
+              onBlur={handleHandoffLabelsBlur}
+              placeholder="moved-to-feedback"
+              disabled={saving}
+            />
+            <p className="text-xs text-muted-foreground">
+              Optional. Issues are closed as &ldquo;not planned&rdquo;, so they read as moved rather
+              than shipped.
+            </p>
+          </div>
+        )}
+      </div>
+
       <div className="space-y-3">
         <Label className="text-base font-medium">Events</Label>
         <p className="text-xs text-muted-foreground">
@@ -309,6 +410,25 @@ export function GitHubConfig({
             made before this feature shipped only listen for issues &mdash; turn status sync off and
             on again below to refresh the webhook.
           </p>
+        )}
+
+        {eventSettings['post.status_changed'] && (
+          <div className="space-y-2 pt-2">
+            <Label htmlFor="promote-status">Create an issue when a post reaches</Label>
+            <Input
+              id="promote-status"
+              value={promoteOnStatus}
+              onChange={(e) => setPromoteOnStatus(e.target.value)}
+              onBlur={handlePromoteStatusBlur}
+              placeholder="Planned"
+              disabled={saving || !integrationEnabled}
+            />
+            <p className="text-xs text-muted-foreground">
+              The status name, exactly as it appears in your settings. A post reaching it gets a
+              GitHub issue for the work; posts that already have one are left alone. Leave empty to
+              never create issues from status changes.
+            </p>
+          </div>
         )}
 
         <div className="space-y-2 pt-2">
@@ -348,8 +468,9 @@ export function GitHubConfig({
         config={initialConfig}
         enabled={integrationEnabled}
         externalStatuses={[
-          { id: 'Open', name: 'Open' },
-          { id: 'Closed', name: 'Closed' },
+          { id: 'Open', name: 'Reopened' },
+          { id: 'Closed', name: 'Closed as completed' },
+          { id: 'Closed (not planned)', name: 'Closed as not planned' },
         ]}
       />
 

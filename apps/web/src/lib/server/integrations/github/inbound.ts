@@ -53,11 +53,17 @@ function issueLabelNames(issue: { labels?: Array<{ name?: string } | string> }):
  * them. An unset or empty list imports everything, which is the behaviour
  * every existing integration had before this filter existed.
  *
- * Matching is case-insensitive: GitHub preserves label case but people rename
- * `bug` to `Bug` often enough that an exact match would silently stop importing.
+ * Matched against both the issue's labels and its GitHub issue *type* — the
+ * org-level field newer repos use in place of `bug`/`enhancement` labels. They
+ * are separate fields in the payload but the same idea to whoever configured
+ * this, so one list covers both and a repo can migrate between them without
+ * anyone having to touch the setting.
+ *
+ * Matching is case-insensitive: GitHub preserves case but people rename `bug`
+ * to `Bug` often enough that an exact match would silently stop importing.
  */
 function labelsAllowImport(
-  issue: { labels?: Array<{ name?: string } | string> },
+  issue: { labels?: Array<{ name?: string } | string>; type?: { name?: string } | null },
   config: Record<string, unknown>
 ): boolean {
   const configured = config.importLabels
@@ -70,7 +76,11 @@ function labelsAllowImport(
   )
   if (allowed.size === 0) return true
 
-  return issueLabelNames(issue).some((name) => allowed.has(name.toLowerCase()))
+  const candidates = issueLabelNames(issue)
+  if (typeof issue.type?.name === 'string' && issue.type.name) {
+    candidates.push(issue.type.name)
+  }
+  return candidates.some((name) => allowed.has(name.toLowerCase()))
 }
 
 /**
@@ -130,8 +140,19 @@ export const githubInboundHandler: InboundWebhookHandler = {
     // ever the original reporter, so it can't answer this question.
     if (isOwnWrite(payload.sender, config)) return null
 
-    // Map GitHub actions to status names
-    const externalStatus = payload.action === 'closed' ? 'Closed' : 'Open'
+    // Map GitHub actions to status names. A close is split by reason so
+    // "we're not doing this" can land somewhere other than "this shipped" —
+    // mapping both to one Closed would show an abandoned feature as delivered.
+    // Anything other than not_planned (including the null that every issue
+    // closed before GitHub added state_reason carries) stays on plain Closed.
+    let externalStatus: string
+    if (payload.action === 'reopened') {
+      externalStatus = 'Open'
+    } else if (payload.issue.state_reason === 'not_planned') {
+      externalStatus = 'Closed (not planned)'
+    } else {
+      externalStatus = 'Closed'
+    }
 
     return {
       externalId: String(payload.issue.number),

@@ -76,6 +76,8 @@ export interface GitHubIssueRaw {
   milestone: { title: string } | null
   pull_request?: unknown
   comments: number
+  /** Org-level issue type (Bug/Feature/Task), where the repository uses them. */
+  type?: { name?: string } | null
 }
 
 export interface GitHubIssueCommentRaw {
@@ -132,9 +134,7 @@ export async function listGitHubIssueComments(
     const url = `${GITHUB_API}/repos/${ownerRepo}/issues/${issueNumber}/comments?per_page=${perPage}&page=${page}`
     const response = await ghGet(url, accessToken)
     if (!response.ok) {
-      throw new Error(
-        `Failed to list comments for issue #${issueNumber}: HTTP ${response.status}`
-      )
+      throw new Error(`Failed to list comments for issue #${issueNumber}: HTTP ${response.status}`)
     }
     const batch = (await response.json()) as GitHubIssueCommentRaw[]
     if (batch.length === 0) break

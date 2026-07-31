@@ -43,6 +43,43 @@ export function buildGitHubIssueBody(
 }
 
 /**
+ * Build the issue body for a post being promoted to scheduled work.
+ *
+ * Deliberately different from the post.created body: this issue is a work item
+ * someone is about to pick up, not an echo of a suggestion. Vote count leads
+ * because "how many people asked for this" is the context a developer wants and
+ * the reason it was scheduled at all, whereas who first suggested it is a
+ * detail they can follow the link for.
+ */
+export function buildPromotedIssueBody(input: {
+  title: string
+  content: string
+  voteCount: number
+  boardSlug: string
+  postId: string
+  status: string
+  rootUrl: string
+}): { title: string; body: string } {
+  const postUrl = buildPostUrl(input.rootUrl, input.boardSlug, input.postId)
+  const votes = input.voteCount === 1 ? '1 vote' : `${input.voteCount} votes`
+
+  const body = [
+    truncate(stripHtml(input.content), 2000),
+    '',
+    '---',
+    '',
+    `**${votes}** · moved to **${input.status}** in Quackback`,
+    '',
+    'Discussion on this issue is mirrored back to the feedback post, so the',
+    'people who requested it can follow along without a GitHub account.',
+    '',
+    `[View in Quackback](${postUrl})`,
+  ].join('\n')
+
+  return { title: input.title, body }
+}
+
+/**
  * Build a GitHub issue-comment body from a comment.created event.
  *
  * Quackback can't post as the commenter (there's no token for them), so the
