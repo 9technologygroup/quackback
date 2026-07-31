@@ -35,6 +35,45 @@ function isOwnWrite(
 }
 
 /**
+ * Label names on an issue payload. GitHub sends objects; bare strings are
+ * tolerated defensively since the wizard's REST reads can see either shape.
+ */
+function issueLabelNames(issue: { labels?: Array<{ name?: string } | string> }): string[] {
+  if (!Array.isArray(issue.labels)) return []
+  return issue.labels
+    .map((label) => (typeof label === 'string' ? label : label?.name))
+    .filter((name): name is string => typeof name === 'string' && name.length > 0)
+}
+
+/**
+ * Whether an issue passes the configured label allowlist.
+ *
+ * `config.importLabels` lets a workspace import only some issues — e.g. only
+ * `enhancement`, so bug reports stay in the tracker where the fixing PR closes
+ * them. An unset or empty list imports everything, which is the behaviour
+ * every existing integration had before this filter existed.
+ *
+ * Matching is case-insensitive: GitHub preserves label case but people rename
+ * `bug` to `Bug` often enough that an exact match would silently stop importing.
+ */
+function labelsAllowImport(
+  issue: { labels?: Array<{ name?: string } | string> },
+  config: Record<string, unknown>
+): boolean {
+  const configured = config.importLabels
+  if (!Array.isArray(configured)) return true
+
+  const allowed = new Set(
+    configured
+      .filter((label): label is string => typeof label === 'string' && label.trim().length > 0)
+      .map((label) => label.trim().toLowerCase())
+  )
+  if (allowed.size === 0) return true
+
+  return issueLabelNames(issue).some((name) => allowed.has(name.toLowerCase()))
+}
+
+/**
  * Whether the webhook's repository matches the integration's configured repo
  * (`config.channelId` is "owner/repo"). Prevents a stale/other repo that shares
  * the webhook secret from creating posts, and stops cross-repo issue-number
@@ -84,6 +123,13 @@ export const githubInboundHandler: InboundWebhookHandler = {
     if (!payload.issue?.number) return null
     if (!repoMatches(payload, config)) return null
 
+    // Ignore closes and reopens Quackback itself performed. The import flow
+    // closes the source issue right after creating the post, and that close
+    // echoes straight back here — without this guard it would drive the
+    // brand-new post to Closed. `sender` is who acted; `issue.user` is only
+    // ever the original reporter, so it can't answer this question.
+    if (isOwnWrite(payload.sender, config)) return null
+
     // Map GitHub actions to status names
     const externalStatus = payload.action === 'closed' ? 'Closed' : 'Open'
 
@@ -119,6 +165,10 @@ export const githubInboundHandler: InboundWebhookHandler = {
     if (typeof issue.body === 'string' && issue.body.includes(QUACKBACK_MARKER)) {
       return null
     }
+
+    // Policy filter, not an echo guard: only import the issue kinds this
+    // workspace asked for. Unmatched issues are left alone in the tracker.
+    if (!labelsAllowImport(issue, config)) return null
 
     const user = issue.user
     return {
