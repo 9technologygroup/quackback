@@ -7,15 +7,26 @@
 export type BoardCategory = 'bug' | 'feature' | 'other'
 
 /**
- * Classify an issue by its labels into a coarse board category. The caller
- * resolves this to an actual board by fuzzy-matching board name/slug (board
- * slugs vary per install — `bugs` vs `bug-reports` etc.), with a fallback so
- * every row is importable out of the box.
+ * Classify an issue into a coarse board category from its labels and its
+ * GitHub issue type. The caller resolves this to an actual board by
+ * fuzzy-matching board name/slug (board slugs vary per install — `bugs` vs
+ * `bug-reports` etc.).
+ *
+ * Matching is by substring rather than exact name, because repositories spell
+ * the same idea a dozen ways: `enhancement`, `feature request`,
+ * `Type: Feature`, or the org-level Feature issue type. An exact list only ever
+ * recognises the conventions its author happened to think of, and the cost of
+ * being wrong is a suggestion an admin overrides — not a bad import.
+ *
+ * Bug wins ties. An issue labelled both is far more likely to be a bug that
+ * someone tagged with a proposed improvement than the reverse, and misfiling a
+ * bug onto a public feature board is the worse outcome.
  */
-export function suggestBoardCategory(labels: string[]): BoardCategory {
-  const lower = labels.map((l) => l.toLowerCase())
-  if (lower.includes('bug')) return 'bug'
-  if (lower.includes('enhancement') || lower.includes('feature request')) return 'feature'
+export function suggestBoardCategory(labels: string[], issueType?: string | null): BoardCategory {
+  const signals = [...labels, issueType ?? ''].filter(Boolean).map((value) => value.toLowerCase())
+
+  if (signals.some((s) => s.includes('bug') || s.includes('defect'))) return 'bug'
+  if (signals.some((s) => s.includes('feature') || s.includes('enhancement'))) return 'feature'
   return 'other'
 }
 

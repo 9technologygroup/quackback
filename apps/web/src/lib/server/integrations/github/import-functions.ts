@@ -64,7 +64,7 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
       await import('./issue-mapping')
     const { listBoards } = await import('@/lib/server/domains/boards/board.service')
     const { listStatuses } = await import('@/lib/server/domains/statuses/status.service')
-    const { listTags, createTag } = await import('@/lib/server/domains/tags/tag.service')
+    const { listTags } = await import('@/lib/server/domains/tags/tag.service')
     const { fetchIssueReleaseVersions } = await import('./project')
 
     await requireAuth({ roles: ['admin'] })
@@ -109,8 +109,15 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
       : []
     const importedNumbers = new Set(links.map((l) => l.externalId))
 
-    // Read the "Release version" project field (GraphQL) for the page's issues,
-    // and ensure a tag exists for each distinct version so it can be pre-selected.
+    // Read the "Release version" project field (GraphQL) for the page's issues
+    // and pre-select a tag where one already exists under that name.
+    //
+    // Deliberately does not create tags. Paging through the wizard to survey a
+    // backlog would otherwise mint a tag per distinct release version as a side
+    // effect of *looking*, leaving a workspace full of tags nobody asked for and
+    // no obvious way to tell which came from browsing. A version with no
+    // matching tag simply isn't pre-selected; the admin can create one and it
+    // will be picked up on the next page load.
     const { versions: releaseVersions, scopeMissing: releaseScopeMissing } =
       await fetchIssueReleaseVersions(
         accessToken,
@@ -124,15 +131,6 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
       if (existingId) {
         releaseTagByVersion.set(version, existingId)
         releaseTags.push({ id: existingId, name: version })
-        continue
-      }
-      try {
-        const tag = await createTag({ name: version })
-        tagByName.set(version.toLowerCase(), tag.id as string)
-        releaseTagByVersion.set(version, tag.id as string)
-        releaseTags.push({ id: tag.id as string, name: tag.name })
-      } catch {
-        // Conflict/race or invalid name — skip; the release just won't pre-select.
       }
     }
 
@@ -159,7 +157,10 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
         createdAt: issue.created_at,
         comments: issue.comments ?? 0,
         alreadyImported: importedNumbers.has(String(issue.number)),
-        suggestedBoardId: resolveSuggestedBoardId(suggestBoardCategory(labels), boardList),
+        suggestedBoardId: resolveSuggestedBoardId(
+          suggestBoardCategory(labels, issue.type?.name),
+          boardList
+        ),
         suggestedStatusId: statusBySlug.get(mapStatusSlug(issue.state, issue.state_reason)) ?? null,
         suggestedTagIds,
       }

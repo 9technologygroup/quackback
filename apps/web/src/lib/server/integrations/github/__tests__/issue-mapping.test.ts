@@ -22,13 +22,33 @@ describe('suggestBoardCategory', () => {
     expect(suggestBoardCategory(['feature request'])).toBe('feature')
   })
 
+  it('recognises prefixed type labels', () => {
+    // The convention an exact-match list would miss.
+    expect(suggestBoardCategory(['Type: Feature'])).toBe('feature')
+    expect(suggestBoardCategory(['Type: Bug'])).toBe('bug')
+  })
+
+  it('recognises a GitHub issue type when there are no labels', () => {
+    expect(suggestBoardCategory([], 'Feature')).toBe('feature')
+    expect(suggestBoardCategory([], 'Bug')).toBe('bug')
+  })
+
+  it('combines labels and issue type', () => {
+    expect(suggestBoardCategory(['needs-triage'], 'Feature')).toBe('feature')
+  })
+
   it('falls back to other for anything else', () => {
     expect(suggestBoardCategory([])).toBe('other')
     expect(suggestBoardCategory(['question', 'docs'])).toBe('other')
+    expect(suggestBoardCategory([], 'Task')).toBe('other')
+    expect(suggestBoardCategory([], null)).toBe('other')
   })
 
-  it('prefers bug when an issue carries both labels', () => {
+  it('prefers bug when an issue carries both signals', () => {
+    // A bug tagged with a proposed improvement is still a bug, and misfiling
+    // one onto a public feature board is the worse mistake.
     expect(suggestBoardCategory(['enhancement', 'bug'])).toBe('bug')
+    expect(suggestBoardCategory(['enhancement'], 'Bug')).toBe('bug')
   })
 })
 
