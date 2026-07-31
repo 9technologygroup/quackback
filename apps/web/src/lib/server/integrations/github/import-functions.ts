@@ -46,18 +46,22 @@ function slugKey(s: string): string {
 }
 
 export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
-  .validator(
-    (input: unknown) =>
-      z.object({ page: z.number().int().min(1).default(1), perPage: z.number().int().min(1).max(100).default(50) }).parse(input)
+  .validator((input: unknown) =>
+    z
+      .object({
+        page: z.number().int().min(1).default(1),
+        perPage: z.number().int().min(1).max(100).default(50),
+      })
+      .parse(input)
   )
   .handler(async ({ data }): Promise<GitHubIssuesPageResult> => {
     const { requireAuth } = await import('../../functions/auth-helpers')
-    const { db, integrations, postExternalLinks, eq, and, inArray } = await import('@/lib/server/db')
+    const { db, integrations, postExternalLinks, eq, and, inArray } =
+      await import('@/lib/server/db')
     const { decryptSecrets } = await import('../encryption')
     const { listGitHubIssues, issueLabelNames } = await import('./issues')
-    const { suggestBoardCategory, resolveSuggestedBoardId, mapStatusSlug } = await import(
-      './issue-mapping'
-    )
+    const { suggestBoardCategory, resolveSuggestedBoardId, mapStatusSlug } =
+      await import('./issue-mapping')
     const { listBoards } = await import('@/lib/server/domains/boards/board.service')
     const { listStatuses } = await import('@/lib/server/domains/statuses/status.service')
     const { listTags, createTag } = await import('@/lib/server/domains/tags/tag.service')
@@ -177,10 +181,18 @@ const importRowSchema = z.object({
   statusId: z.string().optional(),
   tagIds: z.array(z.string()),
   roadmapId: z.string().optional(),
+  state: z.enum(['open', 'closed']).optional(),
 })
 
 export const startGitHubImportFn = createServerFn({ method: 'POST' })
-  .validator((input: unknown) => z.object({ rows: z.array(importRowSchema).min(1).max(100) }).parse(input))
+  .validator((input: unknown) =>
+    z
+      .object({
+        rows: z.array(importRowSchema).min(1).max(100),
+        handoff: z.boolean().optional(),
+      })
+      .parse(input)
+  )
   .handler(async ({ data }): Promise<{ jobId: string }> => {
     const { requireAuth } = await import('../../functions/auth-helpers')
     const { db, integrations, eq } = await import('@/lib/server/db')
@@ -198,6 +210,7 @@ export const startGitHubImportFn = createServerFn({ method: 'POST' })
     const jobId = await enqueueGitHubImportJob({
       integrationId: integration.id,
       rows: data.rows,
+      handoff: data.handoff ?? false,
     })
     return { jobId }
   })

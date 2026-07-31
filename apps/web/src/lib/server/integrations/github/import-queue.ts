@@ -37,11 +37,20 @@ export interface GitHubImportRow {
   statusId?: string
   tagIds: string[]
   roadmapId?: string
+  /** GitHub's issue state — only open issues are worth handing back. */
+  state?: string
 }
 
 export interface GitHubImportJobData {
   integrationId: string
   rows: GitHubImportRow[]
+  /**
+   * Comment on and close the source issues after importing. Decided per job by
+   * the admin running the import rather than read from integration config: a
+   * backfill of years of issues and a live webhook import want different
+   * answers, and closing hundreds of issues should never be a surprise.
+   */
+  handoff?: boolean
 }
 
 export interface GitHubImportProgress {
