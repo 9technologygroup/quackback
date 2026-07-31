@@ -26,6 +26,7 @@ export interface GitHubIssueImportRow {
   suggestedBoardId: string | null
   suggestedStatusId: string | null
   suggestedTagIds: string[]
+  suggestedRoadmapId: string | null
 }
 
 export interface GitHubIssuesPageResult {
@@ -134,6 +135,17 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
       }
     }
 
+    // Roadmap for features that shipped before the portal existed. A closed
+    // feature issue is a delivered feature, and putting it on the roadmap is
+    // what turns an import of years of history into a visible track record
+    // rather than a pile of archived posts. Open ones are left alone — nothing
+    // has been decided about them yet, and that's what triage is for.
+    const closedFeatureRoadmapId =
+      typeof (integration.config as Record<string, unknown> | null)?.closedFeatureRoadmapId ===
+      'string'
+        ? ((integration.config as Record<string, unknown>).closedFeatureRoadmapId as string)
+        : null
+
     const rows: GitHubIssueImportRow[] = issues.map((issue) => {
       const labels = issueLabelNames(issue.labels)
       const suggestedTagIds = labels
@@ -144,6 +156,7 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
       if (releaseTagId && !suggestedTagIds.includes(releaseTagId)) {
         suggestedTagIds.push(releaseTagId)
       }
+      const category = suggestBoardCategory(labels, issue.type?.name)
       return {
         number: issue.number,
         title: issue.title || `Issue #${issue.number}`,
@@ -157,12 +170,11 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
         createdAt: issue.created_at,
         comments: issue.comments ?? 0,
         alreadyImported: importedNumbers.has(String(issue.number)),
-        suggestedBoardId: resolveSuggestedBoardId(
-          suggestBoardCategory(labels, issue.type?.name),
-          boardList
-        ),
+        suggestedBoardId: resolveSuggestedBoardId(category, boardList),
         suggestedStatusId: statusBySlug.get(mapStatusSlug(issue.state, issue.state_reason)) ?? null,
         suggestedTagIds,
+        suggestedRoadmapId:
+          category === 'feature' && issue.state === 'closed' ? closedFeatureRoadmapId : null,
       }
     })
 
