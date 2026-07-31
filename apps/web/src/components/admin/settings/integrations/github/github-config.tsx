@@ -421,7 +421,7 @@ export function GitHubConfig({
               disabled={saving}
             />
             <p className="text-xs text-muted-foreground">
-              Optional. Issues are closed as &ldquo;not planned&rdquo;, so they read as moved rather
+              Optional. Issues are closed as &ldquo;duplicate&rdquo;, so they read as moved rather
               than shipped.
             </p>
           </div>
