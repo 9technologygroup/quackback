@@ -20,8 +20,17 @@ export function suggestBoardCategory(labels: string[]): BoardCategory {
 }
 
 /**
- * Resolve a category to a board id by fuzzy-matching the available boards, with
- * a fallback to the first board so a suggestion is always offered.
+ * Resolve a category to a board id by fuzzy-matching the available boards.
+ *
+ * Returns null when no board is a plausible home and the destination would be a
+ * guess. The wizard leaves such rows unchecked (it seeds `include` from
+ * `!!suggestedBoardId`), so an unclassifiable issue waits for a human instead of
+ * landing somewhere arbitrary. That matters because the arbitrary choice used to
+ * be `boards[0]`, which is alphabetical — on a two-board install a bug report
+ * could be pre-selected into whichever board happens to sort first.
+ *
+ * A single-board install is the exception: there is only one destination, so
+ * there is nothing to get wrong and every row stays importable out of the box.
  */
 export function resolveSuggestedBoardId(
   category: BoardCategory,
@@ -31,25 +40,38 @@ export function resolveSuggestedBoardId(
   const matches = (patterns: RegExp) =>
     boards.find((b) => patterns.test(b.slug) || patterns.test(b.name))
   if (category === 'bug') {
-    const b = matches(/bug/i)
+    const b = matches(/bug|defect|issue/i)
     if (b) return b.id
   }
   if (category === 'feature') {
-    const b = matches(/feature|feedback|request|enhancement/i)
+    const b = matches(/feature|feedback|request|enhancement|idea/i)
     if (b) return b.id
   }
-  // Fallback: a "general"-ish board if one exists, else the first board.
-  return (matches(/general|feedback|other/i)?.id ?? boards[0].id) as string
+  const general = matches(/general|feedback|other/i)
+  if (general) return general.id
+  return boards.length === 1 ? boards[0].id : null
 }
 
 /**
  * Suggest a status slug from GitHub state (+ close reason):
  *   - open                        → open
- *   - closed, not_planned/dup     → closed
- *   - closed, completed/other     → complete
+ *   - closed, completed           → complete
+ *   - closed, not_planned         → declined
+ *   - closed, anything else/null  → closed
+ *
+ * Only an explicit `completed` reason maps to `complete`, because Complete is
+ * roadmap-visible by default. `state_reason` is null on every issue closed
+ * before GitHub added the field, which in a legacy backlog is most of them —
+ * treating that silence as "shipped" would publish hundreds of old issues to a
+ * public roadmap on import. Landing them in Closed instead makes putting
+ * something on the roadmap a deliberate act.
+ *
+ * `duplicate` stays Closed rather than Declined: a duplicate was never judged
+ * on its merits, and merging is how Quackback consolidates those.
  */
 export function mapStatusSlug(state: string, stateReason?: string | null): string {
   if (state === 'open') return 'open'
-  if (stateReason === 'not_planned' || stateReason === 'duplicate') return 'closed'
-  return 'complete'
+  if (stateReason === 'completed') return 'complete'
+  if (stateReason === 'not_planned') return 'declined'
+  return 'closed'
 }
