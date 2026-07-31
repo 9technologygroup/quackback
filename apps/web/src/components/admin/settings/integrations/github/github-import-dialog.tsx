@@ -106,7 +106,7 @@ export function GitHubImportDialog({ open, onOpenChange }: GitHubImportDialogPro
             boardId: r.suggestedBoardId ?? '',
             statusId: r.suggestedStatusId ?? '',
             tagIds: r.suggestedTagIds,
-            roadmapId: NONE,
+            roadmapId: r.suggestedRoadmapId ?? NONE,
           }
         } else if (r.alreadyImported && existing.include) {
           next[r.number] = { ...existing, include: false }

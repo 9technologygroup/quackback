@@ -64,25 +64,31 @@ export function resolveSuggestedBoardId(
 }
 
 /**
- * Suggest a status slug from GitHub state (+ close reason):
- *   - open                        → open
- *   - closed, completed           → complete
- *   - closed, not_planned         → declined
- *   - closed, anything else/null  → closed
+ * Suggest a status slug from GitHub state, close reason, and board category:
+ *   - open                             → open
+ *   - closed, completed                → complete
+ *   - closed, not_planned              → declined
+ *   - closed, no reason, feature       → complete
+ *   - closed, no reason, anything else → closed
  *
- * Only an explicit `completed` reason maps to `complete`, because Complete is
- * roadmap-visible by default. `state_reason` is null on every issue closed
- * before GitHub added the field, which in a legacy backlog is most of them —
- * treating that silence as "shipped" would publish hundreds of old issues to a
- * public roadmap on import. Landing them in Closed instead makes putting
- * something on the roadmap a deliberate act.
+ * `state_reason` is null on every issue closed before GitHub added the field,
+ * which in a legacy backlog is most of them. What that silence means depends on
+ * what the issue was: a closed feature request is a feature that shipped, and
+ * treating those as Complete is what turns an import of years of history into a
+ * visible track record. A closed bug or unclassified issue says nothing of the
+ * sort, so it stays in Closed rather than being published to a public roadmap.
  *
  * `duplicate` stays Closed rather than Declined: a duplicate was never judged
  * on its merits, and merging is how Quackback consolidates those.
  */
-export function mapStatusSlug(state: string, stateReason?: string | null): string {
+export function mapStatusSlug(
+  state: string,
+  stateReason?: string | null,
+  category?: BoardCategory
+): string {
   if (state === 'open') return 'open'
   if (stateReason === 'completed') return 'complete'
   if (stateReason === 'not_planned') return 'declined'
-  return 'closed'
+  if (stateReason === 'duplicate') return 'closed'
+  return category === 'feature' ? 'complete' : 'closed'
 }

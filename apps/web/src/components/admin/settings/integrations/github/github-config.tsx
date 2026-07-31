@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { useUpdateIntegration } from '@/lib/client/mutations'
 import { fetchGitHubReposFn, type GitHubRepo } from '@/lib/server/integrations/github/functions'
 import { fetchBoardsFn } from '@/lib/server/functions/boards'
+import { fetchRoadmaps } from '@/lib/server/functions/roadmaps'
 import { StatusSyncConfig } from '@/components/admin/settings/integrations/status-sync-config'
 import { OnDeleteConfig } from '@/components/admin/settings/integrations/on-delete-config'
 import { BoardFilterCombobox } from '@/components/admin/settings/integrations/shared/board-filter-combobox'
@@ -40,6 +41,9 @@ interface GitHubConfigProps {
  * the board scope below. Inbound events originate at GitHub and are governed by
  * the inbound board setting instead, so they never carry a board filter.
  */
+/** Sentinel for "no roadmap" — Radix Select rejects an empty string value. */
+const NO_ROADMAP = '__none__'
+
 const EVENT_CONFIG = [
   {
     id: 'post.created' as const,
@@ -103,6 +107,10 @@ export function GitHubConfig({
   const [promoteOnStatus, setPromoteOnStatus] = useState(
     (initialConfig.promoteOnStatus as string) || ''
   )
+  const [roadmaps, setRoadmaps] = useState<Array<{ id: string; name: string }>>([])
+  const [closedFeatureRoadmapId, setClosedFeatureRoadmapId] = useState(
+    (initialConfig.closedFeatureRoadmapId as string) || NO_ROADMAP
+  )
   const [eventSettings, setEventSettings] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(
       EVENT_CONFIG.map((event) => [
@@ -141,6 +149,12 @@ export function GitHubConfig({
     fetchBoardsFn()
       .then((result) => setBoards(result.map((b) => ({ id: b.id, name: b.name }))))
       .catch(() => setBoards([]))
+  }, [])
+
+  useEffect(() => {
+    fetchRoadmaps()
+      .then((result) => setRoadmaps(result.map((r) => ({ id: r.id as string, name: r.name }))))
+      .catch(() => setRoadmaps([]))
   }, [])
 
   const handleEnabledChange = (checked: boolean) => {
@@ -185,6 +199,14 @@ export function GitHubConfig({
     updateMutation.mutate({
       id: integrationId,
       config: { handoffLabels: parseLabelList(handoffLabels) },
+    })
+  }
+
+  const handleClosedFeatureRoadmapChange = (roadmapId: string) => {
+    setClosedFeatureRoadmapId(roadmapId)
+    updateMutation.mutate({
+      id: integrationId,
+      config: { closedFeatureRoadmapId: roadmapId === NO_ROADMAP ? null : roadmapId },
     })
   }
 
@@ -340,6 +362,32 @@ export function GitHubConfig({
         <p className="text-xs text-muted-foreground">
           Comma-separated, case-insensitive. An issue is imported when any one of these matches
           either a label or its GitHub issue type. Leave empty to import every new issue.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="closed-feature-roadmap">Roadmap for imported closed features</Label>
+        <Select
+          value={closedFeatureRoadmapId}
+          onValueChange={handleClosedFeatureRoadmapChange}
+          disabled={saving || !integrationEnabled}
+        >
+          <SelectTrigger id="closed-feature-roadmap" className="w-full">
+            <SelectValue placeholder="No roadmap" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_ROADMAP}>No roadmap</SelectItem>
+            {roadmaps.map((roadmap) => (
+              <SelectItem key={roadmap.id} value={roadmap.id}>
+                {roadmap.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          A closed feature issue is one you already shipped, so importing it pre-selects this
+          roadmap and builds a track record rather than a pile of archived posts. Open issues are
+          left unassigned — nothing has been decided about those yet.
         </p>
       </div>
 

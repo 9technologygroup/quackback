@@ -116,11 +116,32 @@ describe('mapStatusSlug', () => {
     expect(mapStatusSlug('closed', 'duplicate')).toBe('closed')
   })
 
-  it('does not treat a missing close reason as shipped', () => {
-    // Legacy issues predating state_reason would otherwise land in Complete,
-    // which is roadmap-visible.
+  it('treats a closed feature with no reason as shipped', () => {
+    // Legacy issues predate state_reason, and a closed feature request is a
+    // feature that shipped — that is the track record worth publishing.
+    expect(mapStatusSlug('closed', null, 'feature')).toBe('complete')
+    expect(mapStatusSlug('closed', undefined, 'feature')).toBe('complete')
+  })
+
+  it('does not treat a missing close reason as shipped for anything else', () => {
     expect(mapStatusSlug('closed')).toBe('closed')
     expect(mapStatusSlug('closed', null)).toBe('closed')
+    expect(mapStatusSlug('closed', null, 'bug')).toBe('closed')
+    expect(mapStatusSlug('closed', null, 'other')).toBe('closed')
     expect(mapStatusSlug('closed', 'reopened')).toBe('closed')
+  })
+
+  it('keeps a declined feature declined rather than shipped', () => {
+    // The reason wins over the category — abandoning a feature must never read
+    // as delivering it.
+    expect(mapStatusSlug('closed', 'not_planned', 'feature')).toBe('declined')
+  })
+
+  it('keeps a duplicate feature out of complete', () => {
+    expect(mapStatusSlug('closed', 'duplicate', 'feature')).toBe('closed')
+  })
+
+  it('leaves open features open regardless of category', () => {
+    expect(mapStatusSlug('open', null, 'feature')).toBe('open')
   })
 })
