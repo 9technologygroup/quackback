@@ -171,7 +171,8 @@ export const fetchGitHubIssuesPageFn = createServerFn({ method: 'GET' })
         comments: issue.comments ?? 0,
         alreadyImported: importedNumbers.has(String(issue.number)),
         suggestedBoardId: resolveSuggestedBoardId(category, boardList),
-        suggestedStatusId: statusBySlug.get(mapStatusSlug(issue.state, issue.state_reason)) ?? null,
+        suggestedStatusId:
+          statusBySlug.get(mapStatusSlug(issue.state, issue.state_reason, category)) ?? null,
         suggestedTagIds,
         suggestedRoadmapId:
           category === 'feature' && issue.state === 'closed' ? closedFeatureRoadmapId : null,
