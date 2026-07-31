@@ -47,6 +47,35 @@ export interface InboundCreatePostIntent {
 }
 
 /**
+ * Intent to mirror a comment made on an external item onto the Quackback post
+ * linked to it. Returned by an integration's optional `parseCreateComment`.
+ */
+export interface InboundCreateCommentIntent {
+  /** The external comment's own id — the idempotency key for redelivery. */
+  externalId: string
+  /**
+   * The external *item* the comment belongs to (e.g. the GitHub issue number).
+   * Resolved against `post_external_links` to find the post to comment on.
+   */
+  externalParentId: string
+  /** Comment body (external markdown). */
+  body: string
+  /** URL of the external comment, stored on the link for traceability. */
+  externalUrl?: string
+  /** The external commenter, mapped to a Quackback principal when present. */
+  reporter?: {
+    githubId: number | string | null
+    login: string
+    name?: string | null
+  }
+  /**
+   * Event type — MUST match the `integration_event_mappings.eventType` toggle
+   * key that governs this behavior (e.g. 'issue_comment.created').
+   */
+  eventType: string
+}
+
+/**
  * Handler interface for inbound webhooks from external platforms.
  */
 export interface InboundWebhookHandler {
@@ -77,4 +106,17 @@ export interface InboundWebhookHandler {
     config: Record<string, unknown>,
     secrets: Record<string, unknown>
   ): Promise<InboundCreatePostIntent | null>
+
+  /**
+   * Optional: parse the webhook body and extract an intent to mirror an
+   * external comment onto the linked post. Only implemented by integrations
+   * that support two-way comment sync. Returns null when the event is not a
+   * comment, or when the comment was written by Quackback itself and would
+   * otherwise echo back. Gated by a per-integration event-mapping toggle.
+   */
+  parseCreateComment?(
+    body: string,
+    config: Record<string, unknown>,
+    secrets: Record<string, unknown>
+  ): Promise<InboundCreateCommentIntent | null>
 }

@@ -1,12 +1,24 @@
 /**
  * GitHub hook handler.
- * Creates GitHub issues when feedback events occur.
+ *
+ * Creates GitHub issues from new feedback, and mirrors Quackback comments onto
+ * the linked issue. Board scoping for both lives on the event mapping's
+ * `filters.boardIds` (set in the GitHub config screen); comment mirroring is
+ * additionally self-limiting because it no-ops on posts with no linked issue.
  */
 
 import type { HookHandler, HookResult } from '../../events/hook-types'
 import type { EventData } from '../../events/types'
 import { isRetryableError } from '../../events/hook-utils'
-import { buildGitHubIssueBody } from './message'
+import { buildGitHubIssueBody, buildGitHubCommentBody } from './message'
+import {
+  githubHeaders,
+  isInboundComment,
+  findLinkedIssueNumber,
+  recordCommentLink,
+  postGitHubIssueComment,
+} from './comment-sync'
+import type { CommentId, PostId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'github' })
@@ -22,10 +34,105 @@ export interface GitHubConfig {
   rootUrl: string
 }
 
+/**
+ * Map a GitHub API failure onto a HookResult. Auth/permission/validation
+ * problems are terminal; rate limits are worth retrying.
+ */
+function mapGitHubError(status: number, errorBody: string, ownerRepo: string): HookResult {
+  if (status === 401) {
+    return {
+      success: false,
+      error: 'Authentication failed. Please reconnect GitHub.',
+      shouldRetry: false,
+    }
+  }
+  if (status === 404) {
+    return {
+      success: false,
+      error: `Repository "${ownerRepo}" not found or not accessible.`,
+      shouldRetry: false,
+    }
+  }
+  if (status === 422) {
+    return { success: false, error: `Validation error: ${errorBody}`, shouldRetry: false }
+  }
+  if (status === 429) {
+    return { success: false, error: 'Rate limited by GitHub API.', shouldRetry: true }
+  }
+  return { success: false, error: `HTTP ${status}: ${errorBody}`, shouldRetry: status >= 500 }
+}
+
+/**
+ * Mirror a Quackback comment onto its post's linked GitHub issue.
+ *
+ * Deliberately returns no `externalId`: the generic worker persists any
+ * returned id as a *post* external link (see events/process.ts), and
+ * comment.created events carry a post reference — returning one here would
+ * corrupt the issue-number lookup that status sync depends on. The comment's
+ * own mapping is written to `comment_external_links` instead.
+ */
+async function syncCommentToGitHub(
+  event: Extract<EventData, { type: 'comment.created' }>,
+  ownerRepo: string,
+  config: GitHubConfig
+): Promise<HookResult> {
+  const { comment, post } = event.data
+
+  // Private comments never leave Quackback. getIntegrationTargets already
+  // filters these out; repeated here so the guarantee survives a direct call.
+  if (comment.isPrivate) return { success: true }
+
+  // Echo guard — this comment arrived from GitHub in the first place.
+  if (await isInboundComment(comment.id as CommentId)) {
+    log.debug({ comment_id: comment.id }, 'comment originated on github, not mirroring back')
+    return { success: true }
+  }
+
+  const issueNumber = await findLinkedIssueNumber(post.id as PostId)
+  if (!issueNumber) {
+    // Post has no GitHub issue — nothing to comment on.
+    return { success: true }
+  }
+
+  const body = buildGitHubCommentBody(event, config.rootUrl)
+
+  try {
+    const created = await postGitHubIssueComment(config.accessToken, ownerRepo, issueNumber, body)
+
+    await recordCommentLink({
+      commentId: comment.id as CommentId,
+      externalId: created.id,
+      externalUrl: created.htmlUrl,
+      direction: 'outbound',
+    })
+
+    log.info(
+      { comment_id: comment.id, issue_number: issueNumber, repo: ownerRepo },
+      'comment mirrored to github'
+    )
+    return { success: true }
+  } catch (error) {
+    const status = (error as { status?: number }).status
+    if (typeof status === 'number') {
+      const errorMsg = error instanceof Error ? error.message : ''
+      return mapGitHubError(status, errorMsg, ownerRepo)
+    }
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      shouldRetry: isRetryableError(error),
+    }
+  }
+}
+
 export const githubHook: HookHandler = {
   async run(event: EventData, target: unknown, config: unknown): Promise<HookResult> {
     const { channelId: ownerRepo } = target as GitHubTarget
-    const { accessToken, rootUrl } = config as GitHubConfig
+    const githubConfig = config as GitHubConfig
+
+    if (event.type === 'comment.created') {
+      return syncCommentToGitHub(event, ownerRepo, githubConfig)
+    }
 
     // Only create issues for new feedback
     if (event.type !== 'post.created') {
@@ -34,18 +141,12 @@ export const githubHook: HookHandler = {
 
     log.debug({ event_type: event.type, repo: ownerRepo }, 'creating issue')
 
-    const { title, body } = buildGitHubIssueBody(event, rootUrl)
+    const { title, body } = buildGitHubIssueBody(event, githubConfig.rootUrl)
 
     try {
       const response = await fetch(`${GITHUB_API}/repos/${ownerRepo}/issues`, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: 'application/vnd.github+json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'quackback',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
+        headers: githubHeaders(githubConfig.accessToken),
         body: JSON.stringify({ title, body }),
       })
 
@@ -53,39 +154,11 @@ export const githubHook: HookHandler = {
         const status = response.status
         const errorBody = await response.text()
 
-        if (status === 401) {
-          return {
-            success: false,
-            error: 'Authentication failed. Please reconnect GitHub.',
-            shouldRetry: false,
-          }
+        if (status >= 500) {
+          throw Object.assign(new Error(`HTTP ${status}: ${errorBody}`), { status })
         }
 
-        if (status === 404) {
-          return {
-            success: false,
-            error: `Repository "${ownerRepo}" not found or not accessible.`,
-            shouldRetry: false,
-          }
-        }
-
-        if (status === 422) {
-          return {
-            success: false,
-            error: `Validation error: ${errorBody}`,
-            shouldRetry: false,
-          }
-        }
-
-        if (status === 429) {
-          return {
-            success: false,
-            error: 'Rate limited by GitHub API.',
-            shouldRetry: true,
-          }
-        }
-
-        throw Object.assign(new Error(`HTTP ${status}: ${errorBody}`), { status })
+        return mapGitHubError(status, errorBody, ownerRepo)
       }
 
       const issue = (await response.json()) as {

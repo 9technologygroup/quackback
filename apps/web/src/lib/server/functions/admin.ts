@@ -539,6 +539,11 @@ export const fetchIntegrationByType = createServerFn({ method: 'GET' })
             id: m.id,
             eventType: m.eventType,
             enabled: m.enabled,
+            // Null means "all boards" — config screens that support board
+            // scoping hydrate their selector from this.
+            boardIds: (m.filters as { boardIds?: string[] } | null)?.boardIds?.length
+              ? (m.filters as { boardIds: string[] }).boardIds
+              : null,
           })),
           notificationChannels,
           monitoredChannels,

@@ -1,7 +1,7 @@
 import { pgTable, text, timestamp, varchar, index, unique, foreignKey } from 'drizzle-orm/pg-core'
 import { relations } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
-import { posts } from './posts'
+import { posts, comments } from './posts'
 import { integrations } from './integrations'
 
 /**
@@ -56,6 +56,71 @@ export const postExternalLinksRelations = relations(postExternalLinks, ({ one })
   }),
   integration: one(integrations, {
     fields: [postExternalLinks.integrationId],
+    references: [integrations.id],
+  }),
+}))
+
+/**
+ * External links between comments and external platform comments, for
+ * two-way comment mirroring (currently GitHub issue comments).
+ *
+ * Serves three jobs at once:
+ *  - **Echo guard.** A row with `direction: 'inbound'` marks a comment that
+ *    originated externally, so the outbound hook knows not to send it back.
+ *    The inbound path writes this row *before* dispatching `comment.created`
+ *    (see the GitHub inbound handler) — dispatching first would race the
+ *    outbound hook and loop.
+ *  - **Idempotency.** `(integration_type, external_id)` is unique, so webhook
+ *    redelivery is a no-op rather than a duplicate comment.
+ *  - **Traceability.** Links each side to the other for debugging.
+ */
+export const commentExternalLinks = pgTable(
+  'comment_external_links',
+  {
+    id: typeIdWithDefault('linked_entity')('id').primaryKey(),
+    commentId: typeIdColumn('comment')('comment_id').notNull(),
+    integrationId: typeIdColumnNullable('integration')('integration_id'),
+    integrationType: varchar('integration_type', { length: 50 }).notNull(),
+    /** Provider-side comment id (e.g. GitHub issue-comment id). */
+    externalId: text('external_id').notNull(),
+    externalUrl: text('external_url'),
+    /**
+     * Which way this comment travelled. 'inbound' = created on the external
+     * platform and mirrored into Quackback; 'outbound' = authored in Quackback
+     * and pushed out. Only 'inbound' suppresses outbound sync.
+     */
+    direction: varchar('direction', { length: 10 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: 'comment_external_links_comment_fk',
+      columns: [table.commentId],
+      foreignColumns: [comments.id],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'comment_external_links_integration_fk',
+      columns: [table.integrationId],
+      foreignColumns: [integrations.id],
+    }).onDelete('cascade'),
+    // One external comment maps to exactly one Quackback comment — this is the
+    // idempotency guarantee for webhook redelivery.
+    unique('comment_external_links_type_external_unique').on(
+      table.integrationType,
+      table.externalId
+    ),
+    // Echo-guard lookup: "does this comment already have an inbound link?"
+    index('comment_external_links_comment_id_idx').on(table.commentId),
+  ]
+)
+
+export const commentExternalLinksRelations = relations(commentExternalLinks, ({ one }) => ({
+  comment: one(comments, {
+    fields: [commentExternalLinks.commentId],
+    references: [comments.id],
+  }),
+  integration: one(integrations, {
+    fields: [commentExternalLinks.integrationId],
     references: [integrations.id],
   }),
 }))

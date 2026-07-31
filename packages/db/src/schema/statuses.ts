@@ -59,11 +59,22 @@ export const DEFAULT_STATUSES: Array<{
     isDefault: false,
   },
   {
+    // Reviewed and agreed, but not yet scheduled. The first status that makes
+    // a promise publicly, which is why it's also the first shown on the roadmap.
+    name: 'Accepted',
+    slug: 'accepted',
+    color: '#14b8a6',
+    category: 'active',
+    position: 2,
+    showOnRoadmap: true,
+    isDefault: false,
+  },
+  {
     name: 'Planned',
     slug: 'planned',
     color: '#a855f7',
     category: 'active',
-    position: 2,
+    position: 3,
     showOnRoadmap: true,
     isDefault: false,
   },
@@ -72,7 +83,7 @@ export const DEFAULT_STATUSES: Array<{
     slug: 'in_progress',
     color: '#f97316',
     category: 'active',
-    position: 3,
+    position: 4,
     showOnRoadmap: true,
     isDefault: false,
   },
@@ -93,6 +104,28 @@ export const DEFAULT_STATUSES: Array<{
     color: '#6b7280',
     category: 'closed',
     position: 0,
+    showOnRoadmap: false,
+    isDefault: false,
+  },
+  {
+    // Reviewed and turned down. Kept distinct from Closed so "we said no, and
+    // here's why" is separable from "this went away" when someone asks later.
+    name: 'Declined',
+    slug: 'declined',
+    color: '#ef4444',
+    category: 'closed',
+    position: 1,
+    showOnRoadmap: false,
+    isDefault: false,
+  },
+  {
+    // Not now, rather than not ever. Leaves the active queue so triage stays
+    // honest, but stays searchable so it can be revived instead of re-filed.
+    name: 'Deferred',
+    slug: 'deferred',
+    color: '#64748b',
+    category: 'closed',
+    position: 2,
     showOnRoadmap: false,
     isDefault: false,
   },

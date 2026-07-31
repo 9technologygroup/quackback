@@ -17,7 +17,8 @@ function makeRequest(headers: Record<string, string> = {}): Request {
 function issuePayload(
   action: string,
   issue: Record<string, unknown> = {},
-  repoFullName = 'acme/app'
+  repoFullName = 'acme/app',
+  extra: Record<string, unknown> = {}
 ) {
   return JSON.stringify({
     action,
@@ -29,6 +30,27 @@ function issuePayload(
       html_url: 'https://github.com/acme/app/issues/142',
       user: { id: 999, login: 'octocat', name: 'The Octocat' },
       ...issue,
+    },
+    ...extra,
+  })
+}
+
+function commentPayload(
+  action: string,
+  comment: Record<string, unknown> = {},
+  issue: Record<string, unknown> = {},
+  repoFullName = 'acme/app'
+) {
+  return JSON.stringify({
+    action,
+    repository: { full_name: repoFullName },
+    issue: { number: 142, ...issue },
+    comment: {
+      id: 5001,
+      body: 'I can reproduce this too.',
+      html_url: 'https://github.com/acme/app/issues/142#issuecomment-5001',
+      user: { id: 999, login: 'octocat', name: 'The Octocat' },
+      ...comment,
     },
   })
 }
@@ -108,6 +130,137 @@ describe('githubInboundHandler.parseCreatePost', () => {
     const intent = await githubInboundHandler.parseCreatePost!(body, {}, {})
     expect(intent?.reporter).toBeUndefined()
   })
+
+  describe('importLabels allowlist', () => {
+    const config = { importLabels: ['enhancement'] }
+
+    it('imports an issue carrying an allowed label', async () => {
+      const body = issuePayload('opened', { labels: [{ name: 'enhancement' }] })
+      const intent = await githubInboundHandler.parseCreatePost!(body, config, {})
+      expect(intent?.externalId).toBe('142')
+    })
+
+    it('skips an issue that lacks every allowed label', async () => {
+      const body = issuePayload('opened', { labels: [{ name: 'bug' }] })
+      expect(await githubInboundHandler.parseCreatePost!(body, config, {})).toBeNull()
+    })
+
+    it('skips an issue with no labels at all', async () => {
+      expect(
+        await githubInboundHandler.parseCreatePost!(issuePayload('opened'), config, {})
+      ).toBeNull()
+    })
+
+    it('matches label names case-insensitively', async () => {
+      const body = issuePayload('opened', { labels: [{ name: 'Enhancement' }] })
+      const intent = await githubInboundHandler.parseCreatePost!(body, config, {})
+      expect(intent?.externalId).toBe('142')
+    })
+
+    it('accepts an issue carrying any one of several allowed labels', async () => {
+      const body = issuePayload('opened', { labels: [{ name: 'bug' }, { name: 'feature' }] })
+      const intent = await githubInboundHandler.parseCreatePost!(
+        body,
+        { importLabels: ['enhancement', 'feature'] },
+        {}
+      )
+      expect(intent?.externalId).toBe('142')
+    })
+
+    it('tolerates bare string labels', async () => {
+      const body = issuePayload('opened', { labels: ['enhancement'] })
+      const intent = await githubInboundHandler.parseCreatePost!(body, config, {})
+      expect(intent?.externalId).toBe('142')
+    })
+
+    it('imports everything when no allowlist is configured', async () => {
+      const body = issuePayload('opened', { labels: [{ name: 'bug' }] })
+      const intent = await githubInboundHandler.parseCreatePost!(body, {}, {})
+      expect(intent?.externalId).toBe('142')
+    })
+
+    it('imports everything when the allowlist is empty or blank', async () => {
+      const body = issuePayload('opened', { labels: [{ name: 'bug' }] })
+      expect(
+        (await githubInboundHandler.parseCreatePost!(body, { importLabels: [] }, {}))?.externalId
+      ).toBe('142')
+      expect(
+        (await githubInboundHandler.parseCreatePost!(body, { importLabels: ['  '] }, {}))
+          ?.externalId
+      ).toBe('142')
+    })
+  })
+})
+
+describe('githubInboundHandler.parseCreateComment', () => {
+  it('produces a mirror intent for a new issue comment', async () => {
+    const intent = await githubInboundHandler.parseCreateComment!(commentPayload('created'), {}, {})
+    expect(intent).toEqual({
+      externalId: '5001',
+      externalParentId: '142',
+      body: 'I can reproduce this too.',
+      externalUrl: 'https://github.com/acme/app/issues/142#issuecomment-5001',
+      reporter: { githubId: 999, login: 'octocat', name: 'The Octocat' },
+      eventType: 'issue_comment.created',
+    })
+  })
+
+  it('ignores edited and deleted comments', async () => {
+    expect(
+      await githubInboundHandler.parseCreateComment!(commentPayload('edited'), {}, {})
+    ).toBeNull()
+    expect(
+      await githubInboundHandler.parseCreateComment!(commentPayload('deleted'), {}, {})
+    ).toBeNull()
+  })
+
+  it('skips comments on pull requests', async () => {
+    const body = commentPayload('created', {}, { pull_request: { url: 'https://api…/pulls/1' } })
+    expect(await githubInboundHandler.parseCreateComment!(body, {}, {})).toBeNull()
+  })
+
+  it('skips comments Quackback itself posted, by marker', async () => {
+    const body = commentPayload('created', {
+      body: '**Alice** commented in Quackback:\n\nhi\n\n---\n\n[View in Quackback](https://f.acme.com/p/1)',
+    })
+    expect(await githubInboundHandler.parseCreateComment!(body, {}, {})).toBeNull()
+  })
+
+  it('skips comments authored by the connected account, by login', async () => {
+    const body = commentPayload('created', { user: { id: 1, login: 'quackback-bot' } })
+    expect(
+      await githubInboundHandler.parseCreateComment!(body, { username: 'quackback-bot' }, {})
+    ).toBeNull()
+  })
+
+  it('matches the connected login case-insensitively', async () => {
+    const body = commentPayload('created', { user: { id: 1, login: 'Quackback-Bot' } })
+    expect(
+      await githubInboundHandler.parseCreateComment!(body, { username: 'quackback-bot' }, {})
+    ).toBeNull()
+  })
+
+  it('still mirrors comments from other authors when a connected login is set', async () => {
+    const intent = await githubInboundHandler.parseCreateComment!(
+      commentPayload('created'),
+      { username: 'quackback-bot' },
+      {}
+    )
+    expect(intent?.externalId).toBe('5001')
+  })
+
+  it('rejects comments from a repo other than the configured one', async () => {
+    const body = commentPayload('created', {}, {}, 'someone-else/other-repo')
+    expect(
+      await githubInboundHandler.parseCreateComment!(body, { channelId: 'acme/app' }, {})
+    ).toBeNull()
+  })
+
+  it('omits the reporter when the commenter has no login', async () => {
+    const body = commentPayload('created', { user: { id: 5 } })
+    const intent = await githubInboundHandler.parseCreateComment!(body, {}, {})
+    expect(intent?.reporter).toBeUndefined()
+  })
 })
 
 describe('githubInboundHandler.parseStatusChange', () => {
@@ -123,5 +276,65 @@ describe('githubInboundHandler.parseStatusChange', () => {
 
   it('ignores opened (handled by parseCreatePost instead)', async () => {
     expect(await githubInboundHandler.parseStatusChange(issuePayload('opened'), {}, {})).toBeNull()
+  })
+
+  it('rejects issues from a repo other than the configured one', async () => {
+    const body = issuePayload('closed', {}, 'someone-else/other-repo')
+    expect(
+      await githubInboundHandler.parseStatusChange(body, { channelId: 'acme/app' }, {})
+    ).toBeNull()
+  })
+
+  describe('own-write guard', () => {
+    const config = { username: 'quackback-bot' }
+
+    it('ignores a close performed by the connected account', async () => {
+      // The import flow closes the source issue immediately after creating the
+      // post; without this guard the echo would drive that post to Closed.
+      const body = issuePayload('closed', {}, 'acme/app', {
+        sender: { id: 1, login: 'quackback-bot' },
+      })
+      expect(await githubInboundHandler.parseStatusChange(body, config, {})).toBeNull()
+    })
+
+    it('ignores a reopen performed by the connected account', async () => {
+      const body = issuePayload('reopened', {}, 'acme/app', {
+        sender: { id: 1, login: 'quackback-bot' },
+      })
+      expect(await githubInboundHandler.parseStatusChange(body, config, {})).toBeNull()
+    })
+
+    it('matches the connected login case-insensitively', async () => {
+      const body = issuePayload('closed', {}, 'acme/app', {
+        sender: { id: 1, login: 'Quackback-Bot' },
+      })
+      expect(await githubInboundHandler.parseStatusChange(body, config, {})).toBeNull()
+    })
+
+    it('still syncs a close performed by someone else', async () => {
+      const body = issuePayload('closed', {}, 'acme/app', {
+        sender: { id: 2, login: 'octocat' },
+      })
+      const result = await githubInboundHandler.parseStatusChange(body, config, {})
+      expect(result).toMatchObject({ externalId: '142', externalStatus: 'Closed' })
+    })
+
+    it('does not confuse the reporter with the actor', async () => {
+      // `issue.user` is the original reporter and stays the connected account
+      // on any issue Quackback opened — only `sender` says who closed it.
+      const body = issuePayload('closed', { user: { id: 1, login: 'quackback-bot' } }, 'acme/app', {
+        sender: { id: 2, login: 'octocat' },
+      })
+      const result = await githubInboundHandler.parseStatusChange(body, config, {})
+      expect(result).toMatchObject({ externalStatus: 'Closed' })
+    })
+
+    it('syncs normally when no connected login is configured', async () => {
+      const body = issuePayload('closed', {}, 'acme/app', {
+        sender: { id: 1, login: 'quackback-bot' },
+      })
+      const result = await githubInboundHandler.parseStatusChange(body, {}, {})
+      expect(result).toMatchObject({ externalStatus: 'Closed' })
+    })
   })
 })
