@@ -130,8 +130,10 @@ export async function buildGenericOAuthConfigs({
       // reject without it; RFC 7636 §5 makes the params backwards-compatible
       // (IdPs without PKCE support simply ignore them).
       pkce: true,
-      // Force the account picker so an admin typing a specific email isn't
+      // Force re-authentication so an admin typing a specific email isn't
       // silently signed in as whoever the IdP already has a session for.
+      // prompt=login is used rather than select_account, which is an
+      // OIDC-optional value many IdPs ignore or reject.
       prompt: 'login',
       // Better-Auth's JIT block. When false, the OAuth callback aborts in
       // handleOAuthUserInfo before any user/session is created. Existing
