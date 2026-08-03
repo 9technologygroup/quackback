@@ -129,7 +129,26 @@ export interface InboxPostListParams {
   showDeleted?: boolean
   cursor?: string
   limit?: number
+  /**
+   * Return a body excerpt instead of the full post.
+   *
+   * List views only ever render a clamped preview, so shipping whole bodies is
+   * pure payload weight — and post content is capped at MAX_POST_CONTENT_LENGTH,
+   * so a page of long posts adds up fast. When set, `content` is truncated to
+   * POST_LIST_EXCERPT_LENGTH and `contentJson` is not selected at all (it is the
+   * heavier of the two, typically several times the markdown size).
+   *
+   * Off by default: the v1 REST API renders full markdown from `contentJson`
+   * and would break. Only the admin inbox UI opts in.
+   */
+  excerpt?: boolean
 }
+
+/**
+ * Length of the body excerpt returned by list queries with `excerpt: true`.
+ * Comfortably longer than the ~3 lines any card actually shows.
+ */
+export const POST_LIST_EXCERPT_LENGTH = 500
 
 /**
  * Result for inbox post list query

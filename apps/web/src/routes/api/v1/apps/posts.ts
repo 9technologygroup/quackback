@@ -7,11 +7,12 @@ import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
 import type { BoardId, PostId } from '@quackback/ids'
 import { appJsonResponse, preflightResponse } from '@/lib/server/integrations/apps/cors'
 import { segmentIdsForPrincipal } from '@/lib/server/domains/segments/segment-membership.service'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const createPostSchema = z.object({
   boardId: z.string().min(1, 'Board ID is required'),
   title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(10000).optional().default(''),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional().default(''),
   // Optional: link to ticket after creation
   link: z
     .object({

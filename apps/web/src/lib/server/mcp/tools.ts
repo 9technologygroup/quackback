@@ -114,6 +114,7 @@ import type {
   ConversationId,
   SegmentId,
 } from '@quackback/ids'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 // ============================================================================
 // Helpers
@@ -393,10 +394,10 @@ const createPostSchema = {
   title: z.string().max(200).describe('Post title (max 200 characters)'),
   content: z
     .string()
-    .max(10000)
+    .max(MAX_POST_CONTENT_LENGTH)
     .optional()
     .describe(
-      'Post content (max 10,000 characters). Markdown (GFM). Images via ![alt](url) are auto-rehosted to workspace storage on save. See tool description for full format details.'
+      `Post content (max ${MAX_POST_CONTENT_LENGTH.toLocaleString()} characters). Markdown (GFM). Images via ![alt](url) are auto-rehosted to workspace storage on save. See tool description for full format details.`
     ),
   statusId: z.string().optional().describe('Initial status TypeID (defaults to board default)'),
   tagIds: z.array(z.string()).optional().describe('Tag TypeIDs to apply'),
@@ -2202,7 +2203,7 @@ Example: suggest_post({ conversationId: "conversation_01...", boardId: "board_01
       conversationId: z.string().describe('Conversation TypeID (must be resolved)'),
       boardId: z.string().describe('Suggested board TypeID'),
       title: z.string().min(3).max(200),
-      content: z.string().max(10000).default(''),
+      content: z.string().max(MAX_POST_CONTENT_LENGTH).default(''),
     },
     WRITE,
     async (args: {

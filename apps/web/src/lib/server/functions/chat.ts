@@ -40,6 +40,7 @@ import {
 } from './auth-helpers'
 import { isTeamMember } from '@/lib/shared/roles'
 import { logger } from '@/lib/server/logger'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const log = logger.child({ component: 'chat' })
 
@@ -757,9 +758,9 @@ const convertSchema = z.object({
   conversationId: z.string(),
   boardId: z.string(),
   title: z.string().max(200).optional(),
-  content: z.string().max(10000).optional(),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional(),
   asUpvoteOfPostId: z.string().optional(),
-  sourceMessageContent: z.string().max(10000).optional(),
+  sourceMessageContent: z.string().max(MAX_POST_CONTENT_LENGTH).optional(),
 })
 
 /** Create a feedback post from a conversation (create new, or upvote existing). */

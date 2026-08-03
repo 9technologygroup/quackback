@@ -152,6 +152,8 @@ export const fetchInboxPosts = createServerFn({ method: 'GET' })
         showDeleted: data.showDeleted,
         cursor: data.cursor,
         limit: data.limit,
+        // Cards render a clamped preview; the modal refetches the detail.
+        excerpt: true,
       })
       log.debug({ count: result.items.length }, 'fetch inbox posts')
       // Serialize contentJson field and Date fields

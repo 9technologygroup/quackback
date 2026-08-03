@@ -17,6 +17,8 @@ import {
   principal as principalTable,
 } from '@/lib/server/db'
 import { toUuid, type PostId, type StatusId, type TagId, type PrincipalId } from '@quackback/ids'
+import { truncate } from '@/lib/shared/utils/string'
+import { POST_LIST_EXCERPT_LENGTH } from './post.types'
 import type { PublicPostListResult } from './post.types'
 import type { RespondedFilter } from '@/lib/shared/types/filters'
 import { postViewFilter, ANONYMOUS_ACTOR, type Actor } from '@/lib/server/policy'
@@ -236,7 +238,8 @@ export async function listPublicPostsWithVotesAndAvatars(
     (post): PostWithVotesAndAvatars => ({
       id: post.id,
       title: post.title,
-      content: post.content,
+      // Cards only ever render a clamped preview — see POST_LIST_EXCERPT_LENGTH.
+      content: truncate(post.content, POST_LIST_EXCERPT_LENGTH),
       statusId: post.statusId,
       voteCount: post.voteCount,
       commentCount: post.commentCount,
@@ -299,7 +302,8 @@ export async function listPublicPosts(
   const items = trimmedResults.map((post) => ({
     id: post.id,
     title: post.title,
-    content: post.content,
+    // Cards only ever render a clamped preview — see POST_LIST_EXCERPT_LENGTH.
+    content: truncate(post.content, POST_LIST_EXCERPT_LENGTH),
     statusId: post.statusId,
     voteCount: post.voteCount,
     authorName: post.authorName,

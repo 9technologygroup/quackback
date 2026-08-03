@@ -23,6 +23,7 @@ import { resolveStatusMapping, type StatusMappings } from './status-mapping'
 import { changeStatus } from '@/lib/server/domains/posts/post.status'
 import type { PostId, StatusId, PrincipalId, BoardId, IntegrationId } from '@quackback/ids'
 import type { InboundCreatePostIntent, InboundCreateCommentIntent } from './inbound-types'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'inbound-webhook' })
@@ -268,7 +269,7 @@ async function handleInboundCreatePost(
       {
         boardId: boardId as BoardId,
         title: intent.title.slice(0, 200),
-        content: (intent.body ?? '').slice(0, 10000),
+        content: (intent.body ?? '').slice(0, MAX_POST_CONTENT_LENGTH),
       },
       { principalId: authorPrincipalId, actor },
       { skipDispatch: true }

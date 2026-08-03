@@ -20,6 +20,7 @@ import {
 import { type PostId, type PrincipalId, type UserId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
 import { isTeamMember } from '@/lib/shared/roles'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 import { createActivity } from '@/lib/server/domains/activity/activity.service'
 import {
   dispatchPostDeleted,
@@ -104,10 +105,7 @@ export async function userEditPost(
   input: UserEditPostInput,
   actor: { principalId: PrincipalId; role: 'admin' | 'member' | 'user' }
 ): Promise<Post> {
-  log.info(
-    { post_id: postId, principal_id: actor.principalId, role: actor.role },
-    'user edit post'
-  )
+  log.info({ post_id: postId, principal_id: actor.principalId, role: actor.role }, 'user edit post')
   // Validate input first (no DB needed)
   if (!input.title?.trim()) {
     throw new ValidationError('VALIDATION_ERROR', 'Title is required')
@@ -115,8 +113,11 @@ export async function userEditPost(
   if (input.title.length > 200) {
     throw new ValidationError('VALIDATION_ERROR', 'Title must be 200 characters or less')
   }
-  if (input.content.length > 10000) {
-    throw new ValidationError('VALIDATION_ERROR', 'Content must be 10,000 characters or less')
+  if (input.content.length > MAX_POST_CONTENT_LENGTH) {
+    throw new ValidationError(
+      'VALIDATION_ERROR',
+      `Content must be ${MAX_POST_CONTENT_LENGTH.toLocaleString()} characters or less`
+    )
   }
 
   // Fetch post with status + portal config in parallel (eliminates duplicate fetches)
