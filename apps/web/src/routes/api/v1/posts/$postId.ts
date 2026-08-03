@@ -16,11 +16,12 @@ import {
 import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
 import type { PostId, StatusId, TagId, PrincipalId } from '@quackback/ids'
 import type { MergedPostSummary } from '@/lib/server/domains/posts/post.types'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 // Input validation schema
 const updatePostSchema = z.object({
   title: z.string().min(1).max(200).optional(),
-  content: z.string().max(10000).optional(),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional(),
   statusId: z.string().optional(),
   tagIds: z.array(z.string()).optional(),
   ownerPrincipalId: z.string().nullable().optional(),

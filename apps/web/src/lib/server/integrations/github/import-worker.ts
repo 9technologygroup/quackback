@@ -28,6 +28,7 @@ import type {
   IntegrationId,
   PrincipalId,
 } from '@quackback/ids'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'github-import-worker' })
@@ -95,7 +96,7 @@ export async function processGitHubImportJob(
         {
           boardId: row.boardId as BoardId,
           title: row.title.slice(0, 200),
-          content: (row.body ?? '').slice(0, 10000),
+          content: (row.body ?? '').slice(0, MAX_POST_CONTENT_LENGTH),
           statusId: row.statusId ? (row.statusId as StatusId) : undefined,
           tagIds: row.tagIds.map((t) => t as TagId),
           createdAt: new Date(row.createdAt),

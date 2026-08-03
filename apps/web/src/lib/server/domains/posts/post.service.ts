@@ -42,6 +42,7 @@ import {
 } from '@/lib/server/events/dispatch'
 import { announcePublishedPost } from './post.announce'
 import { NotFoundError, ValidationError } from '@/lib/shared/errors'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 import { recordAuditEvent } from '@/lib/server/audit/log'
 import { markdownToTiptapJson, contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
 import { rehostExternalImages } from '@/lib/server/content/rehost-images'
@@ -97,8 +98,11 @@ export async function createPost(
   if (title.length > 200) {
     throw new ValidationError('VALIDATION_ERROR', 'Title must not exceed 200 characters')
   }
-  if (content.length > 10000) {
-    throw new ValidationError('VALIDATION_ERROR', 'Content must not exceed 10,000 characters')
+  if (content.length > MAX_POST_CONTENT_LENGTH) {
+    throw new ValidationError(
+      'VALIDATION_ERROR',
+      `Content must not exceed ${MAX_POST_CONTENT_LENGTH.toLocaleString()} characters`
+    )
   }
 
   // Tier-limit gate (no-op in OSS — getTierLimits short-circuits to OSS_TIER_LIMITS
@@ -359,8 +363,11 @@ export async function updatePost(
     }
   }
   if (input.content !== undefined) {
-    if (input.content.length > 10000) {
-      throw new ValidationError('VALIDATION_ERROR', 'Content must be 10,000 characters or less')
+    if (input.content.length > MAX_POST_CONTENT_LENGTH) {
+      throw new ValidationError(
+        'VALIDATION_ERROR',
+        `Content must be ${MAX_POST_CONTENT_LENGTH.toLocaleString()} characters or less`
+      )
     }
   }
 

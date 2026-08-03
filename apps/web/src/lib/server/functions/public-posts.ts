@@ -41,6 +41,7 @@ import { listPublicRoadmaps } from '@/lib/server/domains/roadmaps/roadmap.servic
 import { getPublicRoadmapPosts } from '@/lib/server/domains/roadmaps/roadmap.query'
 import { resolvePortalAccessForRequest } from './portal-access'
 import { logger } from '@/lib/server/logger'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const log = logger.child({ component: 'public-posts' })
 
@@ -75,7 +76,7 @@ const getPostPermissionsSchema = z.object({
 const userEditPostSchema = z.object({
   postId: z.string(),
   title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(10000),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH),
   contentJson: tiptapContentSchema.optional(),
 })
 
@@ -90,7 +91,7 @@ const toggleVoteSchema = z.object({
 const createPublicPostSchema = z.object({
   boardId: z.string(),
   title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(10000).optional().default(''),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional().default(''),
   contentJson: tiptapContentSchema.optional(),
   metadata: z.record(z.string(), z.string()).optional(),
 })

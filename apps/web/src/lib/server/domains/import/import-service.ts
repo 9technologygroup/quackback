@@ -17,6 +17,7 @@ import {
   type StatusId,
 } from '@quackback/ids'
 import { ValidationError } from '@/lib/shared/errors'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 import type { ImportInput, ImportResult, ImportRowError } from './types'
 import { ImportUserResolver } from './user-resolver'
 
@@ -39,7 +40,12 @@ export const jobDataSchema = z.object({
  */
 export const csvRowSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200, 'Title must be 200 characters or less'),
-  content: z.string().max(10000, 'Content must be 10000 characters or less'),
+  content: z
+    .string()
+    .max(
+      MAX_POST_CONTENT_LENGTH,
+      `Content must be ${MAX_POST_CONTENT_LENGTH.toLocaleString()} characters or less`
+    ),
   status: z.string().optional(),
   tags: z.string().optional(),
   board: z.string().optional(),

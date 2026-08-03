@@ -21,6 +21,8 @@ import {
   isNotNull,
 } from '@/lib/server/db'
 import { toUuid, type PostId, type PrincipalId } from '@quackback/ids'
+import { truncate } from '@/lib/shared/utils/string'
+import { POST_LIST_EXCERPT_LENGTH } from './post.types'
 import type { PostListItem, InboxPostListParams, InboxPostListResult } from './post.types'
 
 /**
@@ -48,6 +50,7 @@ export async function listInboxPosts(params: InboxPostListParams): Promise<Inbox
     sort = 'newest',
     cursor,
     limit = 20,
+    excerpt = false,
   } = params
 
   // Build conditions array
@@ -202,7 +205,9 @@ export async function listInboxPosts(params: InboxPostListParams): Promise<Inbox
       boardId: true,
       title: true,
       content: true,
-      contentJson: true,
+      // Excerpt callers render a clamped preview and refetch the detail for the
+      // full body, so the (much larger) TipTap JSON is dead weight for them.
+      contentJson: !excerpt,
       principalId: true,
       statusId: true,
       ownerPrincipalId: true,
@@ -248,6 +253,7 @@ export async function listInboxPosts(params: InboxPostListParams): Promise<Inbox
   // that no caller reads from list items, but PostListItem extends the full Post type.
   const items = sliced.map((post) => ({
     ...post,
+    content: excerpt ? truncate(post.content, POST_LIST_EXCERPT_LENGTH) : post.content,
     board: post.board,
     tags: post.tags.map((pt) => pt.tag),
     commentCount: post.commentCount,
