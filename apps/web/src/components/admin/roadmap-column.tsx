@@ -50,11 +50,11 @@ export const RoadmapColumn = memo(function RoadmapColumn({
     <div
       ref={setNodeRef}
       className={cn(
-        'min-w-[280px] max-w-[360px] flex-1 flex flex-col rounded-xl p-3 bg-muted/30 transition-colors duration-200',
+        'min-w-[280px] max-w-[360px] flex-1 h-full min-h-0 flex flex-col rounded-xl p-3 bg-muted/30 transition-colors duration-200',
         isOver && 'bg-primary/10'
       )}
     >
-      <div className="flex items-center justify-between py-2 px-1 mb-2">
+      <div className="flex items-center justify-between py-2 px-1 mb-2 shrink-0">
         <div className="flex items-center gap-2">
           <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
           <span className="text-sm font-medium text-muted-foreground">{title}</span>
@@ -64,6 +64,7 @@ export const RoadmapColumn = memo(function RoadmapColumn({
 
       <div
         className={cn(
+          'flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin pe-1',
           'flex flex-col gap-3 transition-all duration-200',
           isOver && 'opacity-50 blur-[1px]'
         )}

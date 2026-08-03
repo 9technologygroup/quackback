@@ -129,7 +129,7 @@ export function RoadmapBoard({
         <div className="relative flex-1 min-h-0">
           <div
             ref={columnsScroll.ref}
-            className="flex gap-4 pb-4 h-full overflow-x-auto overflow-y-hidden scrollbar-none snap-x snap-mandatory"
+            className="flex gap-4 pb-4 h-full overflow-x-auto overflow-y-hidden scrollbar-thin snap-x snap-mandatory"
           >
             {statuses.map((status, index) => (
               <div

@@ -133,8 +133,8 @@ export function RoadmapAdmin({ statuses }: RoadmapAdminProps) {
               onDragEnd={handleDragEnd}
               autoScroll={false}
             >
-              <div className="flex-1 overflow-auto p-4 sm:p-6">
-                <div className="flex items-stretch gap-4 sm:gap-5">
+              <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden scrollbar-thin p-4 sm:p-6">
+                <div className="flex items-stretch gap-4 sm:gap-5 h-full">
                   {statuses.map((status) => (
                     <RoadmapColumn
                       key={status.id}
