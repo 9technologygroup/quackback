@@ -28,7 +28,7 @@
 
 services:
   app:
-    image: ghcr.io/quackbackio/quackback:${QUACKBACK_TAG:-latest}
+    image: ${QUACKBACK_IMAGE:-ghcr.io/quackbackio/quackback}:${QUACKBACK_TAG:-latest}
     container_name: quackback-app
     restart: unless-stopped
     init: true
