@@ -121,6 +121,10 @@ export const statusIncidents = pgTable(
     // an older version's sweep (which doesn't read this column) never sends
     // it; this column, not notified_at, says whether it was emailed.
     notifySubscribers: boolean('notify_subscribers').default(true).notNull(),
+    // When the title, scheduled window or affected services last changed
+    // through an edit that posts no update; null until such an edit. The
+    // status feed announces an edit made after the latest update.
+    detailsEditedAt: timestamp('details_edited_at', { withTimezone: true }),
     createdBy: typeIdColumnNullable('principal')('created_by').references(() => principal.id, {
       onDelete: 'set null',
     }),

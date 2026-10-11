@@ -16,20 +16,26 @@ import {
   desc,
   asc,
   lt,
+  ne,
   lte,
   gte,
   statusComponentGroups,
   statusComponents,
   statusComponentEvents,
   statusIncidents,
-  statusIncidentUpdates,
-  statusIncidentComponents,
 } from '@/lib/server/db'
-import type { StatusComponentId, StatusIncidentId } from '@quackback/ids'
+import { isTypeId, type StatusComponentId, type StatusIncidentId } from '@quackback/ids'
 import { canViewStatusComponent, statusComponentViewFilter } from '@/lib/server/policy/status'
 import type { Actor } from '@/lib/server/policy/types'
 import type { StatusSettings } from '@/lib/shared/status-settings'
 import { deriveTopLevelStatus, deriveUptimeDays } from './status.calc'
+import {
+  getComponentLinksForIncidents,
+  groupLinksByIncident,
+  projectIncidents,
+  toPublicIncident,
+  visibleIncidentFilter,
+} from './status.projection'
 import type {
   StatusPageSnapshot,
   PublicStatusComponent,
@@ -44,80 +50,20 @@ import type {
 const RECENT_INCIDENTS_WINDOW_DAYS = 14
 const DEFAULT_UPTIME_WINDOW_DAYS = 90
 
-type IncidentRow = typeof statusIncidents.$inferSelect
-type ComponentLinkRow = {
-  incidentId: StatusIncidentId
-  componentId: StatusComponentId
-  componentStatus: (typeof statusIncidentComponents.$inferSelect)['componentStatus']
-  name: string
-  segmentIds: string[]
+function utcDayKey(date: Date): string {
+  return date.toISOString().slice(0, 10)
 }
 
 /**
- * Project an incident to its public shape for `actor`, filtering the
- * affected-components list to what they can see. Returns null when the
- * incident has zero visible affected components — the incident itself must
- * then be invisible (Status Product Spec §4).
+ * Where the page's recent window starts: 14 days back, rounded down to the
+ * start of that UTC day. The page's history query is keyed on this value and
+ * continues from it, so it holds still between refetches (it moves once a
+ * day), and the window always covers at least the 14 days the page names.
  */
-async function toPublicIncident(
-  incident: IncidentRow,
-  links: ComponentLinkRow[],
-  actor: Actor
-): Promise<PublicStatusIncident | null> {
-  const visibleLinks = links.filter((l) =>
-    canViewStatusComponent(actor, { segmentIds: l.segmentIds })
-  )
-  if (visibleLinks.length === 0) return null
-
-  const updates = await db.query.statusIncidentUpdates.findMany({
-    where: eq(statusIncidentUpdates.incidentId, incident.id),
-    orderBy: [asc(statusIncidentUpdates.createdAt)],
-  })
-
-  return {
-    id: incident.id,
-    kind: incident.kind,
-    title: incident.title,
-    status: incident.status,
-    impact: incident.impact,
-    scheduledStartAt: incident.scheduledStartAt,
-    scheduledEndAt: incident.scheduledEndAt,
-    startedAt: incident.startedAt,
-    resolvedAt: incident.resolvedAt,
-    affectedComponents: visibleLinks.map((l) => ({
-      id: l.componentId,
-      name: l.name,
-      componentStatus: l.componentStatus,
-    })),
-    updates: updates.map((u) => ({
-      id: u.id,
-      status: u.status,
-      body: u.body,
-      createdAt: u.createdAt,
-    })),
-  }
-}
-
-/** Fetch the affected-component links (with component name/segmentIds) for a set of incidents. */
-async function getComponentLinksForIncidents(
-  incidentIds: StatusIncidentId[]
-): Promise<ComponentLinkRow[]> {
-  if (incidentIds.length === 0) return []
-  return db
-    .select({
-      incidentId: statusIncidentComponents.incidentId,
-      componentId: statusIncidentComponents.componentId,
-      componentStatus: statusIncidentComponents.componentStatus,
-      name: statusComponents.name,
-      segmentIds: statusComponents.segmentIds,
-    })
-    .from(statusIncidentComponents)
-    .innerJoin(statusComponents, eq(statusIncidentComponents.componentId, statusComponents.id))
-    .where(inArray(statusIncidentComponents.incidentId, incidentIds))
-}
-
-function utcDayKey(date: Date): string {
-  return date.toISOString().slice(0, 10)
+function recentWindowStartFor(now: Date): Date {
+  const start = new Date(now.getTime() - RECENT_INCIDENTS_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+  start.setUTCHours(0, 0, 0, 0)
+  return start
 }
 
 export async function getStatusPageSnapshot(
@@ -213,9 +159,7 @@ export async function getStatusPageSnapshot(
     actor
   )
 
-  const recentWindowStart = new Date(
-    now.getTime() - RECENT_INCIDENTS_WINDOW_DAYS * 24 * 60 * 60 * 1000
-  )
+  const recentWindowStart = recentWindowStartFor(now)
   const recentRows = await db.query.statusIncidents.findMany({
     where: and(
       isNull(statusIncidents.deletedAt),
@@ -244,32 +188,8 @@ export async function getStatusPageSnapshot(
     activeIncidents,
     upcomingMaintenance,
     recentIncidents: recentIncidents_grouped,
+    recentWindow: { start: recentWindowStart, days: RECENT_INCIDENTS_WINDOW_DAYS },
   }
-}
-
-function groupLinksByIncident(
-  links: ComponentLinkRow[]
-): Map<StatusIncidentId, ComponentLinkRow[]> {
-  const map = new Map<StatusIncidentId, ComponentLinkRow[]>()
-  for (const l of links) {
-    const list = map.get(l.incidentId) ?? []
-    list.push(l)
-    map.set(l.incidentId, list)
-  }
-  return map
-}
-
-async function projectIncidents(
-  rows: IncidentRow[],
-  linksByIncident: Map<StatusIncidentId, ComponentLinkRow[]>,
-  actor: Actor
-): Promise<PublicStatusIncident[]> {
-  const results: PublicStatusIncident[] = []
-  for (const row of rows) {
-    const projected = await toPublicIncident(row, linksByIncident.get(row.id) ?? [], actor)
-    if (projected) results.push(projected)
-  }
-  return results
 }
 
 function groupByUtcDay(
@@ -294,6 +214,10 @@ export async function getPublicStatusIncident(
   actor: Actor,
   id: StatusIncidentId
 ): Promise<PublicStatusIncident | null> {
+  // The id comes from the URL. One that isn't an incident id (a mistyped or
+  // made-up link) names no incident, and converting it for the query would
+  // throw instead of reading as not found.
+  if (!isTypeId(id, 'status_incident')) return null
   const incident = await db.query.statusIncidents.findFirst({
     where: and(eq(statusIncidents.id, id), isNull(statusIncidents.deletedAt)),
   })
@@ -353,8 +277,18 @@ export async function listIncidentHistory(
   actor: Actor,
   params: IncidentHistoryParams
 ): Promise<IncidentHistoryResult> {
-  const { cursor, limit = 20 } = params
+  const { cursor, limit = 20, before } = params
   const conditions = [isNull(statusIncidents.deletedAt), isNotNull(statusIncidents.resolvedAt)]
+
+  // The page already lists the resolved incidents that started inside its
+  // recent window (`getStatusPageSnapshot`), so history picks up after them.
+  // Only incidents are cut: the window never shows maintenance, and a window
+  // completed last week would otherwise appear nowhere on the page.
+  if (before) {
+    conditions.push(
+      or(ne(statusIncidents.kind, 'incident'), lt(statusIncidents.startedAt, before))!
+    )
+  }
 
   if (cursor) {
     const cursorRow = await db.query.statusIncidents.findFirst({
@@ -397,4 +331,86 @@ export async function listIncidentHistory(
     nextCursor: hasMore && pageRows.length > 0 ? pageRows[pageRows.length - 1].id : null,
     hasMore,
   }
+}
+
+/** When an incident last changed: its newest update, or its resolution if
+ *  that came later. A scheduled window's `startedAt` can lie in the future,
+ *  so it is only the fallback for a row with neither. */
+export function statusIncidentLastActivityAt(incident: PublicStatusIncident): Date {
+  let latest: Date | null = incident.resolvedAt
+  for (const update of incident.updates) {
+    if (!latest || update.createdAt > latest) latest = update.createdAt
+  }
+  return latest ?? incident.startedAt
+}
+
+/** A feed item: the public incident, and when its details (title, window,
+ *  services) were last edited without an update, if ever. */
+export interface StatusFeedIncident extends PublicStatusIncident {
+  detailsEditedAt: Date | null
+}
+
+/**
+ * Everything a status feed carries, most recent activity first: every open
+ * incident and every window that is scheduled or under way, plus the `limit`
+ * resolved incidents and completed windows with the most recent activity. The
+ * limit counts only resolved history, so what is happening now is always
+ * listed.
+ * Visibility is the public page's, so a feed never lists what the page would
+ * hide.
+ */
+export async function listStatusFeedItems(
+  actor: Actor,
+  limit: number = 50
+): Promise<StatusFeedIncident[]> {
+  const [openRows, resolvedRows] = await Promise.all([
+    db.query.statusIncidents.findMany({
+      where: and(
+        isNull(statusIncidents.deletedAt),
+        or(
+          and(eq(statusIncidents.kind, 'incident'), isNull(statusIncidents.resolvedAt)),
+          and(
+            eq(statusIncidents.kind, 'maintenance'),
+            inArray(statusIncidents.status, ['scheduled', 'in_progress', 'verifying'])
+          )
+        )
+      ),
+    }),
+    // The viewer's visibility applies before the limit, so incidents they
+    // can't see never take the places of older ones they can. Ordered by when
+    // the row was last written (an update, an edit, the resolution), so an
+    // older incident updated or edited since still reaches the feed.
+    db
+      .select()
+      .from(statusIncidents)
+      .where(
+        and(
+          isNull(statusIncidents.deletedAt),
+          isNotNull(statusIncidents.resolvedAt),
+          visibleIncidentFilter(actor)
+        )
+      )
+      .orderBy(desc(statusIncidents.updatedAt), desc(statusIncidents.id))
+      .limit(limit),
+  ])
+
+  // A row can match both reads (a window moved back to "scheduled" before
+  // reopening cleared its `resolvedAt`); list it once.
+  const seen = new Set<string>()
+  const rows = [...openRows, ...resolvedRows].filter((row) => {
+    if (seen.has(row.id)) return false
+    seen.add(row.id)
+    return true
+  })
+  const links = await getComponentLinksForIncidents(rows.map((r) => r.id))
+  const items = await projectIncidents(rows, groupLinksByIncident(links), actor)
+  const detailsEditedAt = new Map(rows.map((row) => [row.id, row.detailsEditedAt]))
+
+  return items
+    .map((incident) => ({ incident, at: statusIncidentLastActivityAt(incident).getTime() }))
+    .sort((a, b) => b.at - a.at)
+    .map(({ incident }) => ({
+      ...incident,
+      detailsEditedAt: detailsEditedAt.get(incident.id) ?? null,
+    }))
 }

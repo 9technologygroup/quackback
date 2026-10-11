@@ -57,6 +57,30 @@ export function isStatusPagePublished(
   return !!flags?.statusPage && statusSettings?.enabled !== false
 }
 
+/**
+ * Whether a feed reader is served the status feed. A reader has no session,
+ * so this is the status page's gate (`resolveStatusPageGate`) for an
+ * anonymous caller, in the same order: the portal is not private, the page
+ * is published, and its audience is everyone. Anywhere else the feed comes
+ * back empty, so there is no feed worth offering.
+ */
+export function isStatusFeedReadable(
+  settings:
+    | {
+        portalConfig?: { access?: { visibility?: string } | null } | null
+        featureFlags?: { statusPage?: boolean } | null
+        statusConfig?: { enabled?: boolean; audience?: StatusAudience } | null
+      }
+    | null
+    | undefined
+): boolean {
+  return (
+    settings?.portalConfig?.access?.visibility !== 'private' &&
+    isStatusPagePublished(settings?.featureFlags, settings?.statusConfig) &&
+    (settings?.statusConfig?.audience ?? 'public') === 'public'
+  )
+}
+
 export const statusSettingsSchema = z
   .object({
     enabled: z.boolean(),

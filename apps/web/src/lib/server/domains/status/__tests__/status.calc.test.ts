@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   deriveTopLevelStatus,
   deriveImpact,
+  deriveViewerImpact,
   deriveUptimeDays,
   type UptimeStatusEvent,
 } from '../status.calc'
@@ -50,6 +51,32 @@ describe('deriveImpact', () => {
   it('does not let maintenance raise impact', () => {
     expect(deriveImpact(['under_maintenance'])).toBe('none')
     expect(deriveImpact(['under_maintenance', 'degraded_performance'])).toBe('minor')
+  })
+})
+
+describe('deriveViewerImpact', () => {
+  it("keeps the incident's impact for a viewer who sees every affected service", () => {
+    expect(deriveViewerImpact('critical', ['degraded_performance'], false)).toBe('critical')
+    // An admin override stands for a viewer who sees the whole incident.
+    expect(deriveViewerImpact('critical', ['partial_outage'], false)).toBe('critical')
+  })
+
+  it('works the impact out from the visible services when some are hidden', () => {
+    // API "Partial outage" visible; the hidden service's major outage made it critical.
+    expect(deriveViewerImpact('critical', ['partial_outage'], true)).toBe('major')
+    expect(deriveViewerImpact('critical', ['degraded_performance'], true)).toBe('minor')
+  })
+
+  it('lets an override lower what a partial viewer sees, never raise it', () => {
+    // An admin who called a major outage "minor" is still heard.
+    expect(deriveViewerImpact('minor', ['major_outage'], true)).toBe('minor')
+    expect(deriveViewerImpact('none', ['partial_outage'], true)).toBe('none')
+    // One who raised it may have been judging the hidden services.
+    expect(deriveViewerImpact('critical', ['degraded_performance'], true)).toBe('minor')
+  })
+
+  it('keeps maintenance as it is', () => {
+    expect(deriveViewerImpact('maintenance', ['under_maintenance'], true)).toBe('maintenance')
   })
 })
 

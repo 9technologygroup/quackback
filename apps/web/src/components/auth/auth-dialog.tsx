@@ -12,6 +12,7 @@ import { headerForStep, type FormContext } from './auth-step-header'
 import { hasDistinctSignup } from './oauth-buttons'
 import { useAuthPopover } from './auth-popover-context'
 import { useAuthBroadcast } from '@/lib/client/hooks/use-auth-broadcast'
+import { useSignInFromAnotherTab } from './use-sign-in-from-another-tab'
 import { signOut } from '@/lib/client/auth-client'
 import type { OidcSignInButton } from '@/lib/shared/oidc-sign-in-button'
 import { isTeamCallback } from '@/lib/shared/routing'
@@ -43,8 +44,16 @@ interface AuthDialogProps {
  * adapts to the form's current step (e.g. flips to "Check your email"
  * after the user submits their email). */
 export function AuthDialog({ authConfig, workspaceName }: AuthDialogProps) {
-  const { isOpen, mode, callbackUrl, linkConflict, closeAuthPopover, setMode, onAuthSuccess } =
-    useAuthPopover()
+  const {
+    isOpen,
+    mode,
+    callbackUrl,
+    linkConflict,
+    description: openerDescription,
+    closeAuthPopover,
+    setMode,
+    onAuthSuccess,
+  } = useAuthPopover()
   const [formContext, setFormContext] = useState<FormContext>({ step: 'credentials', email: '' })
 
   // Sign-up mode only differs from login when password auth is on and signups
@@ -59,12 +68,17 @@ export function AuthDialog({ authConfig, workspaceName }: AuthDialogProps) {
     enabled: isOpen,
   })
 
+  // The emailed link, opened in another tab, signs the visitor in over there;
+  // notice it when they come back here instead of waiting on the code.
+  useSignInFromAnotherTab(isOpen && formContext.step === 'code')
+
   // A teammate on the way to an admin page gets the team version of the copy.
   const team = isTeamCallback(callbackUrl)
   const workspace = workspaceName?.trim()
   const { title, description } = headerForStep(effectiveMode, formContext, {
     surface: team ? 'team' : 'dialog',
     workspaceName,
+    description: openerDescription,
   })
 
   return (

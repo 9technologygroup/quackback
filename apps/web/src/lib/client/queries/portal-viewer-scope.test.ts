@@ -18,6 +18,7 @@ import {
   removeViewerScopedPortalQueries,
   VIEWER_SCOPED_PORTAL_QUERY_KEYS,
 } from './portal'
+import { statusKeys } from './status'
 
 const teamCatalog = [{ id: 'tag_internal', name: 'Churn risk', isPublic: false }]
 const anonymousCatalog: unknown[] = []
@@ -113,6 +114,10 @@ describe('removeViewerScopedPortalQueries', () => {
     expect(queryClient.getQueryCache().findAll({ queryKey: ['notifications', 'list'] })).toEqual([])
   })
 
+  it('clears the public status reads, which hide segment-restricted services', () => {
+    expect(VIEWER_SCOPED_PORTAL_QUERY_KEYS).toContainEqual([...statusKeys.public()])
+  })
+
   it('covers every family whose payload depends on the viewer', () => {
     expect(VIEWER_SCOPED_PORTAL_QUERY_KEYS).toEqual(
       expect.arrayContaining([
@@ -123,6 +128,7 @@ describe('removeViewerScopedPortalQueries', () => {
         ['portal', 'post'],
         ['portal', 'roadmaps'],
         ['portal', 'roadmapPosts'],
+        ['status', 'public'],
         ['publicPosts'],
       ])
     )

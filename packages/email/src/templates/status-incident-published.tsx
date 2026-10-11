@@ -1,6 +1,7 @@
 import { Button, Heading, Section, Text } from '@react-email/components'
 import { EmailLayout, NotificationFooter } from './email-layout'
 import { typography, button, colors } from './shared-styles'
+import { withLineBreaks } from './line-breaks'
 
 export type IncidentImpact = 'none' | 'minor' | 'major' | 'critical'
 
@@ -16,7 +17,7 @@ interface StatusIncidentPublishedEmailProps {
   impact: IncidentImpact
   /** Humanized incident status, e.g. "Investigating". */
   statusLabel: string
-  /** Plain text of the first update. */
+  /** Plain text of the first update. Its line breaks are kept. */
   body: string
   affectedComponents: AffectedComponent[]
   incidentUrl: string
@@ -106,11 +107,13 @@ export function StatusIncidentPublishedEmail({
           {incidentTitle}
         </Text>
         {body && (
-          <Text style={{ ...typography.textSmall, marginTop: '0', marginBottom: '0' }}>{body}</Text>
+          <Text style={{ ...typography.textSmall, marginTop: '0', marginBottom: '0' }}>
+            {withLineBreaks(body)}
+          </Text>
         )}
       </Section>
 
-      {/* Affected components */}
+      {/* Affected services */}
       {affectedComponents.length > 0 && (
         <Section style={{ marginBottom: '24px' }}>
           <Text
@@ -122,7 +125,7 @@ export function StatusIncidentPublishedEmail({
               marginBottom: '8px',
             }}
           >
-            Affected components
+            Affected services
           </Text>
           {affectedComponents.map((component) => (
             <Text
@@ -146,6 +149,7 @@ export function StatusIncidentPublishedEmail({
       <NotificationFooter
         reason="You received this email because you're subscribed to status updates."
         unsubscribeUrl={unsubscribeUrl}
+        unsubscribeLabel="Unsubscribe from status updates"
         preferencesUrl={preferencesUrl}
       />
     </EmailLayout>

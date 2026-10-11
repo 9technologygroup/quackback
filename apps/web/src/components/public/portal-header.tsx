@@ -283,7 +283,8 @@ export function PortalHeader({
 
   // Two-row layout: Logo + Auth on top, Navigation below
   return (
-    <div className="portal-header w-full py-2 border-b border-[var(--header-border)] bg-[var(--header-background)] shadow-sm">
+    // A banner landmark, so the logo and account controls sit in one.
+    <header className="portal-header w-full py-2 border-b border-[var(--header-border)] bg-[var(--header-background)] shadow-sm">
       {/* Row 1: Logo + Name + Auth */}
       <div>
         <div className="max-w-6xl mx-auto w-full px-4 sm:px-6">
@@ -322,7 +323,7 @@ export function PortalHeader({
           />
         </div>
       </div>
-    </div>
+    </header>
   )
 }
 

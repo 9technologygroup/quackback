@@ -354,6 +354,20 @@ export async function updateIncident(
     if (input.autoStart !== undefined) updateData.autoStart = input.autoStart
     if (input.autoComplete !== undefined) updateData.autoComplete = input.autoComplete
 
+    // details_edited_at records a change a status feed item shows: the
+    // title, the window or the services, compared with the locked row so a
+    // stale save that reverts a change still counts. The editor autosaves its
+    // whole sidebar, so a value sent back unchanged, or a change to
+    // automation or impact alone, is not an edit a reader needs to hear about.
+    const sameInstant = (a: Date | null, b: Date | null) =>
+      (a?.getTime() ?? null) === (b?.getTime() ?? null)
+    let detailsChanged =
+      (title !== undefined && title !== existing.title) ||
+      (input.scheduledStartAt !== undefined &&
+        !sameInstant(input.scheduledStartAt, existing.scheduledStartAt)) ||
+      (input.scheduledEndAt !== undefined &&
+        !sameInstant(input.scheduledEndAt, existing.scheduledEndAt))
+
     if (input.scheduledStartAt !== undefined || input.scheduledEndAt !== undefined) {
       assertWindowOrder(
         input.scheduledStartAt !== undefined ? input.scheduledStartAt : existing.scheduledStartAt,
@@ -377,7 +391,7 @@ export async function updateIncident(
 
     // A link to a service deleted since is history: it stays as it is, and a
     // stale editor that sends the deleted service back doesn't relink it.
-    let previousLinks: { componentId: StatusComponentId }[] = []
+    let previousLinks: { componentId: StatusComponentId; componentStatus: string }[] = []
     let nextComponents = input.affectedComponents
     let live = new Set<StatusComponentId>()
     if (input.affectedComponents !== undefined) {
@@ -399,7 +413,35 @@ export async function updateIncident(
       if (nextComponents.length === 0) {
         throw new ValidationError('VALIDATION_ERROR', DELETED_SERVICE_MESSAGE)
       }
+      // Links to deleted services are kept either way, so only the live ones
+      // can change: which services, and the status set on each. Of those,
+      // only services every viewer of the page can see count: the stamp is
+      // shared by every reader, so a change to a service gated to some
+      // segments would tell everyone else that something they can't see
+      // changed, and when.
+      const seenByEveryone = new Set(
+        (
+          await tx
+            .select({ id: statusComponents.id, segmentIds: statusComponents.segmentIds })
+            .from(statusComponents)
+            .where(inArray(statusComponents.id, [...live]))
+        )
+          .filter((component) => component.segmentIds.length === 0)
+          .map((component) => component.id)
+      )
+      const before = new Map(
+        previousLinks
+          .filter((link) => seenByEveryone.has(link.componentId))
+          .map((link) => [link.componentId, link.componentStatus])
+      )
+      const after = nextComponents.filter((c) => seenByEveryone.has(c.componentId))
+      detailsChanged ||=
+        after.length !== before.size ||
+        after.some((c) => before.get(c.componentId) !== c.componentStatus)
     }
+    // Stamped by the database's clock, the one that dates most updates, so
+    // the feed's "edited after the latest update" never turns on clock skew.
+    if (detailsChanged) updateData.detailsEditedAt = sql`now()`
 
     if (existing.kind === 'incident') {
       if (impactOverride && input.impact !== undefined) {

@@ -5,6 +5,9 @@
  * document shows none of it unless the theme, the language or the kind of
  * page (admin, portal, widget) changed, so it renders nothing again for a
  * navigation between admin pages; a change to the theme still reaches it.
+ *
+ * The document advertises the status feed to feed readers only where one is
+ * served it: a reader has no session, so a private portal turns it away.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render, screen } from '@testing-library/react'
@@ -137,6 +140,36 @@ describe('root document renders', () => {
     bootstrap('dark', settings)
     await mount()
     expect(document.documentElement.hasAttribute('data-visual-theme')).toBe(false)
+  })
+})
+
+describe('the RSS feed the document advertises', () => {
+  const statusPageMatches = (settings: Record<string, unknown>) => [
+    { routeId: '__root__', context: { settings } },
+    { routeId: '/_portal', context: { settings } },
+    { routeId: '/_portal/status/', context: { settings } },
+  ]
+  const alternateHref = (settings: Record<string, unknown>) => {
+    const head = (
+      RootRoute.options.head as unknown as (ctx: { matches: unknown[] }) => {
+        links: Array<{ rel: string; href: string }>
+      }
+    )({ matches: statusPageMatches(settings) })
+    return head.links.find((link) => link.rel === 'alternate')?.href
+  }
+  const publicPage = {
+    featureFlags: { statusPage: true },
+    statusConfig: { enabled: true, audience: 'public' },
+  }
+
+  it('is the status feed on a public status page', () => {
+    expect(alternateHref(publicPage)).toBe('/status/feed')
+  })
+
+  it('is not the status feed inside a private portal, which turns a feed reader away', () => {
+    expect(
+      alternateHref({ ...publicPage, portalConfig: { access: { visibility: 'private' } } })
+    ).toBe('/changelog/feed')
   })
 })
 

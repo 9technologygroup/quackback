@@ -27,6 +27,8 @@ import { documentLocale, htmlLangDir } from '@/lib/shared/document-locale'
 import { DocumentLocaleContext } from '@/components/shared/document-locale-context'
 import { normalizeLocale, DEFAULT_LOCALE, type SupportedLocale } from '@/lib/shared/i18n'
 import { useWorkspaceSettings } from '@/lib/client/hooks/use-root-context'
+import { rssAlternateLink } from '@/lib/shared/rss-alternate'
+import { isStatusFeedReadable } from '@/lib/shared/status-settings'
 
 // The toast renderer is its own chunk: the root module ships with every
 // document (the embedded widget included), and a toast fired before it mounts
@@ -103,7 +105,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 
     return context
   },
-  head: () => ({
+  head: ({ matches }) => ({
     meta: [
       {
         charSet: 'utf-8',
@@ -133,12 +135,14 @@ export const Route = createRootRouteWithContext<RouterContext>()({
         rel: 'stylesheet',
         href: appCss,
       },
-      {
-        rel: 'alternate',
-        type: 'application/rss+xml',
-        title: 'Changelog RSS Feed',
-        href: '/changelog/feed',
-      },
+      rssAlternateLink(
+        matches.map((match) => match.routeId),
+        {
+          statusFeedReadable: isStatusFeedReadable(
+            (matches[0]?.context as RootContext | undefined)?.settings
+          ),
+        }
+      ),
     ],
   }),
   component: RootComponent,

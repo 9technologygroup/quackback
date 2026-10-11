@@ -18,6 +18,9 @@ interface HeaderOptions {
   surface?: AuthSurface
   /** Workspace name woven into the private-portal base-step copy. */
   workspaceName?: string
+  /** The dialog's base-step line when the opener said why the visitor is
+   *  signing in (plain, already-translated text). */
+  description?: string
 }
 
 /**
@@ -156,8 +159,10 @@ export function headerForStep(
       ) : (
         <FormattedMessage id="portal.auth.dialog.signupTitle" defaultMessage="Create an account" />
       ),
+    // The opener's reason for asking, when it gave one.
     description:
-      mode === 'login' ? (
+      opts?.description ??
+      (mode === 'login' ? (
         <FormattedMessage
           id="portal.auth.login.tagline"
           defaultMessage="Sign in to vote and comment on feedback."
@@ -167,6 +172,6 @@ export function headerForStep(
           id="portal.auth.signup.tagline"
           defaultMessage="Sign up to vote and comment on feedback."
         />
-      ),
+      )),
   }
 }

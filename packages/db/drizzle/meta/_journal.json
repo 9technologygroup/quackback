@@ -1940,6 +1940,13 @@
       "when": 1791000400000,
       "tag": "0299_status_incident_notify_subscribers",
       "breakpoints": true
+    },
+    {
+      "idx": 277,
+      "version": "7",
+      "when": 1791000500000,
+      "tag": "0300_status_incident_details_edited_at",
+      "breakpoints": true
     }
   ]
 }

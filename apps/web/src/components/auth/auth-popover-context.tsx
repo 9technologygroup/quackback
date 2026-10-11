@@ -17,6 +17,10 @@ interface OpenAuthPopoverOptions {
   onSuccess?: () => void
   callbackUrl?: string
   linkConflict?: LinkConflictContext
+  /** Why the visitor is signing in, as plain text the caller has already
+   *  translated. Replaces the default "vote and comment" line under the
+   *  dialog's title. */
+  description?: string
 }
 
 interface AuthPopoverContextValue {
@@ -24,6 +28,7 @@ interface AuthPopoverContextValue {
   mode: AuthMode
   callbackUrl: string | undefined
   linkConflict: LinkConflictContext | undefined
+  description: string | undefined
   openAuthPopover: (options: OpenAuthPopoverOptions) => void
   closeAuthPopover: () => void
   setMode: (mode: AuthMode) => void
@@ -42,6 +47,7 @@ export function AuthPopoverProvider({ children }: AuthPopoverProviderProps) {
   const [mode, setMode] = useState<AuthMode>('login')
   const [callbackUrl, setCallbackUrl] = useState<string | undefined>(undefined)
   const [linkConflict, setLinkConflict] = useState<LinkConflictContext | undefined>(undefined)
+  const [description, setDescription] = useState<string | undefined>(undefined)
   const onSuccessCallbackRef = useRef<(() => void) | null>(null)
 
   const openAuthPopover = useCallback((options: OpenAuthPopoverOptions) => {
@@ -49,6 +55,7 @@ export function AuthPopoverProvider({ children }: AuthPopoverProviderProps) {
     onSuccessCallbackRef.current = options.onSuccess || null
     setCallbackUrl(options.callbackUrl)
     setLinkConflict(options.linkConflict)
+    setDescription(options.description)
     setIsOpen(true)
   }, [])
 
@@ -56,6 +63,7 @@ export function AuthPopoverProvider({ children }: AuthPopoverProviderProps) {
     setIsOpen(false)
     setCallbackUrl(undefined)
     setLinkConflict(undefined)
+    setDescription(undefined)
     onSuccessCallbackRef.current = null
   }, [])
 
@@ -73,6 +81,7 @@ export function AuthPopoverProvider({ children }: AuthPopoverProviderProps) {
         mode,
         callbackUrl,
         linkConflict,
+        description,
         openAuthPopover,
         closeAuthPopover,
         setMode,

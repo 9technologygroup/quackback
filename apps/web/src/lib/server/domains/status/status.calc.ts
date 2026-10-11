@@ -13,11 +13,12 @@ import {
   SEVERITY_ORDER,
   deriveImpact,
   deriveTopLevelStatus,
+  deriveViewerImpact,
   type StatusCalcComponentStatus,
   type StatusCalcImpact,
 } from '@/lib/shared/status-calc'
 
-export { deriveImpact, deriveTopLevelStatus }
+export { deriveImpact, deriveTopLevelStatus, deriveViewerImpact }
 
 // Compile-time pin: the shared module's literal unions must stay identical
 // to the schema enums. A pgEnum change that isn't mirrored in

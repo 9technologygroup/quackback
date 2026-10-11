@@ -21,7 +21,9 @@ import {
  * internal tag ids redacted for non-team viewers. The board list holds only
  * the boards the viewer's segments and role can see. Notifications belong to the
  * signed-in viewer outright, and the portal loader reads the bell's unread
- * count back through `ensureQueryData`.
+ * count back through `ensureQueryData`. The public status reads
+ * (`statusKeys.public()`) hide segment-restricted services and the incidents
+ * that touch only them.
  */
 export const VIEWER_SCOPED_PORTAL_QUERY_KEYS: readonly (readonly string[])[] = [
   ['portal', 'tags'],
@@ -33,6 +35,7 @@ export const VIEWER_SCOPED_PORTAL_QUERY_KEYS: readonly (readonly string[])[] = [
   ['portal', 'roadmapPosts'],
   ['publicPosts'],
   ['notifications'],
+  ['status', 'public'],
 ]
 
 /**
