@@ -139,6 +139,25 @@ export async function earliestPendingJobAt(): Promise<Date | null> {
   return value === null ? null : asDate(value)
 }
 
+/**
+ * When the next job that is not yet due becomes due, or null when none is
+ * waiting on a clock.
+ *
+ * What an idle loop sleeps until, so a delayed job runs at its `run_at` rather
+ * than at whichever poll follows it. A row already due is left out on purpose:
+ * the pass that asks has just tried to claim it, and one it could not take (a
+ * full slot, the fleet cap) is retried when a running job settles, not by a
+ * loop spinning on a timestamp in the past.
+ */
+export async function nextPendingJobAt(): Promise<Date | null> {
+  const result = await db.execute(sql`
+    SELECT min(run_at) AS run_at FROM job_queue WHERE status = 'pending' AND run_at > now()
+  `)
+  const rows = getExecuteRows<{ run_at: Date | string | null }>(result)
+  const value = rows[0]?.run_at ?? null
+  return value === null ? null : asDate(value)
+}
+
 export interface EnqueueJobInput {
   queue: string
   payload?: Record<string, unknown>

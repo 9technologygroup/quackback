@@ -24,6 +24,23 @@ interface ClaimPlan {
   maintenance?: boolean[]
   dispatchCalls?: number
   startByIdCalls?: number
+  /** Options of every `createScheduleState` call, in order, when provided. */
+  scheduleStates?: unknown[]
+  pollMs?: number
+  reapMs?: number
+  /** Schedule slots fall on multiples of this, as a cron's do. Unset: no slots. */
+  slotEveryMs?: number
+  /** Schedule ticks so far, and whether each one throws. */
+  ticks?: number
+  tickThrows?: boolean
+  /** A pending job not yet due runs at this instant (ms). */
+  pendingAt?: number
+  /** Times the loop asked when the next delayed job is due. */
+  lookAheads?: number
+  /** `Date.now()` at every dispatch pass, when provided. */
+  passTimes?: number[]
+  /** Delays applied to successive workspace scope entries. */
+  scopeDelaysMs?: number[]
 }
 
 interface DormancyPlan {
@@ -72,6 +89,13 @@ async function bootJobWorker(
   }))
   vi.doMock('../job-queue', () => ({
     earliestPendingJobAt: async () => dormancy?.pendingJobAt ?? null,
+    nextPendingJobAt: async () => {
+      plan.lookAheads = (plan.lookAheads ?? 0) + 1
+      // Mirrors the query: only a job not yet due.
+      return plan.pendingAt !== undefined && plan.pendingAt > Date.now()
+        ? new Date(plan.pendingAt)
+        : null
+    },
     isMissingJobQueue: () => false,
   }))
   vi.doMock('@/lib/server/domains/billing/usage-report', () => ({
@@ -84,6 +108,8 @@ async function bootJobWorker(
   }))
   vi.doMock('@/lib/server/workspaces/fleet', () => ({
     withWorkspaceScopeById: async (id: string, _origin: string, body: () => Promise<unknown>) => {
+      const delay = plan.scopeDelaysMs?.shift()
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
       const out = (await body()) as { month?: string } | undefined
       if (out && typeof out === 'object' && 'month' in out && out.month)
         dormancy?.reportsQueued?.push([id, out.month])
@@ -97,23 +123,33 @@ async function bootJobWorker(
     primeJobHandlers: async () => {},
     resetJobHandlers: () => {},
     runnerConfig: () => ({
-      pollIntervalMs: POLL_MS,
+      pollIntervalMs: plan.pollMs ?? POLL_MS,
       batchSize: 5,
-      reapIntervalMs: REAP_MS,
+      reapIntervalMs: plan.reapMs ?? REAP_MS,
       pruneIntervalMs: PRUNE_MS,
       retentionMs: 7 * 24 * 60 * 60 * 1000,
       maxConcurrency: 4,
     }),
     createJobPool: () => ({}),
     poolSize: () => 0,
-    createScheduleState: () => ({}),
-    runScheduleTick: async () => ({ enqueued: 0, attempted: 0, nextSlotAt: null }),
+    createScheduleState: (opts?: unknown) => {
+      plan.scheduleStates?.push(opts)
+      return {}
+    },
+    runScheduleTick: async () => {
+      plan.ticks = (plan.ticks ?? 0) + 1
+      if (plan.tickThrows) throw new Error('schedule tick failed')
+      const every = plan.slotEveryMs
+      const nextSlotAt = every ? new Date((Math.floor(Date.now() / every) + 1) * every) : null
+      return { enqueued: 0, attempted: 0, nextSlotAt }
+    },
     runMaintenanceTick: async (_config: unknown, opts: { prune?: boolean } = {}) => {
       plan.maintenance?.push(opts.prune !== false)
       return { requeued: 0, terminated: 0, pruned: 0 }
     },
     dispatchPass: async () => {
       plan.dispatchCalls = (plan.dispatchCalls ?? 0) + 1
+      plan.passTimes?.push(Date.now())
       return { claimed: plan.claimed, saturated: true }
     },
     startJobsById: async () => {
@@ -182,6 +218,15 @@ describe('pooled job worker', () => {
     expect(handle.status().claimed).toBeGreaterThanOrEqual(2)
   })
 
+  it("spreads each workspace's schedule by its own key", async () => {
+    // Every loop evaluates the same crons. Keyed by workspace, each loop runs a
+    // slot at its own offset instead of the whole fleet starting it at once.
+    vi.useFakeTimers()
+    const plan: ClaimPlan = { claimed: 0, scheduleStates: [] }
+    handle = await bootJobWorker(plan)
+    expect(plan.scheduleStates).toEqual([{ spreadKey: WORKSPACE_KEY }])
+  })
+
   it('reaps leases on the reap clock and prunes only on the slower prune clock', async () => {
     // Retention is measured in days; pruning on every reap tick scans every
     // workspace's terminal rows for nothing. Only the first tick of each prune
@@ -198,6 +243,104 @@ describe('pooled job worker', () => {
 
     await vi.advanceTimersByTimeAsync(REAP_MS * 2)
     expect(plan.maintenance!.filter(Boolean)).toHaveLength(2)
+  })
+
+  describe('an idle loop', () => {
+    // Every wake is a connection to the workspace's database, and on a pooled
+    // fleet one the pooler has closed is a new server process. An idle loop
+    // should wake when it has something to do, not on a timer of its own as well.
+    const T0 = new Date('2026-01-05T12:00:00.000Z').getTime()
+
+    function idleAt(time: number) {
+      vi.useFakeTimers()
+      vi.setSystemTime(time)
+    }
+
+    it('wakes at its next schedule slot, not at the poll after it', async () => {
+      idleAt(T0)
+      const plan: ClaimPlan = { claimed: 0, pollMs: 60_000, slotEveryMs: 10_000, passTimes: [] }
+      handle = await bootJobWorker(plan)
+      expect(plan.passTimes).toEqual([T0])
+
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(plan.passTimes).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(plan.passTimes).toEqual([T0, T0 + 10_000])
+      expect(plan.ticks).toBe(2)
+    })
+
+    it('never sleeps past the poll interval', async () => {
+      idleAt(T0)
+      const plan: ClaimPlan = { claimed: 0, pollMs: 1_000, slotEveryMs: 60_000, passTimes: [] }
+      handle = await bootJobWorker(plan)
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(plan.passTimes).toEqual([T0, T0 + 1_000, T0 + 2_000, T0 + 3_000])
+    })
+
+    it('wakes when a delayed job falls due, before its slot or poll', async () => {
+      idleAt(T0)
+      const plan: ClaimPlan = {
+        claimed: 0,
+        pollMs: 60_000,
+        slotEveryMs: 60_000,
+        pendingAt: T0 + 3_000,
+        passTimes: [],
+      }
+      handle = await bootJobWorker(plan)
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(plan.passTimes).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(plan.passTimes).toEqual([T0, T0 + 3_000])
+    })
+
+    it('does not ask about delayed jobs when it polls often anyway', async () => {
+      idleAt(T0)
+      const plan: ClaimPlan = {
+        claimed: 0,
+        pollMs: 1_000,
+        slotEveryMs: 60_000,
+        pendingAt: T0 + 30_000,
+        lookAheads: 0,
+      }
+      handle = await bootJobWorker(plan)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(plan.dispatchCalls).toBeGreaterThanOrEqual(5)
+      expect(plan.lookAheads).toBe(0)
+    })
+
+    it('backs off the poll interval after a failed pass instead of retrying at once', async () => {
+      // A pass that throws before its tick moved the slot forward leaves the slot
+      // in the past. Sleeping until it would retry a failing database in a loop.
+      idleAt(T0)
+      const plan: ClaimPlan = { claimed: 0, pollMs: 5_000, slotEveryMs: 60_000, tickThrows: true }
+      handle = await bootJobWorker(plan)
+      expect(plan.ticks).toBe(1)
+      await vi.advanceTimersByTimeAsync(4_999)
+      expect(plan.ticks).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(plan.ticks).toBe(2)
+    })
+
+    it("reaps on every slot's pass, even after a pass that started late", async () => {
+      idleAt(T0)
+      const plan: ClaimPlan = {
+        claimed: 0,
+        pollMs: 60_000,
+        reapMs: 60_000,
+        slotEveryMs: 60_000,
+        maintenance: [],
+        // The first pass opens its scope 300ms late; the next starts on its slot.
+        scopeDelaysMs: [300],
+        passTimes: [],
+      }
+      handle = await bootJobWorker(plan)
+      await vi.advanceTimersByTimeAsync(300)
+      expect(plan.maintenance).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(60_000 - 300)
+      expect(plan.passTimes).toEqual([T0 + 300, T0 + 60_000])
+      expect(plan.maintenance).toHaveLength(2)
+    })
   })
 
   describe('dormancy', () => {

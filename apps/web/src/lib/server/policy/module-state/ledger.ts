@@ -1155,13 +1155,28 @@ export const MODULE_STATE_LEDGER: readonly LedgerEntry[] = [
   },
   {
     file: 'apps/web/src/lib/server/jobs/runner.ts',
+    name: 'fleetInFlight',
+    category: 'process-lifetime',
+    owner: 'Piece 6 (saas/queue-lease)',
+    reason:
+      'Slots reserved by claims in flight or held by running jobs, per queue name, across ' +
+      'every workspace pool in this process - what fleetConcurrency caps. Being shared ' +
+      'across workspaces is its purpose: a ' +
+      'per-workspace count would cap nothing a fleet does at once. It holds queue names and ' +
+      'counts only, never a payload or a workspace identity, so a cross-workspace read reveals ' +
+      'nothing but how busy the process is.',
+  },
+  {
+    file: 'apps/web/src/lib/server/jobs/runner.ts',
     name: 'cronCache',
     category: 'content-addressed',
     owner: 'Piece 6 (saas/queue-lease)',
     reason:
-      'Parsed cron expressions keyed by the pattern string. Parsing is a pure function of that ' +
-      'string, so a cross-workspace hit returns exactly what the requesting workspace would have ' +
-      'parsed - and the patterns are compile-time constants in jobs/definitions.ts anyway.',
+      'Parsed cron expressions and their slot spread windows, keyed by the pattern string. ' +
+      'Both are pure functions of that string, so a cross-workspace hit returns exactly what the ' +
+      'requesting workspace would have computed - and the patterns are compile-time constants in ' +
+      'jobs/definitions.ts anyway. The per-workspace offset is derived from the spread key at ' +
+      'call time and is never cached here.',
   },
   {
     file: 'apps/web/src/lib/server/jobs/job-queue.ts',

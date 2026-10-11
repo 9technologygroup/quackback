@@ -128,8 +128,32 @@ calls `claimById` (same lease stamp as `claimJobs`) and `runJob`. Cloud
 claim. A parked workspace's loop is started, then the id is claimed.
 
 The poll loop is the **sweeper**, not how Slack work starts. Lost HTTP, a
-full concurrency slot, a future `run_at`, or a worker restart still drain on
+full concurrency slot, or a worker restart still drain on
 `JOB_POLL_INTERVAL_MS`. There is no second scheduler.
+
+### An idle loop wakes when it has something to do
+
+After a pass that claims nothing, a loop sleeps until the first of: its next
+schedule slot, the `run_at` of its next delayed job, or the poll interval. The
+poll interval is a ceiling, not a beat.
+
+Under pooled tenancy that is a resource decision, not a latency one. Every wake
+is a connection to the workspace's database, and a connection the pooler has
+closed since the last one is a new server process with its own memory. A loop
+that slept the poll interval whatever its slots were woke on its poll and again
+on its slot; every loop booted at the same moment polled in step with the
+others, so the whole fleet's connections opened together and closed together.
+Sleeping to the slot puts each loop's wake at its own offset (§6), so they are
+spread across the slot instead.
+
+- A delayed job runs at its `run_at` instead of at the poll after it. The loop
+  asks for the next one only when it is about to sleep for more than a few
+  seconds; a loop that polls every second finds it anyway.
+- A pass that fails sleeps the whole poll interval. Its schedule may not have
+  moved past the slot it was working on, and sleeping to that slot would retry
+  a failing database at once, for ever.
+- The reaper and prune ride whichever pass comes first after they fall due. They
+  never wake a loop on their own.
 
 **LISTEN/NOTIFY is not the doorbell.** It does not survive a transaction-mode
 pooler (measured: pooled endpoint delivered 0/N while `pg_listening_channels()`
@@ -161,6 +185,34 @@ a per-workspace database.
 rather than falling back to a permissive reading. A mis-parsed cron expression
 changes a sweep's cadence with no error anywhere, which is not a failure mode a
 scheduler should be able to have.
+
+### A fleet does not start a slot on the same second
+
+Every pooled workspace loop evaluates the same crons, so a plain slot is a
+fleet-wide starting gun: an hourly sweep starts in every workspace at once and
+the shared database takes the whole fleet's work in one burst. Measured on a
+fleet of about two hundred workspaces, every hourly `analytics` refresh started
+inside one minute and the database ran out of memory.
+
+So a pooled loop's scheduler carries a **spread key** (its workspace key) and
+evaluates each cron a fixed offset behind real time. `scheduleOffsetMs` derives
+the offset from a stable hash of the key, scaled into the
+schedule's spread window: the smallest gap between two of its slots, capped at an hour.
+A per-minute sweep therefore starts somewhere inside its minute, a five-minutely
+one inside its five minutes, and an hourly or daily one somewhere inside an
+hour.
+
+- **The slot does not move.** The dedupe key and `scheduledFor` are the slot's
+  instant, so each slot still runs once, and a replica that computes a
+  different offset (or none) dedupes against this one.
+- **The offset is stable**, so a workspace starts a schedule at the same point
+  in every slot and replicas agree without coordinating.
+- **A workspace's schedules on one cadence share its offset**, so its loop
+  still wakes once a minute for its per-minute sweeps. Each tick asks every
+  schedule's gate, and some gates query the database; an offset per schedule
+  would multiply those queries across the fleet.
+- **A single-workspace install has no spread key** and runs on the cron's own
+  minute, exactly as before.
 
 ### The scheduler's memory is per workspace, and that is structural
 
@@ -241,7 +293,7 @@ has not loaded the full application config.
 
 | Variable                   | Default | Meaning                                                                                                                                                                                 |
 | -------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `JOB_POLL_INTERVAL_MS`     | 1000    | How often each workspace loop claims work                                                                                                                                               |
+| `JOB_POLL_INTERVAL_MS`     | 1000    | Longest an idle workspace loop sleeps. It wakes sooner for its next schedule slot or a delayed job (§5). Under pooled tenancy, a minute keeps each loop to one wake per slot            |
 | `JOB_BATCH_SIZE`           | 5       | Jobs claimed per drain pass                                                                                                                                                             |
 | `JOB_REAP_INTERVAL_MS`     | 15000   | How often expired leases are adjudicated                                                                                                                                                |
 | `JOB_PRUNE_INTERVAL_MS`    | 1 hour  | How often terminal rows past retention are dropped (a per-workspace table scan; keep it slow)                                                                                           |
@@ -372,6 +424,7 @@ went stale the moment a queue moved.
 | `events`                        | —              | 5           | 6        | 60s   |
 | `integration-sync`              | —              | 5           | 6        | 90s   |
 | `integration-sync-sweep`        | `* * * * *`    | 1           | 1        | 60s   |
+| `integration-sync-retention`    | `45 2 * * *`   | 1           | 3        | 60s   |
 | `event-dispatch`                | —              | 5           | 10       | 60s   |
 | `event-reactions`               | —              | 1           | 3        | 60s   |
 | `event-summaries`               | —              | 2           | 3        | 60s   |
@@ -449,6 +502,21 @@ to the **sum of every definition's `concurrency`**, which is exactly what the
 reference allowed (one `Worker` per queue at its own concurrency), so the
 default binds nothing. It exists because a pooled process runs one loop per
 workspace, and an operator sizing connections cares about the product.
+
+**`fleetConcurrency` is the cap across workspaces.** Every other cap here binds
+one workspace's loop, so a pooled process can run a queue's `concurrency` times
+the fleet. A definition that sets `fleetConcurrency` (`analytics` does) is held
+to that many running jobs across every loop in the process. A claim reserves
+the slots it asks for before it goes to the database and gives back the ones
+it did not fill when it returns; each job it starts holds its slot until it
+settles. Counting only jobs already running let loops that claimed together
+each take the last free slot, and loops claim together exactly when the cap
+matters: on a worker start, or after a database restart, when every loop finds
+the same backlog at once. A claim in flight therefore holds its slots until it
+returns, so a slow database defers capped work, which is the backpressure a
+heavy queue wants. Jobs over the cap stay `pending`, unclaimed, so no lease
+runs down while they wait. The cap is per process: two worker replicas allow
+twice as many.
 
 ### What the move fixed rather than preserved
 

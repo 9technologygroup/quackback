@@ -208,9 +208,19 @@ export async function onIntegrationSyncFailure(
     )
 }
 
+/** Hands a sync whose worker died mid-flight back to the queue, or to review. */
 export async function sweepIntegrationSync(): Promise<void> {
   await recoverExpiredSyncs()
-  // Detailed resolved history expires, but compact operation identity is permanent.
+}
+
+/**
+ * Detailed resolved history expires, but compact operation identity is permanent.
+ *
+ * Daily rather than on the recovery sweep's minute: history becomes eligible at
+ * ninety days, so a minute's precision bought nothing but a scan of every
+ * workspace's sync history 1,440 times a day.
+ */
+export async function pruneIntegrationSyncHistory(): Promise<void> {
   await db.execute(sql`DELETE FROM integration_sync_attempts WHERE operation_id IN (
     SELECT id FROM integration_sync_operations WHERE state IN ('succeeded', 'cancelled', 'superseded') AND finished_at < now() - interval '90 days')`)
   await db.execute(sql`UPDATE integration_sync_operations SET payload = NULL, result = NULL

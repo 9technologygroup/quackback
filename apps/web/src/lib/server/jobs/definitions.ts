@@ -52,7 +52,11 @@ export interface JobDefinition {
    * may take".
    */
   leaseMs?: number
-  /** Delay before the first retry; doubled per attempt. Ignored when maxAttempts is 1. */
+  /**
+   * Delay before the first retry; doubled per attempt, plus up to half again at
+   * random so jobs that failed together do not retry together. Ignored when
+   * maxAttempts is 1.
+   */
   retryBackoffMs?: number
   /**
    * Per-attempt backoff, when a doubling curve is not what the queue had.
@@ -73,6 +77,16 @@ export interface JobDefinition {
    * order (see runner.ts), so a handler must not depend on it for correctness.
    */
   concurrency?: number
+  /**
+   * How many jobs from this queue may run at once across every workspace loop
+   * in this process. Unset means no cap beyond `concurrency` per loop.
+   *
+   * `concurrency` binds per workspace, so a pooled process can run
+   * `concurrency` times the fleet. A queue whose work is heavy on the shared
+   * database sets this so the fleet's runs cannot all land at once. Jobs over
+   * the cap stay `pending`, unclaimed, until a slot frees.
+   */
+  fleetConcurrency?: number
   /** How long succeeded rows are kept. Defaults to the process-wide setting. */
   retentionMs?: number
   /**
@@ -308,9 +322,16 @@ export const JOB_DEFINITIONS: readonly JobDefinition[] = [
       ),
   },
   {
+    // Whole-table aggregates in every workspace's database, all against the
+    // one shared server, so the fleet runs a few at a time rather than all of
+    // them inside the hour's first minute.
     name: 'analytics',
     cron: '0 * * * *',
+    fleetConcurrency: 4,
     maxAttempts: 3,
+    // Past a database restart's recovery, not inside it. The next slot is an
+    // hour away, so a late retry costs nothing.
+    retryBackoffMs: 60_000,
     handler: () =>
       import('@/lib/server/domains/analytics/analytics-queue').then((m) => m.runAnalyticsRefresh),
   },
@@ -349,6 +370,24 @@ export const JOB_DEFINITIONS: readonly JobDefinition[] = [
     concurrency: 1,
     handler: () =>
       import('@/lib/server/integrations/sync/sweep-queue').then((m) => m.sweepIntegrationSync),
+    // Only a running sync can need recovering. Most workspaces have none, and
+    // without the gate each of them ran this job every minute to find so.
+    cronEnabled: () =>
+      import('@/lib/server/integrations/sync/sweep-queue').then((m) =>
+        m.isIntegrationSyncSweepDue()
+      ),
+  },
+  {
+    name: 'integration-sync-retention',
+    cron: '45 2 * * *',
+    concurrency: 1,
+    // Retried like the other retention schedules: its statements are safe to
+    // repeat, and one attempt would leave a transient failure for a day.
+    maxAttempts: 3,
+    handler: () =>
+      import('@/lib/server/integrations/sync/retention-queue').then(
+        (m) => m.pruneIntegrationSyncHistory
+      ),
   },
   {
     // Drains one job-owned outbox row. The row is written in emit()'s
@@ -609,6 +648,11 @@ export function concurrencyFor(def: JobDefinition): number {
   return def.concurrency ?? DEFAULT_CONCURRENCY
 }
 
+/** The process-wide cap for a queue; unlimited when the definition sets none. */
+export function fleetConcurrencyFor(def: JobDefinition): number {
+  return def.fleetConcurrency ?? Number.POSITIVE_INFINITY
+}
+
 /**
  * Backoff for the next attempt.
  *
@@ -617,10 +661,18 @@ export function concurrencyFor(def: JobDefinition): number {
  * definition may supply its own curve instead — `events` does, because its
  * BullMQ `backoffStrategy` was not geometric.
  */
-export function retryBackoffMs(def: JobDefinition, attemptsMade: number): number {
+export function retryBackoffMs(
+  def: JobDefinition,
+  attemptsMade: number,
+  random: () => number = Math.random
+): number {
   if (def.backoffMs) return def.backoffMs(attemptsMade)
   const base = def.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS
-  return base * Math.pow(2, Math.max(0, attemptsMade - 1))
+  const delay = base * Math.pow(2, Math.max(0, attemptsMade - 1))
+  // Jobs that fail together (a database restart fails every running job at
+  // once) would otherwise retry together and meet the same overload. Each
+  // retry lands somewhere in [delay, 1.5 x delay): never sooner than the curve.
+  return Math.floor(delay * (1 + random() / 2))
 }
 
 /**

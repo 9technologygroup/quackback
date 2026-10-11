@@ -8,7 +8,15 @@
  * that requirement is tested as hard as the happy path.
  */
 import { describe, expect, it } from 'vitest'
-import { latestSlotAtOrBefore, matchesCron, nextSlotAfter, parseCron, slotKey } from '../cron'
+import {
+  MAX_SLOT_SPREAD_MS,
+  latestSlotAtOrBefore,
+  matchesCron,
+  nextSlotAfter,
+  parseCron,
+  slotKey,
+  slotSpreadMs,
+} from '../cron'
 
 /** Local time, because the schedules are local time — see cron.ts. */
 function at(y: number, mo: number, d: number, h: number, mi: number, s = 0): Date {
@@ -131,5 +139,29 @@ describe('slotKey', () => {
     const a = new Date('2026-11-01T05:30:00Z')
     const b = new Date('2026-11-01T06:30:00Z')
     expect(slotKey('probe', a)).not.toBe(slotKey('probe', b))
+  })
+})
+
+describe('slotSpreadMs', () => {
+  const MINUTE = 60_000
+  const spread = (expr: string) => slotSpreadMs(parseCron(expr))
+
+  it('is the gap of an evenly spaced schedule, capped at an hour', () => {
+    expect(spread('* * * * *')).toBe(MINUTE)
+    expect(spread('*/5 * * * *')).toBe(5 * MINUTE)
+    expect(spread('0 * * * *')).toBe(60 * MINUTE)
+    expect(spread('0 3 * * *')).toBe(MAX_SLOT_SPREAD_MS)
+  })
+
+  it('is the smallest gap of an uneven schedule, not whichever gap comes first', () => {
+    // Five minutes apart at noon, a day apart otherwise. Spread by the day's
+    // gap, a late workspace's 12:00 would start after 12:05 was due.
+    expect(spread('0,5 12 * * *')).toBe(5 * MINUTE)
+  })
+
+  it('finds a narrow gap that spans midnight', () => {
+    // 00:05, 00:55, 23:05, 23:55: fifty minutes apart within an hour, ten
+    // across midnight.
+    expect(spread('5,55 0,23 * * *')).toBe(10 * MINUTE)
   })
 })

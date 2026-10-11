@@ -49,7 +49,7 @@ import {
   enqueueUsageReport,
   isHostedBillingConfigured,
 } from '@/lib/server/domains/billing/usage-report'
-import { earliestPendingJobAt, isMissingJobQueue } from './job-queue'
+import { earliestPendingJobAt, isMissingJobQueue, nextPendingJobAt } from './job-queue'
 import {
   awaitPool,
   createJobPool,
@@ -74,6 +74,47 @@ const WORKSPACE_REFRESH_MS = 60_000
 
 /** Sentinel workspace id for a single-workspace install. Never a real workspace id. */
 const SINGLE = '__single__'
+
+/**
+ * A loop that will be back within this long does not ask when the next delayed
+ * job is due. A short poll finds it anyway, and the question would be one more
+ * query on every pass of a loop that polls every second.
+ */
+const LOOKAHEAD_MIN_SLEEP_MS = 5_000
+
+/**
+ * When an idle loop next needs its database: its next schedule slot, the next
+ * delayed job, or the poll interval, whichever comes first.
+ *
+ * Under pooled tenancy every wake of every loop is a connection to that
+ * workspace's database, and one the pooler has closed is a new server process.
+ * A loop that slept the poll interval regardless of its slots woke on its poll
+ * and again on its slot. One that sleeps until whichever is due wakes once, at
+ * its own offset in the slot (§6 of JOBS.md), so the fleet's connections are
+ * spread evenly instead of arriving together.
+ */
+export function idleWakeAt(input: {
+  now: number
+  pollIntervalMs: number
+  nextScheduleAt: number
+  nextPendingAt: number | null
+}): number {
+  let at = Math.min(input.now + input.pollIntervalMs, input.nextScheduleAt)
+  if (input.nextPendingAt !== null) at = Math.min(at, input.nextPendingAt)
+  return Math.max(input.now, at)
+}
+
+/**
+ * How much earlier than its interval a reap may run.
+ *
+ * A loop that wakes on its schedule slot starts each pass a slot after the last,
+ * give or take how late each timer fired. Without slack a one-minute reap,
+ * measured from a pass that started a few milliseconds late, is not quite due on
+ * the next minute's pass and slips to the one after: it would run every two.
+ */
+function reapSlackMs(reapIntervalMs: number): number {
+  return Math.min(2_000, Math.floor(reapIntervalMs / 10))
+}
 
 interface WorkspaceLoop {
   workspaceKey: string
@@ -144,7 +185,8 @@ function emptyStats(): LoopStats {
 }
 
 /**
- * One workspace's loop: schedule → dispatch → wait the poll interval.
+ * One workspace's loop: schedule → dispatch → sleep until the next slot, the
+ * next delayed job or the poll interval, whichever is first (`idleWakeAt`).
  *
  * The loop does not wait for the work it started. `dispatchPass` hands claimed
  * jobs to a bounded pool and returns, so the next schedule tick happens on
@@ -166,7 +208,9 @@ function startLoop(opts: {
   let nextMaintenanceAt = 0
   let nextPruneAt = 0
   let descriptor: WorkspaceDescriptor | null = opts.workspace
-  const schedule = createScheduleState()
+  // A pooled loop spreads its slots by its workspace key; a single install runs
+  // on the minute.
+  const schedule = createScheduleState({ spreadKey: opts.workspace ? opts.workspaceKey : null })
   const pool = createJobPool()
   const handle: WorkspaceLoop = {
     workspaceKey: opts.workspaceKey,
@@ -274,6 +318,9 @@ function startLoop(opts: {
         await wait(retryAt ? Math.max(250, retryAt - Date.now()) : 1_000)
         continue
       }
+      // Null after a pass that failed: back off the whole poll interval rather
+      // than sleep to a slot the failed pass may not have moved past.
+      let wakeAt: number | null = null
       try {
         const now = Date.now()
         const result = await opts.scoped(async () => {
@@ -293,11 +340,12 @@ function startLoop(opts: {
             const maintenance = await runMaintenanceTick(opts.config, { prune })
             s.requeued += maintenance.requeued
             s.terminated += maintenance.terminated
-            nextMaintenanceAt = now + opts.config.reapIntervalMs
+            nextMaintenanceAt =
+              now + opts.config.reapIntervalMs - reapSlackMs(opts.config.reapIntervalMs)
             if (prune) nextPruneAt = now + opts.config.pruneIntervalMs
           }
-          if (stopped) return { claimed: 0, saturated: true }
-          return dispatchPass({
+          if (stopped) return { claimed: 0, saturated: true, nextPendingAt: null }
+          const dispatched = await dispatchPass({
             pool,
             config: opts.config,
             run: (job) => opts.scoped(() => runJob(job)),
@@ -308,6 +356,14 @@ function startLoop(opts: {
               handle.nudge()
             },
           })
+          // Asked on the connection this pass already holds, and only by a loop
+          // about to sleep long enough for a delayed job to fall due meanwhile.
+          const sleepsFor =
+            Math.min(nextScheduleAt, Date.now() + opts.config.pollIntervalMs) - Date.now()
+          const lookAhead =
+            (dispatched.claimed === 0 || dispatched.saturated) && sleepsFor > LOOKAHEAD_MIN_SLEEP_MS
+          const nextPendingAt = lookAhead ? await nextPendingJobAt() : null
+          return { ...dispatched, nextPendingAt }
         })
         if (!running || stopped) break
 
@@ -321,6 +377,12 @@ function startLoop(opts: {
           pendingNudge = false
           continue
         }
+        wakeAt = idleWakeAt({
+          now: Date.now(),
+          pollIntervalMs: opts.config.pollIntervalMs,
+          nextScheduleAt,
+          nextPendingAt: result.nextPendingAt?.getTime() ?? null,
+        })
       } catch (err) {
         if (isMissingJobQueue(err)) {
           if (!s.schemaMissing) {
@@ -335,7 +397,7 @@ function startLoop(opts: {
         }
       }
       if (!running || stopped) break
-      await wait(opts.config.pollIntervalMs)
+      await wait(wakeAt === null ? opts.config.pollIntervalMs : Math.max(0, wakeAt - Date.now()))
     }
   }
 

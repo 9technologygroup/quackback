@@ -168,6 +168,58 @@ export function nextSlotAfter(cron: ParsedCron, now: Date): Date | null {
   return null
 }
 
+/** The widest window one slot's starts are spread across. */
+export const MAX_SLOT_SPREAD_MS = 60 * MINUTE_MS
+
+/**
+ * How widely a fleet may spread its starts for one slot of this schedule: the
+ * smallest gap between consecutive slots, capped at an hour.
+ *
+ * Bounded by the gap so a delayed start still lands before the next slot is
+ * due, which keeps "every minute" meaning once a minute. Capped so a daily
+ * sweep spreads across an hour rather than across its whole day. A schedule
+ * with no second slot inside the search window gets the cap.
+ *
+ * The smallest gap, not any one gap: `0,5 12 * * *` is five minutes apart at
+ * noon and a day apart otherwise, and spreading its 12:00 slot by the day's gap
+ * would start it after 12:05 was due. The scan covers eight days, which takes
+ * in every day of the week and any schedule the evaluator supports (each fires
+ * at least once in its 48-hour search window), and stops at a minute, the
+ * smallest gap a cron can have. Those eight days are early January, when no
+ * time zone changes its clocks, so every gap is the schedule's own.
+ */
+export function slotSpreadMs(cron: ParsedCron): number {
+  const end = new Date(2026, 0, 9, 0, 0, 0).getTime()
+  let smallest = MAX_SLOT_SPREAD_MS
+  let slot = nextSlotAfter(cron, new Date(2026, 0, 1, 0, 0, 0))
+  while (slot && smallest > MINUTE_MS) {
+    const next = nextSlotAfter(cron, slot)
+    if (!next || next.getTime() > end) break
+    smallest = Math.min(smallest, next.getTime() - slot.getTime())
+    slot = next
+  }
+  return smallest
+}
+
+/**
+ * A stable fraction in `[0, 1)` for a key: FNV-1a with a murmur3 finaliser, so
+ * keys that differ only in their last characters still land far apart, and
+ * every replica derives the same value without coordinating.
+ */
+export function stableFraction(key: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  h ^= h >>> 16
+  h = Math.imul(h, 0x85ebca6b)
+  h ^= h >>> 13
+  h = Math.imul(h, 0xc2b2ae35)
+  h ^= h >>> 16
+  return (h >>> 0) / 0x1_0000_0000
+}
+
 /**
  * The dedupe key for one slot of one schedule.
  *
