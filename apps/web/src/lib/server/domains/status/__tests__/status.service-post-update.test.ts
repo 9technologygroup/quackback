@@ -2,11 +2,12 @@
  * postIncidentUpdate lifecycle side-effects for maintenance windows.
  *
  * Posting 'in_progress' on a still-'scheduled' window from the editor's
- * stepper is a real start: it must apply component statuses and pull the
- * start bound to now (job guards + uptime derivation read it), exactly like
- * the scheduler's handleMaintenanceStart, but with the admin's own words as
- * the single timeline row. Without this branch the window "starts" on the
- * timeline while every affected service still shows operational.
+ * stepper is a real start: it must apply component statuses and record the
+ * real start in started_at, exactly like the scheduler's
+ * handleMaintenanceStart, but with the admin's own words as the single
+ * timeline row. The planned window is left as planned. Without this branch
+ * the window "starts" on the timeline while every affected service still
+ * shows operational.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { StatusComponentId, StatusIncidentId } from '@quackback/ids'
@@ -21,9 +22,10 @@ const mockDispatchStatusEvent = vi.fn().mockResolvedValue(undefined)
 const mockEnqueueMaintenanceJobs = vi.fn()
 const mockCancelMaintenanceJobs = vi.fn()
 
-vi.mock('@/lib/server/db', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/server/db')>()),
-  db: {
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  // Lifecycle writes run in a transaction; the mock hands the same stubs in
+  // as the transaction handle.
+  const db = {
     query: {
       statusIncidents: { findFirst: (...args: unknown[]) => mockIncidentFindFirst(...args) },
       statusIncidentComponents: {
@@ -47,15 +49,28 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
       const chain: Record<string, unknown> = {}
       chain.from = () => chain
       chain.innerJoin = () => chain
-      chain.where = () => Promise.resolve([])
+      // A lifecycle write locks and re-reads the incident row first.
+      chain.where = () =>
+        Object.assign(Promise.resolve([]), {
+          for: async () => {
+            const row = await mockIncidentFindFirst()
+            return row ? [row] : []
+          },
+        })
       return chain
     },
-  },
-}))
+    transaction: (fn: (tx: unknown) => unknown) => fn(db),
+  }
+  return { ...(await importOriginal<typeof import('@/lib/server/db')>()), db }
+})
 
 vi.mock('../status.components', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../status.components')>()),
   reconcileComponentStatus: (...args: unknown[]) => mockReconcileComponentStatus(...args),
+  // The batch form recomputes each component in id order through the single one.
+  reconcileComponentStatuses: async (ids: Iterable<string>, ...rest: unknown[]) => {
+    for (const id of [...new Set(ids)].sort()) await mockReconcileComponentStatus(id, ...rest)
+  },
   dispatchStatusEvent: (...args: unknown[]) => mockDispatchStatusEvent(...args),
 }))
 
@@ -105,8 +120,9 @@ beforeEach(() => {
 })
 
 describe('postIncidentUpdate: scheduled maintenance started via the stepper', () => {
-  it('applies component statuses, pulls the start bound to now, and reschedules', async () => {
-    mockIncidentFindFirst.mockResolvedValue(maintenanceRow('scheduled'))
+  it('applies component statuses, records the real start, keeps the plan, and reschedules', async () => {
+    const row = maintenanceRow('scheduled')
+    mockIncidentFindFirst.mockResolvedValue(row)
 
     await postIncidentUpdate(
       INCIDENT_ID,
@@ -118,21 +134,29 @@ describe('postIncidentUpdate: scheduled maintenance started via the stepper', ()
     expect(mockInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'in_progress', body: 'Starting the failover now.' })
     )
-    // Old schedule's jobs cancelled; start bound rewritten to now.
+    // started_at takes the real start; the planned window is not rewritten,
+    // so the public page still shows it as scheduled.
     expect(mockCancelMaintenanceJobs).toHaveBeenCalled()
-    const set = mockUpdateSet.mock.calls[0][0] as { scheduledStartAt?: Date; status: string }
+    const set = mockUpdateSet.mock.calls[0][0] as Record<string, unknown>
     expect(set.status).toBe('in_progress')
-    expect(set.scheduledStartAt).toBeInstanceOf(Date)
-    expect(set.scheduledStartAt!.getTime()).toBeLessThanOrEqual(Date.now())
+    expect(set.startedAt).toBeInstanceOf(Date)
+    expect((set.startedAt as Date).getTime()).toBeLessThanOrEqual(Date.now())
+    expect(set).not.toHaveProperty('scheduledStartAt')
+    expect(set).not.toHaveProperty('scheduledEndAt')
     // Component statuses actually applied.
     expect(mockReconcileComponentStatus).toHaveBeenCalledWith(
       COMPONENT_ID,
       'maintenance',
-      INCIDENT_ID
+      INCIDENT_ID,
+      expect.anything()
     )
-    // Auto-complete job re-enqueued for the rewritten schedule.
+    // Auto-complete job re-enqueued for the planned end.
     expect(mockEnqueueMaintenanceJobs).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'in_progress' })
+      expect.objectContaining({
+        status: 'in_progress',
+        scheduledStartAt: row.scheduledStartAt,
+        scheduledEndAt: row.scheduledEndAt,
+      })
     )
   })
 

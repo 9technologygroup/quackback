@@ -40,6 +40,7 @@ import {
   useUpdateStatusIncidentTemplate,
 } from '@/lib/client/mutations/status'
 import { IMPACT_LABELS, type StatusIncidentImpact } from './status-admin-colors'
+import { useStatusAccess } from './status-access'
 
 function flattenComponents(data: StatusComponentsAdmin | undefined) {
   if (!data) return []
@@ -52,6 +53,9 @@ function flattenComponents(data: StatusComponentsAdmin | undefined) {
 
 export function StatusTemplatesView() {
   const { data: templates, isLoading } = useQuery(statusTemplateQueries.list())
+  // Publishers read templates (the composers insert them); only
+  // status_page.manage adds, edits or deletes them.
+  const { canManage } = useStatusAccess()
   const [editing, setEditing] = useState<StatusIncidentTemplate | null>(null)
   const [creating, setCreating] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<StatusIncidentTemplate | null>(null)
@@ -79,7 +83,9 @@ export function StatusTemplatesView() {
         searchValue={search}
         onSearchChange={setSearch}
         searchPlaceholder="Search templates..."
-        action={<NewButton noun="template" onClick={() => setCreating(true)} />}
+        action={
+          canManage ? <NewButton noun="template" onClick={() => setCreating(true)} /> : undefined
+        }
       />
 
       {isLoading ? (
@@ -104,7 +110,11 @@ export function StatusTemplatesView() {
             icon={DocumentDuplicateIcon}
             title="No templates yet"
             description="Templates prefill an incident's title, body, impact, and affected components."
-            action={<NewButton noun="template" onClick={() => setCreating(true)} />}
+            action={
+              canManage ? (
+                <NewButton noun="template" onClick={() => setCreating(true)} />
+              ) : undefined
+            }
             className="h-48"
           />
         </div>
@@ -125,24 +135,26 @@ export function StatusTemplatesView() {
                 ) : (
                   <span className="text-xs text-muted-foreground">Unused</span>
                 )}
-                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() => setEditing(t)}
-                  >
-                    <PencilSquareIcon className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => setDeleteTarget(t)}
-                  >
-                    <TrashIcon className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
+                {canManage && (
+                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => setEditing(t)}
+                    >
+                      <PencilSquareIcon className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      onClick={() => setDeleteTarget(t)}
+                    >
+                      <TrashIcon className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -153,24 +165,29 @@ export function StatusTemplatesView() {
         </div>
       )}
 
-      <TemplateFormDialog open={creating} onOpenChange={setCreating} mode="create" />
-      <TemplateFormDialog
-        open={!!editing}
-        onOpenChange={(o) => !o && setEditing(null)}
-        mode="edit"
-        template={editing}
-      />
+      {/* The form reads the full service list, which is manage-only too. */}
+      {canManage && (
+        <>
+          <TemplateFormDialog open={creating} onOpenChange={setCreating} mode="create" />
+          <TemplateFormDialog
+            open={!!editing}
+            onOpenChange={(o) => !o && setEditing(null)}
+            mode="edit"
+            template={editing}
+          />
 
-      <ConfirmDialog
-        open={!!deleteTarget}
-        onOpenChange={(o) => !o && setDeleteTarget(null)}
-        title="Delete template?"
-        description={`Are you sure you want to delete "${deleteTarget?.name}"? This cannot be undone.`}
-        confirmLabel="Delete"
-        variant="destructive"
-        isPending={deleteMutation.isPending}
-        onConfirm={confirmDelete}
-      />
+          <ConfirmDialog
+            open={!!deleteTarget}
+            onOpenChange={(o) => !o && setDeleteTarget(null)}
+            title="Delete template?"
+            description={`Are you sure you want to delete "${deleteTarget?.name}"? This cannot be undone.`}
+            confirmLabel="Delete"
+            variant="destructive"
+            isPending={deleteMutation.isPending}
+            onConfirm={confirmDelete}
+          />
+        </>
+      )}
     </div>
   )
 }

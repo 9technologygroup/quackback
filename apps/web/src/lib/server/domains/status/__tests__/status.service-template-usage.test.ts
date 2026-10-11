@@ -18,9 +18,10 @@ const mockDispatchStatusEvent = vi.fn().mockResolvedValue(undefined)
 const mockEnqueueMaintenanceJobs = vi.fn()
 const mockCancelMaintenanceJobs = vi.fn()
 
-vi.mock('@/lib/server/db', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/server/db')>()),
-  db: {
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  // Lifecycle writes run in a transaction; the mock hands the same stubs in
+  // as the transaction handle.
+  const db = {
     query: {
       statusIncidents: { findFirst: (...args: unknown[]) => mockIncidentFindFirst(...args) },
       statusIncidentComponents: {
@@ -44,11 +45,20 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
       const chain: Record<string, unknown> = {}
       chain.from = () => chain
       chain.innerJoin = () => chain
-      chain.where = () => Promise.resolve([])
+      // A lifecycle write locks and re-reads the incident row first.
+      chain.where = () =>
+        Object.assign(Promise.resolve([]), {
+          for: async () => {
+            const row = await mockIncidentFindFirst()
+            return row ? [row] : []
+          },
+        })
       return chain
     },
-  },
-}))
+    transaction: (fn: (tx: unknown) => unknown) => fn(db),
+  }
+  return { ...(await importOriginal<typeof import('@/lib/server/db')>()), db }
+})
 
 vi.mock('../status.components', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../status.components')>()),

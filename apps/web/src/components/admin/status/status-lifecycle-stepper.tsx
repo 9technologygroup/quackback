@@ -12,6 +12,7 @@ import { cn } from '@/lib/shared/utils'
 import {
   LIFECYCLE_COLORS,
   LIFECYCLE_LABELS,
+  isTerminalLifecycle,
   lifecycleValuesForKind,
   type StatusIncidentKind,
   type StatusIncidentLifecycle,
@@ -27,6 +28,9 @@ interface StatusLifecycleStepperProps {
   reachedAt?: Partial<Record<StatusIncidentLifecycle, string>>
   onSelect: (stage: StatusIncidentLifecycle) => void
   disabled?: boolean
+  /** False keeps a resolved/completed row closed: earlier stages, which
+   *  would reopen it, can't be picked (a logged past incident). */
+  canReopen?: boolean
 }
 
 function shortTime(iso: string): string {
@@ -44,9 +48,13 @@ export function StatusLifecycleStepper({
   reachedAt,
   onSelect,
   disabled,
+  canReopen = true,
 }: StatusLifecycleStepperProps) {
   const stages = lifecycleValuesForKind(kind)
   const currentIndex = stages.indexOf(current)
+  const closed = !canReopen && isTerminalLifecycle(current)
+  // Picking an earlier stage on a resolved/completed row reopens it.
+  const reopening = isTerminalLifecycle(current) && stages.indexOf(target) < currentIndex
 
   return (
     <div className="flex items-start" role="radiogroup" aria-label="Lifecycle stage">
@@ -55,6 +63,7 @@ export function StatusLifecycleStepper({
         const isCurrent = i === currentIndex
         const isTarget = stage === target && !isCurrent
         const color = LIFECYCLE_COLORS[stage]
+        const stageDisabled = disabled || (closed && i < currentIndex)
 
         return (
           <button
@@ -62,11 +71,11 @@ export function StatusLifecycleStepper({
             type="button"
             role="radio"
             aria-checked={stage === target}
-            disabled={disabled}
+            disabled={stageDisabled}
             onClick={() => onSelect(stage)}
             className={cn(
               'group relative flex-1 flex flex-col items-center gap-1.5 pb-0.5 outline-none',
-              disabled ? 'cursor-default' : 'cursor-pointer'
+              stageDisabled ? 'cursor-default' : 'cursor-pointer'
             )}
           >
             {/* connector to the next step */}
@@ -86,7 +95,7 @@ export function StatusLifecycleStepper({
                 'bg-card text-muted-foreground border-border',
                 (isDone || isCurrent) && 'text-white',
                 isTarget && 'ring-2 ring-ring/40',
-                !disabled && 'group-hover:border-foreground/40'
+                !stageDisabled && 'group-hover:border-foreground/40'
               )}
               style={
                 isDone
@@ -114,7 +123,9 @@ export function StatusLifecycleStepper({
               {isCurrent
                 ? 'current'
                 : isTarget
-                  ? 'next update posts here'
+                  ? reopening
+                    ? 'reopens here'
+                    : 'next update posts here'
                   : (isDone && reachedAt?.[stage] && shortTime(reachedAt[stage])) || ' '}
             </span>
           </button>

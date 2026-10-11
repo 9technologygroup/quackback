@@ -1,14 +1,19 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 
 let overview: unknown
+let overviewQuery: Record<string, unknown> = {}
+const refetch = vi.fn()
+let permissions: string[] = []
 
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: () => ({ data: overview, isLoading: false }),
+  useQuery: () => ({ data: overview, isLoading: false, refetch, ...overviewQuery }),
 }))
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
+  useRouteContext: ({ select }: { select: (context: unknown) => unknown }) =>
+    select({ permissions }),
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
     <a href={to}>{children}</a>
   ),
@@ -44,6 +49,7 @@ function makeOverview(overrides: Record<string, unknown> = {}) {
     enabled: true,
     topLevelStatus: 'operational',
     activeIncidents: [],
+    liveMaintenance: [],
     upcomingMaintenance: [],
     ungroupedComponents: [{ id: 'c1', name: 'Website', status: 'operational' }],
     groups: [],
@@ -57,6 +63,9 @@ function makeOverview(overrides: Record<string, unknown> = {}) {
 describe('<StatusOverviewView>', () => {
   beforeEach(() => {
     overview = makeOverview()
+    overviewQuery = {}
+    refetch.mockReset()
+    permissions = ['status_page.publish', 'status_page.manage']
   })
 
   it('renders the standard page header with its actions', () => {
@@ -104,6 +113,69 @@ describe('<StatusOverviewView>', () => {
     const label = screen.getByText('90-day uptime')
     expect(label.className).not.toContain('uppercase')
     expect(screen.getByText('99.50%')).toBeTruthy()
+  })
+
+  it('shows a running window as live, and only windows still ahead as upcoming', () => {
+    const window = (id: string, title: string, status: string) => ({
+      id,
+      kind: 'maintenance',
+      title,
+      status,
+      impact: 'maintenance',
+      scheduledStartAt: '2026-10-12T14:00:00.000Z',
+      scheduledEndAt: '2026-10-12T16:00:00.000Z',
+      autoStart: true,
+      autoComplete: true,
+      startedAt: '2026-10-12T13:00:00.000Z',
+      affectedComponents: [{ componentId: 'c1', name: 'Website' }],
+      updates: [{ id: `${id}-u`, body: 'Under way.', createdAt: '2026-10-12T13:00:00.000Z' }],
+    })
+    overview = makeOverview({
+      liveMaintenance: [window('m1', 'Database failover', 'in_progress')],
+      upcomingMaintenance: [window('m2', 'Network upgrade', 'scheduled')],
+    })
+    renderOverview()
+
+    const live = screen.getByText('Maintenance in progress').closest('section') as HTMLElement
+    expect(within(live).getByText('Database failover')).toBeTruthy()
+    expect(within(live).getByText('In progress')).toBeTruthy()
+    expect(within(live).getByRole('button', { name: 'Post update' })).toBeTruthy()
+    expect(within(live).queryByText('Network upgrade')).toBeNull()
+
+    const upcoming = screen.getByText('Upcoming maintenance').closest('section') as HTMLElement
+    expect(within(upcoming).getByText('Network upgrade')).toBeTruthy()
+    expect(within(upcoming).queryByText('Database failover')).toBeNull()
+    expect(within(upcoming).getByRole('button', { name: 'Start now' })).toBeTruthy()
+  })
+
+  it('shows no maintenance cards when no window is open', () => {
+    renderOverview()
+    expect(screen.queryByText('Maintenance in progress')).toBeNull()
+    expect(screen.queryByText('Upcoming maintenance')).toBeNull()
+  })
+
+  it('offers a publisher only what it can do: no settings, and no managing services', () => {
+    permissions = ['status_page.publish']
+    overview = makeOverview({ ungroupedComponents: [], groups: [] })
+    const { container } = renderOverview()
+
+    const header = container.querySelector('[data-page-header]') as HTMLElement
+    expect(header.textContent).toContain('Report incident')
+    expect(header.textContent).toContain('Schedule maintenance')
+    expect(screen.queryByRole('link', { name: 'Settings' })).toBeNull()
+    expect(screen.getByText('No services yet')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Add a service' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Manage' })).toBeNull()
+  })
+
+  it('says the overview failed to load, with a retry, instead of an endless skeleton', () => {
+    overview = undefined
+    overviewQuery = { isError: true, isFetching: false }
+    renderOverview()
+
+    expect(screen.getByText("Couldn't load the overview")).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(refetch).toHaveBeenCalledTimes(1)
   })
 
   it('offers to add the first service, without a paragraph', () => {

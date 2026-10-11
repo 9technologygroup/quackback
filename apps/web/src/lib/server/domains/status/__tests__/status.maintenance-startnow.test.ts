@@ -1,12 +1,12 @@
 /**
- * startMaintenanceNow: the admin "Start now" action for a scheduled window.
+ * startMaintenanceNow: the admin "Start now" for a scheduled window.
  *
- * handleMaintenanceStart's guard requires scheduledStartAt <= now, so an
- * early start MUST rewrite the start bound first — calling the handler
- * directly is a silent no-op, and a bare postIncidentUpdate('in_progress')
- * would skip component-status application entirely. This suite pins the
- * wrapper's contract: guard, old-job cancellation, bound rewrite, handler
- * delegation, and re-enqueue of the auto-complete job under the new hash.
+ * handleMaintenanceStart's guard waits for the planned start, so an early
+ * start can't go through it. The wrapper starts the window itself and keeps
+ * the plan: started_at records the real start, the scheduled bounds stay as
+ * planned (the public page shows that window), and completion stays armed for
+ * the planned end. This suite pins the wrapper's contract: guard, start-job
+ * cancellation, no bound rewrite, the start itself, and the completion job.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { StatusComponentId, StatusIncidentId } from '@quackback/ids'
@@ -21,9 +21,10 @@ const mockDispatchStatusEvent = vi.fn().mockResolvedValue(undefined)
 const mockScheduleDispatch = vi.fn()
 const mockCancelScheduledDispatch = vi.fn()
 
-vi.mock('@/lib/server/db', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/server/db')>()),
-  db: {
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  // Lifecycle writes run in a transaction; the mock hands the same stubs in
+  // as the transaction handle.
+  const db = {
     query: {
       statusIncidents: { findFirst: (...args: unknown[]) => mockIncidentFindFirst(...args) },
       statusIncidentComponents: {
@@ -33,7 +34,13 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
     update: () => ({
       set: (arg: unknown) => {
         mockIncidentUpdateSet(arg)
-        return { where: () => Promise.resolve() }
+        // The start/complete claim reads back the row it matched.
+        return {
+          where: () =>
+            Object.assign(Promise.resolve(), {
+              returning: async () => [{ ...(await mockIncidentFindFirst()), ...(arg as object) }],
+            }),
+        }
       },
     }),
     insert: () => ({
@@ -42,12 +49,20 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
         return Promise.resolve()
       },
     }),
-  },
-}))
+    // Settling started_at builds subqueries; the stubbed updates ignore them.
+    select: () => ({ from: () => ({ where: () => ({}) }) }),
+    transaction: (fn: (tx: unknown) => unknown) => fn(db),
+  }
+  return { ...(await importOriginal<typeof import('@/lib/server/db')>()), db }
+})
 
 vi.mock('../status.components', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../status.components')>()),
   reconcileComponentStatus: (...args: unknown[]) => mockReconcileComponentStatus(...args),
+  // The batch form recomputes each component in id order through the single one.
+  reconcileComponentStatuses: async (ids: Iterable<string>, ...rest: unknown[]) => {
+    for (const id of [...new Set(ids)].sort()) await mockReconcileComponentStatus(id, ...rest)
+  },
   dispatchStatusEvent: (...args: unknown[]) => mockDispatchStatusEvent(...args),
 }))
 
@@ -108,49 +123,55 @@ describe('startMaintenanceNow', () => {
     await expect(startMaintenanceNow(INCIDENT_ID)).rejects.toBeInstanceOf(NotFoundError)
   })
 
-  it('cancels old jobs, pulls the start bound to now, starts, and re-enqueues completion', async () => {
+  it('starts the window now, keeps its plan, and keeps completion at the planned end', async () => {
     const window = scheduledWindow()
-    // First fetch: the wrapper's guard. Second fetch: handleMaintenanceStart's
-    // own re-read, which must observe the rewritten (now-past) start bound.
-    mockIncidentFindFirst
-      .mockResolvedValueOnce(window)
-      .mockResolvedValueOnce({ ...window, scheduledStartAt: new Date(Date.now() - 1000) })
+    mockIncidentFindFirst.mockResolvedValue(window)
 
     await startMaintenanceNow(INCIDENT_ID)
 
-    // Old schedule's jobs cancelled under the OLD hash (original start time).
-    const oldHash = `${FUTURE_START.getTime()}-${FUTURE_END.getTime()}`
+    // The plan is unchanged, so the schedule hash is too: the pending start
+    // job is cancelled and the completion job keeps its id.
+    const hash = `${FUTURE_START.getTime()}-${FUTURE_END.getTime()}`
     expect(mockCancelScheduledDispatch).toHaveBeenCalledWith(
-      `status-maintenance-start--${INCIDENT_ID}--${oldHash}`
+      `status-maintenance-start--${INCIDENT_ID}--${hash}`
     )
-    expect(mockCancelScheduledDispatch).toHaveBeenCalledWith(
-      `status-maintenance-complete--${INCIDENT_ID}--${oldHash}`
+    expect(mockCancelScheduledDispatch).not.toHaveBeenCalledWith(
+      `status-maintenance-complete--${INCIDENT_ID}--${hash}`
     )
 
-    // Start bound rewritten before the handler ran.
-    const boundRewrite = mockIncidentUpdateSet.mock.calls[0][0] as { scheduledStartAt: Date }
-    expect(boundRewrite.scheduledStartAt.getTime()).toBeLessThanOrEqual(Date.now())
+    // The start is one write to the row: in_progress with the real start.
+    // Settling started_at after it writes nothing else, and the scheduled
+    // bounds are never rewritten.
+    const writes = mockIncidentUpdateSet.mock.calls.map(([w]) => w as Record<string, unknown>)
+    const [write, ...settles] = writes
+    expect(write).toMatchObject({ status: 'in_progress' })
+    expect((write.startedAt as Date).getTime()).toBeLessThanOrEqual(Date.now())
+    expect(settles.map((w) => Object.keys(w))).toEqual(settles.map(() => ['startedAt']))
+    for (const w of writes) {
+      expect(w).not.toHaveProperty('scheduledStartAt')
+      expect(w).not.toHaveProperty('scheduledEndAt')
+    }
 
-    // The handler actually started the window: in_progress + component
-    // reconcile + the auto timeline entry.
-    expect(mockIncidentUpdateSet.mock.calls[1][0]).toMatchObject({ status: 'in_progress' })
+    // The window actually started: component reconcile + the timeline entry.
     expect(mockReconcileComponentStatus).toHaveBeenCalledWith(
       COMPONENT_ID,
       'maintenance',
-      INCIDENT_ID
+      INCIDENT_ID,
+      expect.anything()
     )
     expect(mockUpdatesInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'in_progress' })
     )
 
-    // Auto-complete re-enqueued under the NEW hash (rewritten start).
-    const completeCall = mockScheduleDispatch.mock.calls.find((c) =>
-      (c[0] as { jobId: string }).jobId.startsWith(`status-maintenance-complete--${INCIDENT_ID}`)
+    // Completion re-armed under the same id, for the planned end.
+    const completeCall = mockScheduleDispatch.mock.calls.find(
+      (c) =>
+        (c[0] as { jobId: string }).jobId === `status-maintenance-complete--${INCIDENT_ID}--${hash}`
     )
     expect(completeCall).toBeDefined()
-    expect((completeCall![0] as { jobId: string }).jobId).not.toContain(
-      String(FUTURE_START.getTime())
-    )
+    const delayMs = (completeCall![0] as { delayMs: number }).delayMs
+    expect(delayMs).toBeLessThanOrEqual(FUTURE_END.getTime() - Date.now() + 1000)
+    expect(delayMs).toBeGreaterThan(FUTURE_END.getTime() - Date.now() - 60_000)
     // No start job re-enqueued: the window is already in progress.
     const startCall = mockScheduleDispatch.mock.calls.find((c) =>
       (c[0] as { jobId: string }).jobId.startsWith(`status-maintenance-start--${INCIDENT_ID}`)

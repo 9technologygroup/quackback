@@ -26,10 +26,13 @@ export function ModalFooter({
   onSubmit,
   submitDisabled,
 }: ModalFooterProps) {
+  // A long submit label ("Post update & reopen as Investigating") must never
+  // be clipped on a narrow screen: the actions wrap onto another line, and a
+  // label wider than the whole footer wraps inside its button.
   return (
-    <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-t bg-muted/30 shrink-0">
+    <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3 border-t bg-muted/30 shrink-0">
       <KeyboardHint keys={['Mod', 'Enter']} action={hintAction} />
-      <div className="flex items-center gap-2 sm:ml-0 ml-auto">
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 ml-auto">
         {children}
         <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={isPending}>
           Cancel
@@ -37,6 +40,7 @@ export function ModalFooter({
         <Button
           type={submitType}
           size="sm"
+          className="h-auto min-h-8 max-w-full whitespace-normal py-1.5 text-center"
           onClick={submitType === 'button' ? onSubmit : undefined}
           disabled={isPending || submitDisabled}
         >

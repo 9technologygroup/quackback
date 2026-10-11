@@ -8,10 +8,10 @@
  * posts updates. Posting is the sole public, timeline-visible act.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Loader2 } from 'lucide-react'
-import { Cog6ToothIcon, EnvelopeIcon } from '@heroicons/react/24/outline'
+import { Cog6ToothIcon, EnvelopeIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline'
 import type { StatusIncidentId } from '@quackback/ids'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -25,12 +25,19 @@ import { useFormatNumber } from '@/components/ui/format-number'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { ModalHeader } from '@/components/shared/modal-header'
 import { ModalFooter } from '@/components/shared/modal-footer'
+import { EmptyState } from '@/components/shared/empty-state'
 import { UrlModalShell } from '@/components/shared/url-modal-shell'
 import { useUrlModal } from '@/lib/client/hooks/use-url-modal'
 import { useKeyboardSubmit } from '@/lib/client/hooks/use-keyboard-submit'
 import { useDebouncedSave } from '@/lib/client/hooks/use-debounced-save'
 import { SidebarContainer, StatusSelect } from '@/components/shared/sidebar-primitives'
-import { statusIncidentQueries, type StatusIncidentAdminDetail } from '@/lib/client/queries/status'
+import {
+  statusComponentQueries,
+  statusIncidentQueries,
+  statusKeys,
+  type StatusComponentChoices,
+  type StatusIncidentAdminDetail,
+} from '@/lib/client/queries/status'
 import { useUpdateStatusIncident, usePostStatusIncidentUpdate } from '@/lib/client/mutations/status'
 import {
   AffectedComponentsField,
@@ -85,6 +92,69 @@ function detailsFromIncident(incident: StatusIncidentAdminDetail): DetailsState 
   }
 }
 
+type WindowFields = Pick<
+  DetailsState,
+  'scheduledStart' | 'scheduledEnd' | 'autoStart' | 'autoComplete'
+>
+
+function windowFields(details: DetailsState): WindowFields {
+  const { scheduledStart, scheduledEnd, autoStart, autoComplete } = details
+  return { scheduledStart, scheduledEnd, autoStart, autoComplete }
+}
+
+/** Equal, comparing dates by the instant they hold. */
+function sameValue(a: unknown, b: unknown): boolean {
+  return a instanceof Date && b instanceof Date ? a.getTime() === b.getTime() : a === b
+}
+
+/** The sidebar after a post answers: each window field takes the post's
+ *  value, unless it was changed while the post was in flight (it no longer
+ *  matches what was there when the post was sent), in which case the edit
+ *  stands. `edited` says whether any did. */
+function mergePostedWindow(
+  current: DetailsState,
+  sent: WindowFields,
+  posted: WindowFields
+): { next: DetailsState; edited: boolean } {
+  const next = { ...current }
+  let edited = false
+  for (const key of Object.keys(posted) as Array<keyof WindowFields>) {
+    if (sameValue(current[key], sent[key])) {
+      Object.assign(next, { [key]: posted[key] })
+    } else {
+      edited = true
+    }
+  }
+  return { next, edited }
+}
+
+/** A window's end must come after its start (the server rejects it too). */
+function windowInOrder(details: Pick<DetailsState, 'scheduledStart' | 'scheduledEnd'>): boolean {
+  const { scheduledStart, scheduledEnd } = details
+  return !scheduledStart || !scheduledEnd || scheduledEnd.getTime() > scheduledStart.getTime()
+}
+
+/** Id → name for every service in the picker's list. */
+function choiceNames(data: StatusComponentChoices | undefined): Array<[string, string]> {
+  if (!data) return []
+  return [...data.groups.flatMap((g) => g.components), ...data.ungrouped].map((c) => [c.id, c.name])
+}
+
+const SERVICE_LIST = new Intl.ListFormat('en', { style: 'long', type: 'conjunction' })
+
+/** "Webhooks was deleted and removed from this incident." Names that are no
+ *  longer known are counted instead. */
+export function deletedServicesNotice(names: Array<string | undefined>): string {
+  const known = names.filter((n): n is string => !!n)
+  const subject =
+    known.length === names.length
+      ? SERVICE_LIST.format(known)
+      : names.length === 1
+        ? 'A service'
+        : `${names.length} services`
+  return `${subject} ${names.length === 1 ? 'was' : 'were'} deleted and removed from this incident.`
+}
+
 function formatDuration(startIso: string, endIso: string | null): string {
   const start = new Date(startIso).getTime()
   const end = endIso ? new Date(endIso).getTime() : Date.now()
@@ -113,7 +183,13 @@ function StatusIncidentEditorContent({
   incidentId: StatusIncidentId
   onClose: () => void
 }) {
-  const { data: incident, isLoading } = useQuery(statusIncidentQueries.detail(incidentId))
+  const {
+    data: incident,
+    isLoading,
+    isError,
+    isFetching,
+    refetch,
+  } = useQuery(statusIncidentQueries.detail(incidentId))
   const updateMutation = useUpdateStatusIncident()
   const postMutation = usePostStatusIncidentUpdate()
 
@@ -137,12 +213,66 @@ function StatusIncidentEditorContent({
     }
   }, [incident, details])
 
+  // ── Services deleted while the editor is open ──
+  // The server leaves a deleted service out of the incident (its detail and
+  // every save response), but the sidebar, initialized once, would keep it
+  // ticked and every autosave would send it again only to be dropped. When
+  // the server's copy loses a service the sidebar still has, take it out of
+  // the sidebar too and say so. This is a sync, not an edit: nothing saves.
+  const [removedNotice, setRemovedNotice] = useState<string | null>(null)
+  const { data: serviceChoices } = useQuery(statusComponentQueries.choices())
+  const queryClient = useQueryClient()
+  const serviceNames = useRef(new Map<string, string>())
+  useEffect(() => {
+    for (const c of incident?.affectedComponents ?? []) {
+      serviceNames.current.set(c.componentId, c.name)
+    }
+  }, [incident])
+  useEffect(() => {
+    for (const [id, name] of choiceNames(serviceChoices)) serviceNames.current.set(id, name)
+  }, [serviceChoices])
+
+  function dropDeletedServices(ids: string[]) {
+    if (ids.length === 0) return
+    const gone = new Set(ids)
+    setDetails((prev) => {
+      if (!prev || !prev.affected.some((a) => gone.has(a.componentId))) return prev
+      const next = { ...prev, affected: prev.affected.filter((a) => !gone.has(a.componentId)) }
+      // A pending autosave would send the deleted service again.
+      if (detailsSave.hasPending()) detailsSave.queue(next)
+      return next
+    })
+    setRemovedNotice(deletedServicesNotice(ids.map((id) => serviceNames.current.get(id))))
+    // The picker's list is as stale as the incident was: reload it so the
+    // deleted service isn't offered again.
+    void queryClient.invalidateQueries({ queryKey: statusKeys.components() })
+  }
+
+  // A refetch, or a response merged into the cache: a service the server had
+  // linked before and no longer has.
+  const linkedOnServer = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    if (!incident) return
+    const linked = new Set<string>(incident.affectedComponents.map((c) => c.componentId))
+    const before = linkedOnServer.current
+    linkedOnServer.current = linked
+    if (!before || !details) return
+    dropDeletedServices(
+      details.affected.map((a) => a.componentId).filter((id) => before.has(id) && !linked.has(id))
+    )
+    // Only a change in the server's copy can drop a service.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incident])
+
   const { mutateAsync: saveDetailsAsync } = updateMutation
-  async function flushSave(next: DetailsState, kind: 'incident' | 'maintenance') {
-    if (next.title.trim().length === 0 || next.affected.length === 0) return
+  /** False when the save failed (and said so); true when it saved, or when
+   *  the details are incomplete and the sidebar says they aren't saved. */
+  async function flushSave(next: DetailsState, kind: 'incident' | 'maintenance'): Promise<boolean> {
+    if (next.title.trim().length === 0 || next.affected.length === 0) return true
+    if (kind === 'maintenance' && !windowInOrder(next)) return true
     setSaveState('saving')
     try {
-      await saveDetailsAsync({
+      const saved = await saveDetailsAsync({
         id: incidentId,
         title: next.title.trim(),
         ...(kind === 'incident'
@@ -158,24 +288,37 @@ function StatusIncidentEditorContent({
             }
           : {}),
       })
+      // A service sent but not linked in the response was deleted, including
+      // one ticked since the editor loaded.
+      const linked = new Set<string>(saved.affectedComponents.map((c) => c.componentId))
+      dropDeletedServices(next.affected.map((a) => a.componentId).filter((id) => !linked.has(id)))
       setSaveState('saved')
+      return true
     } catch (error) {
       setSaveState('idle')
       toast.error(error instanceof Error ? error.message : 'Failed to save details')
+      // The save may have failed on a service deleted since; the server's
+      // copy says which.
+      void refetch()
+      return false
     }
   }
 
   const kindRef = useRef<'incident' | 'maintenance'>('incident')
   if (incident) kindRef.current = incident.kind
+  // Saves sent and not answered yet. Posting waits for them (see handlePost).
+  const inFlightSaves = useRef(new Set<Promise<boolean>>())
   // Debounced autosave with flush-on-unmount (shared hook; same mechanism
   // as the status settings page's text fields).
-  const detailsSave = useDebouncedSave<DetailsState>(
-    (next) => void flushSave(next, kindRef.current),
-    800
-  )
+  const detailsSave = useDebouncedSave<DetailsState>((next) => {
+    const saving = flushSave(next, kindRef.current)
+    inFlightSaves.current.add(saving)
+    void saving.finally(() => inFlightSaves.current.delete(saving))
+  }, 800)
 
   function patchDetails(patch: Partial<DetailsState>) {
     if (!incident) return
+    if (patch.affected) setRemovedNotice(null)
     setDetails((prev) => {
       if (!prev) return prev
       const next = { ...prev, ...patch }
@@ -189,16 +332,53 @@ function StatusIncidentEditorContent({
   const effectiveTarget = target ?? currentStatus ?? 'investigating'
   const terminal = isTerminalLifecycle(effectiveTarget)
 
+  // The sidebar as last rendered, for handlePost to read after its awaits.
+  const detailsRef = useRef(details)
+  detailsRef.current = details
+
+  const posting = useRef(false)
   async function handlePost() {
-    if (!incident || !body.trim() || postMutation.isPending) return
+    if (!incident || !body.trim() || postMutation.isPending || posting.current) return
+    posting.current = true
     try {
-      await postMutation.mutateAsync({
+      // A sidebar edit still waiting out its debounce was made before this
+      // post. Save it now, and let any save already sent finish, so neither
+      // lands after the post and writes the window as it was before the
+      // transition (its start, or automation the post switched off) back.
+      // If one fails, don't post: the post would act on the details as the
+      // server still has them. The failed save has said so, and the update
+      // stays in the composer to post again.
+      detailsSave.flush()
+      const saved = await Promise.all(inFlightSaves.current)
+      if (saved.includes(false)) return
+      const sentWindow = detailsRef.current ? windowFields(detailsRef.current) : null
+      const posted = await postMutation.mutateAsync({
         id: incidentId,
         status: effectiveTarget,
         body: body.trim(),
         skipRestore: terminal ? !restore : undefined,
         ...(templateId ? { templateId } : {}),
       })
+      // Reopening or moving a window back can switch its automation off
+      // server-side. Take the server's window into the sidebar, or the next
+      // autosave would write stale values back; that includes a save queued
+      // by an edit made while the post was in flight. A window field the
+      // operator changed during the post keeps their value instead, and is
+      // saved on top of the post.
+      if (posted.kind === 'maintenance' && sentWindow) {
+        const postedWindow: WindowFields = {
+          scheduledStart: posted.scheduledStartAt ? new Date(posted.scheduledStartAt) : undefined,
+          scheduledEnd: posted.scheduledEndAt ? new Date(posted.scheduledEndAt) : undefined,
+          autoStart: posted.autoStart,
+          autoComplete: posted.autoComplete,
+        }
+        setDetails((prev) => {
+          if (!prev) return prev
+          const { next, edited } = mergePostedWindow(prev, sentWindow, postedWindow)
+          if (edited || detailsSave.hasPending()) detailsSave.queue(next)
+          return next
+        })
+      }
       setBody('')
       setRestore(true)
       setTemplateId(null)
@@ -206,10 +386,30 @@ function StatusIncidentEditorContent({
       toast.success('Update posted')
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to post update')
+    } finally {
+      posting.current = false
     }
   }
 
   const handleKeyDown = useKeyboardSubmit(handlePost)
+
+  // A failed load would otherwise spin forever; say so and offer a retry.
+  if (isError && !incident) {
+    return (
+      <EditorUnavailable
+        onClose={onClose}
+        title="Couldn't load this incident"
+        description="Something went wrong loading it. Check your connection and try again."
+        action={
+          <Button variant="outline" size="sm" onClick={() => void refetch()} disabled={isFetching}>
+            {isFetching ? 'Retrying…' : 'Try again'}
+          </Button>
+        }
+      />
+    )
+  }
+
+  if (incident === null) return <IncidentNotFound onClose={onClose} />
 
   if (isLoading || !incident || !details) {
     return (
@@ -233,7 +433,9 @@ function StatusIncidentEditorContent({
         ? 'Post update & resolve'
         : effectiveTarget === 'completed'
           ? 'Post update & complete'
-          : `Post update & mark as ${LIFECYCLE_LABELS[effectiveTarget]}`
+          : currentStatus && isTerminalLifecycle(currentStatus)
+            ? `Post update & reopen as ${LIFECYCLE_LABELS[effectiveTarget]}`
+            : `Post update & mark as ${LIFECYCLE_LABELS[effectiveTarget]}`
 
   const sidebar = (
     <EditorSidebarContent
@@ -241,6 +443,7 @@ function StatusIncidentEditorContent({
       details={details}
       onPatch={patchDetails}
       saveState={saveState}
+      removedNotice={removedNotice}
     />
   )
 
@@ -263,6 +466,8 @@ function StatusIncidentEditorContent({
             reachedAt={reachedAt}
             onSelect={setTarget}
             disabled={postMutation.isPending}
+            // A logged past incident stays history; the server refuses a reopen.
+            canReopen={!incident.backfilled}
           />
 
           <div className="mt-6">
@@ -306,9 +511,11 @@ function StatusIncidentEditorContent({
               <EnvelopeIcon className="h-3.5 w-3.5 mt-px shrink-0" />
               {incident.backfilled
                 ? 'Backfilled incident: subscribers were never emailed.'
-                : incident.notifiedAt
-                  ? 'Subscribers were emailed once, when this was published. Updates appear on the status page and in-app.'
-                  : 'Subscribers are emailed once at publish. Updates appear on the status page and in-app.'}
+                : !incident.notifySubscribers
+                  ? 'Subscribers were not emailed: "Email subscribers" was off when this was published. Updates appear on the status page and in-app.'
+                  : incident.notifiedAt
+                    ? 'Subscribers were emailed once, when this was published. Updates appear on the status page and in-app.'
+                    : 'Subscribers are emailed once at publish. Updates appear on the status page and in-app.'}
             </p>
           </div>
 
@@ -352,6 +559,41 @@ function StatusIncidentEditorContent({
   )
 }
 
+function IncidentNotFound({ onClose }: { onClose: () => void }) {
+  return (
+    <EditorUnavailable
+      onClose={onClose}
+      title="Incident not found"
+      description="It may have been deleted, or the link is wrong."
+    />
+  )
+}
+
+function EditorUnavailable({
+  onClose,
+  title,
+  description,
+  action,
+}: {
+  onClose: () => void
+  title: string
+  description: string
+  action?: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-col h-full">
+      <ModalHeader section="Incidents" title={title} onClose={onClose} hideCopyLink />
+      <EmptyState
+        icon={ExclamationTriangleIcon}
+        title={title}
+        description={description}
+        action={action}
+        className="flex-1"
+      />
+    </div>
+  )
+}
+
 // ─── Sidebar ────────────────────────────────────────────────────────────
 
 function SideSection({ label, children }: { label: string; children: React.ReactNode }) {
@@ -370,11 +612,14 @@ function EditorSidebarContent({
   details,
   onPatch,
   saveState,
+  removedNotice,
 }: {
   incident: StatusIncidentAdminDetail
   details: DetailsState
   onPatch: (patch: Partial<DetailsState>) => void
   saveState: 'idle' | 'saving' | 'saved'
+  /** Services the server dropped because they were deleted. */
+  removedNotice: string | null
 }) {
   const lifecycle = incident.status as StatusIncidentLifecycle
 
@@ -455,6 +700,11 @@ function EditorSidebarContent({
                 onChange={(d) => onPatch({ scheduledEnd: d })}
               />
             </div>
+            {!windowInOrder(details) && (
+              <p className="text-[11px] text-destructive">
+                The end must be after the start. Changes are not saved until it is.
+              </p>
+            )}
             <label className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
               Auto-start at scheduled time
               <Switch
@@ -479,6 +729,11 @@ function EditorSidebarContent({
           value={details.affected}
           onChange={(next) => onPatch({ affected: next })}
         />
+        {removedNotice && (
+          <p role="status" className="text-[11px] text-muted-foreground">
+            {removedNotice}
+          </p>
+        )}
         {details.affected.length === 0 && (
           <p className="text-[11px] text-destructive">
             Select at least one service. Changes are not saved until one is selected.
@@ -487,14 +742,21 @@ function EditorSidebarContent({
       </SideSection>
 
       <SideSection label="Started">
-        <p className="text-sm">
-          <TimeAgo date={incident.startedAt} />
-        </p>
-        <p className="text-[11px] text-muted-foreground">
-          {incident.resolvedAt
-            ? `Lasted ${formatDuration(incident.startedAt, incident.resolvedAt)}`
-            : `Ongoing for ${formatDuration(incident.startedAt, null)}`}
-        </p>
+        {incident.kind === 'maintenance' && incident.status === 'scheduled' ? (
+          // Until a window starts, startedAt only holds its planned start.
+          <p className="text-sm text-muted-foreground">Not started yet</p>
+        ) : (
+          <>
+            <p className="text-sm">
+              <TimeAgo date={incident.startedAt} />
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              {incident.resolvedAt
+                ? `Lasted ${formatDuration(incident.startedAt, incident.resolvedAt)}`
+                : `Ongoing for ${formatDuration(incident.startedAt, null)}`}
+            </p>
+          </>
+        )}
       </SideSection>
 
       <SideSection label="Title">
@@ -533,6 +795,9 @@ function IncidentTimeline({ incident }: { incident: StatusIncidentAdminDetail })
     [incident.updates]
   )
   const firstUpdateId = updates[updates.length - 1]?.id
+  // A row published with "Email subscribers" off is stamped notified_at too,
+  // without a send; the publisher's choice says whether it was emailed.
+  const emailed = incident.notifySubscribers && !!incident.notifiedAt && !incident.backfilled
 
   return (
     <div>
@@ -559,13 +824,18 @@ function IncidentTimeline({ incident }: { incident: StatusIncidentAdminDetail })
                 <TimeAgo date={u.createdAt} className="text-[11px] text-muted-foreground" />
               </div>
               <p className="text-sm text-foreground/90 mt-1 whitespace-pre-wrap">{u.body}</p>
-              {isPublishRow && incident.notifiedAt && !incident.backfilled && (
+              {isPublishRow && emailed && (
                 <span className="inline-flex items-center gap-1.5 mt-2 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                   <EnvelopeIcon className="h-3 w-3" />
                   Published
                   {typeof incident.notifiedSubscriberCount === 'number' &&
                     incident.notifiedSubscriberCount > 0 &&
                     ` · emailed ~${formatNumber(incident.notifiedSubscriberCount)} subscribers`}
+                </span>
+              )}
+              {isPublishRow && !incident.notifySubscribers && !incident.backfilled && (
+                <span className="inline-flex items-center gap-1.5 mt-2 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                  Published · subscribers not emailed
                 </span>
               )}
               {isPublishRow && incident.backfilled && (
@@ -594,14 +864,20 @@ export function StatusIncidentModal({
     searchParam: 'incident',
   })
 
+  // An id that isn't an incident id at all is as missing as an unknown one:
+  // say so, rather than opening an empty shell.
   return (
     <UrlModalShell
       open={open}
       onOpenChange={(o) => !o && close()}
       srTitle="Status incident"
-      hasValidId={!!validatedId}
+      hasValidId={open}
     >
-      {validatedId && <StatusIncidentEditorContent incidentId={validatedId} onClose={close} />}
+      {validatedId ? (
+        <StatusIncidentEditorContent incidentId={validatedId} onClose={close} />
+      ) : (
+        <IncidentNotFound onClose={close} />
+      )}
     </UrlModalShell>
   )
 }

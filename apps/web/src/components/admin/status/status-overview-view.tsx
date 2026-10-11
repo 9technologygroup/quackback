@@ -2,14 +2,20 @@
  * Admin Overview: the on-call landing view (Status Admin Redesign spec,
  * Phase 2). Answers "what does the public see right now" before anything
  * else: a banner mirroring the portal hero (same worst-of derivation, same
- * copy), active incidents with Post update one click away, upcoming
- * maintenance with Start now, service health, and stat tiles.
+ * copy), active incidents and maintenance in progress with Post update one
+ * click away, upcoming maintenance with Start now, service health, and stat
+ * tiles.
  */
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import { ArrowTopRightOnSquareIcon, CheckCircleIcon, PencilIcon } from '@heroicons/react/24/outline'
+import {
+  ArrowTopRightOnSquareIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
+  PencilIcon,
+} from '@heroicons/react/24/outline'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/shared/page-header'
 import { AnalyticsStatRow } from '@/components/admin/analytics/analytics-stat-row'
@@ -19,12 +25,14 @@ import { useFormatNumber } from '@/components/ui/format-number'
 import { TimeAgo } from '@/components/ui/time-ago'
 import { useLocalDateFormatter, type LocalDateFormatter } from '@/components/ui/local-date'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
+import { EmptyState } from '@/components/shared/empty-state'
 import { Route } from '@/routes/admin/status'
 import { statusOverviewQueries, type StatusOverview } from '@/lib/client/queries/status'
 import { useStartStatusMaintenanceNow } from '@/lib/client/mutations/status'
 import { LifecycleBadge } from './status-incident-fields'
 import { ReportIncidentDialog } from './status-report-incident-dialog'
 import { ScheduleMaintenanceDialog } from './status-schedule-maintenance-dialog'
+import { useStatusAccess } from './status-access'
 import { FormattedMessage } from 'react-intl'
 import { NewButton } from '@/components/shared/new-button'
 import {
@@ -40,7 +48,8 @@ import {
 type OverviewIncident = StatusOverview['activeIncidents'][number]
 
 export function StatusOverviewView() {
-  const { data, isLoading } = useQuery(statusOverviewQueries.get())
+  const { data, isLoading, isError, isFetching, refetch } = useQuery(statusOverviewQueries.get())
+  const { canPublish, canManage } = useStatusAccess()
 
   return (
     <div className="max-w-5xl w-full flex flex-col flex-1 min-h-0">
@@ -55,17 +64,45 @@ export function StatusOverviewView() {
                   View public page
                 </a>
               </Button>
-              <Button variant="ghost" size="sm" asChild>
-                <Link to="/admin/settings/status">Settings</Link>
-              </Button>
-              <ScheduleMaintenanceDialog />
-              <ReportIncidentDialog />
+              {canManage && (
+                <Button variant="ghost" size="sm" asChild>
+                  <Link to="/admin/settings/status">Settings</Link>
+                </Button>
+              )}
+              {canPublish && (
+                <>
+                  <ScheduleMaintenanceDialog />
+                  <ReportIncidentDialog />
+                </>
+              )}
             </div>
           }
         />
       </div>
 
-      {isLoading || !data ? <OverviewSkeleton /> : <OverviewBody data={data} />}
+      {data ? (
+        <OverviewBody data={data} />
+      ) : isError && !isLoading ? (
+        // A failed read would otherwise leave the skeleton up for good.
+        <EmptyState
+          icon={ExclamationTriangleIcon}
+          title="Couldn't load the overview"
+          description="Something went wrong loading it. Check your connection and try again."
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void refetch()}
+              disabled={isFetching}
+            >
+              {isFetching ? 'Retrying…' : 'Try again'}
+            </Button>
+          }
+          className="flex-1"
+        />
+      ) : (
+        <OverviewSkeleton />
+      )}
     </div>
   )
 }
@@ -86,6 +123,7 @@ function OverviewBody({ data }: { data: StatusOverview }) {
       <div className="grid grid-cols-1 lg:grid-cols-[1.55fr_1fr] gap-3 items-start">
         <div className="space-y-3 min-w-0">
           <ActiveIncidentsCard incidents={data.activeIncidents} />
+          <LiveMaintenanceCard windows={data.liveMaintenance} />
           <UpcomingMaintenanceCard windows={data.upcomingMaintenance} />
           <StatTiles data={data} />
         </div>
@@ -97,20 +135,23 @@ function OverviewBody({ data }: { data: StatusOverview }) {
 
 function DisabledNotice() {
   const navigate = useNavigate({ from: Route.fullPath })
+  const { canManage } = useStatusAccess()
   return (
     <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 flex items-center gap-3 text-sm">
       <span className="h-2 w-2 rounded-full bg-warning shrink-0" />
       <span className="text-foreground/90">
         The status page is turned off, so visitors can't see any of this yet.
       </span>
-      <Button
-        variant="outline"
-        size="sm"
-        className="ml-auto shrink-0"
-        onClick={() => void navigate({ to: '/admin/settings/status' })}
-      >
-        Settings
-      </Button>
+      {canManage && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto shrink-0"
+          onClick={() => void navigate({ to: '/admin/settings/status' })}
+        >
+          Settings
+        </Button>
+      )}
     </div>
   )
 }
@@ -217,8 +258,6 @@ function useGoToIncident() {
 }
 
 function ActiveIncidentsCard({ incidents }: { incidents: OverviewIncident[] }) {
-  const goToIncident = useGoToIncident()
-
   if (incidents.length === 0) {
     return (
       <CardShell title="Open incidents">
@@ -233,55 +272,96 @@ function ActiveIncidentsCard({ incidents }: { incidents: OverviewIncident[] }) {
   return (
     <CardShell title="Open incidents" action={<ViewAllLink view="open" />}>
       <div className="divide-y divide-border/40">
-        {incidents.map((incident) => {
-          const latest = incident.updates[incident.updates.length - 1]
-          const lifecycle = incident.status as StatusIncidentLifecycle
-          return (
-            <div key={incident.id} className="px-4 py-3 space-y-2">
-              <div className="flex items-start gap-2.5">
-                <span
-                  className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: IMPACT_COLORS[incident.impact] }}
-                />
-                <div className="flex-1 min-w-0">
-                  <button
-                    type="button"
-                    className="font-semibold text-sm text-left hover:underline underline-offset-2 line-clamp-1"
-                    onClick={() => goToIncident(incident.id)}
-                  >
-                    {incident.title}
-                  </button>
-                  <div className="flex items-center flex-wrap gap-2 text-[11px] text-muted-foreground mt-1">
-                    <LifecycleBadge status={lifecycle} />
-                    <Badge variant="outline" size="sm">
-                      {IMPACT_LABELS[incident.impact]}
-                    </Badge>
-                    {incident.affectedComponents.slice(0, 3).map((c) => (
-                      <span key={c.componentId}>{c.name}</span>
-                    ))}
-                    <span className="text-muted-foreground/50">·</span>
-                    <span>
-                      Started <TimeAgo date={incident.startedAt} locale="en" />
-                    </span>
-                  </div>
-                </div>
-                <Button size="sm" onClick={() => goToIncident(incident.id)}>
-                  Post update
-                </Button>
-              </div>
-              {latest && (
-                <p className="text-xs text-muted-foreground border-l-2 border-border pl-2.5 ml-1 line-clamp-2">
-                  <span className="text-foreground/80 font-medium">
-                    Latest update <TimeAgo date={latest.createdAt} locale="en" />:
-                  </span>{' '}
-                  {latest.body}
-                </p>
-              )}
-            </div>
-          )
-        })}
+        {incidents.map((incident) => (
+          <LiveRow
+            key={incident.id}
+            item={incident}
+            meta={
+              <Badge variant="outline" size="sm">
+                {IMPACT_LABELS[incident.impact]}
+              </Badge>
+            }
+          />
+        ))}
       </div>
     </CardShell>
+  )
+}
+
+/** Windows running now. They are live, like an open incident, so they read
+ *  like one: when they started and the latest update, with Post update to
+ *  hand. Nothing shows while none is running. */
+function LiveMaintenanceCard({ windows }: { windows: OverviewIncident[] }) {
+  const formatDate = useLocalDateFormatter()
+  if (windows.length === 0) return null
+
+  return (
+    <CardShell title="Maintenance in progress" action={<ViewAllLink view="maintenance" />}>
+      <div className="divide-y divide-border/40">
+        {windows.map((w) => (
+          <LiveRow
+            key={w.id}
+            item={w}
+            meta={
+              w.scheduledStartAt ? (
+                <span>
+                  Planned {formatWindow(formatDate, w.scheduledStartAt, w.scheduledEndAt)}
+                </span>
+              ) : null
+            }
+          />
+        ))}
+      </div>
+    </CardShell>
+  )
+}
+
+/** One live incident or running window: what it is, when it started, the
+ *  latest update, and Post update. */
+function LiveRow({ item, meta }: { item: OverviewIncident; meta?: React.ReactNode }) {
+  const goToIncident = useGoToIncident()
+  const latest = item.updates[item.updates.length - 1]
+  const lifecycle = item.status as StatusIncidentLifecycle
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <div className="flex items-start gap-2.5">
+        <span
+          className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
+          style={{ backgroundColor: IMPACT_COLORS[item.impact] }}
+        />
+        <div className="flex-1 min-w-0">
+          <button
+            type="button"
+            className="font-semibold text-sm text-left hover:underline underline-offset-2 line-clamp-1"
+            onClick={() => goToIncident(item.id)}
+          >
+            {item.title}
+          </button>
+          <div className="flex items-center flex-wrap gap-2 text-[11px] text-muted-foreground mt-1">
+            <LifecycleBadge status={lifecycle} />
+            {meta}
+            {item.affectedComponents.slice(0, 3).map((c) => (
+              <span key={c.componentId}>{c.name}</span>
+            ))}
+            <span className="text-muted-foreground/50">·</span>
+            <span>
+              Started <TimeAgo date={item.startedAt} locale="en" />
+            </span>
+          </div>
+        </div>
+        <Button size="sm" onClick={() => goToIncident(item.id)}>
+          Post update
+        </Button>
+      </div>
+      {latest && (
+        <p className="text-xs text-muted-foreground border-l-2 border-border pl-2.5 ml-1 line-clamp-2">
+          <span className="text-foreground/80 font-medium">
+            Latest update <TimeAgo date={latest.createdAt} locale="en" />:
+          </span>{' '}
+          {latest.body}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -301,6 +381,8 @@ function dayOfMonth(format: LocalDateFormatter, date: Date): string {
   return format(date, { day: 'numeric', numberingSystem: 'latn' }).replace(/\D/g, '')
 }
 
+/** Windows still ahead. One that has started is under Maintenance in
+ *  progress instead. */
 function UpcomingMaintenanceCard({ windows }: { windows: OverviewIncident[] }) {
   const formatDate = useLocalDateFormatter()
   const goToIncident = useGoToIncident()
@@ -422,18 +504,23 @@ function StatTiles({ data }: { data: StatusOverview }) {
 }
 
 function ServiceHealthCard({ data }: { data: StatusOverview }) {
+  // Services are managed on a page only status_page.manage can open.
+  const { canManage } = useStatusAccess()
   // A group with no services has nothing to report, so it is not listed.
   const groups = data.groups.filter((g) => g.components.length > 0)
   const hasAny = data.ungroupedComponents.length > 0 || groups.length > 0
 
   return (
-    <CardShell title="Service health" action={<ViewAllLink view="components" label="Manage" />}>
+    <CardShell
+      title="Service health"
+      action={canManage ? <ViewAllLink view="components" label="Manage" /> : undefined}
+    >
       {!hasAny ? (
         <div className="space-y-3 px-4 py-5">
           <div className="text-sm font-medium">
             <FormattedMessage id="admin.empty.status.title" defaultMessage="No services yet" />
           </div>
-          <AddServiceButton />
+          {canManage && <AddServiceButton />}
         </div>
       ) : (
         <div>

@@ -176,6 +176,8 @@ export interface StatusIncidentWithDetails {
   resolvedAt: Date | null
   backfilled: boolean
   notifiedAt: Date | null
+  /** The publisher's "Email subscribers" choice; false means never emailed. */
+  notifySubscribers: boolean
   createdBy: PrincipalId | null
   createdAt: Date
   updatedAt: Date
@@ -187,6 +189,11 @@ export interface ListStatusIncidentsParams {
   kind?: StatusIncidentKind
   /** 'active' = not resolved/completed; 'resolved' = resolved/completed. */
   state?: 'active' | 'resolved' | 'all'
+  /** Only rows in one of these lifecycle statuses, applied before `limit`. */
+  statuses?: Array<StatusIncidentStatus | StatusMaintenanceStatus>
+  /** 'newest' (default) = most recently created first, and pages by `cursor`;
+   *  'soonest' = earliest scheduled start first (none last), one page only. */
+  order?: 'newest' | 'soonest'
   /** Case-insensitive title match. */
   search?: string
   cursor?: string
@@ -271,6 +278,8 @@ export interface StatusSubscriptionCsvImportResult {
   imported: number
   /** Emails that didn't match an existing user account. */
   skipped: number
+  /** Matched people who had unsubscribed; left unsubscribed. */
+  optedOut: number
   total: number
 }
 
