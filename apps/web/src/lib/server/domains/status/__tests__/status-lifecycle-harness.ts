@@ -5,6 +5,7 @@
  * builders for services, incidents and maintenance windows. Each suite mocks
  * the global `db` onto the fixture's testDb itself.
  */
+import { vi } from 'vitest'
 import { createId, type PrincipalId, type StatusComponentId } from '@quackback/ids'
 import { createDbTestFixture, testDb } from '@/lib/server/__tests__/db-test-fixture'
 import { eq, principal, statusComponents, statusIncidents } from '@/lib/server/db'
@@ -85,4 +86,24 @@ export async function statusOf(id: StatusComponentId) {
     where: eq(statusComponents.id, id),
   })
   return row?.status
+}
+
+/** Runs `handler` with its first read of an incident answered from before
+ *  `other` ran: `handler` read the row, then `other` changed it, then
+ *  `handler` writes. */
+export async function raceOnStaleRead(handler: () => Promise<void>, other: () => Promise<void>) {
+  const read = testDb.query.statusIncidents
+  const realFindFirst = read.findFirst.bind(read)
+  const spy = vi.spyOn(read, 'findFirst').mockImplementationOnce((async (
+    config: Parameters<typeof realFindFirst>[0]
+  ) => {
+    const stale = await realFindFirst(config)
+    await other()
+    return stale
+  }) as never)
+  try {
+    await handler()
+  } finally {
+    spy.mockRestore()
+  }
 }

@@ -244,10 +244,22 @@ export async function reorderStatusComponents(ids: StatusComponentId[]): Promise
   if (!ids || ids.length === 0) {
     throw new ValidationError('VALIDATION_ERROR', 'Component IDs are required')
   }
-  await db
-    .update(statusComponents)
-    .set({ position: positionCaseSql(statusComponents.id, ids) })
-    .where(inArray(statusComponents.id, ids))
+  // Locked in id order first, like a lifecycle recompute takes them (see
+  // reconcileComponentStatus). A bare UPDATE locks rows in whatever order the
+  // database scans them, so against a recompute sharing two or more of these
+  // services each could hold one the other waits for.
+  await db.transaction(async (tx) => {
+    await tx
+      .select({ id: statusComponents.id })
+      .from(statusComponents)
+      .where(inArray(statusComponents.id, ids))
+      .orderBy(asc(statusComponents.id))
+      .for('no key update')
+    await tx
+      .update(statusComponents)
+      .set({ position: positionCaseSql(statusComponents.id, ids) })
+      .where(inArray(statusComponents.id, ids))
+  })
 }
 
 /**
@@ -345,10 +357,16 @@ export async function reconcileComponentStatus(
   // this service, whose foreign key check holds KEY SHARE on the row. Two
   // writes linking the same service both hold it, and FOR UPDATE would make
   // each wait on the other's (a deadlock); NO KEY UPDATE still serialises
-  // recomputes against each other without conflicting with it. Lifecycle
-  // writes lock and refresh their incident row before this (lockIncident in
-  // status.service.ts, or the scheduler's claim), so locks are always taken
-  // incident row first, then services in id order.
+  // recomputes against each other without conflicting with it.
+  //
+  // Lock order: lifecycle writes lock and refresh their incident row before
+  // this (lockIncident in status.service.ts, or the scheduler's claim), then
+  // take services in id order (reconcileComponentStatuses), and reordering
+  // services takes them in id order too. Two of these never wait on each
+  // other in a cycle. The one write that can't be ordered is deleting a
+  // group: its ON DELETE SET NULL cascade updates the group's services in
+  // the order the database scans them, so against a recompute sharing two or
+  // more of them, Postgres may abort one of the two as a deadlock.
   const [component] = await executor
     .select()
     .from(statusComponents)

@@ -51,7 +51,11 @@ import {
   reconcileStatusNotifications,
   updateIncident,
 } from '../status.service'
-import { handleMaintenanceComplete, reconcileMaintenanceWindows } from '../status.maintenance'
+import {
+  handleMaintenanceComplete,
+  handleMaintenanceStart,
+  reconcileMaintenanceWindows,
+} from '../status.maintenance'
 import { getStatusPageSnapshot } from '../status.public'
 import {
   HOUR,
@@ -60,6 +64,7 @@ import {
   fixture,
   isRecent,
   openIncident,
+  raceOnStaleRead,
   scheduleWindow,
   service,
   statusOf,
@@ -304,6 +309,19 @@ describe('status lifecycle (Postgres)', () => {
   })
 
   describe('deleting an incident', () => {
+    it('decides from the row as deleted, not as first read', async () => {
+      const window = await scheduleWindow(new Date(Date.now() - HOUR), new Date(Date.now() + HOUR))
+      const [link] = window.affectedComponents
+
+      // Read while still scheduled; the scheduler starts it before the
+      // delete lands, so the delete must release what it now holds.
+      await raceOnStaleRead(
+        () => deleteIncident(window.id),
+        () => handleMaintenanceStart(window.id)
+      )
+      expect(await statusOf(link.componentId)).toBe('operational')
+    })
+
     it('releases the services it held, but not ones another open incident still holds', async () => {
       const api = await service('API')
       const web = await service('Website')

@@ -48,6 +48,7 @@ import {
   beginTest,
   fixture,
   isRecent,
+  raceOnStaleRead,
   scheduleWindow,
   service,
   statements,
@@ -431,26 +432,6 @@ describe('status lifecycle (Postgres)', () => {
       expect(sweepRead?.params).toContain('completed')
     })
 
-    /** Runs `handler` with its read of the window answered from before
-     *  `other` ran: the job and the sweep (or "Start now") both read the
-     *  window, then both write. */
-    async function raceOnStaleRead(handler: () => Promise<void>, other: () => Promise<void>) {
-      const read = testDb.query.statusIncidents
-      const realFindFirst = read.findFirst.bind(read)
-      const spy = vi.spyOn(read, 'findFirst').mockImplementationOnce((async (
-        config: Parameters<typeof realFindFirst>[0]
-      ) => {
-        const stale = await realFindFirst(config)
-        await other()
-        return stale
-      }) as never)
-      try {
-        await handler()
-      } finally {
-        spy.mockRestore()
-      }
-    }
-
     function dispatched(type: string) {
       return mockProcessEvent.mock.calls.filter(
         ([event]) => (event as { type: string }).type === type
@@ -509,6 +490,60 @@ describe('status lifecycle (Postgres)', () => {
       expect(completed.status).toBe('completed')
       expect(completed.updates.filter((u) => u.status === 'completed')).toHaveLength(1)
       expect(dispatched('status.maintenance_completed')).toHaveLength(1)
+    })
+
+    it('a job left over after its automation was switched off does nothing', async () => {
+      // Switching automation off cancels the queued job, but one can still
+      // fire: already picked up, or queued under an earlier schedule.
+      const scheduled = await scheduleWindow(
+        new Date(Date.now() - HOUR),
+        new Date(Date.now() + HOUR)
+      )
+      await updateIncident(scheduled.id, { autoStart: false })
+      await handleMaintenanceStart(scheduled.id)
+      expect((await getStatusIncidentById(scheduled.id)).status).toBe('scheduled')
+
+      const db = await service('Database')
+      const running = await createIncident(
+        {
+          kind: 'maintenance',
+          title: 'Upgrade',
+          status: 'in_progress',
+          body: 'Upgrading.',
+          affectedComponents: [{ componentId: db, componentStatus: 'under_maintenance' }],
+          scheduledStartAt: new Date(Date.now() - 2 * HOUR),
+          scheduledEndAt: new Date(Date.now() - HOUR),
+          notifySubscribers: false,
+        },
+        { principalId: author }
+      )
+      await updateIncident(running.id, { autoComplete: false })
+      await handleMaintenanceComplete(running.id)
+      expect((await getStatusIncidentById(running.id)).status).toBe('in_progress')
+      expect(dispatched('status.maintenance_started')).toEqual([])
+      expect(dispatched('status.maintenance_completed')).toEqual([])
+    })
+
+    it('"Start now" re-arms completion from the window as it started, not as first read', async () => {
+      const start = new Date(Date.now() + 24 * HOUR)
+      const window = await scheduleWindow(start, new Date(start.getTime() + HOUR))
+      const movedEnd = new Date(start.getTime() + 3 * HOUR)
+
+      // The end moves between "Start now" reading the window and starting it.
+      await raceOnStaleRead(
+        () => startMaintenanceNow(window.id),
+        async () => {
+          await updateIncident(window.id, { scheduledEndAt: movedEnd })
+          vi.mocked(scheduleDispatch).mockClear()
+        }
+      )
+
+      const completion = vi
+        .mocked(scheduleDispatch)
+        .mock.calls.map(([job]) => job)
+        .find((job) => job.handler === '__status_maintenance_complete__')
+      expect(completion?.jobId).toContain(`-${movedEnd.getTime()}`)
+      expect(completion?.delayMs).toBeGreaterThan(movedEnd.getTime() - Date.now() - 60_000)
     })
   })
 })

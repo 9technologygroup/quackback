@@ -1,13 +1,13 @@
 /**
  * Real-Postgres proof that a manual lifecycle write (an editor save, a posted
- * update) landing while the scheduler is starting or completing the same
- * window acts on the window as the scheduler left it, not as it was before.
+ * update) and the scheduler starting or completing the same window each act
+ * on the window as the other left it, whichever goes first.
  *
- * The scheduler's transaction is held open after it has claimed the window:
+ * The first one's transaction is held open after it has locked the window:
  * this suite holds a lock on the window's service, which the scheduler waits
- * for when it recomputes it. The manual write is sent while it waits, and the
- * lock is released once both are queued, so the scheduler always commits
- * first.
+ * for when it recomputes it, and an editor save waits for when it relinks
+ * it. The second is sent while the first waits, and the lock is released
+ * once both are queued, so the first always commits first.
  *
  * The writes run on their own connections, so their rows have to be
  * committed. They go into copies of the status tables in a schema of this
@@ -274,5 +274,63 @@ describe.skipIf(!available)('a manual write while the scheduler moves the window
     const after = await getStatusIncidentById(window.id)
     expect(after.status).toBe('completed')
     expect(after.resolvedAt?.getTime()).toBe(T0)
+  })
+})
+
+describe.skipIf(!available)('the scheduler while a manual write holds the window', () => {
+  beforeEach(async () => {
+    mockProcessEvent.mockReset().mockResolvedValue(undefined)
+    for (const table of [...TABLES].reverse()) {
+      await admin!.unsafe(`delete from ${race.schema}."${table}"`)
+    }
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(T0 - HOUR)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('a start that is due no more after a reschedule does nothing', async () => {
+    const window = await maintenance('scheduled', T0 - 60_000, T0 + HOUR)
+    const release = await holdService(window.service)
+
+    vi.setSystemTime(T0)
+    // The editor's save relinks the service, so it waits on it holding the
+    // window's lock.
+    const saving = updateIncident(window.id, {
+      scheduledStartAt: new Date(T0 + 2 * HOUR),
+      scheduledEndAt: new Date(T0 + 3 * HOUR),
+      affectedComponents: [{ componentId: window.service, componentStatus: 'under_maintenance' }],
+    })
+    await waitingOnLocks(1)
+    const starting = handleMaintenanceStart(window.id)
+    await waitingOnLocks(2)
+    await release()
+    await Promise.all([saving, starting])
+
+    const after = await getStatusIncidentById(window.id)
+    expect(after.status).toBe('scheduled')
+    expect(after.startedAt.getTime()).toBe(T0 + 2 * HOUR)
+    expect(after.updates.map((u) => u.status)).toEqual(['scheduled'])
+  })
+
+  it('a completion does nothing once auto-complete was switched off', async () => {
+    const window = await maintenance('in_progress', T0 - 2 * HOUR, T0 - 60_000)
+    const release = await holdService(window.service)
+
+    vi.setSystemTime(T0)
+    const saving = updateIncident(window.id, {
+      autoComplete: false,
+      affectedComponents: [{ componentId: window.service, componentStatus: 'under_maintenance' }],
+    })
+    await waitingOnLocks(1)
+    const completing = handleMaintenanceComplete(window.id)
+    await waitingOnLocks(2)
+    await release()
+    await Promise.all([saving, completing])
+
+    const after = await getStatusIncidentById(window.id)
+    expect(after.status).toBe('in_progress')
+    expect(after.resolvedAt).toBeNull()
   })
 })

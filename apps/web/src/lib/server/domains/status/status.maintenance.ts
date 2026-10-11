@@ -204,7 +204,8 @@ async function affectedComponentIds(
 }
 
 /** Flip a scheduled window to in_progress + apply component statuses. Guarded
- *  on status==='scheduled' so a stale duplicate job is a no-op. */
+ *  on status==='scheduled' so a stale duplicate job is a no-op, and claimed
+ *  only while the start is still due and automatic (see beginMaintenance). */
 export async function handleMaintenanceStart(incidentId: StatusIncidentId): Promise<void> {
   const incident = await db.query.statusIncidents.findFirst({
     where: and(eq(statusIncidents.id, incidentId), isNull(statusIncidents.deletedAt)),
@@ -212,15 +213,19 @@ export async function handleMaintenanceStart(incidentId: StatusIncidentId): Prom
   if (!incident || incident.kind !== 'maintenance' || incident.status !== 'scheduled') return
   if (!incident.scheduledStartAt || incident.scheduledStartAt.getTime() > Date.now()) return
 
-  await beginMaintenance(incident)
+  await beginMaintenance(incident, { scheduler: true })
 }
 
 /** Start a scheduled window now: status, real start, component statuses and
  *  the timeline row in one transaction, then the started event. The planned
  *  window (scheduled_start_at / scheduled_end_at) is left as planned. Returns
  *  the window as started, or null when it was no longer scheduled by the
- *  time it was claimed. */
-async function beginMaintenance(incident: { id: StatusIncidentId; title: string }) {
+ *  time it was claimed. For the scheduler, it must also still be due and
+ *  still start automatically then; "Start now" starts it regardless. */
+async function beginMaintenance(
+  incident: { id: StatusIncidentId; title: string },
+  { scheduler }: { scheduler: boolean }
+) {
   const incidentId = incident.id
   const started = await db.transaction(async (tx) => {
     // started_at becomes the real start; until now it held the planned one.
@@ -229,7 +234,10 @@ async function beginMaintenance(incident: { id: StatusIncidentId; title: string 
     // window as scheduled, the one that commits second matches nothing and
     // stops here instead of starting it again. Its row lock is the one
     // manual lifecycle writes take first (lockIncident in status.service.ts),
-    // so one racing this waits for it and then sees the window started.
+    // so one racing this waits for it and then sees the window started. The
+    // scheduler's checks of the plan and the automation ran on its read; the
+    // claim repeats them, so a reschedule to later or auto-start switched
+    // off, committed while it waited (or before a stale job fired), stops it.
     const now = new Date()
     const [claimed] = await tx
       .update(statusIncidents)
@@ -238,7 +246,10 @@ async function beginMaintenance(incident: { id: StatusIncidentId; title: string 
         and(
           eq(statusIncidents.id, incidentId),
           eq(statusIncidents.status, 'scheduled'),
-          isNull(statusIncidents.deletedAt)
+          isNull(statusIncidents.deletedAt),
+          scheduler
+            ? and(eq(statusIncidents.autoStart, true), lte(statusIncidents.scheduledStartAt, now))
+            : undefined
         )
       )
       .returning()
@@ -295,19 +306,25 @@ export async function handleMaintenanceComplete(incidentId: StatusIncidentId): P
     // Claimed like a start, against the status just read: of two callers
     // that both read the window as open, only one completes it, and whether
     // it was holding its services is known. A window whose status changed
-    // since the read is left for the sweep, which reads it afresh.
+    // since the read is left for the sweep, which reads it afresh. The end
+    // must still have passed and completion still be automatic, so an end
+    // moved later or auto-complete switched off, committed while this waited
+    // (or before a stale job fired), stops it.
+    const now = new Date()
     const [claimed] = await tx
       .update(statusIncidents)
       .set({
         status: 'completed',
-        resolvedAt: incident.resolvedAt ?? new Date(),
-        updatedAt: new Date(),
+        resolvedAt: incident.resolvedAt ?? now,
+        updatedAt: now,
       })
       .where(
         and(
           eq(statusIncidents.id, incidentId),
           eq(statusIncidents.status, incident.status),
-          isNull(statusIncidents.deletedAt)
+          isNull(statusIncidents.deletedAt),
+          eq(statusIncidents.autoComplete, true),
+          lte(statusIncidents.scheduledEndAt, now)
         )
       )
       .returning({ id: statusIncidents.id })
@@ -371,7 +388,7 @@ export async function startMaintenanceNow(incidentId: StatusIncidentId): Promise
   await cancelScheduledDispatch(startJobId(incident.id, scheduleHash(incident)))
 
   // Started (or completed, or deleted) by something else since the read.
-  const started = await beginMaintenance(incident)
+  const started = await beginMaintenance(incident, { scheduler: false })
   if (!started) throw notStartable()
 
   // Re-armed from the window as claimed, not as first read.

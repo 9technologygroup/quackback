@@ -21,6 +21,23 @@ import { createId, type StatusComponentId, type StatusIncidentId } from '@quackb
 
 vi.mock('@/lib/server/events/process', () => ({ processEvent: vi.fn() }))
 
+// Writes that use the global `db` (reordering services) run in this suite's
+// schema too.
+const globalDb = vi.hoisted(() => ({ db: null as unknown }))
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
+  db: new Proxy(
+    {},
+    {
+      get(_, prop) {
+        const target = globalDb.db as Record<string | symbol, unknown>
+        const value = target[prop]
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    }
+  ),
+}))
+
 import {
   eq,
   sql,
@@ -29,7 +46,7 @@ import {
   statusIncidents,
   type Transaction,
 } from '@/lib/server/db'
-import { reconcileComponentStatus } from '../status.components'
+import { reconcileComponentStatus, reorderStatusComponents } from '../status.components'
 
 const schema = `status_locks_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 const TABLES = [
@@ -41,6 +58,7 @@ const TABLES = [
 
 let admin: postgres.Sql | null = null
 let pool: postgres.Sql | null = null
+let reorderPool: postgres.Sql | null = null
 let available = false
 try {
   const url = process.env.DATABASE_URL
@@ -63,6 +81,21 @@ try {
     // A wait that outlives this is a hang, not a deadlock the server resolves.
     connection: { search_path: schema, application_name: schema, lock_timeout: 15_000 },
   })
+  // The global `db`. Its scans read rows in the order they were written (no
+  // index order), the plan a small table usually gets anyway.
+  reorderPool = postgres(url, {
+    max: 2,
+    onnotice: () => {},
+    connection: {
+      search_path: schema,
+      application_name: `${schema}_g`,
+      lock_timeout: 15_000,
+      enable_indexscan: 'off',
+      enable_bitmapscan: 'off',
+      enable_indexonlyscan: 'off',
+    },
+  })
+  globalDb.db = drizzle(reorderPool)
   available = true
 } catch {
   // Local/unit-only runs without Postgres skip this integration proof.
@@ -71,6 +104,7 @@ try {
 const db = pool ? drizzle(pool) : null
 
 afterAll(async () => {
+  await reorderPool?.end()
   await pool?.end()
   await admin?.unsafe(`drop schema if exists ${schema} cascade`).catch(() => {})
   await admin?.end()
@@ -95,6 +129,22 @@ async function blockedOnLock(pid: number, stop: Promise<unknown>): Promise<void>
     const [row] = await admin!<{ waiting: boolean }[]>`
       select wait_event_type = 'Lock' as waiting from pg_stat_activity where pid = ${pid}`
     if (row?.waiting) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
+/** Resolves once a connection of the global `db` waits on a lock, or once
+ *  `stop` settles. */
+async function globalDbBlocked(stop: Promise<unknown>): Promise<void> {
+  let stopped = false
+  void stop.finally(() => {
+    stopped = true
+  })
+  while (!stopped) {
+    const [row] = await admin!<{ waiting: number }[]>`
+      select count(*)::int as waiting from pg_stat_activity
+       where application_name = ${`${schema}_g`} and wait_event_type = 'Lock'`
+    if (row!.waiting > 0) return
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
 }
@@ -174,5 +224,55 @@ describe.skipIf(!available)('two writes linking one service at once', () => {
       .where(eq(statusComponents.id, service))
     expect(row.status).toBe('major_outage')
     expect(await db!.select().from(statusIncidentComponents)).toHaveLength(2)
+  })
+})
+
+describe.skipIf(!available)('reordering services while a lifecycle write recomputes them', () => {
+  beforeEach(async () => {
+    for (const table of [...TABLES].reverse()) {
+      await admin!.unsafe(`delete from ${schema}."${table}"`)
+    }
+  })
+
+  it('both commit, whichever order the services are listed and stored in', async () => {
+    const [low, high] = [
+      createId('status_component') as StatusComponentId,
+      createId('status_component') as StatusComponentId,
+    ].sort()
+    // Stored highest id first, and moved to the top by the reorder.
+    await db!.insert(statusComponents).values({ id: high, name: 'Website', position: 1 })
+    await db!.insert(statusComponents).values({ id: low, name: 'API', position: 0 })
+
+    const lowLocked = signal()
+    const reorderSettled = signal()
+
+    // A recompute takes its services in id order: the lower one, then (once
+    // the reorder is waiting) the higher one.
+    const recompute = db!.transaction(async (raw) => {
+      const tx = raw as unknown as Transaction
+      await reconcileComponentStatus(low, 'incident', null, tx)
+      lowLocked.resolve()
+      await globalDbBlocked(reorderSettled.promise)
+      await reconcileComponentStatus(high, 'incident', null, tx)
+    })
+
+    await lowLocked.promise
+    const reorder = reorderStatusComponents([high, low])
+    void reorder.then(reorderSettled.resolve, reorderSettled.resolve)
+
+    // A deadlock surfaces as SQLSTATE 40P01 on whichever write Postgres aborts.
+    type QueryError = { code?: string; cause?: { code?: string; message?: string } }
+    const results = await Promise.allSettled([recompute, reorder])
+    const failures = results.flatMap((r) => {
+      if (r.status === 'fulfilled') return []
+      const err = r.reason as QueryError
+      return [`${err.cause?.code ?? err.code}: ${err.cause?.message ?? String(r.reason)}`]
+    })
+    expect(failures).toEqual([])
+
+    const rows = await db!
+      .select({ id: statusComponents.id, position: statusComponents.position })
+      .from(statusComponents)
+    expect(Object.fromEntries(rows.map((r) => [r.id, r.position]))).toEqual({ [high]: 0, [low]: 1 })
   })
 })
