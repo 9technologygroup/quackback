@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useIntl } from 'react-intl'
+import { useIntl, type IntlShape } from 'react-intl'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRouter } from '@tanstack/react-router'
 import type { AssistantPendingActionId } from '@quackback/ids'
@@ -17,6 +17,7 @@ import {
   undoWorkspaceSettingsProposalFn,
 } from '@/lib/server/functions/workspace-copilot'
 import { sanitizeImageUrl } from '@/lib/shared/utils/sanitize'
+import { isValidOklch, oklchToHex } from '@/lib/shared/theme/colors'
 import { refreshSettingsProposalQueries } from './settings-proposal-cache'
 import type { ApprovalRefusal } from '@/lib/shared/approval-refusal'
 
@@ -76,6 +77,38 @@ const MESSENGER_TAB_OFF_COPY = {
   defaultMessage: 'Hides the Messages tab in the widget',
 }
 
+/** What else a change turns on or off, as a line under it. */
+export function settingsEffectMessage(effect: MessengerEffect, after: unknown) {
+  return effect === 'messengerTab' && after !== true
+    ? MESSENGER_TAB_OFF_COPY
+    : MESSENGER_EFFECT_COPY[effect]
+}
+
+/** The settings area a change lives in: "Portal", "Office hours". */
+export function settingsAreaLabel(intl: IntlShape, area: SettingsChange['area']): string {
+  return intl.formatMessage({
+    id: `ask.settings.area.${area}`,
+    defaultMessage: SETTINGS_CARD_AREA_COPY[area],
+  })
+}
+
+/** The field a change sets, with its appearance when it has one: "Dark · Brand color". */
+export function settingsFieldLabel(intl: IntlShape, path: readonly string[]): string {
+  const field = path.at(-1)!
+  const fieldLabel = intl.formatMessage({
+    id: `ask.settings.field.${field}`,
+    defaultMessage: SETTINGS_CARD_FIELD_COPY[field] ?? field,
+  })
+  const appearance =
+    path[0] === 'light' || path[0] === 'dark'
+      ? intl.formatMessage({
+          id: `ask.settings.value.${path[0]}`,
+          defaultMessage: path[0] === 'light' ? 'Light' : 'Dark',
+        })
+      : null
+  return appearance ? `${appearance} · ${fieldLabel}` : fieldLabel
+}
+
 export interface SettingsChangeCardProps {
   changes: readonly SettingsChange[]
   status: 'proposed' | 'executed' | 'undone' | 'unavailable'
@@ -111,7 +144,14 @@ function readableValue(value: unknown, locale: string): string {
     .join(', ')
 }
 
-function SettingsValue({ value, preview }: { value: unknown; preview?: string | null }) {
+/** A color as a person reads it: a hex value, whichever notation it is stored in. */
+function readableColor(color: string): string {
+  if (color.startsWith('#')) return color.toUpperCase()
+  return isValidOklch(color) ? oklchToHex(color).toUpperCase() : color
+}
+
+/** A settings value as it reads: On, a color swatch, a logo, a weekly schedule. */
+export function SettingsValue({ value, preview }: { value: unknown; preview?: string | null }) {
   const intl = useIntl()
   const enums: Record<string, string> = {
     light: 'Light',
@@ -155,7 +195,9 @@ function SettingsValue({ value, preview }: { value: unknown; preview?: string | 
       <span className="min-w-0 truncate">
         {imageUrl
           ? intl.formatMessage({ id: 'ask.settings.field.logoKey', defaultMessage: 'Logo' })
-          : text}
+          : color
+            ? readableColor(color)
+            : text}
       </span>
     </span>
   )
@@ -181,10 +223,7 @@ export function SettingsChangeCard({
         change.settingsHref,
         {
           href: change.settingsHref,
-          area: intl.formatMessage({
-            id: `ask.settings.area.${change.area}`,
-            defaultMessage: SETTINGS_CARD_AREA_COPY[change.area],
-          }),
+          area: settingsAreaLabel(intl, change.area),
         },
       ])
     ).values(),
@@ -204,23 +243,7 @@ export function SettingsChangeCard({
     <div className="space-y-3 rounded-xl border border-border bg-card p-4 shadow-raise">
       <p className="text-sm font-medium">{title}</p>
       {changes.map((change) => {
-        const area = intl.formatMessage({
-          id: `ask.settings.area.${change.area}`,
-          defaultMessage: SETTINGS_CARD_AREA_COPY[change.area],
-        })
-        const field = change.path.at(-1)!
-        const fieldLabel = intl.formatMessage({
-          id: `ask.settings.field.${field}`,
-          defaultMessage: SETTINGS_CARD_FIELD_COPY[field] ?? field,
-        })
-        const appearance =
-          change.path[0] === 'light' || change.path[0] === 'dark'
-            ? intl.formatMessage({
-                id: `ask.settings.value.${change.path[0]}`,
-                defaultMessage: change.path[0] === 'light' ? 'Light' : 'Dark',
-              })
-            : null
-        const changeLabel = `${area}: ${appearance ? `${appearance} · ` : ''}${fieldLabel}`
+        const changeLabel = `${settingsAreaLabel(intl, change.area)}: ${settingsFieldLabel(intl, change.path)}`
         const before = status === 'undone' ? change.after : change.before
         const after = status === 'undone' ? change.before : change.after
         return (
@@ -261,11 +284,7 @@ export function SettingsChangeCard({
               <ul className="space-y-0.5 text-xs text-muted-foreground">
                 {change.effects.map((effect) => (
                   <li key={effect}>
-                    {intl.formatMessage(
-                      effect === 'messengerTab' && change.after !== true
-                        ? MESSENGER_TAB_OFF_COPY
-                        : MESSENGER_EFFECT_COPY[effect]
-                    )}
+                    {intl.formatMessage(settingsEffectMessage(effect, change.after))}
                   </li>
                 ))}
               </ul>

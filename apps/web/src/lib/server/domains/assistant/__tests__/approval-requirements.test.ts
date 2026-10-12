@@ -25,7 +25,7 @@ vi.mock('../approvals.service', async (original) => ({
   },
 }))
 
-import { approvalRequirements } from '../approvals.queue'
+import { approvalRequirements } from '../approval-requirements'
 
 type Row = Parameters<ReturnType<typeof approvalRequirements>>[0]
 

@@ -8,11 +8,10 @@ import { FormattedMessage, useIntl } from 'react-intl'
 import { htmlLangDir } from '@/lib/shared/document-locale'
 import type { SupportedLocale } from '@/lib/shared/i18n'
 import { railControlClass } from '@/components/admin/rail-item'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ComponentType } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useRouter, useRouterState } from '@tanstack/react-router'
 import {
-  ChatBubbleLeftIcon,
   ChatBubbleLeftRightIcon,
   MapIcon,
   UsersIcon,
@@ -64,8 +63,14 @@ import {
   useBillingEnabled,
   useCloudEnabled,
   useSessionContext,
+  useUserRole,
   useWorkspaceSettings,
 } from '@/lib/client/hooks/use-root-context'
+import { isAdmin } from '@/lib/shared/roles'
+import {
+  useRefreshWaitingOnNewApproval,
+  useWaitingApprovalCount,
+} from '@/components/admin/approvals/use-waiting-approvals'
 
 /** Availability toggle for the account menu (conversation routing). The label shows the
  *  state you'll switch to; the avatar dot shows the current one. */
@@ -96,10 +101,28 @@ interface AdminSidebarProps {
   planNotice?: PlanNotice | null
 }
 
+type RailIcon = ComponentType<{ className?: string }>
+
+/**
+ * Drawn here rather than imported: the shared icon would be a file of its own
+ * that every admin page loads before it can draw the rail.
+ */
+function ApprovalsIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}>
+      <path
+        fillRule="evenodd"
+        d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm4.3-10.4-4.6 6.2-3.2-3.1 1.1-1.1 1.9 1.8 3.5-4.7 1.3.9Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  )
+}
+
 interface RailItem {
   label: string
   href: string
-  icon: typeof ChatBubbleLeftIcon
+  icon: RailIcon
   /** Active on this path only, not on the pages under it. */
   exact?: boolean
   /** The catalogue id of the label, so the rail reads in the workspace language. */
@@ -173,10 +196,27 @@ const RAIL_ITEMS: RailItem[] = [
   { label: 'Users', labelId: 'admin.nav.users', href: '/admin/users', icon: UsersIcon },
 ]
 
-/** The rail items a viewer sees: the products that are on. */
-export function buildRailItems(flags: Partial<FeatureFlags> | undefined): RailItem[] {
-  return RAIL_ITEMS.filter((item) => !item.product || isProductEnabled(flags, item.product))
+const APPROVALS_ITEM: RailItem = {
+  label: 'Approvals',
+  labelId: 'admin.nav.approvals',
+  href: '/admin/approvals',
+  icon: ApprovalsIcon,
 }
+
+/**
+ * The rail items a viewer sees: the products that are on, and Approvals
+ * below Home for a viewer who can decide requests.
+ */
+export function buildRailItems(
+  flags: Partial<FeatureFlags> | undefined,
+  options: { approvals?: boolean } = {}
+): RailItem[] {
+  const items = RAIL_ITEMS.filter((item) => !item.product || isProductEnabled(flags, item.product))
+  return options.approvals ? [items[0]!, APPROVALS_ITEM, ...items.slice(1)] : items
+}
+
+/** The most the rail's badge spells out. */
+const MAX_BADGE = 99
 
 /**
  * A rail item is active on its page and every page under it, whatever the
@@ -196,7 +236,11 @@ const railLinkProps = (exact: boolean) => ({
 const MOBILE_LINK_CLASS =
   'flex items-center gap-3 px-4 py-3 rounded-lg text-sm transition-colors text-muted-foreground/80 hover:text-foreground hover:bg-muted/50'
 
-function NavItem({
+/**
+ * One rail link. Called, not rendered as a component: it holds no state, so a
+ * component of its own would only add a render to every item on every page.
+ */
+function railItem({
   href,
   icon: Icon,
   label,
@@ -208,7 +252,7 @@ function NavItem({
   tour,
 }: {
   href: string
-  icon: typeof ChatBubbleLeftIcon
+  icon: RailIcon
   label: string
   /** The guided tour's name for this item. */
   tour?: string
@@ -224,6 +268,7 @@ function NavItem({
 }) {
   return (
     <Link
+      key={href}
       to={href}
       onClick={onClick}
       data-admin-rail-item=""
@@ -256,11 +301,11 @@ function MobileNavLink({
   badgeLabel,
 }: {
   href: string
-  icon: typeof ChatBubbleLeftIcon
+  icon: RailIcon
   label: string
   onClick: () => void
   exact?: boolean
-  badge?: number | null
+  badge?: string | number | null
   badgeLabel?: string
 }) {
   return (
@@ -312,7 +357,17 @@ export function AdminSidebar({ initialUserData, latestVersion, planNotice }: Adm
   const orgLogo = branding?.logoUrl ?? branding?.headerLogoUrl ?? '/logo.png'
   const orgName = branding?.name ?? 'Quackback'
 
-  const railItems = buildRailItems(flags)
+  // Requests waiting on the viewer. Admins can decide every kind, so they
+  // always have Approvals; a member has it while a request waits on them.
+  const userRole = useUserRole()
+  const waitingApprovals = useWaitingApprovalCount() ?? 0
+  useRefreshWaitingOnNewApproval()
+  const onApprovalsPage = useRouterState({
+    select: (s) => s.location.pathname.startsWith('/admin/approvals'),
+  })
+  const railItems = buildRailItems(flags, {
+    approvals: isAdmin(userRole) || waitingApprovals > 0 || onApprovalsPage,
+  })
   // Posts and comments waiting for review. Shown on Feedback when there are any.
   const feedbackEnabled = isProductEnabled(flags, 'feedback')
   const canReviewPosts = usePermission(PERMISSIONS.POST_APPROVE)
@@ -323,9 +378,25 @@ export function AdminSidebar({ initialUserData, latestVersion, planNotice }: Adm
   })
   const pendingModeration = reviewEnabled ? (moderation?.pendingCount ?? 0) : 0
   const itemBadge = (item: RailItem) =>
-    item.href === '/admin/feedback' && pendingModeration > 0 ? pendingModeration : null
+    item.href === '/admin/feedback' && pendingModeration > 0
+      ? pendingModeration
+      : item.href === APPROVALS_ITEM.href && waitingApprovals > 0
+        ? waitingApprovals > MAX_BADGE
+          ? `${MAX_BADGE}+`
+          : waitingApprovals
+        : null
   const itemBadgeLabel = (item: RailItem) =>
-    itemBadge(item) ? `${pendingModeration} waiting for review` : undefined
+    !itemBadge(item)
+      ? undefined
+      : item.href === APPROVALS_ITEM.href
+        ? intl.formatMessage(
+            {
+              id: 'admin.nav.approvalsWaiting',
+              defaultMessage: '{count, plural, one {# waiting} other {# waiting}}',
+            },
+            { count: waitingApprovals }
+          )
+        : `${pendingModeration} waiting for review`
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   const user = session?.user
@@ -401,18 +472,17 @@ export function AdminSidebar({ initialUserData, latestVersion, planNotice }: Adm
               <SearchTrigger tour className={railControlClass()} />
             </div>
             <nav data-tour="products" className="flex flex-col gap-0.5 px-2">
-              {railItems.map((item) => (
-                <NavItem
-                  key={item.href}
-                  href={item.href}
-                  icon={item.icon}
-                  label={intl.formatMessage({ id: item.labelId, defaultMessage: item.label })}
-                  exact={item.exact}
-                  badge={itemBadge(item)}
-                  badgeLabel={itemBadgeLabel(item)}
-                  tour={item.tour}
-                />
-              ))}
+              {railItems.map((item) =>
+                railItem({
+                  href: item.href,
+                  icon: item.icon,
+                  label: intl.formatMessage({ id: item.labelId, defaultMessage: item.label }),
+                  exact: item.exact,
+                  badge: itemBadge(item),
+                  badgeLabel: itemBadgeLabel(item),
+                  tour: item.tour,
+                })
+              )}
             </nav>
 
             {/* Spacer */}
@@ -424,16 +494,15 @@ export function AdminSidebar({ initialUserData, latestVersion, planNotice }: Adm
               {planNotice && <PlanNoticeQuiet notice={planNotice} />}
               <LaunchPlanDock />
               {/* Settings (admin-only) */}
-              {showSettings && (
-                <NavItem
-                  href="/admin/settings"
-                  icon={Cog6ToothIcon}
-                  label={intl.formatMessage({
+              {showSettings &&
+                railItem({
+                  href: '/admin/settings',
+                  icon: Cog6ToothIcon,
+                  label: intl.formatMessage({
                     id: 'admin.nav.settings',
                     defaultMessage: 'Settings',
-                  })}
-                />
-              )}
+                  }),
+                })}
 
               {billingEnabled && siblings.length > 0 ? (
                 <WorkspaceSwitcher siblings={siblings} onOpen={(id) => openSibling.mutate(id)} />

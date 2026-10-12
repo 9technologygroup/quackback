@@ -55,7 +55,8 @@ import type { JsonValue } from '@/lib/shared/json'
 import { SETTINGS_PROPOSAL_TOOL, summarizeSettingsProposal } from './approval-policy'
 import { WORKSPACE_THREAD_PREFIX } from './workspace-safety'
 import { approvalNotFound, approvalRiskOf, isDecidableApproval } from './approvals.service'
-import { approvalRequirements, parentVisible, qualifiesToDecide } from './approvals.queue'
+import { approvalRequirements } from './approval-requirements'
+import { parentVisible, qualifiesToDecide } from './approvals.queue'
 
 type PendingActionRow = typeof assistantPendingActions.$inferSelect
 

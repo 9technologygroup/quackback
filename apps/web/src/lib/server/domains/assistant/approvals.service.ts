@@ -281,7 +281,7 @@ function personRequired() {
 }
 
 /** Whether the person a request borrows authority from is in the app with it. */
-function requesterIsPresent(row: Pick<PendingActionRow, 'requestedVia'>): boolean {
+export function requesterIsPresent(row: Pick<PendingActionRow, 'requestedVia'>): boolean {
   return row.requestedVia === null || row.requestedVia === 'assistant' || row.requestedVia === 'ui'
 }
 
@@ -391,6 +391,57 @@ export function assertStillPending(row: PendingActionRow): void {
       'PENDING_ACTION_NOT_DECIDABLE',
       'This request was already decided or has expired'
     )
+}
+
+/**
+ * Approve a request and carry it out with the executor its origin uses: the
+ * settings apply for a settings request, the tool-action pipeline for an
+ * action on a conversation or ticket. Every rule above applies before
+ * anything runs, and the executor checks the content hash again as it
+ * decides.
+ */
+export async function approveApproval(
+  actor: Actor,
+  id: AssistantPendingActionId,
+  input: ApprovalDecisionInput
+): Promise<PendingActionRow> {
+  const [row] = await db
+    .select()
+    .from(assistantPendingActions)
+    .where(eq(assistantPendingActions.id, id))
+    .limit(1)
+  if (!row || !isDecidableApproval(row) || !(await parentVisibleTo(row, actor)))
+    throw approvalNotFound()
+  assertStillPending(row)
+  const decision: ApprovalDecisionInput = { ...input, via: input.via ?? 'app' }
+
+  if (row.toolName === SETTINGS_PROPOSAL_TOOL) {
+    const parsed = settingsProposalSchema.safeParse(row.args)
+    if (!parsed.success) throw approvalUnavailable()
+    const { applyWorkspaceSettingsProposal } = await import('./workspace-settings-actions.service')
+    return applyWorkspaceSettingsProposal(
+      actor,
+      id,
+      parsed.data.changes.map((change) => change.id),
+      decision
+    )
+  }
+
+  if (!row.conversationId && !row.ticketId) throw approvalUnavailable()
+  const required = (await requiredApprovalPermissions(row)) ?? GONE_TOOL_PERMISSIONS
+  await assertMayDecide(row, actor, decision, required, 'approved')
+  const { decideAssistantAction } = await import('./assistant-actions.service')
+  return decideAssistantAction(id, 'approved', actor.principalId!, actor, undefined, {
+    contentHash: decision.contentHash,
+    via: decision.via,
+  })
+}
+
+function approvalUnavailable() {
+  return new ConflictError(
+    'APPROVAL_NOT_AVAILABLE',
+    'This request can only be decided where it was made.'
+  )
 }
 
 /**

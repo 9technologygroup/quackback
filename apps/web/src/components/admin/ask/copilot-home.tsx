@@ -70,6 +70,8 @@ export interface CopilotHomeProps {
    * in plain sight.
    */
   paused?: ReactNode
+  /** What waits on the teammate, above their last chat. */
+  waiting?: ReactNode
   below?: ReactNode
 }
 
@@ -81,7 +83,7 @@ export function CopilotHome(props: CopilotHomeProps) {
   )
 }
 
-function CopilotHomeView({ threadKey, canAsk, header, paused, below }: CopilotHomeProps) {
+function CopilotHomeView({ threadKey, canAsk, header, paused, waiting, below }: CopilotHomeProps) {
   const intl = useIntl()
   const router = useRouter()
   const queryClient = useQueryClient()
@@ -331,6 +333,7 @@ function CopilotHomeView({ threadKey, canAsk, header, paused, below }: CopilotHo
                   {error}
                 </p>
               )}
+              {waiting}
               {latest && (
                 <button
                   type="button"

@@ -29,6 +29,7 @@ const hoisted = vi.hoisted(() => ({
   undo: vi.fn(),
   reject: vi.fn(),
   markRead: vi.fn(),
+  view: vi.fn(),
 }))
 
 vi.mock('@/lib/server/functions/auth-helpers', () => ({
@@ -53,6 +54,9 @@ vi.mock('@/lib/server/domains/assistant/approvals.service', () => ({
 }))
 vi.mock('@/lib/server/domains/notifications/notification.service', () => ({
   markApprovalBellsRead: hoisted.markRead,
+}))
+vi.mock('@/lib/server/domains/assistant/approvals.queue', () => ({
+  approvalViewOf: hoisted.view,
 }))
 
 import {
@@ -84,6 +88,10 @@ const REFUSALS = [
   new ValidationError('SETTINGS_CHANGED', 'These settings changed. Ask again.'),
 ]
 
+/** The code a refusal travels with: one code for every sign-in-again refusal. */
+const wireCode = (code: string) =>
+  code === 'APPROVAL_SIGN_IN_REQUIRED' ? 'RECENT_SIGN_IN_REQUIRED' : code
+
 beforeEach(() => vi.clearAllMocks())
 
 describe('approval decisions return refusals as values', () => {
@@ -91,7 +99,7 @@ describe('approval decisions return refusals as values', () => {
     hoisted.apply.mockRejectedValue(refusal)
     await expect(apply()).resolves.toEqual({
       ok: false,
-      code: refusal.code,
+      code: wireCode(refusal.code),
       message: refusal.message,
     })
   })
@@ -100,7 +108,7 @@ describe('approval decisions return refusals as values', () => {
     hoisted.undo.mockRejectedValue(refusal)
     await expect(undo()).resolves.toEqual({
       ok: false,
-      code: refusal.code,
+      code: wireCode(refusal.code),
       message: refusal.message,
     })
   })
@@ -109,7 +117,7 @@ describe('approval decisions return refusals as values', () => {
     hoisted.reject.mockRejectedValue(refusal)
     await expect(reject()).resolves.toEqual({
       ok: false,
-      code: refusal.code,
+      code: wireCode(refusal.code),
       message: refusal.message,
     })
   })
@@ -133,8 +141,11 @@ describe('approval decisions return refusals as values', () => {
       status: 'rejected',
       decisionReason: 'Not now',
     })
-    await expect(reject()).resolves.toEqual({
-      ok: true,
+    // Reject returns the request as the Approvals page now shows it.
+    const shown = { id: 'assistant_action_1', status: 'rejected', decisionReason: 'Not now' }
+    hoisted.view.mockResolvedValue(shown)
+    await expect(reject()).resolves.toEqual({ ok: true, approval: shown })
+    expect(hoisted.view).toHaveBeenCalledWith({
       id: 'assistant_action_1',
       status: 'rejected',
       decisionReason: 'Not now',

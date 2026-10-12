@@ -312,9 +312,17 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
     APPROVAL_PERMISSIONS,
     'lists only requests the caller may decide: the item is visible and every permission the operation needs is held'
   ),
+  'lib/server/functions/approval-counts.ts::getRailCountsFn': DYNAMIC_PERMISSION(
+    APPROVAL_PERMISSIONS,
+    'the caller own unread count, and a count of only the requests the caller may decide: the item is visible and every permission the operation needs is held'
+  ),
   'lib/server/functions/approvals.ts::getApprovalFn': DYNAMIC_PERMISSION(
     APPROVAL_PERMISSIONS,
-    'caller may decide the request, or it was filed on their behalf; the item must be visible'
+    'caller may decide the request, decided it, or it was filed on their behalf; the item must be visible'
+  ),
+  'lib/server/functions/approvals.ts::approveApprovalFn': DYNAMIC_PERMISSION(
+    APPROVAL_PERMISSIONS,
+    'a person, never the requesting credential, who sees the item and holds every permission the operation needs; the change then runs as that person'
   ),
   'lib/server/functions/approvals.ts::markApprovalBellReadFn': END_USER(
     'reads only the caller own approval bell; the principal comes from the session'
