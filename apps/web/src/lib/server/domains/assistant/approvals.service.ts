@@ -212,7 +212,7 @@ export async function requiredApprovalPermissions(
  * manages the AI assistant can still turn it down.
  */
 export const GONE_TOOL_PERMISSIONS: ReadonlySet<PermissionKey> = new Set([
-  PERMISSIONS.ASSISTANT_MANAGE,
+  PERMISSIONS.AI_TEAMMATE_MANAGE,
 ])
 
 /**

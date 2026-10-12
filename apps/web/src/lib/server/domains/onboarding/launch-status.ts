@@ -185,7 +185,7 @@ export async function loadLaunchStatus(caller: LaunchStatusCaller) {
       brandingManage: permissions.has(PERMISSIONS.SETTINGS_BRANDING),
       integrationManage: permissions.has(PERMISSIONS.INTEGRATION_MANAGE),
       helpCenterManage: permissions.has(PERMISSIONS.HELP_CENTER_MANAGE),
-      assistantManage: permissions.has(PERMISSIONS.ASSISTANT_MANAGE),
+      assistantManage: permissions.has(PERMISSIONS.AI_CUSTOMER_MANAGE),
     },
     features: {
       supportInbox: flags.supportInbox,

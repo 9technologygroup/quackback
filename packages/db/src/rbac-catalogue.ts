@@ -133,7 +133,8 @@ export const PERMISSIONS = {
   CHANNEL_ACCOUNT_MANAGE: 'channel_account.manage', // manage connected inbox channels (workspace-admin; was inbox.manage)
 
   // category 'ai'
-  ASSISTANT_MANAGE: 'assistant.manage', // manage AI assistant behavior, guidance, and action controls
+  AI_CUSTOMER_MANAGE: 'ai.customer.manage', // customer-facing AI (answers customers): identity, voice, knowledge, guidance, tools, who answers
+  AI_TEAMMATE_MANAGE: 'ai.teammate.manage', // teammate AI (Home chat, inbox assist, Slack): Copilot knowledge, capabilities, Slack agent
   COPILOT_USE: 'copilot.use', // use the agent-facing Copilot assistant in the inbox
 
   // category 'status_page' — the Status page product (Status Product Spec §6).
@@ -570,9 +571,14 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   },
 
   {
-    key: PERMISSIONS.ASSISTANT_MANAGE,
+    key: PERMISSIONS.AI_CUSTOMER_MANAGE,
     category: 'ai',
-    description: 'Manage AI assistant behavior, guidance, and action controls',
+    description: 'Manage the customer-facing AI: identity, voice, knowledge, guidance, and tools',
+  },
+  {
+    key: PERMISSIONS.AI_TEAMMATE_MANAGE,
+    category: 'ai',
+    description: 'Manage the teammate AI: Copilot knowledge and capabilities, and the Slack agent',
   },
   {
     key: PERMISSIONS.COPILOT_USE,
@@ -598,6 +604,7 @@ export const SYSTEM_ROLES = {
   OWNER: 'owner',
   ADMIN: 'admin',
   MANAGER: 'manager',
+  SUPPORT_LEAD: 'support_lead',
   CONTRIBUTOR: 'contributor',
 } as const
 
@@ -635,11 +642,36 @@ export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.WORKFLOW_MANAGE,
   PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
   // AI infrastructure config (admin-only)
-  PERMISSIONS.ASSISTANT_MANAGE,
+  PERMISSIONS.AI_CUSTOMER_MANAGE,
+  PERMISSIONS.AI_TEAMMATE_MANAGE,
   // Status page structure (components/groups/settings/templates) is
   // admin-only; publishing incidents is a broader operator action (below).
   PERMISSIONS.STATUS_PAGE_MANAGE,
 ]
+
+/**
+ * The support-operations permissions a Support lead holds on top of everything
+ * Manager has: routing, workflows, SLA policies, office hours, inbox channels,
+ * custom fields, and the customer-facing AI. An explicit list so a new
+ * workspace-admin permission never reaches the preset by accident. Teams,
+ * settings, integrations, and the teammate AI stay admin-only.
+ */
+export const SUPPORT_LEAD_EXTRA_PERMISSIONS: readonly PermissionKey[] = [
+  PERMISSIONS.ROUTING_MANAGE,
+  PERMISSIONS.WORKFLOW_MANAGE,
+  PERMISSIONS.SLA_MANAGE,
+  PERMISSIONS.OFFICE_HOURS_MANAGE,
+  PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
+  PERMISSIONS.CUSTOM_FIELD_MANAGE,
+  PERMISSIONS.AI_CUSTOMER_MANAGE,
+]
+
+/**
+ * Permission keys retired from the catalogue. Their `permissions` rows and
+ * grants stay in the database so an older app version still running during a
+ * rollout keeps working; the reconcile leaves their preset grants alone.
+ */
+export const RETIRED_PERMISSION_KEYS: readonly string[] = ['assistant.manage']
 
 export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {
   owner: ALL_PERMISSIONS,
@@ -647,6 +679,10 @@ export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {
   // Everything except the workspace-admin set; this naturally keeps member.view +
   // integration.view (not in the set) while excluding member.manage / integration.manage.
   manager: ALL_PERMISSIONS.filter((p) => !WORKSPACE_ADMIN_PERMISSIONS.includes(p)),
+  // Manager plus the support-operations configuration permissions.
+  support_lead: ALL_PERMISSIONS.filter(
+    (p) => !WORKSPACE_ADMIN_PERMISSIONS.includes(p) || SUPPORT_LEAD_EXTRA_PERMISSIONS.includes(p)
+  ),
   // Broad cross-domain operator: works feedback + (later) support queues; does not
   // configure product structure or settings. The support operate permissions are
   // appended here by default when the platform lands.
@@ -709,6 +745,12 @@ export const SYSTEM_ROLE_DEFS: ReadonlyArray<{
     name: 'Manager',
     description:
       'Configures and operates the whole product and inbox; no workspace-admin permissions',
+  },
+  {
+    key: SYSTEM_ROLES.SUPPORT_LEAD,
+    name: 'Support lead',
+    description:
+      'Everything a Manager can do, plus routing, workflows, SLA policies, office hours, inbox channels, custom fields, and the customer-facing AI',
   },
   {
     key: SYSTEM_ROLES.CONTRIBUTOR,

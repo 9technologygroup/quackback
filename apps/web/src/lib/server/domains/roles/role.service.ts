@@ -41,7 +41,10 @@ import {
 
 type Executor = Database | Transaction
 import { generateId, type PrincipalId, type RoleId } from '@quackback/ids'
-import { SYSTEM_ROLES, type PermissionKey } from '@/lib/shared/permissions'
+import { ALL_PERMISSIONS, SYSTEM_ROLES, type PermissionKey } from '@/lib/shared/permissions'
+
+/** Keys the catalogue still defines; a retired key's grants linger in the database for older app versions. */
+const CATALOGUE_KEYS: ReadonlySet<string> = new Set(ALL_PERMISSIONS)
 import { assertKnownPermissions, assertWithinCeiling } from './role.ceiling'
 import { ForbiddenError, NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { getTierLimits } from '@/lib/server/domains/settings/tier-limits.service'
@@ -101,6 +104,7 @@ export async function listRoles(): Promise<RoleWithMeta[]> {
 
   const keysByRole = new Map<string, PermissionKey[]>()
   for (const row of permRows) {
+    if (!CATALOGUE_KEYS.has(row.key)) continue
     const list = keysByRole.get(row.roleId) ?? []
     list.push(row.key as PermissionKey)
     keysByRole.set(row.roleId, list)
@@ -138,6 +142,7 @@ export async function listRoles(): Promise<RoleWithMeta[]> {
     SYSTEM_ROLES.OWNER,
     SYSTEM_ROLES.ADMIN,
     SYSTEM_ROLES.MANAGER,
+    SYSTEM_ROLES.SUPPORT_LEAD,
     SYSTEM_ROLES.CONTRIBUTOR,
   ] as string[]
   return result.sort((a, b) => {
@@ -162,7 +167,7 @@ export async function permissionKeysForRole(
     .from(rolePermissions)
     .innerJoin(permissions, eq(permissions.id, rolePermissions.permissionId))
     .where(eq(rolePermissions.roleId, roleId))
-  return new Set(rows.map((r) => r.key as PermissionKey))
+  return new Set(rows.map((r) => r.key as PermissionKey).filter((k) => CATALOGUE_KEYS.has(k)))
 }
 
 /** Serializes concurrent edits of one role (and its permission rows). */

@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "Novedades",
   "automation.knowledge.source.changelog.description": "Entradas publicadas de novedades.",
   "automation.knowledge.source.documents.label": "Documentos",
+  "team.roleSelect.supportLead": "Responsable de soporte - También puede configurar el enrutamiento, los flujos de trabajo, los SLA y los canales",
   "automation.knowledge.source.documents.description": "Documentos de conocimiento subidos (PDF).",
   "automation.knowledge.source.status.label": "Estado del sistema",
   "automation.knowledge.source.status.description": "Componentes de estado en vivo, incidentes y ventanas de mantenimiento.",

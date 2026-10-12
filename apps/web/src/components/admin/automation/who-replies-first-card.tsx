@@ -17,7 +17,7 @@ import { INLINE_LINK } from '@/components/admin/settings/inline-link'
 export function WhoRepliesFirstCard() {
   const intl = useIntl()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
-  const canAgent = usePermission(PERMISSIONS.ASSISTANT_MANAGE)
+  const canAgent = usePermission(PERMISSIONS.AI_CUSTOMER_MANAGE)
   const canWorkflows = usePermission(PERMISSIONS.WORKFLOW_MANAGE)
   const canOfficeHours = usePermission(PERMISSIONS.OFFICE_HOURS_MANAGE)
   const settings = useWorkspaceSettings()

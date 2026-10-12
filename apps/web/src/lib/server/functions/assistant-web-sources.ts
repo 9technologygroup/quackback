@@ -1,6 +1,6 @@
 /**
  * Web-source CRUD server fns for the assistant knowledge settings. Gates on
- * assistant.manage, same as snippets (assistant-snippets.ts) and guidance
+ * either AI permission, same as snippets (assistant-snippets.ts) and guidance
  * rules (assistant-guidance.ts). Adding a source fetches the URL at write
  * time through the SSRF-guarded fetch (web-source.service.ts); with `crawl`
  * set, same-origin links are followed up to the page cap within the admin's
@@ -10,9 +10,9 @@
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import type { AssistantWebSourceId } from '@quackback/ids'
-import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
-import { requireAuth } from './auth-helpers'
+import { requireAuth, assertAnyPermission } from './auth-helpers'
+import { AI_ANY_PERMISSIONS } from '@/lib/shared/ai-permissions'
 
 const log = logger.child({ component: 'assistant-web-sources' })
 
@@ -37,7 +37,7 @@ const setWebSourceEnabledSchema = z.object({
 /** All web sources, enabled or not — the admin list shows every source. */
 export const listWebSourcesFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('list web sources')
-  await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+  assertAnyPermission(await requireAuth(), AI_ANY_PERMISSIONS)
   const { listWebSources } = await import('@/lib/server/domains/assistant/web-source.service')
   return listWebSources()
 })
@@ -46,7 +46,8 @@ export const addWebSourceFn = createServerFn({ method: 'POST' })
   .validator(addWebSourceSchema)
   .handler(async ({ data }) => {
     log.info('add web source')
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth()
+    assertAnyPermission(ctx, AI_ANY_PERMISSIONS)
     const { addWebSourceFromUrl } =
       await import('@/lib/server/domains/assistant/web-source.service')
     return addWebSourceFromUrl({
@@ -63,7 +64,7 @@ export const setWebSourceEnabledFn = createServerFn({ method: 'POST' })
   .validator(setWebSourceEnabledSchema)
   .handler(async ({ data }) => {
     log.info('toggle web source')
-    await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    assertAnyPermission(await requireAuth(), AI_ANY_PERMISSIONS)
     const { setWebSourceEnabled } =
       await import('@/lib/server/domains/assistant/web-source.service')
     return setWebSourceEnabled(data.id as AssistantWebSourceId, data.enabled)
@@ -73,7 +74,7 @@ export const deleteWebSourceFn = createServerFn({ method: 'POST' })
   .validator(webSourceIdSchema)
   .handler(async ({ data }) => {
     log.info('delete web source')
-    await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    assertAnyPermission(await requireAuth(), AI_ANY_PERMISSIONS)
     const { deleteWebSource } = await import('@/lib/server/domains/assistant/web-source.service')
     await deleteWebSource(data.id as AssistantWebSourceId)
     return { id: data.id }

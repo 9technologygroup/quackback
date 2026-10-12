@@ -105,7 +105,7 @@ describe('AI & Automation loaders', () => {
     const { warmed, afterMount } = await fetchesAfterLoader(
       '@/routes/admin/settings.agent',
       useAgentSettingsReads,
-      { permissions: ['assistant.manage'] }
+      { permissions: ['ai.customer.manage'] }
     )
     expect(afterMount).toEqual([])
     expect(warmed).toEqual(['guidanceRules', 'guidanceStats', 'settings'])

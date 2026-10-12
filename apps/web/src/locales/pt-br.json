@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "Changelog",
   "automation.knowledge.source.changelog.description": "Entradas publicadas do changelog.",
   "automation.knowledge.source.documents.label": "Documentos",
+  "team.roleSelect.supportLead": "Líder de suporte - Também pode configurar roteamento, fluxos de trabalho, SLAs e canais",
   "automation.knowledge.source.documents.description": "Documentos de conhecimento enviados (PDFs).",
   "automation.knowledge.source.status.label": "Status do sistema",
   "automation.knowledge.source.status.description": "Componentes de status, incidentes e janelas de manutenção em tempo real.",

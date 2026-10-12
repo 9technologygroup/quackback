@@ -16,6 +16,7 @@ import { principal } from './schema/auth'
 import { roles, permissions, rolePermissions, principalRoleAssignments } from './schema/rbac'
 import {
   PERMISSION_CATALOGUE,
+  RETIRED_PERMISSION_KEYS,
   SYSTEM_ROLES,
   SYSTEM_ROLE_DEFS,
   SYSTEM_ROLE_PERMISSIONS,
@@ -56,7 +57,7 @@ export async function seedSystemData(db: Executor): Promise<void> {
       })
   }
 
-  // 3. System roles — upsert the four presets by key.
+  // 3. System roles — upsert the presets by key.
   for (const r of SYSTEM_ROLE_DEFS) {
     await db
       .insert(roles)
@@ -71,6 +72,9 @@ export async function seedSystemData(db: Executor): Promise<void> {
   //    (insert missing, delete stale) so a bundle edit propagates on the next run.
   const permRows = await db.select({ id: permissions.id, key: permissions.key }).from(permissions)
   const permIdByKey = new Map(permRows.map((p) => [p.key, p.id]))
+  const retiredPermIds = new Set(
+    permRows.filter((p) => RETIRED_PERMISSION_KEYS.includes(p.key)).map((p) => p.id)
+  )
   const roleRows = await db.select({ id: roles.id, key: roles.key }).from(roles)
   const roleIdByKey = new Map(roleRows.map((r) => [r.key, r.id]))
 
@@ -97,7 +101,11 @@ export async function seedSystemData(db: Executor): Promise<void> {
       await db.insert(rolePermissions).values(toInsert).onConflictDoNothing()
     }
 
-    const toDelete = existing.filter((e) => !desired.has(e.permissionId)).map((e) => e.id)
+    // Grants of a retired key are left alone: an older app version still running
+    // during a rollout reads them, and nothing in this version does.
+    const toDelete = existing
+      .filter((e) => !desired.has(e.permissionId) && !retiredPermIds.has(e.permissionId))
+      .map((e) => e.id)
     if (toDelete.length > 0) {
       await db.delete(rolePermissions).where(inArray(rolePermissions.id, toDelete))
     }

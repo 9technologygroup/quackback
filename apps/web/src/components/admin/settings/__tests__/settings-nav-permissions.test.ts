@@ -74,8 +74,12 @@ describe('navSectionsFor', () => {
     const only = (permission: PermissionKey) =>
       navSectionsFor(buildNavSections({ supportInbox: true }, true, true), new Set([permission]))
 
-    expect(labels(only(PERMISSIONS.ASSISTANT_MANAGE), 'AI & Automation')).toEqual([
+    expect(labels(only(PERMISSIONS.AI_CUSTOMER_MANAGE), 'AI & Automation')).toEqual([
       'Agent',
+      'Skills',
+      'Connectors',
+    ])
+    expect(labels(only(PERMISSIONS.AI_TEAMMATE_MANAGE), 'AI & Automation')).toEqual([
       'Copilot',
       'Skills',
       'Connectors',
@@ -133,7 +137,7 @@ describe('canOpenSettings', () => {
   const can = (...permissions: PermissionKey[]) => canOpenSettings(sections, new Set(permissions))
 
   it('is true for a holder of any page permission, however small', () => {
-    expect(can(PERMISSIONS.ASSISTANT_MANAGE)).toBe(true)
+    expect(can(PERMISSIONS.AI_CUSTOMER_MANAGE)).toBe(true)
     expect(can(PERMISSIONS.WORKFLOW_MANAGE)).toBe(true)
     expect(can(PERMISSIONS.MEMBER_VIEW)).toBe(true)
   })
@@ -174,8 +178,8 @@ describe('firstSettingsPath', () => {
     expect(first(contributor)).toBe('/admin/settings/members')
   })
 
-  it('opens Agent for a role with only assistant.manage', () => {
-    expect(first(new Set([PERMISSIONS.ASSISTANT_MANAGE]))).toBe('/admin/settings/agent')
+  it('opens Agent for a role with only ai.customer.manage', () => {
+    expect(first(new Set([PERMISSIONS.AI_CUSTOMER_MANAGE]))).toBe('/admin/settings/agent')
   })
 
   it('opens Workflows for a workflow manager while the inbox is on', () => {

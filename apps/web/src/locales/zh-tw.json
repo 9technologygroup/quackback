@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "更新日誌",
   "automation.knowledge.source.changelog.description": "已發布的更新日誌項目。",
   "automation.knowledge.source.documents.label": "文件",
+  "team.roleSelect.supportLead": "支援負責人 - 還可以設定路由、工作流程、SLA 與管道",
   "automation.knowledge.source.documents.description": "已上傳的知識文件（PDF）。",
   "automation.knowledge.source.status.label": "系統狀態",
   "automation.knowledge.source.status.description": "即時的狀態元件、事件與維護時段。",

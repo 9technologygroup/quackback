@@ -505,9 +505,9 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
   'assistant_events.principal_id':
     'assistant event attribution is the acting teammate; customer subjects are carried by conversation or ticket instead',
   'assistant_documents.created_by_id':
-    'knowledge documents are ingested by team members with assistant.manage; ON DELETE SET NULL, so teardown detaches the uploader (same reasoning as assistant_snippets.created_by_id)',
+    'knowledge documents are ingested by team members with ai.customer.manage or ai.teammate.manage; ON DELETE SET NULL, so teardown detaches the uploader (same reasoning as assistant_snippets.created_by_id)',
   'assistant_web_sources.created_by_id':
-    'web sources are added by team members with assistant.manage; ON DELETE SET NULL, so teardown detaches the author (same reasoning as assistant_snippets.created_by_id)',
+    'web sources are added by team members with ai.customer.manage or ai.teammate.manage; ON DELETE SET NULL, so teardown detaches the author (same reasoning as assistant_snippets.created_by_id)',
   'post_merge_suggestions.resolved_by_principal_id': 'suggestion resolution is a team action',
   'principal_role_assignments.principal_id':
     'role assignments are team-only; anonymous principals hold none',
@@ -543,11 +543,11 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
   'assistant_guidance_rules.created_by_id':
     'guidance rule authors are team members, never anonymous',
   'assistant_snippets.created_by_id':
-    'snippet authors are team members with assistant.manage, never anonymous',
+    'snippet authors are team members with ai.customer.manage or ai.teammate.manage, never anonymous',
   'connectors.created_by_principal_id':
-    'connector authors are team members with assistant.manage, never anonymous',
+    'connector authors are team members with ai.customer.manage or ai.teammate.manage, never anonymous',
   'agent_skills.created_by_principal_id':
-    'skill authors are team members with assistant.manage, never anonymous',
+    'skill authors are team members with ai.customer.manage or ai.teammate.manage, never anonymous',
   'assistant_pending_actions.decided_by_id':
     'the agent who approves/rejects a pending action is a team member, never anonymous',
   'assistant_pending_actions.requested_by_id':

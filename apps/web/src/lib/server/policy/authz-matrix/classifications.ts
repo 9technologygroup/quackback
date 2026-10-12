@@ -85,10 +85,134 @@ const APPROVAL_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.TICKET_CREATE,
   PERMISSIONS.POST_CREATE,
   PERMISSIONS.POST_VOTE_ON_BEHALF,
-  PERMISSIONS.ASSISTANT_MANAGE,
+  PERMISSIONS.AI_TEAMMATE_MANAGE,
 ]
 
 export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
+  'lib/server/functions/assistant-connectors.ts::createConnectorFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'either AI permission opens it, and assigning to an agent also requires that agent AI permission'
+  ),
+  'lib/server/functions/assistant-connectors.ts::deleteConnectorFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-connectors.ts::getConnectorFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-connectors.ts::listConnectorsFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-connectors.ts::refreshConnectorFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-connectors.ts::startConnectorOAuthFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-connectors.ts::updateConnectorFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'either AI permission opens it, and assigning to an agent also requires that agent AI permission'
+  ),
+  'lib/server/functions/assistant-documents.ts::deleteAssistantDocumentFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-documents.ts::listAssistantDocumentsFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-documents.ts::uploadAssistantDocumentFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-guidance-stats.ts::getGuidanceRuleStatsFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-guidance.ts::createGuidanceRuleFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'the check requires the AI permission of the agent the rule or tool rules belong to'
+  ),
+  'lib/server/functions/assistant-guidance.ts::deleteGuidanceRuleFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'the check requires the AI permission of the agent the rule or tool rules belong to'
+  ),
+  'lib/server/functions/assistant-guidance.ts::listAssistantToolsFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-guidance.ts::listGuidanceRulesFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-guidance.ts::reorderGuidanceRulesFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'the check requires the AI permission of the agent the rule or tool rules belong to'
+  ),
+  'lib/server/functions/assistant-guidance.ts::updateGuidanceRuleFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'the check requires the AI permission of the agent the rule or tool rules belong to'
+  ),
+  'lib/server/functions/assistant-settings.ts::getAssistantSettingsFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-settings.ts::updateAssistantToolRulesFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'the check requires the AI permission of the agent the rule or tool rules belong to'
+  ),
+  'lib/server/functions/assistant-skills.ts::createSkillFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'either AI permission opens it, and assigning to an agent also requires that agent AI permission'
+  ),
+  'lib/server/functions/assistant-skills.ts::deleteSkillFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-skills.ts::listSkillsFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-skills.ts::updateSkillFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'either AI permission opens it, and assigning to an agent also requires that agent AI permission'
+  ),
+  'lib/server/functions/assistant-snippets.ts::createSnippetFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-snippets.ts::deleteSnippetFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-snippets.ts::listSnippetsFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-snippets.ts::updateSnippetFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-web-sources.ts::addWebSourceFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-web-sources.ts::deleteWebSourceFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-web-sources.ts::listWebSourcesFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
+  'lib/server/functions/assistant-web-sources.ts::setWebSourceEnabledFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
+    'shared AI settings: a holder of either AI permission may use them'
+  ),
   'lib/server/functions/website-branding.ts::startAutomaticWebsiteBrandingFn': DYNAMIC_PERMISSION(
     [PERMISSIONS.SETTINGS_MANAGE],
     'the lookup only records an offer and requires current settings management, rechecked after the fetch'

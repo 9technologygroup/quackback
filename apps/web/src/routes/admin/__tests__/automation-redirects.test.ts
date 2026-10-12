@@ -76,7 +76,7 @@ describe('retired /admin/automation URLs', () => {
       context: { permissions, settings: { featureFlags: { supportInbox } } },
     })
     expect(
-      (await redirectOf('../automation.index', ctx([PERMISSIONS.ASSISTANT_MANAGE], false))).href
+      (await redirectOf('../automation.index', ctx([PERMISSIONS.AI_CUSTOMER_MANAGE], false))).href
     ).toBe('/admin/settings/agent')
     expect(
       (await redirectOf('../automation.index', ctx([PERMISSIONS.WORKFLOW_MANAGE], true))).href

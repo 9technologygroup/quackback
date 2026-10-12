@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IntlProvider } from 'react-intl'
 
 const fns = vi.hoisted(() => ({
   searchPeopleToAddFn: vi.fn(),
@@ -130,9 +131,11 @@ function renderDialog(props: Partial<AddPeopleDialogProps> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const onOpenChange = vi.fn()
   render(
-    <QueryClientProvider client={queryClient}>
-      <AddPeopleDialog open onOpenChange={onOpenChange} canGrantAdmin {...props} />
-    </QueryClientProvider>
+    <IntlProvider locale="en" messages={{}}>
+      <QueryClientProvider client={queryClient}>
+        <AddPeopleDialog open onOpenChange={onOpenChange} canGrantAdmin {...props} />
+      </QueryClientProvider>
+    </IntlProvider>
   )
   return { onOpenChange, queryClient }
 }

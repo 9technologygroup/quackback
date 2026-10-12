@@ -25,23 +25,32 @@ const hoisted = vi.hoisted(() => ({
   getGuidanceRuleStats: vi.fn(),
 }))
 
-vi.mock('@/lib/server/functions/auth-helpers', () => ({ requireAuth: hoisted.requireAuth }))
+vi.mock('@/lib/server/functions/auth-helpers', async () =>
+  (await import('./ai-auth-mock')).aiAuthHelpers(hoisted.requireAuth)
+)
 vi.mock('@/lib/server/domains/assistant/guidance-stats', () => ({
   getGuidanceRuleStats: hoisted.getGuidanceRuleStats,
 }))
 
 import { getGuidanceRuleStatsFn } from '../assistant-guidance-stats'
+import { dashboardAuth } from './ai-auth-mock'
 
 beforeEach(() => {
   vi.clearAllMocks()
-  hoisted.requireAuth.mockResolvedValue({ principal: { id: 'principal_admin' } })
+  hoisted.requireAuth.mockResolvedValue(
+    dashboardAuth([PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE])
+  )
   hoisted.getGuidanceRuleStats.mockResolvedValue({})
 })
 
 describe('getGuidanceRuleStatsFn', () => {
-  it('gates on assistant.manage', async () => {
-    await getGuidanceRuleStatsFn()
-    expect(hoisted.requireAuth).toHaveBeenCalledWith({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+  it('opens to a holder of either AI permission and refuses everyone else', async () => {
+    for (const held of [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE]) {
+      hoisted.requireAuth.mockResolvedValue(dashboardAuth([held]))
+      await expect(getGuidanceRuleStatsFn()).resolves.toBeDefined()
+    }
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.TAG_MANAGE]))
+    await expect(getGuidanceRuleStatsFn()).rejects.toThrow('Access denied')
   })
 
   it('propagates an auth rejection without touching the domain layer', async () => {

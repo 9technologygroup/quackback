@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "Changelog",
   "automation.knowledge.source.changelog.description": "Published changelog entries.",
   "automation.knowledge.source.documents.label": "Documents",
+  "team.roleSelect.supportLead": "Support lead - Can also set up routing, workflows, SLAs and channels",
   "automation.knowledge.source.documents.description": "Uploaded knowledge documents (PDFs).",
   "automation.knowledge.source.status.label": "System status",
   "automation.knowledge.source.status.description": "Live status components, incidents, and maintenance windows.",

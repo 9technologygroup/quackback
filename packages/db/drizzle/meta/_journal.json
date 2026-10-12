@@ -1961,6 +1961,13 @@
       "when": 1791000700000,
       "tag": "0302_approvals_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 280,
+      "version": "7",
+      "when": 1791000800000,
+      "tag": "0303_ai_permission_split",
+      "breakpoints": true
     }
   ]
 }

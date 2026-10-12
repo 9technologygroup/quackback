@@ -7,7 +7,7 @@ import { WHO_REPLIES_FIRST } from '@/lib/shared/assistant/who-replies-first'
 
 const hoisted = vi.hoisted(() => ({
   pathname: '/admin/settings/workflows',
-  permissions: new Set<string>(['assistant.manage', 'office_hours.manage', 'workflow.manage']),
+  permissions: new Set<string>(['ai.customer.manage', 'office_hours.manage', 'workflow.manage']),
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -33,7 +33,7 @@ import { WhoRepliesFirstCard } from '../who-replies-first-card'
 afterEach(() => {
   cleanup()
   hoisted.pathname = '/admin/settings/workflows'
-  hoisted.permissions = new Set(['assistant.manage', 'office_hours.manage', 'workflow.manage'])
+  hoisted.permissions = new Set(['ai.customer.manage', 'office_hours.manage', 'workflow.manage'])
 })
 
 function renderCard() {
@@ -90,7 +90,7 @@ describe('WhoRepliesFirstCard', () => {
   })
 
   it('hides Office hours when the admin cannot open that settings page', () => {
-    hoisted.permissions = new Set(['assistant.manage'])
+    hoisted.permissions = new Set(['ai.customer.manage'])
     renderCard()
     expect(screen.getByRole('link', { name: 'Manage the agent' })).toBeTruthy()
     expect(screen.queryByRole('link', { name: 'Office hours' })).toBeNull()

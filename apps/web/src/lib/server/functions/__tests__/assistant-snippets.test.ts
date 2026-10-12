@@ -34,7 +34,9 @@ const hoisted = vi.hoisted(() => ({
   deleteSnippet: vi.fn(),
 }))
 
-vi.mock('@/lib/server/functions/auth-helpers', () => ({ requireAuth: hoisted.requireAuth }))
+vi.mock('@/lib/server/functions/auth-helpers', async () =>
+  (await import('./ai-auth-mock')).aiAuthHelpers(hoisted.requireAuth)
+)
 vi.mock('@/lib/server/domains/assistant/snippet.service', () => ({
   createSnippet: hoisted.createSnippet,
   listSnippets: hoisted.listSnippets,
@@ -48,37 +50,36 @@ import {
   updateSnippetFn,
   deleteSnippetFn,
 } from '../assistant-snippets'
+import { dashboardAuth } from './ai-auth-mock'
 
 beforeEach(() => {
   vi.clearAllMocks()
-  hoisted.requireAuth.mockResolvedValue({ principal: { id: 'principal_admin' } })
+  hoisted.requireAuth.mockResolvedValue(
+    dashboardAuth([PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE])
+  )
   hoisted.listSnippets.mockResolvedValue([])
 })
 
 describe('permission gates', () => {
-  it('every fn gates on assistant.manage', async () => {
-    await listSnippetsFn()
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
+  it('every fn opens to either AI permission and refuses everyone else', async () => {
     hoisted.createSnippet.mockResolvedValue({ id: 'assistant_snippet_1' })
-    await createSnippetFn({ data: { title: 'Refund window', content: 'Refunds within 30 days.' } })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
     hoisted.updateSnippet.mockResolvedValue({ id: 'assistant_snippet_1' })
-    await updateSnippetFn({ data: { id: 'assistant_snippet_1', enabled: false } })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
-
     hoisted.deleteSnippet.mockResolvedValue(undefined)
-    await deleteSnippetFn({ data: { id: 'assistant_snippet_1' } })
-    expect(hoisted.requireAuth).toHaveBeenLastCalledWith({
-      permission: PERMISSIONS.ASSISTANT_MANAGE,
-    })
+    const calls = [
+      () => listSnippetsFn(),
+      () =>
+        createSnippetFn({
+          data: { title: 'Refund window', content: 'Refunds within 30 days.' },
+        }),
+      () => updateSnippetFn({ data: { id: 'assistant_snippet_1', enabled: false } }),
+      () => deleteSnippetFn({ data: { id: 'assistant_snippet_1' } }),
+    ]
+    for (const held of [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE]) {
+      hoisted.requireAuth.mockResolvedValue(dashboardAuth([held]))
+      for (const call of calls) await expect(call()).resolves.toBeDefined()
+    }
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.TAG_MANAGE]))
+    for (const call of calls) await expect(call()).rejects.toThrow('Access denied')
   })
 
   it('propagates an auth rejection without touching the domain layer', async () => {

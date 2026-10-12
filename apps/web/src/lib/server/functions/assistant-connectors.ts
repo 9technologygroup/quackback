@@ -1,12 +1,11 @@
 /**
- * Agent Connectors CRUD + refresh. All gate on assistant.manage. Secrets never
+ * Agent Connectors CRUD + refresh. All gate on either AI permission. Secrets never
  * return to the client.
  */
 import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import type { ConnectorId } from '@quackback/ids'
-import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
   connectorCreateInputSchema,
   connectorUpdateInputSchema,
@@ -14,7 +13,8 @@ import {
 } from '@/lib/shared/assistant/connectors'
 import { logger } from '@/lib/server/logger'
 import { recordAuditEvent, actorFromAuth } from '@/lib/server/audit/log'
-import { requireAuth } from './auth-helpers'
+import { requireAuth, assertAnyPermission, assertPermission } from './auth-helpers'
+import { AI_ANY_PERMISSIONS, aiPermissionsForAssignments } from '@/lib/shared/ai-permissions'
 
 const log = logger.child({ component: 'assistant-connectors' })
 
@@ -40,7 +40,7 @@ const idSchema = z.object({ id: z.string().min(1) })
 
 export const listConnectorsFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('list connectors')
-  await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+  assertAnyPermission(await requireAuth(), AI_ANY_PERMISSIONS)
 
   const { listConnectors, toConnectorDTO } =
     await import('@/lib/server/domains/assistant/connectors/connectors.service')
@@ -52,7 +52,7 @@ export const listConnectorsFn = createServerFn({ method: 'GET' }).handler(async 
 export const getConnectorFn = createServerFn({ method: 'GET' })
   .validator(idSchema)
   .handler(async ({ data }) => {
-    await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    assertAnyPermission(await requireAuth(), AI_ANY_PERMISSIONS)
     if (data.id === 'quackback') {
       return { builtin: await loadBuiltinConnector(), connector: null }
     }
@@ -66,7 +66,10 @@ export const createConnectorFn = createServerFn({ method: 'POST' })
   .validator(connectorCreateInputSchema)
   .handler(async ({ data }) => {
     log.info('create connector')
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth()
+    assertAnyPermission(ctx, AI_ANY_PERMISSIONS)
+    for (const needed of aiPermissionsForAssignments(data.assignments))
+      assertPermission(ctx, needed)
     const { createConnector, toConnectorDTO, ConnectorOAuthRequiredError } =
       await import('@/lib/server/domains/assistant/connectors/connectors.service')
     const audit = async (id: string, after: Record<string, unknown>) => {
@@ -101,7 +104,10 @@ export const updateConnectorFn = createServerFn({ method: 'POST' })
   .validator(connectorUpdateInputSchema)
   .handler(async ({ data }) => {
     log.info('update connector')
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth()
+    assertAnyPermission(ctx, AI_ANY_PERMISSIONS)
+    for (const needed of aiPermissionsForAssignments(data.assignments))
+      assertPermission(ctx, needed)
     const { updateConnector, toConnectorDTO } =
       await import('@/lib/server/domains/assistant/connectors/connectors.service')
     const { id, ...input } = data
@@ -120,7 +126,8 @@ export const refreshConnectorFn = createServerFn({ method: 'POST' })
   .validator(idSchema)
   .handler(async ({ data }) => {
     log.info('refresh connector')
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth()
+    assertAnyPermission(ctx, AI_ANY_PERMISSIONS)
     const { toConnectorDTO } =
       await import('@/lib/server/domains/assistant/connectors/connectors.service')
     const { refreshConnector } =
@@ -139,7 +146,7 @@ export const startConnectorOAuthFn = createServerFn({ method: 'POST' })
   .validator(idSchema)
   .handler(async ({ data }) => {
     log.info('start connector oauth')
-    await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    assertAnyPermission(await requireAuth(), AI_ANY_PERMISSIONS)
     const { startConnectorOAuth } =
       await import('@/lib/server/domains/assistant/connectors/oauth-provider')
     const headers = getRequestHeaders()
@@ -153,7 +160,8 @@ export const deleteConnectorFn = createServerFn({ method: 'POST' })
   .validator(idSchema)
   .handler(async ({ data }) => {
     log.info('delete connector')
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth()
+    assertAnyPermission(ctx, AI_ANY_PERMISSIONS)
     const { deleteConnector } =
       await import('@/lib/server/domains/assistant/connectors/connectors.health')
     await deleteConnector(data.id as ConnectorId)

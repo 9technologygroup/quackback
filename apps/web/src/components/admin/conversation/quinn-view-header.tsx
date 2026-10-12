@@ -26,7 +26,7 @@ export function QuinnViewHeader({
   counts?: { resolved: number; escalated: number; pending: number }
   onChange: (value?: QuinnBucket) => void
 }) {
-  const canConfigure = usePermission(PERMISSIONS.ASSISTANT_MANAGE)
+  const canConfigure = usePermission(PERMISSIONS.AI_CUSTOMER_MANAGE)
   const countFor = (v?: QuinnBucket): number | undefined => {
     if (!counts) return undefined
     return v ? counts[v] : counts.resolved + counts.escalated + counts.pending

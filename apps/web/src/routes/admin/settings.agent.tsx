@@ -45,7 +45,7 @@ export const Route = createFileRoute('/admin/settings/agent')({
     if (search.tab === 'actions') {
       throw redirect({ to: '/admin/settings/connectors' })
     }
-    assertRoutePermission(context.permissions, PERMISSIONS.ASSISTANT_MANAGE)
+    assertRoutePermission(context.permissions, PERMISSIONS.AI_CUSTOMER_MANAGE)
   },
   // The page reads its settings, and the always-mounted Guidance tab reads the
   // rules and their stats. Warming them means the page finds all three loaded;

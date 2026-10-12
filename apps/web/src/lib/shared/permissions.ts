@@ -123,7 +123,8 @@ export const PERMISSIONS = {
   CHANNEL_ACCOUNT_MANAGE: 'channel_account.manage',
 
   // ai
-  ASSISTANT_MANAGE: 'assistant.manage',
+  AI_CUSTOMER_MANAGE: 'ai.customer.manage',
+  AI_TEAMMATE_MANAGE: 'ai.teammate.manage',
   COPILOT_USE: 'copilot.use',
 
   // status_page
@@ -164,6 +165,7 @@ export const SYSTEM_ROLES = {
   OWNER: 'owner',
   ADMIN: 'admin',
   MANAGER: 'manager',
+  SUPPORT_LEAD: 'support_lead',
   CONTRIBUTOR: 'contributor',
 } as const
 
@@ -191,14 +193,28 @@ export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.TEAM_MANAGE,
   PERMISSIONS.WORKFLOW_MANAGE,
   PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
-  PERMISSIONS.ASSISTANT_MANAGE,
+  PERMISSIONS.AI_CUSTOMER_MANAGE,
+  PERMISSIONS.AI_TEAMMATE_MANAGE,
   PERMISSIONS.STATUS_PAGE_MANAGE,
+]
+
+export const SUPPORT_LEAD_EXTRA_PERMISSIONS: readonly PermissionKey[] = [
+  PERMISSIONS.ROUTING_MANAGE,
+  PERMISSIONS.WORKFLOW_MANAGE,
+  PERMISSIONS.SLA_MANAGE,
+  PERMISSIONS.OFFICE_HOURS_MANAGE,
+  PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
+  PERMISSIONS.CUSTOM_FIELD_MANAGE,
+  PERMISSIONS.AI_CUSTOMER_MANAGE,
 ]
 
 export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {
   owner: ALL_PERMISSIONS,
   admin: ALL_PERMISSIONS.filter((p) => p !== PERMISSIONS.BILLING_MANAGE),
   manager: ALL_PERMISSIONS.filter((p) => !WORKSPACE_ADMIN_PERMISSIONS.includes(p)),
+  support_lead: ALL_PERMISSIONS.filter(
+    (p) => !WORKSPACE_ADMIN_PERMISSIONS.includes(p) || SUPPORT_LEAD_EXTRA_PERMISSIONS.includes(p)
+  ),
   contributor: [
     PERMISSIONS.POST_VIEW_PRIVATE,
     PERMISSIONS.POST_CREATE,
@@ -334,7 +350,8 @@ export const PERMISSION_CATALOGUE: ReadonlyArray<{
   { key: PERMISSIONS.TEAM_MANAGE, category: 'support' },
   { key: PERMISSIONS.WORKFLOW_MANAGE, category: 'support' },
   { key: PERMISSIONS.CHANNEL_ACCOUNT_MANAGE, category: 'support' },
-  { key: PERMISSIONS.ASSISTANT_MANAGE, category: 'ai' },
+  { key: PERMISSIONS.AI_CUSTOMER_MANAGE, category: 'ai' },
+  { key: PERMISSIONS.AI_TEAMMATE_MANAGE, category: 'ai' },
   { key: PERMISSIONS.COPILOT_USE, category: 'ai' },
   { key: PERMISSIONS.STATUS_PAGE_MANAGE, category: 'status_page' },
   { key: PERMISSIONS.STATUS_PAGE_PUBLISH, category: 'status_page' },

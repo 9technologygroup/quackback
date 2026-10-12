@@ -11,14 +11,15 @@ import {
 } from '@/lib/server/domains/settings/settings.assistant'
 import { logger } from '@/lib/server/logger'
 import { PERMISSIONS } from '@/lib/shared/permissions'
-import { requireAuth } from './auth-helpers'
+import { requireAuth, assertAnyPermission, assertPermission } from './auth-helpers'
+import { AI_ANY_PERMISSIONS, aiPermissionForAgent } from '@/lib/shared/ai-permissions'
 import { z } from 'zod'
 
 const log = logger.child({ component: 'assistant-settings' })
 
 export const getAssistantSettingsFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('fetch assistant settings')
-  await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+  assertAnyPermission(await requireAuth(), AI_ANY_PERMISSIONS)
   const { getAssistantSettings } = await import('@/lib/server/domains/settings/settings.assistant')
   const { isAssistantConfigured } = await import('@/lib/server/domains/assistant/assistant.runtime')
   // `aiAvailable` is whether an AI model is configured at all, so the pages can
@@ -33,7 +34,7 @@ function configActor(ctx: Awaited<ReturnType<typeof requireAuth>>) {
 export const updateAssistantIdentityFn = createServerFn({ method: 'POST' })
   .validator(assistantIdentityUpdateSchema)
   .handler(async ({ data }) => {
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth({ permission: PERMISSIONS.AI_CUSTOMER_MANAGE })
     const { updateAssistantIdentity } =
       await import('@/lib/server/domains/settings/settings.assistant')
     return updateAssistantIdentity(data.expectedRevision, data.identity, configActor(ctx))
@@ -42,7 +43,7 @@ export const updateAssistantIdentityFn = createServerFn({ method: 'POST' })
 export const updateAssistantVoiceFn = createServerFn({ method: 'POST' })
   .validator(assistantVoiceUpdateSchema)
   .handler(async ({ data }) => {
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth({ permission: PERMISSIONS.AI_CUSTOMER_MANAGE })
     const { updateAssistantVoice } =
       await import('@/lib/server/domains/settings/settings.assistant')
     return updateAssistantVoice(data.expectedRevision, data.voice, configActor(ctx))
@@ -51,7 +52,7 @@ export const updateAssistantVoiceFn = createServerFn({ method: 'POST' })
 export const updateAssistantAgentKnowledgeFn = createServerFn({ method: 'POST' })
   .validator(assistantAgentKnowledgeUpdateSchema)
   .handler(async ({ data }) => {
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth({ permission: PERMISSIONS.AI_CUSTOMER_MANAGE })
     const { updateAssistantAgentKnowledge } =
       await import('@/lib/server/domains/settings/settings.assistant')
     return updateAssistantAgentKnowledge(
@@ -64,7 +65,7 @@ export const updateAssistantAgentKnowledgeFn = createServerFn({ method: 'POST' }
 export const updateAssistantCopilotKnowledgeFn = createServerFn({ method: 'POST' })
   .validator(assistantCopilotKnowledgeUpdateSchema)
   .handler(async ({ data }) => {
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth({ permission: PERMISSIONS.AI_TEAMMATE_MANAGE })
     const { updateAssistantAgentKnowledge } =
       await import('@/lib/server/domains/settings/settings.assistant')
     return updateAssistantAgentKnowledge(
@@ -77,7 +78,7 @@ export const updateAssistantCopilotKnowledgeFn = createServerFn({ method: 'POST'
 export const updateAssistantCopilotCapabilitiesFn = createServerFn({ method: 'POST' })
   .validator(assistantCopilotCapabilitiesUpdateSchema)
   .handler(async ({ data }) => {
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth({ permission: PERMISSIONS.AI_TEAMMATE_MANAGE })
     const { updateAssistantCopilotCapabilities } =
       await import('@/lib/server/domains/settings/settings.assistant')
     return updateAssistantCopilotCapabilities(
@@ -90,7 +91,8 @@ export const updateAssistantCopilotCapabilitiesFn = createServerFn({ method: 'PO
 export const updateAssistantToolRulesFn = createServerFn({ method: 'POST' })
   .validator(assistantToolRulesUpdateSchema)
   .handler(async ({ data }) => {
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth()
+    assertPermission(ctx, aiPermissionForAgent(data.agent))
     const { updateAssistantToolRules } =
       await import('@/lib/server/domains/settings/settings.assistant')
     return updateAssistantToolRules(
@@ -103,7 +105,7 @@ export const updateAssistantToolRulesFn = createServerFn({ method: 'POST' })
 export const updateWidgetAssistantDeploymentFn = createServerFn({ method: 'POST' })
   .validator(z.object({ enabled: z.boolean(), respond: z.boolean() }))
   .handler(async ({ data }) => {
-    const ctx = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const ctx = await requireAuth({ permission: PERMISSIONS.AI_CUSTOMER_MANAGE })
     const { updateWidgetAssistantDeployment } =
       await import('@/lib/server/domains/settings/settings.widget')
     return updateWidgetAssistantDeployment(data, configActor(ctx))

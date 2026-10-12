@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "Журнал изменений",
   "automation.knowledge.source.changelog.description": "Опубликованные записи журнала изменений.",
   "automation.knowledge.source.documents.label": "Документы",
+  "team.roleSelect.supportLead": "Руководитель поддержки - Может также настраивать маршрутизацию, рабочие процессы, SLA и каналы",
   "automation.knowledge.source.documents.description": "Загруженные документы базы знаний (PDF).",
   "automation.knowledge.source.status.label": "Статус системы",
   "automation.knowledge.source.status.description": "Актуальные компоненты статуса, инциденты и окна обслуживания.",

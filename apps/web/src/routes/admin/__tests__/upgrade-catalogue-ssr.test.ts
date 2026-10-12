@@ -17,7 +17,7 @@ describe('upgrade catalogue SSR prefetch', () => {
     const context = {
       queryClient,
       billingEnabled: true,
-      permissions: ['settings.manage', 'assistant.manage', 'workflow.manage'],
+      permissions: ['settings.manage', 'ai.customer.manage', 'workflow.manage'],
     }
     const runLoader = async (loader: unknown) => {
       if (typeof loader !== 'function') throw new Error('expected a function loader')

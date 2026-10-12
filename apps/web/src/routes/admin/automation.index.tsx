@@ -8,8 +8,11 @@ export const Route = createFileRoute('/admin/automation/')({
   head: adminPageHead('Automation'),
   beforeLoad: ({ context, location }) => {
     const permissions: readonly string[] = context.permissions ?? []
-    if (permissions.includes(PERMISSIONS.ASSISTANT_MANAGE)) {
+    if (permissions.includes(PERMISSIONS.AI_CUSTOMER_MANAGE)) {
       redirectMoved('/admin/settings/agent', location)
+    }
+    if (permissions.includes(PERMISSIONS.AI_TEAMMATE_MANAGE)) {
+      redirectMoved('/admin/settings/copilot', location)
     }
     if (
       permissions.includes(PERMISSIONS.WORKFLOW_MANAGE) &&

@@ -13,6 +13,7 @@ import {
   PERMISSION_CATEGORIES,
   SYSTEM_ROLES,
   SYSTEM_ROLE_PERMISSIONS,
+  SUPPORT_LEAD_EXTRA_PERMISSIONS,
   WORKSPACE_ADMIN_PERMISSIONS,
 } from './rbac-catalogue'
 
@@ -101,10 +102,17 @@ export const WORKSPACE_ADMIN_PERMISSIONS: readonly PermissionKey[] = [
 ${renderRefList(WORKSPACE_ADMIN_PERMISSIONS)}
 ]
 
+export const SUPPORT_LEAD_EXTRA_PERMISSIONS: readonly PermissionKey[] = [
+${renderRefList(SUPPORT_LEAD_EXTRA_PERMISSIONS)}
+]
+
 export const SYSTEM_ROLE_PERMISSIONS: Record<SystemRoleKey, PermissionKey[]> = {
   owner: ALL_PERMISSIONS,
   admin: ALL_PERMISSIONS.filter((p) => p !== PERMISSIONS.BILLING_MANAGE),
   manager: ALL_PERMISSIONS.filter((p) => !WORKSPACE_ADMIN_PERMISSIONS.includes(p)),
+  support_lead: ALL_PERMISSIONS.filter(
+    (p) => !WORKSPACE_ADMIN_PERMISSIONS.includes(p) || SUPPORT_LEAD_EXTRA_PERMISSIONS.includes(p)
+  ),
   contributor: [
     ${contributor}
   ],

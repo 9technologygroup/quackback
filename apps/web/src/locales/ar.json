@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "آخر المستجدات",
   "automation.knowledge.source.changelog.description": "إدخالات سجل التغييرات المنشورة.",
   "automation.knowledge.source.documents.label": "المستندات",
+  "team.roleSelect.supportLead": "قائد الدعم - يمكنه أيضًا إعداد التوجيه وسير العمل واتفاقيات مستوى الخدمة والقنوات",
   "automation.knowledge.source.documents.description": "مستندات المعرفة المرفوعة (PDF).",
   "automation.knowledge.source.status.label": "حالة النظام",
   "automation.knowledge.source.status.description": "مكونات الحالة المباشرة والحوادث ونوافذ الصيانة.",

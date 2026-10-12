@@ -1,4 +1,5 @@
 import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
+import { AI_ANY_PERMISSIONS } from '@/lib/shared/ai-permissions'
 import { isProductEnabled, type FeatureFlags } from '@/lib/shared/types'
 import {
   AUTOMATION_PAGES,
@@ -22,6 +23,8 @@ export interface NavItem {
   exact?: boolean
   /** The permission the page checks when it opens; the nav offers it only to holders. */
   permission?: PermissionKey
+  /** Pages that open to a holder of any one of these, instead of a single permission. */
+  anyOf?: readonly PermissionKey[]
 }
 
 /**
@@ -179,6 +182,10 @@ function navAutomationPage(to: AutomationPagePath, permission: PermissionKey): N
   return { label: AUTOMATION_PAGES[to].defaultMessage, to, permission }
 }
 
+function navSharedAiPage(to: AutomationPagePath): NavItem {
+  return { label: AUTOMATION_PAGES[to].defaultMessage, to, anyOf: AI_ANY_PERMISSIONS }
+}
+
 export function isNavModule(entry: NavEntry): entry is NavModule {
   return 'pages' in entry
 }
@@ -216,10 +223,10 @@ export function buildNavSections(
     {
       label: 'AI & Automation',
       items: [
-        navAutomationPage('/admin/settings/agent', PERMISSIONS.ASSISTANT_MANAGE),
-        navAutomationPage('/admin/settings/copilot', PERMISSIONS.ASSISTANT_MANAGE),
-        navAutomationPage('/admin/settings/skills', PERMISSIONS.ASSISTANT_MANAGE),
-        navAutomationPage('/admin/settings/connectors', PERMISSIONS.ASSISTANT_MANAGE),
+        navAutomationPage('/admin/settings/agent', PERMISSIONS.AI_CUSTOMER_MANAGE),
+        navAutomationPage('/admin/settings/copilot', PERMISSIONS.AI_TEAMMATE_MANAGE),
+        navSharedAiPage('/admin/settings/skills'),
+        navSharedAiPage('/admin/settings/connectors'),
         ...(flags?.supportInbox
           ? [navAutomationPage('/admin/settings/workflows', PERMISSIONS.WORKFLOW_MANAGE)]
           : []),
@@ -316,7 +323,10 @@ export function navSectionsFor(
   sections: NavSection[],
   permissions: ReadonlySet<PermissionKey>
 ): NavSection[] {
-  const canOpen = (item: NavItem) => !item.permission || permissions.has(item.permission)
+  const canOpen = (item: NavItem) =>
+    item.anyOf
+      ? item.anyOf.some((permission) => permissions.has(permission))
+      : !item.permission || permissions.has(item.permission)
   const visible = (entry: NavEntry): NavEntry | null => {
     if (!isNavModule(entry)) return canOpen(entry) ? entry : null
     const pages = entry.pages.filter(canOpen)
@@ -339,7 +349,7 @@ export function canOpenSettings(
   sections: NavSection[],
   permissions: ReadonlySet<PermissionKey>
 ): boolean {
-  const gated = (item: NavItem) => item.permission !== undefined
+  const gated = (item: NavItem) => item.permission !== undefined || item.anyOf !== undefined
   const anyGated = (entry: NavEntry) =>
     isNavModule(entry) ? entry.pages.some(gated) : gated(entry)
   return navSectionsFor(sections, permissions).some((section) => section.items.some(anyGated))
@@ -361,7 +371,7 @@ export function firstSettingsPath(
   const gatedPaths = navSectionsFor(sections, permissions)
     .flatMap((section) => section.items)
     .flatMap((entry) => (isNavModule(entry) ? entry.pages : [entry]))
-    .filter((item) => item.permission !== undefined)
+    .filter((item) => item.permission !== undefined || item.anyOf !== undefined)
     .map((item) => item.to)
   if (gatedPaths.includes(GENERAL_PATH)) return GENERAL_PATH
   return gatedPaths[0] ?? NOTIFICATIONS_PATH

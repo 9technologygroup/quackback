@@ -93,7 +93,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | team.manage | support | ✓ | · |
 | workflow.manage | support | ✓ | · |
 | channel_account.manage | support | ✓ | · |
-| assistant.manage | ai | ✓ | · |
+| ai.customer.manage | ai | ✓ | · |
+| ai.teammate.manage | ai | ✓ | · |
 | copilot.use | ai | ✓ | ✓ |
 | status_page.manage | status_page | ✓ | · |
 | status_page.publish | status_page | ✓ | ✓ |
@@ -141,8 +142,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `integrations/salesforce/server/functions.ts`::getSalesforceConnectUrl | integration.manage |
 | `integrations/shortcut/server/functions.ts`::saveShortcutTokenFn | integration.manage |
 | `integrations/shortcut/server/functions.ts`::fetchShortcutProjectsFn | integration.manage |
-| `integrations/slack/server/agent/settings.ts`::getSlackAgentSettingsFn | assistant.manage |
-| `integrations/slack/server/agent/settings.ts`::setSlackAssistantEnabledFn | assistant.manage |
+| `integrations/slack/server/agent/settings.ts`::getSlackAgentSettingsFn | ai.teammate.manage |
+| `integrations/slack/server/agent/settings.ts`::setSlackAssistantEnabledFn | ai.teammate.manage |
 | `integrations/slack/server/functions.ts`::getSlackConnectUrl | integration.manage |
 | `integrations/slack/server/functions.ts`::fetchSlackChannelsFn | integration.manage |
 | `integrations/stripe/server/functions.ts`::saveStripeKeyFn | integration.manage |
@@ -207,55 +208,55 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/api-keys.ts`::updateApiKeyFn | api_key.manage |
 | `lib/server/functions/api-keys.ts`::rotateApiKeyFn | api_key.manage |
 | `lib/server/functions/api-keys.ts`::revokeApiKeyFn | api_key.manage |
-| `lib/server/functions/approvals.ts`::listApprovalsFn | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | assistant.manage) |
-| `lib/server/functions/approvals.ts`::getApprovalFn | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | assistant.manage) |
-| `lib/server/functions/approvals.ts`::rejectApprovalFn | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | assistant.manage) |
+| `lib/server/functions/approvals.ts`::listApprovalsFn | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | ai.teammate.manage) |
+| `lib/server/functions/approvals.ts`::getApprovalFn | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | ai.teammate.manage) |
+| `lib/server/functions/approvals.ts`::rejectApprovalFn | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | ai.teammate.manage) |
 | `lib/server/functions/approvals.ts`::markApprovalBellReadFn | END_USER (any authenticated) |
 | `lib/server/functions/ask-search.ts`::searchAskEntitiesFn | DYNAMIC (post.view_private | help_center.manage | changelog.view_draft | changelog.manage | conversation.view | ticket.view) |
 | `lib/server/functions/assistant-actions.ts`::approveAssistantActionFn | DYNAMIC (conversation.view | ticket.view | copilot.use | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | ticket.create | post.create | post.vote_on_behalf) |
 | `lib/server/functions/assistant-actions.ts`::rejectAssistantActionFn | DYNAMIC (conversation.view | ticket.view | copilot.use) |
 | `lib/server/functions/assistant-analytics.ts`::getQuinnPerformanceFn | analytics.view |
-| `lib/server/functions/assistant-connectors.ts`::listConnectorsFn | assistant.manage |
-| `lib/server/functions/assistant-connectors.ts`::getConnectorFn | assistant.manage |
-| `lib/server/functions/assistant-connectors.ts`::createConnectorFn | assistant.manage |
-| `lib/server/functions/assistant-connectors.ts`::updateConnectorFn | assistant.manage |
-| `lib/server/functions/assistant-connectors.ts`::refreshConnectorFn | assistant.manage |
-| `lib/server/functions/assistant-connectors.ts`::startConnectorOAuthFn | assistant.manage |
-| `lib/server/functions/assistant-connectors.ts`::deleteConnectorFn | assistant.manage |
+| `lib/server/functions/assistant-connectors.ts`::listConnectorsFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-connectors.ts`::getConnectorFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-connectors.ts`::createConnectorFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-connectors.ts`::updateConnectorFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-connectors.ts`::refreshConnectorFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-connectors.ts`::startConnectorOAuthFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-connectors.ts`::deleteConnectorFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
 | `lib/server/functions/assistant-copilot-analytics.ts`::getCopilotUsageMetricsFn | analytics.view |
-| `lib/server/functions/assistant-documents.ts`::uploadAssistantDocumentFn | assistant.manage |
-| `lib/server/functions/assistant-documents.ts`::listAssistantDocumentsFn | assistant.manage |
-| `lib/server/functions/assistant-documents.ts`::deleteAssistantDocumentFn | assistant.manage |
-| `lib/server/functions/assistant-guidance-stats.ts`::getGuidanceRuleStatsFn | assistant.manage |
-| `lib/server/functions/assistant-guidance.ts`::listGuidanceRulesFn | assistant.manage |
-| `lib/server/functions/assistant-guidance.ts`::createGuidanceRuleFn | assistant.manage |
-| `lib/server/functions/assistant-guidance.ts`::updateGuidanceRuleFn | assistant.manage |
-| `lib/server/functions/assistant-guidance.ts`::reorderGuidanceRulesFn | assistant.manage |
-| `lib/server/functions/assistant-guidance.ts`::deleteGuidanceRuleFn | assistant.manage |
-| `lib/server/functions/assistant-guidance.ts`::listAssistantToolsFn | assistant.manage |
+| `lib/server/functions/assistant-documents.ts`::uploadAssistantDocumentFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-documents.ts`::listAssistantDocumentsFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-documents.ts`::deleteAssistantDocumentFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-guidance-stats.ts`::getGuidanceRuleStatsFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-guidance.ts`::listGuidanceRulesFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-guidance.ts`::createGuidanceRuleFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-guidance.ts`::updateGuidanceRuleFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-guidance.ts`::reorderGuidanceRulesFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-guidance.ts`::deleteGuidanceRuleFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-guidance.ts`::listAssistantToolsFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
 | `lib/server/functions/assistant-improve-answer.ts`::improveAssistantAnswerFn | conversation.reply |
 | `lib/server/functions/assistant-pending-actions.ts`::getAssistantPendingActionFn | DYNAMIC (conversation.view | ticket.view | copilot.use) |
-| `lib/server/functions/assistant-settings.ts`::getAssistantSettingsFn | assistant.manage |
-| `lib/server/functions/assistant-settings.ts`::updateAssistantIdentityFn | assistant.manage |
-| `lib/server/functions/assistant-settings.ts`::updateAssistantVoiceFn | assistant.manage |
-| `lib/server/functions/assistant-settings.ts`::updateAssistantAgentKnowledgeFn | assistant.manage |
-| `lib/server/functions/assistant-settings.ts`::updateAssistantCopilotKnowledgeFn | assistant.manage |
-| `lib/server/functions/assistant-settings.ts`::updateAssistantCopilotCapabilitiesFn | assistant.manage |
-| `lib/server/functions/assistant-settings.ts`::updateAssistantToolRulesFn | assistant.manage |
-| `lib/server/functions/assistant-settings.ts`::updateWidgetAssistantDeploymentFn | assistant.manage |
-| `lib/server/functions/assistant-skills.ts`::listSkillsFn | assistant.manage |
-| `lib/server/functions/assistant-skills.ts`::createSkillFn | assistant.manage |
-| `lib/server/functions/assistant-skills.ts`::updateSkillFn | assistant.manage |
-| `lib/server/functions/assistant-skills.ts`::deleteSkillFn | assistant.manage |
-| `lib/server/functions/assistant-snippets.ts`::listSnippetsFn | assistant.manage |
-| `lib/server/functions/assistant-snippets.ts`::createSnippetFn | assistant.manage |
-| `lib/server/functions/assistant-snippets.ts`::updateSnippetFn | assistant.manage |
-| `lib/server/functions/assistant-snippets.ts`::deleteSnippetFn | assistant.manage |
+| `lib/server/functions/assistant-settings.ts`::getAssistantSettingsFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-settings.ts`::updateAssistantIdentityFn | ai.customer.manage |
+| `lib/server/functions/assistant-settings.ts`::updateAssistantVoiceFn | ai.customer.manage |
+| `lib/server/functions/assistant-settings.ts`::updateAssistantAgentKnowledgeFn | ai.customer.manage |
+| `lib/server/functions/assistant-settings.ts`::updateAssistantCopilotKnowledgeFn | ai.teammate.manage |
+| `lib/server/functions/assistant-settings.ts`::updateAssistantCopilotCapabilitiesFn | ai.teammate.manage |
+| `lib/server/functions/assistant-settings.ts`::updateAssistantToolRulesFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-settings.ts`::updateWidgetAssistantDeploymentFn | ai.customer.manage |
+| `lib/server/functions/assistant-skills.ts`::listSkillsFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-skills.ts`::createSkillFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-skills.ts`::updateSkillFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-skills.ts`::deleteSkillFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-snippets.ts`::listSnippetsFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-snippets.ts`::createSnippetFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-snippets.ts`::updateSnippetFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-snippets.ts`::deleteSnippetFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
 | `lib/server/functions/assistant-tools-analytics.ts`::getQuinnToolMetricsFn | analytics.view |
-| `lib/server/functions/assistant-web-sources.ts`::listWebSourcesFn | assistant.manage |
-| `lib/server/functions/assistant-web-sources.ts`::addWebSourceFn | assistant.manage |
-| `lib/server/functions/assistant-web-sources.ts`::setWebSourceEnabledFn | assistant.manage |
-| `lib/server/functions/assistant-web-sources.ts`::deleteWebSourceFn | assistant.manage |
+| `lib/server/functions/assistant-web-sources.ts`::listWebSourcesFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-web-sources.ts`::addWebSourceFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-web-sources.ts`::setWebSourceEnabledFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
+| `lib/server/functions/assistant-web-sources.ts`::deleteWebSourceFn | DYNAMIC (ai.customer.manage | ai.teammate.manage) |
 | `lib/server/functions/audit-log.ts`::listAuditEventsFn | audit.view |
 | `lib/server/functions/auth-provider-credentials.ts`::saveAuthProviderCredentialsFn | auth.manage |
 | `lib/server/functions/auth-provider-credentials.ts`::deleteAuthProviderCredentialsFn | auth.manage |
@@ -793,7 +794,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/uploads.ts`::getIdentityProviderLogoUploadUrlFn | auth.manage |
 | `lib/server/functions/uploads.ts`::getWidgetHeroUploadUrlFn | settings.manage |
 | `lib/server/functions/uploads.ts`::getAvatarUploadUrlFn | END_USER (any authenticated) |
-| `lib/server/functions/uploads.ts`::getAssistantAvatarUploadUrlFn | assistant.manage |
+| `lib/server/functions/uploads.ts`::getAssistantAvatarUploadUrlFn | ai.customer.manage |
 | `lib/server/functions/user-attributes.ts`::listUserAttributesFn | user_attribute.view |
 | `lib/server/functions/user-attributes.ts`::createUserAttributeFn | user_attribute.manage |
 | `lib/server/functions/user-attributes.ts`::updateUserAttributeFn | user_attribute.manage |

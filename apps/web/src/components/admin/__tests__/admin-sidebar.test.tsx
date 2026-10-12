@@ -263,7 +263,7 @@ describe('AdminSidebar: settings entry', () => {
   })
 
   it('shows Settings to an assistant manager, who has no legacy admin role', () => {
-    const { container } = renderSidebar('member', { permissions: [PERMISSIONS.ASSISTANT_MANAGE] })
+    const { container } = renderSidebar('member', { permissions: [PERMISSIONS.AI_CUSTOMER_MANAGE] })
     expect(container.querySelectorAll('a[href="/admin/settings"]').length).toBeGreaterThan(0)
   })
 

@@ -29,6 +29,9 @@ const hoisted = vi.hoisted(() => ({
   getAssistantSettings: vi.fn(),
   updateAssistantIdentity: vi.fn(),
   updateAssistantVoice: vi.fn(),
+  updateAssistantAgentKnowledge: vi.fn(),
+  updateAssistantCopilotCapabilities: vi.fn(),
+  updateAssistantToolRules: vi.fn(),
   updateWidgetAssistantDeployment: vi.fn(),
   isAssistantConfigured: vi.fn(),
   requestHeaders: new Headers({
@@ -37,15 +40,18 @@ const hoisted = vi.hoisted(() => ({
   }),
 }))
 
-vi.mock('@/lib/server/functions/auth-helpers', () => ({
-  requireAuth: hoisted.requireAuth,
-}))
+vi.mock('@/lib/server/functions/auth-helpers', async () =>
+  (await import('./ai-auth-mock')).aiAuthHelpers(hoisted.requireAuth)
+)
 
 vi.mock('@/lib/server/domains/settings/settings.assistant', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/domains/settings/settings.assistant')>()),
   getAssistantSettings: hoisted.getAssistantSettings,
   updateAssistantIdentity: hoisted.updateAssistantIdentity,
   updateAssistantVoice: hoisted.updateAssistantVoice,
+  updateAssistantAgentKnowledge: hoisted.updateAssistantAgentKnowledge,
+  updateAssistantCopilotCapabilities: hoisted.updateAssistantCopilotCapabilities,
+  updateAssistantToolRules: hoisted.updateAssistantToolRules,
 }))
 
 vi.mock('@/lib/server/domains/assistant/assistant.runtime', () => ({
@@ -64,8 +70,12 @@ vi.mock('@tanstack/react-start/server', () => ({
   getRequestHeaders: () => hoisted.requestHeaders,
 }))
 
+import { dashboardAuth } from './ai-auth-mock'
 import {
   getAssistantSettingsFn,
+  updateAssistantCopilotCapabilitiesFn,
+  updateAssistantCopilotKnowledgeFn,
+  updateAssistantToolRulesFn,
   updateAssistantIdentityFn,
   updateAssistantVoiceFn,
   updateWidgetAssistantDeploymentFn,
@@ -127,6 +137,8 @@ const CONFIG_RESULT = {
 const AUTH_CONTEXT = {
   user: { id: 'user_admin', email: 'admin@example.com' },
   principal: { id: 'principal_admin', role: 'admin', type: 'user' },
+  scope: 'dashboard',
+  permissions: ['ai.customer.manage', 'ai.teammate.manage'],
 }
 
 const AUDIT_ACTOR = {
@@ -148,26 +160,57 @@ beforeEach(() => {
 })
 
 describe('assistant settings permission gates', () => {
-  it('requires assistant.manage for the query, every config mutation, and deployment', async () => {
+  it('settings open to either AI permission; customer config needs the customer one', async () => {
     await getAssistantSettingsFn()
     await updateAssistantIdentityFn({
-      data: {
-        expectedRevision: 41,
-        identity: CONFIG.identity,
-      },
+      data: { expectedRevision: 41, identity: CONFIG.identity },
     })
     await updateAssistantVoiceFn({
-      data: {
-        expectedRevision: 41,
-        voice: CONFIG.agents.agent.voice,
-      },
+      data: { expectedRevision: 41, voice: CONFIG.agents.agent.voice },
     })
     await updateWidgetAssistantDeploymentFn({ data: { enabled: true, respond: true } })
 
-    expect(hoisted.requireAuth).toHaveBeenCalledTimes(4)
+    const gated = hoisted.requireAuth.mock.calls.map((call) => call[0])
+    expect(gated).toEqual([
+      undefined,
+      { permission: PERMISSIONS.AI_CUSTOMER_MANAGE },
+      { permission: PERMISSIONS.AI_CUSTOMER_MANAGE },
+      { permission: PERMISSIONS.AI_CUSTOMER_MANAGE },
+    ])
+  })
+
+  it('Copilot config needs the teammate permission', async () => {
+    hoisted.updateAssistantAgentKnowledge.mockResolvedValue(CONFIG_RESULT)
+    hoisted.updateAssistantCopilotCapabilities.mockResolvedValue(CONFIG_RESULT)
+    await updateAssistantCopilotKnowledgeFn({
+      data: { expectedRevision: 41, knowledge: CONFIG.agents.copilot.knowledge },
+    })
+    await updateAssistantCopilotCapabilitiesFn({
+      data: { expectedRevision: 41, capabilities: { qa: true } },
+    })
     for (const call of hoisted.requireAuth.mock.calls) {
-      expect(call[0]).toEqual({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+      expect(call[0]).toEqual({ permission: PERMISSIONS.AI_TEAMMATE_MANAGE })
     }
+    expect(hoisted.requireAuth).toHaveBeenCalledTimes(2)
+  })
+
+  it('tool rules follow the agent they configure', async () => {
+    hoisted.updateAssistantToolRules.mockResolvedValue(CONFIG_RESULT)
+    const save = (agent: 'agent' | 'copilot') =>
+      updateAssistantToolRulesFn({ data: { expectedRevision: 41, agent, toolRules: {} } })
+
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.AI_CUSTOMER_MANAGE]))
+    await expect(save('agent')).resolves.toBeDefined()
+    await expect(save('copilot')).rejects.toThrow('Access denied')
+
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.AI_TEAMMATE_MANAGE]))
+    await expect(save('copilot')).resolves.toBeDefined()
+    await expect(save('agent')).rejects.toThrow('Access denied')
+  })
+
+  it('the settings read refuses a caller with neither AI permission', async () => {
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.TAG_MANAGE]))
+    await expect(getAssistantSettingsFn()).rejects.toThrow('Access denied')
   })
 
   it('propagates auth rejection without reaching a settings domain mutation', async () => {

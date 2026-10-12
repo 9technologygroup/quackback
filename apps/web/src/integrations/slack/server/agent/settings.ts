@@ -12,7 +12,7 @@ import {
 import { getInstallRouting } from '@/lib/server/integrations/install-registry'
 import { missingSlackScopes } from '../../scopes'
 export const getSlackAgentSettingsFn = createServerFn({ method: 'GET' }).handler(async () => {
-  await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+  await requireAuth({ permission: PERMISSIONS.AI_TEAMMATE_MANAGE })
   const state = await getAssistantSettings()
   const integration = await db.query.integrations.findFirst({
     where: eq(integrations.integrationType, 'slack'),
@@ -41,7 +41,7 @@ export const getSlackAgentSettingsFn = createServerFn({ method: 'GET' }).handler
 export const setSlackAssistantEnabledFn = createServerFn({ method: 'POST' })
   .validator(z.object({ expectedRevision: z.number().int().positive(), enabled: z.boolean() }))
   .handler(async ({ data }) => {
-    const auth = await requireAuth({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+    const auth = await requireAuth({ permission: PERMISSIONS.AI_TEAMMATE_MANAGE })
     if (data.enabled) {
       const row = await db.query.integrations.findFirst({
         where: eq(integrations.integrationType, 'slack'),

@@ -41,7 +41,7 @@ const seen = {
 
 function PermissionProbe() {
   renders.permission++
-  seen.permission = usePermission(PERMISSIONS.ASSISTANT_MANAGE)
+  seen.permission = usePermission(PERMISSIONS.AI_CUSTOMER_MANAGE)
   return null
 }
 
@@ -113,7 +113,7 @@ describe('route context hooks', () => {
     rootAnswer = { settings: { featureFlags: { helpCenter: true } } }
     adminAnswer = {
       principal: { role: 'member' },
-      permissions: [PERMISSIONS.ASSISTANT_MANAGE, PERMISSIONS.WORKFLOW_MANAGE],
+      permissions: [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.WORKFLOW_MANAGE],
     }
     const router = await mount()
     const settled = { ...renders }
@@ -126,7 +126,7 @@ describe('route context hooks', () => {
     expect(renders).toEqual(settled)
     expect(seen).toEqual({
       permission: true,
-      permissions: [PERMISSIONS.ASSISTANT_MANAGE, PERMISSIONS.WORKFLOW_MANAGE],
+      permissions: [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.WORKFLOW_MANAGE],
       hasPermission: true,
       flag: true,
     })
@@ -136,7 +136,7 @@ describe('route context hooks', () => {
     rootAnswer = { settings: { featureFlags: { helpCenter: false } } }
     adminAnswer = {
       principal: { role: 'member' },
-      permissions: [PERMISSIONS.ASSISTANT_MANAGE, PERMISSIONS.WORKFLOW_MANAGE],
+      permissions: [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.WORKFLOW_MANAGE],
     }
     const router = await mount()
     expect(seen.permission).toBe(true)
@@ -144,13 +144,13 @@ describe('route context hooks', () => {
     expect(seen.flag).toBe(false)
 
     // A role change: the next guard answer holds a narrower set.
-    adminAnswer = { principal: { role: 'member' }, permissions: [PERMISSIONS.ASSISTANT_MANAGE] }
+    adminAnswer = { principal: { role: 'member' }, permissions: [PERMISSIONS.AI_CUSTOMER_MANAGE] }
     rootAnswer = { settings: { featureFlags: { helpCenter: true } } }
     await act(() => router.invalidate())
 
     expect(seen).toEqual({
       permission: true,
-      permissions: [PERMISSIONS.ASSISTANT_MANAGE],
+      permissions: [PERMISSIONS.AI_CUSTOMER_MANAGE],
       hasPermission: false,
       flag: true,
     })

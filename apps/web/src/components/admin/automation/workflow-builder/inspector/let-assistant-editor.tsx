@@ -20,7 +20,7 @@ export function LetAssistantAnswerEditor({
   step: Extract<TreeStep, { kind: 'let_assistant_answer' }>
   onChange: (step: TreeStep) => void
 }) {
-  const canAgent = usePermission(PERMISSIONS.ASSISTANT_MANAGE)
+  const canAgent = usePermission(PERMISSIONS.AI_CUSTOMER_MANAGE)
   const autoClose = useQuery(settingsQueries.workflowAbandonedAutoClose())
   const escalateMinutes = assistantWaitMinutes(autoClose.data)
 

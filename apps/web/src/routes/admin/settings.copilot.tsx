@@ -37,7 +37,7 @@ export const Route = createFileRoute('/admin/settings/copilot')({
     if (search.tab === 'actions') {
       throw redirect({ to: '/admin/settings/connectors' })
     }
-    assertRoutePermission(context.permissions, PERMISSIONS.ASSISTANT_MANAGE)
+    assertRoutePermission(context.permissions, PERMISSIONS.AI_TEAMMATE_MANAGE)
   },
   loader: async ({ context }) => {
     await context.queryClient.ensureQueryData(assistantQueries.settings())

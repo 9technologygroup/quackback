@@ -5,7 +5,7 @@ import { usePermission } from '@/lib/client/hooks/use-permission'
 import { PERMISSIONS } from '@/lib/shared/permissions'
 import { getSlackAgentSettingsFn, setSlackAssistantEnabledFn } from '../server/agent/settings'
 export function SlackAgentCard() {
-  const allowed = usePermission(PERMISSIONS.ASSISTANT_MANAGE)
+  const allowed = usePermission(PERMISSIONS.AI_TEAMMATE_MANAGE)
   const client = useQueryClient()
   const query = useQuery({
     queryKey: ['slack-agent-settings'],

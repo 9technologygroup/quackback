@@ -32,3 +32,13 @@ export function assertRoutePermission(
     throw redirect(buildSigninRedirect('/admin', { error: 'not_team_member' }))
   }
 }
+
+/** Like {@link assertRoutePermission}, but a holder of any one of `anyOf` passes. */
+export function assertRouteAnyPermission(
+  permissions: readonly string[] | undefined,
+  anyOf: readonly PermissionKey[]
+): void {
+  if (!anyOf.some((permission) => permissions?.includes(permission))) {
+    throw redirect(buildSigninRedirect('/admin', { error: 'not_team_member' }))
+  }
+}

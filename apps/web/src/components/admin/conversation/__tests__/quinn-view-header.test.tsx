@@ -14,7 +14,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 vi.mock('@/lib/client/hooks/use-permission', () => ({
-  usePermission: (key: string) => key === 'assistant.manage' && hoisted.canManage,
+  usePermission: (key: string) => key === 'ai.customer.manage' && hoisted.canManage,
 }))
 
 const { QuinnViewHeader } = await import('../quinn-view-header')

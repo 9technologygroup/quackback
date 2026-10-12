@@ -38,7 +38,7 @@ let rootAnswer: {
 }
 const adminAnswer: { principal: { role: string }; permissions: PermissionKey[] } = {
   principal: { role: 'admin' },
-  permissions: [PERMISSIONS.ASSISTANT_MANAGE, PERMISSIONS.WORKFLOW_MANAGE],
+  permissions: [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.WORKFLOW_MANAGE],
 }
 
 function Title() {

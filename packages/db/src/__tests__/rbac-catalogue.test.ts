@@ -5,6 +5,8 @@ import {
   PERMISSION_CATALOGUE,
   PERMISSION_CATEGORIES,
   WORKSPACE_ADMIN_PERMISSIONS,
+  SUPPORT_LEAD_EXTRA_PERMISSIONS,
+  RETIRED_PERMISSION_KEYS,
   SYSTEM_ROLES,
   SYSTEM_ROLE_DEFS,
   SYSTEM_ROLE_PERMISSIONS,
@@ -90,9 +92,51 @@ describe('RBAC permission catalogue', () => {
     expect(c).not.toContain(PERMISSIONS.SEGMENT_MANAGE)
   })
 
-  it('there are exactly four system roles with matching defs and bundles', () => {
+  it('Support lead is Manager plus exactly the support-operations extras', () => {
+    const manager = asSet(SYSTEM_ROLE_PERMISSIONS.manager)
+    const lead = asSet(SYSTEM_ROLE_PERMISSIONS.support_lead)
+    for (const p of manager) expect(lead.has(p)).toBe(true)
+    expect([...lead].filter((p) => !manager.has(p)).sort()).toEqual(
+      [
+        PERMISSIONS.ROUTING_MANAGE,
+        PERMISSIONS.WORKFLOW_MANAGE,
+        PERMISSIONS.SLA_MANAGE,
+        PERMISSIONS.OFFICE_HOURS_MANAGE,
+        PERMISSIONS.CHANNEL_ACCOUNT_MANAGE,
+        PERMISSIONS.CUSTOM_FIELD_MANAGE,
+        PERMISSIONS.AI_CUSTOMER_MANAGE,
+      ].sort()
+    )
+    expect(new Set(SUPPORT_LEAD_EXTRA_PERMISSIONS).size).toBe(SUPPORT_LEAD_EXTRA_PERMISSIONS.length)
+    for (const key of [
+      PERMISSIONS.SETTINGS_MANAGE,
+      PERMISSIONS.MEMBER_MANAGE,
+      PERMISSIONS.INTEGRATION_MANAGE,
+      PERMISSIONS.TEAM_MANAGE,
+      PERMISSIONS.AI_TEAMMATE_MANAGE,
+      PERMISSIONS.ROLE_MANAGE,
+      PERMISSIONS.BILLING_MANAGE,
+    ]) {
+      expect(lead.has(key)).toBe(false)
+    }
+  })
+
+  it('Manager is unchanged by the Support lead preset', () => {
+    expect(SYSTEM_ROLE_PERMISSIONS.manager).not.toContain(PERMISSIONS.AI_CUSTOMER_MANAGE)
+    expect(SYSTEM_ROLE_PERMISSIONS.manager).not.toContain(PERMISSIONS.AI_TEAMMATE_MANAGE)
+    expect(SYSTEM_ROLE_PERMISSIONS.manager).not.toContain(PERMISSIONS.ROUTING_MANAGE)
+  })
+
+  it('the AI permission is split in two and the old key is retired', () => {
+    expect(ALL_PERMISSIONS).not.toContain('assistant.manage')
+    expect(RETIRED_PERMISSION_KEYS).toContain('assistant.manage')
+    expect(WORKSPACE_ADMIN_PERMISSIONS).toContain(PERMISSIONS.AI_CUSTOMER_MANAGE)
+    expect(WORKSPACE_ADMIN_PERMISSIONS).toContain(PERMISSIONS.AI_TEAMMATE_MANAGE)
+  })
+
+  it('there are exactly five system roles with matching defs and bundles', () => {
     const roleKeys = Object.values(SYSTEM_ROLES)
-    expect(roleKeys.length).toBe(4)
+    expect(roleKeys.length).toBe(5)
     expect(asSet(SYSTEM_ROLE_DEFS.map((r) => r.key))).toEqual(asSet(roleKeys))
     expect(asSet(Object.keys(SYSTEM_ROLE_PERMISSIONS))).toEqual(asSet(roleKeys))
   })

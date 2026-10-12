@@ -51,7 +51,7 @@ describe('settings index on desktop', () => {
   })
 
   it('opens the first page a viewer without settings.manage can open', () => {
-    renderIndex([PERMISSIONS.ASSISTANT_MANAGE])
+    renderIndex([PERMISSIONS.AI_CUSTOMER_MANAGE])
     expect(hoisted.navigate).toHaveBeenCalledWith({ to: '/admin/settings/agent', replace: true })
   })
 

@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "Nouveautés",
   "automation.knowledge.source.changelog.description": "Entrées publiées du changelog.",
   "automation.knowledge.source.documents.label": "Documents",
+  "team.roleSelect.supportLead": "Responsable du support - Peut aussi configurer le routage, les workflows, les SLA et les canaux",
   "automation.knowledge.source.documents.description": "Documents de connaissances téléversés (PDF).",
   "automation.knowledge.source.status.label": "État du système",
   "automation.knowledge.source.status.description": "Composants, incidents et fenêtres de maintenance en direct.",

@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "Neuigkeiten",
   "automation.knowledge.source.changelog.description": "Veröffentlichte Einträge unter Neuigkeiten.",
   "automation.knowledge.source.documents.label": "Dokumente",
+  "team.roleSelect.supportLead": "Support-Leitung - Kann zusätzlich Routing, Workflows, SLAs und Kanäle einrichten",
   "automation.knowledge.source.documents.description": "Hochgeladene Wissensdokumente (PDFs).",
   "automation.knowledge.source.status.label": "Systemstatus",
   "automation.knowledge.source.status.description": "Live-Status der Dienste, Störungen und Wartungsfenster.",

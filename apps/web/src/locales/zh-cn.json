@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "更新日志",
   "automation.knowledge.source.changelog.description": "已发布的更新日志条目。",
   "automation.knowledge.source.documents.label": "文档",
+  "team.roleSelect.supportLead": "支持负责人 - 还可以设置路由、工作流、SLA 和渠道",
   "automation.knowledge.source.documents.description": "已上传的知识文档（PDF）。",
   "automation.knowledge.source.status.label": "系统状态",
   "automation.knowledge.source.status.description": "实时的状态组件、事件和维护窗口。",

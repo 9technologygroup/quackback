@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { createDb, type Database } from '../client'
 import { roles, permissions, rolePermissions } from '../schema/rbac'
 import { seedSystemData } from '../seed-system'
@@ -8,6 +8,7 @@ import {
   SYSTEM_ROLES,
   SYSTEM_ROLE_PERMISSIONS,
   PERMISSION_CATALOGUE,
+  RETIRED_PERMISSION_KEYS,
   type SystemRoleKey,
 } from '../rbac-catalogue'
 
@@ -37,7 +38,7 @@ describe.skipIf(!DB_URL)('seedSystemData', () => {
         const permKeys = new Set(permRows.map((p) => p.key))
         for (const k of ALL_PERMISSIONS) expect(permKeys.has(k)).toBe(true)
 
-        // Exactly the four system-role presets.
+        // Exactly the system-role presets.
         const sysRoleRows = await tx
           .select({ key: roles.key })
           .from(roles)
@@ -56,6 +57,32 @@ describe.skipIf(!DB_URL)('seedSystemData', () => {
         const after = (await tx.select({ id: rolePermissions.id }).from(rolePermissions)).length
         expect(after).toBe(before)
 
+        throw new Error(ROLLBACK)
+      })
+      .catch((e) => {
+        if (!(e instanceof Error) || e.message !== ROLLBACK) throw e
+      })
+  })
+
+  it('leaves a retired key and its preset grants alone', async () => {
+    if (!db) return
+    await db
+      .transaction(async (tx) => {
+        await seedSystemData(tx)
+        await tx.execute(
+          sql`INSERT INTO "permissions" ("id","key","category","description") VALUES (gen_random_uuid(),'assistant.manage','ai','old') ON CONFLICT ("key") DO NOTHING`
+        )
+        await tx.execute(sql`
+          INSERT INTO "role_permissions" ("id","role_id","permission_id")
+          SELECT gen_random_uuid(), r."id", p."id" FROM "roles" r, "permissions" p
+          WHERE r."key" = 'admin' AND p."key" = 'assistant.manage'
+          ON CONFLICT DO NOTHING`)
+        await seedSystemData(tx)
+        const kept = (await tx.execute(sql`
+          SELECT 1 FROM "role_permissions" rp
+          JOIN "roles" r ON r."id" = rp."role_id" JOIN "permissions" p ON p."id" = rp."permission_id"
+          WHERE r."key" = 'admin' AND p."key" = 'assistant.manage'`)) as unknown as unknown[]
+        expect(kept.length).toBe(1)
         throw new Error(ROLLBACK)
       })
       .catch((e) => {
@@ -98,6 +125,8 @@ async function resolveBundles(
     .innerJoin(permissions, eq(permissions.id, rolePermissions.permissionId))
   const byRole = new Map<string, Set<string>>()
   for (const r of rows) {
+    // Retired keys keep their grants for older app versions; they are not part of a bundle.
+    if (RETIRED_PERMISSION_KEYS.includes(r.permKey)) continue
     if (!byRole.has(r.roleKey)) byRole.set(r.roleKey, new Set())
     byRole.get(r.roleKey)!.add(r.permKey)
   }

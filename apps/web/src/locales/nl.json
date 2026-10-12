@@ -1061,6 +1061,7 @@
   "automation.knowledge.source.changelog.label": "Changelog",
   "automation.knowledge.source.changelog.description": "Gepubliceerde updates in de changelog.",
   "automation.knowledge.source.documents.label": "Documenten",
+  "team.roleSelect.supportLead": "Supportlead - Kan ook routering, workflows, SLA's en kanalen instellen",
   "automation.knowledge.source.documents.description": "Geüploade kennisdocumenten (PDF's).",
   "automation.knowledge.source.status.label": "Systeemstatus",
   "automation.knowledge.source.status.description": "Live status van diensten, storingen en onderhoudsperiodes.",

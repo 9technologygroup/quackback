@@ -33,7 +33,9 @@ const hoisted = vi.hoisted(() => ({
   actorFromAuth: vi.fn(() => ({ email: 'admin@example.com' })),
 }))
 
-vi.mock('@/lib/server/functions/auth-helpers', () => ({ requireAuth: hoisted.requireAuth }))
+vi.mock('@/lib/server/functions/auth-helpers', async () =>
+  (await import('./ai-auth-mock')).aiAuthHelpers(hoisted.requireAuth)
+)
 vi.mock('@/lib/server/domains/assistant/guidance.service', () => ({
   createGuidanceRule: hoisted.createGuidanceRule,
   listGuidanceRules: hoisted.listGuidanceRules,
@@ -59,29 +61,68 @@ import {
   reorderGuidanceRulesFn,
   updateGuidanceRuleFn,
 } from '../assistant-guidance'
+import { dashboardAuth } from './ai-auth-mock'
 
 beforeEach(() => {
   vi.clearAllMocks()
-  hoisted.requireAuth.mockResolvedValue({ principal: { id: 'principal_admin' } })
+  hoisted.requireAuth.mockResolvedValue(
+    dashboardAuth([PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE])
+  )
   hoisted.listGuidanceRules.mockResolvedValue([])
   hoisted.resolveToolSpecs.mockResolvedValue([])
 })
 
 describe('permission gates', () => {
-  it('gates every guidance and catalogue function on assistant.manage', async () => {
-    await listGuidanceRulesFn()
-    hoisted.createGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1' })
-    await createGuidanceRuleFn({ data: { name: 'Refunds', instruction: 'Explain refunds.' } })
-    hoisted.updateGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1' })
-    await updateGuidanceRuleFn({ data: { id: 'assistant_guidance_1', enabled: false } })
-    await reorderGuidanceRulesFn({ data: { ids: ['assistant_guidance_1'] } })
-    await deleteGuidanceRuleFn({ data: { id: 'assistant_guidance_1' } })
-    await listAssistantToolsFn()
-
-    expect(hoisted.requireAuth).toHaveBeenCalledTimes(6)
-    for (const call of hoisted.requireAuth.mock.calls) {
-      expect(call[0]).toEqual({ permission: PERMISSIONS.ASSISTANT_MANAGE })
+  it('lists and the tool catalogue open to either AI permission', async () => {
+    for (const held of [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE]) {
+      hoisted.requireAuth.mockResolvedValue(dashboardAuth([held]))
+      await expect(listGuidanceRulesFn()).resolves.toBeDefined()
+      await expect(listAssistantToolsFn()).resolves.toBeDefined()
     }
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.TAG_MANAGE]))
+    await expect(listGuidanceRulesFn()).rejects.toThrow('Access denied')
+    await expect(listAssistantToolsFn()).rejects.toThrow('Access denied')
+  })
+
+  it('a rule is written with the permission of the agent it belongs to', async () => {
+    hoisted.createGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1' })
+    const create = (agent: 'agent' | 'copilot' | 'workspace') =>
+      createGuidanceRuleFn({ data: { name: 'Refunds', instruction: 'Explain refunds.', agent } })
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.AI_CUSTOMER_MANAGE]))
+    await expect(create('agent')).resolves.toBeDefined()
+    await expect(create('copilot')).rejects.toThrow('Access denied')
+    await expect(create('workspace')).rejects.toThrow('Access denied')
+
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.AI_TEAMMATE_MANAGE]))
+    await expect(create('copilot')).resolves.toBeDefined()
+    await expect(create('workspace')).resolves.toBeDefined()
+    await expect(create('agent')).rejects.toThrow('Access denied')
+  })
+
+  it('editing, reordering and deleting follow the agent that owns the rule', async () => {
+    hoisted.listGuidanceRules.mockResolvedValue([
+      { id: 'assistant_guidance_1', agent: 'agent' },
+      { id: 'assistant_guidance_2', agent: 'copilot' },
+    ])
+    hoisted.updateGuidanceRule.mockResolvedValue({ id: 'assistant_guidance_1' })
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.AI_TEAMMATE_MANAGE]))
+    await expect(
+      updateGuidanceRuleFn({ data: { id: 'assistant_guidance_1', enabled: false } })
+    ).rejects.toThrow('Access denied')
+    await expect(deleteGuidanceRuleFn({ data: { id: 'assistant_guidance_1' } })).rejects.toThrow(
+      'Access denied'
+    )
+    await expect(
+      reorderGuidanceRulesFn({ data: { ids: ['assistant_guidance_1', 'assistant_guidance_2'] } })
+    ).rejects.toThrow('Access denied')
+    await expect(
+      deleteGuidanceRuleFn({ data: { id: 'assistant_guidance_2' } })
+    ).resolves.toBeDefined()
+    // Moving a rule to an agent needs that agent's permission as well.
+    hoisted.requireAuth.mockResolvedValue(dashboardAuth([PERMISSIONS.AI_CUSTOMER_MANAGE]))
+    await expect(
+      updateGuidanceRuleFn({ data: { id: 'assistant_guidance_1', agent: 'copilot' } })
+    ).rejects.toThrow('Access denied')
   })
 
   it('propagates auth rejection before the domain call', async () => {

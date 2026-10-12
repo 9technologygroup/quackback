@@ -1283,6 +1283,7 @@
   "automation.knowledge.source.changelog.label": "บันทึกการเปลี่ยนแปลง",
   "automation.knowledge.source.changelog.description": "บันทึกการเปลี่ยนแปลงที่เผยแพร่แล้ว",
   "automation.knowledge.source.documents.label": "เอกสาร",
+  "team.roleSelect.supportLead": "หัวหน้าทีมซัพพอร์ต - ตั้งค่าการกำหนดเส้นทาง เวิร์กโฟลว์ SLA และช่องทางได้เพิ่มเติม",
   "automation.knowledge.source.documents.description": "เอกสารความรู้ที่อัปโหลด (PDF)",
   "automation.knowledge.source.status.label": "สถานะระบบ",
   "automation.knowledge.source.status.description": "สถานะบริการ เหตุขัดข้อง และช่วงบำรุงรักษาแบบเรียลไทม์",

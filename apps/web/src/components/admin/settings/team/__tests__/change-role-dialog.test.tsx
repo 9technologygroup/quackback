@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IntlProvider } from 'react-intl'
 
 const fns = vi.hoisted(() => ({
   changeTeamRoleFn: vi.fn(),
@@ -32,6 +33,13 @@ const ROLES = [
   { id: 'role_admin', key: 'admin', name: 'Admin', isSystem: true, permissionKeys: [] },
   { id: 'role_manager', key: 'manager', name: 'Manager', isSystem: true, permissionKeys: [] },
   {
+    id: 'role_support_lead',
+    key: 'support_lead',
+    name: 'Support lead',
+    isSystem: true,
+    permissionKeys: [],
+  },
+  {
     id: 'role_contributor',
     key: 'contributor',
     name: 'Contributor',
@@ -53,17 +61,19 @@ afterEach(() => {
 function renderDialog(props: Partial<ChangeRoleDialogProps> = {}) {
   const onOpenChange = vi.fn()
   render(
-    <QueryClientProvider client={new QueryClient()}>
-      <ChangeRoleDialog
-        open
-        onOpenChange={onOpenChange}
-        principalId="principal_1"
-        personName="Maya Chen"
-        current={{ role: 'member', label: 'Member' }}
-        canGrantAdmin
-        {...props}
-      />
-    </QueryClientProvider>
+    <IntlProvider locale="en" messages={{}}>
+      <QueryClientProvider client={new QueryClient()}>
+        <ChangeRoleDialog
+          open
+          onOpenChange={onOpenChange}
+          principalId="principal_1"
+          personName="Maya Chen"
+          current={{ role: 'member', label: 'Member' }}
+          canGrantAdmin
+          {...props}
+        />
+      </QueryClientProvider>
+    </IntlProvider>
   )
   return { onOpenChange }
 }
@@ -106,6 +116,19 @@ describe('ChangeRoleDialog', () => {
         data: { principalId: 'principal_1', role: 'member' },
       })
     )
+  })
+
+  it('offers the Support lead preset beside Member and Admin, once', async () => {
+    renderDialog({
+      current: { role: 'member', roleId: 'role_support_lead', label: 'Support lead' },
+    })
+    expect(roleField()).toHaveValue('role_support_lead')
+    const presets = await screen.findByRole('group', { name: 'Presets' })
+    expect(
+      await within(presets).findAllByRole('option', {
+        name: /^Support lead - Can also set up routing/,
+      })
+    ).toHaveLength(1)
   })
 
   it('opens on a custom role, listed under Custom', async () => {
