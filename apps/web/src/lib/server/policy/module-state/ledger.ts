@@ -362,6 +362,16 @@ export const MODULE_STATE_LEDGER: readonly LedgerEntry[] = [
       'for up to the copy lifetime.',
   },
   {
+    file: 'apps/web/src/lib/server/mcp/untrusted.ts',
+    name: 'itemFacts',
+    category: 'workspace-scoped-key',
+    keyedBy: 'CallToolResult',
+    reason:
+      "Keyed by one MCP tool call's result object, which exists only for the request that produced " +
+      'it, so a lookup can only ever find facts about its own result. It is a WeakMap, so nothing ' +
+      'outlives the result once the response is sent.',
+  },
+  {
     file: 'apps/web/src/lib/server/response-hooks.ts',
     name: 'bodyEndHooks',
     category: 'workspace-scoped-key',

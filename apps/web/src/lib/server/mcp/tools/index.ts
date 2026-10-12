@@ -5,6 +5,9 @@
  * resource module. Each tool declares its authorization contract — `{ scope,
  * teamOnly, feature, permissions }` — on `registerTool` (see ./helpers); the
  * two cross-entity lookup tools (search, get_details) gate scope per-branch.
+ * Every tool also declares which result fields hold text from outside the
+ * team in ../untrusted (UNTRUSTED_TOOL_FIELDS); registration fails typecheck
+ * and the coverage test without it.
  *
  * - search.ts        search, get_details
  * - posts.ts         triage_post, vote_post, proxy_vote, create_post,

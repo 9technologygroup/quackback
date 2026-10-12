@@ -15,6 +15,7 @@ import { softDeletePost, restorePost } from '@/lib/server/domains/posts/post.use
 import { getActivityForPost, createActivity } from '@/lib/server/domains/activity/activity.service'
 import type { PostId, BoardId, PostTagId, PostStatusId, PrincipalId } from '@quackback/ids'
 import type { McpAuthContext } from '../types'
+import { withItemFacts } from '../untrusted'
 import {
   registerTool,
   mcpMemberActor,
@@ -444,16 +445,24 @@ Examples:
     handler: async (args) => {
       const activities = await getActivityForPost(args.postId as PostId)
 
-      return jsonResult({
-        postId: args.postId,
-        activities: activities.map((a) => ({
-          id: a.id,
-          type: a.type,
-          actorName: a.actorName,
-          metadata: a.metadata,
-          createdAt: a.createdAt,
-        })),
-      })
+      // Whether each actor is on the team today (from the same read) decides
+      // if their name is marked untrusted; it rides beside the result and is
+      // never sent.
+      return withItemFacts(
+        jsonResult({
+          postId: args.postId,
+          activities: activities.map((a) => ({
+            id: a.id,
+            type: a.type,
+            actorName: a.actorName,
+            metadata: a.metadata,
+            createdAt: a.createdAt,
+          })),
+        }),
+        Object.fromEntries(
+          activities.map((a, i) => [`activities[${i}]`, { authorOnTeam: a.actorOnTeam }])
+        )
+      )
     },
   })
 }

@@ -19,7 +19,18 @@ import type { Actor } from '@/lib/server/policy/types'
 import { hasApiScope } from '@/lib/server/domains/api-keys/api-key-scopes'
 import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import type { PermissionKey } from '@/lib/shared/permissions'
+import { principalIdsOnTeam } from '@/lib/server/domains/principals/principal-standing'
+import { logger } from '@/lib/server/logger'
 import type { McpAuthContext, McpScope } from '../types'
+import {
+  UNTRUSTED_TOOL_FIELDS,
+  markUntrusted,
+  withItemFacts,
+  type McpToolName,
+  type UntrustedSpec,
+} from '../untrusted'
+
+const log = logger.child({ component: 'mcp-tools' })
 
 // ============================================================================
 // Result wrappers
@@ -191,7 +202,8 @@ async function requireFeature(feature: ToolFeature): Promise<CallToolResult | nu
 }
 
 export interface ToolDef<TArgs> {
-  name: string
+  /** Must be declared in UNTRUSTED_TOOL_FIELDS (../untrusted). */
+  name: McpToolName
   description: string
   schema: z.ZodRawShape
   annotations: ToolAnnotations
@@ -240,12 +252,20 @@ function requiredPermissions<TArgs>(
  * Error ownership also lives here: any error the handler throws becomes the
  * standard errorResult, so handlers only add try/catch when a branch needs a
  * more specific mapping (e.g. get_details' invalid-TypeID message).
+ *
+ * So does untrusted marking: every successful result passes through
+ * markUntrusted with the tool's UNTRUSTED_TOOL_FIELDS declaration, which adds
+ * the `untrusted` descriptor when the result holds text from outside the team.
  */
 export function registerTool<TArgs>(
   server: McpServer,
   auth: McpAuthContext,
   def: ToolDef<TArgs>
 ): void {
+  const untrusted: UntrustedSpec | undefined = UNTRUSTED_TOOL_FIELDS[def.name]
+  if (!untrusted) {
+    throw new Error(`MCP tool "${def.name}" has no UNTRUSTED_TOOL_FIELDS declaration`)
+  }
   const wrapped = (async (args: TArgs): Promise<CallToolResult> => {
     if (def.feature) {
       const denied = await requireFeature(def.feature)
@@ -262,7 +282,7 @@ export function registerTool<TArgs>(
     try {
       const denied = requirePermissions(auth, requiredPermissions(def.permissions, args, auth))
       if (denied) return denied
-      return await def.handler(args)
+      return markUntrusted(await def.handler(args), untrusted)
     } catch (err) {
       return errorResult(err)
     }
@@ -337,8 +357,41 @@ export async function mcpMemberActor(auth: McpAuthContext): Promise<Actor> {
   }
 }
 
-/** Format a help center article as a tool result. */
-export function articleResult(article: {
+/** An object in a result that shows someone's name: its path there, and whose name it is. */
+export type AuthorAt = readonly [path: string, principalId: string | null | undefined]
+
+/**
+ * Attach whether each listed object's author is on the team today, as
+ * `authorOnTeam` facts at the object's path (see withItemFacts). Names are
+ * read live, so only a current teammate's or service principal's name is the
+ * team's. One principal read covers the whole result, and none happens when no
+ * object names an author. If the read fails, no author counts as on the team,
+ * so every name is marked rather than the call failing.
+ */
+export async function withAuthorFacts(
+  result: CallToolResult,
+  authors: ReadonlyArray<AuthorAt>
+): Promise<CallToolResult> {
+  let onTeam: Set<string>
+  try {
+    onTeam = await principalIdsOnTeam(authors.map(([, principalId]) => principalId))
+  } catch (err) {
+    log.warn({ err }, 'author standing lookup failed, marking every author name')
+    onTeam = new Set()
+  }
+  return withItemFacts(
+    result,
+    Object.fromEntries(
+      authors.map(([path, principalId]) => [
+        path,
+        { authorOnTeam: !!principalId && onTeam.has(principalId) },
+      ])
+    )
+  )
+}
+
+/** Format a help center article as a tool result, with its author's standing attached. */
+export async function articleResult(article: {
   id: string
   slug: string
   title: string
@@ -354,23 +407,26 @@ export function articleResult(article: {
   notHelpfulCount: number
   createdAt: Date
   updatedAt: Date
-}): CallToolResult {
-  return jsonResult({
-    id: article.id,
-    slug: article.slug,
-    title: article.title,
-    content: contentJsonToMarkdown(article.contentJson, article.content),
-    description: article.description,
-    position: article.position,
-    category: article.category,
-    author: article.author,
-    publishedAt: article.publishedAt,
-    viewCount: article.viewCount,
-    helpfulCount: article.helpfulCount,
-    notHelpfulCount: article.notHelpfulCount,
-    createdAt: article.createdAt,
-    updatedAt: article.updatedAt,
-  })
+}): Promise<CallToolResult> {
+  return withAuthorFacts(
+    jsonResult({
+      id: article.id,
+      slug: article.slug,
+      title: article.title,
+      content: contentJsonToMarkdown(article.contentJson, article.content),
+      description: article.description,
+      position: article.position,
+      category: article.category,
+      author: article.author,
+      publishedAt: article.publishedAt,
+      viewCount: article.viewCount,
+      helpfulCount: article.helpfulCount,
+      notHelpfulCount: article.notHelpfulCount,
+      createdAt: article.createdAt,
+      updatedAt: article.updatedAt,
+    }),
+    [['author', article.author?.id]]
+  )
 }
 
 /** Format a help center category as a tool result. */

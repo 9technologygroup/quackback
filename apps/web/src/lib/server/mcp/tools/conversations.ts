@@ -17,8 +17,10 @@ import {
   mcpAgentActor,
   jsonResult,
   compactJsonResult,
+  withAuthorFacts,
   READ_ONLY,
   WRITE,
+  type AuthorAt,
 } from './helpers'
 
 // ============================================================================
@@ -127,7 +129,7 @@ Example: get_conversation({ conversationId: "conversation_01abc...", includeInte
           preferAccountName: true,
         }),
       ])
-      return jsonResult({
+      const result = jsonResult({
         conversation: {
           id: dto.id,
           status: dto.status,
@@ -152,6 +154,10 @@ Example: get_conversation({ conversationId: "conversation_01abc...", includeInte
         hasMore: page.hasMore,
         nextCursor: page.nextCursor,
       })
+      return withAuthorFacts(
+        result,
+        page.messages.map((m, i): AuthorAt => [`messages[${i}]`, m.author?.principalId])
+      )
     },
   })
 

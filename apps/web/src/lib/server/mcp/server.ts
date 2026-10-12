@@ -10,14 +10,18 @@ import { hasApiScope } from '@/lib/server/domains/api-keys/api-key-scopes'
 import { RESOURCE_SCOPES } from './required-scope'
 import { registerTools } from './tools'
 import type { McpAuthContext, McpScope } from './types'
+import { MCP_SERVER_INSTRUCTIONS } from './untrusted'
 
 type ResourceUri = keyof typeof RESOURCE_SCOPES
 
 export function createMcpServer(auth: McpAuthContext): McpServer {
-  const server = new McpServer({
-    name: 'quackback',
-    version: '1.0.0',
-  })
+  const server = new McpServer(
+    {
+      name: 'quackback',
+      version: '1.0.0',
+    },
+    { instructions: MCP_SERVER_INSTRUCTIONS }
+  )
 
   registerTools(server, auth)
   registerResources(server, auth)

@@ -27,8 +27,10 @@ import {
   mcpAgentActor,
   jsonResult,
   compactJsonResult,
+  withAuthorFacts,
   READ_ONLY,
   WRITE,
+  type AuthorAt,
 } from './helpers'
 
 const TICKET_TYPES = ['customer', 'back_office', 'tracker'] as const
@@ -183,7 +185,7 @@ Example: get_ticket({ ticketId: "ticket_01abc...", includeInternal: true })`,
         }),
       ])
       const nextCursor = page.hasMore && page.messages.length ? page.messages[0].id : null
-      return jsonResult({
+      const result = jsonResult({
         ticket: {
           id: dto.id,
           number: dto.number,
@@ -219,6 +221,10 @@ Example: get_ticket({ ticketId: "ticket_01abc...", includeInternal: true })`,
         hasMore: page.hasMore,
         nextCursor,
       })
+      return withAuthorFacts(
+        result,
+        page.messages.map((m, i): AuthorAt => [`messages[${i}]`, m.author?.principalId])
+      )
     },
   })
 

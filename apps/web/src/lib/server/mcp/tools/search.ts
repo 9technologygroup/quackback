@@ -48,7 +48,9 @@ import {
   parseFlexibleDate,
   articleResult,
   categoryResult,
+  withAuthorFacts,
   READ_ONLY,
+  type AuthorAt,
 } from './helpers'
 
 // ============================================================================
@@ -415,25 +417,29 @@ async function searchChangelogs(args: SearchArgs): Promise<CallToolResult> {
   const nextCursor =
     result.hasMore && lastItem ? encodeSearchCursor('changelogs', lastItem.id) : null
 
-  return compactJsonResult({
-    changelogs: result.items.map((c) => ({
-      id: c.id,
-      title: c.title,
-      excerpt: c.content ? truncate(c.content, 200) : '',
-      status: c.status,
-      authorName: c.author?.name ?? null,
-      linkedPosts: c.linkedPosts.map((p) => ({
-        id: p.id,
-        title: p.title,
-        voteCount: p.voteCount,
+  const changelogAuthors = result.items.map((c, i): AuthorAt => [`changelogs[${i}]`, c.author?.id])
+  return withAuthorFacts(
+    compactJsonResult({
+      changelogs: result.items.map((c) => ({
+        id: c.id,
+        title: c.title,
+        excerpt: c.content ? truncate(c.content, 200) : '',
+        status: c.status,
+        authorName: c.author?.name ?? null,
+        linkedPosts: c.linkedPosts.map((p) => ({
+          id: p.id,
+          title: p.title,
+          voteCount: p.voteCount,
+        })),
+        publishedAt: c.publishedAt,
+        displayDate: c.displayDate,
+        createdAt: c.createdAt,
       })),
-      publishedAt: c.publishedAt,
-      displayDate: c.displayDate,
-      createdAt: c.createdAt,
-    })),
-    nextCursor,
-    hasMore: result.hasMore,
-  })
+      nextCursor,
+      hasMore: result.hasMore,
+    }),
+    changelogAuthors
+  )
 }
 
 async function searchArticles(args: SearchArgs): Promise<CallToolResult> {
@@ -461,25 +467,28 @@ async function searchArticles(args: SearchArgs): Promise<CallToolResult> {
   const lastItem = result.items[result.items.length - 1]
   const nextCursor = result.hasMore && lastItem ? encodeSearchCursor('articles', lastItem.id) : null
 
-  return compactJsonResult({
-    articles: result.items.map((a) => ({
-      id: a.id,
-      slug: a.slug,
-      title: a.title,
-      excerpt: a.content ? truncate(a.content, 200) : '',
-      description: a.description,
-      status: a.publishedAt ? 'published' : 'draft',
-      categoryId: a.category.id,
-      categoryName: a.category.name,
-      categorySlug: a.category.slug,
-      authorName: a.author?.name ?? null,
-      publishedAt: a.publishedAt,
-      createdAt: a.createdAt,
-      updatedAt: a.updatedAt,
-    })),
-    nextCursor,
-    hasMore: result.hasMore,
-  })
+  return withAuthorFacts(
+    compactJsonResult({
+      articles: result.items.map((a) => ({
+        id: a.id,
+        slug: a.slug,
+        title: a.title,
+        excerpt: a.content ? truncate(a.content, 200) : '',
+        description: a.description,
+        status: a.publishedAt ? 'published' : 'draft',
+        categoryId: a.category.id,
+        categoryName: a.category.name,
+        categorySlug: a.category.slug,
+        authorName: a.author?.name ?? null,
+        publishedAt: a.publishedAt,
+        createdAt: a.createdAt,
+        updatedAt: a.updatedAt,
+      })),
+      nextCursor,
+      hasMore: result.hasMore,
+    }),
+    result.items.map((a, i): AuthorAt => [`articles[${i}]`, a.author?.id])
+  )
 }
 
 // ============================================================================
@@ -502,6 +511,14 @@ function serializeMcpComment(c: CommentTreeNode): Record<string, unknown> {
   }
 }
 
+/** Each comment's path in the result and its author, replies included. */
+function commentAuthors(comments: CommentTreeNode[], prefix: string): AuthorAt[] {
+  return comments.flatMap((c, i): AuthorAt[] => [
+    [`${prefix}[${i}]`, c.principalId],
+    ...commentAuthors(c.replies, `${prefix}[${i}].replies`),
+  ])
+}
+
 async function getPostDetails(postId: PostId): Promise<CallToolResult> {
   const [post, comments, mergedPosts] = await Promise.all([
     getPostWithDetails(postId),
@@ -509,7 +526,9 @@ async function getPostDetails(postId: PostId): Promise<CallToolResult> {
     getMergedPosts(postId),
   ])
 
-  return jsonResult({
+  const authors = commentAuthors(comments, 'comments')
+  if (post.pinnedComment) authors.push(['pinnedComment', post.pinnedComment.principalId])
+  const result = jsonResult({
     id: post.id,
     title: post.title,
     content: contentJsonToMarkdown(post.contentJson, post.content),
@@ -550,12 +569,13 @@ async function getPostDetails(postId: PostId): Promise<CallToolResult> {
     deletedAt: post.deletedAt ?? null,
     comments: comments.map(serializeMcpComment),
   })
+  return withAuthorFacts(result, authors)
 }
 
 async function getChangelogDetails(changelogId: ChangelogId): Promise<CallToolResult> {
   const entry = await getChangelogById(changelogId)
 
-  return jsonResult({
+  const result = jsonResult({
     id: entry.id,
     title: entry.title,
     content: contentJsonToMarkdown(entry.contentJson, entry.content),
@@ -572,6 +592,7 @@ async function getChangelogDetails(changelogId: ChangelogId): Promise<CallToolRe
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
   })
+  return withAuthorFacts(result, [['', entry.author?.id]])
 }
 
 async function getArticleDetails(articleId: KbArticleId): Promise<CallToolResult> {
