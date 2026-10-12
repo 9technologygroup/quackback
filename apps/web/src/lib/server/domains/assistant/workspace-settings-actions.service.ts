@@ -88,7 +88,9 @@ export async function enqueueWorkspaceSettingsProposal(
   inputs: unknown[],
   threadKey?: string,
   turnId?: string,
-  requester?: ApprovalRequester
+  requester?: ApprovalRequester,
+  /** Runs first inside the filing transaction, for a check that must hold under its lock. */
+  guard?: (tx: Transaction) => Promise<void>
 ): Promise<
   AssistantPendingAction & {
     reviewHref?: string
@@ -108,6 +110,7 @@ export async function enqueueWorkspaceSettingsProposal(
     onBehalfOfPrincipalId: requester?.onBehalfOfPrincipalId ?? actor.principalId,
   }
   const result = await db.transaction(async (tx) => {
+    await guard?.(tx)
     // A dedicated review keeps external proposals out of an active chat's history.
     const key =
       threadKey ??
@@ -199,7 +202,7 @@ async function lockedSettingsRequest(
 async function audit(
   tx: Transaction,
   actor: Actor,
-  event: 'copilot.settings.applied' | 'copilot.settings.undone',
+  event: 'copilot.settings.applied' | 'copilot.settings.undone' | 'settings.undone',
   id: string,
   changes: SettingsProposal['changes']
 ) {
@@ -215,7 +218,13 @@ async function audit(
     target: { type: 'assistant_pending_action', id },
     before: changes.map((change) => ({ id: change.id, value: change.before })),
     after: changes.map((change) => ({ id: change.id, value: change.after })),
-    metadata: { via: 'copilot', principalId: actor.principalId },
+    metadata: {
+      via: 'copilot',
+      principalId: actor.principalId,
+      ...(event === 'settings.undone'
+        ? { area: changes[0]?.area, areas: [...new Set(changes.map((change) => change.area))] }
+        : {}),
+    },
   })
 }
 
@@ -277,7 +286,9 @@ export async function applyWorkspaceSettingsProposal(
  */
 export async function undoWorkspaceSettingsProposal(
   actor: Actor,
-  id: AssistantPendingActionId
+  id: AssistantPendingActionId,
+  /** `settings.undone` when the settings registry undoes it, so the row names the area. */
+  event: 'copilot.settings.undone' | 'settings.undone' = 'copilot.settings.undone'
 ): Promise<AssistantPendingAction> {
   const result = await db.transaction(async (tx) => {
     const pending = await lockedSettingsRequest(id, tx)
@@ -288,7 +299,7 @@ export async function undoWorkspaceSettingsProposal(
     await audit(
       tx,
       actor,
-      'copilot.settings.undone',
+      event,
       pending.id,
       receipt.changes.map((change) => ({ ...change, before: change.after, after: change.before }))
     )

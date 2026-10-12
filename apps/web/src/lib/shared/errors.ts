@@ -82,6 +82,42 @@ export class ConflictError extends DomainException {
 }
 
 /**
+ * HTTP 412 - A precondition the caller sent (If-Match) no longer holds
+ * Use for: REVISION_MISMATCH
+ */
+export class PreconditionFailedError extends DomainException {
+  readonly statusCode = 412
+
+  constructor(code: string, message: string, cause?: unknown) {
+    super(code, message, cause)
+  }
+}
+
+/**
+ * HTTP 423 - The resource is locked by its operator or a config file
+ * Use for: FIELD_LOCKED
+ */
+export class LockedError extends DomainException {
+  readonly statusCode = 423
+
+  constructor(code: string, message: string, cause?: unknown) {
+    super(code, message, cause)
+  }
+}
+
+/**
+ * HTTP 428 - The request must carry a precondition (If-Match)
+ * Use for: IF_MATCH_REQUIRED
+ */
+export class PreconditionRequiredError extends DomainException {
+  readonly statusCode = 428
+
+  constructor(code: string, message: string, cause?: unknown) {
+    super(code, message, cause)
+  }
+}
+
+/**
  * HTTP 500 - Internal/database errors
  * Use for: DATABASE_ERROR, unexpected failures
  */

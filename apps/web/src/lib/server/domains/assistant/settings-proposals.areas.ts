@@ -1,7 +1,8 @@
 import { db, eq, principal, type Database, type Transaction } from '@/lib/server/db'
 import type { Actor } from '@/lib/server/policy/types'
 import { permissionsForPrincipal } from '@/lib/server/policy/permissions'
-import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
+import type { PermissionKey } from '@/lib/shared/permissions'
+import { SETTINGS_AREA_META } from '@/lib/shared/settings-registry'
 import { ForbiddenError, ValidationError } from '@/lib/shared/errors'
 import { settingsAreaSchema, type SettingsArea } from '@/lib/shared/assistant/settings-proposals'
 import { resolveOfficeHoursSchedule } from '@/lib/server/domains/settings/settings.office-hours'
@@ -19,21 +20,14 @@ import { expandTheme } from '@/lib/shared/theme/expand'
 import type { ThemeConfig } from '@/lib/shared/theme/types'
 import { parseIdentityProjection } from '@/lib/server/domains/settings/cloud/identity-projection'
 
-export const AREAS: Record<SettingsArea, { permission: PermissionKey; href: string }> = {
-  branding: { permission: PERMISSIONS.SETTINGS_BRANDING, href: '/admin/settings/portal' },
-  // Portal settings opens with the branding permission alone.
-  portal: { permission: PERMISSIONS.SETTINGS_BRANDING, href: '/admin/settings/portal' },
-  messenger: {
-    permission: PERMISSIONS.SETTINGS_MANAGE,
-    href: '/admin/settings/channels/messenger',
-  },
-  modules: { permission: PERMISSIONS.SETTINGS_MANAGE, href: '/admin/settings/general' },
-  office_hours: {
-    permission: PERMISSIONS.OFFICE_HOURS_MANAGE,
-    href: '/admin/settings/office-hours',
-  },
-  changelog: { permission: PERMISSIONS.CHANGELOG_MANAGE, href: '/admin/settings/changelog' },
-}
+/** Each area's write permission and page, read from the settings registry. */
+export const AREAS: Record<SettingsArea, { permission: PermissionKey; href: string }> =
+  Object.fromEntries(
+    Object.entries(SETTINGS_AREA_META).map(([id, meta]) => [
+      id,
+      { permission: meta.permission, href: meta.href },
+    ])
+  ) as Record<SettingsArea, { permission: PermissionKey; href: string }>
 
 export function assertWorkspaceNameWritable(row: SettingsRecord): void {
   if (parseIdentityProjection(row.cloudIdentity))

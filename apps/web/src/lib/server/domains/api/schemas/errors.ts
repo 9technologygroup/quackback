@@ -24,6 +24,19 @@ export const ConflictErrorSchema = z
   })
   .meta({ description: 'The request conflicts with the current state of the resource' })
 
+export const PreconditionErrorSchema = z
+  .object({
+    error: z.object({
+      code: z.string().meta({ example: 'REVISION_MISMATCH' }),
+      message: z.string(),
+      details: z.record(z.string(), z.unknown()).optional(),
+    }),
+  })
+  .meta({
+    description:
+      'A precondition failed: the If-Match header is missing (428), stale (412), or a field is locked (423)',
+  })
+
 export const RateLimitedErrorSchema = z
   .object({
     error: z.object({
@@ -39,6 +52,9 @@ const ERROR_RESPONSES = {
   403: { description: 'Forbidden', schema: ForbiddenErrorSchema },
   404: { description: 'Not found', schema: NotFoundErrorSchema },
   409: { description: 'Conflict', schema: ConflictErrorSchema },
+  412: { description: 'The If-Match revision is stale', schema: PreconditionErrorSchema },
+  423: { description: 'A field in the patch is locked', schema: PreconditionErrorSchema },
+  428: { description: 'If-Match is required', schema: PreconditionErrorSchema },
   429: {
     description: 'Rate limited. The Retry-After header gives the seconds to wait.',
     schema: RateLimitedErrorSchema,

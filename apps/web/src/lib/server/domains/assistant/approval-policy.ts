@@ -13,6 +13,7 @@ import type {
   SettingsChange,
   SettingsProposal,
 } from '@/lib/shared/assistant/settings-proposals'
+import { SETTINGS_AREA_META } from '@/lib/shared/settings-registry'
 import { AREAS } from './settings-proposals.areas'
 
 /** The tool name a settings request is filed under. */
@@ -28,19 +29,10 @@ export function higherRisk(a: ApprovalRisk, b: ApprovalRisk): ApprovalRisk {
 /** More changes than this in one request is medium risk, however small each one is. */
 export const BULK_CHANGE_THRESHOLD = 25
 
-/**
- * The tier of each settings area. What customers see or are emailed about
- * (Messenger, product modules, changelog email) is medium; branding, the
- * workspace name and hours are low.
- */
-const SETTINGS_AREA_RISK: Record<SettingsArea, ApprovalRisk> = {
-  branding: 'low',
-  portal: 'low',
-  office_hours: 'low',
-  messenger: 'medium',
-  modules: 'medium',
-  changelog: 'medium',
-}
+/** The tier of each settings area, as the settings registry declares it. */
+const SETTINGS_AREA_RISK: Record<SettingsArea, ApprovalRisk> = Object.fromEntries(
+  Object.entries(SETTINGS_AREA_META).map(([id, meta]) => [id, meta.risk])
+) as Record<SettingsArea, ApprovalRisk>
 
 /** The risk of a settings request: its riskiest change, and medium for a bulk one. */
 export function settingsProposalRisk(proposal: SettingsProposal): ApprovalRisk {

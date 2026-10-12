@@ -308,6 +308,7 @@ export const UNTRUSTED_TOOL_FIELDS = {
   widget_install_status: ['originHost'],
   get_settings: NONE,
   propose_settings_change: NONE,
+  update_settings: NONE,
   navigate_workspace: NONE,
   // A client name is chosen by the client that filed the request.
   get_approval: ['clientName'],

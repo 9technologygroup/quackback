@@ -88,6 +88,14 @@ const APPROVAL_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.AI_TEAMMATE_MANAGE,
 ]
 
+/** The permission each settings registry area needs, to read and to write. */
+const SETTINGS_REGISTRY_PERMISSIONS = [
+  PERMISSIONS.SETTINGS_MANAGE,
+  PERMISSIONS.SETTINGS_BRANDING,
+  PERMISSIONS.OFFICE_HOURS_MANAGE,
+  PERMISSIONS.CHANGELOG_MANAGE,
+]
+
 export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/assistant-connectors.ts::createConnectorFn': DYNAMIC_PERMISSION(
     [PERMISSIONS.AI_CUSTOMER_MANAGE, PERMISSIONS.AI_TEAMMATE_MANAGE],
@@ -237,6 +245,22 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/website-branding.ts::declineWebsiteBrandingOfferFn': DYNAMIC_PERMISSION(
     [PERMISSIONS.SETTINGS_MANAGE],
     'Not now closes the offer and requires current settings management'
+  ),
+  'routes/api/v1/settings/index.ts::GET': DYNAMIC_PERMISSION(
+    SETTINGS_REGISTRY_PERMISSIONS,
+    'the key needs the read:settings scope; the list holds only the areas whose permission the key holds'
+  ),
+  'routes/api/v1/settings/$area.ts::GET': DYNAMIC_PERMISSION(
+    SETTINGS_REGISTRY_PERMISSIONS,
+    'the key needs the read:settings scope and the permission of the area read, checked again in the registry'
+  ),
+  'routes/api/v1/settings/$area.ts::PATCH': DYNAMIC_PERMISSION(
+    SETTINGS_REGISTRY_PERMISSIONS,
+    'the key needs the write:settings scope and the permission of the area changed, checked again in the registry and again when an approval is decided'
+  ),
+  'routes/api/v1/settings/receipts.$receiptId.undo.ts::POST': DYNAMIC_PERMISSION(
+    SETTINGS_REGISTRY_PERMISSIONS,
+    'the key needs the write:settings scope and the permission of every area the receipt changed'
   ),
   'lib/server/functions/ask-search.ts::searchAskEntitiesFn': DYNAMIC_PERMISSION(
     [

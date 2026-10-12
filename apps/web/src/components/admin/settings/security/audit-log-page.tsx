@@ -90,6 +90,8 @@ const FILTER_EVENT_TYPES: FilterEventOption[] = [
   { group: 'API and MCP', label: 'API write', value: 'api.write' },
   { group: 'API and MCP', label: 'API import', value: 'api.import' },
   { group: 'API and MCP', label: 'MCP tool call', value: 'mcp.tool_call' },
+  { group: 'Settings', label: 'Settings applied', value: 'settings.applied' },
+  { group: 'Settings', label: 'Settings undone', value: 'settings.undone' },
   { group: 'Portal', label: 'Widget sign-in changed', value: 'portal.widget_signin.changed' },
   // Widget activity, separated because handshake events are high-volume on active workspaces.
   // portal.widget_handshake.consumed is flagged excludeByDefault for future multi-select support.

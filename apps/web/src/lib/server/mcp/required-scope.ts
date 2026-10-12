@@ -49,6 +49,7 @@ export const TOOL_SCOPES: Readonly<Record<string, McpScope>> = {
   propose_settings_change: 'write:settings',
   get_approval: 'read:settings',
   list_approvals: 'read:settings',
+  update_settings: 'write:settings',
 }
 
 export const RESOURCE_SCOPES: Readonly<Record<string, McpScope>> = {

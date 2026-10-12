@@ -5,6 +5,8 @@ const state = vi.hoisted(() => ({
   flags: {} as Record<string, boolean>,
   reads: [] as string[],
   proposals: [] as unknown[],
+  changes: [] as unknown[],
+  change: { status: 'noop', revision: 'rev' } as Record<string, unknown>,
 }))
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   isFeatureEnabled: async (flag: string) => state.flags[flag] === true,
@@ -16,6 +18,21 @@ vi.mock('@/lib/server/domains/assistant/settings-proposals.service', () => ({
   getSettingsForActor: async (actor: { scope: string }, area: string) => {
     state.reads.push(`${actor.scope}:${area}`)
     return { area, settings: {} }
+  },
+}))
+vi.mock('@/lib/server/domains/settings-registry/service', () => ({
+  readSettingsArea: async (_actor: unknown, area: string) => ({
+    id: area,
+    risk: 'low',
+    revision: 'rev',
+    locked: [],
+    gates: { permission: 'settings.branding', approval: 'none', freshSignIn: false },
+    value: {},
+  }),
+  listSettingsAreas: async () => [{ id: 'branding', risk: 'low', revision: 'rev' }],
+  changeSettingsArea: async (_caller: unknown, area: string, input: unknown) => {
+    state.changes.push({ area, input })
+    return state.change
   },
 }))
 vi.mock('@/lib/server/domains/assistant/workspace-settings-actions.service', () => ({
@@ -58,21 +75,26 @@ beforeEach(() => {
   state.flags = {}
   state.reads = []
   state.proposals = []
+  state.changes = []
+  state.change = { status: 'noop', revision: 'rev' }
 })
 
 describe('settings MCP tools follow Copilot on Home', () => {
-  it('refuse to read or propose while the flag is off', async () => {
+  it('refuses to propose while the flag is off, but reads and updates need no flag', async () => {
     const tools = collect()
-    const read = await tools.get('get_settings')!({ area: 'branding' })
     const propose = await tools.get('propose_settings_change')!({
       changes: [{ area: 'messenger', patch: { enabled: true } }],
     })
-    for (const result of [read, propose]) {
-      expect(result.isError).toBe(true)
-      expect(text(result)).toContain('Settings → Labs')
-    }
-    expect(state.reads).toEqual([])
+    expect(propose.isError).toBe(true)
+    expect(text(propose)).toContain('Settings → Labs')
     expect(state.proposals).toEqual([])
+    expect((await tools.get('get_settings')!({ area: 'branding' })).isError).not.toBe(true)
+    const update = await tools.get('update_settings')!({
+      area: 'portal',
+      patch: { displayName: 'Acme' },
+      dry_run: true,
+    })
+    expect(update.isError).not.toBe(true)
   })
 
   it('work once the flag is on', async () => {
@@ -85,5 +107,69 @@ describe('settings MCP tools follow Copilot on Home', () => {
     })
     expect(propose.isError).not.toBe(true)
     expect(state.proposals).toEqual([[{ area: 'messenger', patch: { enabled: true } }]])
+  })
+
+  it('lists the areas with no area given, and an area with its revision', async () => {
+    state.flags = { copilotHome: true }
+    const tools = collect()
+    expect(JSON.parse(text(await tools.get('get_settings')!({})))).toMatchObject({
+      areas: [{ id: 'branding', revision: 'rev' }],
+    })
+    expect(JSON.parse(text(await tools.get('get_settings')!({ area: 'branding' })))).toMatchObject({
+      area: 'branding',
+      revision: 'rev',
+      risk: 'low',
+      locked: [],
+    })
+  })
+
+  it('update_settings needs a revision unless it is a dry run', async () => {
+    state.flags = { copilotHome: true }
+    const tools = collect()
+    const refused = await tools.get('update_settings')!({
+      area: 'portal',
+      patch: { displayName: 'Acme' },
+    })
+    expect(refused.isError).toBe(true)
+    expect(text(refused)).toContain('IF_MATCH_REQUIRED')
+    expect(state.changes).toEqual([])
+
+    await tools.get('update_settings')!({
+      area: 'portal',
+      patch: { displayName: 'Acme' },
+      dry_run: true,
+    })
+    expect(state.changes).toEqual([
+      {
+        area: 'portal',
+        input: { patch: { displayName: 'Acme' }, expectedRevision: undefined, dryRun: true },
+      },
+    ])
+  })
+
+  it('update_settings returns the approval in the propose_settings_change shape', async () => {
+    state.flags = { copilotHome: true }
+    state.change = {
+      status: 'approval_required',
+      approval: {
+        proposed: true,
+        approvalId: 'assistant_action_1',
+        pendingActionId: 'assistant_action_1',
+        status: 'pending',
+        proposal: { kind: 'x' },
+      },
+    }
+    const result = await collect().get('update_settings')!({
+      area: 'messenger',
+      patch: { enabled: true },
+      expected_revision: 'rev',
+    })
+    expect(JSON.parse(text(result))).toMatchObject({
+      proposed: true,
+      approvalId: 'assistant_action_1',
+      status: 'pending',
+      pendingActionId: 'assistant_action_1',
+      proposal: { kind: 'x' },
+    })
   })
 })

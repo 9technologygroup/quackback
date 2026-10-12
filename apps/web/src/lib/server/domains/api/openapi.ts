@@ -143,6 +143,11 @@ Example: \`post_01h455vb4pex5vsknk084sn02q\`
         name: 'Workspace',
         description: 'Mention lookups and usage counters, authenticated without an API key',
       },
+      {
+        name: 'Settings',
+        description:
+          'Read and change workspace settings by area, with revisions, approvals and undo',
+      },
       { name: 'Roadmaps', description: 'Manage roadmaps' },
       { name: 'Changelog', description: 'Manage changelog entries' },
       { name: 'Conversations', description: 'Manage support conversations' },

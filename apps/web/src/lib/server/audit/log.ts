@@ -51,6 +51,10 @@ export type AuditEventType =
   | 'branding.website.undone'
   | 'copilot.settings.applied'
   | 'copilot.settings.undone'
+  // Settings registry: a direct write to one area, and its undo. The audit row
+  // of a write is the receipt the undo names.
+  | 'settings.applied'
+  | 'settings.undone'
   | 'sso.enforcement.domain.enabled'
   | 'sso.enforcement.domain.disabled'
   | 'sso.config.changed'
@@ -333,8 +337,12 @@ export async function recordAuditRollup(
 export async function recordAuditEventInTransaction(
   tx: Transaction,
   input: RecordAuditEventInput
-): Promise<void> {
-  await tx.insert(auditLog).values(auditInsertValues(input))
+): Promise<string> {
+  const [row] = await tx
+    .insert(auditLog)
+    .values(auditInsertValues(input))
+    .returning({ id: auditLog.id })
+  return row.id
 }
 
 /**

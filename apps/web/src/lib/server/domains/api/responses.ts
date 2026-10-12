@@ -174,6 +174,8 @@ const NOT_FOUND_RESOURCES: Record<string, string> = {
   STATUS_INCIDENT_NOT_FOUND: 'Status incident',
   STATUS_TEMPLATE_NOT_FOUND: 'Status incident template',
   APPROVAL_NOT_FOUND: 'Approval',
+  SETTINGS_AREA_NOT_FOUND: 'Settings area',
+  SETTINGS_RECEIPT_NOT_FOUND: 'Settings receipt',
 }
 
 /**
@@ -229,6 +231,14 @@ export function handleDomainError(error: unknown): Response {
           if (s === 403) return forbiddenResponse(domainError.message)
           if (s === 404) return notFoundResponse(domainError.message)
           if (s === 409) return conflictResponse(domainError.message)
+          // Preconditions and locks keep their own codes: a client branches on them.
+          if (s === 412 || s === 423 || s === 428) {
+            const details =
+              'cause' in domainError && domainError.cause && typeof domainError.cause === 'object'
+                ? (domainError.cause as Record<string, unknown>)
+                : undefined
+            return errorResponse(domainError.code, domainError.message, s, details)
+          }
         }
         log.error({ err: error }, 'unhandled domain error')
         return internalErrorResponse()

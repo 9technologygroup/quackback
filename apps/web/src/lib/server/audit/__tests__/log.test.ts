@@ -380,7 +380,7 @@ describe('recordAuditEvent attribution', () => {
   it('stamps the boundary onto the transactional insert too', async () => {
     const { runWithAuditAttribution } = await import('../attribution')
     const { recordAuditEventInTransaction } = await import('../log')
-    const txValues = vi.fn().mockResolvedValue(undefined)
+    const txValues = vi.fn((_row: unknown) => ({ returning: async () => [{ id: 'audit_row' }] }))
     const tx = { insert: vi.fn(() => ({ values: txValues })) }
     await runWithAuditAttribution(
       { channel: 'assistant', clientName: 'Quinn', onBehalfOfPrincipalId: ON_BEHALF as never },
