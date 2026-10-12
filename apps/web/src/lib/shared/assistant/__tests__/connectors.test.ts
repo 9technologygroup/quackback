@@ -7,6 +7,8 @@ import {
   stableToolHash,
   toolGroupFromAnnotations,
   DEFAULT_CONNECTOR_TOOL_POLICIES,
+  connectorCreateInputSchema,
+  connectorAssignmentsSchema,
 } from '../connectors'
 
 describe('slugifyConnectorName', () => {
@@ -50,5 +52,29 @@ describe('resolveToolPolicy', () => {
     expect(toolGroupFromAnnotations({})).toBe('write')
     expect(toolGroupFromAnnotations({ readOnlyHint: true })).toBe('read')
     expect(DEFAULT_CONNECTOR_TOOL_POLICIES.groupDefaults.write).toBe('approval')
+  })
+})
+
+describe('connector assignments defaults', () => {
+  const base = { name: 'CRM', url: 'https://example.com/mcp' }
+
+  it('starts new connectors available to teammates only', () => {
+    const parsed = connectorCreateInputSchema.parse(base)
+    expect(parsed.assignments).toEqual({ agent: false, copilot: true })
+  })
+
+  it('respects explicit assignments', () => {
+    const parsed = connectorCreateInputSchema.parse({
+      ...base,
+      assignments: { agent: true, copilot: false },
+    })
+    expect(parsed.assignments).toEqual({ agent: true, copilot: false })
+  })
+
+  it('keeps stored assignments unchanged when parsing', () => {
+    expect(connectorAssignmentsSchema.parse({ agent: true, copilot: true })).toEqual({
+      agent: true,
+      copilot: true,
+    })
   })
 })

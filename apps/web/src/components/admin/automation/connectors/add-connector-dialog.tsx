@@ -52,7 +52,6 @@ export function AddConnectorDialog({
       url,
       authMode,
       bearerToken: authMode === 'bearer' ? bearerToken : undefined,
-      assignments: { agent: true, copilot: true },
     })
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? 'Invalid connector')
