@@ -135,6 +135,18 @@ afterEach(() => {
 })
 
 describe('launch plan dock', () => {
+  it('declares a fetcher for the progress markers it reads, so nothing logs a missing queryFn', async () => {
+    const { client } = mount({ status: open })
+    await screen.findByRole('link', { name: /Launch plan/ })
+    const query = client.getQueryCache().find({ queryKey: PROGRESS_KEY })
+    expect(query?.options.queryFn).toBeTypeOf('function')
+    // Still never fetched by the dock itself.
+    expect(hoisted.progressFetches).toBe(0)
+    // A refetch that does reach it works instead of erroring.
+    await client.fetchQuery({ queryKey: PROGRESS_KEY, staleTime: 0 })
+    expect(hoisted.progressFetches).toBe(1)
+  })
+
   it("is a plain link to the Launch plan page with the plan's one count", async () => {
     mount({ status: open })
     const link = await screen.findByRole('link', { name: /Launch plan/ })

@@ -272,6 +272,23 @@ it('returns an honest role refusal from the proposal loop instead of failing the
   }
 })
 
+it('titles the thread an external proposal opens, so Home can list it', async () => {
+  const pending = await enqueueWorkspaceSettingsProposal(owner, [
+    { area: 'portal', patch: { displayName: 'Acme team' } },
+  ])
+  const key = new URL(pending.reviewHref!, 'https://example.com').searchParams.get('copilotThread')!
+  expect((await readWorkspaceThread(key, owner)).title).toBe('Change portal settings')
+
+  const several = await enqueueWorkspaceSettingsProposal(owner, [
+    { area: 'portal', patch: { displayName: 'Acme team' } },
+    { area: 'modules', patch: { supportInbox: true } },
+  ])
+  const other = new URL(several.reviewHref!, 'https://example.com').searchParams.get(
+    'copilotThread'
+  )!
+  expect((await readWorkspaceThread(other, owner)).title).toBe('Change portal and modules settings')
+})
+
 it('publishes external SDK proposals for owner review without changing settings or interrupting chat', async () => {
   const active = await acquireWorkspaceTurn(owner, threadKey, 'active-chat', 'Hello')
   expect(active.status).toBe('acquired')

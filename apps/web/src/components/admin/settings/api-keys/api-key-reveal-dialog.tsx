@@ -34,7 +34,7 @@ export function ApiKeyRevealDialog({
           Your API key <strong>{keyName}</strong> has been created successfully.
         </>
       }
-      secretLabel="Your API key"
+      secretLabel="API key"
       secretValue={keyValue}
       confirmLabel="I've saved my key"
     >

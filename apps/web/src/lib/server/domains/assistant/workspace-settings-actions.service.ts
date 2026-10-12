@@ -15,6 +15,7 @@ import { ConflictError, NotFoundError } from '@/lib/shared/errors'
 import {
   settingsProposalInputSchema,
   settingsProposalSchema,
+  type SettingsArea,
   type SettingsProposal,
 } from '@/lib/shared/assistant/settings-proposals'
 import {
@@ -33,6 +34,23 @@ import { assertWorkspaceThreadOwned, createWorkspaceThread } from './workspace-t
 import { publishWorkspaceProposalReviewInTransaction } from './workspace-proposal-review'
 import type { AssistantPendingAction } from './pending-actions.service'
 import { recordAuditEventInTransaction } from '@/lib/server/audit/log'
+
+const AREA_WORDS: Record<SettingsArea, string> = {
+  branding: 'branding',
+  portal: 'portal',
+  messenger: 'messenger',
+  modules: 'modules',
+  office_hours: 'office hours',
+  changelog: 'changelog',
+}
+
+/** The title of the review thread a proposal opens, from the areas it changes. */
+function proposalThreadTitle(areas: SettingsArea[]): string {
+  const words = [...new Set(areas)].map((area) => AREA_WORDS[area])
+  const named =
+    words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}` : words[0]
+  return `Change ${named} settings`
+}
 
 export async function enqueueWorkspaceSettingsProposal(
   actor: Actor,
@@ -53,7 +71,9 @@ export async function enqueueWorkspaceSettingsProposal(
   const resolved = await resolveWebsiteSettingsInputs(actor, parsed)
   const result = await db.transaction(async (tx) => {
     // A dedicated review keeps external proposals out of an active chat's history.
-    const key = threadKey ?? (await createWorkspaceThread(actor, '', tx)).key
+    const key =
+      threadKey ??
+      (await createWorkspaceThread(actor, proposalThreadTitle(parsed.map((c) => c.area)), tx)).key
     await assertWorkspaceThreadOwned(key, actor, tx, true)
     const proposal = await prepareResolvedWebsiteSettingsChanges(actor, resolved, tx)
     const idempotencyKey = `workspace-settings:${key}:${turnId ?? randomUUID()}`

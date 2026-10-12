@@ -80,6 +80,11 @@ function useSidebarLaunch(): SidebarLaunch | null {
   const { data } = useQuery({ ...adminQueries.onboardingStatus(), enabled: false })
   const { data: progress } = useQuery<OnboardingProgress>({
     queryKey: PROGRESS_KEY,
+    // Never run by the dock; declared so a refetch that reaches it (a broad
+    // invalidation, a refocus) loads the markers instead of logging a missing
+    // fetcher. Loaded on demand to keep the server function off the rail.
+    queryFn: async () =>
+      (await import('@/lib/server/functions/onboarding-progress')).getOnboardingProgressFn(),
     enabled: false,
   })
   const [state, setState] = useState<SidebarLaunch | null>(null)
