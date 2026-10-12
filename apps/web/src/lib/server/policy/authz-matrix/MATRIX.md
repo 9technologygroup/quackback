@@ -865,8 +865,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `routes/api/export.companies.ts`::GET | company.view |
 | `routes/api/export.ts`::GET | post.export |
 | `routes/api/export.users.ts`::handleExportUsers | people.view |
-| `routes/api/v1/approvals/$approvalId.ts`::GET | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | assistant.manage) |
-| `routes/api/v1/approvals/index.ts`::GET | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | assistant.manage) |
+| `routes/api/v1/approvals/$approvalId.ts`::GET | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | ai.teammate.manage) |
+| `routes/api/v1/approvals/index.ts`::GET | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | ai.teammate.manage) |
 | `routes/api/v1/apps/boards.ts`::GET | PUBLIC (any valid key) |
 | `routes/api/v1/apps/link.ts`::POST | post.vote_on_behalf |
 | `routes/api/v1/apps/linked.ts`::GET | integration.view |
