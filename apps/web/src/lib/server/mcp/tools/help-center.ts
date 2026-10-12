@@ -4,6 +4,7 @@
  * declared as `feature` + `scope` + `teamOnly` metadata on registerTool.
  */
 
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import {
@@ -154,6 +155,7 @@ type ManageCategoryArgs = {
 export function registerHelpCenterTools(server: McpServer, auth: McpAuthContext) {
   registerTool<CreateHelpCenterArticleArgs>(server, auth, {
     name: 'create_article',
+    permissions: [PERMISSIONS.HELP_CENTER_MANAGE],
     description: `Create a new help center article (draft). Use update_article to publish it.
 
 Examples:
@@ -188,6 +190,7 @@ Examples:
 
   registerTool<UpdateHelpCenterArticleArgs>(server, auth, {
     name: 'update_article',
+    permissions: [PERMISSIONS.HELP_CENTER_MANAGE],
     description: `Update a help center article. All fields optional — only provided fields change. Set publishedAt to any ISO datetime string to publish immediately, or null to unpublish.
 
 Examples:
@@ -235,6 +238,7 @@ Examples:
 
   registerTool<DeleteHelpCenterArticleArgs>(server, auth, {
     name: 'delete_article',
+    permissions: [PERMISSIONS.HELP_CENTER_MANAGE],
     description: `Soft-delete a help center article.
 
 Example:
@@ -253,6 +257,7 @@ Example:
 
   registerTool<ManageCategoryArgs>(server, auth, {
     name: 'manage_category',
+    permissions: [PERMISSIONS.HELP_CENTER_MANAGE],
     description: `Create, update, or delete a help center category.
 
 Examples:

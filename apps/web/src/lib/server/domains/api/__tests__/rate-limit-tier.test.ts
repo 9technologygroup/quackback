@@ -59,7 +59,21 @@ describe('checkRateLimit — tier-aware', () => {
     vi.mocked(getTierLimits).mockResolvedValue({ ...OSS_TIER_LIMITS, apiRequestsPerMinute: 5 })
     mockIncrementBuckets.mockResolvedValueOnce([2000, 1])
     const result = await checkRateLimit('4.4.4.4', true)
-    expect(result).toEqual({ allowed: true, remaining: 0 })
+    // Admitted on the import cap alone, so the caller must still verify an admin key.
+    expect(result).toEqual({ allowed: true, remaining: 0, overBaseLimit: true })
+  })
+
+  it('marks only import-mode admissions past the base cap', async () => {
+    vi.mocked(getTierLimits).mockResolvedValue({ ...OSS_TIER_LIMITS, apiRequestsPerMinute: 5 })
+    mockIncrementBuckets.mockResolvedValueOnce([5, 1])
+    expect(await checkRateLimit('6.6.6.6', true)).toEqual({ allowed: true, remaining: 1995 })
+
+    mockIncrementBuckets.mockResolvedValueOnce([6, 1])
+    expect(await checkRateLimit('6.6.6.6', true)).toEqual({
+      allowed: true,
+      remaining: 1994,
+      overBaseLimit: true,
+    })
   })
 
   it('fails open when the primitive reports a Redis error (null count)', async () => {

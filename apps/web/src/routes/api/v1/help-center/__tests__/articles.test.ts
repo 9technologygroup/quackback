@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ApiAuthContext } from '@/lib/server/domains/api/auth'
+import { SYSTEM_ROLE_PERMISSIONS } from '@/lib/shared/permissions'
 import type { ApiKeyId } from '@/lib/server/domains/api-keys'
 import type { HelpCenterArticleWithCategory } from '@/lib/server/domains/help-center/help-center.types'
 import type { KbArticleFeedbackId, KbArticleId, KbCategoryId, PrincipalId } from '@quackback/ids'
@@ -95,6 +96,7 @@ const mockAuthContext: ApiAuthContext = {
   },
   principalId: 'principal_1' as PrincipalId,
   role: 'admin',
+  permissions: new Set(SYSTEM_ROLE_PERMISSIONS.owner),
   principal: null,
   importMode: false,
 }

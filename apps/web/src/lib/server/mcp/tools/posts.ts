@@ -3,6 +3,8 @@
  * merge/unmerge, and the activity log.
  */
 
+import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
+import { isTeamMember } from '@/lib/shared/roles'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { createPost, updatePost } from '@/lib/server/domains/posts/post.service'
@@ -48,6 +50,15 @@ export function resolveOwnerPrincipalId(
 ): PrincipalId | null | undefined {
   if (value === 'me') return selfPrincipalId
   return value as PrincipalId | null | undefined
+}
+
+/** Every granular permission a triage call implies, as the REST post PATCH requires. */
+function permissionsForTriage(args: TriagePostArgs): PermissionKey[] {
+  const required: PermissionKey[] = []
+  if (args.statusId !== undefined) required.push(PERMISSIONS.POST_SET_STATUS)
+  if (args.tagIds !== undefined) required.push(PERMISSIONS.POST_SET_TAGS)
+  if (args.ownerPrincipalId !== undefined) required.push(PERMISSIONS.POST_SET_OWNER)
+  return required
 }
 
 const createPostSchema = {
@@ -149,6 +160,7 @@ type GetPostActivityArgs = { postId: string }
 export function registerPostTools(server: McpServer, auth: McpAuthContext) {
   registerTool<TriagePostArgs>(server, auth, {
     name: 'triage_post',
+    permissions: (args) => permissionsForTriage(args),
     description: `Update a post: set status, tags, and/or owner. All fields optional — only provided fields are updated.
 
 Examples:
@@ -188,6 +200,7 @@ Examples:
 
   registerTool<VotePostArgs>(server, auth, {
     name: 'vote_post',
+    permissions: 'none',
     description: `Toggle vote on a feedback post. If not yet voted, adds a vote. If already voted, removes the vote.
 
 Examples:
@@ -222,6 +235,7 @@ Examples:
 
   registerTool<ProxyVoteArgs>(server, auth, {
     name: 'proxy_vote',
+    permissions: [PERMISSIONS.POST_VOTE_ON_BEHALF],
     description: `Add or remove a vote on behalf of another user. Requires team role.
 
 Examples:
@@ -287,6 +301,9 @@ Examples:
 
   registerTool<CreatePostArgs>(server, auth, {
     name: 'create_post',
+    // A teammate needs post.create, as the dashboard requires; a portal user
+    // is gated by the board's submit policy inside createPost.
+    permissions: (_args, caller) => (isTeamMember(caller.role) ? [PERMISSIONS.POST_CREATE] : []),
     description: `Submit new feedback on a board. Requires board and title; content/status/tags optional.
 
 Examples:
@@ -330,6 +347,7 @@ Examples:
 
   registerTool<MergePostArgs>(server, auth, {
     name: 'merge_post',
+    permissions: [PERMISSIONS.POST_MERGE],
     description: `Merge a duplicate post into a canonical post. Aggregates votes. Reversible via unmerge_post.
 
 Examples:
@@ -354,6 +372,7 @@ Examples:
 
   registerTool<UnmergePostArgs>(server, auth, {
     name: 'unmerge_post',
+    permissions: [PERMISSIONS.POST_MERGE],
     description: `Restore a merged post to independent state. Recalculates vote counts.
 
 Examples:
@@ -374,6 +393,7 @@ Examples:
 
   registerTool<DeletePostArgs>(server, auth, {
     name: 'delete_post',
+    permissions: [PERMISSIONS.POST_DELETE],
     description: `Soft-delete a feedback post. The post is hidden from public views but can be restored within 30 days.
 
 Examples:
@@ -394,6 +414,7 @@ Examples:
 
   registerTool<RestorePostArgs>(server, auth, {
     name: 'restore_post',
+    permissions: [PERMISSIONS.POST_DELETE],
     description: `Restore a soft-deleted post. Posts can only be restored within 30 days of deletion.
 
 Examples:
@@ -411,6 +432,7 @@ Examples:
 
   registerTool<GetPostActivityArgs>(server, auth, {
     name: 'get_post_activity',
+    permissions: [PERMISSIONS.POST_VIEW_PRIVATE],
     description: `Get the activity log for a post. Shows status changes, merges, tag changes, owner assignments, proxy votes, and other events.
 
 Examples:

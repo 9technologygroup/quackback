@@ -7,7 +7,12 @@
  * Forwarding headers are ignored unless TRUSTED_CLIENT_IP_HEADER or
  * TRUSTED_PROXY_HOPS is configured; see getClientIp() below for the rules.
  */
-import { bucketRetryAfter, incrementBuckets } from '@/lib/server/utils/rate-bucket'
+import {
+  bucketRetryAfter,
+  getBucketCount,
+  incrementBucket,
+  incrementBuckets,
+} from '@/lib/server/utils/rate-bucket'
 import { API_MONTH_BUCKET_KEY, secondsUntilNextUtcMonth } from './monthly-usage'
 import { isIP } from 'node:net'
 import { config } from '@/lib/server/config'
@@ -98,12 +103,13 @@ const MAX_REQUESTS = 100 // 100 requests per minute per IP — used when tier li
 const IMPORT_MIN = 2000 // Floor for import-mode caps so a tight per-minute tier doesn't choke bulk imports
 
 const rateLimitKey = (ip: string): string => `api:rl:${ip}`
+const keyFailureKey = (ip: string): string => `api:rl:key-fail:${ip}`
 
 /**
  * Check if a request is rate limited.
  *
  * @param ip - The client IP address
- * @param importMode - Whether the request is in import mode (higher limit)
+ * @param importMode - Whether the request asks for import mode (higher limit)
  * @returns Object with allowed flag and remaining requests
  *
  * Tier-aware: when settings.tier_limits has a non-null apiRequestsPerMinute,
@@ -115,6 +121,11 @@ const rateLimitKey = (ip: string): string => `api:rl:${ip}`
  * The counter is keyed by IP only (not mode), so import-mode and
  * normal-mode calls for the same IP share one count — only the cap
  * chosen per call differs. Fails open on Redis errors.
+ *
+ * The check runs before the caller's key is known, so asking for import mode
+ * only admits a request up to the import cap. A request admitted past the
+ * base cap carries `overBaseLimit`, and the caller must serve it only once it
+ * has verified an admin key (see withApiKeyAuth).
  */
 export async function checkRateLimit(
   ip: string,
@@ -123,6 +134,8 @@ export async function checkRateLimit(
   allowed: boolean
   remaining: number
   retryAfter?: number
+  /** Admitted on the import cap alone: past the base cap this window. */
+  overBaseLimit?: true
 }> {
   const { getTierLimits } = await import('@/lib/server/domains/settings/tier-limits.service')
   const limits = await getTierLimits()
@@ -142,7 +155,29 @@ export async function checkRateLimit(
     return { allowed: false, remaining: 0, retryAfter: await bucketRetryAfter(minute) }
   }
 
-  return { allowed: true, remaining: Math.max(0, maxRequests - count) }
+  const remaining = Math.max(0, maxRequests - count)
+  return count > baseLimit
+    ? { allowed: true, remaining, overBaseLimit: true }
+    : { allowed: true, remaining }
+}
+
+/** Retry-After for the address's current window, for a request refused after the check. */
+export async function apiRateLimitRetryAfter(ip: string): Promise<number> {
+  return bucketRetryAfter({ key: rateLimitKey(ip), windowSeconds: WINDOW_SECONDS })
+}
+
+/**
+ * Note that `ip` asked for import mode with an API key that did not verify.
+ * An address with a failure this window gets no import allowance past the
+ * base cap, so failed key attempts never get more than the base cap.
+ */
+export async function recordApiKeyFailure(ip: string): Promise<void> {
+  await incrementBucket({ key: keyFailureKey(ip), windowSeconds: WINDOW_SECONDS })
+}
+
+/** Whether `ip` presented an API key that did not verify, in import mode, this window. */
+export async function hasRecentApiKeyFailure(ip: string): Promise<boolean> {
+  return (await getBucketCount(keyFailureKey(ip))) > 0
 }
 
 function requestHostname(source: Request | Headers, headers: Headers): string | null {

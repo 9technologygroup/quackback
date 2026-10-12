@@ -35,6 +35,7 @@ export const Route = createFileRoute('/api/v1/apps/search')({
             role: auth.role,
             principalType: 'service',
             segmentIds: new Set<SegmentId>(),
+            permissions: auth.permissions,
           }
           const result = await listPublicPosts({
             search: q,

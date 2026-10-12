@@ -27,6 +27,36 @@ vi.mock('better-auth/oauth2', () => ({
 
 const mockFindFirst = vi.fn()
 
+// The key's authority (resolveApiKeyAuthority) is covered against real Postgres
+// in api-key-owner-access.db.test.ts. Here it is driven off the same principal
+// row mockFindFirst serves: the mock key is a legacy human-backed key, so that
+// row is both the key's principal and the creator it acts for.
+const mockAuthority = vi.fn(async (_key: unknown) => {
+  const record = (await mockFindFirst()) as { role?: string } | null
+  if (!record || (record.role !== 'admin' && record.role !== 'member')) return null
+  const { resolveActorPermissions } = await import('@/lib/server/policy/permissions')
+  return {
+    principal: record,
+    owner: record,
+    role: record.role,
+    permissions: resolveActorPermissions(record.role),
+  }
+})
+vi.mock('@/lib/server/domains/api-keys/api-key-authority', () => ({
+  resolveApiKeyAuthority: (key: unknown) => mockAuthority(key),
+}))
+
+// An OAuth caller's assignment-derived permissions; here the preset of the
+// role mockFindFirst serves, as for a principal with no custom role.
+vi.mock('@/lib/server/policy/permissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/server/policy/permissions')>()
+  return {
+    ...actual,
+    permissionsForPrincipal: async (_id: unknown, role: 'admin' | 'member' | 'user') =>
+      actual.permissionsForLegacyRole(role),
+  }
+})
+
 vi.mock('@/lib/server/db', async (importOriginal) => ({
   // Spread the real db module so tables/operators stay current; override only what this suite drives.
   ...(await importOriginal<typeof import('@/lib/server/db')>()),
@@ -454,24 +484,30 @@ describe('MCP HTTP Handler', () => {
       expect(response.headers.get('www-authenticate')).toContain('resource_metadata=')
     })
 
-    it('should return 403 when member is a portal user (not team)', async () => {
+    it('should return 401 when the key creator is no longer a team member', async () => {
       const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
       vi.mocked(verifyApiKey).mockResolvedValue(MOCK_API_KEY)
-      // Return role: 'user' for the principal lookup in withApiKeyAuth
+      // The creator is now a portal user, so the key is refused like an unknown key.
       mockFindFirst.mockResolvedValue({ role: 'user' })
 
       const { handleMcpRequest } = await import('../handler')
       const response = await handleMcpRequest(mcpRequest(jsonRpcRequest('initialize')))
 
-      expect(response.status).toBe(403)
+      expect(response.status).toBe(401)
+      expect(response.headers.get('www-authenticate')).toContain('resource_metadata=')
     })
 
     it('should return 401 when member record not found', async () => {
       const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
       vi.mocked(verifyApiKey).mockResolvedValue(MOCK_API_KEY)
-      // The single principal lookup in withApiKeyAuth finds nothing; the MCP
-      // handler rejects the request off that same (reused) result.
-      mockFindFirst.mockResolvedValueOnce(null)
+      // The single principal lookup in withApiKeyAuth finds no key principal;
+      // the MCP handler rejects the request off that same (reused) result.
+      mockAuthority.mockResolvedValueOnce({
+        principal: null,
+        owner: null,
+        role: 'user',
+        permissions: new Set(),
+      } as never)
 
       const { handleMcpRequest } = await import('../handler')
       const response = await handleMcpRequest(mcpRequest(jsonRpcRequest('initialize')))

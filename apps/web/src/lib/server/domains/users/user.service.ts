@@ -486,6 +486,11 @@ export async function removePortalUser(principalId: PrincipalId): Promise<void> 
       // threads and ideas hold RESTRICT references the cascade cannot clear.
       const { purgeTestCustomerOf } = await import('@/lib/server/test-customer')
       await purgeTestCustomerOf(tx, principalId)
+      // A former teammate's API keys act for them; revoke them before the
+      // delete below detaches the keys from their creator.
+      const { revokeApiKeysCreatedBy } =
+        await import('@/lib/server/domains/principals/principal.factory')
+      await revokeApiKeysCreatedBy(tx, principalId)
       await reattributeAuthoredContent(tx, principalId)
       await tx
         .update(conversations)

@@ -110,7 +110,6 @@ export const principalHandlers = {
 
       const { updateMemberRole } = await import('@/lib/server/domains/principals/principal.service')
 
-      const { resolveActorPermissions } = await import('@/lib/server/policy/permissions')
       await updateMemberRole(
         principalId,
         parsed.data.role,
@@ -119,10 +118,10 @@ export const principalHandlers = {
         request.headers,
         {
           assignRoleId: parsed.data.roleId as RoleId | undefined,
-          // API keys carry the owner-preset authority model; the ceiling for
-          // an assignment grant is the key owner's resolved set, and the
-          // Admin role needs an admin key owner.
-          granterPermissions: [...resolveActorPermissions(auth.role)],
+          // The ceiling for an assignment grant is the key's resolved set
+          // (its preset capped at its creator's current permissions), and
+          // the Admin role needs a key whose role is still admin.
+          granterPermissions: [...auth.permissions],
           granterRole: auth.role,
         }
       )

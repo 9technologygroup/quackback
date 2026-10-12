@@ -5,6 +5,7 @@
  * only ever a step toward attaching to a conversation or ticket).
  */
 
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { McpAuthContext } from '../types'
@@ -21,6 +22,7 @@ export const MCP_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
 export function registerFileTools(server: McpServer, auth: McpAuthContext) {
   registerTool<{ name: string; contentBase64: string }>(server, auth, {
     name: 'upload_file',
+    permissions: [PERMISSIONS.CONVERSATION_REPLY],
     description: `Upload a file (base64-encoded, max 5 MB decoded) so it can be attached to a conversation reply, ticket reply, or ticket note. Returns a fileId: pass it in fileIds on reply_to_conversation, reply_to_ticket, or add_ticket_note.
 
 Example: upload_file({ name: "invoice.pdf", contentBase64: "JVBERi0xLjQK..." })`,

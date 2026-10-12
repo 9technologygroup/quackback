@@ -219,6 +219,7 @@ export const Route = createFileRoute('/api/v1/posts/')({
             role: auth.role,
             principalType: callerType === 'service' ? ('service' as const) : ('user' as const),
             segmentIds: callerSegmentIds,
+            permissions: auth.permissions,
           }
 
           const result = await createPost(

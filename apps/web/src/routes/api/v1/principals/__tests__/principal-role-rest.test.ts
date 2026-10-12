@@ -41,6 +41,8 @@ const AUTH_CONTEXT = {
   apiKey: { id: 'api_key_01jz000000000000000000test' },
   principalId: createId('principal'),
   role: 'member',
+  // The key's resolved authority, narrower than the member preset.
+  permissions: new Set(['member.manage', 'post.view_private']),
   principal: { userId: 'user_owner', user: { email: 'owner@example.com' } },
   importMode: false,
 }
@@ -94,6 +96,8 @@ describe('PATCH /api/v1/principals/:principalId', () => {
     })
     expect((headers as Headers).get('user-agent')).toBe('rest-test')
     expect(opts).toMatchObject({ granterRole: 'member' })
+    // The grant ceiling is the key's resolved set, never a preset of its role.
+    expect(opts.granterPermissions).toEqual(['member.manage', 'post.view_private'])
     const body = (await res.json()) as { data: { id: string; role: string } }
     expect(body.data).toMatchObject({ id: TARGET, role: 'member' })
   })

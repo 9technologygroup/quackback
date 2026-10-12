@@ -30,6 +30,7 @@ export const Route = createFileRoute('/api/v1/conversations/$conversationId')({
             role: auth.role,
             principalType: 'service' as const,
             segmentIds: new Set<SegmentId>(),
+            permissions: auth.permissions,
           }
 
           const conversation = await assertConversationViewable(conversationId, actor)

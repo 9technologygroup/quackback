@@ -6,30 +6,40 @@
  */
 
 import { verifyApiKey } from '@/lib/server/domains/api-keys/api-key.service'
+import {
+  resolveApiKeyAuthority,
+  type ApiKeyPrincipal,
+} from '@/lib/server/domains/api-keys/api-key-authority'
 import type { ApiKey } from '@/lib/server/domains/api-keys'
-import { checkRateLimit, getClientIp } from './rate-limit'
+import {
+  apiRateLimitRetryAfter,
+  checkRateLimit,
+  getClientIp,
+  hasRecentApiKeyFailure,
+  recordApiKeyFailure,
+} from './rate-limit'
 import { UnauthorizedError, ForbiddenError, RateLimitError } from '@/lib/shared/errors'
-import { db, principal, user, eq } from '@/lib/server/db'
 import type { PrincipalId } from '@quackback/ids'
 import { isAdmin, type Role } from '@/lib/shared/roles'
-import { resolveActorPermissions } from '@/lib/server/policy/permissions'
 import { hasApiScope, scopeForPermission } from '@/lib/server/domains/api-keys/api-key-scopes'
 import type { PermissionKey } from '@/lib/shared/permissions'
 
 export type MemberRole = Role
-
-/** The key's principal row (with any linked user) as read by the auth query. */
-export type ApiKeyPrincipal = typeof principal.$inferSelect & {
-  user: typeof user.$inferSelect | null
-}
+export type { ApiKeyPrincipal }
 
 export interface ApiAuthContext {
   /** The validated API key */
   apiKey: ApiKey
-  /** The principal ID of the key creator (for audit logging) */
+  /** The key's own principal ID (its identity for attribution and audit) */
   principalId: PrincipalId
-  /** The role of the member who created the key */
+  /** The key's role, capped at its creator's current role */
   role: MemberRole
+  /**
+   * The key's permission set: its role preset intersected with its creator's
+   * current permissions (custom roles included). Gates read this, never a
+   * preset expanded from `role`, which could be wider.
+   */
+  permissions: ReadonlySet<PermissionKey>
   /**
    * The key's principal row read during auth, or null when the principal is
    * missing. Exposed so downstream consumers (the MCP handler) reuse the
@@ -74,22 +84,21 @@ export async function requireApiKey(request: Request): Promise<ApiAuthContext | 
     return null
   }
 
-  // Use the API key's service principal for role and identity. The linked
-  // user rides along in the same query for consumers that need the human
-  // identity (legacy human-backed keys via MCP); service principals have none.
-  const principalRecord = await db.query.principal.findFirst({
-    where: eq(principal.id, apiKey.principalId),
-    with: { user: true },
-  })
-
-  // Default to most restrictive role if principal not found
-  const role = (principalRecord?.role as MemberRole) ?? 'user'
+  // The key acts for its creator: once they have left the team it is refused
+  // exactly like an unknown key, and while they remain it is capped at their
+  // current access. The key's principal (with any linked user, for legacy
+  // human-backed keys used via MCP) is read in the same query.
+  const authority = await resolveApiKeyAuthority(apiKey)
+  if (!authority) {
+    return null
+  }
 
   return {
     apiKey,
     principalId: apiKey.principalId,
-    role,
-    principal: principalRecord ?? null,
+    role: authority.role,
+    permissions: authority.permissions,
+    principal: authority.principal,
     importMode: false,
   }
 }
@@ -98,9 +107,9 @@ export async function requireApiKey(request: Request): Promise<ApiAuthContext | 
  * Require API key authentication, optionally gated on a permission.
  * Includes rate limiting to prevent brute-force attacks.
  *
- * A key's authority is its owner's permission set (the service principal's role
- * preset). Bare `withApiKeyAuth(request)` requires only a valid key. The legacy
- * `{ role }` form was retired at the Phase C completion gate.
+ * A key's authority is its role preset intersected with its creator's current
+ * permissions (see `resolveApiKeyAuthority`). Bare `withApiKeyAuth(request)`
+ * requires only a valid key whose creator is still on the team.
  *
  * @example
  * const { principalId } = await withApiKeyAuth(request, { permission: PERMISSIONS.POST_CREATE })
@@ -111,33 +120,52 @@ export async function withApiKeyAuth(
 ): Promise<ApiAuthContext> {
   const clientIp = getClientIp(request)
   const wantsImportMode = request.headers.get('x-import-mode') === 'true'
+  // Each request is counted once, before its key is checked. Asking for import
+  // mode admits it up to the import cap, but past the base cap it is served
+  // only for a verified admin key, and only from an address that has not
+  // presented a bad key in import mode this window. A missing, bad or
+  // non-admin key therefore stays at the base cap, and so do failed attempts.
   const rateLimit = await checkRateLimit(clientIp, wantsImportMode)
 
   if (!rateLimit.allowed) {
     throw new RateLimitError(rateLimit.retryAfter ?? 60)
   }
 
+  const overBaseLimit = rateLimit.overBaseLimit === true
+  if (overBaseLimit && (await hasRecentApiKeyFailure(clientIp))) {
+    throw new RateLimitError(await apiRateLimitRetryAfter(clientIp))
+  }
+
   const auth = await requireApiKey(request)
 
   if (!auth) {
+    if (wantsImportMode) await recordApiKeyFailure(clientIp)
+    if (overBaseLimit) throw new RateLimitError(await apiRateLimitRetryAfter(clientIp))
     throw new UnauthorizedError(
       'Invalid or missing API key. Provide a valid key in the Authorization header: Bearer qb_xxx'
     )
   }
 
-  // A key's authority is its owner's permission set (the service principal's
-  // role preset) INTERSECTED with the key's stored scopes — the personal-access-
-  // token model. Keys with a NULL scopes column predate scope selection and keep
-  // full owner authority. No options means a valid key is required but no
-  // authorization gate — for reads whose data is public.
+  // The key's role is already capped at its creator's current role.
+  const importMode = wantsImportMode && isAdmin(auth.role)
+  if (overBaseLimit && !importMode) {
+    throw new RateLimitError(await apiRateLimitRetryAfter(clientIp))
+  }
+
+  // A key's authority is its resolved permission set (role preset intersected
+  // with the creator's current permissions) INTERSECTED with the key's stored
+  // scopes: the personal-access-token model. Keys with a NULL scopes column
+  // predate scope selection and keep full owner authority. No options means a
+  // valid key is required but no authorization gate, for reads whose data is
+  // public.
   if (options) {
-    if (!resolveActorPermissions(auth.role).has(options.permission)) {
+    if (!auth.permissions.has(options.permission)) {
       throw new ForbiddenError('FORBIDDEN', `Requires the '${options.permission}' permission`)
     }
     assertKeyScopeFor(auth, options.permission)
   }
 
-  if (wantsImportMode && isAdmin(auth.role)) {
+  if (importMode) {
     auth.importMode = true
   }
 
@@ -145,9 +173,9 @@ export async function withApiKeyAuth(
 }
 
 /**
- * Assert an API key's authority holds every permission in the list — the
- * owner's role preset must grant each permission AND, for a scoped key, the
- * key must hold each permission's mapped scope. For routes whose required
+ * Assert an API key's authority holds every permission in the list: the key's
+ * resolved permission set must grant each permission AND, for a scoped key,
+ * the key must hold each permission's mapped scope. For routes whose required
  * permissions depend on the request body (e.g. a multi-field PATCH), gate with
  * a bare `withApiKeyAuth(request)` then call this with the body-derived key set.
  */
@@ -155,9 +183,8 @@ export function assertApiPermissions(
   auth: ApiAuthContext,
   permissions: readonly PermissionKey[]
 ): void {
-  const held = resolveActorPermissions(auth.role)
   for (const permission of permissions) {
-    if (!held.has(permission)) {
+    if (!auth.permissions.has(permission)) {
       throw new ForbiddenError('FORBIDDEN', `Requires the '${permission}' permission`)
     }
     assertKeyScopeFor(auth, permission)

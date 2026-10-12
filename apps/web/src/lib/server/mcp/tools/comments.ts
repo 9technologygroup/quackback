@@ -91,6 +91,7 @@ type ReactToCommentArgs = {
 export function registerCommentTools(server: McpServer, auth: McpAuthContext) {
   registerTool<AddCommentArgs>(server, auth, {
     name: 'add_comment',
+    permissions: 'none',
     description: `Post a comment on a feedback post. Supports threaded replies via parentId. Set isPrivate to create an internal note visible only to team members.
 ${CONTENT_FORMAT_BLOCK}
 
@@ -136,6 +137,7 @@ Examples:
 
   registerTool<UpdateCommentArgs>(server, auth, {
     name: 'update_comment',
+    permissions: 'none',
     description: `Edit a comment's content. Team members can edit any comment; authors can edit their own.
 ${CONTENT_FORMAT_BLOCK}
 
@@ -154,6 +156,7 @@ Examples:
       const result = await userEditComment(args.commentId as PostCommentId, args.content, {
         principalId: auth.principalId,
         role: auth.role,
+        permissions: auth.permissions && [...auth.permissions],
       })
 
       return jsonResult({
@@ -166,6 +169,7 @@ Examples:
 
   registerTool<DeleteCommentArgs>(server, auth, {
     name: 'delete_comment',
+    permissions: 'none',
     description: `Hard-delete a comment and all its replies (cascade). This cannot be undone.
 Authors can delete their own comments; team members can delete any comment.
 
@@ -191,6 +195,7 @@ Examples:
 
   registerTool<ReactToCommentArgs>(server, auth, {
     name: 'react_to_comment',
+    permissions: 'none',
     description: `Add or remove an emoji reaction on a comment.
 
 Examples:

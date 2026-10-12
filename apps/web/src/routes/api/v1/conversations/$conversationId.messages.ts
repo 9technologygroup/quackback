@@ -38,6 +38,7 @@ export const Route = createFileRoute('/api/v1/conversations/$conversationId/mess
             role: auth.role,
             principalType: 'service' as const,
             segmentIds: new Set<SegmentId>(),
+            permissions: auth.permissions,
           }
 
           // 404 if the conversation doesn't exist or isn't viewable (before listing messages).

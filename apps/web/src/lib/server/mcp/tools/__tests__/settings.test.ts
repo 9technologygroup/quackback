@@ -43,6 +43,8 @@ function collect(): Map<string, Handler> {
       principalId: 'principal_member',
       name: 'Acme',
       role: 'member',
+      // A member whose custom role grants the settings areas these tools touch.
+      permissions: new Set(['settings.branding', 'settings.manage']),
       authMethod: 'oauth',
       scopes: ['read:settings', 'write:settings'],
     } as unknown as McpAuthContext

@@ -5,7 +5,9 @@
  * public routes never call the server fns (which do cookie-based `requireAuth`).
  * They call domain services directly with this actor — a team-role principal
  * of `principalType: 'service'` and no segment narrowing (a key is workspace-
- * wide). Mirrors the literal the existing GET routes already build inline
+ * wide). It carries the key's resolved permission set, so policy checks see
+ * the key's creator's current access rather than a preset expanded from the
+ * role. Mirrors the literal the existing GET routes already build inline
  * (`tickets/index.ts`, `conversations/$conversationId.ts`), centralized so it
  * isn't re-copied per file.
  */
@@ -19,5 +21,6 @@ export function serviceActorFromApiAuth(auth: ApiAuthContext): Actor {
     role: auth.role,
     principalType: 'service' as const,
     segmentIds: new Set<SegmentId>(),
+    permissions: auth.permissions,
   }
 }

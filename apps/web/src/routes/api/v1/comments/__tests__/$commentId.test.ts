@@ -103,7 +103,11 @@ function makeRequest(method: string, body?: unknown): Request {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockWithApiKeyAuth.mockResolvedValue({ principalId: PRINCIPAL_ID, role: 'admin' })
+  mockWithApiKeyAuth.mockResolvedValue({
+    principalId: PRINCIPAL_ID,
+    role: 'member',
+    permissions: new Set(['comment.edit']),
+  })
   mockParseTypeId.mockImplementation((v: unknown) => v)
   mockUserEditComment.mockResolvedValue(mockUpdatedComment)
   mockSoftDeleteComment.mockResolvedValue(undefined)
@@ -135,7 +139,7 @@ describe('PATCH /api/v1/comments/:commentId', () => {
     expect(mockUserEditComment).toHaveBeenCalledWith(
       COMMENT_ID_STR,
       'Hello world',
-      expect.objectContaining({ principalId: PRINCIPAL_ID }),
+      { principalId: PRINCIPAL_ID, role: 'member', permissions: ['comment.edit'] },
       expect.objectContaining({ contentJson: undefined })
     )
   })
@@ -224,6 +228,12 @@ describe('DELETE /api/v1/comments/:commentId', () => {
     const request = makeRequest('DELETE')
     const response = await handlers.DELETE({ request, params: { commentId: COMMENT_ID_STR } })
     expect(response.status).toBe(204)
+    // The key's resolved authority, not a re-read of its principal's stored role.
+    expect(mockSoftDeleteComment).toHaveBeenCalledWith(COMMENT_ID_STR, {
+      principalId: PRINCIPAL_ID,
+      role: 'member',
+      permissions: ['comment.edit'],
+    })
   })
 
   it('returns 403 when softDeleteComment throws ForbiddenError', async () => {

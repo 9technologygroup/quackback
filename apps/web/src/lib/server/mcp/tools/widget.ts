@@ -9,6 +9,7 @@ import { registerTool, jsonResult, READ_ONLY } from './helpers'
 export function registerWidgetTools(server: McpServer, auth: McpAuthContext) {
   registerTool<Record<string, never>>(server, auth, {
     name: 'widget_install_status',
+    permissions: 'none',
     description: `Read whether the Quackback widget is connected on the customer site.
 
 Returns connected (snippet seen), enabled (Show on your website), last detected time, origin host, and SDK version. Does not return the signing secret. Use after install to prove the launcher loaded — same idea as verifying identity via search, not by fetching credentials.

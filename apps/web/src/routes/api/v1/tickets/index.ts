@@ -68,6 +68,7 @@ export const Route = createFileRoute('/api/v1/tickets/')({
             role: auth.role,
             principalType: 'service' as const,
             segmentIds: new Set<SegmentId>(),
+            permissions: auth.permissions,
           }
 
           const { listTickets } = await import('@/lib/server/domains/tickets/ticket.service')

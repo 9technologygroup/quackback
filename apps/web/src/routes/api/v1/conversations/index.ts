@@ -34,6 +34,7 @@ export const Route = createFileRoute('/api/v1/conversations/')({
             role: auth.role,
             principalType: 'service' as const,
             segmentIds: new Set<SegmentId>(),
+            permissions: auth.permissions,
           }
 
           const { listConversationsForAgent } =

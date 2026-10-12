@@ -3,8 +3,8 @@
  *
  * Tools calling domain services directly (no HTTP self-loop), grouped by
  * resource module. Each tool declares its authorization contract — `{ scope,
- * teamOnly, feature }` — on `registerTool` (see ./helpers), except the two
- * cross-entity lookup tools (search, get_details) which gate per-branch.
+ * teamOnly, feature, permissions }` — on `registerTool` (see ./helpers); the
+ * two cross-entity lookup tools (search, get_details) gate scope per-branch.
  *
  * - search.ts        search, get_details
  * - posts.ts         triage_post, vote_post, proxy_vote, create_post,

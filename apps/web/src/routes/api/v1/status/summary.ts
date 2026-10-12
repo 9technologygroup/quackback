@@ -33,6 +33,7 @@ export const Route = createFileRoute('/api/v1/status/summary')({
             role: auth.role,
             principalType: 'service',
             segmentIds: new Set<SegmentId>(),
+            permissions: auth.permissions,
           }
 
           const settings = await getStatusSettings()

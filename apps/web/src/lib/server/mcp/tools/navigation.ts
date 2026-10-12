@@ -103,6 +103,7 @@ export const workspaceNavigationInputSchema = z
 export function registerNavigationTools(server: McpServer, auth: McpAuthContext) {
   registerTool<{ destination: WorkspaceNavigationDestination }>(server, auth, {
     name: 'navigate_workspace',
+    permissions: ({ destination }) => [WORKSPACE_NAVIGATION[destination].permission],
     description: `Return an allowed workspace deep link without changing anything. Use this for operator-managed workspace names, billing or plans, authentication or SSO, domains, members or roles, API keys, integration OAuth, installing a site snippet, creating a board, portal header customization, and every delete request. These areas cannot be changed from chat. Never invent a URL. A delete request opens its product page for a person to review.
 Examples:
 {"destination":"members"}

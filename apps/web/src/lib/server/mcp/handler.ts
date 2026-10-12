@@ -29,6 +29,8 @@ import { DomainException, RateLimitError } from '@/lib/shared/errors'
 import { EntitlementRequiredError } from '@/lib/server/errors/entitlement-error'
 import { getDeveloperConfig } from '@/lib/server/domains/settings/settings.service'
 import { db, principal, eq } from '@/lib/server/db'
+import { permissionsForPrincipal } from '@/lib/server/policy/permissions'
+import type { PermissionKey } from '@/lib/shared/permissions'
 import { config } from '@/lib/server/config'
 import { createMcpServer } from './server'
 import type { PrincipalId } from '@quackback/ids'
@@ -110,6 +112,13 @@ async function resolveOAuthContext(
     if (!principalRecord) return null
 
     const role = principalRecord.role
+    // The caller's current assignment-derived permissions, resolved as a
+    // signed-in session resolves them, gate every tool. Portal users hold no
+    // workspace assignments, so they skip the read.
+    const permissions =
+      role === 'user'
+        ? new Set<PermissionKey>()
+        : await permissionsForPrincipal(principalId as PrincipalId, role as Role)
 
     // Parse granted scopes from space-separated string
     const scopeStr = (payload.scope as string) ?? ''
@@ -123,6 +132,7 @@ async function resolveOAuthContext(
       name: (payload.name as string) ?? 'Unknown',
       email: payload.email as string | undefined,
       role: role as Role,
+      permissions,
       authMethod: 'oauth',
       scopes,
     }
@@ -180,12 +190,16 @@ export async function resolveAuthContext(request: Request): Promise<McpAuthConte
     // back-compat — the same rule the REST permission gates apply).
     const keyScopes = effectiveScopes(authResult.apiKey.scopes)
 
-    // Service principals (API keys) use displayName; human principals use user.name
+    // Role and permissions are the key's authority exactly as the REST API
+    // resolves it, capped at its creator's current access; the permission set
+    // is the ceiling every MCP actor built from this context carries.
+    // Service principals (API keys) use displayName; human principals use user.name.
     if (principalRecord.type === 'service') {
       return {
         principalId: authResult.principalId,
         name: principalRecord.displayName ?? authResult.apiKey.name,
         role: authResult.role as Role,
+        permissions: authResult.permissions,
         authMethod: 'api-key',
         scopes: keyScopes,
       }
@@ -198,6 +212,7 @@ export async function resolveAuthContext(request: Request): Promise<McpAuthConte
       name: principalRecord.displayName ?? principalRecord.user?.name ?? 'Unknown',
       email: principalRecord.user?.email ?? undefined,
       role: authResult.role as Role,
+      permissions: authResult.permissions,
       authMethod: 'api-key',
       scopes: keyScopes,
     }

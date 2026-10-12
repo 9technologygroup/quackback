@@ -27,6 +27,7 @@ export const Route = createFileRoute('/api/v1/apps/boards')({
             role: auth.role,
             principalType: 'service',
             segmentIds: new Set<SegmentId>(),
+            permissions: auth.permissions,
           }
           const boards = await listPublicBoardsWithStats(actor)
 

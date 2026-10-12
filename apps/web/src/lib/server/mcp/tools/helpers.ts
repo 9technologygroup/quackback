@@ -1,8 +1,8 @@
 /**
  * Shared plumbing for the MCP tool modules: result wrappers, cursor codecs,
  * authorization guards, annotations, and the `registerTool` helper that owns
- * guard placement so individual tools declare `{ scope, teamOnly, feature }`
- * metadata instead of hand-copying guard calls.
+ * guard placement so individual tools declare `{ scope, teamOnly, feature,
+ * permissions }` metadata instead of hand-copying guard calls.
  */
 
 import { z } from 'zod'
@@ -17,6 +17,8 @@ import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
 import type { ConversationAttachment, TiptapContent } from '@/lib/server/db'
 import type { Actor } from '@/lib/server/policy/types'
 import { hasApiScope } from '@/lib/server/domains/api-keys/api-key-scopes'
+import { resolveActorPermissions } from '@/lib/server/policy/permissions'
+import type { PermissionKey } from '@/lib/shared/permissions'
 import type { McpAuthContext, McpScope } from '../types'
 
 // ============================================================================
@@ -127,6 +129,35 @@ export function requireTeamRole(auth: McpAuthContext): CallToolResult | null {
   }
 }
 
+/**
+ * The caller's resolved permission set: an API key's role preset intersected
+ * with its creator's current permissions, or an OAuth or in-app caller's own
+ * assignment-derived set. A context built without one (a synthetic actor)
+ * falls back to its role's preset, as the policy layer's can() does.
+ */
+function heldPermissions(auth: McpAuthContext): ReadonlySet<PermissionKey> {
+  return auth.permissions ?? resolveActorPermissions(auth.role)
+}
+
+/** Return an error if the caller does not hold every permission in the list. */
+export function requirePermissions(
+  auth: McpAuthContext,
+  required: readonly PermissionKey[]
+): CallToolResult | null {
+  const held = heldPermissions(auth)
+  const missing = required.find((permission) => !held.has(permission))
+  if (!missing) return null
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text',
+        text: `Error: This operation requires the '${missing}' permission. Ask a workspace owner or an admin to grant it.`,
+      },
+    ],
+  }
+}
+
 /** Feature flags a tool can require before its scope/role guards run. */
 type ToolFeature = 'helpCenter' | 'copilotHome'
 
@@ -173,13 +204,38 @@ export interface ToolDef<TArgs> {
   teamOnly?: boolean
   /** Feature flag that must be enabled, checked before the scope/role guards. */
   feature?: ToolFeature
+  /**
+   * Permissions the caller's resolved set must hold before the handler runs:
+   * every key listed, or every key a function derives from the arguments
+   * (a field-by-field update, a per-area or per-destination tool). `'none'`
+   * marks a tool any caller the scope admits may run, portal users included,
+   * whose domain policy gates the effect (voting, commenting as yourself).
+   * Required, so a tool cannot be gated on scope and team role alone.
+   */
+  permissions: ToolPermissions<TArgs>
   handler: (args: TArgs) => Promise<CallToolResult>
+}
+
+export type ToolPermissions<TArgs> =
+  | readonly [PermissionKey, ...PermissionKey[]]
+  | ((args: TArgs, auth: McpAuthContext) => readonly PermissionKey[])
+  | 'none'
+
+function requiredPermissions<TArgs>(
+  declared: ToolPermissions<TArgs>,
+  args: TArgs,
+  auth: McpAuthContext
+): readonly PermissionKey[] {
+  if (declared === 'none') return []
+  return typeof declared === 'function' ? declared(args, auth) : declared
 }
 
 /**
  * Register a tool with its authorization contract applied declaratively.
  * Guard order is feature flag, then scope, then team role — the same order the
- * hand-written guards used, so denial messages are unchanged.
+ * hand-written guards used, so denial messages are unchanged — then the
+ * tool's declared permissions against the caller's resolved set, the same
+ * intersection the REST API gates on.
  *
  * Error ownership also lives here: any error the handler throws becomes the
  * standard errorResult, so handlers only add try/catch when a branch needs a
@@ -204,6 +260,8 @@ export function registerTool<TArgs>(
       if (denied) return denied
     }
     try {
+      const denied = requirePermissions(auth, requiredPermissions(def.permissions, args, auth))
+      if (denied) return denied
       return await def.handler(args)
     } catch (err) {
       return errorResult(err)
@@ -250,7 +308,8 @@ export function principalTypeOf(auth: McpAuthContext): 'user' | 'service' {
 /**
  * Policy actor for the agent-side conversation tools. The conversation gates
  * (canViewConversation / canActAsAgent) short-circuit on the team role, so
- * segment memberships are never consulted and stay empty.
+ * segment memberships are never consulted and stay empty. A permission ceiling
+ * on the context (an API key's resolved authority) rides along.
  */
 export function mcpAgentActor(auth: McpAuthContext): Actor {
   return {
@@ -258,6 +317,7 @@ export function mcpAgentActor(auth: McpAuthContext): Actor {
     role: auth.role,
     principalType: principalTypeOf(auth),
     segmentIds: new Set<SegmentId>(),
+    permissions: auth.permissions,
   }
 }
 
@@ -273,6 +333,7 @@ export async function mcpMemberActor(auth: McpAuthContext): Promise<Actor> {
     role: auth.role,
     principalType: principalTypeOf(auth),
     segmentIds: await segmentIdsForPrincipal(auth.principalId),
+    permissions: auth.permissions,
   }
 }
 

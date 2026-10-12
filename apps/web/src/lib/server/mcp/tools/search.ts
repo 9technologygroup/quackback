@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod'
+import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { listInboxPosts } from '@/lib/server/domains/posts/post.inbox'
@@ -107,6 +108,31 @@ const searchSchema = {
     .describe('Filter posts by author email, or "me" for the authenticated teammate'),
 }
 
+/** What each search entity reveals, matching the REST list endpoints. */
+const SEARCH_PERMISSIONS: Record<SearchArgs['entity'], PermissionKey> = {
+  posts: PERMISSIONS.POST_VIEW_PRIVATE,
+  changelogs: PERMISSIONS.CHANGELOG_VIEW_DRAFT,
+  articles: PERMISSIONS.HELP_CENTER_MANAGE,
+}
+
+/** What each get_details entity reveals; an unparseable or unsupported id needs none. */
+const DETAIL_PERMISSIONS: Record<string, PermissionKey> = {
+  post: PERMISSIONS.POST_VIEW_PRIVATE,
+  changelog: PERMISSIONS.CHANGELOG_VIEW_DRAFT,
+  article: PERMISSIONS.HELP_CENTER_MANAGE,
+  kb_article: PERMISSIONS.HELP_CENTER_MANAGE,
+  kb_category: PERMISSIONS.HELP_CENTER_MANAGE,
+}
+
+function detailPermissions(id: string): PermissionKey[] {
+  try {
+    const permission = DETAIL_PERMISSIONS[getTypeIdPrefix(id)]
+    return permission ? [permission] : []
+  } catch {
+    return []
+  }
+}
+
 const getDetailsSchema = {
   id: z
     .string()
@@ -147,6 +173,9 @@ type GetDetailsArgs = { id: string }
 export function registerSearchTools(server: McpServer, auth: McpAuthContext) {
   registerTool<SearchArgs>(server, auth, {
     name: 'search',
+    // Every branch is team-only; the per-branch scope gates stay in the handler.
+    teamOnly: true,
+    permissions: (args) => [SEARCH_PERMISSIONS[args.entity ?? 'posts']],
     description: `Search feedback posts, changelog entries, or help center articles. Returns paginated results with a cursor for fetching more.
 
 Examples:
@@ -194,6 +223,9 @@ Examples:
 
   registerTool<GetDetailsArgs>(server, auth, {
     name: 'get_details',
+    // Every branch is team-only; the per-branch scope gates stay in the handler.
+    teamOnly: true,
+    permissions: (args) => detailPermissions(args.id),
     description: `Get full details for any entity by TypeID. Entity type is auto-detected from the ID prefix.
 
 Examples:
