@@ -160,6 +160,11 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/contact-email.ts::confirmEmailChangeFn': END_USER(
     'writes the caller own address, gated on a code proving they hold it'
   ),
+  // Signing in again reads only the caller's own sign-in: their address, their
+  // linked providers and whether their session is fresh. Nothing is written.
+  'lib/server/functions/sign-in-again.ts::getSignInAgainOptionsFn': END_USER(
+    'reads how the caller signs in and whether they signed in recently'
+  ),
   // Assistant proposals are item-scoped after authentication. Reads/rejections
   // require visibility of the concrete parent; approval additionally checks
   // every permission declared by the current Writer tool specification.

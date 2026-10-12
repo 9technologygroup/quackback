@@ -84,6 +84,9 @@ interface PortalAuthFormInlineProps {
   onModeSwitch?: (mode: 'login' | 'signup') => void
   /** Lets the surrounding dialog adapt its header to the form's step. */
   onContextChange?: (ctx: { step: AuthFormStep; email: string }) => void
+  /** Sign in this address only: the form opens on the methods step with it
+   *  filled in, and it cannot be changed (signing in again). */
+  lockedEmail?: string
 }
 
 /**
@@ -166,6 +169,7 @@ export function PortalAuthFormInline({
   linkConflict,
   onModeSwitch,
   onContextChange,
+  lockedEmail,
 }: PortalAuthFormInlineProps) {
   const intl = useIntl()
   const effectiveCallbackUrl = callbackUrl ?? '/'
@@ -190,17 +194,18 @@ export function PortalAuthFormInline({
     | { stage: 'two-factor-enroll' }
     | { stage: 'link-conflict' }
 
-  // Invitation flow: the email is server-known, so Stage 1 is moot.
+  // Invitation flow: the email is server-known, so Stage 1 is moot. The same
+  // holds for a locked email.
   const [view, setView] = useState<View>(
     linkConflict
       ? { stage: 'link-conflict' }
-      : invitationId
+      : invitationId || lockedEmail
         ? { stage: 'methods-step', step: methodsDefaultStep }
         : { stage: 'email' }
   )
 
   const [name, setName] = useState('')
-  const [email, setEmail] = useState(linkConflict?.email ?? '')
+  const [email, setEmail] = useState(lockedEmail ?? linkConflict?.email ?? '')
   // Provider context for link-conflict recovery. Survives the move to the
   // OTP code step, where a successful verify resumes the link instead of
   // plain sign-in success. A ref mirror lets the emailSignin onSuccess
@@ -272,7 +277,7 @@ export function PortalAuthFormInline({
           providerType: attempt?.providerType,
           email: attempt?.email,
         })
-        if (attempt?.email) setEmail(attempt.email)
+        if (attempt?.email && !lockedEmail) setEmail(attempt.email)
         setError('')
         setView({ stage: 'link-conflict' })
         return
@@ -593,13 +598,14 @@ export function PortalAuthFormInline({
 
   const handleResend = () => emailSignin.resend(email)
 
-  /** Stage 2 → Stage 1 escape hatch. */
+  /** Stage 2 → Stage 1 escape hatch. A locked email has no Stage 1 to go
+   *  back to, so it returns to the methods step instead. */
   const backToEmail = () => {
     setError('')
     setPassword('')
     setConflict(null)
     emailSignin.reset()
-    setView({ stage: 'email' })
+    setView(lockedEmail ? { stage: 'methods-step', step: methodsDefaultStep } : { stage: 'email' })
   }
 
   /** Link-conflict recovery: email a confirmation (magic link + code).
@@ -946,7 +952,7 @@ export function PortalAuthFormInline({
       })
     return (
       <div className="space-y-4">
-        <BackToEmailLink onClick={backToEmail} />
+        {!lockedEmail && <BackToEmailLink onClick={backToEmail} />}
         <div className="space-y-2 text-center">
           <ShieldCheckIcon className="mx-auto h-8 w-8 text-primary" />
           <p className="font-medium text-foreground">
@@ -990,6 +996,7 @@ export function PortalAuthFormInline({
               })}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              readOnly={!!lockedEmail}
               disabled={loadingAction !== null}
               required
             />
@@ -1217,7 +1224,7 @@ export function PortalAuthFormInline({
   // Stage 2 — methods (password / magic link / forgot / reset / code)
   // ============================================================
   const step = view.step
-  const showBack = !invitation
+  const showBack = !invitation && !lockedEmail
 
   return (
     <div className="space-y-6">
@@ -1450,6 +1457,7 @@ export function PortalAuthFormInline({
               })}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              readOnly={!!lockedEmail}
               disabled={loadingAction !== null}
               autoComplete="email"
             />
