@@ -45,7 +45,7 @@ describe('Copilot paused for the period', () => {
   it('says so in the box, with the day it comes back, not on hover', () => {
     show('2026-11-01T00:00:00.000Z')
     const box = screen.getByRole('status')
-    expect(box).toHaveTextContent('Copilot is paused until Nov 1.')
+    expect(box).toHaveTextContent('AI is paused until Nov 1.')
     expect(box).toBeVisible()
     // Nothing to type into while it is paused.
     expect(screen.queryByRole('textbox')).toBeNull()
@@ -76,18 +76,18 @@ describe('Copilot paused for the period', () => {
     // The month's allowance resets at midnight UTC: still Oct 31 on the US west coast.
     process.env.TZ = 'America/Los_Angeles'
     show('2026-11-01T00:00:00.000Z')
-    expect(screen.getByRole('status')).toHaveTextContent('Copilot is paused until Oct 31.')
+    expect(screen.getByRole('status')).toHaveTextContent('AI is paused until Oct 31.')
   })
 
   it('names no day in a trial, whose end is not a reset', () => {
     show(null, true)
     const box = screen.getByRole('status')
-    expect(box).toHaveTextContent('Copilot is paused for the rest of your trial.')
+    expect(box).toHaveTextContent('AI is paused for the rest of your trial.')
     expect(box).not.toHaveTextContent(/until/)
   })
 
   it('still says it is paused when the reset day is not known', () => {
     show(null)
-    expect(screen.getByRole('status')).toHaveTextContent('Copilot is paused.')
+    expect(screen.getByRole('status')).toHaveTextContent('AI is paused.')
   })
 })

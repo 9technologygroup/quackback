@@ -31,7 +31,7 @@ export function ChatComposer({
   const canSend = canAsk && !busy && question.length > 0
   const placeholder = intl.formatMessage({
     id: 'ask.composer.placeholder',
-    defaultMessage: 'Ask Copilot anything',
+    defaultMessage: 'Ask anything',
   })
   useEffect(() => {
     if (autoFocus) input.current?.focus()
@@ -93,7 +93,7 @@ export function ChatComposer({
               className="shrink-0 rounded-full focus-visible:ring-muted-foreground"
               aria-label={intl.formatMessage({
                 id: 'ask.composer.ask',
-                defaultMessage: 'Ask Copilot',
+                defaultMessage: 'Send',
               })}
               disabled={!canSend}
               onClick={() => onAsk(question)}

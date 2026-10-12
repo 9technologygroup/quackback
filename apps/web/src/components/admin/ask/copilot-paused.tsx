@@ -41,16 +41,16 @@ export function CopilotPaused({
             {trial ? (
               <FormattedMessage
                 id="ask.paused.trial"
-                defaultMessage="Copilot is paused for the rest of your trial."
+                defaultMessage="AI is paused for the rest of your trial."
               />
             ) : date ? (
               <FormattedMessage
                 id="ask.paused.until"
-                defaultMessage="Copilot is paused until {date}."
+                defaultMessage="AI is paused until {date}."
                 values={{ date }}
               />
             ) : (
-              <FormattedMessage id="ask.paused.now" defaultMessage="Copilot is paused." />
+              <FormattedMessage id="ask.paused.now" defaultMessage="AI is paused." />
             )}
           </p>
           <p className="text-sm text-muted-foreground">

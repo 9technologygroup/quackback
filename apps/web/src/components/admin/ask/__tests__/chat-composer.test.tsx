@@ -27,7 +27,7 @@ function mount(overrides: Partial<ChatComposerProps> = {}) {
 describe('the focused chat composer', () => {
   it('focuses an accessible multiline question field', () => {
     mount()
-    const input = screen.getByRole('textbox', { name: 'Ask Copilot anything' })
+    const input = screen.getByRole('textbox', { name: 'Ask anything' })
     expect(input.tagName).toBe('TEXTAREA')
     expect(document.activeElement).toBe(input)
   })
@@ -69,7 +69,7 @@ describe('the focused chat composer', () => {
     { query: 'Find our refund policy', canAsk: false },
   ])('never sends an empty question or a question without permission: %j', (input) => {
     const props = mount(input)
-    expect(screen.getByRole('button', { name: 'Ask Copilot' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
     expect(props.onAsk).not.toHaveBeenCalled()
   })
@@ -83,7 +83,7 @@ describe('the composer focus state', () => {
     const box = screen.getByRole('textbox').parentElement as HTMLElement
     expect(box).toHaveClass('focus-within:border-muted-foreground')
     expect(box.className).not.toMatch(/focus-within:border-foreground\/\d+/)
-    expect(screen.getByRole('button', { name: 'Ask Copilot' })).toHaveClass(
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveClass(
       'focus-visible:ring-muted-foreground'
     )
   })

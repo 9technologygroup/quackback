@@ -359,7 +359,7 @@ export function WorkspaceSettingsProposalCard({ action }: { action: CopilotPropo
       },
       SETTINGS_CHANGED: {
         id: 'ask.settings.changed',
-        defaultMessage: 'These settings changed. Ask Copilot again.',
+        defaultMessage: 'These settings changed. Ask again.',
       },
       SETTINGS_UNDO_CONFLICT: {
         id: 'ask.settings.undoConflict',

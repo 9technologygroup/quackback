@@ -47,9 +47,11 @@ const SAME_AS_ENGLISH_EVERYWHERE = [
   'name@company.com',
   'GitHub',
   'Copilot.',
+  'Quackback AI.',
 ]
 const SAME_AS_ENGLISH: Record<string, readonly string[]> = {
   de: [
+    'Chat',
     '(optional)',
     'Admin',
     'Agent',
@@ -160,6 +162,7 @@ const SAME_AS_ENGLISH: Record<string, readonly string[]> = {
     '{count}+ votes',
   ],
   es: [
+    'Chat',
     'Audio',
     'Avatar',
     'ETA',
@@ -183,6 +186,7 @@ const SAME_AS_ENGLISH: Record<string, readonly string[]> = {
   ar: [],
   ru: [],
   'pt-br': [
+    'Chat',
     'Admin',
     'Avatar',
     'Changelog',
@@ -213,6 +217,7 @@ const SAME_AS_ENGLISH: Record<string, readonly string[]> = {
   'zh-cn': [],
   'zh-tw': [],
   nl: [
+    'Chat',
     'Accent',
     'Account',
     'Agent',

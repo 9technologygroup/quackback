@@ -164,7 +164,7 @@ function CopilotHomeView({ threadKey, canAsk, header, paused, below }: CopilotHo
   const failed = () =>
     intl.formatMessage({
       id: 'ask.chat.failed',
-      defaultMessage: 'Copilot could not finish. Try again.',
+      defaultMessage: "Couldn't finish this answer. Try again.",
     })
 
   const ask = async (question: string, target?: string) => {
@@ -246,7 +246,7 @@ function CopilotHomeView({ threadKey, canAsk, header, paused, below }: CopilotHo
   const title =
     threads.data?.find((item) => item.key === threadKey)?.title ||
     pending ||
-    intl.formatMessage({ id: 'ask.chat.name', defaultMessage: 'Copilot' })
+    intl.formatMessage({ id: 'ask.chat.newChat', defaultMessage: 'New chat' })
   const draftShown = liveDraft ?? (pending ? { threadKey: '', question: pending, text: '' } : null)
 
   return (
@@ -407,7 +407,6 @@ function CopilotThread({
   const intl = useIntl()
   const search = useSearchPalette()
   const shortcut = useSearchShortcutLabel()
-  const copilot = intl.formatMessage({ id: 'ask.chat.name', defaultMessage: 'Copilot' })
   const payload = (final?: WorkspaceCopilotFinalPayload) =>
     final ? (
       <>
@@ -495,7 +494,13 @@ function CopilotThread({
             <DropdownMenuContent align="end" className="w-72 max-w-[calc(100vw-2rem)]">
               {threads.map((item) => (
                 <DropdownMenuItem key={item.key} onClick={() => onOpenThread(item.key)}>
-                  <span className="min-w-0 truncate">{item.title || copilot}</span>
+                  <span className="min-w-0 truncate">
+                    {item.title ||
+                      intl.formatMessage({
+                        id: 'ask.chat.untitled',
+                        defaultMessage: 'Untitled chat',
+                      })}
+                  </span>
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -512,7 +517,10 @@ function CopilotThread({
           {intl.formatMessage({ id: 'ask.chat.newChat', defaultMessage: 'New chat' })}
         </Button>
       </header>
-      <section aria-label={copilot} className="space-y-8 py-6">
+      <section
+        aria-label={intl.formatMessage({ id: 'ask.chat.section', defaultMessage: 'Chat' })}
+        className="space-y-8 py-6"
+      >
         {loadFailed && (
           <p role="alert" className="text-sm text-destructive">
             {intl.formatMessage({
@@ -527,13 +535,10 @@ function CopilotThread({
             className={message.sender === 'customer' ? userBubble : 'space-y-3 leading-7'}
           >
             {message.sender === 'assistant' ? (
-              <>
-                <span className="text-xs font-medium">{copilot}</span>
-                <WorkspaceAssistantMessage
-                  text={message.text}
-                  citations={message.payload?.citations ?? []}
-                />
-              </>
+              <WorkspaceAssistantMessage
+                text={message.text}
+                citations={message.payload?.citations ?? []}
+              />
             ) : (
               <MessageMarkdown text={message.text} />
             )}
@@ -546,7 +551,6 @@ function CopilotThread({
               <MessageMarkdown text={draft.question} />
             </div>
             <div className="space-y-3 leading-7" aria-busy={busy}>
-              <span className="text-xs font-medium">{copilot}</span>
               {draft.text ? (
                 <WorkspaceAssistantMessage
                   text={draft.text}

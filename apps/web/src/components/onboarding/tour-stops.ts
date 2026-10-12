@@ -65,7 +65,7 @@ export interface TourContext {
 
 const COPY = {
   copilot: {
-    lead: { id: 'onboarding.tour.stop.copilot.lead', defaultMessage: 'Copilot.' },
+    lead: { id: 'onboarding.tour.stop.copilot.lead', defaultMessage: 'Quackback AI.' },
     line: {
       id: 'onboarding.tour.stop.copilot.line',
       defaultMessage: 'Ask anything, or tell it what to change. Nothing changes until you apply.',
