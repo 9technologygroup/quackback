@@ -233,6 +233,8 @@ export const AREA_MESSAGE_PREFIXES = {
   notificationText: ['portal.notifications.text.'],
   accessGate: ['portal.accessGate.'],
   errorPage: ['common.errorPage.'],
+  // The /device page where a person approves a headless client's sign-in code.
+  deviceSignIn: ['oauthDevice.'],
   // The public status page's own strings. The status labels it shares with
   // the admin status pages (componentStatus, hero, impact, lifecycle) stay
   // in the seed.

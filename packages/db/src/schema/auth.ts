@@ -1248,6 +1248,40 @@ export const oauthClientAssertion = pgTable('oauth_client_assertion', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 })
 
+/**
+ * Device authorization grant (RFC 8628): a pending device sign-in, bound to the
+ * OAuth client and resources it asked for. Written and consumed by Better
+ * Auth's device-authorization plugin.
+ */
+export const deviceCode = pgTable(
+  'device_code',
+  {
+    id: text('id').primaryKey(),
+    deviceCode: text('device_code').notNull(),
+    userCode: text('user_code').notNull(),
+    userId: typeIdColumnNullable('user')('user_id'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    status: text('status').notNull(),
+    lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
+    pollingInterval: integer('polling_interval'),
+    clientId: text('client_id'),
+    scope: text('scope'),
+    resources: text('resources').array(),
+    oauthClientId: text('oauth_client_id'),
+  },
+  (table) => [
+    foreignKey({
+      name: 'device_code_user_id_fkey',
+      columns: [table.userId],
+      foreignColumns: [user.id],
+    }).onDelete('cascade'),
+    uniqueIndex('device_code_device_code_idx').on(table.deviceCode),
+    uniqueIndex('device_code_user_code_idx').on(table.userCode),
+    index('device_code_user_id_idx').on(table.userId),
+    index('device_code_expires_at_idx').on(table.expiresAt),
+  ]
+)
+
 // Relations for Drizzle relational queries (enables experimental joins)
 export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),

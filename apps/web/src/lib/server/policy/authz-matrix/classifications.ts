@@ -313,6 +313,12 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   // visibility could be checked and no permission that would mean anything.
   // Abuse is bounded by the rate limiter rather than by authorization, because
   // the risk is mailing a stranger, not reading someone else's data.
+  'lib/server/functions/device-auth.ts::lookupDeviceCodeFn': END_USER(
+    'a signed-in person opens a device sign-in code; the code binds to the first account that looks it up and no other account can settle it'
+  ),
+  'lib/server/functions/device-auth.ts::decideDeviceCodeFn': END_USER(
+    'a signed-in person approves or denies a code only they opened; the grant is narrowed to what the client asked for'
+  ),
   'lib/server/functions/contact-email.ts::getEmailChangeStateFn': END_USER(
     'reads only the caller own address state'
   ),
@@ -801,9 +807,6 @@ export const INLINE_CLASSIFICATIONS: Record<string, Classification> = {
   // Behavior refinements sitting behind an already-present entry gate.
   'lib/server/functions/admin.ts::checkOnboardingState::isAdmin': NOT_A_GATE(
     'race-safe first-user promotion — not an access check'
-  ),
-  'lib/server/functions/onboarding.ts::ensureBootstrapAdmin::isAdmin': NOT_A_GATE(
-    'promotes an existing non-admin principal during bootstrap — not an access check'
   ),
   'routes/api/widget/identify.ts::POST::isTeamMember': NOT_A_GATE(
     'skips overwriting a teammate dashboard profile from the host-app JWT; identify still mints a widget-scoped customer session'

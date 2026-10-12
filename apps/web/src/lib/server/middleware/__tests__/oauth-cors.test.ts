@@ -30,6 +30,7 @@ describe('isOAuthCorsPath', () => {
     '/api/auth/oauth2/register',
     '/api/auth/oauth2/token',
     '/api/auth/oauth2/revoke',
+    '/api/auth/device/code',
     '/api/auth/jwks',
   ])('covers %s', (path) => {
     expect(isOAuthCorsPath(path)).toBe(true)
@@ -41,6 +42,9 @@ describe('isOAuthCorsPath', () => {
     '/api/auth/oauth2/authorize',
     '/api/auth/oauth2/consent',
     '/api/auth/oauth2/introspect',
+    '/api/auth/device/approve',
+    '/api/auth/device/deny',
+    '/api/auth/device',
     '/api/mcp/extra',
     '/admin',
   ])('leaves %s alone', (path) => {

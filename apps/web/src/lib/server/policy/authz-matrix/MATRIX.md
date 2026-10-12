@@ -101,7 +101,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 752 surfaces
+### Server functions (`requireAuth`) — 754 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -423,6 +423,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/data-runs.ts`::listExportRunsFn | settings.manage |
 | `lib/server/functions/data-runs.ts`::listImportRunsFn | settings.manage |
 | `lib/server/functions/data-runs.ts`::listImportRunsFn | ADMIN-ONLY |
+| `lib/server/functions/device-auth.ts`::lookupDeviceCodeFn | END_USER (any authenticated) |
+| `lib/server/functions/device-auth.ts`::decideDeviceCodeFn | END_USER (any authenticated) |
 | `lib/server/functions/external-item-search.ts`::searchExternalItemsFn | integration.manage |
 | `lib/server/functions/external-statuses.ts`::fetchExternalStatusesFn | integration.manage |
 | `lib/server/functions/feature-flags.ts`::updateFeatureFlagsFn | settings.manage |
@@ -1080,7 +1082,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-227 of 1097 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+228 of 1100 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 
@@ -1273,6 +1275,7 @@ Each is expected to be intentionally public, a pre-auth flow, a signature-verifi
 | `routes/api/v1/docs.ts`::GET | route |
 | `routes/api/v1/mentions/suggest.ts`::GET | route |
 | `routes/api/v1/openapi.json.ts`::GET | route |
+| `routes/api/v1/setup.ts`::POST | route |
 | `routes/api/v1/status/components/$componentId.ts`::GET | route |
 | `routes/api/v1/status/components/$componentId.ts`::PATCH | route |
 | `routes/api/v1/status/components/index.ts`::GET | route |

@@ -270,6 +270,11 @@ export const SIDE_EFFECT_LEDGER_EXEMPTIONS: readonly LedgerExemption[] = [
       'Declared but not wired: no code writes it and no code reads it, so there is nothing for a restore to get wrong. Reclassify as settle with stamp-pending the moment an escalation path starts draining it, because a rewound stamp would then offer a human a second time to a conversation that already had the offer.',
   },
   {
+    column: schema.deviceCode.lastPolledAt,
+    reason:
+      'Polling bookkeeping on a device sign-in code that lives ten minutes: it only decides whether the next token poll is told to slow down, and no external act is recorded. After a restore every pending code has long expired. Reclassify if a code ever outlives a restore, because a rewound value would then admit one poll inside the interval.',
+  },
+  {
     column: schema.integrations.lastSyncAt,
     reason:
       'Declared in the initial migration and never wired: no writer and no reader anywhere in the tree. Reclassify as settle the moment a poll-based sync starts stamping it, because a rewound sync cursor re-pushes stale state outbound.',

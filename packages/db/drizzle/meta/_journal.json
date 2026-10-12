@@ -1968,6 +1968,13 @@
       "when": 1791000800000,
       "tag": "0303_ai_permission_split",
       "breakpoints": true
+    },
+    {
+      "idx": 281,
+      "version": "7",
+      "when": 1791000900000,
+      "tag": "0304_device_authorization",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,7 @@ import {
   type DomainAccessChip,
   type DomainAccessLevels,
 } from '@/lib/shared/api-key-scopes'
+import { isChipWithinRequest } from '@/lib/shared/domain-access'
 import { cn } from '@/lib/shared/utils'
 
 function AccessChip({
@@ -46,13 +47,18 @@ export function DomainAccessPicker({
   onChange,
   disabled,
   className,
+  allowed,
 }: {
   levels: DomainAccessLevels
   onChange: (levels: DomainAccessLevels) => void
   disabled?: boolean
   className?: string
+  /** The most each domain may be given. Chips above it are disabled. */
+  allowed?: DomainAccessLevels
 }) {
   const intl = useIntl()
+  const within = (domain: AccessDomainId, chip: DomainAccessChip) =>
+    !allowed || isChipWithinRequest(allowed, domain, chip)
   function select(domain: AccessDomainId, chip: DomainAccessChip) {
     onChange({
       ...levels,
@@ -101,7 +107,7 @@ export function DomainAccessPicker({
                   }
                   pressed={levels[group.domain] === 'read'}
                   onPressedChange={() => select(group.domain, 'read')}
-                  disabled={disabled}
+                  disabled={disabled || !within(group.domain, 'read')}
                 />
                 <AccessChip
                   name={
@@ -122,7 +128,7 @@ export function DomainAccessPicker({
                   }
                   pressed={levels[group.domain] === 'read_write'}
                   onPressedChange={() => select(group.domain, 'read_write')}
-                  disabled={disabled}
+                  disabled={disabled || !within(group.domain, 'read_write')}
                 />
               </>
             )}
@@ -132,7 +138,7 @@ export function DomainAccessPicker({
                 display="Write"
                 pressed={levels[group.domain] === 'write'}
                 onPressedChange={() => select(group.domain, 'write')}
-                disabled={disabled}
+                disabled={disabled || !within(group.domain, 'write')}
               />
             )}
           </div>

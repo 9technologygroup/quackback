@@ -172,6 +172,7 @@ export {
   oauthClient,
   oauthClientRelations,
   oauthClientAssertion,
+  deviceCode,
   oauthClientResource,
   oauthClientResourceRelations,
   oauthConsent,

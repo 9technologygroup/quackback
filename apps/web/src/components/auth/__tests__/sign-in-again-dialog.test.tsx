@@ -31,10 +31,15 @@ const hoisted = vi.hoisted(() => ({
 vi.mock('@/lib/server/functions/sign-in-again', () => ({
   getSignInAgainOptionsFn: () => hoisted.options(),
 }))
-vi.mock('@/lib/client/start-oidc-sign-in', () => ({
-  startOidcSignIn: (args: unknown) => hoisted.startOidcSignIn(args),
+vi.mock('@/lib/client/auth-client', () => ({
+  signOut: () => hoisted.signOut(),
+  authClient: {
+    signIn: {
+      social: ({ provider, ...rest }: { provider: string } & Record<string, unknown>) =>
+        hoisted.startOidcSignIn({ providerId: provider, ...rest }),
+    },
+  },
 }))
-vi.mock('@/lib/client/auth-client', () => ({ signOut: () => hoisted.signOut() }))
 vi.mock('@/lib/client/hooks/use-auth-broadcast', () => ({
   useAuthBroadcast: (opts: { onSuccess?: () => void; enabled?: boolean }) => {
     hoisted.broadcast.onSuccess = opts.onSuccess

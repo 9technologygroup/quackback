@@ -48,6 +48,10 @@ const AREAS: Record<MessageArea, { users: RegExp; importers: RegExp | null }> = 
     users: /^components\/shared\/error-page\.tsx$/,
     importers: null,
   },
+  deviceSignIn: {
+    users: /^(components\/device\/device-approval\.tsx|routes\/device\.tsx)$/,
+    importers: /^routes\/device\.tsx$/,
+  },
   statusPage: {
     users: /^(components\/portal\/status\/|routes\/_portal\/status\.(index|\$incidentId)\.tsx$)/,
     importers:

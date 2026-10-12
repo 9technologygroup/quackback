@@ -91,6 +91,7 @@ export const API_ROUTE_SEGMENTS: ReadonlySet<string> = new Set([
   'segments',
   'services',
   'settings',
+  'setup',
   'status',
   'statuses',
   'suggest',

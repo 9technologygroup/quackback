@@ -378,6 +378,7 @@ describe('replayGateVerdict', () => {
       '0301_audit_attribution',
       '0302_approvals_foundation',
       '0303_ai_permission_split',
+      '0304_device_authorization',
     ])
     const verdict = replayGateVerdict(before, verdictsFor(replaySetFor(before)), false)
     expect(verdict.ok).toBe(false)

@@ -179,6 +179,13 @@ export type AuditEventType =
   // A bulk import's writes, summarised: one row per API key per minute with
   // a count, in place of an api.write row each.
   | 'api.import'
+  // First-run setup by an operator holding the setup token: the workspace and
+  // its first admin created without the browser wizard, or a refused attempt.
+  | 'workspace.setup.completed'
+  | 'workspace.setup.rejected'
+  // Device sign-in (RFC 8628): a person approved or denied a headless client's code.
+  | 'oauth.device.approved'
+  | 'oauth.device.denied'
 
 export type AuditEventOutcome = 'success' | 'failure'
 

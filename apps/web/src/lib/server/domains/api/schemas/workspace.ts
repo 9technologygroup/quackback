@@ -139,3 +139,75 @@ registerPath('/admin/usage', {
     },
   },
 })
+
+const SetupRequestSchema = z.object({
+  workspaceName: z.string().min(2).max(100).meta({ description: 'Name of the workspace' }),
+  adminEmail: z.string().email().meta({ description: 'Email address of the first admin' }),
+  adminName: z.string().min(2).max(100).meta({ description: 'Display name of the first admin' }),
+})
+
+const SetupResponseSchema = z.object({
+  data: z.object({
+    workspace: z.object({ id: TypeIdSchema, name: z.string(), slug: z.string() }),
+    admin: z.object({
+      userId: TypeIdSchema,
+      principalId: TypeIdSchema,
+      email: z.string(),
+      name: z.string(),
+    }),
+    apiKey: z.object({
+      id: TypeIdSchema,
+      name: z.string(),
+      key: z.string().meta({
+        description:
+          'The first admin API key, with every scope. Shown only in this response; store it now.',
+      }),
+    }),
+    reusedExistingAccount: z.boolean().meta({
+      description:
+        'True when adminEmail already had a verified account, which was promoted and signed out everywhere.',
+    }),
+  }),
+})
+
+const setupError = (description: string, code: string) => ({
+  description,
+  content: {
+    'application/json': {
+      schema: z.object({
+        error: z.object({ code: z.literal(code), message: z.string() }),
+      }),
+    },
+  },
+})
+
+registerPath('/setup', {
+  post: {
+    tags: ['Workspace'],
+    summary: 'Set up a new workspace without the browser',
+    description:
+      "Creates the workspace and its first admin, and returns that admin's first API key, once. Authenticated with the setup token, sent as a bearer token: the SETUP_TOKEN environment variable, or the token the server writes to its log once on first boot. It exists only while the workspace has no admin; at any other time, and on hosted workspaces, it answers 404 without a trace. An existing account with that email is reused only if its address is verified (409 otherwise). API keys are not accepted. Limited to 10 requests per minute per address.",
+    security: [{ setupToken: [] }],
+    requestBody: {
+      required: true,
+      content: { 'application/json': { schema: SetupRequestSchema } },
+    },
+    responses: {
+      201: {
+        description: 'Workspace and first admin created',
+        content: { 'application/json': { schema: SetupResponseSchema } },
+      },
+      400: setupError('Invalid request body', 'VALIDATION_ERROR'),
+      401: setupError('Missing or wrong setup token', 'UNAUTHORIZED'),
+      404: setupError(
+        'No setup token exists, or the workspace is not awaiting its first admin',
+        'NOT_FOUND'
+      ),
+      409: setupError(
+        'Another request set the workspace up first, or an unverified account already uses adminEmail',
+        'SETUP_ALREADY_COMPLETE'
+      ),
+      429: setupError('Too many requests', 'RATE_LIMITED'),
+    },
+  },
+})

@@ -115,6 +115,15 @@ export const Route = createFileRoute('/api/auth/$')({
           }
         }
 
+        // A device authorization request gets the MCP `resource` by default (as
+        // the token exchange below does) and loses any `user_id` pre-binding.
+        const { isDeviceCodeRequest, prepareDeviceCodeRequest } =
+          await import('@/lib/server/auth/device-request')
+        if (isDeviceCodeRequest(request)) {
+          const { config } = await import('@/lib/server/config')
+          request = await prepareDeviceCodeRequest(request, `${config.baseUrl}/api/mcp`)
+        }
+
         // Ensure `resource` is present in token exchange requests.
         // Without it, better-auth issues opaque tokens instead of JWTs,
         // breaking `verifyAccessTokenRequest` in the MCP handler.

@@ -192,6 +192,12 @@ Example: \`post_01h455vb4pex5vsknk084sn02q\`
           scheme: 'bearer',
           description: 'Operator token from the ADMIN_API_TOKEN environment variable.',
         },
+        setupToken: {
+          type: 'http',
+          scheme: 'bearer',
+          description:
+            'First-run setup token: the SETUP_TOKEN environment variable, or the token the server logs once on first boot. Valid only while the workspace has no admin.',
+        },
       },
     },
   })

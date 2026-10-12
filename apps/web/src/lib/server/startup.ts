@@ -200,6 +200,15 @@ export function logStartupBanner(): void {
       .catch((err) => log.error({ err }, 'failed to run startup backfills'))
   }
 
+  // First-run setup token: on an install that still has no admin, either note
+  // that SETUP_TOKEN is live or print a generated one once. Self-hosted only:
+  // a pooled workspace is provisioned for a named owner and never takes one.
+  if (!config.isPooledTenancy) {
+    import('@/lib/server/domains/onboarding/headless-setup')
+      .then(({ ensureBootSetupToken }) => ensureBootSetupToken())
+      .catch((err) => log.error({ err }, 'failed to prepare the first-run setup token'))
+  }
+
   // Quackback config file watcher — reconciles managed fields from
   // /etc/quackback/config.yaml on every change. No-op when the file
   // is absent (self-host default).

@@ -23,8 +23,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRouter } from '@tanstack/react-router'
+import { authClient } from '@/lib/client/auth-client'
 import { getSignInAgainOptionsFn } from '@/lib/server/functions/sign-in-again'
-import { startOidcSignIn } from '@/lib/client/start-oidc-sign-in'
 import { useSessionContext } from '@/lib/client/hooks/use-root-context'
 import {
   readSignInAgainMarker,
@@ -197,9 +197,16 @@ export function useSignInAgain(options: {
       const returnUrl = signInAgainReturnUrl(window.location.href, action)
       stashSignInAgain({ action, userId: askedBy })
       try {
-        const result = await startOidcSignIn(
-          signInAgainProviderRequest(provider, person.email, returnUrl)
-        )
+        // Calls the client directly rather than through `startOidcSignIn`: that
+        // helper shares a chunk with eager portal code, and importing it from
+        // here would split the chunk and add a request to every portal page.
+        const request = signInAgainProviderRequest(provider, person.email, returnUrl)
+        const result = await authClient.signIn.social({
+          provider: request.providerId,
+          callbackURL: request.callbackURL,
+          errorCallbackURL: request.errorCallbackURL,
+          loginHint: request.loginHint,
+        })
         if (!result?.error) return true
       } catch {
         // Reported below, as a sign-in that did not start.

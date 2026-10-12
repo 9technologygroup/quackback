@@ -14,6 +14,9 @@ const EXACT_PATHS = new Set([
   '/api/auth/oauth2/register',
   '/api/auth/oauth2/token',
   '/api/auth/oauth2/revoke',
+  // Device authorization request (RFC 8628): the client's own call, no cookies.
+  // The person's approval (`/device`, `/device/approve`) stays cookie-only.
+  '/api/auth/device/code',
   '/api/auth/jwks',
 ])
 
