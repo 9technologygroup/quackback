@@ -51,7 +51,9 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
     }),
     // Settling started_at builds subqueries; the stubbed updates ignore them.
     select: () => ({ from: () => ({ where: () => ({}) }) }),
-    transaction: (fn: (tx: unknown) => unknown) => fn(db),
+    // A distinct handle, so a test can tell the transaction from the connection.
+    transaction: (fn: (tx: unknown) => unknown) =>
+      fn(Object.assign(Object.create(db), { isTransaction: true })),
   }
   return { ...(await importOriginal<typeof import('@/lib/server/db')>()), db }
 })
@@ -63,7 +65,11 @@ vi.mock('../status.components', async (importOriginal) => ({
   reconcileComponentStatuses: async (ids: Iterable<string>, ...rest: unknown[]) => {
     for (const id of [...new Set(ids)].sort()) await mockReconcileComponentStatus(id, ...rest)
   },
-  dispatchStatusEvent: (...args: unknown[]) => mockDispatchStatusEvent(...args),
+  writeStatusEvent: (...args: unknown[]) => {
+    // Status events are written on the change's own transaction.
+    expect((args[3] as { isTransaction?: boolean }).isTransaction).toBe(true)
+    return mockDispatchStatusEvent(...args)
+  },
 }))
 
 vi.mock('@/lib/server/events/scheduler', () => ({

@@ -76,7 +76,7 @@ export {
   deleteStatusComponent,
   reorderStatusComponents,
   setComponentStatus,
-  dispatchStatusEvent,
+  writeStatusEvent,
   type StatusEventType,
 } from './status.components'
 

@@ -55,7 +55,9 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
         })
       return chain
     },
-    transaction: (fn: (tx: unknown) => unknown) => fn(db),
+    // A distinct handle, so a test can tell the transaction from the connection.
+    transaction: (fn: (tx: unknown) => unknown) =>
+      fn(Object.assign(Object.create(db), { isTransaction: true })),
   }
   return { ...(await importOriginal<typeof import('@/lib/server/db')>()), db }
 })
@@ -63,7 +65,11 @@ vi.mock('@/lib/server/db', async (importOriginal) => {
 vi.mock('../status.components', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../status.components')>()),
   reconcileComponentStatus: (...args: unknown[]) => mockReconcileComponentStatus(...args),
-  dispatchStatusEvent: (...args: unknown[]) => mockDispatchStatusEvent(...args),
+  writeStatusEvent: (...args: unknown[]) => {
+    // Status events are written on the change's own transaction.
+    expect((args[3] as { isTransaction?: boolean }).isTransaction).toBe(true)
+    return mockDispatchStatusEvent(...args)
+  },
 }))
 
 vi.mock('../status.maintenance', async (importOriginal) => ({

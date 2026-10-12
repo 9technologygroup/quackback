@@ -38,11 +38,7 @@ import { logger } from '@/lib/server/logger'
 import { buildEventActor, type EventActor } from '@/lib/server/events/dispatch'
 import type { EventData } from '@/lib/server/events/types'
 import { deriveImpact } from './status.calc'
-import {
-  reconcileComponentStatuses,
-  dispatchStatusEvent,
-  holdsComponents,
-} from './status.components'
+import { reconcileComponentStatuses, writeStatusEvent, holdsComponents } from './status.components'
 import {
   enqueueMaintenanceJobs,
   cancelMaintenanceJobs,
@@ -232,15 +228,19 @@ export async function createIncident(
     input.backfill?.startedAt ??
     (plannedStart && (!resolvedAt || plannedStart <= resolvedAt) ? plannedStart : now)
 
-  // Published with "Email subscribers" off: the email is never sent, and
-  // notified_at is stamped all the same. An older version's sweep doesn't
+  // A publication is claimed at create: notified_at is stamped and the
+  // publish event written on the create transaction, so the event always
+  // precedes the window's own transition events. The event is what drives the
+  // subscriber fan-out; with "Email subscribers" off it carries that flag and
+  // no email follows. An older version's sweep doesn't
   // read notify_subscribers and announces every live row with no
   // notified_at, so the stamp is what keeps one rolled back to (or an old
-  // worker mid-deploy) from sending it. Readers tell this apart from a real
-  // send by notify_subscribers. A backfill is never announced by any version
-  // and keeps notified_at null.
+  // worker mid-deploy) from sending it. Readers tell a quiet row apart by
+  // notify_subscribers. A backfill is never announced by any version and
+  // keeps notified_at null. The sweep still announces rows an older version
+  // left unclaimed.
   const notifySubscribers = !backfilled && (input.notifySubscribers ?? true)
-  const notifiedAt = !backfilled && !notifySubscribers ? now : null
+  const notifiedAt = !backfilled ? now : null
 
   // One transaction: the row, its links, the first update and the component
   // statuses it applies land together or not at all, so a failure part-way
@@ -312,9 +312,9 @@ export async function createIncident(
       )
     }
 
-    // A quiet publication is stamped notified at create, so no sweep retries
-    // its publish event; it commits with the row instead, or not at all.
-    if (!backfilled && !notifySubscribers) {
+    // The publish event commits with the row, or not at all; the row is
+    // already stamped notified, so no sweep sends it a second time.
+    if (!backfilled) {
       const { writeEventToOutbox } = await import('@/lib/server/events/outbox-dispatch')
       await writeEventToOutbox(
         statusPublishEvent(
@@ -325,27 +325,33 @@ export async function createIncident(
         tx
       )
     }
+
+    // A window created already under way, or already finished, has made its
+    // transition at create: announce it here, in the same transaction, so the
+    // scheduler (which only moves a window still scheduled or still running)
+    // has nothing left to add for it. A backfill is history and says nothing.
+    if (!backfilled && created.kind === 'maintenance' && created.status !== 'scheduled') {
+      await writeStatusEvent(
+        created.status === 'completed'
+          ? 'status.maintenance_completed'
+          : 'status.maintenance_started',
+        buildEventActor({ principalId: author.principalId }),
+        {
+          incidentId: created.id,
+          title: created.title,
+          componentIds: input.affectedComponents.map((c) => c.componentId),
+        },
+        tx
+      )
+    }
     return created
   })
 
-  // Jobs and the publish notification reach outside this database, so they
-  // run only once the rows above are committed.
+  // Jobs reach outside this database, so they run only once the rows above
+  // (the publish event included) are committed.
   if (incident.kind === 'maintenance') {
     await enqueueMaintenanceJobs(incident).catch((err) =>
       log.error({ err, incident_id: incident.id }, 'failed to enqueue maintenance jobs')
-    )
-  }
-
-  // The publish event fires for every publication (webhooks and workflows
-  // hear about it either way); only the subscriber email depends on
-  // notify_subscribers. An emailing row is claimed through notified_at so the
-  // event fires once however many sweeps see it; a quiet row's event was
-  // written in the transaction above. A backfill is a log of the past, not a
-  // publication, and sends nothing.
-  if (!incident.backfilled && incident.notifySubscribers) {
-    const actor = buildEventActor({ principalId: author.principalId })
-    notifyStatusIncidentPublished(incident.id, actor).catch((err) =>
-      log.error({ err, incident_id: incident.id }, 'failed to dispatch status publish event')
     )
   }
 
@@ -547,11 +553,16 @@ export async function postIncidentUpdate(
   assertStatusMatchesKind(current.kind, input.status)
   if (current.backfilled) assertBackfillStaysResolved(current.kind, input.status, true)
 
-  // The timeline row, the status change and the component statuses it moves
-  // commit together, so a failure part-way can't leave an incident marked
-  // resolved while some of its services were never restored.
-  const { existing, startsMaintenance, completesMaintenance, rearmsMaintenance, updateData } =
-    await db.transaction(async (tx) => {
+  const actor: EventActor = author.principalId
+    ? buildEventActor({ principalId: author.principalId })
+    : { type: 'service', displayName: 'system' }
+
+  // The timeline row, the status change, the component statuses it moves and
+  // the events announcing it commit together, so a failure part-way can't
+  // leave an incident marked resolved while some of its services were never
+  // restored, or a status that moved with no event to say so.
+  const { existing, startsMaintenance, rearmsMaintenance, updateData } = await db.transaction(
+    async (tx) => {
       const existing = await lockIncident(id, tx)
 
       const wasTerminal = existing.status === TERMINAL_STATUS[existing.kind]
@@ -658,16 +669,47 @@ export async function postIncidentUpdate(
           tx
         )
       }
+
+      await writeStatusEvent(
+        'status.incident_updated',
+        actor,
+        { incidentId: id, kind: existing.kind, status: input.status, body },
+        tx
+      )
+      // The window's own transition events, which the scheduler writes when it
+      // makes the same move. Each path claims the move from the row's status
+      // under the same lock, so a transition is announced once whoever made it.
+      const completesMaintenance =
+        existing.kind === 'maintenance' && becomesTerminal && !wasTerminal
+      const transition = startsMaintenance
+        ? 'status.maintenance_started'
+        : completesMaintenance
+          ? 'status.maintenance_completed'
+          : null
+      if (transition) {
+        const links = await tx.query.statusIncidentComponents.findMany({
+          where: eq(statusIncidentComponents.incidentId, id),
+          columns: { componentId: true },
+        })
+        await writeStatusEvent(
+          transition,
+          actor,
+          {
+            incidentId: id,
+            title: existing.title,
+            componentIds: links.map((l) => l.componentId),
+          },
+          tx
+        )
+      }
       return {
         existing,
         startsMaintenance,
-        // Decided from the locked row, like the scheduler's own claim, so a
-        // transition is announced by whichever path actually made it.
-        completesMaintenance: existing.kind === 'maintenance' && becomesTerminal && !wasTerminal,
         rearmsMaintenance: existing.kind === 'maintenance' && (reopens || unschedulesMaintenance),
         updateData,
       }
-    })
+    }
+  )
 
   if (startsMaintenance) {
     await cancelMaintenanceJobs(existing).catch((err) =>
@@ -685,38 +727,6 @@ export async function postIncidentUpdate(
     }).catch((err) =>
       log.error({ err, incident_id: id }, 'failed to re-enqueue maintenance jobs on reopen')
     )
-  }
-
-  const actor: EventActor = author.principalId
-    ? buildEventActor({ principalId: author.principalId })
-    : { type: 'service', displayName: 'system' }
-  await dispatchStatusEvent('status.incident_updated', actor, {
-    incidentId: id,
-    kind: existing.kind,
-    status: input.status,
-    body,
-  }).catch((err) =>
-    log.error({ err, incident_id: id }, 'failed to dispatch status.incident_updated')
-  )
-
-  // The window's own transition events, which the scheduler sends when it
-  // makes the same move. Each path claims the move from the row's status
-  // under the same lock, so a transition is announced once whoever made it.
-  const transition = startsMaintenance
-    ? 'status.maintenance_started'
-    : completesMaintenance
-      ? 'status.maintenance_completed'
-      : null
-  if (transition) {
-    const links = await db.query.statusIncidentComponents.findMany({
-      where: eq(statusIncidentComponents.incidentId, id),
-      columns: { componentId: true },
-    })
-    await dispatchStatusEvent(transition, actor, {
-      incidentId: id,
-      title: existing.title,
-      componentIds: links.map((l) => l.componentId),
-    }).catch((err) => log.error({ err, incident_id: id }, `failed to dispatch ${transition}`))
   }
 
   return getStatusIncidentById(id)
@@ -998,73 +1008,65 @@ function statusPublishEvent(
   } as unknown as EventData
 }
 
-/** Send the creation event for a published row, reading its services. */
-async function dispatchStatusPublishEvent(
-  row: StatusIncidentRow,
-  actor: EventActor,
-  opts?: { rethrow?: boolean }
-): Promise<void> {
-  const links = await db.query.statusIncidentComponents.findMany({
-    where: eq(statusIncidentComponents.incidentId, row.id),
-    columns: { componentId: true },
-  })
-  const { type, data } = statusPublishPayload(
-    row,
-    links.map((l) => l.componentId)
-  )
-  await dispatchStatusEvent(type, actor, data, opts)
-}
-
 /**
- * Announce a published incident/maintenance exactly once. Atomically claims
- * via `notified_at`, gated on `backfilled = false` so a backfilled row can
- * never be claimed (Status Product Spec §2), and on `notify_subscribers` so a
- * row published with "Email subscribers" unchecked is never claimed either.
- * Such a row is already stamped at create (see createIncident); the gate
- * keeps it unsendable whatever its notified_at says.
+ * Announce a published incident/maintenance exactly once, for rows an older
+ * version left unclaimed: createIncident now stamps `notified_at` and writes
+ * the event itself. Atomically claims via `notified_at` in the same
+ * transaction as the event, gated on `backfilled = false` so a backfilled row
+ * can never be claimed (Status Product Spec §2), and on `notify_subscribers`
+ * so a row published with "Email subscribers" unchecked is never claimed.
  */
 export async function notifyStatusIncidentPublished(
   id: StatusIncidentId,
   actor: EventActor
 ): Promise<boolean> {
-  const now = new Date()
-  const [claimed] = await db
-    .update(statusIncidents)
-    .set({ notifiedAt: now })
-    .where(
-      and(
-        eq(statusIncidents.id, id),
-        isNull(statusIncidents.notifiedAt),
-        eq(statusIncidents.backfilled, false),
-        eq(statusIncidents.notifySubscribers, true),
-        isNull(statusIncidents.deletedAt)
-      )
-    )
-    .returning()
-
-  if (!claimed) return false
-
   try {
-    await dispatchStatusPublishEvent(claimed, actor, { rethrow: true })
-    return true
+    // The claim and the event commit together: a failed write rolls the claim
+    // back, so the row stays unclaimed for the sweep, and a claim that holds
+    // always has its event.
+    return await db.transaction(async (tx) => {
+      const [claimed] = await tx
+        .update(statusIncidents)
+        .set({ notifiedAt: new Date() })
+        .where(
+          and(
+            eq(statusIncidents.id, id),
+            isNull(statusIncidents.notifiedAt),
+            eq(statusIncidents.backfilled, false),
+            eq(statusIncidents.notifySubscribers, true),
+            isNull(statusIncidents.deletedAt)
+          )
+        )
+        .returning()
+      if (!claimed) return false
+
+      const links = await tx.query.statusIncidentComponents.findMany({
+        where: eq(statusIncidentComponents.incidentId, id),
+        columns: { componentId: true },
+      })
+      const { writeEventToOutbox } = await import('@/lib/server/events/outbox-dispatch')
+      await writeEventToOutbox(
+        statusPublishEvent(
+          claimed,
+          links.map((l) => l.componentId),
+          actor
+        ),
+        tx
+      )
+      return true
+    })
   } catch (err) {
-    await db
-      .update(statusIncidents)
-      .set({ notifiedAt: null })
-      .where(eq(statusIncidents.id, id))
-      .catch(() => {})
     log.error({ err, incident_id: id }, 'failed to dispatch status publish event')
     return false
   }
 }
 
-/** How old an unclaimed row must be before the sweep announces it. Every
- *  publish path claims (or, publishing without the email, stamps) a row
- *  within milliseconds of inserting it, so the sweep only needs rows whose
- *  own claim was lost. Leaving the newest alone also keeps it from racing a
- *  publish in flight: an older version publishing without the email inserts
- *  the row (notify_subscribers then defaults to true) and stamps notified_at
- *  a moment later. */
+/** How old an unclaimed row must be before the sweep announces it. This
+ *  version stamps a row in the transaction that inserts it, so the sweep only
+ *  finds rows an older version left unclaimed. Leaving the newest alone also
+ *  keeps it from racing a publish in flight: an older version publishing
+ *  without the email inserts the row (notify_subscribers then defaults to
+ *  true) and stamps notified_at a moment later. */
 const NOTIFY_SWEEP_MIN_AGE_MS = 2 * 60 * 1000
 
 /**

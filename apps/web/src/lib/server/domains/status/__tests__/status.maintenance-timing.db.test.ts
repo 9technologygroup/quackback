@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { testDb } from '@/lib/server/__tests__/db-test-fixture'
-import { eq, sql, statusIncidents, statusIncidentUpdates } from '@/lib/server/db'
+import { eq, events, sql, statusIncidents, statusIncidentUpdates } from '@/lib/server/db'
 import { ValidationError } from '@/lib/shared/errors'
 
 vi.mock('@/lib/server/db', async (importOriginal) => ({
@@ -432,10 +432,9 @@ describe('status lifecycle (Postgres)', () => {
       expect(sweepRead?.params).toContain('completed')
     })
 
-    function dispatched(type: string) {
-      return mockProcessEvent.mock.calls.filter(
-        ([event]) => (event as { type: string }).type === type
-      )
+    // Transition events are written to the outbox with the change itself.
+    async function dispatched(type: string) {
+      return testDb.select({ id: events.id }).from(events).where(eq(events.type, type))
     }
 
     it('starts a window once when two callers read it as scheduled', async () => {
@@ -448,7 +447,7 @@ describe('status lifecycle (Postgres)', () => {
       const started = await getStatusIncidentById(window.id)
       expect(started.status).toBe('in_progress')
       expect(started.updates.filter((u) => u.status === 'in_progress')).toHaveLength(1)
-      expect(dispatched('status.maintenance_started')).toHaveLength(1)
+      expect(await dispatched('status.maintenance_started')).toHaveLength(1)
 
       // "Start now" that loses the same race says the window can't be started.
       const other = await scheduleWindow(
@@ -489,7 +488,7 @@ describe('status lifecycle (Postgres)', () => {
       const completed = await getStatusIncidentById(window.id)
       expect(completed.status).toBe('completed')
       expect(completed.updates.filter((u) => u.status === 'completed')).toHaveLength(1)
-      expect(dispatched('status.maintenance_completed')).toHaveLength(1)
+      expect(await dispatched('status.maintenance_completed')).toHaveLength(1)
     })
 
     it('a job left over after its automation was switched off does nothing', async () => {
@@ -520,8 +519,9 @@ describe('status lifecycle (Postgres)', () => {
       await updateIncident(running.id, { autoComplete: false })
       await handleMaintenanceComplete(running.id)
       expect((await getStatusIncidentById(running.id)).status).toBe('in_progress')
-      expect(dispatched('status.maintenance_started')).toEqual([])
-      expect(dispatched('status.maintenance_completed')).toEqual([])
+      // Only the start recorded when the window was created under way.
+      expect(await dispatched('status.maintenance_started')).toHaveLength(1)
+      expect(await dispatched('status.maintenance_completed')).toEqual([])
     })
 
     it('"Start now" re-arms completion from the window as it started, not as first read', async () => {
