@@ -139,8 +139,8 @@ describe("Home's launch plan card", () => {
       'Put Messenger on your site',
       'Publish your first article',
       'Publish your first update',
-      'Invite your team',
       'Add your logo',
+      'Invite your team',
       'Connect an integration',
     ])
     const later = screen.getByText(/^Later:/)
@@ -292,7 +292,8 @@ describe("Home's launch plan card", () => {
       </IntlProvider>
     )
     // German keeps its capitals and joins with "und".
-    expect(screen.getByText(/^Später:/).textContent).toMatch(/ und Logo hinzufügen$/)
+    // Branding comes before invites, so the logo is first and the team last.
+    expect(screen.getByText(/^Später:/).textContent).toMatch(/^Später: Logo hinzufügen und /)
     // The region says which language it is in; the admin document stays English.
     expect(screen.getByText(/^Später:/).closest('[lang]')).toHaveAttribute('lang', 'de')
   })

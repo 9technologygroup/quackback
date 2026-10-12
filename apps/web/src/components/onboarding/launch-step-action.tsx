@@ -13,6 +13,7 @@ import { markStatusLinkCopiedFn } from '@/lib/server/functions/activation'
 import { useBaseUrl } from '@/lib/client/hooks/use-root-context'
 import { launchOutcome, type LaunchStatus, type LaunchTask } from '@/lib/shared/launch-checklist'
 import { openGoingLiveSheet } from './going-live-events'
+import { BrandingStepAction } from './branding-step-action'
 
 // The editor loads when the step opens it, not with every page that lists the step.
 const CreateArticleDialog = lazy(() =>
@@ -108,8 +109,8 @@ function CopyStatusLinkButton({ variant }: { variant: 'default' | 'outline' }) {
 
 /**
  * The one action a launch step offers: copy the board or status link, create
- * the board, open the sheet that does the step in place, or open the page that
- * does it. The automatic first win takes its action from the caller. Null for
+ * the board, use the logo found on the website (or look one up), open the
+ * sheet that does the step in place, or open the page that does it. The automatic first win takes its action from the caller. Null for
  * a step that is done, skipped or blocked.
  */
 export function LaunchStepAction({
@@ -144,6 +145,7 @@ export function LaunchStepAction({
   }
   if (task.id === 'share-status-page') return <CopyStatusLinkButton variant={variant} />
   if (task.id === 'help-article') return <WriteArticleButton variant={variant} />
+  if (task.id === 'customize-branding') return <BrandingStepAction task={task} variant={variant} />
   if (task.id === 'create-board') {
     return (
       <Button size="sm" variant={variant} disabled={pending} onClick={onCreateBoard}>

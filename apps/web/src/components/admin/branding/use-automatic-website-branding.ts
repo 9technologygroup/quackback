@@ -7,6 +7,7 @@ import {
   acceptWebsiteBrandingOfferFn,
   declineWebsiteBrandingOfferFn,
   getAutomaticWebsiteBrandingStatusFn,
+  lookupWebsiteBrandingFn,
   startAutomaticWebsiteBrandingFn,
   undoAutomaticWebsiteBrandingFn,
 } from '@/lib/server/functions/website-branding'
@@ -91,7 +92,17 @@ export function useAutomaticWebsiteBranding({ enabled }: { enabled: boolean }) {
                 id: 'onboarding.branding.unavailable',
                 defaultMessage: 'This branding change is no longer available.',
               })
-            : failed()
+            : code === 'WEBSITE_BRANDING_INVALID_SITE'
+              ? intl.formatMessage({
+                  id: 'onboarding.branding.invalidSite',
+                  defaultMessage: 'Enter a website, like acme.com.',
+                })
+              : code === 'WEBSITE_BRANDING_BUSY'
+                ? intl.formatMessage({
+                    id: 'onboarding.branding.busy',
+                    defaultMessage: 'Still looking. Try again in a moment.',
+                  })
+                : failed()
     )
   }
   const undo = useMutation({
@@ -109,12 +120,22 @@ export function useAutomaticWebsiteBranding({ enabled }: { enabled: boolean }) {
     onSuccess: (result) => settle(result, false),
     onError,
   })
+  // "Find logo" for a website the teammate types: the result is an offer.
+  const lookupSite = useMutation({
+    mutationFn: (site: string) => lookupWebsiteBrandingFn({ data: { site } }),
+    onMutate: () => setError(null),
+    onSuccess: (result) => settle(result, false),
+    onError,
+  })
   return {
     status: status.data,
     pending: undo.isPending || acceptOffer.isPending || declineOffer.isPending,
+    /** A typed website is being looked up. */
+    looking: lookupSite.isPending,
     error,
     undo: () => undo.mutate(),
     accept: () => acceptOffer.mutate(),
     dismiss: () => declineOffer.mutate(),
+    lookup: (site: string) => lookupSite.mutate(site),
   }
 }

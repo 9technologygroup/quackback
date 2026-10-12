@@ -2087,5 +2087,14 @@
   "workspaceUnavailable.unknown.body": "لا يوجد شيء مُعدّ على {host}. تحقّق من العنوان أو اسأل من أرسل إليك الرابط.",
   "workspaceUnavailable.unknown.owner": "هل تُعدّ مساحة عمل؟ سجّل الدخول إلى Quackback.",
   "workspaceUnavailable.signIn": "تسجيل الدخول إلى Quackback",
-  "workspaceUnavailable.poweredBy": "مدعوم بواسطة {brand}"
+  "workspaceUnavailable.poweredBy": "مدعوم بواسطة {brand}",
+  "onboarding.branding.upload": "ارفع شعارًا",
+  "onboarding.branding.find": "ابحث عن الشعار",
+  "onboarding.branding.finding": "جارٍ البحث…",
+  "onboarding.branding.website": "موقعك الإلكتروني",
+  "onboarding.branding.websitePlaceholder": "موقعك الإلكتروني، مثل acme.com",
+  "onboarding.branding.looking": "جارٍ البحث عن شعار في {domain}…",
+  "onboarding.branding.notFound": "لم يُعثر على شعار في {domain}. جرّب موقعًا آخر أو ارفع شعارًا.",
+  "onboarding.branding.invalidSite": "أدخل موقعًا إلكترونيًا، مثل acme.com.",
+  "onboarding.branding.busy": "ما زلنا نبحث. حاول مجددًا بعد قليل."
 }

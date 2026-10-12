@@ -100,7 +100,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 2. Surfaces and their enforced authorization
 
-### Server functions (`requireAuth`) — 744 surfaces
+### Server functions (`requireAuth`) — 745 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -806,6 +806,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/website-branding.ts`::acceptWebsiteBrandingOfferFn | DYNAMIC (settings.manage) |
 | `lib/server/functions/website-branding.ts`::declineWebsiteBrandingOfferFn | DYNAMIC (settings.manage) |
 | `lib/server/functions/website-branding.ts`::undoAutomaticWebsiteBrandingFn | DYNAMIC (settings.manage) |
+| `lib/server/functions/website-branding.ts`::lookupWebsiteBrandingFn | DYNAMIC (settings.manage) |
 | `lib/server/functions/widget/comments.ts`::widgetCreateCommentFn | END_USER (any authenticated) |
 | `lib/server/functions/widget/comments.ts`::widgetAddReactionFn | END_USER (any authenticated) |
 | `lib/server/functions/widget/comments.ts`::widgetRemoveReactionFn | END_USER (any authenticated) |
@@ -1062,7 +1063,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-227 of 1083 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+227 of 1084 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 

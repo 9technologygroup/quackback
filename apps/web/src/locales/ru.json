@@ -2087,5 +2087,14 @@
   "workspaceUnavailable.unknown.body": "По адресу {host} ничего не настроено. Проверьте адрес или спросите того, кто прислал вам ссылку.",
   "workspaceUnavailable.unknown.owner": "Настраиваете пространство? Войдите в Quackback.",
   "workspaceUnavailable.signIn": "Войти в Quackback",
-  "workspaceUnavailable.poweredBy": "На базе {brand}"
+  "workspaceUnavailable.poweredBy": "На базе {brand}",
+  "onboarding.branding.upload": "Загрузить логотип",
+  "onboarding.branding.find": "Найти логотип",
+  "onboarding.branding.finding": "Ищем…",
+  "onboarding.branding.website": "Ваш сайт",
+  "onboarding.branding.websitePlaceholder": "Ваш сайт, например acme.com",
+  "onboarding.branding.looking": "Ищем логотип на {domain}…",
+  "onboarding.branding.notFound": "На {domain} логотип не найден. Попробуйте другой сайт или загрузите логотип.",
+  "onboarding.branding.invalidSite": "Введите адрес сайта, например acme.com.",
+  "onboarding.branding.busy": "Поиск ещё идёт. Попробуйте чуть позже."
 }

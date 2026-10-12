@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { db, settings, type Transaction } from '@/lib/server/db'
 import type { Actor } from '@/lib/server/policy/types'
 import { logger } from '@/lib/server/logger'
-import { ForbiddenError } from '@/lib/shared/errors'
+import { ConflictError, ForbiddenError, ValidationError } from '@/lib/shared/errors'
 import { companyEmailDomain } from '@/lib/server/personal-email-domains'
 import { getSetupState } from '@/lib/shared/db-types'
 import { isLaunchWindowOpen, launchWindowFor } from '@/lib/shared/launch-window'
-import type { AutomaticBrandingStatus } from '@/lib/shared/website-branding'
+import { parseWebsiteInput, type AutomaticBrandingStatus } from '@/lib/shared/website-branding'
 import { fetchWebsiteBranding } from '@/lib/server/content/website-branding'
 import {
   invalidateSettingsCache,
@@ -14,11 +14,8 @@ import {
 } from '@/lib/server/domains/settings/settings.helpers'
 import { automaticBrandingAvailable } from './automatic-website-branding.availability'
 import {
-  applyOffer,
-  auditAutomaticBranding,
-  customColorsAllowed,
-} from './automatic-website-branding.actions'
-import {
+  STALE_CLAIM_MS,
+  automaticBrandingUnavailable,
   hasLookupAttempt,
   lookupFromRow,
   presentLookup,
@@ -152,21 +149,17 @@ const finish = (claim: LookupClaim, status: 'failed' | 'skipped') =>
   })
 
 /**
- * Home's start. Runs the lookup once per workspace: a good logo is applied
- * with Undo, a weak one is offered, and a failed fetch is recorded.
+ * Fetch the website and keep what it finds as an offer. Nothing is applied
+ * here: a logo only reaches the workspace when someone chooses "Use it",
+ * which is the launch plan's branding step (or Home's notice).
  */
-export async function ensureAutomaticWebsiteBranding(
-  actor: Actor
-): Promise<AutomaticBrandingStatus | null> {
-  const initial = await claimLookup(actor)
-  const claim = initial.claim
-  if (!claim) return initial.status
+async function fetchIntoOffer(actor: Actor, claim: LookupClaim, site: string): Promise<void> {
   try {
     // The homepage and logo are fetched without holding a database lock.
-    const branding = await fetchWebsiteBranding(claim.lookup.domain)
-    const customColors = await customColorsAllowed()
+    const branding = await fetchWebsiteBranding(site)
     await completeClaim(claim, async (tx, row) => {
-      const person = await resolveAutomaticBrandingActor(actor, tx)
+      // Whoever started it may have lost the right to change branding meanwhile.
+      await resolveAutomaticBrandingActor(actor, tx)
       const completedAt = new Date().toISOString()
       if (row.logoKey || !branding) {
         await storeLookup(tx, {
@@ -176,27 +169,71 @@ export async function ensureAutomaticWebsiteBranding(
         })
         return
       }
-      const offer = { logoKey: branding.logoKey, color: branding.color }
-      if (branding.quality === 'weak') {
-        await storeLookup(tx, { ...claim.lookup, status: 'offered', completedAt, offer })
-        return
-      }
-      const receipt = await applyOffer(tx, person, row, offer, {
-        baseline: claim.row,
-        customColors,
-      })
-      const applied = await storeLookup(tx, {
+      await storeLookup(tx, {
         ...claim.lookup,
-        status: 'applied',
+        status: 'offered',
         completedAt,
-        offer,
-        receipt,
+        offer: { logoKey: branding.logoKey, color: branding.color },
       })
-      await auditAutomaticBranding(tx, person, 'branding.website.applied', row.id, applied, receipt)
     })
   } catch (error) {
-    log.warn({ err: error, domain: claim.lookup.domain }, 'automatic website branding failed')
+    log.warn({ err: error, domain: claim.lookup.domain }, 'website branding lookup failed')
     await finish(claim, 'failed')
   }
+}
+
+/**
+ * Home's start. Looks the work email's domain up once per workspace and keeps
+ * any logo it finds as an offer; a failed fetch is recorded.
+ */
+export async function ensureAutomaticWebsiteBranding(
+  actor: Actor
+): Promise<AutomaticBrandingStatus | null> {
+  const initial = await claimLookup(actor)
+  const claim = initial.claim
+  if (!claim) return initial.status
+  await fetchIntoOffer(actor, claim, claim.lookup.domain)
+  return getAutomaticWebsiteBrandingStatus(actor)
+}
+
+/**
+ * The branding step's "Find logo": look up a website the teammate types, for
+ * a personal email that has no company domain or when their own found
+ * nothing. Replaces any earlier lookup while the workspace has no logo; one
+ * runs at a time.
+ */
+export async function lookupWebsiteBrandingForSite(
+  actor: Actor,
+  site: string
+): Promise<AutomaticBrandingStatus | null> {
+  const url = parseWebsiteInput(site)
+  if (!url) {
+    throw new ValidationError('WEBSITE_BRANDING_INVALID_SITE', 'Enter a website, like acme.com.')
+  }
+  if (!automaticBrandingAvailable()) throw automaticBrandingUnavailable()
+  const claim = await db.transaction(async (tx): Promise<LookupClaim> => {
+    const [row] = await tx.select().from(settings).limit(1).for('update')
+    if (!row) throw automaticBrandingUnavailable()
+    await resolveAutomaticBrandingActor(actor, tx)
+    if (row.logoKey) throw automaticBrandingUnavailable()
+    const current = lookupFromRow(row)
+    if (
+      current?.status === 'pending' &&
+      Date.now() - Date.parse(current.startedAt) < STALE_CLAIM_MS
+    ) {
+      throw new ConflictError('WEBSITE_BRANDING_BUSY', 'A logo lookup is already running.')
+    }
+    const lookup = await storeLookup(tx, {
+      version: 1,
+      status: 'pending',
+      domain: url.hostname.toLowerCase(),
+      claimId: randomUUID(),
+      ownerPrincipalId: actor.principalId,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+    })
+    return { row, lookup }
+  })
+  await fetchIntoOffer(actor, claim, url.href)
   return getAutomaticWebsiteBrandingStatus(actor)
 }

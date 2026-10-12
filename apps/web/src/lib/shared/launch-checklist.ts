@@ -466,7 +466,8 @@ function buildOutcomeTasks(
   if (features.helpCenter) inputs.push(helpDraft)
   if (features.statusPage) inputs.push(addStatusService)
   if (features.statusPage && outcome === 'status_page') inputs.push(shareStatusPage)
-  inputs.push(invite, branding)
+  // Branding before invites: the portal should look like theirs before teammates see it.
+  inputs.push(branding, invite)
   // A step the plan does not include is not part of the plan.
   if (features.integrations) inputs.push(integration)
   inputs.push(firstWin)

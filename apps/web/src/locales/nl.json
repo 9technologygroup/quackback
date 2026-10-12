@@ -2087,5 +2087,14 @@
   "workspaceUnavailable.unknown.body": "Op {host} is niets ingesteld. Controleer het adres of vraag het aan wie je de link heeft gestuurd.",
   "workspaceUnavailable.unknown.owner": "Ben je een werkruimte aan het opzetten? Log in bij Quackback.",
   "workspaceUnavailable.signIn": "Inloggen bij Quackback",
-  "workspaceUnavailable.poweredBy": "Mogelijk gemaakt door {brand}"
+  "workspaceUnavailable.poweredBy": "Mogelijk gemaakt door {brand}",
+  "onboarding.branding.upload": "Logo uploaden",
+  "onboarding.branding.find": "Logo zoeken",
+  "onboarding.branding.finding": "Zoeken…",
+  "onboarding.branding.website": "Je website",
+  "onboarding.branding.websitePlaceholder": "Je website, bijv. acme.com",
+  "onboarding.branding.looking": "Zoeken naar een logo op {domain}…",
+  "onboarding.branding.notFound": "Geen logo gevonden op {domain}. Probeer een andere website of upload er een.",
+  "onboarding.branding.invalidSite": "Vul een website in, bijv. acme.com.",
+  "onboarding.branding.busy": "We zoeken nog. Probeer het zo opnieuw."
 }

@@ -6,8 +6,9 @@ import { safeWebsiteBrandColor } from '@/lib/shared/website-brand-color'
 import { isStandardWebsiteUrl, parseWebsiteInput } from '@/lib/shared/website-branding'
 
 /**
- * `good` logos are applied automatically. `weak` ones (an ICO, anything under
- * 64px, or a social banner) are only offered.
+ * How sure the lookup is that the image is a usable logo. `weak` is an ICO,
+ * anything under 64px, or a social banner. Every logo is only offered; a weak
+ * one is kept when nothing better is found.
  */
 export type WebsiteLogoQuality = 'good' | 'weak'
 

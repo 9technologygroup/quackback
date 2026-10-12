@@ -2087,5 +2087,14 @@
   "workspaceUnavailable.unknown.body": "{host} 上没有设置任何内容。请检查地址，或询问向您发送链接的人。",
   "workspaceUnavailable.unknown.owner": "正在设置工作区？请登录 Quackback。",
   "workspaceUnavailable.signIn": "登录 Quackback",
-  "workspaceUnavailable.poweredBy": "由 {brand} 提供支持"
+  "workspaceUnavailable.poweredBy": "由 {brand} 提供支持",
+  "onboarding.branding.upload": "上传标志",
+  "onboarding.branding.find": "查找标志",
+  "onboarding.branding.finding": "正在查找…",
+  "onboarding.branding.website": "你的网站",
+  "onboarding.branding.websitePlaceholder": "你的网站，例如 acme.com",
+  "onboarding.branding.looking": "正在 {domain} 上查找标志…",
+  "onboarding.branding.notFound": "未在 {domain} 上找到标志。试试其他网站，或直接上传。",
+  "onboarding.branding.invalidSite": "请输入网站，例如 acme.com。",
+  "onboarding.branding.busy": "仍在查找中。请稍后再试。"
 }

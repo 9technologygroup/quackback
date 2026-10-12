@@ -22,7 +22,7 @@ import {
 export const AUTOMATIC_BRANDING_SOURCE = 'website_branding'
 /** A lookup still pending after this long died with its process; it reads as failed. */
 export const STALE_CLAIM_MS = 5 * 60_000
-/** Home shows an applied or offered logo for this long after the lookup. */
+/** Home shows an applied logo, with Undo, for this long after it is applied. */
 export const NOTICE_WINDOW_MS = 3 * 24 * 60 * 60_000
 
 const AUTOMATIC_CHANGE_IDS = ['branding.logoKey', 'branding.light.primary', 'branding.dark.primary']
@@ -217,9 +217,9 @@ export function quietStatus(
 }
 
 /**
- * What Home shows for a recorded lookup, or null once there is nothing to show:
- * an offer answered by a logo set by hand, an applied change edited since, or
- * either one older than the notice window.
+ * What Home and the branding step show for a recorded lookup, or null once
+ * there is nothing to show: an offer answered by a logo set by hand, or an
+ * applied change edited since or older than the notice window.
  */
 export function presentLookup(
   row: SettingsRecord,
@@ -234,8 +234,10 @@ export function presentLookup(
     )
   const recent =
     lookup.completedAt !== null && now - Date.parse(lookup.completedAt) < NOTICE_WINDOW_MS
+  // An offer waits for its answer while the workspace has no logo: the launch
+  // plan's branding step asks for it, so it does not expire with the notice.
   if (lookup.status === 'offered') {
-    if (!recent || row.logoKey) return null
+    if (row.logoKey) return null
     return {
       ...quietStatus(lookup.domain, 'offered'),
       logoUrl: getPublicUrlOrNull(lookup.offer.logoKey),

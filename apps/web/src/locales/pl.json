@@ -2087,5 +2087,14 @@
   "workspaceUnavailable.unknown.body": "Pod adresem {host} nic nie skonfigurowano. Sprawdź adres albo zapytaj osobę, która przysłała ci link.",
   "workspaceUnavailable.unknown.owner": "Konfigurujesz obszar roboczy? Zaloguj się do Quackback.",
   "workspaceUnavailable.signIn": "Zaloguj się do Quackback",
-  "workspaceUnavailable.poweredBy": "Obsługiwane przez {brand}"
+  "workspaceUnavailable.poweredBy": "Obsługiwane przez {brand}",
+  "onboarding.branding.upload": "Prześlij logo",
+  "onboarding.branding.find": "Znajdź logo",
+  "onboarding.branding.finding": "Szukam…",
+  "onboarding.branding.website": "Twoja strona internetowa",
+  "onboarding.branding.websitePlaceholder": "Twoja strona, np. acme.com",
+  "onboarding.branding.looking": "Szukamy logo na {domain}…",
+  "onboarding.branding.notFound": "Nie znaleziono logo na {domain}. Spróbuj innej strony albo prześlij logo.",
+  "onboarding.branding.invalidSite": "Wpisz adres strony, np. acme.com.",
+  "onboarding.branding.busy": "Wciąż szukamy. Spróbuj za chwilę."
 }

@@ -2087,5 +2087,14 @@
   "workspaceUnavailable.unknown.body": "ยังไม่มีการตั้งค่าใดๆ ที่ {host} ตรวจสอบที่อยู่ หรือสอบถามผู้ที่ส่งลิงก์ให้คุณ",
   "workspaceUnavailable.unknown.owner": "กำลังตั้งค่าเวิร์กสเปซอยู่ใช่ไหม เข้าสู่ระบบ Quackback",
   "workspaceUnavailable.signIn": "เข้าสู่ระบบ Quackback",
-  "workspaceUnavailable.poweredBy": "ให้บริการโดย {brand}"
+  "workspaceUnavailable.poweredBy": "ให้บริการโดย {brand}",
+  "onboarding.branding.upload": "อัปโหลดโลโก้",
+  "onboarding.branding.find": "ค้นหาโลโก้",
+  "onboarding.branding.finding": "กำลังค้นหา…",
+  "onboarding.branding.website": "เว็บไซต์ของคุณ",
+  "onboarding.branding.websitePlaceholder": "เว็บไซต์ของคุณ เช่น acme.com",
+  "onboarding.branding.looking": "กำลังค้นหาโลโก้บน {domain}…",
+  "onboarding.branding.notFound": "ไม่พบโลโก้บน {domain} ลองเว็บไซต์อื่นหรืออัปโหลดเอง",
+  "onboarding.branding.invalidSite": "ป้อนเว็บไซต์ เช่น acme.com",
+  "onboarding.branding.busy": "ยังค้นหาอยู่ ลองใหม่อีกครั้งในอีกสักครู่"
 }

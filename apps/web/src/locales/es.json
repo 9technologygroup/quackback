@@ -2087,5 +2087,14 @@
   "workspaceUnavailable.unknown.body": "No hay nada configurado en {host}. Revisa la dirección o pregunta a quien te envió el enlace.",
   "workspaceUnavailable.unknown.owner": "¿Estás configurando un espacio? Inicia sesión en Quackback.",
   "workspaceUnavailable.signIn": "Iniciar sesión en Quackback",
-  "workspaceUnavailable.poweredBy": "Desarrollado con {brand}"
+  "workspaceUnavailable.poweredBy": "Desarrollado con {brand}",
+  "onboarding.branding.upload": "Subir un logotipo",
+  "onboarding.branding.find": "Buscar logotipo",
+  "onboarding.branding.finding": "Buscando…",
+  "onboarding.branding.website": "Tu sitio web",
+  "onboarding.branding.websitePlaceholder": "Tu sitio web, como acme.com",
+  "onboarding.branding.looking": "Buscando un logotipo en {domain}…",
+  "onboarding.branding.notFound": "No se encontró ningún logotipo en {domain}. Prueba otro sitio web o sube uno.",
+  "onboarding.branding.invalidSite": "Escribe un sitio web, como acme.com.",
+  "onboarding.branding.busy": "Seguimos buscando. Inténtalo de nuevo en un momento."
 }

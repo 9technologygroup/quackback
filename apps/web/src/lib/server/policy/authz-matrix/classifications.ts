@@ -74,7 +74,11 @@ const DYNAMIC_PERMISSION = (
 export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/website-branding.ts::startAutomaticWebsiteBrandingFn': DYNAMIC_PERMISSION(
     [PERMISSIONS.SETTINGS_MANAGE],
-    'lookup and logo writes require current settings management; color writes additionally require branding permission'
+    'the lookup only records an offer and requires current settings management, rechecked after the fetch'
+  ),
+  'lib/server/functions/website-branding.ts::lookupWebsiteBrandingFn': DYNAMIC_PERMISSION(
+    [PERMISSIONS.SETTINGS_MANAGE],
+    'Find logo looks up a typed website through the safe fetch and records an offer; requires current settings management, rechecked after the fetch'
   ),
   'lib/server/functions/website-branding.ts::getAutomaticWebsiteBrandingStatusFn':
     DYNAMIC_PERMISSION(

@@ -62,6 +62,8 @@ describe('lazily loaded strings', () => {
       'components/onboarding/goal-actions.tsx',
       'components/onboarding/launch-plan-page.tsx',
       'components/onboarding/launch-step-action.tsx',
+      // The branding step's own action: the found logo, or a website to look up.
+      'components/onboarding/branding-step-action.tsx',
       'components/onboarding/launch-task-label.tsx',
       'components/admin/admin-overview.tsx',
       'components/admin/branding/automatic-branding-notice.tsx',
