@@ -159,6 +159,8 @@ export interface EventPostMentionedData {
   postId: string
   postTitle: string
   postUrl: string
+  /** Board the post lives on; lets webhook board filters apply. */
+  boardId?: string
   mentionedPrincipalId: string
   mentioningPrincipalId: string
   /** Text of the paragraph containing the mention (≤200 chars), used as email body context. */
@@ -180,6 +182,8 @@ export interface PostOwnerAssignedPayload {
   postTitle: string
   boardSlug: string
   postUrl: string
+  /** Board the post lives on; lets webhook board filters apply. */
+  boardId?: string
   ownerPrincipalId: string
   previousOwnerPrincipalId: string | null
 }
@@ -251,6 +255,8 @@ export interface StatusIncidentEventData {
   scheduledEndAt: string | null
   startedAt: string
   componentIds: string[]
+  /** On the publish events: false when the publication does not email subscribers. */
+  notifySubscribers?: boolean
 }
 
 /** status.incident_created + status.maintenance_scheduled (the publish events). */

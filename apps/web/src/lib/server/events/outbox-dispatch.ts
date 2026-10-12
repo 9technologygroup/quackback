@@ -12,7 +12,7 @@
 import { db } from '@/lib/server/db'
 import { logger } from '@/lib/server/logger'
 import { isUniqueViolation } from '@/lib/server/utils'
-import { emit } from './emit'
+import { emit, type DbOrTx } from './emit'
 import { getEventDefinition } from './catalogue'
 import { TIMER_DRIVEN_EVENT_TYPES, type EventData } from './types'
 import type { EventActorType } from './envelope'
@@ -74,24 +74,32 @@ export function extractEntityId(event: EventData): string {
  * Write one legacy event to the outbox. Returns true if written, false if the
  * type has no catalogue entry (defensive — the coverage test makes this
  * impossible for real EVENT_TYPES, but a stray call shouldn't throw).
+ *
+ * Pass the caller's transaction to commit the event atomically with the write
+ * it describes; any failure then propagates so the caller's transaction rolls
+ * back as a whole.
  */
-export async function writeEventToOutbox(event: EventData): Promise<boolean> {
+export async function writeEventToOutbox(event: EventData, executor?: DbOrTx): Promise<boolean> {
   const def = getEventDefinition(event.type)
   if (!def) {
     log.warn({ type: event.type }, 'no catalogue definition for event; not written to outbox')
     return false
   }
   const dedupeKey = TIMER_DEDUPED_TYPES.has(event.type) ? event.id : null
+  const write = (tx: DbOrTx) =>
+    emit(tx, def, {
+      payload: event.data as unknown as Record<string, unknown>,
+      actor: mapActor(event.actor),
+      entityId: extractEntityId(event),
+      context: { source: event.actor.service, correlationId: event.id },
+      dedupeKey,
+    })
+  if (executor) {
+    await write(executor)
+    return true
+  }
   try {
-    await db.transaction((tx) =>
-      emit(tx, def, {
-        payload: event.data as unknown as Record<string, unknown>,
-        actor: mapActor(event.actor),
-        entityId: extractEntityId(event),
-        context: { source: event.actor.service, correlationId: event.id },
-        dedupeKey,
-      })
-    )
+    await db.transaction(write)
   } catch (error) {
     // A dedupe-key collision means this exact timer event was already written on
     // an earlier tick — the intended fire-once outcome, not an error. Swallow it

@@ -43,6 +43,11 @@ const mockProcessEvent = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/server/events/process', () => ({
   processEvent: (...args: unknown[]) => mockProcessEvent(...args),
 }))
+// The scratch schema has no outbox; a quiet publication's in-transaction event
+// write lands on the same stub as every other event.
+vi.mock('@/lib/server/events/outbox-dispatch', () => ({
+  writeEventToOutbox: (event: unknown) => mockProcessEvent(event),
+}))
 vi.mock('@/lib/server/events/scheduler', () => ({
   scheduleDispatch: vi.fn().mockResolvedValue(undefined),
   cancelScheduledDispatch: vi.fn().mockResolvedValue(undefined),

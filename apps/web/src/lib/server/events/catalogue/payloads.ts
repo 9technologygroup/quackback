@@ -90,6 +90,7 @@ export const P = {
     postId: id,
     postTitle: z.string(),
     postUrl: z.string(),
+    boardId: id.optional(),
     mentionedPrincipalId: id,
     mentioningPrincipalId: id,
     excerpt: z.string(),
@@ -99,6 +100,7 @@ export const P = {
     postTitle: z.string(),
     boardSlug: z.string(),
     postUrl: z.string(),
+    boardId: id.optional(),
     ownerPrincipalId: id,
     previousOwnerPrincipalId: nullableStr,
   }),
@@ -122,10 +124,22 @@ export const P = {
   }),
   // status page
   'status.incident_created': z.looseObject({
-    incident: z.looseObject({ id, componentIds: z.array(z.string()) }).loose(),
+    incident: z
+      .looseObject({
+        id,
+        componentIds: z.array(z.string()),
+        notifySubscribers: z.boolean().optional(),
+      })
+      .loose(),
   }),
   'status.maintenance_scheduled': z.looseObject({
-    incident: z.looseObject({ id, componentIds: z.array(z.string()) }).loose(),
+    incident: z
+      .looseObject({
+        id,
+        componentIds: z.array(z.string()),
+        notifySubscribers: z.boolean().optional(),
+      })
+      .loose(),
   }),
   'status.incident_updated': z.looseObject({
     incidentId: id,

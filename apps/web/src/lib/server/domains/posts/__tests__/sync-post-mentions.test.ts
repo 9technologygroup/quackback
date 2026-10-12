@@ -216,7 +216,7 @@ describe('syncPostMentions', () => {
     expect(deleteCalls.length).toBe(0)
   })
 
-  it('skips dispatch for self-mention but still records the row', async () => {
+  it('dispatches for a self-mention too, and records the row', async () => {
     eligibilityRows = [userRow(ACTOR_PRINCIPAL), userRow(P1)]
     existingRows = []
     insertReturning = [{ principalId: ACTOR_PRINCIPAL }, { principalId: P1 }]
@@ -228,13 +228,14 @@ describe('syncPostMentions', () => {
       })
     )
 
-    expect(dispatchPostMentioned).toHaveBeenCalledTimes(1)
-    expect(dispatchPostMentioned.mock.calls[0][1].mentionedPrincipalId).toBe(P1)
-    // Both rows were inserted (self-mention is still recorded).
+    // The event is the record of the mention (webhooks see it); the
+    // notification target decides nobody is told about their own mention.
+    expect(dispatchPostMentioned.mock.calls.map((c) => c[1].mentionedPrincipalId).sort()).toEqual(
+      [ACTOR_PRINCIPAL as string, P1 as string].sort()
+    )
     expect(insertCalls[0].rows.map((r) => r.principalId).sort()).toEqual(
       [ACTOR_PRINCIPAL as string, P1 as string].sort()
     )
-    // Both got notifiedAt watermark set (self-mention via the skip-branch).
     expect(updateNotifiedCalls.map((c) => c.principalId).sort()).toEqual(
       [ACTOR_PRINCIPAL as string, P1 as string].sort()
     )

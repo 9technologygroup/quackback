@@ -555,6 +555,9 @@ export async function getMentionTargets(
 
   const { mentionedPrincipalId, postTitle, postUrl } = event.data
   if (!mentionedPrincipalId) return []
+  // The event fires for a self-mention (webhooks see it); nobody is told
+  // about their own mention.
+  if (mentionedPrincipalId === event.data.mentioningPrincipalId) return []
 
   const rows = await db
     .select({
@@ -1931,6 +1934,9 @@ export async function getStatusSubscriberTargets(
     return []
   }
   const incident = event.data.incident
+  // Published without emailing subscribers: the event still goes to webhooks
+  // and workflows, but no subscriber email or bell comes of it.
+  if (incident.notifySubscribers === false) return []
   const affectedComponentIds = incident.componentIds
 
   const {

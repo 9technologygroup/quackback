@@ -36,6 +36,7 @@ import type {
 import { NotFoundError, ValidationError } from '@/lib/shared/errors'
 import { logger } from '@/lib/server/logger'
 import { buildEventActor, type EventActor } from '@/lib/server/events/dispatch'
+import type { EventData } from '@/lib/server/events/types'
 import { deriveImpact } from './status.calc'
 import {
   reconcileComponentStatuses,
@@ -310,6 +311,20 @@ export async function createIncident(
         tx
       )
     }
+
+    // A quiet publication is stamped notified at create, so no sweep retries
+    // its publish event; it commits with the row instead, or not at all.
+    if (!backfilled && !notifySubscribers) {
+      const { writeEventToOutbox } = await import('@/lib/server/events/outbox-dispatch')
+      await writeEventToOutbox(
+        statusPublishEvent(
+          created,
+          input.affectedComponents.map((c) => c.componentId),
+          buildEventActor({ principalId: author.principalId })
+        ),
+        tx
+      )
+    }
     return created
   })
 
@@ -321,7 +336,13 @@ export async function createIncident(
     )
   }
 
-  if (incident.notifySubscribers) {
+  // The publish event fires for every publication (webhooks and workflows
+  // hear about it either way); only the subscriber email depends on
+  // notify_subscribers. An emailing row is claimed through notified_at so the
+  // event fires once however many sweeps see it; a quiet row's event was
+  // written in the transaction above. A backfill is a log of the past, not a
+  // publication, and sends nothing.
+  if (!incident.backfilled && incident.notifySubscribers) {
     const actor = buildEventActor({ principalId: author.principalId })
     notifyStatusIncidentPublished(incident.id, actor).catch((err) =>
       log.error({ err, incident_id: incident.id }, 'failed to dispatch status publish event')
@@ -529,8 +550,8 @@ export async function postIncidentUpdate(
   // The timeline row, the status change and the component statuses it moves
   // commit together, so a failure part-way can't leave an incident marked
   // resolved while some of its services were never restored.
-  const { existing, startsMaintenance, rearmsMaintenance, updateData } = await db.transaction(
-    async (tx) => {
+  const { existing, startsMaintenance, completesMaintenance, rearmsMaintenance, updateData } =
+    await db.transaction(async (tx) => {
       const existing = await lockIncident(id, tx)
 
       const wasTerminal = existing.status === TERMINAL_STATUS[existing.kind]
@@ -640,11 +661,13 @@ export async function postIncidentUpdate(
       return {
         existing,
         startsMaintenance,
+        // Decided from the locked row, like the scheduler's own claim, so a
+        // transition is announced by whichever path actually made it.
+        completesMaintenance: existing.kind === 'maintenance' && becomesTerminal && !wasTerminal,
         rearmsMaintenance: existing.kind === 'maintenance' && (reopens || unschedulesMaintenance),
         updateData,
       }
-    }
-  )
+    })
 
   if (startsMaintenance) {
     await cancelMaintenanceJobs(existing).catch((err) =>
@@ -675,6 +698,26 @@ export async function postIncidentUpdate(
   }).catch((err) =>
     log.error({ err, incident_id: id }, 'failed to dispatch status.incident_updated')
   )
+
+  // The window's own transition events, which the scheduler sends when it
+  // makes the same move. Each path claims the move from the row's status
+  // under the same lock, so a transition is announced once whoever made it.
+  const transition = startsMaintenance
+    ? 'status.maintenance_started'
+    : completesMaintenance
+      ? 'status.maintenance_completed'
+      : null
+  if (transition) {
+    const links = await db.query.statusIncidentComponents.findMany({
+      where: eq(statusIncidentComponents.incidentId, id),
+      columns: { componentId: true },
+    })
+    await dispatchStatusEvent(transition, actor, {
+      incidentId: id,
+      title: existing.title,
+      componentIds: links.map((l) => l.componentId),
+    }).catch((err) => log.error({ err, incident_id: id }, `failed to dispatch ${transition}`))
+  }
 
   return getStatusIncidentById(id)
 }
@@ -907,6 +950,71 @@ export async function countStatusIncidentsSince(date: Date): Promise<number> {
 // Publish notification (changelog notifyChangelogPublished pattern)
 // ============================================================================
 
+type StatusIncidentRow = typeof statusIncidents.$inferSelect
+
+/**
+ * The creation event's type and payload for a published incident or
+ * maintenance window. The payload says whether subscribers are emailed, which
+ * is all the subscriber fan-out reads; webhooks and workflows get the event
+ * either way.
+ */
+function statusPublishPayload(row: StatusIncidentRow, componentIds: string[]) {
+  return {
+    type: (row.kind === 'incident'
+      ? 'status.incident_created'
+      : 'status.maintenance_scheduled') as StatusIncidentPublishedType,
+    data: {
+      incident: {
+        id: row.id,
+        kind: row.kind,
+        title: row.title,
+        status: row.status,
+        impact: row.impact,
+        scheduledStartAt: row.scheduledStartAt?.toISOString() ?? null,
+        scheduledEndAt: row.scheduledEndAt?.toISOString() ?? null,
+        startedAt: row.startedAt.toISOString(),
+        componentIds,
+        notifySubscribers: row.notifySubscribers,
+      },
+    },
+  }
+}
+
+type StatusIncidentPublishedType = 'status.incident_created' | 'status.maintenance_scheduled'
+
+/** The creation event as an envelope, for writing on the caller's transaction. */
+function statusPublishEvent(
+  row: StatusIncidentRow,
+  componentIds: string[],
+  actor: EventActor
+): EventData {
+  const { type, data } = statusPublishPayload(row, componentIds)
+  return {
+    id: globalThis.crypto.randomUUID(),
+    type,
+    timestamp: new Date().toISOString(),
+    actor,
+    data,
+  } as unknown as EventData
+}
+
+/** Send the creation event for a published row, reading its services. */
+async function dispatchStatusPublishEvent(
+  row: StatusIncidentRow,
+  actor: EventActor,
+  opts?: { rethrow?: boolean }
+): Promise<void> {
+  const links = await db.query.statusIncidentComponents.findMany({
+    where: eq(statusIncidentComponents.incidentId, row.id),
+    columns: { componentId: true },
+  })
+  const { type, data } = statusPublishPayload(
+    row,
+    links.map((l) => l.componentId)
+  )
+  await dispatchStatusEvent(type, actor, data, opts)
+}
+
 /**
  * Announce a published incident/maintenance exactly once. Atomically claims
  * via `notified_at`, gated on `backfilled = false` so a backfilled row can
@@ -937,30 +1045,7 @@ export async function notifyStatusIncidentPublished(
   if (!claimed) return false
 
   try {
-    const links = await db.query.statusIncidentComponents.findMany({
-      where: eq(statusIncidentComponents.incidentId, id),
-      columns: { componentId: true },
-    })
-    const eventType =
-      claimed.kind === 'incident' ? 'status.incident_created' : 'status.maintenance_scheduled'
-    await dispatchStatusEvent(
-      eventType,
-      actor,
-      {
-        incident: {
-          id: claimed.id,
-          kind: claimed.kind,
-          title: claimed.title,
-          status: claimed.status,
-          impact: claimed.impact,
-          scheduledStartAt: claimed.scheduledStartAt?.toISOString() ?? null,
-          scheduledEndAt: claimed.scheduledEndAt?.toISOString() ?? null,
-          startedAt: claimed.startedAt.toISOString(),
-          componentIds: links.map((l) => l.componentId),
-        },
-      },
-      { rethrow: true }
-    )
+    await dispatchStatusPublishEvent(claimed, actor, { rethrow: true })
     return true
   } catch (err) {
     await db

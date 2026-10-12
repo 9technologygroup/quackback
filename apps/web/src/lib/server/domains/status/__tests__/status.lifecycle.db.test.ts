@@ -14,6 +14,7 @@ import { testDb } from '@/lib/server/__tests__/db-test-fixture'
 import {
   and,
   eq,
+  events,
   isNull,
   statusComponentEvents,
   statusIncidentComponents,
@@ -31,6 +32,20 @@ const mockProcessEvent = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/server/events/process', () => ({
   processEvent: (...args: unknown[]) => mockProcessEvent(...args),
 }))
+
+// A quiet publication writes its event on the create transaction; this lets a
+// test make that write fail.
+const outbox = vi.hoisted(() => ({ fail: false }))
+vi.mock('@/lib/server/events/outbox-dispatch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/server/events/outbox-dispatch')>()
+  return {
+    ...actual,
+    writeEventToOutbox: async (...args: Parameters<typeof actual.writeEventToOutbox>) => {
+      if (outbox.fail) throw new Error('outbox unavailable')
+      return actual.writeEventToOutbox(...args)
+    },
+  }
+})
 
 vi.mock('@/lib/server/events/scheduler', () => ({
   scheduleDispatch: vi.fn().mockResolvedValue(undefined),
@@ -74,6 +89,7 @@ describe('status lifecycle (Postgres)', () => {
   beforeEach(async () => {
     expect(fixture.available).toBe(true)
     mockProcessEvent.mockReset().mockResolvedValue(undefined)
+    outbox.fail = false
     await beginTest()
   })
   afterEach(fixture.rollback)
@@ -572,8 +588,13 @@ describe('status lifecycle (Postgres)', () => {
         .returning({ id: statusIncidents.id })
       expect(await reconcileStatusNotifications()).toBe(1)
       expect((await getStatusIncidentById(pending.id)).notifiedAt).not.toBeNull()
+      // Only the row that asked for the email is announced to subscribers; the
+      // quiet one's event is flagged so the fan-out sends it no email.
       const published = mockProcessEvent.mock.calls.filter(
-        ([event]) => (event as { type: string }).type === 'status.incident_created'
+        ([event]) =>
+          (event as { type: string }).type === 'status.incident_created' &&
+          (event as { data: { incident: { notifySubscribers?: boolean } } }).data.incident
+            .notifySubscribers !== false
       )
       expect(published).toHaveLength(1)
 
@@ -593,6 +614,57 @@ describe('status lifecycle (Postgres)', () => {
       expect(releasedSweep).toEqual([])
     })
 
+    it('still sends the creation event, once, flagged as not emailed', async () => {
+      const api = await service('API')
+      const quiet = await openIncident([{ componentId: api, componentStatus: 'major_outage' }])
+      const window = await scheduleWindow(new Date(Date.now() + HOUR), null)
+
+      const actor = { type: 'service' as const, displayName: 'test' }
+      expect(await notifyStatusIncidentPublished(quiet.id, actor)).toBe(false)
+      expect(await reconcileStatusNotifications()).toBe(0)
+
+      // Nothing goes through the after-commit path; the events are in the
+      // outbox, written with the rows themselves.
+      expect(mockProcessEvent).not.toHaveBeenCalled()
+      const sent = async (type: string, entityId: string) =>
+        (
+          await testDb
+            .select({ payload: events.payload })
+            .from(events)
+            .where(and(eq(events.type, type), eq(events.entityId, entityId)))
+        ).map((row) => (row.payload as { incident: Record<string, unknown> }).incident)
+      const created = await sent('status.incident_created', quiet.id)
+      expect(created).toHaveLength(1)
+      expect(created[0]).toMatchObject({ id: quiet.id, notifySubscribers: false })
+      const scheduled = await sent('status.maintenance_scheduled', window.id)
+      expect(scheduled).toHaveLength(1)
+      expect(scheduled[0]).toMatchObject({ id: window.id, notifySubscribers: false })
+    })
+
+    it('creates nothing when its creation event cannot be written', async () => {
+      const api = await service('API')
+      outbox.fail = true
+      await expect(
+        createIncident(
+          {
+            kind: 'incident',
+            title: 'Quiet and unrecorded',
+            status: 'investigating',
+            body: 'Looking into it.',
+            affectedComponents: [{ componentId: api, componentStatus: 'major_outage' }],
+            notifySubscribers: false,
+          },
+          { principalId: author }
+        )
+      ).rejects.toThrow('outbox unavailable')
+      const rows = await testDb
+        .select({ id: statusIncidents.id })
+        .from(statusIncidents)
+        .where(eq(statusIncidents.title, 'Quiet and unrecorded'))
+      expect(rows).toEqual([])
+      expect(await statusOf(api)).toBe('operational')
+    })
+
     it('the sweep leaves a row just published to its own claim', async () => {
       // An older version publishing with the box unchecked inserts the row
       // (notify_subscribers defaulting to true) and stamps notified_at a
@@ -608,6 +680,64 @@ describe('status lifecycle (Postgres)', () => {
       expect(await reconcileStatusNotifications()).toBe(1)
       expect((await getStatusIncidentById(justNow.id)).notifiedAt).toBeNull()
       expect((await getStatusIncidentById(lost.id)).notifiedAt).not.toBeNull()
+    })
+  })
+
+  describe('maintenance transition events', () => {
+    const sent = (type: string) =>
+      mockProcessEvent.mock.calls.filter(([event]) => (event as { type: string }).type === type)
+
+    it('a manual start sends the started event once, and the scheduler adds none', async () => {
+      const window = await scheduleWindow(new Date(Date.now() - HOUR), new Date(Date.now() + HOUR))
+      await postIncidentUpdate(
+        window.id,
+        { status: 'in_progress', body: 'Starting.' },
+        { principalId: author }
+      )
+      await handleMaintenanceStart(window.id)
+      expect(sent('status.maintenance_started')).toHaveLength(1)
+      expect(sent('status.maintenance_completed')).toHaveLength(0)
+    })
+
+    it('a manual completion sends the completed event once, and the scheduler adds none', async () => {
+      const window = await scheduleWindow(
+        new Date(Date.now() - 2 * HOUR),
+        new Date(Date.now() - HOUR)
+      )
+      await postIncidentUpdate(
+        window.id,
+        { status: 'completed', body: 'Done.' },
+        { principalId: author }
+      )
+      await handleMaintenanceComplete(window.id)
+      expect(sent('status.maintenance_completed')).toHaveLength(1)
+      expect(sent('status.maintenance_started')).toHaveLength(0)
+    })
+
+    it('the scheduler completing first leaves a later manual completion silent', async () => {
+      const window = await scheduleWindow(
+        new Date(Date.now() - 2 * HOUR),
+        new Date(Date.now() - HOUR)
+      )
+      await handleMaintenanceComplete(window.id)
+      await postIncidentUpdate(
+        window.id,
+        { status: 'completed', body: 'Done.' },
+        { principalId: author }
+      )
+      expect(sent('status.maintenance_completed')).toHaveLength(1)
+    })
+
+    it('an incident resolved by an update sends no maintenance event', async () => {
+      const api = await service('API')
+      const incident = await openIncident([{ componentId: api, componentStatus: 'major_outage' }])
+      await postIncidentUpdate(
+        incident.id,
+        { status: 'resolved', body: 'Fixed.' },
+        { principalId: author }
+      )
+      expect(sent('status.maintenance_completed')).toHaveLength(0)
+      expect(sent('status.maintenance_started')).toHaveLength(0)
     })
   })
 

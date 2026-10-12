@@ -28,9 +28,9 @@ describe('webhook resolver (WO-8a)', () => {
   it('interestedIn is catalogue-derived (exposure.webhook)', () => {
     expect(webhookResolver.interestedIn('post.created')).toBe(true)
     expect(webhookResolver.interestedIn('post.voted')).toBe(true)
-    // post.mentioned + status.* are not webhook-exposed
-    expect(webhookResolver.interestedIn('post.mentioned')).toBe(false)
-    expect(webhookResolver.interestedIn('status.component_changed')).toBe(false)
+    expect(webhookResolver.interestedIn('post.mentioned')).toBe(true)
+    expect(webhookResolver.interestedIn('status.component_changed')).toBe(true)
+    expect(webhookResolver.interestedIn('not.an_event')).toBe(false)
   })
 
   it('boardIdsFromEvent digs the board from post + merge payloads', () => {

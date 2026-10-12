@@ -191,6 +191,15 @@ describe.skipIf(!fixture.available)('status incident emails (execution-level)', 
   afterEach(fixture.rollback)
   afterAll(fixture.close)
 
+  it('sends no subscriber email or bell for a publication made without emailing subscribers', async () => {
+    const created = incidentCreated as unknown as { data: { incident: object } }
+    const quiet = {
+      ...created,
+      data: { incident: { ...created.data.incident, notifySubscribers: false } },
+    } as unknown as EventData
+    expect(await getStatusSubscriberTargets(quiet, context)).toEqual([])
+  })
+
   it('lists each component with the status the incident set on it, as far as the recipient can see', async () => {
     const targets = await getStatusSubscriberTargets(incidentCreated, context)
     expect(emailedComponents(targets)).toEqual({

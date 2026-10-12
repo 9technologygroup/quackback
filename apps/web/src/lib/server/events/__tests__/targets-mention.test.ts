@@ -202,6 +202,18 @@ describe('post.mentioned target resolution', () => {
     ])
   })
 
+  it('notifies nobody when the principal mentioned themselves', async () => {
+    setupMentionDbChain([
+      { id: 'principal_actor', type: 'user', role: 'user', email: 'self@example.com' },
+    ])
+    const event = makePostMentionedEvent()
+    event.data.mentionedPrincipalId = 'principal_actor'
+
+    const targets = await getHookTargets(event)
+
+    expect(targets.filter((t) => t.type === 'notification' || t.type === 'email')).toEqual([])
+  })
+
   it('drops the email target when the principal has emailMuted=true', async () => {
     setupMentionDbChain([
       {

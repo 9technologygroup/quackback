@@ -102,6 +102,7 @@ export async function announcePublishedPost(
         postId: post.id,
         postTitle: post.title,
         postUrl: buildPostUrl(getBaseUrl(), board.slug, post.id),
+        boardId: post.boardId,
         mentionedIds,
         excerptByPrincipalId: extractMentionExcerpts(post.contentJson),
         actor: buildEventActor(author),

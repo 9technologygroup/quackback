@@ -218,7 +218,7 @@ describe('post.service updatePost', () => {
     )
   })
 
-  it('does not notify a teammate who assigns a post to themselves', async () => {
+  it('emits the owner event when a teammate assigns a post to themselves', async () => {
     mockPostsFindFirst.mockResolvedValueOnce({
       id: 'post_123' as PostId,
       title: 'Original title',
@@ -251,7 +251,11 @@ describe('post.service updatePost', () => {
     )
 
     expect(createActivity).toHaveBeenCalledWith(expect.objectContaining({ type: 'owner.assigned' }))
-    expect(dispatchPostOwnerAssigned).not.toHaveBeenCalled()
+    expect(dispatchPostOwnerAssigned).toHaveBeenCalledTimes(1)
+    expect(dispatchPostOwnerAssigned).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ownerPrincipalId: 'principal_actor' })
+    )
   })
 
   it('writes the eta when set', async () => {

@@ -63,6 +63,16 @@ export const WEBHOOK_EVENT_CONFIG = [
     description: 'When a user votes on a post',
   },
   {
+    id: 'post.mentioned',
+    label: 'Post Mention',
+    description: 'When a post @-mentions a teammate or user',
+  },
+  {
+    id: 'post.owner_assigned',
+    label: 'Post Owner Assigned',
+    description: 'When a post is assigned to a new owner',
+  },
+  {
     id: 'comment.created',
     label: 'New Comment',
     description: 'When a comment is posted',
@@ -81,6 +91,36 @@ export const WEBHOOK_EVENT_CONFIG = [
     id: 'changelog.published',
     label: 'Changelog Published',
     description: 'When a changelog entry is published',
+  },
+  {
+    id: 'status.incident_created',
+    label: 'Incident Created',
+    description: 'When an incident is published on the status page',
+  },
+  {
+    id: 'status.incident_updated',
+    label: 'Incident Updated',
+    description: 'When an update is posted to a status page incident',
+  },
+  {
+    id: 'status.maintenance_scheduled',
+    label: 'Maintenance Scheduled',
+    description: 'When a maintenance window is scheduled on the status page',
+  },
+  {
+    id: 'status.maintenance_started',
+    label: 'Maintenance Started',
+    description: 'When a scheduled maintenance window begins',
+  },
+  {
+    id: 'status.maintenance_completed',
+    label: 'Maintenance Completed',
+    description: 'When a maintenance window ends',
+  },
+  {
+    id: 'status.component_changed',
+    label: 'Component Status Changed',
+    description: 'When a status page component changes status',
   },
   {
     id: 'conversation.created',

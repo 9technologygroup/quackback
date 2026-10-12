@@ -190,6 +190,7 @@ export interface PostMentionedInput {
   postId: PostId
   postTitle: string
   postUrl: string
+  boardId?: BoardId
   mentionedPrincipalId: PrincipalId
   mentioningPrincipalId: PrincipalId
   excerpt: string
@@ -206,6 +207,7 @@ export async function dispatchPostMentioned(
       postId: input.postId,
       postTitle: input.postTitle,
       postUrl: input.postUrl,
+      ...(input.boardId ? { boardId: input.boardId } : {}),
       mentionedPrincipalId: input.mentionedPrincipalId,
       mentioningPrincipalId: input.mentioningPrincipalId,
       excerpt: input.excerpt,
@@ -218,6 +220,7 @@ export interface PostOwnerAssignedInput {
   postTitle: string
   boardSlug: string
   postUrl: string
+  boardId?: BoardId
   ownerPrincipalId: PrincipalId
   previousOwnerPrincipalId: PrincipalId | null
 }
@@ -234,6 +237,7 @@ export async function dispatchPostOwnerAssigned(
       postTitle: input.postTitle,
       boardSlug: input.boardSlug,
       postUrl: input.postUrl,
+      ...(input.boardId ? { boardId: input.boardId } : {}),
       ownerPrincipalId: input.ownerPrincipalId,
       previousOwnerPrincipalId: input.previousOwnerPrincipalId,
     },
