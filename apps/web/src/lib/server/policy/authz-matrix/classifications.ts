@@ -458,6 +458,18 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
     ],
     'field-scoped post PATCH — assertApiPermissions authorizes per changed field'
   ),
+  // Approval reads: a key with read:settings reads the requests it filed, and
+  // the requests its creator could decide with the key's own authority (the
+  // creator's current permissions, the key's role, and its scopes), per row.
+  // Read-only: nothing on the API decides a request.
+  'routes/api/v1/approvals/index.ts::GET': DYNAMIC_PERMISSION(
+    APPROVAL_PERMISSIONS,
+    'lists the requests the key filed and those its creator could decide with the key authority'
+  ),
+  'routes/api/v1/approvals/$approvalId.ts::GET': DYNAMIC_PERMISSION(
+    APPROVAL_PERMISSIONS,
+    'the key filed the request, or its creator could decide it with the key authority; else 404'
+  ),
 
   // Bulk inbox action: the permission depends on the action (assign vs tag vs
   // status), so the gate is bare and the per-action permission is asserted at

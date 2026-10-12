@@ -309,6 +309,9 @@ export const UNTRUSTED_TOOL_FIELDS = {
   get_settings: NONE,
   propose_settings_change: NONE,
   navigate_workspace: NONE,
+  // A client name is chosen by the client that filed the request.
+  get_approval: ['clientName'],
+  list_approvals: ['approvals[].clientName'],
 } satisfies Record<string, UntrustedSpec>
 
 export type McpToolName = keyof typeof UNTRUSTED_TOOL_FIELDS

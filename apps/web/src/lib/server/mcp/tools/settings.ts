@@ -11,6 +11,7 @@ import { RETRIEVED_CONTENT_NOTE } from '@/lib/server/domains/assistant/injection
 import { getSettingsForActor } from '@/lib/server/domains/assistant/settings-proposals.service'
 import { AREAS } from '@/lib/server/domains/assistant/settings-proposals.areas'
 import { enqueueWorkspaceSettingsProposal } from '@/lib/server/domains/assistant/workspace-settings-actions.service'
+import { approvalUrl } from '@/lib/server/domains/assistant/approvals.follow'
 import { registerTool, jsonResult, READ_ONLY, WRITE } from './helpers'
 
 export function registerSettingsTools(server: McpServer, auth: McpAuthContext) {
@@ -35,7 +36,7 @@ export function registerSettingsTools(server: McpServer, auth: McpAuthContext) {
     permissions: ({ changes }) => [
       ...new Set(changes.map((change) => AREAS[change.area].permission)),
     ],
-    description: `Propose reversible settings changes in one card. This tool never applies settings. A person selects changes and clicks Apply. Only the declared areas and fields are allowed. Branding website input fetches and rehosts a logo plus a safe color, combined with the other requested changes. Use at most one website; never provide a logo key or invent website colors. When website_color_unavailable is returned, describe only the logo and other proposed fields. Workspace name changes use portal displayName. When portal readOnly is true, use navigate_workspace with destination general instead. Header layout and navigation use navigate_workspace with destination portal. Billing, authentication, domains, members, API keys, deletes, OAuth, snippet installation, and creating a board use navigate_workspace instead.
+    description: `Propose reversible settings changes in one card. This tool never applies settings. A person selects changes and clicks Apply. The result carries approvalId and the url where a person decides; follow it with get_approval. Only the declared areas and fields are allowed. Branding website input fetches and rehosts a logo plus a safe color, combined with the other requested changes. Use at most one website; never provide a logo key or invent website colors. When website_color_unavailable is returned, describe only the logo and other proposed fields. Workspace name changes use portal displayName. When portal readOnly is true, use navigate_workspace with destination general instead. Header layout and navigation use navigate_workspace with destination portal. Billing, authentication, domains, members, API keys, deletes, OAuth, snippet installation, and creating a board use navigate_workspace instead.
 Examples:
 {"changes":[{"area":"branding","patch":{"light":{"primary":"#0F766E"}}},{"area":"messenger","patch":{"enabled":true}}]}
 {"changes":[{"area":"portal","patch":{"displayName":"Acme"}}]}
@@ -65,7 +66,12 @@ Examples:
       )
       return jsonResult({
         proposed: true,
+        approvalId: action.id,
+        // The same id, under the name earlier clients read.
         pendingActionId: action.id,
+        status: 'pending',
+        url: approvalUrl(action.id),
+        next: 'Nothing changes until a person approves this in the app, at url. Check its progress with get_approval.',
         proposal: action.args,
         ...(action.preparationNotes ? { preparationNotes: action.preparationNotes } : {}),
         ...(action.reviewHref ? { reviewHref: action.reviewHref } : {}),

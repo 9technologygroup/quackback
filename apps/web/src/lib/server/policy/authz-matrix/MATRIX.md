@@ -855,7 +855,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `lib/server/functions/workspace-copilot.ts`::undoWorkspaceSettingsProposalFn | DYNAMIC (copilot.use | settings.manage | settings.branding | office_hours.manage | changelog.manage) |
 | `lib/server/functions/workspace-wipe.ts`::wipeCloudWorkspaceFn | END_USER (any authenticated) |
 
-### Public REST API (`withApiKeyAuth`) — 127 surfaces
+### Public REST API (`withApiKeyAuth`) — 129 surfaces
 
 | Surface | Enforces |
 | --- | --- |
@@ -864,6 +864,8 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | `routes/api/export.companies.ts`::GET | company.view |
 | `routes/api/export.ts`::GET | post.export |
 | `routes/api/export.users.ts`::handleExportUsers | people.view |
+| `routes/api/v1/approvals/$approvalId.ts`::GET | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | assistant.manage) |
+| `routes/api/v1/approvals/index.ts`::GET | DYNAMIC (conversation.view | ticket.view | settings.manage | settings.branding | office_hours.manage | changelog.manage | conversation.set_attributes | conversation.set_status | conversation.reply | ticket.create | post.create | post.vote_on_behalf | assistant.manage) |
 | `routes/api/v1/apps/boards.ts`::GET | PUBLIC (any valid key) |
 | `routes/api/v1/apps/link.ts`::POST | post.vote_on_behalf |
 | `routes/api/v1/apps/linked.ts`::GET | integration.view |
@@ -1008,7 +1010,7 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 
 ## 3. MCP tools
 
-43 tools. "Team" = requires an admin/member role in addition to the scope.
+45 tools. "Team" = requires an admin/member role in addition to the scope.
 
 | Tool | Scope(s) | Team |
 | --- | --- | :---: |
@@ -1024,12 +1026,14 @@ Profiles: **Owner** = admin class + an admin-owned full API key (scoped keys hol
 | delete_comment | write:feedback | · |
 | delete_post | write:feedback | ✓ |
 | dismiss_suggestion | write:feedback | ✓ |
+| get_approval | read:settings | ✓ |
 | get_conversation | read:chat | ✓ |
 | get_details | read:article, read:feedback | ✓ |
 | get_post_activity | read:feedback | ✓ |
 | get_settings | read:settings | ✓ |
 | get_ticket | read:chat | ✓ |
 | link_ticket | write:chat | ✓ |
+| list_approvals | read:settings | ✓ |
 | list_conversations | read:chat | ✓ |
 | list_tickets | read:chat | ✓ |
 | manage_category | write:article | ✓ |
@@ -1068,7 +1072,7 @@ Key scopes are enforced: an API key holds exactly its stored scopes (owner permi
 
 ## 4. Entry points without a requireAuth/key gate
 
-227 of 1089 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
+227 of 1091 entry points hold no `requireAuth` / `withApiKeyAuth` / `requireTeamAuth` gate.
 Each is expected to be intentionally public, a pre-auth flow, a signature-verified webhook, or a handler that delegates auth (e.g. the MCP route).
 **Adding a row here is an access-control change** — confirm the new entry point is meant to be reachable without a gate.
 

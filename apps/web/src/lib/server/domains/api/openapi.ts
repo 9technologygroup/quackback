@@ -153,6 +153,11 @@ Example: \`post_01h455vb4pex5vsknk084sn02q\`
         name: 'Status',
         description: 'Manage the status page: components, incidents, and maintenance',
       },
+      {
+        name: 'Approvals',
+        description:
+          'Follow requests for a person to approve a change. People decide them in the app.',
+      },
     ],
     paths: registeredPaths,
     components: {

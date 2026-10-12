@@ -173,6 +173,7 @@ const NOT_FOUND_RESOURCES: Record<string, string> = {
   STATUS_GROUP_NOT_FOUND: 'Status component group',
   STATUS_INCIDENT_NOT_FOUND: 'Status incident',
   STATUS_TEMPLATE_NOT_FOUND: 'Status incident template',
+  APPROVAL_NOT_FOUND: 'Approval',
 }
 
 /**

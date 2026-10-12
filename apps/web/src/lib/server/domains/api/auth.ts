@@ -21,7 +21,11 @@ import {
 import { UnauthorizedError, ForbiddenError, RateLimitError } from '@/lib/shared/errors'
 import type { PrincipalId } from '@quackback/ids'
 import { isAdmin, type Role } from '@/lib/shared/roles'
-import { hasApiScope, scopeForPermission } from '@/lib/server/domains/api-keys/api-key-scopes'
+import {
+  hasApiScope,
+  scopeForPermission,
+  type ApiKeyScope,
+} from '@/lib/server/domains/api-keys/api-key-scopes'
 import type { PermissionKey } from '@/lib/shared/permissions'
 import {
   apiKeyAttribution,
@@ -219,6 +223,17 @@ export function assertApiPermissions(
       throw new ForbiddenError('FORBIDDEN', `Requires the '${permission}' permission`)
     }
     assertKeyScopeFor(auth, permission)
+  }
+}
+
+/**
+ * Assert a key holds a scope, for a read whose rows are authorized one by one
+ * rather than by a single permission. Legacy keys (NULL scopes) hold every
+ * scope.
+ */
+export function assertApiScope(auth: ApiAuthContext, scope: ApiKeyScope): void {
+  if (!hasApiScope(auth.apiKey.scopes, scope)) {
+    throw new ForbiddenError('FORBIDDEN', `This API key is missing the '${scope}' scope`)
   }
 }
 

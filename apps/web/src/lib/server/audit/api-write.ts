@@ -44,6 +44,7 @@ export const API_ROUTE_SEGMENTS: ReadonlySet<string> = new Set([
   'activity',
   'admin',
   'api',
+  'approvals',
   'approve',
   'apps',
   'articles',

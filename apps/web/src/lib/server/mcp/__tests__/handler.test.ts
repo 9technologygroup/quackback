@@ -737,7 +737,9 @@ describe('MCP HTTP Handler', () => {
       expect(toolNames).toContain('get_settings')
       expect(toolNames).toContain('propose_settings_change')
       expect(toolNames).toContain('navigate_workspace')
-      expect(toolNames).toHaveLength(43)
+      expect(toolNames).toContain('get_approval')
+      expect(toolNames).toContain('list_approvals')
+      expect(toolNames).toHaveLength(45)
     })
 
     it('should handle resources/list request', async () => {
