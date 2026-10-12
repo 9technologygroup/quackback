@@ -55,7 +55,7 @@ const deleteCommentSchema = {
 const reactToCommentSchema = {
   action: z.enum(['add', 'remove']).describe('Whether to add or remove the reaction'),
   commentId: z.string().describe('Comment TypeID to react to'),
-  emoji: z.string().max(32).describe('Emoji to react with (e.g., "👍", "❤️", "🎉")'),
+  emoji: z.string().max(32).describe('One emoji to react with (e.g., "👍", "❤️", "🎉")'),
 }
 
 // ============================================================================

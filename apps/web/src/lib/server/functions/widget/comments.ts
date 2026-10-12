@@ -1,5 +1,9 @@
 import { createServerFn } from '@tanstack/react-start'
-import { createCommentSchema, reactionSchema } from '@/lib/shared/schemas/comments'
+import {
+  addReactionSchema,
+  createCommentSchema,
+  reactionSchema,
+} from '@/lib/shared/schemas/comments'
 
 export const widgetCreateCommentFn = createServerFn({ method: 'POST' })
   .validator(createCommentSchema)
@@ -10,7 +14,7 @@ export const widgetCreateCommentFn = createServerFn({ method: 'POST' })
   })
 
 export const widgetAddReactionFn = createServerFn({ method: 'POST' })
-  .validator(reactionSchema)
+  .validator(addReactionSchema)
   .handler(async ({ data }) => {
     const { requireWidgetAuth } = await import('../widget-auth')
     const { runAddReaction } = await import('../comments')

@@ -29,6 +29,7 @@ import { NotFoundError } from '@/lib/shared/errors'
 import { getOptionalAuth, requireAuth, hasAuthCredentials } from './auth-helpers'
 import {
   createCommentSchema,
+  addReactionSchema,
   reactionSchema,
   type CreateCommentInput,
   type ReactionInput,
@@ -144,7 +145,7 @@ export const runAddReaction = createServerOnlyFn(async function runAddReaction(
 })
 
 export const addReactionFn = createServerFn({ method: 'POST' })
-  .validator(reactionSchema)
+  .validator(addReactionSchema)
   .handler(async ({ data }) => {
     const { resolvePortalAccessForRequest } = await import('./portal-access')
     const access = await resolvePortalAccessForRequest()

@@ -12,6 +12,8 @@ import { assertCommentViewable } from '@/lib/server/domains/posts/post.access'
 import type { CommentReactionCount, ReactionResult } from './comment.types'
 import { logger } from '@/lib/server/logger'
 import { notTestPrincipal } from '@/lib/server/test-data'
+import { ValidationError } from '@/lib/shared/errors'
+import { isReactionEmoji, REACTION_EMOJI_MESSAGE } from '@/lib/shared/reaction-emoji'
 
 const log = logger.child({ component: 'comment-reactions' })
 
@@ -55,6 +57,9 @@ export async function addReaction(
   principalId: PrincipalId,
   actor: Actor
 ): Promise<ReactionResult> {
+  // Every surface adds reactions through here, so this is where free text is
+  // turned away. Removal accepts any stored value, so older rows can go.
+  if (!isReactionEmoji(emoji)) throw new ValidationError('VALIDATION_ERROR', REACTION_EMOJI_MESSAGE)
   log.info({ comment_id: commentId, emoji }, 'add reaction')
   // Single chokepoint for comment access: audience + moderation +
   // isPrivate + isNull(deletedAt) on comment/post/board. Previously this
