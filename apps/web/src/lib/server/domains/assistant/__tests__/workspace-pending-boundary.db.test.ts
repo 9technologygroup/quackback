@@ -93,18 +93,22 @@ it('checks actual workspace ownership on get, reject and approve', async () => {
     getAssistantPendingActionFn({ data: { pendingActionId: row.id } })
   ).rejects.toMatchObject({ code: 'WORKSPACE_THREAD_NOT_FOUND' })
   await expect(
-    rejectAssistantActionFn({ data: { pendingActionId: row.id } })
+    rejectAssistantActionFn({ data: { pendingActionId: row.id, contentHash: row.argsDigest! } })
   ).rejects.toMatchObject({ code: 'WORKSPACE_THREAD_NOT_FOUND' })
   await expect(
-    approveAssistantActionFn({ data: { pendingActionId: row.id } })
+    approveAssistantActionFn({ data: { pendingActionId: row.id, contentHash: row.argsDigest! } })
   ).rejects.toMatchObject({ code: 'WORKSPACE_THREAD_NOT_FOUND' })
   authState.actor = owner
   await expect(
-    approveAssistantActionFn({ data: { pendingActionId: row.id } })
+    approveAssistantActionFn({ data: { pendingActionId: row.id, contentHash: row.argsDigest! } })
   ).rejects.toMatchObject({ code: 'ASSISTANT_ACTION_POLICY_CHANGED' })
-  expect((await rejectAssistantActionFn({ data: { pendingActionId: row.id } })).status).toBe(
-    'rejected'
-  )
+  expect(
+    (
+      await rejectAssistantActionFn({
+        data: { pendingActionId: row.id, contentHash: row.argsDigest! },
+      })
+    ).status
+  ).toBe('rejected')
   expect(
     (
       await testDb
@@ -123,7 +127,9 @@ it('rejects integration keys from every web decision endpoint', async () => {
     originRole: 'workspace_assistant',
   })
   for (const fn of [getAssistantPendingActionFn, rejectAssistantActionFn, approveAssistantActionFn])
-    await expect(fn({ data: { pendingActionId: row.id } })).rejects.toMatchObject({
+    await expect(
+      fn({ data: { pendingActionId: row.id, contentHash: row.argsDigest! } })
+    ).rejects.toMatchObject({
       code: 'PENDING_ACTION_NOT_FOUND',
     })
   expect(

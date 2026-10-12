@@ -73,7 +73,7 @@ afterAll(() => fixture.close())
 const read = async () =>
   (await testDb.select().from(settings).where(eq(settings.id, settingsId)))[0]
 describe('atomic workspace settings cards', () => {
-  it('merges same-turn proposals in one owned card, then selected Apply and Undo commit with audit', async () => {
+  it('combines same-turn proposals in one owned card, then selected Apply and Undo commit with audit', async () => {
     const first = await enqueueWorkspaceSettingsProposal(
       owner,
       [{ area: 'portal', patch: { displayName: 'Acme team' } }],
@@ -86,10 +86,13 @@ describe('atomic workspace settings cards', () => {
       threadKey,
       'turn-one'
     )
-    expect(first.id).toBe(second.id)
+    // A pending card is never edited: the combined one replaces it.
+    expect(second.supersededId).toBe(first.id)
     expect(second.args.changes as unknown[]).toHaveLength(2)
     expect((await read()).name).toBe('Acme')
-    const applied = await applyWorkspaceSettingsProposal(owner, second.id, ['portal.displayName'])
+    const applied = await applyWorkspaceSettingsProposal(owner, second.id, ['portal.displayName'], {
+      contentHash: second.argsDigest!,
+    })
     expect(applied.status).toBe('executed')
     expect((await read()).name).toBe('Acme team')
     expect(JSON.parse((await read()).featureFlags!).supportInbox).not.toBe(true)
@@ -111,7 +114,7 @@ describe('atomic workspace settings cards', () => {
       code: 'SETTINGS_UNDO_UNAVAILABLE',
     })
   })
-  it('rejects foreign Apply, Undo and proposal parents', async () => {
+  it('keeps proposal parents owned while any qualified person may decide', async () => {
     const pending = await enqueueWorkspaceSettingsProposal(
       owner,
       [{ area: 'portal', patch: { displayName: 'Acme team' } }],
@@ -119,20 +122,22 @@ describe('atomic workspace settings cards', () => {
       'turn-one'
     )
     await expect(
-      applyWorkspaceSettingsProposal(foreign, pending.id, ['portal.displayName'])
-    ).rejects.toMatchObject({ code: 'WORKSPACE_THREAD_NOT_FOUND' })
-    await expect(
       enqueueWorkspaceSettingsProposal(
         foreign,
         [{ area: 'portal', patch: { displayName: 'Other' } }],
         threadKey
       )
     ).rejects.toMatchObject({ code: 'WORKSPACE_THREAD_NOT_FOUND' })
-    await applyWorkspaceSettingsProposal(owner, pending.id, ['portal.displayName'])
-    await expect(undoWorkspaceSettingsProposal(foreign, pending.id)).rejects.toMatchObject({
-      code: 'WORKSPACE_THREAD_NOT_FOUND',
-    })
+    const applied = await applyWorkspaceSettingsProposal(
+      foreign,
+      pending.id,
+      ['portal.displayName'],
+      { contentHash: pending.argsDigest! }
+    )
+    expect(applied).toMatchObject({ status: 'executed', decidedById: foreign.principalId })
     expect((await read()).name).toBe('Acme team')
+    await undoWorkspaceSettingsProposal(owner, pending.id)
+    expect((await read()).name).toBe('Acme')
   })
   it('rolls back every area, status and audit when a selected write fails', async () => {
     const pending = await enqueueWorkspaceSettingsProposal(
@@ -146,7 +151,9 @@ describe('atomic workspace settings cards', () => {
     )
     managed.add('workspace.name')
     const ids = (pending.args.changes as { id: string }[]).map((change) => change.id)
-    await expect(applyWorkspaceSettingsProposal(owner, pending.id, ids)).rejects.toThrow('Managed')
+    await expect(
+      applyWorkspaceSettingsProposal(owner, pending.id, ids, { contentHash: pending.argsDigest! })
+    ).rejects.toThrow('Managed')
     expect((await read()).name).toBe('Acme')
     expect((await read()).widgetConfig).toBe('{}')
     const [row] = await testDb
@@ -165,7 +172,9 @@ describe('atomic workspace settings cards', () => {
       threadKey,
       'turn-one'
     )
-    await applyWorkspaceSettingsProposal(owner, pending.id, ['portal.displayName'])
+    await applyWorkspaceSettingsProposal(owner, pending.id, ['portal.displayName'], {
+      contentHash: pending.argsDigest!,
+    })
     await testDb.update(settings).set({ name: 'Later name' }).where(eq(settings.id, settingsId))
     await expect(undoWorkspaceSettingsProposal(owner, pending.id)).rejects.toThrow(/changed/i)
     expect((await read()).name).toBe('Later name')
@@ -227,7 +236,9 @@ it('runs real SDK settings tools through the proposal pipeline without a write b
     expect((await read()).brandingConfig).toBe('{}')
     expect((await read()).widgetConfig).toBe('{}')
     const selected = (pending.args.changes as { id: string }[]).map((change) => change.id)
-    await applyWorkspaceSettingsProposal(owner, pending.id, selected)
+    await applyWorkspaceSettingsProposal(owner, pending.id, selected, {
+      contentHash: pending.argsDigest!,
+    })
     expect(JSON.parse((await read()).brandingConfig!).light.primary).toBe('#0F766E')
     expect(JSON.parse((await read()).widgetConfig!).messenger.enabled).toBe(true)
     await undoWorkspaceSettingsProposal(owner, pending.id)

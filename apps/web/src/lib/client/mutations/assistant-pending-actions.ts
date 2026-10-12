@@ -18,7 +18,9 @@ import { conversationKeys } from '@/lib/client/queries/conversation-keys'
 function useDecideAssistantAction(decide: typeof approveAssistantActionFn) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (vars: { pendingActionId: AssistantPendingActionId }) => decide({ data: vars }),
+    // contentHash: the digest of the request the card showed; the decision binds to it.
+    mutationFn: (vars: { pendingActionId: AssistantPendingActionId; contentHash: string }) =>
+      decide({ data: vars }),
     onSuccess: (settled, vars) => {
       queryClient.setQueryData(assistantPendingActionKeys.detail(vars.pendingActionId), settled)
       void queryClient.invalidateQueries({

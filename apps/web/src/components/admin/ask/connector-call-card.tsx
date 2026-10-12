@@ -29,7 +29,8 @@ export function ConnectorCallCard({
   const decide = useMutation({
     mutationFn: (decision: 'allow' | 'skip') =>
       (decision === 'allow' ? approveAssistantActionFn : rejectAssistantActionFn)({
-        data: { pendingActionId: action.id },
+        // The decision names the request this card shows.
+        data: { pendingActionId: action.id, contentHash: detail.data?.argsDigest ?? '' },
       }),
     onSuccess: (row, decision) => {
       setFailed(false)
@@ -84,7 +85,7 @@ export function ConnectorCallCard({
             type="button"
             variant="ghost"
             size="sm"
-            disabled={decide.isPending}
+            disabled={decide.isPending || !detail.data}
             className="focus-visible:ring-muted-foreground"
             onClick={() => decide.mutate('skip')}
           >
@@ -93,7 +94,7 @@ export function ConnectorCallCard({
           <Button
             type="button"
             size="sm"
-            disabled={decide.isPending}
+            disabled={decide.isPending || !detail.data}
             className="focus-visible:ring-muted-foreground"
             onClick={() => decide.mutate('allow')}
           >

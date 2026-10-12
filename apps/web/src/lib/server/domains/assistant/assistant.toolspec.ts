@@ -117,6 +117,8 @@ export interface AssistantProposedAction {
   label: string
   connector?: { name: string; initials: string }
   argsPreview?: Record<string, string>
+  /** The digest of the request as filed, which a decision on it must name. */
+  contentHash?: string
 }
 
 export interface AssistantToolOutcome {

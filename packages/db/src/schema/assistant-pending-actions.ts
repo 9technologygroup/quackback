@@ -46,6 +46,16 @@ import { conversations } from './conversation'
 import { tickets } from './tickets'
 import { assistantInvolvements } from './assistant'
 import { principal } from './auth'
+import {
+  APPROVAL_RISKS,
+  APPROVAL_REQUEST_CHANNELS,
+  APPROVAL_DECISION_CHANNELS,
+  APPROVAL_EXECUTION_STATES,
+  type ApprovalRisk,
+  type ApprovalRequestChannel,
+  type ApprovalDecisionChannel,
+  type ApprovalExecutionState,
+} from '../types'
 
 export const ASSISTANT_PENDING_ACTION_STATUSES = [
   'proposed',
@@ -63,6 +73,17 @@ export const ASSISTANT_PENDING_ACTION_ORIGIN_ROLES = [
   'copilot_qa',
   'workspace_assistant',
 ] as const
+
+export {
+  APPROVAL_RISKS,
+  APPROVAL_REQUEST_CHANNELS,
+  APPROVAL_DECISION_CHANNELS,
+  APPROVAL_EXECUTION_STATES,
+  type ApprovalRisk,
+  type ApprovalRequestChannel,
+  type ApprovalDecisionChannel,
+  type ApprovalExecutionState,
+}
 
 export const assistantPendingActions = pgTable(
   'assistant_pending_actions',
@@ -101,6 +122,32 @@ export const assistantPendingActions = pgTable(
     executedAt: timestamp('executed_at', { withTimezone: true }),
     result: jsonb('result').$type<Record<string, unknown> | null>(),
     idempotencyKey: text('idempotency_key'),
+    // The principal that filed the request (an API key's service principal,
+    // the AI assistant, or a person asking in the app). Never the decider.
+    requestedById: typeIdColumnNullable('principal')('requested_by_id').references(
+      () => principal.id,
+      { onDelete: 'set null' }
+    ),
+    // The person whose authority the request borrows. FK declared below with
+    // a short name: the generated one overflows Postgres's identifier limit.
+    onBehalfOfPrincipalId: typeIdColumnNullable('principal')('on_behalf_of_principal_id'),
+    requestedVia: text('requested_via', { enum: APPROVAL_REQUEST_CHANNELS }),
+    // The credential that filed it (an API key id or an OAuth client id). A
+    // decision can never arrive through it.
+    credentialId: text('credential_id'),
+    clientName: text('client_name'),
+    risk: text('risk', { enum: APPROVAL_RISKS }),
+    // The digest of the exact operation proposed; a decision binds to it.
+    argsDigest: text('args_digest'),
+    contractDigest: text('contract_digest'),
+    decidedVia: text('decided_via', { enum: APPROVAL_DECISION_CHANNELS }),
+    decisionReason: text('decision_reason'),
+    executionState: text('execution_state', { enum: APPROVAL_EXECUTION_STATES }),
+    executionJobId: text('execution_job_id'),
+    executionError: text('execution_error'),
+    // Why a request stopped being decidable without a decision, such as
+    // `superseded:merged`.
+    disposition: text('disposition'),
   },
   (table) => [
     foreignKey({
@@ -109,6 +156,11 @@ export const assistantPendingActions = pgTable(
       name: 'assistant_pending_actions_involvement_id_assistant_involvements',
       columns: [table.involvementId],
       foreignColumns: [assistantInvolvements.id],
+    }).onDelete('set null'),
+    foreignKey({
+      name: 'assistant_pending_actions_on_behalf_of_fk',
+      columns: [table.onBehalfOfPrincipalId],
+      foreignColumns: [principal.id],
     }).onDelete('set null'),
     // Drives "does this conversation have an outstanding proposal" lookups;
     // partial so only live proposals are indexed. Narrowed to conversation_id
@@ -127,6 +179,17 @@ export const assistantPendingActions = pgTable(
     // FILTER'd counts inside one aggregate) — plain, not partial or
     // composite, since every row (regardless of status) is in scope.
     index('assistant_pending_actions_proposed_at_idx').on(table.proposedAt),
+    // The requests still waiting for a decision, newest first: what the
+    // approvals queue and its count read. NULLS FIRST is Postgres's own
+    // default for DESC, spelled out to match the migration.
+    index('assistant_pending_actions_waiting_idx')
+      .on(table.proposedAt.desc().nullsFirst())
+      .where(sql`${table.status} = 'proposed'`),
+    // The requests already decided, most recent first: what the approvals
+    // queue's Decided tab reads.
+    index('assistant_pending_actions_decided_idx')
+      .on(table.decidedAt.desc().nullsFirst())
+      .where(sql`${table.decidedAt} IS NOT NULL`),
     // See the column comment above for why this is scoped to `status =
     // 'proposed'` rather than the key alone.
     uniqueIndex('assistant_pending_actions_idempotency_key_idx')
@@ -136,10 +199,11 @@ export const assistantPendingActions = pgTable(
       'assistant_pending_actions_status_check',
       sql`${table.status} IN ('proposed','approved','rejected','expired','executed','failed')`
     ),
-    // Exactly one parent: a pending action belongs to a conversation XOR a ticket.
+    // At most one parent: a conversation, a ticket, or a workspace thread. A
+    // request with none (an API caller's) is decided from the approvals queue.
     check(
       'assistant_pending_actions_parent_check',
-      sql`num_nonnulls(${table.conversationId}, ${table.ticketId}, ${table.workspaceThreadKey}) = 1`
+      sql`num_nonnulls(${table.conversationId}, ${table.ticketId}, ${table.workspaceThreadKey}) <= 1`
     ),
   ]
 )

@@ -476,6 +476,14 @@ export {
   // Schema tables - assistant pending actions
   assistantPendingActions,
   ASSISTANT_PENDING_ACTION_STATUSES,
+  APPROVAL_RISKS,
+  APPROVAL_REQUEST_CHANNELS,
+  APPROVAL_DECISION_CHANNELS,
+  APPROVAL_EXECUTION_STATES,
+  type ApprovalRisk,
+  type ApprovalRequestChannel,
+  type ApprovalDecisionChannel,
+  type ApprovalExecutionState,
   // Schema tables - assistant tool-call audit log
   assistantToolCalls,
   ASSISTANT_TOOL_CALL_STATUSES,

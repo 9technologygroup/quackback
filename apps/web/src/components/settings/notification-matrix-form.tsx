@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useIntl } from 'react-intl'
+import { useIntl, type IntlShape } from 'react-intl'
 import { ArrowPathIcon } from '@heroicons/react/24/solid'
 import { Switch } from '@/components/ui/switch'
 import { useMutation } from '@tanstack/react-query'
@@ -24,10 +24,18 @@ import { ONBOARDING_TIPS_KEY } from '@/lib/shared/onboarding-tips'
 
 type Message = { id: string; defaultMessage: string }
 
-const GROUP_LABELS: Record<NotificationGroup, Message> = {
+/** Groups the portal shows are worded in the app's language; an admin-only
+ *  group keeps its English label, like its rows. */
+const GROUP_LABELS: Record<NotificationGroup, Message | string> = {
   feedback: { id: 'portal.settings.notifications.group.feedback', defaultMessage: 'Feedback' },
   support: { id: 'portal.settings.notifications.group.support', defaultMessage: 'Support' },
   changelog: { id: 'portal.settings.notifications.group.changelog', defaultMessage: 'Changelog' },
+  approvals: 'Approvals',
+}
+
+function groupLabel(group: NotificationGroup, intl: IntlShape): string {
+  const label = GROUP_LABELS[group]
+  return typeof label === 'string' ? label : intl.formatMessage(label)
 }
 
 // Push is not offered until it is delivered.
@@ -341,7 +349,7 @@ export function NotificationMatrixForm({
         <TabsList>
           {groups.map(({ group }) => (
             <TabsTrigger key={group} value={group}>
-              {intl.formatMessage(GROUP_LABELS[group])}
+              {groupLabel(group, intl)}
             </TabsTrigger>
           ))}
         </TabsList>

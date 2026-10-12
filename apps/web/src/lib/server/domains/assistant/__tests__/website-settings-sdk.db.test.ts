@@ -18,6 +18,7 @@ import {
 } from '@/lib/server/db'
 import { ALL_PERMISSIONS, PERMISSIONS } from '@/lib/shared/permissions'
 import { settingsProposalSchema } from '@/lib/shared/assistant/settings-proposals'
+import { digestOf } from '@/lib/server/utils/canonical-json'
 import { createWorkspaceThread } from '../workspace-threads.service'
 import {
   applyWorkspaceSettingsProposal,
@@ -150,6 +151,7 @@ async function proposal(
   return {
     id: parsed.pendingActionId as typeof assistantPendingActions.$inferSelect.id,
     args: settingsProposalSchema.parse(parsed.proposal),
+    contentHash: digestOf(parsed.proposal),
   }
 }
 function values(row: typeof settings.$inferSelect) {
@@ -246,7 +248,9 @@ describe('website settings through real MCP SDK, Postgres and scoped storage', (
           'assets.example.com/logo.png',
         ])
         const selected = ['branding.logoKey', 'messenger.enabled']
-        await applyWorkspaceSettingsProposal(seeded.actor, pending.id, selected)
+        await applyWorkspaceSettingsProposal(seeded.actor, pending.id, selected, {
+          contentHash: pending.contentHash,
+        })
         const after = await read()
         expect(after.logoKey).toBe(logo.after)
         expect(after.brandingConfig).toBe(before.brandingConfig)
@@ -287,7 +291,8 @@ describe('website settings through real MCP SDK, Postgres and scoped storage', (
         await applyWorkspaceSettingsProposal(
           seeded.actor,
           pending.id,
-          pending.args.changes.map(({ id }) => id)
+          pending.args.changes.map(({ id }) => id),
+          { contentHash: pending.contentHash }
         )
         const [after] = await database
           .select()
@@ -337,7 +342,8 @@ describe('website settings through real MCP SDK, Postgres and scoped storage', (
           applyWorkspaceSettingsProposal(
             seeded.actor,
             pending.id,
-            pending.args.changes.map(({ id }) => id)
+            pending.args.changes.map(({ id }) => id),
+            { contentHash: pending.contentHash }
           )
         ).rejects.toThrow(/managed/i)
         const [after] = await database
@@ -401,7 +407,7 @@ describe('website settings through real MCP SDK, Postgres and scoped storage', (
       })
     }
   )
-  it('refuses a foreign proposal parent before fetching and keeps Apply and Undo private', async () => {
+  it('refuses a foreign proposal parent before fetching and lets any qualified person decide', async () => {
     await run(async (database) => {
       const seeded = await seedAskGoldenFixture(database, 'owner'),
         other = await otherActor(database)
@@ -420,13 +426,11 @@ describe('website settings through real MCP SDK, Postgres and scoped storage', (
       try {
         const pending = await proposal(sdk),
           selected = pending.args.changes.map(({ id }) => id)
-        await expect(
-          applyWorkspaceSettingsProposal(other, pending.id, selected)
-        ).rejects.toMatchObject({ code: 'WORKSPACE_THREAD_NOT_FOUND' })
-        await applyWorkspaceSettingsProposal(seeded.actor, pending.id, selected)
-        await expect(undoWorkspaceSettingsProposal(other, pending.id)).rejects.toMatchObject({
-          code: 'WORKSPACE_THREAD_NOT_FOUND',
+        const applied = await applyWorkspaceSettingsProposal(other, pending.id, selected, {
+          contentHash: pending.contentHash,
         })
+        expect(applied).toMatchObject({ status: 'executed', decidedById: other.principalId })
+        await undoWorkspaceSettingsProposal(seeded.actor, pending.id)
       } finally {
         await sdk.close()
       }

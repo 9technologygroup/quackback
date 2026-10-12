@@ -212,7 +212,9 @@ it('hands the next turn only connector reads allowed since the last answer, as d
       originRole: 'workspace_assistant',
     })
   const earlier = await propose('connector_acme__find_order', 'Earlier order lookup')
-  await decidePendingAction(earlier.id, 'approved', owner.principalId!)
+  await decidePendingAction(earlier.id, 'approved', owner.principalId!, testDb, {
+    contentHash: earlier.argsDigest!,
+  })
   await markPendingActionExecuted(earlier.id, { order: 'A-0' })
   const tick = () => new Promise((resolve) => setTimeout(resolve, 5))
   await tick()
@@ -224,12 +226,18 @@ it('hands the next turn only connector reads allowed since the last answer, as d
   })
   await tick()
   const allowed = await propose('connector_acme__find_order', 'Find order A-1')
-  await decidePendingAction(allowed.id, 'approved', owner.principalId!)
+  await decidePendingAction(allowed.id, 'approved', owner.principalId!, testDb, {
+    contentHash: allowed.argsDigest!,
+  })
   await markPendingActionExecuted(allowed.id, { order: 'A-1', total: 42 })
   const skipped = await propose('connector_acme__find_customer', 'Find customer')
-  await decidePendingAction(skipped.id, 'rejected', owner.principalId!)
+  await decidePendingAction(skipped.id, 'rejected', owner.principalId!, testDb, {
+    contentHash: skipped.argsDigest!,
+  })
   const settings = await propose('propose_settings_change', 'Settings')
-  await decidePendingAction(settings.id, 'approved', owner.principalId!)
+  await decidePendingAction(settings.id, 'approved', owner.principalId!, testDb, {
+    contentHash: settings.argsDigest!,
+  })
   await markPendingActionExecuted(settings.id, { kind: 'settings' })
 
   const next = await acquireWorkspaceTurn(owner, thread.key, 'run-two', 'Continue')

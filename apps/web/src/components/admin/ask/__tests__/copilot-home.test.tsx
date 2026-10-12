@@ -18,7 +18,7 @@ const state = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
   clear: vi.fn(),
-  decisions: [] as Array<[string, string]>,
+  decisions: [] as Array<[string, string, string]>,
   actionStatus: 'proposed',
 }))
 vi.mock('@tanstack/react-router', () => ({
@@ -52,12 +52,20 @@ vi.mock('@/lib/server/functions/workspace-copilot', () => ({
   },
 }))
 vi.mock('@/lib/server/functions/assistant-actions', () => ({
-  approveAssistantActionFn: async ({ data }: { data: { pendingActionId: string } }) => {
-    state.decisions.push([data.pendingActionId, 'approved'])
+  approveAssistantActionFn: async ({
+    data,
+  }: {
+    data: { pendingActionId: string; contentHash: string }
+  }) => {
+    state.decisions.push([data.pendingActionId, 'approved', data.contentHash])
     return { id: data.pendingActionId, status: 'executed' }
   },
-  rejectAssistantActionFn: async ({ data }: { data: { pendingActionId: string } }) => {
-    state.decisions.push([data.pendingActionId, 'rejected'])
+  rejectAssistantActionFn: async ({
+    data,
+  }: {
+    data: { pendingActionId: string; contentHash: string }
+  }) => {
+    state.decisions.push([data.pendingActionId, 'rejected', data.contentHash])
     return { id: data.pendingActionId, status: 'rejected' }
   },
 }))
@@ -65,7 +73,7 @@ vi.mock('@/lib/client/queries/assistant-pending-actions', () => ({
   assistantPendingActionQueries: {
     detail: (id: string) => ({
       queryKey: ['pending-action', id],
-      queryFn: async () => ({ id, status: state.actionStatus }),
+      queryFn: async () => ({ id, status: state.actionStatus, argsDigest: 'digest-1' }),
     }),
   },
 }))
@@ -440,8 +448,16 @@ describe('connector calls', () => {
     state.threads = [threadWithConnector()]
     mount({ thread: 'workspace:crm' })
     expect(await screen.findByText('Sends this request to Acme CRM')).toBeTruthy()
+    // The buttons wait for the request they decide on.
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Skip' }) as HTMLButtonElement).disabled).toBe(
+        false
+      )
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
-    await waitFor(() => expect(state.decisions).toEqual([['assistant_action_crm', 'rejected']]))
+    await waitFor(() =>
+      expect(state.decisions).toEqual([['assistant_action_crm', 'rejected', 'digest-1']])
+    )
     expect(await screen.findByText('Skipped Acme CRM. Nothing was sent.')).toBeTruthy()
     expect(state.start).not.toHaveBeenCalled()
   })
@@ -453,8 +469,10 @@ describe('connector calls', () => {
       expect(options.forwardedProps).toEqual({ threadKey: 'workspace:crm' })
     })
     mount({ thread: 'workspace:crm' })
-    fireEvent.click(await screen.findByRole('button', { name: 'Allow' }))
+    const allow = (await screen.findByRole('button', { name: 'Allow' })) as HTMLButtonElement
+    await waitFor(() => expect(allow.disabled).toBe(false))
+    fireEvent.click(allow)
     await waitFor(() => expect(state.start).toHaveBeenCalledOnce())
-    expect(state.decisions).toEqual([['assistant_action_crm', 'approved']])
+    expect(state.decisions).toEqual([['assistant_action_crm', 'approved', 'digest-1']])
   })
 })

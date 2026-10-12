@@ -117,6 +117,7 @@ async function mount(selected: SettingsChange[]) {
       id: data.pendingActionId,
       status: receipt ? 'executed' : 'proposed',
       args: proposed,
+      argsDigest: 'digest-1',
       result: receipt,
     }
   })
@@ -125,6 +126,7 @@ async function mount(selected: SettingsChange[]) {
       expect(data).toEqual({
         pendingActionId: 'pending-settings',
         selectedChangeIds: selected.map((change) => change.id),
+        contentHash: 'digest-1',
       })
       stage = 'applied'
       receipt = {
@@ -133,14 +135,14 @@ async function mount(selected: SettingsChange[]) {
         changes: selected,
         appliedAt: '2026-10-03T12:00:00Z',
       }
-      return { id: data.pendingActionId, status: 'executed', result: receipt }
+      return { ok: true, id: data.pendingActionId, status: 'executed', result: receipt }
     }
   )
   server.undo.mockImplementation(async ({ data }: { data: { pendingActionId: string } }) => {
     expect(data.pendingActionId).toBe('pending-settings')
     stage = 'before'
     receipt = { ...receipt, undoneAt: '2026-10-03T12:01:00Z' }
-    return { id: data.pendingActionId, status: 'executed', result: receipt }
+    return { ok: true, id: data.pendingActionId, status: 'executed', result: receipt }
   })
   server.invalidate.mockImplementation(async () => {
     cacheSnapshots.push(warmKeys.map((key) => client.getQueryData(key)))
@@ -180,13 +182,34 @@ describe('settings proposal cache refresh', () => {
         expect(data).toEqual({
           pendingActionId: 'pending-settings',
           selectedChangeIds: selected.map((change) => change.id),
+          contentHash: 'digest-1',
         })
-        throw { code: 'SETTINGS_NAME_MANAGED' }
+        // A refusal arrives as a value: a thrown error would lose its code.
+        return {
+          ok: false,
+          code: 'SETTINGS_NAME_MANAGED',
+          message: 'Open General settings to change this workspace name.',
+        }
       }
     )
     fireEvent.click(screen.getByRole('button', { name: 'Apply 1 change' }))
     expect((await screen.findByRole('alert')).textContent).toContain(
       'Open General settings to change this workspace name.'
+    )
+    expect(server.invalidate).not.toHaveBeenCalled()
+    client.clear()
+  })
+  it('tells the person the request changed when the decision names old content', async () => {
+    const selected = changes.slice(-1)
+    const { client } = await mount(selected)
+    server.apply.mockResolvedValue({
+      ok: false,
+      code: 'APPROVAL_CONTENT_CHANGED',
+      message: 'This request changed. Review it again.',
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply 1 change' }))
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'These settings changed. Ask again.'
     )
     expect(server.invalidate).not.toHaveBeenCalled()
     client.clear()

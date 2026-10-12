@@ -550,6 +550,10 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
     'skill authors are team members with assistant.manage, never anonymous',
   'assistant_pending_actions.decided_by_id':
     'the agent who approves/rejects a pending action is a team member, never anonymous',
+  'assistant_pending_actions.requested_by_id':
+    'who filed an approval request: an API key service principal, the assistant or a signed-in teammate with the permission to ask, never the anonymous merge source; the row records history and is never rewritten',
+  'assistant_pending_actions.on_behalf_of_principal_id':
+    'the person whose authority the request borrows: a key creator, an OAuth grant holder or a teammate, never the anonymous merge source; the row records history and is never rewritten',
   'assistant_tool_calls.principal_id':
     'the actor attributed to a tool call is a team member or the assistant itself, never the anonymous merge source',
   'import_runs.initiated_by_principal_id':

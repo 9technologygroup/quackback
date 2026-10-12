@@ -30,6 +30,7 @@ const ALL_TYPES: Record<NotificationType, true> = {
   sla_breach: true,
   comment_mentioned: true,
   assistant_handed_off: true,
+  approval_requested: true,
 }
 
 describe('notification catalog bijection', () => {

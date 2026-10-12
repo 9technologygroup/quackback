@@ -34,6 +34,14 @@ export interface McpAuthContext {
   role: Role
   authMethod: 'oauth' | 'api-key'
   /**
+   * The credential the request arrived through: the API key id, or the OAuth
+   * client id. Recorded on a request for approval, which that credential can
+   * then never decide.
+   */
+  credentialId?: string
+  /** The name that credential's client goes by (an API key's name). */
+  clientName?: string
+  /**
    * Granted scopes. OAuth tokens carry the grant's scopes; API keys carry
    * their stored scopes, or every scope for legacy keys with none stored.
    */

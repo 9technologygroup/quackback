@@ -4,6 +4,7 @@ import {
   mapSlackThread,
   toSlackMrkdwn,
   buildProposalBlocks,
+  parseProposalButtonValue,
   formatSlackAnswer,
   takeSafeMarkdownPrefix,
   SlackReplyStream,
@@ -153,10 +154,22 @@ describe('Slack presentation', () => {
     await stopped
   })
 
-  it('buttons contain only the pending-action id', () => {
+  it('buttons carry the pending-action id and the digest of the request shown', () => {
     const id = generateId('assistant_action')
-    const blocks = buildProposalBlocks({ id, summary: 'Create feedback <@all>' }) as any[]
+    const digest = 'a'.repeat(64)
+    const blocks = buildProposalBlocks({
+      id,
+      summary: 'Create feedback <@all>',
+      contentHash: digest,
+    }) as any[]
     expect(blocks[0].text.text).not.toContain('<@all>')
-    expect(blocks[2].elements.map((e: any) => e.value)).toEqual([id, id])
+    expect(blocks[2].elements.map((e: any) => e.value)).toEqual([
+      `${id}:${digest}`,
+      `${id}:${digest}`,
+    ])
+    expect(parseProposalButtonValue(`${id}:${digest}`)).toEqual({ id, contentHash: digest })
+    // A button posted before buttons named their content carries none.
+    expect(parseProposalButtonValue(id)).toEqual({ id, contentHash: null })
+    expect(parseProposalButtonValue('not-an-action')).toBeNull()
   })
 })

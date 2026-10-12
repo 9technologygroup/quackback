@@ -33,6 +33,7 @@ import {
   type AssistantToolCall,
 } from './tool-audit'
 import { proposePendingAction, type AssistantPendingAction } from './pending-actions.service'
+import type { ApprovalRequester } from './approvals.service'
 import { describeEnabledKnowledgeSources } from './retrieval-sources'
 
 const log = logger.child({ component: 'assistant-tools' })
@@ -195,6 +196,25 @@ function resolveIdempotencyKey(
 }
 
 /**
+ * Who files a proposal from an assistant turn: the assistant itself, for the
+ * teammate it works for when there is one. The assistant can never decide its
+ * own request; the teammate, like any qualified person, can.
+ */
+function assistantRequester(ctx: AssistantToolContext): ApprovalRequester {
+  const person = ctx.actor.principalType === 'user' ? ctx.actor.principalId : null
+  return {
+    via: 'assistant',
+    // A turn whose assistant identity is the person themselves has no agent
+    // principal of its own to record.
+    requestedById:
+      ctx.assistantPrincipalId && ctx.assistantPrincipalId !== person
+        ? ctx.assistantPrincipalId
+        : null,
+    onBehalfOfPrincipalId: person,
+  }
+}
+
+/**
  * Run one tool call through the execution pipeline. `mode` arrives already
  * fully resolved (see `resolveEffectiveToolMode`); this function does no
  * further gating of its own, it only carries out what the mode says.
@@ -235,21 +255,24 @@ async function runWithPipeline(
         ctx.actor,
         settingsProposalInputSchema.parse(args).changes,
         ctx.workspaceThreadKey!,
-        ctx.latestCustomerMessageId ?? undefined
+        ctx.latestCustomerMessageId ?? undefined,
+        assistantRequester(ctx)
       )
     } catch (error) {
       if (!(error instanceof DomainException)) throw error
       ctx.ledger.toolOutcomes.push({ name: spec.name, outcome: 'failed' })
       return { status: 'denied', note: error.message }
     }
+    // A combined card replaces the one it absorbed, which is never edited.
     ctx.ledger.proposedActions = ctx.ledger.proposedActions.filter(
-      (action) => action.id !== pending.id
+      (action) => action.id !== pending.id && action.id !== pending.supersededId
     )
     ctx.ledger.proposedActions.push({
       id: pending.id,
       toolName: pending.toolName,
       summary: pending.summary,
       label: spec.label,
+      ...(pending.argsDigest ? { contentHash: pending.argsDigest } : {}),
     })
     ctx.ledger.toolOutcomes.push({ name: spec.name, outcome: 'proposed' })
     return {
@@ -283,6 +306,10 @@ async function runWithPipeline(
       args: args as Record<string, unknown>,
       summary,
       originRole: ctx.role,
+      requester: assistantRequester(ctx),
+      // A connector read a teammate allows in their own Home chat is low risk;
+      // any other write waits for a teammate's approval.
+      risk: spec.connector && isHomeTurn(ctx) && spec.risk !== 'write' ? 'low' : 'medium',
       // Same-shaped key as the autonomous branch's claim below: a synthesis
       // retry that re-runs this exact write-tool call for the same turn
       // dedupes onto the first proposal row instead of inserting a duplicate
@@ -303,6 +330,8 @@ async function runWithPipeline(
       toolName: spec.name,
       summary,
       label: spec.label,
+      // What a decision on it must name, for a surface that posts its own card.
+      ...(pending.argsDigest ? { contentHash: pending.argsDigest } : {}),
       ...(spec.connector
         ? {
             connector: spec.connector,

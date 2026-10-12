@@ -71,6 +71,23 @@ const DYNAMIC_PERMISSION = (
   why: string
 ): Classification => ({ intent: 'DYNAMIC_PERMISSION', resolvesToAny, why })
 
+/** Every permission an approval decision may require: settings areas, assistant tools, and item visibility. */
+const APPROVAL_PERMISSIONS: readonly PermissionKey[] = [
+  PERMISSIONS.CONVERSATION_VIEW,
+  PERMISSIONS.TICKET_VIEW,
+  PERMISSIONS.SETTINGS_MANAGE,
+  PERMISSIONS.SETTINGS_BRANDING,
+  PERMISSIONS.OFFICE_HOURS_MANAGE,
+  PERMISSIONS.CHANGELOG_MANAGE,
+  PERMISSIONS.CONVERSATION_SET_ATTRIBUTES,
+  PERMISSIONS.CONVERSATION_SET_STATUS,
+  PERMISSIONS.CONVERSATION_REPLY,
+  PERMISSIONS.TICKET_CREATE,
+  PERMISSIONS.POST_CREATE,
+  PERMISSIONS.POST_VOTE_ON_BEHALF,
+  PERMISSIONS.ASSISTANT_MANAGE,
+]
+
 export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   'lib/server/functions/website-branding.ts::startAutomaticWebsiteBrandingFn': DYNAMIC_PERMISSION(
     [PERMISSIONS.SETTINGS_MANAGE],
@@ -131,7 +148,7 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
       PERMISSIONS.OFFICE_HOURS_MANAGE,
       PERMISSIONS.CHANGELOG_MANAGE,
     ],
-    'caller owns the proposal thread and holds every current permission required by its selected changes'
+    'any person holding every current permission the request needs may approve it; never the credential that filed it'
   ),
   'lib/server/functions/workspace-copilot.ts::undoWorkspaceSettingsProposalFn': DYNAMIC_PERMISSION(
     [
@@ -141,7 +158,7 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
       PERMISSIONS.OFFICE_HOURS_MANAGE,
       PERMISSIONS.CHANGELOG_MANAGE,
     ],
-    'caller owns the proposal thread and holds every current permission required to restore its applied changes'
+    'any person holding every current permission required to restore the applied changes'
   ),
   // Anyone signed in acts only on their OWN address here: the principal comes
   // from the session, never from the request, so there is no object whose
@@ -164,6 +181,23 @@ export const BARE_GATE_CLASSIFICATIONS: Record<string, Classification> = {
   // linked providers and whether their session is fresh. Nothing is written.
   'lib/server/functions/sign-in-again.ts::getSignInAgainOptionsFn': END_USER(
     'reads how the caller signs in and whether they signed in recently'
+  ),
+  // Approvals: who may see or decide a request is per row, the item's
+  // visibility plus every permission the operation needs (approvals.service).
+  'lib/server/functions/approvals.ts::listApprovalsFn': DYNAMIC_PERMISSION(
+    APPROVAL_PERMISSIONS,
+    'lists only requests the caller may decide: the item is visible and every permission the operation needs is held'
+  ),
+  'lib/server/functions/approvals.ts::getApprovalFn': DYNAMIC_PERMISSION(
+    APPROVAL_PERMISSIONS,
+    'caller may decide the request, or it was filed on their behalf; the item must be visible'
+  ),
+  'lib/server/functions/approvals.ts::markApprovalBellReadFn': END_USER(
+    'reads only the caller own approval bell; the principal comes from the session'
+  ),
+  'lib/server/functions/approvals.ts::rejectApprovalFn': DYNAMIC_PERMISSION(
+    APPROVAL_PERMISSIONS,
+    'a person, never the requesting credential, who sees the item and holds every permission the operation needs'
   ),
   // Assistant proposals are item-scoped after authentication. Reads/rejections
   // require visibility of the concrete parent; approval additionally checks

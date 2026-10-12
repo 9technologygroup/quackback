@@ -71,9 +71,11 @@ export function usePendingActionDecision(
   const busy = approveMutation.isPending || rejectMutation.isPending
 
   const decide = (mutate: typeof approveMutation.mutate) => {
+    // A decision names the request this card shows; nothing is shown before it loads.
+    if (!data) return
     setInlineError(null)
     mutate(
-      { pendingActionId: id },
+      { pendingActionId: id, contentHash: data.argsDigest },
       {
         onError: (error) => {
           setInlineError(decisionErrorMessage(error))

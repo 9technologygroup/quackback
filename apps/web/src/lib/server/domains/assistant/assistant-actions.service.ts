@@ -14,7 +14,10 @@ import {
   markPendingActionExecuted,
   markPendingActionFailed,
   type AssistantPendingAction,
+  type PendingActionDecisionOptions,
 } from './pending-actions.service'
+import { assertDecisionNamesContent, rejectApproval } from './approvals.service'
+import { SETTINGS_PROPOSAL_TOOL } from './approval-policy'
 import {
   getToolSpecByName,
   makeAssistantToolContext,
@@ -72,11 +75,44 @@ export async function decideAssistantAction(
   decision: 'approved' | 'rejected',
   approverPrincipalId: PrincipalId,
   actor: Actor,
-  verifiedThreadKey?: string
+  verifiedThreadKey: string | undefined,
+  options: Pick<PendingActionDecisionOptions, 'via' | 'reason' | 'contentHash'>
 ): Promise<AssistantPendingAction> {
   const pending = await getPendingActionById(pendingActionId)
   if (!pending) throw new NotFoundError('PENDING_ACTION_NOT_FOUND', 'Pending action not found')
+  // A decision names the digest of the content the person was shown; every
+  // caller sends the one its card or message carried.
+  const { contentHash } = options
+  const via = options.via ?? 'app'
+  if (isHomeThreadKey(pending.workspaceThreadKey) && pending.toolName === SETTINGS_PROPOSAL_TOOL) {
+    // A Home settings request is decided by any qualified person, under the
+    // approval rules, not only by whoever owns the thread.
+    if (decision === 'rejected')
+      return rejectApproval(actor, pending.id, { contentHash, via, reason: options.reason })
+    const { settingsProposalSchema } = await import('@/lib/shared/assistant/settings-proposals')
+    const { applyWorkspaceSettingsProposal } =
+      await import('@/lib/server/domains/assistant/workspace-settings-actions.service')
+    const proposal = settingsProposalSchema.parse(pending.args)
+    return applyWorkspaceSettingsProposal(
+      actor,
+      pending.id,
+      proposal.changes.map((change) => change.id),
+      { contentHash, via }
+    )
+  }
   await assertPendingWorkspaceParent(pending, actor, verifiedThreadKey)
+  // The agent that asked never decides its own request.
+  if (approverPrincipalId === pending.requestedById)
+    throw new ForbiddenError(
+      'APPROVAL_SELF_DECISION',
+      'The requester cannot decide its own request.'
+    )
+  assertDecisionNamesContent(pending, contentHash)
+  const decideOptions: PendingActionDecisionOptions = {
+    via,
+    reason: options.reason,
+    contentHash,
+  }
 
   // Row-level authz (unified inbox §3.3): the route's base gate only confirms
   // the approver holds conversation.view SOMEWHERE, not that they may see
@@ -91,7 +127,13 @@ export async function decideAssistantAction(
   }
 
   if (decision === 'rejected') {
-    const rejected = await decidePendingAction(pendingActionId, decision, approverPrincipalId)
+    const rejected = await decidePendingAction(
+      pendingActionId,
+      decision,
+      approverPrincipalId,
+      db,
+      decideOptions
+    )
     if (!rejected) {
       throw new ConflictError(
         'PENDING_ACTION_NOT_DECIDABLE',
@@ -103,17 +145,6 @@ export async function decideAssistantAction(
 
   const agentKind = agentKindForTurn(pending.originRole, pending.workspaceThreadKey)
   if (isHomeThreadKey(pending.workspaceThreadKey)) {
-    if (pending.toolName === 'propose_settings_change') {
-      const { settingsProposalSchema } = await import('@/lib/shared/assistant/settings-proposals')
-      const { applyWorkspaceSettingsProposal } =
-        await import('@/lib/server/domains/assistant/workspace-settings-actions.service')
-      const proposal = settingsProposalSchema.parse(pending.args)
-      return applyWorkspaceSettingsProposal(
-        actor,
-        pending.id,
-        proposal.changes.map((change) => change.id)
-      )
-    }
     // Home allows exactly one other decision: a connector read the teammate
     // lets run. A connector write is never executed from Home.
     if (!isConnectorTool(pending.toolName))
@@ -121,7 +152,7 @@ export async function decideAssistantAction(
         'ASSISTANT_ACTION_POLICY_CHANGED',
         'Open the settings page to make this change'
       )
-    return allowHomeConnectorRead(pending, approverPrincipalId, actor, agentKind)
+    return allowHomeConnectorRead(pending, approverPrincipalId, actor, agentKind, decideOptions)
   }
 
   // Built-in specs resolve from the static registry; a custom action
@@ -162,7 +193,13 @@ export async function decideAssistantAction(
     }
   }
 
-  const decided = await decidePendingAction(pendingActionId, decision, approverPrincipalId)
+  const decided = await decidePendingAction(
+    pendingActionId,
+    decision,
+    approverPrincipalId,
+    db,
+    decideOptions
+  )
   if (!decided) {
     throw new ConflictError(
       'PENDING_ACTION_NOT_DECIDABLE',
@@ -196,7 +233,8 @@ async function allowHomeConnectorRead(
   pending: AssistantPendingAction,
   approverPrincipalId: PrincipalId,
   actor: Actor,
-  agentKind: ReturnType<typeof agentKindForTurn>
+  agentKind: ReturnType<typeof agentKindForTurn>,
+  decideOptions: PendingActionDecisionOptions
 ): Promise<AssistantPendingAction> {
   const spec = await getConnectorSpecByToolName(pending.toolName, agentKind)
   if (!spec) throw new ToolSpecGoneError(pending.toolName)
@@ -211,7 +249,13 @@ async function allowHomeConnectorRead(
       'ASSISTANT_ACTION_INPUT_CHANGED',
       'This action no longer matches the current input contract'
     )
-  const decided = await decidePendingAction(pending.id, 'approved', approverPrincipalId)
+  const decided = await decidePendingAction(
+    pending.id,
+    'approved',
+    approverPrincipalId,
+    db,
+    decideOptions
+  )
   if (!decided)
     throw new ConflictError(
       'PENDING_ACTION_NOT_DECIDABLE',

@@ -165,6 +165,8 @@ function proposedActionRow(overrides: Record<string, unknown> = {}) {
     decidedAt: null,
     executedAt: null,
     result: null,
+    argsDigest: 'digest-1',
+    risk: 'medium',
     ...overrides,
   }
 }
@@ -1014,7 +1016,7 @@ describe('<CopilotPanel> proposed actions (P2-C.4)', () => {
 
     await waitFor(() =>
       expect(hoisted.approveAssistantActionFn).toHaveBeenCalledWith({
-        data: { pendingActionId: 'assistant_action_1' },
+        data: { pendingActionId: 'assistant_action_1', contentHash: 'digest-1' },
       })
     )
     expect(await screen.findByText('Closed as resolved.')).toBeInTheDocument()
@@ -1042,7 +1044,7 @@ describe('<CopilotPanel> proposed actions (P2-C.4)', () => {
 
     await waitFor(() =>
       expect(hoisted.rejectAssistantActionFn).toHaveBeenCalledWith({
-        data: { pendingActionId: 'assistant_action_1' },
+        data: { pendingActionId: 'assistant_action_1', contentHash: 'digest-1' },
       })
     )
     expect(await screen.findByText('Rejected')).toBeInTheDocument()

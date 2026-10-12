@@ -47,10 +47,21 @@ Examples:
     teamOnly: true,
     feature: 'copilotHome',
     handler: async ({ changes }) => {
+      const actor = await resolveMcpActor(auth, 'write:settings')
       const action = await enqueueWorkspaceSettingsProposal(
-        await resolveMcpActor(auth, 'write:settings'),
+        actor,
         changes,
-        auth.workspaceThreadKey
+        auth.workspaceThreadKey,
+        undefined,
+        {
+          via: 'mcp',
+          // A key asks as its own service principal; an OAuth client has none
+          // and asks as the person, through its client id.
+          requestedById: auth.authMethod === 'api-key' && !auth.userId ? auth.principalId : null,
+          onBehalfOfPrincipalId: actor.principalId,
+          credentialId: auth.credentialId ?? null,
+          clientName: auth.clientName ?? null,
+        }
       )
       return jsonResult({
         proposed: true,

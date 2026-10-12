@@ -313,6 +313,8 @@ describe('the real corpus', () => {
     // resolved_at, and leaves the two equal, so a second run writes zero
     // rows. The app settles every window it writes the same way
     // (settleMaintenanceStart), so a later replay writes zero rows too.
+    // 0302 widens the pending-action parent check to allow no parent, once,
+    // guarded by its existing definition already reading `<= 1`.
     const vouching = files.filter(
       (f) => assessReplaySafety(f, readFileSync(join(MIGRATIONS_DIR, f), 'utf8')).vouched.length > 0
     )
@@ -339,6 +341,7 @@ describe('the real corpus', () => {
       '0295_website_branding_existing_workspaces.sql',
       '0296_validate_workspace_copilot_checks.sql',
       '0298_status_maintenance_started_at.sql',
+      '0302_approvals_foundation.sql',
     ])
   })
 

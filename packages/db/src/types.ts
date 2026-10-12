@@ -1015,6 +1015,30 @@ export const INTERACTIVE_BLOCK_KINDS: ReadonlySet<WorkflowBlockKind> = new Set([
  *  fallback, and the workflow builder's rating-path labels. */
 export const CSAT_FACES = ['😞', '🙁', '😐', '🙂', '😄'] as const
 
+/**
+ * Approval vocabulary. A pending action is an approval: the server sets its
+ * risk for the operation, records how it arrived and how it was decided, and
+ * tracks its execution apart from the decision. None of these columns carries
+ * a CHECK; the application validates every value it writes.
+ */
+export const APPROVAL_RISKS = ['low', 'medium', 'high', 'critical'] as const
+export type ApprovalRisk = (typeof APPROVAL_RISKS)[number]
+
+export const APPROVAL_REQUEST_CHANNELS = ['ui', 'api', 'mcp', 'assistant', 'workflow'] as const
+export type ApprovalRequestChannel = (typeof APPROVAL_REQUEST_CHANNELS)[number]
+
+export const APPROVAL_DECISION_CHANNELS = ['app', 'email', 'assistant', 'slack'] as const
+export type ApprovalDecisionChannel = (typeof APPROVAL_DECISION_CHANNELS)[number]
+
+export const APPROVAL_EXECUTION_STATES = [
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+  'unknown',
+] as const
+export type ApprovalExecutionState = (typeof APPROVAL_EXECUTION_STATES)[number]
+
 interface WorkflowBlockPayloadBase {
   /** Payload schema version, so a future shape change can branch on it. */
   v: 1

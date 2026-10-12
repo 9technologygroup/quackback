@@ -183,10 +183,18 @@ function expectDTOFrom(row: Record<string, unknown>): Partial<AssistantPendingAc
   }
 }
 
+/** The digest of the row the test serves, as the card that showed it sends. */
+async function shownDigest(): Promise<string> {
+  const serve = hoisted.getPendingActionById.getMockImplementation()
+  const row = serve ? ((await serve()) as { argsDigest?: string } | null) : null
+  return row?.argsDigest ?? 'no-row'
+}
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-const approve = (data: any) => approveAssistantActionFn({ data })
+const approve = async (data: any) =>
+  approveAssistantActionFn({ data: { contentHash: await shownDigest(), ...data } })
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-const reject = (data: any) => rejectAssistantActionFn({ data })
+const reject = async (data: any) =>
+  rejectAssistantActionFn({ data: { contentHash: await shownDigest(), ...data } })
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -203,6 +211,15 @@ beforeEach(() => {
 })
 
 describe('approveAssistantActionFn', () => {
+  it('refuses a decision that does not name the content the card showed', async () => {
+    hoisted.getPendingActionById.mockResolvedValue(pendingRow())
+    await expect(
+      approve({ pendingActionId: 'assistant_action_1', contentHash: 'not-what-was-shown' })
+    ).rejects.toMatchObject({ code: 'APPROVAL_CONTENT_CHANGED' })
+    expect(hoisted.decidePendingAction).not.toHaveBeenCalled()
+    expect(hoisted.executeApprovedPendingAction).not.toHaveBeenCalled()
+  })
+
   it('executes via the same pipeline seam, links the audit row, and settles the row', async () => {
     const pending = pendingRow()
     const approver = actorWith([PERMISSIONS.CONVERSATION_SET_STATUS])
@@ -222,7 +239,9 @@ describe('approveAssistantActionFn', () => {
     expect(hoisted.decidePendingAction).toHaveBeenCalledWith(
       'assistant_action_1',
       'approved',
-      'principal_agent1'
+      'principal_agent1',
+      expect.anything(),
+      expect.objectContaining({ via: 'app', contentHash: pendingRow().argsDigest })
     )
     expect(hoisted.executeApprovedPendingAction).toHaveBeenCalledWith(
       CLOSE_SPEC,
@@ -463,7 +482,9 @@ describe('rejectAssistantActionFn', () => {
     expect(hoisted.decidePendingAction).toHaveBeenCalledWith(
       'assistant_action_1',
       'rejected',
-      'principal_agent1'
+      'principal_agent1',
+      expect.anything(),
+      expect.objectContaining({ via: 'app', contentHash: pendingRow().argsDigest })
     )
     expect(hoisted.requireAuth).toHaveBeenCalledWith()
     expect(hoisted.resolveToolSpecs).not.toHaveBeenCalled()

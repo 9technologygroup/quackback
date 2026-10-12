@@ -301,7 +301,9 @@ describe.skipIf(!fixture.available)('sweepAndNotifyExpiredPendingActions', () =>
       args: {},
       summary: 'Already decided.',
     })
-    await decidePendingAction(decided.id, 'approved', agentId)
+    await decidePendingAction(decided.id, 'approved', agentId, testDb, {
+      contentHash: decided.argsDigest!,
+    })
     await testDb
       .update(assistantPendingActions)
       .set({ expiresAt: new Date(Date.now() - 1000) })

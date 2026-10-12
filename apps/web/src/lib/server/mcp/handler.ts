@@ -140,6 +140,7 @@ async function resolveOAuthContext(
       role: role as Role,
       permissions,
       authMethod: 'oauth',
+      ...(typeof payload.azp === 'string' && payload.azp ? { credentialId: payload.azp } : {}),
       scopes,
       auditAttribution: oauthClientAttribution({
         clientId,
@@ -222,6 +223,8 @@ export async function resolveAuthContext(request: Request): Promise<McpAuthConte
         role: authResult.role as Role,
         permissions: authResult.permissions,
         authMethod: 'api-key',
+        credentialId: authResult.apiKey.id,
+        clientName: authResult.apiKey.name,
         scopes: keyScopes,
         auditAttribution,
       }
@@ -236,6 +239,8 @@ export async function resolveAuthContext(request: Request): Promise<McpAuthConte
       role: authResult.role as Role,
       permissions: authResult.permissions,
       authMethod: 'api-key',
+      credentialId: authResult.apiKey.id,
+      clientName: authResult.apiKey.name,
       scopes: keyScopes,
       auditAttribution,
     }

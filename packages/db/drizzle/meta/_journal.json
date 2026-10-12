@@ -1954,6 +1954,13 @@
       "when": 1791000600000,
       "tag": "0301_audit_attribution",
       "breakpoints": true
+    },
+    {
+      "idx": 279,
+      "version": "7",
+      "when": 1791000700000,
+      "tag": "0302_approvals_foundation",
+      "breakpoints": true
     }
   ]
 }

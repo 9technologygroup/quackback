@@ -102,6 +102,8 @@ function proposed(toolName: string) {
   }) as unknown as Record<string, unknown>
 }
 
+const digest = () => String((state.row as { argsDigest: string }).argsDigest)
+
 beforeEach(() => {
   state.row = null
   state.specs.clear()
@@ -117,7 +119,9 @@ describe('Home connector calls', () => {
       'assistant_action_home' as never,
       'approved',
       owner.principalId!,
-      owner
+      owner,
+      undefined,
+      { contentHash: digest() }
     )
     expect(state.executed).toEqual([{ order: 'A-1' }])
     expect(state.decisions).toEqual([['assistant_action_home', 'approved']])
@@ -131,7 +135,9 @@ describe('Home connector calls', () => {
       'assistant_action_home' as never,
       'rejected',
       owner.principalId!,
-      owner
+      owner,
+      undefined,
+      { contentHash: digest() }
     )
     expect(settled.status).toBe('rejected')
     expect(state.executed).toEqual([])
@@ -144,7 +150,16 @@ describe('Home connector calls', () => {
     )
     proposed('connector_acme__refund_order')
     await expect(
-      decideAssistantAction('assistant_action_home' as never, 'approved', owner.principalId!, owner)
+      decideAssistantAction(
+        'assistant_action_home' as never,
+        'approved',
+        owner.principalId!,
+        owner,
+        undefined,
+        {
+          contentHash: digest(),
+        }
+      )
     ).rejects.toMatchObject({ code: 'ASSISTANT_ACTION_POLICY_CHANGED' })
     expect(state.executed).toEqual([])
     expect(state.decisions).toEqual([])
@@ -153,7 +168,16 @@ describe('Home connector calls', () => {
   it('refuses any other Home proposal than settings and connector reads', async () => {
     proposed('create_post')
     await expect(
-      decideAssistantAction('assistant_action_home' as never, 'approved', owner.principalId!, owner)
+      decideAssistantAction(
+        'assistant_action_home' as never,
+        'approved',
+        owner.principalId!,
+        owner,
+        undefined,
+        {
+          contentHash: digest(),
+        }
+      )
     ).rejects.toMatchObject({ code: 'ASSISTANT_ACTION_POLICY_CHANGED' })
     expect(state.decisions).toEqual([])
   })

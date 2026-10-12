@@ -1,4 +1,5 @@
 import type { ChatStopStreamArguments } from '@slack/web-api'
+import { isTypeId } from '@quackback/ids'
 type KnownBlock = NonNullable<ChatStopStreamArguments['blocks']>[number]
 import type { AssistantThreadMessage } from '@/lib/server/domains/assistant/assistant.runtime'
 import type {
@@ -186,9 +187,28 @@ export function mapSlackThread(
 export function slackThreadKey(team: string, channel: string, thread: string): string {
   return JSON.stringify([team, channel, thread])
 }
+/**
+ * A decision button names the request and the digest of the content it was
+ * posted with, so approving from Slack decides exactly what the message showed.
+ */
+export function proposalButtonValue(id: string, contentHash: string | undefined): string {
+  return contentHash ? `${id}:${contentHash}` : id
+}
+
+/** Read a decision button back. A button posted before buttons named their content carries none. */
+export function parseProposalButtonValue(
+  value: unknown
+): { id: string; contentHash: string | null } | null {
+  if (typeof value !== 'string') return null
+  const [id, contentHash, ...rest] = value.split(':')
+  if (!id || rest.length > 0 || !isTypeId(id, 'assistant_action')) return null
+  return { id, contentHash: contentHash || null }
+}
+
 export function buildProposalBlocks(
-  action: Pick<AssistantProposedAction, 'id' | 'summary'>
+  action: Pick<AssistantProposedAction, 'id' | 'summary' | 'contentHash'>
 ): KnownBlock[] {
+  const value = proposalButtonValue(action.id, action.contentHash)
   return [
     { type: 'section', text: { type: 'mrkdwn', text: escapeSlack(action.summary).slice(0, 2800) } },
     {
@@ -202,14 +222,14 @@ export function buildProposalBlocks(
           type: 'button',
           text: { type: 'plain_text', text: 'Approve' },
           action_id: 'qb_action_approve',
-          value: action.id,
+          value,
           style: 'primary',
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: 'Reject' },
           action_id: 'qb_action_reject',
-          value: action.id,
+          value,
         },
       ],
     },

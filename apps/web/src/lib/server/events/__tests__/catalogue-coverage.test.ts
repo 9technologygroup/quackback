@@ -92,6 +92,10 @@ describe('event catalogue coverage', () => {
     'teammate_unresponsive',
     'approaching_breach',
     'breached',
+    // approvals: a person is asked, decides, and the change is applied
+    'requested',
+    'decided',
+    'applied',
     // status-page legacy compound verbs (entity is status_incident/status_component)
     'incident_created',
     'incident_updated',

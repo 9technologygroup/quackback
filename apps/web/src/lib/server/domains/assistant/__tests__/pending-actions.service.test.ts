@@ -91,7 +91,9 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
     expect(proposed.originRole).toBe('customer_support')
     expect(proposed.expiresAt.getTime()).toBeGreaterThan(Date.now())
 
-    const approved = await decidePendingAction(proposed.id, 'approved', agentId)
+    const approved = await decidePendingAction(proposed.id, 'approved', agentId, testDb, {
+      contentHash: proposed.argsDigest!,
+    })
     expect(approved?.status).toBe('approved')
     expect(approved?.decidedById).toBe(agentId)
     expect(approved?.decidedAt).not.toBeNull()
@@ -100,6 +102,44 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
     expect(executed?.status).toBe('executed')
     expect(executed?.result).toEqual({ closed: true })
     expect(executed?.executedAt).not.toBeNull()
+  })
+
+  it('lands a decision only on a row whose stored digest is the one it names', async () => {
+    const conversationId = await seedConversation()
+    const agentId = await seedPrincipal()
+    const proposed = await proposePendingAction({
+      conversationId,
+      toolName: 'close_conversation',
+      args: { reason: 'resolved' },
+      summary: 'Close this conversation as resolved.',
+    })
+    const stored = async () =>
+      (
+        await testDb
+          .select()
+          .from(assistantPendingActions)
+          .where(eq(assistantPendingActions.id, proposed.id))
+      )[0]!
+
+    // A digest that is not the stored one decides nothing.
+    expect(
+      await decidePendingAction(proposed.id, 'approved', agentId, testDb, {
+        contentHash: 'not-the-stored-digest',
+      })
+    ).toBeNull()
+    expect((await stored()).status).toBe('proposed')
+
+    // Nor does any digest while none is stored, even the content's own.
+    await testDb
+      .update(assistantPendingActions)
+      .set({ argsDigest: null })
+      .where(eq(assistantPendingActions.id, proposed.id))
+    expect(
+      await decidePendingAction(proposed.id, 'rejected', agentId, testDb, {
+        contentHash: proposed.argsDigest!,
+      })
+    ).toBeNull()
+    expect((await stored()).status).toBe('proposed')
   })
 
   it('persists a Slack proposal without creating conversation notes', async () => {
@@ -115,7 +155,11 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
     expect(proposed.conversationId).toBeNull()
     expect(proposed.ticketId).toBeNull()
     expect(
-      (await decidePendingAction(proposed.id, 'approved', await seedPrincipal()))?.status
+      (
+        await decidePendingAction(proposed.id, 'approved', await seedPrincipal(), testDb, {
+          contentHash: proposed.argsDigest!,
+        })
+      )?.status
     ).toBe('approved')
   })
 
@@ -148,7 +192,9 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
       summary: 'Refund $10.',
     })
 
-    const rejected = await decidePendingAction(proposed.id, 'rejected', agentId)
+    const rejected = await decidePendingAction(proposed.id, 'rejected', agentId, testDb, {
+      contentHash: proposed.argsDigest!,
+    })
     expect(rejected?.status).toBe('rejected')
   })
 
@@ -161,7 +207,9 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
       args: { amount: 10 },
       summary: 'Refund $10.',
     })
-    await decidePendingAction(proposed.id, 'approved', agentId)
+    await decidePendingAction(proposed.id, 'approved', agentId, testDb, {
+      contentHash: proposed.argsDigest!,
+    })
 
     const failed = await markPendingActionFailed(proposed.id, 'payment provider timed out')
     expect(failed?.status).toBe('failed')
@@ -182,7 +230,11 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
       .set({ expiresAt: new Date(Date.now() - 1000) })
       .where(eq(assistantPendingActions.id, proposed.id))
 
-    expect(await decidePendingAction(proposed.id, 'approved', agentId)).toBeNull()
+    expect(
+      await decidePendingAction(proposed.id, 'approved', agentId, testDb, {
+        contentHash: proposed.argsDigest!,
+      })
+    ).toBeNull()
   })
 
   it('returns null on a second decision (at-most-one guard)', async () => {
@@ -195,8 +247,18 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
       summary: 'Close it.',
     })
 
-    expect((await decidePendingAction(proposed.id, 'approved', agentId))?.status).toBe('approved')
-    expect(await decidePendingAction(proposed.id, 'rejected', agentId)).toBeNull()
+    expect(
+      (
+        await decidePendingAction(proposed.id, 'approved', agentId, testDb, {
+          contentHash: proposed.argsDigest!,
+        })
+      )?.status
+    ).toBe('approved')
+    expect(
+      await decidePendingAction(proposed.id, 'rejected', agentId, testDb, {
+        contentHash: proposed.argsDigest!,
+      })
+    ).toBeNull()
   })
 
   it('sweep expires only stale proposed rows', async () => {
@@ -221,7 +283,9 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
       args: {},
       summary: 'Already approved before the sweep runs.',
     })
-    await decidePendingAction(decidedButPastExpiry.id, 'approved', agentId)
+    await decidePendingAction(decidedButPastExpiry.id, 'approved', agentId, testDb, {
+      contentHash: decidedButPastExpiry.argsDigest!,
+    })
 
     await testDb
       .update(assistantPendingActions)
@@ -293,7 +357,9 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
         summary: 'Close it.',
         idempotencyKey: key,
       })
-      await decidePendingAction(first.id, 'rejected', agentId)
+      await decidePendingAction(first.id, 'rejected', agentId, testDb, {
+        contentHash: first.argsDigest!,
+      })
 
       // Same key, but the earlier row is no longer `proposed`: this must be a
       // genuinely new proposal, not a resurrection of the rejected decision.
@@ -329,7 +395,9 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
         summary: 'An earlier turn, already done.',
         idempotencyKey: key,
       })
-      await decidePendingAction(stale.id, 'approved', agentId)
+      await decidePendingAction(stale.id, 'approved', agentId, testDb, {
+        contentHash: stale.argsDigest!,
+      })
       await markPendingActionExecuted(stale.id, { closed: true })
 
       // A fresh proposal reuses the key (no conflict: the stale row is no
@@ -414,7 +482,9 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
         summary: 'An earlier turn, already done.',
         idempotencyKey: key,
       })
-      await decidePendingAction(stale.id, 'approved', agentId)
+      await decidePendingAction(stale.id, 'approved', agentId, testDb, {
+        contentHash: stale.argsDigest!,
+      })
       await markPendingActionExecuted(stale.id, { closed: true })
 
       // A fresh proposal reusing the SAME key: the stale row is no longer
@@ -452,7 +522,9 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
       expect(proposed.ticketId).toBe(ticketId)
       expect(proposed.conversationId).toBeNull()
 
-      const approved = await decidePendingAction(proposed.id, 'approved', agentId)
+      const approved = await decidePendingAction(proposed.id, 'approved', agentId, testDb, {
+        contentHash: proposed.argsDigest!,
+      })
       expect(approved?.status).toBe('approved')
 
       const executed = await markPendingActionExecuted(proposed.id, { created: true })
@@ -487,7 +559,9 @@ describe.skipIf(!fixture.available)('pending-actions.service (real DB, rolled ba
         summary: 'x',
       })
 
-      const rejected = await decidePendingAction(proposed.id, 'rejected', agentId)
+      const rejected = await decidePendingAction(proposed.id, 'rejected', agentId, testDb, {
+        contentHash: proposed.argsDigest!,
+      })
       expect(rejected?.status).toBe('rejected')
     })
 
