@@ -22,6 +22,7 @@ import { toolDefinition } from '@tanstack/ai'
 import { DomainException } from '@/lib/shared/errors'
 import { can } from '@/lib/server/policy/authorize'
 import { logger } from '@/lib/server/logger'
+import { assistantAttribution, runWithAuditAttribution } from '@/lib/server/audit/attribution'
 import type { ConversationId, TicketId } from '@quackback/ids'
 import type { AssistantToolContext, AssistantToolSpec } from './assistant.toolspec'
 import { resolveToolSpecs, isNoParentResult, NO_CONVERSATION_NOTE } from './assistant.toolspec'
@@ -385,7 +386,12 @@ async function executeAndFinalize(
 ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
   const startedAt = Date.now()
   try {
-    const result = await spec.execute(args, ctx)
+    // Whatever the tool changes is the assistant's change, made for the
+    // teammate it is acting for, if any.
+    const result = await runWithAuditAttribution(
+      assistantAttribution({ assistantName: ctx.assistantName, actor: ctx.actor }),
+      () => spec.execute(args, ctx)
+    )
     // Defense in depth alongside the `parents` catalogue gate (assembleAssistantToolset):
     // a tool that reports it found no parent to act on (see `NO_CONVERSATION_NOTE`)
     // is never a successful execution, even if it somehow ran — most notably

@@ -90,6 +90,31 @@ describe('requiredScopeForMcpRpc', () => {
     for (const name of dispatched) expect(names).toContain(name)
   })
 
+  it('marks a tool read-only exactly when its scope only reads, so writes are always audited', () => {
+    // The tool-call audit skips tools annotated read-only. A write tool marked
+    // read-only by mistake would change things with no audit row.
+    const annotations = new Map<string, { readOnlyHint?: boolean }>()
+    registerTools(
+      {
+        tool: (name: string, _d: string, _s: unknown, a: { readOnlyHint?: boolean }) => {
+          annotations.set(name, a)
+        },
+      } as never,
+      TEST_AUTH
+    )
+    const dispatched = new Set<string>(MCP_ARGUMENT_DISPATCHED_TOOLS)
+    for (const [name, a] of annotations) {
+      const readOnly = a?.readOnlyHint === true
+      if (dispatched.has(name)) {
+        expect({ name, readOnly }).toEqual({ name, readOnly: true })
+        continue
+      }
+      const reads = TOOL_SCOPES[name]?.startsWith('read:') ?? false
+      expect({ name, readOnly }).toEqual({ name, readOnly: reads })
+    }
+    expect(annotations.size).toBeGreaterThan(Object.keys(TOOL_SCOPES).length)
+  })
+
   it('maps every registered resource URI', () => {
     const uris: string[] = []
     registerResources(

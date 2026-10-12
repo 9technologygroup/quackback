@@ -556,6 +556,8 @@ export const REPOINT_EXEMPTIONS: Record<string, string> = {
     'import runs are launched by admins (route requires the admin role); the merge source is always anonymous',
   'export_runs.initiated_by_principal_id':
     'export runs are launched by admins (route requires the admin role); the merge source is always anonymous',
+  'audit_log.on_behalf_of_principal_id':
+    'the person a credential or the assistant acted for: an API key creator, an OAuth grant holder or a teammate, never the anonymous merge source; audit rows record history and are never rewritten',
 }
 
 /**

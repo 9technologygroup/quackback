@@ -685,6 +685,28 @@ describe('assembleAssistantToolset: write-tool pipeline (autonomous mode)', () =
     expect(mockClaimToolCall).not.toHaveBeenCalled()
     expect(mockFinalizeToolCall).not.toHaveBeenCalled()
   })
+
+  it('runs the tool as the assistant, acting for no one on its own customer-support turn', async () => {
+    const { getAuditAttribution, runWithAuditAttribution } =
+      await import('@/lib/server/audit/attribution')
+    mockClaimToolCall.mockResolvedValue({ id: 'assistant_tool_call_1', status: 'started' })
+    const seen: unknown[] = []
+    mockWriteExecute.mockImplementation(async () => {
+      seen.push(getAuditAttribution())
+      return { closed: true }
+    })
+
+    const c = autonomousCtx({ assistantName: 'Quinn' })
+    const tool = await findTool(c, 'close_conversation', [makeFakeWriteSpec({ permissions: [] })])
+    // The turn itself runs as background work.
+    await runWithAuditAttribution({ channel: 'system' }, () =>
+      tool.execute({ reason: 'resolved' }, toolCtx(c))
+    )
+
+    expect(seen).toEqual([
+      { channel: 'assistant', clientName: 'Quinn', onBehalfOfPrincipalId: null },
+    ])
+  })
 })
 
 describe('assembleAssistantToolset: sandbox simulate mode', () => {
@@ -914,6 +936,37 @@ describe('executeApprovedPendingAction', () => {
       'assistant_tool_call_1',
       expect.objectContaining({ status: 'failed', error: 'No linked conversation.' })
     )
+  })
+
+  it('runs an approved action as the assistant, on behalf of the teammate who approved it', async () => {
+    const { getAuditAttribution, runWithAuditAttribution, UI_ATTRIBUTION } =
+      await import('@/lib/server/audit/attribution')
+    mockClaimToolCall.mockResolvedValue({ id: 'assistant_tool_call_1', status: 'started' })
+    const seen: unknown[] = []
+    mockWriteExecute.mockImplementation(async () => {
+      seen.push(getAuditAttribution())
+      return { closed: true }
+    })
+    const teammate = {
+      principalId: 'principal_teammate' as never,
+      role: 'member' as const,
+      principalType: 'user' as const,
+      segmentIds: new Set<never>(),
+    }
+
+    const { executeApprovedPendingAction } = await import('../assistant.tools')
+    // Approved from the app, so the request around it is the teammate's own.
+    await runWithAuditAttribution(UI_ATTRIBUTION, () =>
+      executeApprovedPendingAction(
+        makeFakeWriteSpec(),
+        fakePendingAction(),
+        ctx({ actor: teammate, assistantName: 'Quinn' })
+      )
+    )
+
+    expect(seen).toEqual([
+      { channel: 'assistant', clientName: 'Quinn', onBehalfOfPrincipalId: 'principal_teammate' },
+    ])
   })
 })
 

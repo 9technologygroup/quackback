@@ -28,6 +28,7 @@ import type { ConversationId, PrincipalId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
 import { boundedServiceActor } from '@/lib/server/policy/service-actor'
 import { logger } from '@/lib/server/logger'
+import { runWithAuditAttribution, workflowAttribution } from '@/lib/server/audit/attribution'
 import { isUniqueViolation } from '@/lib/server/utils'
 import { applyAction, type ResolvedBlockDeps } from './action.executor'
 import { walkWorkflow, type WorkflowGraph, type WalkResult } from './graph'
@@ -235,7 +236,22 @@ export async function runWorkflow(
  * event instead. A failure before any such action still rethrows so the
  * existing retry contract remains available when it is safe.
  */
-async function applyPlanAndSettle(
+function applyPlanAndSettle(
+  run: WorkflowRun,
+  workflow: Workflow,
+  plan: WalkResult,
+  conversationId: ConversationId,
+  subjectPrincipalId: PrincipalId | null,
+  ctx: ConditionContext
+): Promise<WorkflowRun | null> {
+  // A run's actions are the workflow's changes, attributed to it by name, not
+  // to whatever request or job happened to start or resume it.
+  return runWithAuditAttribution(workflowAttribution(workflow), () =>
+    runPlanAndSettle(run, workflow, plan, conversationId, subjectPrincipalId, ctx)
+  )
+}
+
+async function runPlanAndSettle(
   run: WorkflowRun,
   workflow: Workflow,
   plan: WalkResult,
@@ -351,7 +367,7 @@ async function applyPlanAndSettle(
       { ...ctx, assistantOutcome: 'escalated' },
       plan.resumeNodeId
     )
-    return applyPlanAndSettle(run, workflow, next, conversationId, subjectPrincipalId, {
+    return runPlanAndSettle(run, workflow, next, conversationId, subjectPrincipalId, {
       ...ctx,
       assistantOutcome: 'escalated',
     })

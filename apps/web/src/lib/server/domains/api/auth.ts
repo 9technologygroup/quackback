@@ -23,6 +23,12 @@ import type { PrincipalId } from '@quackback/ids'
 import { isAdmin, type Role } from '@/lib/shared/roles'
 import { hasApiScope, scopeForPermission } from '@/lib/server/domains/api-keys/api-key-scopes'
 import type { PermissionKey } from '@/lib/shared/permissions'
+import {
+  apiKeyAttribution,
+  getAuditAttribution,
+  setAuditAttribution,
+} from '@/lib/server/audit/attribution'
+import type { AuditActor, AuditActorType } from '@/lib/server/audit/log'
 
 export type MemberRole = Role
 export type { ApiKeyPrincipal }
@@ -152,6 +158,16 @@ export async function withApiKeyAuth(
     throw new RateLimitError(await apiRateLimitRetryAfter(clientIp))
   }
 
+  // The key is now known, so this request's changes are attributed to it, and
+  // to the teammate who created it. Stated before the permission gates so a
+  // refused write is attributed too.
+  // An admin key's import is summarised per minute rather than row by row.
+  // A key used over MCP keeps the MCP label its boundary set before auth ran.
+  const channel = getAuditAttribution()?.channel === 'mcp' ? 'mcp' : 'api'
+  setAuditAttribution(apiKeyAttribution(auth.apiKey, channel), apiKeyAuditActor(auth), {
+    importMode,
+  })
+
   // A key's authority is its resolved permission set (role preset intersected
   // with the creator's current permissions) INTERSECTED with the key's stored
   // scopes: the personal-access-token model. Keys with a NULL scopes column
@@ -170,6 +186,21 @@ export async function withApiKeyAuth(
   }
 
   return auth
+}
+
+/**
+ * The audit actor for a key: its service principal, or for a legacy key backed
+ * by a person, that person.
+ */
+function apiKeyAuditActor(auth: ApiAuthContext): AuditActor {
+  const human = auth.principal?.type === 'service' ? null : (auth.principal?.user ?? null)
+  return {
+    userId: human?.id ?? null,
+    email: human?.email ?? null,
+    role: auth.role,
+    type: (auth.principal?.type as AuditActorType | undefined) ?? 'service',
+    authMethod: 'api_key',
+  }
 }
 
 /**

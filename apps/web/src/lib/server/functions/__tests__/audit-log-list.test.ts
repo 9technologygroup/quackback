@@ -57,6 +57,12 @@ vi.mock('@/lib/server/db', () => {
       actorEmail: 'audit_log.actor_email',
       eventType: 'audit_log.event_type',
     },
+    principal: {
+      id: 'principal.id',
+      displayName: 'principal.display_name',
+      userId: 'principal.user_id',
+    },
+    user: { id: 'user.id', name: 'user.name' },
     and: vi.fn((...parts) => ({ op: 'and', parts })),
     eq: vi.fn((col, val) => ({ op: 'eq', col, val })),
     gte: vi.fn((col, val) => ({ op: 'gte', col, val })),
@@ -266,5 +272,89 @@ describe('listAuditEventsFn', () => {
     const eqCall = eqCalls.find(([col]) => col === 'audit_log.event_type')
     expect(eqCall).toBeDefined()
     expect(eqCall?.[1]).toBe('portal.widget_handshake.consumed')
+  })
+
+  it('projects attribution and names who each credential acted for, in one batched read', async () => {
+    const onBehalf = 'principal_01h455vb4pex5vsknk084sn02r'
+    const deleted = 'principal_01h455vb4pex5vsknk084sn02z'
+    hoisted.mockSelect.mockReturnValueOnce(
+      chainReturning([
+        {
+          id: 'audit_1',
+          eventType: 'api.write',
+          occurredAt: new Date(),
+          eventOutcome: 'success',
+          channel: 'api',
+          credentialKind: 'api_key',
+          credentialId: 'api_key_01h455vb4pex5vsknk084sn02q',
+          clientName: 'Zapier',
+          onBehalfOfPrincipalId: onBehalf,
+        },
+        {
+          id: 'audit_2',
+          eventType: 'mcp.tool_call',
+          occurredAt: new Date(),
+          eventOutcome: 'success',
+          channel: 'mcp',
+          credentialKind: 'oauth_client',
+          credentialId: 'client_desktop',
+          clientName: 'Claude Desktop',
+          onBehalfOfPrincipalId: onBehalf,
+        },
+        {
+          id: 'audit_3',
+          eventType: 'api.write',
+          occurredAt: new Date(),
+          eventOutcome: 'success',
+          channel: 'api',
+          onBehalfOfPrincipalId: deleted,
+        },
+        { id: 'audit_4', eventType: 'sso.config.changed', occurredAt: new Date() },
+      ])
+    )
+    const nameWhere = vi.fn(async () => [
+      { id: onBehalf, displayName: null, userName: 'James Morton' },
+    ])
+    const names = { from: () => names, leftJoin: () => names, where: nameWhere }
+    hoisted.mockSelect.mockReturnValueOnce(names)
+
+    const result = (await listAuditEvents({ data: { limit: 10 } })) as {
+      events: Array<Record<string, unknown>>
+    }
+
+    expect(hoisted.mockSelect).toHaveBeenCalledTimes(2)
+    // One lookup for the distinct ids, not one per row.
+    const inArrayCalls = vi.mocked(db.inArray).mock.calls as unknown as Array<[string, string[]]>
+    const lookup = inArrayCalls.find(([col]) => col === 'principal.id')
+    expect(lookup?.[1]).toEqual([onBehalf, deleted])
+    expect(result.events.map((e) => e.onBehalfOfName)).toEqual([
+      'James Morton',
+      'James Morton',
+      null,
+      null,
+    ])
+    expect(result.events[1]).toMatchObject({
+      channel: 'mcp',
+      credentialKind: 'oauth_client',
+      credentialId: 'client_desktop',
+      clientName: 'Claude Desktop',
+      onBehalfOfPrincipalId: onBehalf,
+    })
+    expect(result.events[3]).toMatchObject({
+      channel: null,
+      credentialKind: null,
+      credentialId: null,
+      clientName: null,
+      onBehalfOfPrincipalId: null,
+      onBehalfOfName: null,
+    })
+  })
+
+  it('skips the name lookup when no row was made on anyone’s behalf', async () => {
+    hoisted.mockSelect.mockReturnValueOnce(
+      chainReturning([{ id: 'audit_1', eventType: 'sso.config.changed', occurredAt: new Date() }])
+    )
+    await listAuditEvents({ data: { limit: 10 } })
+    expect(hoisted.mockSelect).toHaveBeenCalledTimes(1)
   })
 })

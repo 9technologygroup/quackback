@@ -18,6 +18,7 @@
  */
 import { logger } from '@/lib/server/logger'
 import { getCurrentWorkspace } from '@/lib/server/workspaces/workspace-context'
+import { runWithAuditAttribution, SYSTEM_ATTRIBUTION } from '@/lib/server/audit/attribution'
 import {
   claimById,
   claimJobs,
@@ -259,7 +260,9 @@ export async function runJob(job: ClaimedJob): Promise<'succeeded' | 'failed' | 
   )
   try {
     const handler = await resolveHandler(def)
-    await handler(job)
+    // A job is background work: whatever it changes is attributed to the
+    // system, never to the request or tier that happened to arm the runner.
+    await runWithAuditAttribution(SYSTEM_ATTRIBUTION, () => handler(job))
   } catch (err) {
     clearInterval(heartbeat)
     const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err)

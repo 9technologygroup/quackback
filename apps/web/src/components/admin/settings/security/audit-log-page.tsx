@@ -5,6 +5,7 @@
  */
 import { useMemo, useState } from 'react'
 import { useSuspenseQuery } from '@tanstack/react-query'
+import { defineMessages, useIntl, type IntlShape, type MessageDescriptor } from 'react-intl'
 import { useDebouncedValue } from '@/lib/client/hooks/use-debounced-value'
 import { ArrowDownTrayIcon } from '@heroicons/react/24/solid'
 import {
@@ -31,6 +32,7 @@ import {
 import { adminQueries } from '@/lib/client/queries/admin'
 import { ASSISTANT_CONFIG_EVENT_LABELS } from '@/lib/shared/assistant/config-audit-events'
 import type { AuditEventRow } from '@/lib/server/functions/audit-log'
+import type { AuditChannel } from '@/lib/shared/audit-attribution'
 
 /**
  * Event-type catalog for the filter dropdown. Mirrors the
@@ -84,6 +86,10 @@ const FILTER_EVENT_TYPES: FilterEventOption[] = [
   { group: 'Portal', label: 'Sign-in failed', value: 'auth.signin.failed' },
   { group: 'Portal', label: 'Visibility changed', value: 'portal.visibility.changed' },
   { group: 'Labs', label: 'Experiment changed', value: 'labs.experiment.changed' },
+  // Changes made with an API key or an MCP client, recorded at the boundary.
+  { group: 'API and MCP', label: 'API write', value: 'api.write' },
+  { group: 'API and MCP', label: 'API import', value: 'api.import' },
+  { group: 'API and MCP', label: 'MCP tool call', value: 'mcp.tool_call' },
   { group: 'Portal', label: 'Widget sign-in changed', value: 'portal.widget_signin.changed' },
   // Widget activity, separated because handshake events are high-volume on active workspaces.
   // portal.widget_handshake.consumed is flagged excludeByDefault for future multi-select support.
@@ -192,10 +198,20 @@ export function rowsToCsv(rows: AuditEventRow[]): string {
     'target_id',
     'request_id',
     'metadata',
+    'channel',
+    'credential_kind',
+    'credential_id',
+    'client_name',
+    'on_behalf_of_principal_id',
+    'on_behalf_of',
   ]
   const escape = (v: unknown): string => {
     if (v === null || v === undefined) return ''
-    const s = typeof v === 'string' ? v : JSON.stringify(v)
+    let s = typeof v === 'string' ? v : JSON.stringify(v)
+    // A spreadsheet runs a cell that starts like a formula. Several columns
+    // carry text the actor chose (client names, emails), so a leading quote
+    // keeps every such cell text.
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
   const lines = [
@@ -214,12 +230,79 @@ export function rowsToCsv(rows: AuditEventRow[]): string {
         r.targetId,
         r.requestId,
         r.metadata,
+        r.channel,
+        r.credentialKind,
+        r.credentialId,
+        r.clientName,
+        r.onBehalfOfPrincipalId,
+        r.onBehalfOfName,
       ]
         .map(escape)
         .join(',')
     ),
   ]
   return lines.join('\n')
+}
+
+const VIA_CHANNEL: Partial<Record<AuditChannel, MessageDescriptor>> = defineMessages({
+  api: { id: 'admin.auditLog.via.api', defaultMessage: 'via API' },
+  mcp: { id: 'admin.auditLog.via.mcp', defaultMessage: 'via MCP' },
+  assistant: { id: 'admin.auditLog.via.assistant', defaultMessage: 'via assistant' },
+  workflow: { id: 'admin.auditLog.via.workflow', defaultMessage: 'via workflow' },
+  system: { id: 'admin.auditLog.via.system', defaultMessage: 'via system' },
+})
+
+const VIA_ON_BEHALF_OF = defineMessages({
+  onBehalfOf: { id: 'admin.auditLog.via.onBehalfOf', defaultMessage: 'for {name}' },
+}).onBehalfOf
+
+/**
+ * How a change that did not come from someone using the app arrived, and for
+ * whom: "via MCP · Claude Desktop for James Morton". Null for a change made in
+ * the app, and for a row with no attribution, so the normal row stays quiet.
+ */
+export function attributionLine(
+  row: { channel: AuditChannel | null; clientName: string | null; onBehalfOfName: string | null },
+  intl: Pick<IntlShape, 'formatMessage'>
+): string | null {
+  // `ui` has no line, and neither does a channel this build does not know.
+  const channel = row.channel ? VIA_CHANNEL[row.channel] : undefined
+  if (!channel) return null
+  const via = [intl.formatMessage(channel), row.clientName].filter(Boolean).join(' · ')
+  if (!row.onBehalfOfName) return via
+  return `${via} ${intl.formatMessage(VIA_ON_BEHALF_OF, { name: row.onBehalfOfName })}`
+}
+
+/**
+ * The via line with the credential id after it, for the tooltip: a client
+ * names itself, so two with look-alike names are told apart by their ids.
+ */
+export function attributionTooltip(
+  row: {
+    channel: AuditChannel | null
+    clientName: string | null
+    onBehalfOfName: string | null
+    credentialId: string | null
+  },
+  intl: Pick<IntlShape, 'formatMessage'>
+): string | null {
+  const line = attributionLine(row, intl)
+  if (!line) return null
+  return row.credentialId ? `${line} (${row.credentialId})` : line
+}
+
+function ViaLine({ row }: { row: AuditEventRow }) {
+  const intl = useIntl()
+  const line = attributionLine(row, intl)
+  if (!line) return null
+  return (
+    <span
+      className="truncate text-xs text-muted-foreground"
+      title={attributionTooltip(row, intl) ?? undefined}
+    >
+      {line}
+    </span>
+  )
 }
 
 function ActorCell({ row }: { row: AuditEventRow }) {
@@ -235,6 +318,7 @@ function ActorCell({ row }: { row: AuditEventRow }) {
     <div className="flex flex-col">
       <span className="truncate">{primary}</span>
       {subtitle ? <span className="text-xs text-muted-foreground">{subtitle}</span> : null}
+      <ViaLine row={row} />
     </div>
   )
 }
@@ -284,6 +368,7 @@ function downloadCsv(rows: AuditEventRow[]): void {
 }
 
 export function AuditLogPage() {
+  const intl = useIntl()
   const [eventType, setEventType] = useState<string>('all')
   const [timeRange, setTimeRange] = useState<TimeRange>('30d')
   const [actorEmailInput, setActorEmailInput] = useState<string>('')
@@ -463,12 +548,17 @@ export function AuditLogPage() {
                     <span className="w-12 shrink-0 font-medium text-foreground/60">When</span>
                     <InlineTimestamp iso={row.occurredAt} />
                   </div>
-                  {row.actorEmail && (
+                  {row.actorEmail || attributionLine(row, intl) ? (
                     <div className="flex gap-2">
                       <span className="w-12 shrink-0 font-medium text-foreground/60">Actor</span>
-                      <span className="truncate">{row.actorEmail}</span>
+                      <div className="flex min-w-0 flex-col">
+                        <span className="truncate">
+                          {row.actorEmail ?? (row.actorType ? `(${row.actorType})` : null)}
+                        </span>
+                        <ViaLine row={row} />
+                      </div>
                     </div>
-                  )}
+                  ) : null}
                   {row.targetType && (
                     <div className="flex gap-2">
                       <span className="w-12 shrink-0 font-medium text-foreground/60">Target</span>

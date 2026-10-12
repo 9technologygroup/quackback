@@ -29,6 +29,7 @@ import {
   type McpToolName,
   type UntrustedSpec,
 } from '../untrusted'
+import { recordMcpToolCall, type McpToolErrorCode } from '../tool-call-audit'
 
 const log = logger.child({ component: 'mcp-tools' })
 
@@ -266,30 +267,51 @@ export function registerTool<TArgs>(
   if (!untrusted) {
     throw new Error(`MCP tool "${def.name}" has no UNTRUSTED_TOOL_FIELDS declaration`)
   }
-  const wrapped = (async (args: TArgs): Promise<CallToolResult> => {
-    if (def.feature) {
-      const denied = await requireFeature(def.feature)
-      if (denied) return denied
+  const audited = def.annotations.readOnlyHint !== true
+  const wrapped = (async (args: TArgs, extra?: unknown): Promise<CallToolResult> => {
+    const { result, errorCode } = await runGuardedTool(auth, def, args, untrusted)
+    // Every call that can change something is audited, refused ones included,
+    // on the result the caller receives.
+    if (audited) {
+      await recordMcpToolCall({ auth, tool: def.name, args, result, errorCode, extra })
     }
-    if (def.scope) {
-      const denied = requireScope(auth, def.scope)
-      if (denied) return denied
-    }
-    if (def.teamOnly) {
-      const denied = requireTeamRole(auth)
-      if (denied) return denied
-    }
-    try {
-      const denied = requirePermissions(auth, requiredPermissions(def.permissions, args, auth))
-      if (denied) return denied
-      return markUntrusted(await def.handler(args), untrusted)
-    } catch (err) {
-      return errorResult(err)
-    }
+    return result
   }) as unknown as ToolCallback<never>
 
   // MCP SDK still types against an older Zod shape; the runtime schema is ours.
   server.tool(def.name, def.description, def.schema as never, def.annotations, wrapped)
+}
+
+/** Run a tool behind its guards, naming the outcome for the audit. */
+async function runGuardedTool<TArgs>(
+  auth: McpAuthContext,
+  def: ToolDef<TArgs>,
+  args: TArgs,
+  untrusted: UntrustedSpec
+): Promise<{ result: CallToolResult; errorCode: McpToolErrorCode | null }> {
+  if (def.feature) {
+    const denied = await requireFeature(def.feature)
+    if (denied) return { result: denied, errorCode: 'FEATURE_DISABLED' }
+  }
+  if (def.scope) {
+    const denied = requireScope(auth, def.scope)
+    if (denied) return { result: denied, errorCode: 'INSUFFICIENT_SCOPE' }
+  }
+  if (def.teamOnly) {
+    const denied = requireTeamRole(auth)
+    if (denied) return { result: denied, errorCode: 'FORBIDDEN' }
+  }
+  try {
+    const denied = requirePermissions(auth, requiredPermissions(def.permissions, args, auth))
+    if (denied) return { result: denied, errorCode: 'MISSING_PERMISSION' }
+    const result = markUntrusted(await def.handler(args), untrusted)
+    return { result, errorCode: result.isError ? 'TOOL_ERROR' : null }
+  } catch (err) {
+    return {
+      result: errorResult(err),
+      errorCode: err instanceof DomainException ? err.code : 'INTERNAL_ERROR',
+    }
+  }
 }
 
 // ============================================================================

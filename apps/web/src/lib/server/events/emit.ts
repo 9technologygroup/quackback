@@ -12,6 +12,7 @@
  * carry `dispatch_owner = relay`; job-worker / scheduler start converts them.
  */
 import { db, events, auditLog, type Database, type Transaction } from '@/lib/server/db'
+import { auditAttributionColumns } from '@/lib/server/audit/attribution'
 import { createId, type EvtId } from '@quackback/ids'
 import { logger } from '@/lib/server/logger'
 import { enqueueJob } from '@/lib/server/jobs/job-queue'
@@ -83,6 +84,8 @@ export async function emit<P>(
       afterValue: payload as unknown as Record<string, unknown>,
       requestId: context.correlationId ?? null,
       metadata: { eventId, source: context.source ?? null },
+      // How the change arrived, from the boundary the emit runs under.
+      ...auditAttributionColumns(),
     })
   }
 

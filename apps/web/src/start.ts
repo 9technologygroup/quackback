@@ -16,6 +16,7 @@ import { requestContextMiddleware } from '@/lib/server/middleware/request-contex
 import { userContentHostMiddleware } from '@/lib/server/middleware/user-content-host'
 import { serverFnLogMiddleware } from '@/lib/server/middleware/server-fn-log'
 import { workspaceContextMiddleware } from '@/lib/server/middleware/workspace-context'
+import { auditAttributionMiddleware } from '@/lib/server/middleware/audit-attribution'
 import { expireRouteContextOnWrite } from '@/lib/client/route-context-middleware'
 
 /**
@@ -42,12 +43,15 @@ export const startInstance = createStart(() => {
     // preflight carries no credentials and needs no database.
     // The user-content host (USER_CONTENT_URL) is narrowed to stored-file
     // reads before anything else looks at the request.
+    // Audit attribution last: it opens the request's attribution boundary, and
+    // anything it records must land in the workspace resolved above.
     requestMiddleware: [
       requestContextMiddleware,
       userContentHostMiddleware,
       oauthCorsMiddleware,
       workspaceContextMiddleware,
       csrfMiddleware,
+      auditAttributionMiddleware,
     ],
     // Server-function failures never reach the request middleware's error
     // branch (see server-fn-log.ts), so they are logged here instead. Unlike

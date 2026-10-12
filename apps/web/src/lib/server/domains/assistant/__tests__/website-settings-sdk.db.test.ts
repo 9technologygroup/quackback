@@ -233,7 +233,13 @@ describe('website settings through real MCP SDK, Postgres and scoped storage', (
         ).toEqual(['#0F766E', '#0F766E'])
         expect(await read()).toEqual(before)
         expect(await database.select().from(assistantPendingActions)).toHaveLength(1)
-        expect(await database.select().from(auditLog)).toHaveLength(0)
+        // Proposing changes no setting: the only audit row is the tool call.
+        expect(
+          (await database.select().from(auditLog)).map(({ eventType, metadata }) => ({
+            eventType,
+            metadata,
+          }))
+        ).toEqual([{ eventType: 'mcp.tool_call', metadata: { tool: 'propose_settings_change' } }])
         expect(transport.requests.map(({ headers, path }) => headers.host + path)).toEqual([
           'example.com/',
           'example.com/touch.png',

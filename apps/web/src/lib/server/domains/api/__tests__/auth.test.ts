@@ -247,6 +247,68 @@ describe('API Auth', () => {
       const result = await withApiKeyAuth(bearer())
       expect(result.principalId).toBe(mockApiKey.principalId)
     })
+
+    it('states the key as the request attribution, even when a permission gate then refuses it', async () => {
+      const { runWithAuditAttribution, getAuditAttribution, getAuditBoundaryActor } =
+        await import('@/lib/server/audit/attribution')
+      const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
+      vi.mocked(verifyApiKey).mockResolvedValue(mockApiKey)
+      mockAuthority.mockResolvedValue({
+        principal: { role: 'member', type: 'service', user: null },
+        owner: null,
+        role: 'member',
+        permissions: resolveActorPermissions('member'),
+      })
+
+      const seen = await runWithAuditAttribution(null, async () => {
+        await expect(
+          withApiKeyAuth(bearer(), { permission: PERMISSIONS.BILLING_MANAGE })
+        ).rejects.toThrow(ForbiddenError)
+        return { attribution: getAuditAttribution(), actor: getAuditBoundaryActor() }
+      })
+
+      expect(seen.attribution).toEqual({
+        channel: 'api',
+        credentialKind: 'api_key',
+        credentialId: mockApiKey.id,
+        clientName: 'Test Key',
+        onBehalfOfPrincipalId: mockApiKey.createdById,
+      })
+      expect(seen.actor).toEqual({
+        userId: null,
+        email: null,
+        role: 'member',
+        type: 'service',
+        authMethod: 'api_key',
+      })
+    })
+
+    it('keeps the MCP label when the key authenticates an MCP request', async () => {
+      const { runWithAuditAttribution, getAuditAttribution, MCP_ATTRIBUTION } =
+        await import('@/lib/server/audit/attribution')
+      const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
+      vi.mocked(verifyApiKey).mockResolvedValue(mockApiKey)
+      keyRole('admin')
+
+      const seen = await runWithAuditAttribution(MCP_ATTRIBUTION, async () => {
+        await withApiKeyAuth(bearer())
+        return getAuditAttribution()
+      })
+      expect(seen).toMatchObject({ channel: 'mcp', credentialId: mockApiKey.id })
+    })
+
+    it('leaves the request attribution empty when the key does not authenticate', async () => {
+      const { runWithAuditAttribution, getAuditAttribution } =
+        await import('@/lib/server/audit/attribution')
+      const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
+      vi.mocked(verifyApiKey).mockResolvedValue(null)
+
+      const seen = await runWithAuditAttribution(null, async () => {
+        await expect(withApiKeyAuth(bearer())).rejects.toThrow(UnauthorizedError)
+        return getAuditAttribution()
+      })
+      expect(seen).toBeNull()
+    })
   })
 
   describe('key scope enforcement (owner permissions ∩ key scopes)', () => {

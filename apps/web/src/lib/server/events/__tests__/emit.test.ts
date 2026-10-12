@@ -279,6 +279,36 @@ describe('emit()', () => {
     expect(noAudit).toHaveLength(0)
   })
 
+  it('stamps the active boundary attribution onto the audit row it writes', async () => {
+    const { runWithAuditAttribution, apiKeyAttribution } =
+      await import('@/lib/server/audit/attribution')
+    const creator = createId('principal')
+    const keyId = createId('api_key')
+    const auditedEntity = createId('post')
+    await runWithAuditAttribution(
+      apiKeyAttribution({ id: keyId, name: 'Zapier', createdById: creator }, 'api'),
+      () =>
+        db.transaction((tx) =>
+          emit(tx, auditedDef, {
+            payload: { postId: auditedEntity, note: 'hi' },
+            actor: { type: 'service', id: createId('principal') },
+            entityId: auditedEntity,
+          })
+        )
+    )
+    const [row] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.eventType, 'test.emit_audited'), eq(auditLog.targetId, auditedEntity)))
+    expect(row).toMatchObject({
+      channel: 'api',
+      credentialKind: 'api_key',
+      credentialId: keyId,
+      clientName: 'Zapier',
+      onBehalfOfPrincipalId: creator,
+    })
+  })
+
   it('inherit() bumps depth and threads causation from a parent event', () => {
     const parent: DomainEvent = {
       eventId: createId('event'),

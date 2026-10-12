@@ -302,3 +302,98 @@ describe('withAuditEvent', () => {
     })
   })
 })
+
+describe('recordAuditEvent attribution', () => {
+  const ON_BEHALF = 'principal_01h455vb4pex5vsknk084sn02r'
+
+  it('leaves every attribution column null outside any boundary', async () => {
+    await recordAuditEvent({ event: 'sso.config.changed', actor: { email: 'a@b.com' } })
+    expect(mockInsertValues.mock.calls[0][0]).toMatchObject({
+      channel: null,
+      credentialKind: null,
+      credentialId: null,
+      clientName: null,
+      onBehalfOfPrincipalId: null,
+    })
+  })
+
+  it.each([
+    ['ui', { channel: 'ui' }, { channel: 'ui', credentialKind: null, clientName: null }],
+    [
+      'api',
+      {
+        channel: 'api',
+        credentialKind: 'api_key',
+        credentialId: 'apikey_01h455vb4pex5vsknk084sn02q',
+        clientName: 'Zapier',
+        onBehalfOfPrincipalId: ON_BEHALF,
+      },
+      {
+        channel: 'api',
+        credentialKind: 'api_key',
+        credentialId: 'apikey_01h455vb4pex5vsknk084sn02q',
+        clientName: 'Zapier',
+        onBehalfOfPrincipalId: ON_BEHALF,
+      },
+    ],
+    [
+      'mcp',
+      {
+        channel: 'mcp',
+        credentialKind: 'oauth_client',
+        credentialId: 'client_abc',
+        clientName: 'Claude Desktop',
+        onBehalfOfPrincipalId: ON_BEHALF,
+      },
+      {
+        channel: 'mcp',
+        credentialKind: 'oauth_client',
+        credentialId: 'client_abc',
+        clientName: 'Claude Desktop',
+        onBehalfOfPrincipalId: ON_BEHALF,
+      },
+    ],
+    [
+      'assistant',
+      { channel: 'assistant', clientName: 'Quinn', onBehalfOfPrincipalId: ON_BEHALF },
+      { channel: 'assistant', credentialKind: null, onBehalfOfPrincipalId: ON_BEHALF },
+    ],
+    [
+      'workflow',
+      { channel: 'workflow', clientName: 'Auto-close' },
+      { channel: 'workflow', clientName: 'Auto-close', onBehalfOfPrincipalId: null },
+    ],
+    ['system', { channel: 'system' }, { channel: 'system', credentialId: null }],
+  ] as const)(
+    'stamps the %s boundary onto the row without the caller passing it',
+    async (_name, attribution, expected) => {
+      const { runWithAuditAttribution } = await import('../attribution')
+      await runWithAuditAttribution(attribution as never, async () => {
+        // Recorded after an await, the way real call sites run.
+        await Promise.resolve()
+        await recordAuditEvent({ event: 'sso.config.changed', actor: { email: 'a@b.com' } })
+      })
+      expect(mockInsertValues.mock.calls[0][0]).toMatchObject(expected)
+    }
+  )
+
+  it('stamps the boundary onto the transactional insert too', async () => {
+    const { runWithAuditAttribution } = await import('../attribution')
+    const { recordAuditEventInTransaction } = await import('../log')
+    const txValues = vi.fn().mockResolvedValue(undefined)
+    const tx = { insert: vi.fn(() => ({ values: txValues })) }
+    await runWithAuditAttribution(
+      { channel: 'assistant', clientName: 'Quinn', onBehalfOfPrincipalId: ON_BEHALF as never },
+      () =>
+        recordAuditEventInTransaction(tx as never, {
+          event: 'copilot.settings.applied',
+          actor: { email: 'a@b.com' },
+        })
+    )
+    expect(txValues.mock.calls[0][0]).toMatchObject({
+      channel: 'assistant',
+      clientName: 'Quinn',
+      onBehalfOfPrincipalId: ON_BEHALF,
+    })
+  })
+})

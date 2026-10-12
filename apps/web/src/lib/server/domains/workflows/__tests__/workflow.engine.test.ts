@@ -273,6 +273,48 @@ describe.skipIf(!fixture.available)('runWorkflow (real DB, rolled back)', () => 
     expect(applyAction.mock.calls[0][0]).toEqual({ type: 'close' })
   })
 
+  it('runs its actions under the workflow channel, fresh and resumed, whatever started it', async () => {
+    const { getAuditAttribution, runWithAuditAttribution } =
+      await import('@/lib/server/audit/attribution')
+    const seen: unknown[] = []
+    applyAction.mockImplementation(async () => {
+      seen.push(getAuditAttribution())
+      return 'ok'
+    })
+    const conversationId = await seedConversation()
+    const wf = await createWorkflow({
+      name: 'Escalate, wait, close',
+      class: 'background',
+      triggerType: 'conversation.created',
+      graph: {
+        nodes: [
+          { id: 't', type: 'trigger' },
+          { id: 'a1', type: 'action', action: { type: 'set_priority', priority: 'urgent' } },
+          { id: 'w', type: 'wait', seconds: 60 },
+          { id: 'a2', type: 'action', action: { type: 'close' } },
+        ],
+        edges: [
+          { from: 't', to: 'a1' },
+          { from: 'a1', to: 'w' },
+          { from: 'w', to: 'a2' },
+        ],
+      },
+    })
+    await setWorkflowStatus(wf.id, 'live')
+
+    // Started by an API write: the workflow, not the key, made these changes.
+    const waiting = await runWithAuditAttribution(
+      { channel: 'api', credentialKind: 'api_key', clientName: 'Zapier' },
+      () => runWorkflow(wf, ctx(), { conversationId })
+    )
+    expect(waiting?.state).toBe('waiting')
+    await runWithAuditAttribution({ channel: 'system' }, () => resumeWorkflowRun(waiting!.id))
+
+    const expected = { channel: 'workflow', clientName: 'Escalate, wait, close' }
+    expect(seen).toEqual([expected, expected])
+    applyAction.mockResolvedValue('ok')
+  })
+
   it('does not resume a run that was interrupted while waiting', async () => {
     const conversationId = await seedConversation()
     const wf = await createWorkflow({

@@ -375,6 +375,7 @@ describe('replayGateVerdict', () => {
       '0298_status_maintenance_started_at',
       '0299_status_incident_notify_subscribers',
       '0300_status_incident_details_edited_at',
+      '0301_audit_attribution',
     ])
     const verdict = replayGateVerdict(before, verdictsFor(replaySetFor(before)), false)
     expect(verdict.ok).toBe(false)

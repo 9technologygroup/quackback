@@ -27,6 +27,20 @@ vi.mock('better-auth/oauth2', () => ({
 
 const mockFindFirst = vi.fn()
 
+// The plan gate runs after auth and before any tool, so it sees what anything
+// recorded in that window would be attributed to.
+const entitlementGate = vi.hoisted(() => ({ seen: [] as unknown[] }))
+vi.mock('@/lib/server/domains/settings/cloud/entitlements', async (importOriginal) => {
+  const { getAuditAttribution } = await import('@/lib/server/audit/attribution')
+  return {
+    ...(await importOriginal<typeof import('@/lib/server/domains/settings/cloud/entitlements')>()),
+    requireEntitlement: async () => {
+      entitlementGate.seen.push(getAuditAttribution())
+    },
+  }
+})
+const mockAuditInsertValues = vi.fn(async () => undefined)
+
 // The key's authority (resolveApiKeyAuthority) is covered against real Postgres
 // in api-key-owner-access.db.test.ts. Here it is driven off the same principal
 // row mockFindFirst serves: the mock key is a legacy human-backed key, so that
@@ -64,6 +78,8 @@ vi.mock('@/lib/server/db', async (importOriginal) => ({
     query: {
       principal: { findFirst: (...args: unknown[]) => mockFindFirst(...args) },
     },
+    // The only insert this suite reaches is the tool-call audit row.
+    insert: () => ({ values: (...args: unknown[]) => mockAuditInsertValues(...(args as [])) }),
   },
   eq: vi.fn((_a: unknown, _b: unknown) => 'eq-condition'),
 }))
@@ -2721,6 +2737,182 @@ describe('MCP HTTP Handler', () => {
       const response = await handleMcpRequest(request)
       // Stateless: DELETE either succeeds as no-op (200) or rejects (405)
       expect([200, 405]).toContain(response.status)
+    })
+  })
+
+  // ===========================================================================
+  // Audit attribution
+  // ===========================================================================
+
+  describe('Audit attribution', () => {
+    const createPostCall = () =>
+      jsonRpcRequest('tools/call', {
+        name: 'create_post',
+        arguments: { boardId: 'board_test', title: 'Attributed' },
+      })
+
+    /** Capture the attribution the write sees at the moment it runs. */
+    async function attributionSeenByCreatePost() {
+      const { createPost } = await import('@/lib/server/domains/posts/post.service')
+      const { getAuditAttribution } = await import('@/lib/server/audit/attribution')
+      const seen: unknown[] = []
+      vi.mocked(createPost).mockImplementationOnce(async () => {
+        seen.push(getAuditAttribution())
+        return {
+          id: 'post_new',
+          title: 'Attributed',
+          boardId: 'board_test',
+          statusId: 'post_status_test',
+          createdAt: new Date('2026-01-01'),
+        } as never
+      })
+      return seen
+    }
+
+    it('runs an OAuth tool call as the client, on behalf of the user who granted it', async () => {
+      const { verifyAccessTokenRequest } = await import('better-auth/oauth2')
+      vi.mocked(verifyAccessTokenRequest).mockResolvedValue({
+        sub: MOCK_USER_ID,
+        principalId: MOCK_MEMBER_ID,
+        scope: 'read:feedback write:feedback',
+        name: 'Jane Admin',
+        email: 'jane@example.com',
+        client_id: 'client_desktop',
+        azp: 'client_desktop',
+      })
+      // The client's registered name rides on the principal re-read.
+      mockFindFirst.mockResolvedValue({ role: 'admin', clientName: 'Claude Desktop' })
+      const seen = await attributionSeenByCreatePost()
+
+      const { handleMcpRequest } = await import('../handler')
+      const response = await handleMcpRequest(oauthRequest(createPostCall()))
+
+      expect(response.status).toBe(200)
+      expect(seen).toEqual([
+        {
+          channel: 'mcp',
+          credentialKind: 'oauth_client',
+          credentialId: 'client_desktop',
+          clientName: 'Claude Desktop',
+          onBehalfOfPrincipalId: MOCK_MEMBER_ID,
+        },
+      ])
+      // One read for role and client name, never a second round-trip.
+      expect(mockFindFirst).toHaveBeenCalledTimes(1)
+      expect(mockFindFirst.mock.calls[0][0]).toHaveProperty('extras.clientName')
+    })
+
+    it('audits an OAuth write once, as the client, for the user', async () => {
+      const { verifyAccessTokenRequest } = await import('better-auth/oauth2')
+      vi.mocked(verifyAccessTokenRequest).mockResolvedValue({
+        sub: MOCK_USER_ID,
+        principalId: MOCK_MEMBER_ID,
+        scope: 'read:feedback write:feedback',
+        name: 'Jane Admin',
+        email: 'jane@example.com',
+        client_id: 'client_desktop',
+      })
+      mockFindFirst.mockResolvedValue({ role: 'admin', clientName: 'Claude Desktop' })
+
+      const { handleMcpRequest } = await import('../handler')
+      const response = await handleMcpRequest(oauthRequest(createPostCall()))
+
+      expect(response.status).toBe(200)
+      expect(mockAuditInsertValues).toHaveBeenCalledTimes(1)
+      expect(mockAuditInsertValues.mock.calls[0]).toEqual([
+        expect.objectContaining({
+          eventType: 'mcp.tool_call',
+          eventOutcome: 'success',
+          actorUserId: MOCK_USER_ID,
+          authMethod: 'oauth',
+          channel: 'mcp',
+          credentialKind: 'oauth_client',
+          credentialId: 'client_desktop',
+          clientName: 'Claude Desktop',
+          onBehalfOfPrincipalId: MOCK_MEMBER_ID,
+          metadata: { tool: 'create_post' },
+        }),
+      ])
+    })
+
+    it('does not audit a read-only tool call', async () => {
+      await setupValidAuth()
+      const { handleMcpRequest } = await import('../handler')
+      const response = await handleMcpRequest(
+        mcpRequest(jsonRpcRequest('tools/call', { name: 'search', arguments: { query: 'x' } }))
+      )
+      expect(response.status).toBe(200)
+      expect(mockAuditInsertValues).not.toHaveBeenCalled()
+    })
+
+    it('labels the request MCP from the start, so nothing in it reads as the REST API', async () => {
+      await setupValidAuth()
+      entitlementGate.seen.length = 0
+      const { runWithAuditAttribution } = await import('@/lib/server/audit/attribution')
+      const { handleMcpRequest } = await import('../handler')
+
+      // Inside the request middleware's own slot, as every request is.
+      const response = await runWithAuditAttribution(null, () =>
+        handleMcpRequest(mcpRequest(jsonRpcRequest('tools/list')))
+      )
+
+      expect(response.status).toBe(200)
+      expect(entitlementGate.seen).toEqual([
+        {
+          channel: 'mcp',
+          credentialKind: 'api_key',
+          credentialId: MOCK_API_KEY.id,
+          clientName: 'Test Key',
+          onBehalfOfPrincipalId: MOCK_API_KEY.createdById,
+        },
+      ])
+    })
+
+    it('labels an OAuth request as its client from the moment it is known', async () => {
+      const { verifyAccessTokenRequest } = await import('better-auth/oauth2')
+      vi.mocked(verifyAccessTokenRequest).mockResolvedValue({
+        sub: MOCK_USER_ID,
+        principalId: MOCK_MEMBER_ID,
+        scope: 'read:feedback',
+        client_id: 'client_desktop',
+      })
+      mockFindFirst.mockResolvedValue({ role: 'admin', clientName: 'Claude Desktop' })
+      entitlementGate.seen.length = 0
+      const { runWithAuditAttribution } = await import('@/lib/server/audit/attribution')
+      const { handleMcpRequest } = await import('../handler')
+
+      await runWithAuditAttribution(null, () =>
+        handleMcpRequest(oauthRequest(jsonRpcRequest('tools/list')))
+      )
+
+      expect(entitlementGate.seen).toEqual([
+        {
+          channel: 'mcp',
+          credentialKind: 'oauth_client',
+          credentialId: 'client_desktop',
+          clientName: 'Claude Desktop',
+          onBehalfOfPrincipalId: MOCK_MEMBER_ID,
+        },
+      ])
+    })
+
+    it('runs an API-key tool call as the key, on behalf of the teammate who created it', async () => {
+      await setupValidAuth()
+      const seen = await attributionSeenByCreatePost()
+
+      const { handleMcpRequest } = await import('../handler')
+      const response = await handleMcpRequest(mcpRequest(createPostCall()))
+
+      expect(response.status).toBe(200)
+      expect(seen).toEqual([
+        {
+          channel: 'mcp',
+          credentialKind: 'api_key',
+          credentialId: MOCK_API_KEY.id,
+          clientName: 'Test Key',
+          onBehalfOfPrincipalId: MOCK_API_KEY.createdById,
+        },
+      ])
     })
   })
 })

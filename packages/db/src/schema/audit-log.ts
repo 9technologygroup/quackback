@@ -43,6 +43,23 @@ export const auditLog = pgTable(
     beforeValue: jsonb('before_value'),
     afterValue: jsonb('after_value'),
     metadata: jsonb('metadata'),
+    /**
+     * What carried the change: 'ui' | 'api' | 'mcp' | 'assistant' | 'workflow' |
+     * 'system'. Null on rows written before attribution existed and on paths
+     * no boundary attributes.
+     */
+    channel: text('channel'),
+    /** The credential that made the change: 'api_key' | 'oauth_client', or null. */
+    credentialKind: text('credential_kind'),
+    /** The API key id or OAuth client id. */
+    credentialId: text('credential_id'),
+    /** The credential's name at write time: the key name or the OAuth client's registered name. */
+    clientName: text('client_name'),
+    /**
+     * The person a credential acts for: the OAuth user, or the teammate who
+     * created the API key. No foreign key, like the denormalised actor fields.
+     */
+    onBehalfOfPrincipalId: typeIdColumnNullable('principal')('on_behalf_of_principal_id'),
   },
   (table) => [
     // Named to match the constraint the SQL migration created.
