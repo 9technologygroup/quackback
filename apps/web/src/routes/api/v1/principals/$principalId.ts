@@ -63,120 +63,103 @@ async function fetchTeamMemberWithUser(principalId: PrincipalId) {
   }
 }
 
-export const Route = createFileRoute('/api/v1/principals/$principalId')({
-  server: {
-    handlers: {
-      /**
-       * GET /api/v1/principals/:principalId
-       * Get a single team member by ID
-       */
-      GET: async ({ request, params }) => {
-        try {
-          await withApiKeyAuth(request, { permission: PERMISSIONS.MEMBER_VIEW })
+type PrincipalRouteArgs = { request: Request; params: { principalId: string } }
 
-          const principalId = parseTypeId<PrincipalId>(
-            params.principalId,
-            'principal',
-            'principal ID'
-          )
+/** Handlers shared with the deprecated /api/v1/members/$principalId alias. */
+export const principalHandlers = {
+  /**
+   * GET /api/v1/principals/:principalId
+   * Get a single team member by ID
+   */
+  GET: async ({ request, params }: PrincipalRouteArgs) => {
+    try {
+      await withApiKeyAuth(request, { permission: PERMISSIONS.MEMBER_VIEW })
 
-          const result = await fetchTeamMemberWithUser(principalId)
+      const principalId = parseTypeId<PrincipalId>(params.principalId, 'principal', 'principal ID')
 
-          return successResponse(result)
-        } catch (error) {
-          return handleDomainError(error)
-        }
-      },
+      const result = await fetchTeamMemberWithUser(principalId)
 
-      /**
-       * PATCH /api/v1/principals/:principalId
-       * Update a team member's role, or add a portal user who has signed in
-       * to the team (takes a seat). Only an admin key grants the Admin role.
-       */
-      PATCH: async ({ request, params }) => {
-        try {
-          const auth = await withApiKeyAuth(request, {
-            permission: PERMISSIONS.MEMBER_MANAGE,
-          })
-          const actingPrincipalId = auth.principalId
-
-          const principalId = parseTypeId<PrincipalId>(
-            params.principalId,
-            'principal',
-            'principal ID'
-          )
-
-          const body = await request.json()
-          const parsed = updateMemberSchema.safeParse(body)
-
-          if (!parsed.success) {
-            return badRequestResponse('Invalid request body', {
-              errors: parsed.error.flatten().fieldErrors,
-            })
-          }
-
-          const { updateMemberRole } =
-            await import('@/lib/server/domains/principals/principal.service')
-
-          const { resolveActorPermissions } = await import('@/lib/server/policy/permissions')
-          await updateMemberRole(
-            principalId,
-            parsed.data.role,
-            actingPrincipalId,
-            apiKeyActor(auth),
-            request.headers,
-            {
-              assignRoleId: parsed.data.roleId as RoleId | undefined,
-              // API keys carry the owner-preset authority model; the ceiling for
-              // an assignment grant is the key owner's resolved set, and the
-              // Admin role needs an admin key owner.
-              granterPermissions: [...resolveActorPermissions(auth.role)],
-              granterRole: auth.role,
-            }
-          )
-
-          const result = await fetchTeamMemberWithUser(principalId)
-
-          return successResponse(result)
-        } catch (error) {
-          return handleDomainError(error)
-        }
-      },
-
-      /**
-       * DELETE /api/v1/principals/:principalId
-       * Remove a team member (converts them to a portal user)
-       */
-      DELETE: async ({ request, params }) => {
-        try {
-          const auth = await withApiKeyAuth(request, {
-            permission: PERMISSIONS.MEMBER_MANAGE,
-          })
-
-          const principalId = parseTypeId<PrincipalId>(
-            params.principalId,
-            'principal',
-            'principal ID'
-          )
-
-          const { removeTeamMember } =
-            await import('@/lib/server/domains/principals/principal.service')
-
-          await removeTeamMember(
-            principalId,
-            auth.principalId,
-            apiKeyActor(auth),
-            request.headers,
-            {
-              granterRole: auth.role,
-            }
-          )
-
-          return noContentResponse()
-        } catch (error) {
-          return handleDomainError(error)
-        }
-      },
-    },
+      return successResponse(result)
+    } catch (error) {
+      return handleDomainError(error)
+    }
   },
+
+  /**
+   * PATCH /api/v1/principals/:principalId
+   * Update a team member's role, or add a portal user who has signed in
+   * to the team (takes a seat). Only an admin key grants the Admin role.
+   */
+  PATCH: async ({ request, params }: PrincipalRouteArgs) => {
+    try {
+      const auth = await withApiKeyAuth(request, {
+        permission: PERMISSIONS.MEMBER_MANAGE,
+      })
+      const actingPrincipalId = auth.principalId
+
+      const principalId = parseTypeId<PrincipalId>(params.principalId, 'principal', 'principal ID')
+
+      const body = await request.json()
+      const parsed = updateMemberSchema.safeParse(body)
+
+      if (!parsed.success) {
+        return badRequestResponse('Invalid request body', {
+          errors: parsed.error.flatten().fieldErrors,
+        })
+      }
+
+      const { updateMemberRole } = await import('@/lib/server/domains/principals/principal.service')
+
+      const { resolveActorPermissions } = await import('@/lib/server/policy/permissions')
+      await updateMemberRole(
+        principalId,
+        parsed.data.role,
+        actingPrincipalId,
+        apiKeyActor(auth),
+        request.headers,
+        {
+          assignRoleId: parsed.data.roleId as RoleId | undefined,
+          // API keys carry the owner-preset authority model; the ceiling for
+          // an assignment grant is the key owner's resolved set, and the
+          // Admin role needs an admin key owner.
+          granterPermissions: [...resolveActorPermissions(auth.role)],
+          granterRole: auth.role,
+        }
+      )
+
+      const result = await fetchTeamMemberWithUser(principalId)
+
+      return successResponse(result)
+    } catch (error) {
+      return handleDomainError(error)
+    }
+  },
+
+  /**
+   * DELETE /api/v1/principals/:principalId
+   * Remove a team member (converts them to a portal user)
+   */
+  DELETE: async ({ request, params }: PrincipalRouteArgs) => {
+    try {
+      const auth = await withApiKeyAuth(request, {
+        permission: PERMISSIONS.MEMBER_MANAGE,
+      })
+
+      const principalId = parseTypeId<PrincipalId>(params.principalId, 'principal', 'principal ID')
+
+      const { removeTeamMember } = await import('@/lib/server/domains/principals/principal.service')
+
+      await removeTeamMember(principalId, auth.principalId, apiKeyActor(auth), request.headers, {
+        granterRole: auth.role,
+      })
+
+      return noContentResponse()
+    } catch (error) {
+      return handleDomainError(error)
+    }
+  },
+}
+
+export const Route = createFileRoute('/api/v1/principals/$principalId')({
+  server: { handlers: principalHandlers },
 })

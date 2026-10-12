@@ -3,13 +3,7 @@
  */
 import 'zod-openapi'
 import { z } from 'zod'
-import {
-  registerPath,
-  TypeIdSchema,
-  createItemResponseSchema,
-  createPaginatedResponseSchema,
-  asSchema,
-} from '../openapi'
+import { registerPath, TypeIdSchema, createItemResponseSchema, asSchema } from '../openapi'
 import {
   TimestampSchema,
   UnauthorizedErrorSchema,
@@ -28,14 +22,6 @@ const TeamMemberSchema = z.object({
   createdAt: TimestampSchema,
 })
 
-// Team Member list item (simplified)
-const TeamMemberListItemSchema = z.object({
-  id: TypeIdSchema,
-  name: z.string().nullable(),
-  email: z.string(),
-  image: z.string().nullable(),
-})
-
 // Request body schemas
 const UpdateMemberRoleSchema = z
   .object({
@@ -46,6 +32,29 @@ const UpdateMemberRoleSchema = z
     }),
   })
   .meta({ description: 'Update member role request body' })
+
+type PathMethods = Parameters<typeof registerPath>[1]
+
+/**
+ * Register a team-member operation at its real `/principals` path and at the
+ * deprecated `/members` alias, which serves the same handlers.
+ */
+function registerMemberPath(suffix: string, methods: PathMethods) {
+  registerPath(`/principals${suffix}`, methods)
+  const aliased = Object.fromEntries(
+    Object.entries(methods).map(([method, operation]) => [
+      method,
+      {
+        ...(operation as object),
+        deprecated: true,
+        description:
+          `Deprecated alias of ${method.toUpperCase()} /principals${suffix}; use that path instead. ` +
+          ((operation as { description?: string }).description ?? ''),
+      },
+    ])
+  ) as PathMethods
+  registerPath(`/members${suffix}`, aliased)
+}
 
 // Error response schemas
 const ForbiddenErrorSchema = z
@@ -69,8 +78,8 @@ const SeatLimitErrorSchema = z
   })
   .meta({ description: 'Seat limit error' })
 
-// Register GET /members
-registerPath('/members', {
+// Register GET /principals (and the deprecated /members alias)
+registerMemberPath('', {
   get: {
     tags: ['Members'],
     summary: 'List team members',
@@ -80,7 +89,7 @@ registerPath('/members', {
         description: 'List of team members',
         content: {
           'application/json': {
-            schema: createPaginatedResponseSchema(TeamMemberListItemSchema, 'List of team members'),
+            schema: z.object({ data: z.array(TeamMemberSchema) }),
           },
         },
       },
@@ -92,8 +101,8 @@ registerPath('/members', {
   },
 })
 
-// Register GET /members/{principalId}
-registerPath('/members/{principalId}', {
+// Register GET /principals/{principalId} (and the deprecated /members alias)
+registerMemberPath('/{principalId}', {
   get: {
     tags: ['Members'],
     summary: 'Get a team member',
@@ -128,8 +137,8 @@ registerPath('/members/{principalId}', {
   },
 })
 
-// Register PATCH /members/{principalId}
-registerPath('/members/{principalId}', {
+// Register PATCH /principals/{principalId} (and the deprecated /members alias)
+registerMemberPath('/{principalId}', {
   patch: {
     tags: ['Members'],
     summary: 'Update a team member',
@@ -188,8 +197,8 @@ registerPath('/members/{principalId}', {
   },
 })
 
-// Register DELETE /members/{principalId}
-registerPath('/members/{principalId}', {
+// Register DELETE /principals/{principalId} (and the deprecated /members alias)
+registerMemberPath('/{principalId}', {
   delete: {
     tags: ['Members'],
     summary: 'Remove a team member',
