@@ -4,7 +4,7 @@ import { useInfiniteScroll } from '@/lib/client/hooks/use-infinite-scroll'
 import { RoadmapCard } from './roadmap-card'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   usePublicRoadmapPosts,
   flattenRoadmapViewPosts,
@@ -112,7 +112,6 @@ export function RoadmapColumn({
               )}
             </div>
           )}
-          <ScrollBar />
         </ScrollArea>
       </CardContent>
     </Card>

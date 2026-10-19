@@ -18,6 +18,7 @@ import {
   NotFoundErrorSchema,
   ValidationErrorSchema,
 } from './common'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 // PostTag nested schema (shared between list and detail)
 const TagSchema = z.object({
@@ -137,7 +138,7 @@ const CreatePostSchema = z
       .meta({ description: 'Post title', example: 'Add dark mode support' }),
     content: z
       .string()
-      .max(10000)
+      .max(MAX_POST_CONTENT_LENGTH)
       .meta({ description: 'Post content (optional)', example: 'It would be great to have...' }),
     boardId: TypeIdSchema.meta({
       description: 'Board ID',
@@ -151,7 +152,7 @@ const CreatePostSchema = z
 const UpdatePostSchema = z
   .object({
     title: z.string().min(1).max(200).optional(),
-    content: z.string().max(10000).optional(),
+    content: z.string().max(MAX_POST_CONTENT_LENGTH).optional(),
     statusId: z
       .string()
       .nullable()

@@ -26,7 +26,8 @@ import {
   type PrincipalId,
   type SegmentId,
 } from '@quackback/ids'
-import type { PublicPostListResult } from './post.types'
+import { POST_LIST_EXCERPT_LENGTH, type PublicPostListResult } from './post.types'
+import { truncate } from '@/lib/shared/utils/string'
 import type { RespondedFilter } from '@/lib/shared/types/filters'
 import { postViewFilter, isTeamActor, ANONYMOUS_ACTOR, type Actor } from '@/lib/server/policy'
 
@@ -337,7 +338,7 @@ export async function listPublicPostsWithVotesAndAvatars(
     return {
       id: post.id,
       title: post.title,
-      content: post.content,
+      content: truncate(post.content, POST_LIST_EXCERPT_LENGTH),
       statusId: post.statusId,
       voteCount: post.voteCount,
       commentCount: post.commentCount,
@@ -403,7 +404,7 @@ export async function listPublicPosts(
   const items = trimmedResults.map((post) => ({
     id: post.id,
     title: post.title,
-    content: post.content,
+    content: truncate(post.content, POST_LIST_EXCERPT_LENGTH),
     statusId: post.statusId,
     voteCount: post.voteCount,
     authorName: post.authorName,

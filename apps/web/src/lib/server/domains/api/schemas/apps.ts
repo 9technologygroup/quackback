@@ -15,6 +15,7 @@ import {
 } from '../openapi'
 import { TimestampSchema } from './common'
 import { errorResponses } from './errors'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const RequesterSchema = z.object({
   email: z.string().email(),
@@ -40,7 +41,11 @@ const UnlinkBodySchema = createRequestBodySchema({
 const CreatePostBodySchema = createRequestBodySchema({
   boardId: TypeIdSchema,
   title: z.string().min(1).max(200),
-  content: z.string().max(10000).optional().meta({ description: 'Markdown body, default empty' }),
+  content: z
+    .string()
+    .max(MAX_POST_CONTENT_LENGTH)
+    .optional()
+    .meta({ description: 'Markdown body, default empty' }),
   link: z
     .object({
       integrationType: z.string().min(1),

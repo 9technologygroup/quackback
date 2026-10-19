@@ -80,11 +80,22 @@ export const tiptapContentSchema: z.ZodType<DbTiptapContent> = z.object({
 })
 
 /**
+ * Maximum length of a post body, in characters.
+ *
+ * The `posts.content` column is `text`, so this is purely a product limit — it
+ * exists to keep pathological bodies out of list payloads and imports, not to
+ * satisfy the database. Every AI path truncates well below this on its own
+ * (embeddings 8k, summary 6k, sentiment 3k, merge assessment 2k), so raising it
+ * does not move token spend.
+ */
+export const MAX_POST_CONTENT_LENGTH = 50_000
+
+/**
  * Schema for admin creating a post
  */
 export const createPostSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(10000),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH),
   contentJson: tiptapContentSchema.optional(),
   boardId: boardIdSchema,
   statusId: postStatusIdSchema.optional(),
@@ -96,7 +107,7 @@ export const createPostSchema = z.object({
  */
 export const editPostSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(10000),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH),
   boardId: boardIdSchema,
   statusId: postStatusIdSchema.optional(),
   tagIds: tagIdsSchema,
@@ -131,7 +142,7 @@ export type ListPublicPostsInput = z.infer<typeof listPublicPostsSchema>
 export const createPublicPostSchema = z.object({
   boardId: z.string(),
   title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(10000).optional().default(''),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional().default(''),
   contentJson: tiptapContentSchema.optional(),
   metadata: z.record(z.string(), z.string()).optional(),
   customFields: z.record(z.string(), z.unknown()).optional(),

@@ -36,6 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 interface ConvertToPostDialogProps {
   conversationId: ConversationId
@@ -231,7 +232,7 @@ export function ConvertToPostDialog({
             <Textarea
               id="convert-content"
               value={content}
-              maxLength={10000}
+              maxLength={MAX_POST_CONTENT_LENGTH}
               rows={4}
               onChange={(e) => setContent(e.target.value)}
             />

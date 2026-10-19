@@ -22,6 +22,7 @@ import {
   WRITE,
   type AuthorAt,
 } from './helpers'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 // ============================================================================
 // Tool registration
@@ -218,7 +219,7 @@ Example: suggest_post({ conversationId: "conversation_01...", boardId: "board_01
       conversationId: z.string().describe('Conversation TypeID (must be resolved)'),
       boardId: z.string().describe('Suggested board TypeID'),
       title: z.string().min(3).max(200),
-      content: z.string().max(10000).default(''),
+      content: z.string().max(MAX_POST_CONTENT_LENGTH).default(''),
     },
     annotations: WRITE,
     scope: 'write:chat',

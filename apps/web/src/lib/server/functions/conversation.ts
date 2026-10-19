@@ -69,6 +69,7 @@ import type { RequesterTicketDTO, ConversationTicketSummary } from '@/lib/server
 import { AI_INBOX_BUCKETS } from '@/lib/server/domains/assistant/assistant.involvement'
 import { ConflictError, ForbiddenError } from '@/lib/shared/errors'
 import { logger } from '@/lib/server/logger'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const log = logger.child({ component: 'conversation' })
 
@@ -1189,9 +1190,9 @@ const convertSchema = z.object({
   conversationId: z.string(),
   boardId: z.string(),
   title: z.string().max(200).optional(),
-  content: z.string().max(10000).optional(),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional(),
   asUpvoteOfPostId: z.string().optional(),
-  sourceMessageContent: z.string().max(10000).optional(),
+  sourceMessageContent: z.string().max(MAX_POST_CONTENT_LENGTH).optional(),
 })
 
 /** Create a feedback post from a conversation (create new, or upvote existing). */

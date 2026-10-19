@@ -55,6 +55,7 @@ import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
 import { toIsoStringOrNull } from '@/lib/shared/utils'
 import { roadmapIdSchema, postStatusIdSchema } from '@quackback/ids/zod'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const log = logger.child({ component: 'public-posts' })
 
@@ -65,7 +66,7 @@ const getPostPermissionsSchema = z.object({
 const userEditPostSchema = z.object({
   postId: z.string(),
   title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(10000),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH),
   contentJson: tiptapContentSchema.optional(),
 })
 

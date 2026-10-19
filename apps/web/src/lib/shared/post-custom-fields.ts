@@ -16,7 +16,7 @@
 import type { BoardCustomField, CustomFieldValues } from '@/lib/shared/db-types'
 
 /** Upper bound on a stored text/long_text answer. Answers land in the post's
- *  customFieldValues JSON, so — like the 10,000-char content cap — a bound
+ *  customFieldValues JSON, so — like the post content cap — a bound
  *  keeps an anonymous submitter from writing unbounded blobs into the
  *  column. */
 export const POST_CUSTOM_FIELD_TEXT_MAX_LENGTH = 4000

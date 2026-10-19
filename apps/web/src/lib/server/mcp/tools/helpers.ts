@@ -514,7 +514,7 @@ Example: "## New feature\\n\\nAdds **dark mode**. See screenshot:\\n\\n![dark mo
 
 /**
  * Shared tail for rich-content field `.describe()` blurbs. Each schema
- * prepends its own lead ("Post content (max 10,000 characters).", ...) so the
+ * prepends its own lead ("Post content (max N characters).", ...) so the
  * format/rehost wording stays identical across posts, changelog, and
  * help-center tools.
  */

@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/select'
 import { ArrowLeftIcon, Loader2Icon } from 'lucide-react'
 import { useAppContext } from './use-app-context'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 interface Board {
   id: string
@@ -151,7 +152,7 @@ export function SidebarCreateForm({ initialTitle, onBack, onCreated }: SidebarCr
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Optional description..."
             className="mt-1 min-h-[80px] text-sm"
-            maxLength={10000}
+            maxLength={MAX_POST_CONTENT_LENGTH}
           />
         </div>
 

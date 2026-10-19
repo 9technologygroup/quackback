@@ -314,7 +314,7 @@ describe('feedback header post composer', () => {
     renderHeader()
     typeTitle('Dark mode')
     await screen.findByTestId('editor')
-    const long = 'x'.repeat(10_001)
+    const long = 'x'.repeat(50_001)
     act(() => {
       editor.onDocumentChange!({
         json: () => paragraph(long),
@@ -324,7 +324,7 @@ describe('feedback header post composer', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
 
-    expect(await screen.findByText('Keep the details under 10,000 characters.')).toBeTruthy()
+    expect(await screen.findByText('Keep the details under 50,000 characters.')).toBeTruthy()
     expect(createPost).not.toHaveBeenCalled()
   })
 

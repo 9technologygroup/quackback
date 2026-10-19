@@ -33,6 +33,7 @@ import { contentHoldReason } from '@/lib/server/content/content-holds'
 import { recordAuditEvent } from '@/lib/server/audit/log'
 import { logger } from '@/lib/server/logger'
 import { recalculateCanonicalVoteCount } from './post.merge-ids'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const log = logger.child({ component: 'post-user-actions' })
 
@@ -120,8 +121,11 @@ export async function userEditPost(
   if (input.title.length > 200) {
     throw new ValidationError('VALIDATION_ERROR', 'Title must be 200 characters or less')
   }
-  if (input.content.length > 10000) {
-    throw new ValidationError('VALIDATION_ERROR', 'Content must be 10,000 characters or less')
+  if (input.content.length > MAX_POST_CONTENT_LENGTH) {
+    throw new ValidationError(
+      'VALIDATION_ERROR',
+      `Content must be ${MAX_POST_CONTENT_LENGTH.toLocaleString()} characters or less`
+    )
   }
 
   // Fetch post with status + portal config in parallel (eliminates duplicate fetches)

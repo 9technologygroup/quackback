@@ -17,12 +17,13 @@ import {
 import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
 import type { BoardId, PrincipalId, PostStatusId, PostTagId } from '@quackback/ids'
 import { segmentIdsForPrincipal } from '@/lib/server/domains/segments/segment-membership.service'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 // Input validation schemas
 const createPostSchema = z.object({
   boardId: z.string().min(1, 'Board ID is required'),
   title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(10000).optional().default(''),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional().default(''),
   statusId: z.string().optional(),
   tagIds: z.array(z.string()).optional(),
   createdAt: z.string().datetime().optional(),

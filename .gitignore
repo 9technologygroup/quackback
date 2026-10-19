@@ -39,6 +39,7 @@ yarn-error.log*
 coverage
 .nyc_output
 .vitest/
+discord-triage/
 
 # Playwright
 playwright-report/

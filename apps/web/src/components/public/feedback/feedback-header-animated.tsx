@@ -32,6 +32,7 @@ import { PUBLIC_FEEDBACK_EDITOR_FEATURES } from '@/components/public/feedback/fe
 import type { EditorDocument } from '@/components/ui/rich-text-editor'
 import { useSessionContext } from '@/lib/client/hooks/use-root-context'
 import { shownName } from '@/lib/shared/greeting-name'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 interface BoardOption {
   id: string
@@ -62,7 +63,7 @@ export interface FeedbackHeaderProps {
 
 /** The server's limits for a new post's title and details (createPublicPostSchema). */
 const TITLE_MAX_LENGTH = 200
-const DETAILS_MAX_LENGTH = 10_000
+const DETAILS_MAX_LENGTH = MAX_POST_CONTENT_LENGTH
 
 export function FeedbackHeaderAnimated({
   boards,

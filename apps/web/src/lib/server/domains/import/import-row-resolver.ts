@@ -16,6 +16,7 @@ import { slugify } from '@/lib/shared/utils/slugify'
 import type { BoardId, PrincipalId, PostTagId, PostStatusId } from '@quackback/ids'
 import type { ImportRowError } from './types'
 import type { ImportUserResolver } from './user-resolver'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 export const MAX_TAGS_PER_POST = 20
 export const BATCH_SIZE = 100
@@ -44,7 +45,12 @@ export const AUTHOR_REQUIRED_MESSAGE = 'Author name or email is required'
 export const csvRowSchema = z
   .object({
     title: z.string().min(1, 'Title is required').max(200, 'Title must be 200 characters or less'),
-    content: z.string().max(10000, 'Content must be 10000 characters or less'),
+    content: z
+      .string()
+      .max(
+        MAX_POST_CONTENT_LENGTH,
+        `Content must be ${MAX_POST_CONTENT_LENGTH.toLocaleString()} characters or less`
+      ),
     status: z.string().optional(),
     tags: z.string().optional(),
     board: z.string().optional(),

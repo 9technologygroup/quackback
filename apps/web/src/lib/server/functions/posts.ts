@@ -47,6 +47,7 @@ import {
 } from '@/lib/server/domains/posts/post.admin-panels'
 import { toIsoString, toIsoStringOrNull } from '@/lib/shared/utils'
 import { logger } from '@/lib/server/logger'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const log = logger.child({ component: 'posts' })
 
@@ -111,7 +112,7 @@ const inboxFilterCountsSchema = listInboxPostsSchema.omit({
 
 const createPostSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(10000).optional().default(''),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional().default(''),
   contentJson: tiptapContentSchema.optional(),
   boardId: z.string(),
   statusId: z.string().optional(),
@@ -126,7 +127,7 @@ const getPostSchema = z.object({
 const updatePostSchema = z.object({
   id: z.string(),
   title: z.string().min(1).max(200).optional(),
-  content: z.string().max(10000).optional(),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional(),
   contentJson: tiptapContentSchema.optional(),
   pinned: z.boolean().optional(),
 })
@@ -226,6 +227,7 @@ export const fetchInboxPostsForAdmin = createServerFn({ method: 'GET' })
       showDeleted: data.showDeleted,
       cursor: data.cursor,
       limit: data.limit,
+      excerpt: true,
     })
     log.debug(
       { count: result.items.length, cursor: data.cursor ?? 'none' },

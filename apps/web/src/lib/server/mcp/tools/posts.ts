@@ -26,6 +26,7 @@ import {
   CONTENT_FORMAT_BLOCK,
   CONTENT_FIELD_DESCRIBE,
 } from './helpers'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 // ============================================================================
 // Schemas
@@ -67,9 +68,11 @@ const createPostSchema = {
   title: z.string().max(200).describe('Post title (max 200 characters)'),
   content: z
     .string()
-    .max(10000)
+    .max(MAX_POST_CONTENT_LENGTH)
     .optional()
-    .describe(`Post content (max 10,000 characters). ${CONTENT_FIELD_DESCRIBE}`),
+    .describe(
+      `Post content (max ${MAX_POST_CONTENT_LENGTH.toLocaleString()} characters). ${CONTENT_FIELD_DESCRIBE}`
+    ),
   statusId: z.string().optional().describe('Initial status TypeID (defaults to board default)'),
   tagIds: z.array(z.string()).optional().describe('PostTag TypeIDs to apply'),
 }

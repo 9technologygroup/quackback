@@ -25,6 +25,8 @@ import { postViewFilter } from '@/lib/server/policy/posts'
 import type { Actor } from '@/lib/server/policy/types'
 import { toUuid, type PostId, type PrincipalId } from '@quackback/ids'
 import { notTestPrincipal } from '@/lib/server/test-data'
+import { truncate } from '@/lib/shared/utils/string'
+import { POST_LIST_EXCERPT_LENGTH } from './post.types'
 import type {
   PostListItem,
   InboxPostListParams,
@@ -217,7 +219,7 @@ export async function listInboxPosts(
   params: InboxPostListParams,
   actor?: Actor
 ): Promise<InboxPostListResult> {
-  const { sort = 'newest', cursor, limit = 20 } = params
+  const { sort = 'newest', cursor, limit = 20, excerpt = false } = params
 
   const conditions = inboxFilterConditions(params)
   if (actor) conditions.push(postViewFilter(actor))
@@ -277,7 +279,7 @@ export async function listInboxPosts(
       boardId: true,
       title: true,
       content: true,
-      contentJson: true,
+      contentJson: !excerpt,
       principalId: true,
       statusId: true,
       ownerPrincipalId: true,
@@ -323,6 +325,7 @@ export async function listInboxPosts(
   // that no caller reads from list items, but PostListItem extends the full Post type.
   const items = sliced.map((post) => ({
     ...post,
+    content: excerpt ? truncate(post.content, POST_LIST_EXCERPT_LENGTH) : post.content,
     board: post.board,
     tags: post.tags.map((pt) => ({ ...pt.tag, autoTagged: pt.autoTagged })),
     commentCount: post.commentCount,
