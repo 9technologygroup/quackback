@@ -36,7 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/post-limits'
 
 interface ConvertToPostDialogProps {
   conversationId: ConversationId

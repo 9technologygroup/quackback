@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/select'
 import { ArrowLeftIcon, Loader2Icon } from 'lucide-react'
 import { useAppContext } from './use-app-context'
-import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/post-limits'
 
 interface Board {
   id: string

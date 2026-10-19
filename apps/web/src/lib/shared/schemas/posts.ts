@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { boardIdSchema, postStatusIdSchema, tagIdsSchema } from '@quackback/ids/zod'
 import type { TiptapContent as DbTiptapContent } from '@/lib/shared/db-types'
 import { PageLimitSchema } from './taxonomy'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/post-limits'
 
 /**
  * TipTap mark schema - validates mark types and their attributes
@@ -79,16 +80,7 @@ export const tiptapContentSchema: z.ZodType<DbTiptapContent> = z.object({
   content: z.array(tiptapNodeSchema).optional(),
 })
 
-/**
- * Maximum length of a post body, in characters.
- *
- * The `posts.content` column is `text`, so this is purely a product limit — it
- * exists to keep pathological bodies out of list payloads and imports, not to
- * satisfy the database. Every AI path truncates well below this on its own
- * (embeddings 8k, summary 6k, sentiment 3k, merge assessment 2k), so raising it
- * does not move token spend.
- */
-export const MAX_POST_CONTENT_LENGTH = 50_000
+export { MAX_POST_CONTENT_LENGTH }
 
 /**
  * Schema for admin creating a post

@@ -32,7 +32,7 @@ import { PUBLIC_FEEDBACK_EDITOR_FEATURES } from '@/components/public/feedback/fe
 import type { EditorDocument } from '@/components/ui/rich-text-editor'
 import { useSessionContext } from '@/lib/client/hooks/use-root-context'
 import { shownName } from '@/lib/shared/greeting-name'
-import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/post-limits'
 
 interface BoardOption {
   id: string

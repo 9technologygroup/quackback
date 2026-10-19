@@ -1,0 +1,1 @@
+export const MAX_POST_CONTENT_LENGTH = 50_000
