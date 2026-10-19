@@ -10,45 +10,65 @@ import {
   gte,
   posts,
   boards,
+  postTagAssignments,
   postTags,
-  tags,
-  votes,
+  postVotes,
   postStatuses,
+  userSegments,
   principal as principalTable,
+  user as userTable,
 } from '@/lib/server/db'
-import { toUuid, type PostId, type StatusId, type TagId, type PrincipalId } from '@quackback/ids'
+import {
+  toUuid,
+  type PostId,
+  type PostStatusId,
+  type PostTagId,
+  type PrincipalId,
+  type SegmentId,
+} from '@quackback/ids'
+import { POST_LIST_EXCERPT_LENGTH, type PublicPostListResult } from './post.types'
 import { truncate } from '@/lib/shared/utils/string'
-import { POST_LIST_EXCERPT_LENGTH } from './post.types'
-import type { PublicPostListResult } from './post.types'
 import type { RespondedFilter } from '@/lib/shared/types/filters'
-import { postViewFilter, ANONYMOUS_ACTOR, type Actor } from '@/lib/server/policy'
+import { postViewFilter, isTeamActor, ANONYMOUS_ACTOR, type Actor } from '@/lib/server/policy'
 
-import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
+import { resolveUserAvatarUrl } from '@/lib/server/domains/principals/principal-display'
 
-/** Resolve avatar URL from principal's avatar fields */
-export function resolveAvatarUrl(principal: {
+/**
+ * Portal tag visibility. Non-team viewers only see tags marked public —
+ * both in filter lists and attached to posts — so an internal tag never
+ * reaches a customer. Team actors see every tag (they assign internal tags
+ * from the portal too). Returns undefined for team actors so it can be
+ * dropped into `and(...)` without a branch.
+ */
+export function publicTagCondition(actor: Actor) {
+  return isTeamActor(actor) ? undefined : eq(postTags.isPublic, true)
+}
+
+/**
+ * Raw-SQL twin of {@link publicTagCondition} for the `json_agg` tag
+ * subqueries, which alias `post_tags` as `t`. Empty for team actors.
+ */
+export function publicTagSqlFilter(actor: Actor) {
+  return isTeamActor(actor) ? sql`` : sql`AND t.is_public = true`
+}
+
+/** Resolve avatar URL — uploaded key first, then OAuth/external URL. */
+export function resolveAvatarUrl(source: {
   avatarKey?: string | null
   avatarUrl?: string | null
+  userImageKey?: string | null
+  userImage?: string | null
 }): string | null {
-  if (principal.avatarKey) {
-    const s3Url = getPublicUrlOrNull(principal.avatarKey)
-    if (s3Url) return s3Url
-  }
-  return principal.avatarUrl ?? null
+  return resolveUserAvatarUrl({
+    userImage: source.userImage,
+    userImageKey: source.userImageKey,
+    principalAvatarUrl: source.avatarUrl,
+    principalAvatarKey: source.avatarKey,
+  })
 }
 
 export function parseJson<T>(value: string | T): T {
   return typeof value === 'string' ? JSON.parse(value) : value
-}
-
-export function parseAvatarData(json: string | null): string | null {
-  if (!json) return null
-  const data = parseJson<{ key?: string; url?: string }>(json)
-  if (data.key) {
-    const s3Url = getPublicUrlOrNull(data.key)
-    if (s3Url) return s3Url
-  }
-  return data.url ?? null
 }
 
 type SortOrder = 'top' | 'new' | 'trending'
@@ -64,34 +84,55 @@ function getPostSortOrder(sort: SortOrder) {
   }
 }
 
+/**
+ * Pinned posts lead the board under every sort; among themselves the most
+ * recently pinned is first. NULLS LAST is load-bearing: Postgres DESC
+ * otherwise floats the unpinned NULL rows above the pinned ones.
+ */
+function pinnedFirstThen(sort: SortOrder) {
+  return [sql`${posts.pinnedAt} DESC NULLS LAST`, getPostSortOrder(sort)]
+}
+
 export interface PostWithVotesAndAvatars {
   id: PostId
   title: string
   content: string | null
-  statusId: StatusId | null
+  statusId: PostStatusId | null
   voteCount: number
   commentCount: number
   authorName: string | null
   principalId: string
   createdAt: Date
-  tags: Array<{ id: TagId; name: string; color: string }>
+  /** Set when a team member pinned the post to lead its board listing. */
+  pinnedAt: Date | null
+  tags: Array<{ id: PostTagId; name: string; color: string }>
   board: { id: string; name: string; slug: string }
   hasVoted: boolean
   avatarUrl: string | null
+  moderationState?: 'published' | 'pending' | string
 }
 
 interface PostListParams {
   boardSlug?: string
   search?: string
-  statusIds?: StatusId[]
+  statusIds?: PostStatusId[]
   statusSlugs?: string[]
-  tagIds?: TagId[]
+  tagIds?: PostTagId[]
   sort?: SortOrder
   page?: number
   limit?: number
   minVotes?: number
   dateFrom?: string
   responded?: RespondedFilter
+  /**
+   * Team-only owner filter. `null` matches unassigned posts; a principal id
+   * matches that owner. Undefined leaves ownership unfiltered. Callers must
+   * gate this on post.view_private before passing it in — the query layer
+   * does not re-check.
+   */
+  ownerId?: PrincipalId | null
+  /** Team-only: restrict to posts authored by members of any of these segments. */
+  segmentIds?: SegmentId[]
 }
 
 function buildPostFilterConditions(params: PostListParams, actor: Actor) {
@@ -135,10 +176,14 @@ function buildPostFilterConditions(params: PostListParams, actor: Actor) {
   }
 
   if (tagIds && tagIds.length > 0) {
+    // Join the tag catalog so an internal tag id in a crafted URL is inert
+    // for non-team callers — otherwise the filter would reveal which posts
+    // carry a tag the viewer is never shown.
     const postIdsWithTagsSubquery = db
-      .selectDistinct({ postId: postTags.postId })
-      .from(postTags)
-      .where(inArray(postTags.tagId, tagIds))
+      .selectDistinct({ postId: postTagAssignments.postId })
+      .from(postTagAssignments)
+      .innerJoin(postTags, eq(postTags.id, postTagAssignments.tagId))
+      .where(and(inArray(postTagAssignments.tagId, tagIds), publicTagCondition(actor)))
     conditions.push(inArray(posts.id, postIdsWithTagsSubquery))
   }
 
@@ -155,15 +200,37 @@ function buildPostFilterConditions(params: PostListParams, actor: Actor) {
   }
 
   if (params.responded === 'responded') {
-    // Raw column names for the inner comments table; outer posts.id via Drizzle
-    // interpolation. Mirrors post.inbox.ts — see its comment for why ${comments.postId}
+    // Raw column names for the inner post_comments table; outer posts.id via Drizzle
+    // interpolation. Mirrors post.inbox.ts — see its comment for why ${postComments.postId}
     // would be incorrectly rewritten by Drizzle's relational query builder.
     conditions.push(
-      sql`EXISTS (SELECT 1 FROM comments WHERE comments.post_id = ${posts.id} AND comments.is_team_member = true AND comments.deleted_at IS NULL)`
+      sql`EXISTS (SELECT 1 FROM post_comments WHERE post_comments.post_id = ${posts.id} AND post_comments.is_team_member = true AND post_comments.deleted_at IS NULL)`
     )
   } else if (params.responded === 'unresponded') {
     conditions.push(
-      sql`NOT EXISTS (SELECT 1 FROM comments WHERE comments.post_id = ${posts.id} AND comments.is_team_member = true AND comments.deleted_at IS NULL)`
+      sql`NOT EXISTS (SELECT 1 FROM post_comments WHERE post_comments.post_id = ${posts.id} AND post_comments.is_team_member = true AND post_comments.deleted_at IS NULL)`
+    )
+  }
+
+  // Team-only owner filter — mirrors post.inbox.ts. `null` means unassigned;
+  // a principal id restricts to that owner. The server fn only forwards these
+  // for post.view_private holders, so no re-check here.
+  if (params.ownerId === null) {
+    conditions.push(sql`${posts.ownerPrincipalId} IS NULL`)
+  } else if (params.ownerId) {
+    conditions.push(eq(posts.ownerPrincipalId, params.ownerId))
+  }
+
+  // Team-only segment filter — posts whose author is in any selected segment.
+  if (params.segmentIds && params.segmentIds.length > 0) {
+    conditions.push(
+      inArray(
+        posts.principalId,
+        db
+          .select({ principalId: userSegments.principalId })
+          .from(userSegments)
+          .where(inArray(userSegments.segmentId, params.segmentIds))
+      )
     )
   }
 
@@ -176,16 +243,16 @@ export async function listPublicPostsWithVotesAndAvatars(
   const { sort = 'top', page = 1, limit = 20, principalId, actor = ANONYMOUS_ACTOR } = params
   const offset = (page - 1) * limit
   const conditions = buildPostFilterConditions(params, actor)
-  const orderBy = getPostSortOrder(sort)
+  const orderBy = pinnedFirstThen(sort)
 
   // Only authenticated users can vote, so we only check principal_id
   // Anonymous users see vote counts but hasVoted is always false
   const principalUuid = principalId ? toUuid(principalId) : null
   const voteExistsSubquery = principalUuid
     ? sql<boolean>`EXISTS(
-        SELECT 1 FROM ${votes}
-        WHERE ${votes.postId} = ${posts.id}
-        AND ${votes.principalId} = ${principalUuid}::uuid
+        SELECT 1 FROM ${postVotes}
+        WHERE ${postVotes.postId} = ${posts.id}
+        AND ${postVotes.principalId} = ${principalUuid}::uuid
       )`.as('has_voted')
     : sql<boolean>`false`.as('has_voted')
 
@@ -199,59 +266,93 @@ export async function listPublicPostsWithVotesAndAvatars(
       commentCount: posts.commentCount,
       principalId: posts.principalId,
       createdAt: posts.createdAt,
+      pinnedAt: posts.pinnedAt,
+      moderationState: posts.moderationState,
       boardId: boards.id,
       boardName: boards.name,
       boardSlug: boards.slug,
-      tagsJson: sql<string>`COALESCE(
-        (SELECT json_agg(json_build_object('id', t.id, 'name', t.name, 'color', t.color))
-         FROM ${postTags} pt
-         INNER JOIN ${tags} t ON t.id = pt.tag_id
-         WHERE pt.post_id = ${posts.id}),
-        '[]'
-      )`.as('tags_json'),
       hasVoted: voteExistsSubquery,
-      authorName: sql<string | null>`(
-        SELECT m.display_name FROM ${principalTable} m
-        WHERE m.id = ${posts.principalId}
-      )`.as('author_name'),
-      avatarData: sql<string | null>`(
-        SELECT CASE
-          WHEN m.avatar_key IS NOT NULL
-          THEN json_build_object('key', m.avatar_key)
-          ELSE json_build_object('url', m.avatar_url)
-        END
-        FROM ${principalTable} m
-        WHERE m.id = ${posts.principalId}
-      )`.as('avatar_data'),
     })
     .from(posts)
     .innerJoin(boards, eq(posts.boardId, boards.id))
     .where(and(...conditions))
-    .orderBy(orderBy)
+    .orderBy(...orderBy)
     .limit(limit + 1)
     .offset(offset)
 
   const hasMore = postsResult.length > limit
   const trimmedResults = hasMore ? postsResult.slice(0, limit) : postsResult
 
-  const items = trimmedResults.map(
-    (post): PostWithVotesAndAvatars => ({
+  // Batch-load tags and author identities for the page instead of running a
+  // correlated subquery per row: one query over the page's post ids for tags,
+  // one over the page's author principal ids for display name + avatar. Both
+  // are keyed into maps and merged in JS below, preserving the response shape.
+  const pagePostIds = trimmedResults.map((p) => p.id)
+  const pageAuthorIds = [...new Set(trimmedResults.map((p) => p.principalId))]
+
+  const [tagRows, authorRows] = await Promise.all([
+    pagePostIds.length > 0
+      ? db
+          .select({
+            postId: postTagAssignments.postId,
+            id: postTags.id,
+            name: postTags.name,
+            color: postTags.color,
+          })
+          .from(postTagAssignments)
+          .innerJoin(postTags, eq(postTags.id, postTagAssignments.tagId))
+          .where(and(inArray(postTagAssignments.postId, pagePostIds), publicTagCondition(actor)))
+      : Promise.resolve([]),
+    pageAuthorIds.length > 0
+      ? db
+          .select({
+            id: principalTable.id,
+            displayName: principalTable.displayName,
+            avatarKey: principalTable.avatarKey,
+            avatarUrl: principalTable.avatarUrl,
+            userImage: userTable.image,
+            userImageKey: userTable.imageKey,
+          })
+          .from(principalTable)
+          .leftJoin(userTable, eq(userTable.id, principalTable.userId))
+          .where(inArray(principalTable.id, pageAuthorIds))
+      : Promise.resolve([]),
+  ])
+
+  const tagsByPost = new Map<string, Array<{ id: PostTagId; name: string; color: string }>>()
+  for (const row of tagRows) {
+    const list = tagsByPost.get(row.postId) ?? []
+    list.push({ id: row.id, name: row.name, color: row.color })
+    tagsByPost.set(row.postId, list)
+  }
+  const authorById = new Map(authorRows.map((a) => [a.id, a]))
+
+  const items = trimmedResults.map((post): PostWithVotesAndAvatars => {
+    const author = authorById.get(post.principalId)
+    const avatarUrl = resolveAvatarUrl({
+      avatarKey: author?.avatarKey,
+      avatarUrl: author?.avatarUrl,
+      userImageKey: author?.userImageKey,
+      userImage: author?.userImage,
+    })
+    return {
       id: post.id,
       title: post.title,
-      // Cards only ever render a clamped preview — see POST_LIST_EXCERPT_LENGTH.
       content: truncate(post.content, POST_LIST_EXCERPT_LENGTH),
       statusId: post.statusId,
       voteCount: post.voteCount,
       commentCount: post.commentCount,
-      authorName: post.authorName,
+      authorName: author?.displayName ?? null,
       principalId: post.principalId,
       createdAt: post.createdAt,
-      tags: parseJson<Array<{ id: TagId; name: string; color: string }>>(post.tagsJson),
+      pinnedAt: post.pinnedAt,
+      moderationState: post.moderationState,
+      tags: tagsByPost.get(post.id) ?? [],
       board: { id: post.boardId, name: post.boardName, slug: post.boardSlug },
       hasVoted: post.hasVoted ?? false,
-      avatarUrl: parseAvatarData(post.avatarData),
-    })
-  )
+      avatarUrl,
+    }
+  })
 
   return { items, hasMore }
 }
@@ -262,7 +363,7 @@ export async function listPublicPosts(
   const { sort = 'top', page = 1, limit = 20, actor = ANONYMOUS_ACTOR } = params
   const offset = (page - 1) * limit
   const conditions = buildPostFilterConditions(params, actor)
-  const orderBy = getPostSortOrder(sort)
+  const orderBy = pinnedFirstThen(sort)
 
   const postsResult = await db
     .select({
@@ -274,14 +375,15 @@ export async function listPublicPosts(
       commentCount: posts.commentCount,
       principalId: posts.principalId,
       createdAt: posts.createdAt,
+      moderationState: posts.moderationState,
       boardId: boards.id,
       boardName: boards.name,
       boardSlug: boards.slug,
       tagsJson: sql<string>`COALESCE(
         (SELECT json_agg(json_build_object('id', t.id, 'name', t.name, 'color', t.color))
-         FROM ${postTags} pt
-         INNER JOIN ${tags} t ON t.id = pt.tag_id
-         WHERE pt.post_id = ${posts.id}),
+         FROM ${postTagAssignments} pt
+         INNER JOIN ${postTags} t ON t.id = pt.tag_id
+         WHERE pt.post_id = ${posts.id} ${publicTagSqlFilter(actor)}),
         '[]'
       )`.as('tags_json'),
       authorName: sql<string | null>`(
@@ -292,7 +394,7 @@ export async function listPublicPosts(
     .from(posts)
     .innerJoin(boards, eq(posts.boardId, boards.id))
     .where(and(...conditions))
-    .orderBy(orderBy)
+    .orderBy(...orderBy)
     .limit(limit + 1)
     .offset(offset)
 
@@ -302,7 +404,6 @@ export async function listPublicPosts(
   const items = trimmedResults.map((post) => ({
     id: post.id,
     title: post.title,
-    // Cards only ever render a clamped preview — see POST_LIST_EXCERPT_LENGTH.
     content: truncate(post.content, POST_LIST_EXCERPT_LENGTH),
     statusId: post.statusId,
     voteCount: post.voteCount,
@@ -310,30 +411,34 @@ export async function listPublicPosts(
     principalId: post.principalId,
     createdAt: post.createdAt,
     commentCount: post.commentCount,
-    tags: parseJson<Array<{ id: TagId; name: string; color: string }>>(post.tagsJson),
+    moderationState: post.moderationState,
+    tags: parseJson<Array<{ id: PostTagId; name: string; color: string }>>(post.tagsJson),
     board: { id: post.boardId, name: post.boardName, slug: post.boardSlug },
   }))
 
-  return { items, total: -1, hasMore }
+  return { items, total: undefined, hasMore }
 }
 
 export async function getAllUserVotedPostIds(principalId: PrincipalId): Promise<Set<PostId>> {
+  // Include both the post the vote was cast on and, when that post has been
+  // merged away, the canonical — so the survivor highlights as voted.
   const result = await db
-    .select({ postId: votes.postId })
-    .from(votes)
-    .where(eq(votes.principalId, principalId))
-  return new Set(result.map((r) => r.postId))
-}
-
-export async function getVotedPostIdsByUserId(
-  userId: import('@quackback/ids').UserId
-): Promise<Set<PostId>> {
-  const result = await db
-    .select({ postId: votes.postId })
-    .from(votes)
-    .innerJoin(principalTable, eq(votes.principalId, principalTable.id))
-    .where(eq(principalTable.userId, userId))
-  return new Set(result.map((r) => r.postId))
+    .select({
+      postId: postVotes.postId,
+      canonicalPostId: posts.canonicalPostId,
+    })
+    .from(postVotes)
+    .innerJoin(posts, eq(posts.id, postVotes.postId))
+    .innerJoin(boards, eq(boards.id, posts.boardId))
+    .where(
+      and(eq(postVotes.principalId, principalId), isNull(posts.deletedAt), isNull(boards.deletedAt))
+    )
+  const ids = new Set<PostId>()
+  for (const row of result) {
+    ids.add(row.postId)
+    if (row.canonicalPostId) ids.add(row.canonicalPostId)
+  }
+  return ids
 }
 
 export async function getBoardByPostId(

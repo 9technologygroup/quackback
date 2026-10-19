@@ -1,0 +1,169 @@
+import { describe, it, expect } from 'vitest'
+import { diffProviderAudit } from '../idp-audit-diff'
+
+const prior = {
+  // Immutable on update, so it is on both sides of a real diff.
+  registrationId: 'oidc_abc',
+  label: 'Acme SSO',
+  kind: 'other' as const,
+  clientId: 'client-1',
+  discoveryUrl: 'https://idp/.well-known/openid-configuration',
+  authorizationUrl: null,
+  tokenUrl: null,
+  userInfoUrl: null,
+  jwksUri: null,
+  issuer: null,
+  scopes: null,
+  enabled: true,
+  autoCreateUsers: true,
+  autoProvisionRole: 'user' as const,
+  claimMapping: null,
+  showButton: true,
+}
+
+const next = { ...prior }
+
+describe('diffProviderAudit — create', () => {
+  it('records the full snapshot when there is no prior row', () => {
+    const { before, after } = diffProviderAudit(null, next)
+    expect(before).toBeNull()
+    expect(after.label).toBe('Acme SSO')
+    expect(after.clientId).toBe('client-1')
+    expect(after.registrationId).toBe('oidc_abc')
+  })
+})
+
+describe('diffProviderAudit — update', () => {
+  it('records a change to the ID token nonce setting', () => {
+    // Switching the nonce off removes a replay check, so it belongs in the trail.
+    const { before, after } = diffProviderAudit(
+      { ...prior, idTokenNonce: null },
+      { ...next, idTokenNonce: 'off' }
+    )
+    expect(before).toEqual({ idTokenNonce: null })
+    expect(after).toEqual({ idTokenNonce: 'off' })
+  })
+
+  it('records only the fields that changed, on both sides', () => {
+    const { before, after } = diffProviderAudit(prior, { ...next, label: 'Renamed' })
+    expect(before).toEqual({ label: 'Acme SSO' })
+    expect(after).toEqual({ label: 'Renamed' })
+  })
+
+  it('captures scopes, which decide which claims the IdP releases', () => {
+    const { before, after } = diffProviderAudit(prior, { ...next, scopes: 'openid public' })
+    expect(before).toEqual({ scopes: null })
+    expect(after).toEqual({ scopes: 'openid public' })
+  })
+
+  it('captures every endpoint and the client id', () => {
+    const { before, after } = diffProviderAudit(prior, {
+      ...next,
+      clientId: 'client-2',
+      discoveryUrl: 'https://evil/.well-known/openid-configuration',
+      userInfoUrl: 'https://evil/userinfo',
+    })
+    expect(Object.keys(before ?? {}).sort()).toEqual(['clientId', 'discoveryUrl', 'userInfoUrl'])
+    expect(after.clientId).toBe('client-2')
+    expect(after.userInfoUrl).toBe('https://evil/userinfo')
+  })
+
+  it('captures a claim-mapping change, comparing by value not reference', () => {
+    // The abuse this closes: repoint the claim used for identity, sign in as
+    // someone else, repoint back. Both saves previously produced byte-identical
+    // audit rows recording only label and enabled.
+    const mapping = { role: { claimPath: 'groups', rules: [], syncOnEverySignIn: false } }
+    const changed = diffProviderAudit(prior, { ...next, claimMapping: mapping })
+    expect(changed.before).toEqual({ claimMapping: null })
+    expect(changed.after.claimMapping).toEqual({
+      role: { claimPath: 'groups', ruleCount: 0, rules: [] },
+    })
+
+    const unchanged = diffProviderAudit(
+      { ...prior, claimMapping: mapping },
+      { ...next, claimMapping: { ...mapping } }
+    )
+    expect(unchanged.before).toEqual({})
+    expect(unchanged.after).toEqual({})
+  })
+
+  it('audit never records captured role match values', () => {
+    const SENTINEL = 'CAPTURED_ROLE_VALUE_DO_NOT_AUDIT'
+    const mapping = {
+      profile: {
+        claims: { email: 'upn', id: 'oid' },
+        extraSecret: SENTINEL,
+      },
+      role: {
+        claimPath: 'groups',
+        rules: [{ whenContains: SENTINEL, role: 'admin' as const }],
+        syncOnEverySignIn: true,
+      },
+      attributes: {
+        map: [{ claimPath: 'department', attributeKey: 'dept' }],
+      },
+      unknownSection: { nested: { value: SENTINEL } },
+    }
+
+    const created = diffProviderAudit(null, { ...next, claimMapping: mapping })
+    const createdSerialized = JSON.stringify({ before: created.before, after: created.after })
+    expect(createdSerialized).not.toContain(SENTINEL)
+    expect(createdSerialized).not.toContain('whenContains')
+    expect(created.after.claimMapping).toEqual({
+      profile: { claims: { email: 'upn', id: 'oid' } },
+      role: {
+        claimPath: 'groups',
+        ruleCount: 1,
+        rules: [{ index: 0, role: 'admin' }],
+        syncOnEverySignIn: true,
+      },
+      attributes: { map: [{ claimPath: 'department', attributeKey: 'dept' }] },
+    })
+
+    const updated = diffProviderAudit(
+      { ...prior, claimMapping: mapping },
+      {
+        ...next,
+        claimMapping: {
+          ...mapping,
+          role: {
+            ...mapping.role,
+            rules: [{ whenContains: 'CHANGED_VALUE', role: 'admin' as const }],
+          },
+        },
+      }
+    )
+    const updatedSerialized = JSON.stringify({ before: updated.before, after: updated.after })
+    expect(updatedSerialized).not.toContain(SENTINEL)
+    expect(updatedSerialized).not.toContain('CHANGED_VALUE')
+    expect(updatedSerialized).not.toContain('whenContains')
+    expect(updated.after.claimMapping).toEqual({
+      profile: { claims: { email: 'upn', id: 'oid' } },
+      role: {
+        claimPath: 'groups',
+        ruleCount: 1,
+        rules: [{ index: 0, role: 'admin' }],
+        syncOnEverySignIn: true,
+        ruleValuesChanged: true,
+      },
+      attributes: { map: [{ claimPath: 'department', attributeKey: 'dept' }] },
+    })
+  })
+
+  it('records nothing when nothing changed', () => {
+    const { before, after } = diffProviderAudit(prior, next)
+    expect(before).toEqual({})
+    expect(after).toEqual({})
+  })
+
+  it('ignores fields the caller did not supply, honouring patch semantics', () => {
+    // An omitted optional leaves the column untouched, so it is not a change.
+    const { before, after } = diffProviderAudit(prior, {
+      registrationId: 'oidc_abc',
+      label: 'Acme SSO',
+      clientId: 'client-1',
+    })
+    expect(before).toEqual({})
+    expect(after).toEqual({})
+  })
+})

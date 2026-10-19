@@ -1,0 +1,142 @@
+/**
+ * GitLab OAuth utilities.
+ */
+
+import { GITLAB_COM_ORIGIN, normalizeGitLabInstanceUrl } from '@/integrations/gitlab/server/url'
+import { gitlabFetch } from '@/integrations/gitlab/server/fetch'
+
+function instanceOrigin(credentials?: Record<string, string>): string {
+  return normalizeGitLabInstanceUrl(credentials?.instanceUrl)
+}
+
+/**
+ * Generate the GitLab OAuth authorization URL.
+ */
+export function getGitLabOAuthUrl(
+  state: string,
+  redirectUri: string,
+  _fields?: Record<string, string>,
+  credentials?: Record<string, string>
+): string {
+  const clientId = credentials?.clientId
+  if (!clientId) {
+    throw new Error('GitLab client ID not configured')
+  }
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    state,
+    scope: 'api',
+  })
+
+  return `${instanceOrigin(credentials)}/oauth/authorize?${params}`
+}
+
+/**
+ * Exchange an OAuth code for access tokens.
+ */
+export async function exchangeGitLabCode(
+  code: string,
+  redirectUri: string,
+  _fields?: Record<string, string>,
+  credentials?: Record<string, string>
+): Promise<{
+  accessToken: string
+  refreshToken?: string
+  expiresIn?: number
+  config?: Record<string, unknown>
+}> {
+  const clientId = credentials?.clientId
+  const clientSecret = credentials?.clientSecret
+
+  if (!clientId || !clientSecret) {
+    throw new Error('GitLab credentials not configured')
+  }
+
+  const origin = instanceOrigin(credentials)
+
+  const response = await gitlabFetch(`${origin}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+    }),
+  })
+
+  if (!response.ok) {
+    const error = await response.text()
+    throw new Error(`GitLab OAuth failed: ${error}`)
+  }
+
+  const data = (await response.json()) as {
+    access_token: string
+    refresh_token: string
+    expires_in: number
+  }
+
+  // Fetch user info for workspace name
+  const userResponse = await gitlabFetch(`${origin}/api/v4/user`, {
+    headers: { Authorization: `Bearer ${data.access_token}` },
+  })
+
+  const user = userResponse.ok
+    ? ((await userResponse.json()) as { name: string; username: string })
+    : null
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    expiresIn: data.expires_in,
+    config: {
+      oauthRedirectUri: redirectUri,
+      workspaceName: user?.name || user?.username || 'GitLab',
+      // Persist the origin so hook / archive / project listing talk to the
+      // same instance without a credentials lookup. Omit when defaulting
+      // to gitlab.com so existing connections stay unchanged.
+      ...(origin !== GITLAB_COM_ORIGIN ? { instanceUrl: origin } : {}),
+    },
+  }
+}
+
+export async function refreshGitLabToken(
+  refreshToken: string,
+  credentials?: Record<string, string>,
+  config?: Record<string, unknown>
+) {
+  const origin = normalizeGitLabInstanceUrl(config?.instanceUrl as string | undefined)
+  if (
+    !credentials?.clientId ||
+    !credentials.clientSecret ||
+    typeof config?.oauthRedirectUri !== 'string' ||
+    origin !== instanceOrigin(credentials)
+  )
+    throw new Error('Reconnect GitLab to refresh its credentials')
+  const response = await gitlabFetch(`${origin}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: credentials.clientId,
+      client_secret: credentials.clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+      redirect_uri: config.oauthRedirectUri,
+    }),
+  })
+  if (!response.ok) throw new Error(`GitLab token refresh failed: ${response.status}`)
+  const data = (await response.json()) as {
+    access_token: string
+    refresh_token: string
+    expires_in: number
+  }
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    expiresIn: data.expires_in,
+  }
+}

@@ -3,10 +3,9 @@
  *
  * GET /.well-known/oauth-protected-resource
  *
- * Returns metadata about the MCP resource server, including
- * the authorization server URL for OAuth 2.1 discovery.
- * This is fetched by MCP clients (e.g., Claude Code) during
- * the OAuth discovery flow.
+ * First-connect scopes only. MCP clients that see a 401 without `scope=`
+ * take all of `scopes_supported`; advertising writes + offline_access here
+ * is what made Cursor's authorize request fail with `invalid_scope`.
  */
 
 import { createFileRoute } from '@tanstack/react-router'
@@ -16,34 +15,15 @@ export const Route = createFileRoute('/.well-known/oauth-protected-resource')({
     handlers: {
       GET: async () => {
         const { config } = await import('@/lib/server/config')
-        const baseUrl = config.baseUrl
-
-        return new Response(
-          JSON.stringify({
-            resource: `${baseUrl}/api/mcp`,
-            authorization_servers: [baseUrl],
-            bearer_methods_supported: ['header'],
-            scopes_supported: [
-              'openid',
-              'profile',
-              'email',
-              'offline_access',
-              'read:feedback',
-              'write:feedback',
-              'write:changelog',
-              'read:article',
-              'write:article',
-              'read:chat',
-              'write:chat',
-            ],
-          }),
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'Cache-Control': 'public, max-age=3600',
-            },
-          }
-        )
+        const { mcpProtectedResourceMetadata } =
+          await import('@/lib/server/mcp/protected-resource-metadata')
+        return new Response(JSON.stringify(mcpProtectedResourceMetadata(config.baseUrl)), {
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'public, max-age=3600',
+            Vary: 'Host',
+          },
+        })
       },
     },
   },

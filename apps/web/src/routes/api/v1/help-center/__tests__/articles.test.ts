@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ApiAuthContext } from '@/lib/server/domains/api/auth'
+import { SYSTEM_ROLE_PERMISSIONS } from '@/lib/shared/permissions'
 import type { ApiKeyId } from '@/lib/server/domains/api-keys'
 import type { HelpCenterArticleWithCategory } from '@/lib/server/domains/help-center/help-center.types'
-import type { HelpCenterArticleId, HelpCenterCategoryId, PrincipalId } from '@quackback/ids'
+import type { KbArticleFeedbackId, KbArticleId, KbCategoryId, PrincipalId } from '@quackback/ids'
 
 // --- Mocks ---
 
@@ -59,12 +60,16 @@ import { Route as ArticlesListRoute } from '../articles/index'
 import { Route as ArticleDetailRoute } from '../articles/$articleId'
 import { Route as ArticleFeedbackRoute } from '../articles/$articleId.feedback'
 
-type MockedHandler = (ctx: { request: Request; params?: Record<string, string> }) => Promise<Response>
+type MockedHandler = (ctx: {
+  request: Request
+  params?: Record<string, string>
+}) => Promise<Response>
 type MockedRouteShape = { options: { server: { handlers: Record<string, MockedHandler> } } }
 
 const listHandlers = (ArticlesListRoute as unknown as MockedRouteShape).options.server.handlers
 const detailHandlers = (ArticleDetailRoute as unknown as MockedRouteShape).options.server.handlers
-const feedbackHandlers = (ArticleFeedbackRoute as unknown as MockedRouteShape).options.server.handlers
+const feedbackHandlers = (ArticleFeedbackRoute as unknown as MockedRouteShape).options.server
+  .handlers
 
 // --- Helpers ---
 
@@ -87,15 +92,18 @@ const mockAuthContext: ApiAuthContext = {
     expiresAt: null,
     createdAt: new Date('2026-01-01'),
     revokedAt: null,
+    scopes: null,
   },
   principalId: 'principal_1' as PrincipalId,
   role: 'admin',
+  permissions: new Set(SYSTEM_ROLE_PERMISSIONS.owner),
+  principal: null,
   importMode: false,
 }
 
 const mockArticle: HelpCenterArticleWithCategory = {
-  id: 'article_1' as HelpCenterArticleId,
-  categoryId: 'category_1' as HelpCenterCategoryId,
+  id: 'article_1' as KbArticleId,
+  categoryId: 'kb_category_1' as KbCategoryId,
   slug: 'how-to-start',
   title: 'How to Get Started',
   description: null,
@@ -103,14 +111,21 @@ const mockArticle: HelpCenterArticleWithCategory = {
   content: 'Follow these steps...',
   contentJson: null,
   principalId: 'principal_1' as PrincipalId,
+  segmentIds: [],
   publishedAt: new Date('2026-01-15'),
   viewCount: 42,
   helpfulCount: 10,
   notHelpfulCount: 2,
+  urlId: 1,
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-10'),
   deletedAt: null,
-  category: { id: 'category_1' as HelpCenterCategoryId, slug: 'getting-started', name: 'Getting Started' },
+  category: {
+    id: 'kb_category_1' as KbCategoryId,
+    urlId: 1,
+    slug: 'getting-started',
+    name: 'Getting Started',
+  },
   author: { id: 'principal_1' as PrincipalId, name: 'Admin', avatarUrl: null },
 }
 
@@ -190,7 +205,7 @@ describe('POST /api/v1/help-center/articles', () => {
     vi.mocked(createArticle).mockResolvedValue(mockArticle)
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'How to Get Started',
       content: 'Follow these steps...',
     }
@@ -208,7 +223,7 @@ describe('POST /api/v1/help-center/articles', () => {
     vi.mocked(parseOptionalTypeId).mockReturnValue('principal_2' as PrincipalId)
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'Authored Article',
       content: 'Content',
       authorId: 'principal_2',
@@ -218,7 +233,7 @@ describe('POST /api/v1/help-center/articles', () => {
 
     expect(response.status).toBe(201)
     expect(createArticle).toHaveBeenCalledWith(
-      { categoryId: 'category_1', title: 'Authored Article', content: 'Content' },
+      { categoryId: 'kb_category_1', title: 'Authored Article', content: 'Content' },
       'principal_1',
       'principal_2'
     )
@@ -230,7 +245,7 @@ describe('POST /api/v1/help-center/articles', () => {
     })
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'Test',
       content: 'Content',
       authorId: 'not-a-valid-id',
@@ -247,7 +262,7 @@ describe('POST /api/v1/help-center/articles', () => {
     )
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'Test',
       content: 'Content',
       authorId: 'principal_ghost',
@@ -277,7 +292,7 @@ describe('POST /api/v1/help-center/articles', () => {
     )
 
     const body = {
-      categoryId: 'category_1',
+      categoryId: 'kb_category_1',
       title: 'Test',
       content: 'Test content',
     }
@@ -309,7 +324,8 @@ describe('GET /api/v1/help-center/articles/:id', () => {
     const json = await response.json()
     expect(json.data.id).toBe('article_1')
     expect(json.data.category).toEqual({
-      id: 'category_1',
+      id: 'kb_category_1',
+      urlId: 1,
       slug: 'getting-started',
       name: 'Getting Started',
     })
@@ -364,7 +380,10 @@ describe('PATCH /api/v1/help-center/articles/:id', () => {
   })
 
   it('reassigns author when authorId is provided', async () => {
-    const updatedArticle = { ...mockArticle, author: { id: 'principal_2' as PrincipalId, name: 'Other', avatarUrl: null } }
+    const updatedArticle = {
+      ...mockArticle,
+      author: { id: 'principal_2' as PrincipalId, name: 'Other', avatarUrl: null },
+    }
     vi.mocked(updateArticle).mockResolvedValue(updatedArticle)
     vi.mocked(parseOptionalTypeId).mockReturnValue('principal_2' as PrincipalId)
 
@@ -552,7 +571,9 @@ describe('POST /api/v1/help-center/articles/:id/feedback', () => {
   })
 
   it('records helpful=true feedback', async () => {
-    vi.mocked(recordArticleFeedback).mockResolvedValue(undefined)
+    vi.mocked(recordArticleFeedback).mockResolvedValue(
+      'kb_article_feedback_1' as KbArticleFeedbackId
+    )
 
     const body = { helpful: true }
     const request = createRequest(
@@ -572,7 +593,9 @@ describe('POST /api/v1/help-center/articles/:id/feedback', () => {
   })
 
   it('records helpful=false feedback', async () => {
-    vi.mocked(recordArticleFeedback).mockResolvedValue(undefined)
+    vi.mocked(recordArticleFeedback).mockResolvedValue(
+      'kb_article_feedback_1' as KbArticleFeedbackId
+    )
 
     const body = { helpful: false }
     const request = createRequest(

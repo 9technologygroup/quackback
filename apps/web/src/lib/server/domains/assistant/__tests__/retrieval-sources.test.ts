@@ -1,0 +1,598 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { makeKbArticle } from './kb-fixtures'
+import { ASSISTANT_CITATION_TYPES, type AssistantCitationType } from '../citation-types'
+
+const mockRetrieveKbArticles = vi.fn()
+vi.mock('../retrieval', () => ({
+  retrieveKbArticles: (...args: unknown[]) => mockRetrieveKbArticles(...args),
+}))
+
+// Stands in for the real feedback-posts source: resolveKnowledgeSources
+// dynamically imports './posts-retrieval' only when 'post' is in the turn's
+// enabled-source set (config v3).
+const mockPostsRetrieve = vi.fn()
+vi.mock('../posts-retrieval', () => ({
+  postsKnowledgeSource: {
+    sourceType: 'post',
+    retrieve: (...args: unknown[]) => mockPostsRetrieve(...args),
+  },
+}))
+
+// Same idea for the snippets source.
+const mockSnippetsRetrieve = vi.fn()
+vi.mock('../snippets-retrieval', () => ({
+  snippetsKnowledgeSource: {
+    sourceType: 'snippet',
+    retrieve: (...args: unknown[]) => mockSnippetsRetrieve(...args),
+  },
+}))
+
+// Same idea for the past-conversation-summaries source.
+const mockConversationSummariesRetrieve = vi.fn()
+vi.mock('../conversation-summary-retrieval', () => ({
+  conversationSummariesKnowledgeSource: {
+    sourceType: 'summary',
+    retrieve: (...args: unknown[]) => mockConversationSummariesRetrieve(...args),
+  },
+}))
+
+// Same idea for the closed-tickets source (team-only).
+const mockTicketsRetrieve = vi.fn()
+vi.mock('../tickets-retrieval', () => ({
+  ticketsKnowledgeSource: {
+    sourceType: 'ticket',
+    retrieve: (...args: unknown[]) => mockTicketsRetrieve(...args),
+  },
+}))
+
+// Same idea for the changelog source.
+const mockChangelogRetrieve = vi.fn()
+vi.mock('../changelog-retrieval', () => ({
+  changelogKnowledgeSource: {
+    sourceType: 'changelog',
+    retrieve: (...args: unknown[]) => mockChangelogRetrieve(...args),
+  },
+}))
+
+// Same idea for the knowledge-documents source.
+const mockDocumentsRetrieve = vi.fn()
+vi.mock('../documents-retrieval', () => ({
+  documentsKnowledgeSource: {
+    sourceType: 'document',
+    retrieve: (...args: unknown[]) => mockDocumentsRetrieve(...args),
+  },
+}))
+
+// Same idea for the web-source (crawled public pages) source.
+const mockWebSourcesRetrieve = vi.fn()
+vi.mock('../web-sources-retrieval', () => ({
+  webpageKnowledgeSource: {
+    sourceType: 'webpage',
+    retrieve: (...args: unknown[]) => mockWebSourcesRetrieve(...args),
+  },
+}))
+
+// The member-scoped workspace conversation source; records what it was built with.
+const mockWorkspaceConversationSource = vi.fn()
+vi.mock('../workspace-retrieval', () => ({
+  workspaceConversationSource: (...args: unknown[]) => {
+    mockWorkspaceConversationSource(...args)
+    return { sourceType: 'summary', retrieve: async () => [] }
+  },
+}))
+
+import {
+  retrieveKnowledge,
+  resolveKnowledgeSources,
+  resolveAssistantKnowledgeSnapshot,
+  describeEnabledKnowledgeSources,
+  kbKnowledgeSource,
+  KNOWLEDGE_SNIPPET_CHARS,
+} from '../retrieval-sources'
+import { DEFAULT_ASSISTANT_CONFIG } from '@/lib/shared/assistant/config'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import type { Actor } from '@/lib/server/policy/types'
+
+/** Every retrieval source enabled — the config-v3 snapshot standing in for the
+ *  old flag-on bundle. */
+const ALL_SOURCES: ReadonlySet<AssistantCitationType> = new Set(ASSISTANT_CITATION_TYPES)
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  // The team-only tickets source and the changelog source default to empty so
+  // existing merge/forwarding assertions (which don't seed them) stay valid;
+  // a test that cares seeds its own rows.
+  mockTicketsRetrieve.mockResolvedValue([])
+  mockChangelogRetrieve.mockResolvedValue([])
+  mockDocumentsRetrieve.mockResolvedValue([])
+  mockWebSourcesRetrieve.mockResolvedValue([])
+})
+
+describe('workspace search reads each source only as far as its own permission', () => {
+  const member = (permissions: string[] = []): Actor => ({
+    principalId: 'principal_member' as never,
+    principalType: 'user',
+    role: 'member',
+    segmentIds: new Set(),
+    permissions: new Set(permissions) as Actor['permissions'],
+  })
+  const enabledSources = new Set<AssistantCitationType>(['article', 'post', 'changelog', 'ticket'])
+  async function ceilings(actor?: Actor) {
+    mockRetrieveKbArticles.mockResolvedValue([])
+    mockPostsRetrieve.mockResolvedValue([])
+    await retrieveKnowledge('Acme pricing', 'team', {
+      workspaceSearch: true,
+      actor,
+      enabledSources,
+    })
+    return {
+      article: mockRetrieveKbArticles.mock.calls.at(-1)?.[1]?.audience,
+      post: mockPostsRetrieve.mock.calls.at(-1)?.[1],
+      changelog: mockChangelogRetrieve.mock.calls.at(-1)?.[1],
+      ticket: mockTicketsRetrieve.mock.calls.length,
+    }
+  }
+  it('keeps private articles, private posts, drafts and tickets from a teammate without access', async () => {
+    expect(await ceilings(member())).toEqual({
+      article: 'public',
+      post: 'public',
+      changelog: 'public',
+      ticket: 0,
+    })
+  })
+  it('fails closed without an actor', async () => {
+    expect(await ceilings()).toEqual({
+      article: 'public',
+      post: 'public',
+      changelog: 'public',
+      ticket: 0,
+    })
+  })
+  it('reads team content for a teammate holding each permission', async () => {
+    expect(
+      await ceilings(
+        member([
+          PERMISSIONS.HELP_CENTER_MANAGE,
+          PERMISSIONS.POST_VIEW_PRIVATE,
+          PERMISSIONS.CHANGELOG_VIEW_DRAFT,
+          PERMISSIONS.TICKET_VIEW_ALL,
+        ])
+      )
+    ).toEqual({ article: 'team', post: 'team', changelog: 'team', ticket: 1 })
+  })
+  it('includes internal notes only for a teammate allowed to read them', async () => {
+    const summary = new Set<AssistantCitationType>(['summary'])
+    const actor = member([PERMISSIONS.CONVERSATION_VIEW])
+    await resolveKnowledgeSources(summary, true, true, false, actor)
+    expect(mockWorkspaceConversationSource).toHaveBeenLastCalledWith(false, false, actor)
+    mockWorkspaceConversationSource.mockClear()
+    expect(await resolveKnowledgeSources(summary, true, true, true, actor)).toEqual([])
+    expect(mockWorkspaceConversationSource).not.toHaveBeenCalled()
+    const noteReader = member([PERMISSIONS.CONVERSATION_VIEW, PERMISSIONS.CONVERSATION_NOTE])
+    await resolveKnowledgeSources(summary, true, true, false, noteReader)
+    expect(mockWorkspaceConversationSource).toHaveBeenLastCalledWith(true, false, noteReader)
+  })
+})
+
+describe('kbKnowledgeSource', () => {
+  it('maps a retrieved article onto a RetrievedItem with an article citation', async () => {
+    mockRetrieveKbArticles.mockResolvedValue([
+      makeKbArticle('article_1', { content: 'X'.repeat(5000), score: 0.87 }),
+    ])
+
+    const items = await kbKnowledgeSource.retrieve('reset password', 'public', {
+      topK: 5,
+    })
+
+    expect(mockRetrieveKbArticles).toHaveBeenCalledWith('reset password', { audience: 'public' })
+    expect(items).toHaveLength(1)
+    expect(items[0]).toEqual({
+      id: 'article_1',
+      sourceType: 'article',
+      title: 'Title article_1',
+      excerpt: 'X'.repeat(KNOWLEDGE_SNIPPET_CHARS),
+      score: 0.87,
+      // The row's own updated_at, ISO-encoded for the copilot freshness line —
+      // on the item here; the runtime copies it onto the ledgered citation for
+      // EVERY surface, and the orchestrator's persistence point strips it.
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      citation: {
+        type: 'article',
+        id: 'article_1',
+        title: 'Title article_1',
+        url: '/hc/en/articles/1-slug-article_1',
+      },
+    })
+  })
+
+  it('maps the team ceiling to the team HelpCenterAudience', async () => {
+    mockRetrieveKbArticles.mockResolvedValue([])
+    await kbKnowledgeSource.retrieve('escalation policy', 'team', { topK: 5 })
+    expect(mockRetrieveKbArticles).toHaveBeenCalledWith('escalation policy', { audience: 'team' })
+  })
+
+  it('maps the internal ceiling to the team HelpCenterAudience (no internal KB tier)', async () => {
+    mockRetrieveKbArticles.mockResolvedValue([])
+    await kbKnowledgeSource.retrieve('q', 'internal', { topK: 5 })
+    expect(mockRetrieveKbArticles).toHaveBeenCalledWith('q', { audience: 'team' })
+  })
+
+  it('flags a team-only article as internal (isPublic: false)', async () => {
+    mockRetrieveKbArticles.mockResolvedValue([
+      makeKbArticle('kb_article_private', { isPublic: false }),
+    ])
+    const items = await kbKnowledgeSource.retrieve('policy', 'team', { topK: 5 })
+    expect(items[0].citation.internal).toBe(true)
+  })
+
+  it('leaves a public article unflagged (no internal key)', async () => {
+    mockRetrieveKbArticles.mockResolvedValue([
+      makeKbArticle('kb_article_public', { isPublic: true }),
+    ])
+    const items = await kbKnowledgeSource.retrieve('policy', 'public', { topK: 5 })
+    expect(items[0].citation).not.toHaveProperty('internal')
+  })
+})
+
+describe('resolveAssistantKnowledgeSnapshot', () => {
+  it('compiles the Agent map (public ceiling): helpCenter plus always-on snippets and web sources, no team-only sources', () => {
+    const snap = resolveAssistantKnowledgeSnapshot('agent', DEFAULT_ASSISTANT_CONFIG, 'public')
+    expect([...snap.sources].sort()).toEqual(['article', 'document', 'snippet', 'webpage'])
+    expect(snap.status).toBe(false)
+  })
+
+  it('respects the Agent posts + changelog + status toggles', () => {
+    const config = structuredClone(DEFAULT_ASSISTANT_CONFIG)
+    config.agents.agent.knowledge = {
+      helpCenter: true,
+      posts: true,
+      changelog: true,
+      documents: false,
+      status: true,
+    }
+    const snap = resolveAssistantKnowledgeSnapshot('agent', config, 'public')
+    expect([...snap.sources].sort()).toEqual(['article', 'changelog', 'post', 'snippet', 'webpage'])
+    expect(snap.status).toBe(true)
+    // Snippets are registered at every ceiling; the snippets source's own
+    // audience predicate restricts a public turn to public-audience rows.
+    expect(snap.sources.has('snippet')).toBe(true)
+  })
+
+  it('compiles the Copilot map (team ceiling): its enabled sources plus always-on snippets and web sources', () => {
+    const snap = resolveAssistantKnowledgeSnapshot('copilot', DEFAULT_ASSISTANT_CONFIG, 'team')
+    // Default copilot: every knowledge source on, plus snippets always at the
+    // team ceiling and web sources always at every ceiling.
+    expect([...snap.sources].sort()).toEqual([
+      'article',
+      'changelog',
+      'document',
+      'post',
+      'snippet',
+      'summary',
+      'ticket',
+      'webpage',
+    ])
+    expect(snap.status).toBe(true)
+  })
+
+  it('compiles every configured workspace source without reading the customer-facing map', () => {
+    const config = structuredClone(DEFAULT_ASSISTANT_CONFIG)
+    config.agents.agent.knowledge.helpCenter = false
+    const snapshot = resolveAssistantKnowledgeSnapshot('workspace', config, 'team')
+    expect([...snapshot.sources].sort()).toEqual([...ASSISTANT_CITATION_TYPES].sort())
+    expect(snapshot.internalNotes).toBe(true)
+    expect(snapshot.pastConversations).toBe(true)
+    config.agents.workspace.knowledge.documents = false
+    config.agents.workspace.knowledge.pastConversations = false
+    config.agents.workspace.knowledge.internalNotes = false
+    const narrowed = resolveAssistantKnowledgeSnapshot('workspace', config, 'team')
+    expect(narrowed.sources.has('document')).toBe(false)
+    expect(narrowed.sources.has('summary')).toBe(false)
+    expect(narrowed.sources.has('article')).toBe(true)
+  })
+
+  it('keeps enabled Copilot internal-note retrieval when workspace chat disables conversation history', () => {
+    const config = structuredClone(DEFAULT_ASSISTANT_CONFIG)
+    config.agents.copilot.knowledge.pastConversations = false
+    config.agents.copilot.knowledge.internalNotes = true
+    const workspace = resolveAssistantKnowledgeSnapshot('copilot', config, 'team', true)
+    expect(workspace.sources.has('summary')).toBe(true)
+    expect(workspace.internalNotes).toBe(true)
+    expect(workspace.pastConversations).toBe(false)
+    expect(
+      resolveAssistantKnowledgeSnapshot('copilot', config, 'team').sources.has('summary')
+    ).toBe(false)
+    config.agents.copilot.knowledge.internalNotes = false
+    expect(
+      resolveAssistantKnowledgeSnapshot('copilot', config, 'team', true).sources.has('summary')
+    ).toBe(false)
+  })
+
+  it('a Copilot with every source off still gets snippets at the team ceiling (and web sources everywhere)', () => {
+    const config = structuredClone(DEFAULT_ASSISTANT_CONFIG)
+    config.agents.copilot.knowledge = {
+      helpCenter: false,
+      posts: false,
+      pastConversations: false,
+      internalNotes: false,
+      tickets: false,
+      changelog: false,
+      documents: false,
+      status: false,
+    }
+    const snap = resolveAssistantKnowledgeSnapshot('copilot', config, 'team')
+    expect([...snap.sources].sort()).toEqual(['snippet', 'webpage'])
+    expect(snap.status).toBe(false)
+  })
+})
+
+describe('describeEnabledKnowledgeSources', () => {
+  it('describes workspace-wide conversation grounding without inventing a current customer', () => {
+    const text = describeEnabledKnowledgeSources(new Set(['article', 'summary']), true)
+    expect(text).toContain('help center articles')
+    expect(text).toContain('workspace conversations')
+    expect(text).not.toContain("this customer's")
+  })
+  it('enumerates enabled sources in citation-vocabulary order', () => {
+    const text = describeEnabledKnowledgeSources(new Set(['article', 'changelog']))
+    expect(text).toContain('help center articles')
+    expect(text).toContain('changelog entries')
+    expect(text).toContain('sources parameter')
+  })
+
+  it('adds the customer-feedback caveat when posts are enabled', () => {
+    const text = describeEnabledKnowledgeSources(new Set(['article', 'post']))
+    expect(text).toMatch(/customer feedback, not/i)
+  })
+
+  it('is empty when no source is enabled', () => {
+    expect(describeEnabledKnowledgeSources(new Set())).toBe('')
+  })
+})
+
+describe('resolveKnowledgeSources', () => {
+  it('defaults to only the knowledge-base source when no snapshot is passed', async () => {
+    const sources = await resolveKnowledgeSources()
+    expect(sources).toEqual([kbKnowledgeSource])
+  })
+
+  it('registers exactly the sources named in the enabled set, in vocabulary order', async () => {
+    const sources = await resolveKnowledgeSources(ALL_SOURCES)
+    expect(sources.map((s) => s.sourceType)).toEqual([
+      'article',
+      'post',
+      'snippet',
+      'summary',
+      'ticket',
+      'changelog',
+      'document',
+      'webpage',
+    ])
+  })
+
+  it('omits a source whose type is not enabled', async () => {
+    const sources = await resolveKnowledgeSources(new Set(['article', 'changelog']))
+    expect(sources.map((s) => s.sourceType)).toEqual(['article', 'changelog'])
+  })
+})
+
+describe('retrieveKnowledge', () => {
+  it('consults only the knowledge base when no enabled set is passed (KB-only default)', async () => {
+    mockRetrieveKbArticles.mockResolvedValue([makeKbArticle('article_1', { score: 0.9 })])
+
+    const items = await retrieveKnowledge('q', 'public')
+
+    expect(items).toHaveLength(1)
+    expect(items[0].sourceType).toBe('article')
+    expect(mockPostsRetrieve).not.toHaveBeenCalled()
+  })
+
+  it('merges sources in parallel by rank tier (score breaking ties within a tier) and trims to topK', async () => {
+    mockSnippetsRetrieve.mockResolvedValue([])
+    mockConversationSummariesRetrieve.mockResolvedValue([])
+    mockRetrieveKbArticles.mockResolvedValue([
+      makeKbArticle('kb_low', { score: 0.5 }),
+      makeKbArticle('kb_high', { score: 0.9 }),
+    ])
+    mockPostsRetrieve.mockResolvedValue([
+      {
+        id: 'post_mid',
+        sourceType: 'post',
+        title: 'Post mid',
+        excerpt: 'mid',
+        score: 0.7,
+        citation: {
+          type: 'post',
+          id: 'post_mid',
+          title: 'Post mid',
+          url: '/b/general/posts/post_mid',
+        },
+      },
+      {
+        id: 'post_top',
+        sourceType: 'post',
+        title: 'Post top',
+        excerpt: 'top',
+        score: 0.95,
+        citation: {
+          type: 'post',
+          id: 'post_top',
+          title: 'Post top',
+          url: '/b/general/posts/post_top',
+        },
+      },
+    ])
+
+    const items = await retrieveKnowledge('q', 'public', { topK: 3, enabledSources: ALL_SOURCES })
+
+    // Both sources ran (parallel composition); the merge interleaves rank
+    // tiers (each source's #1 before any source's #2, raw score ordering
+    // within a tier) and trims to topK, dropping the last-tier loser
+    // (kb_low, 0.5) even though it came from the always-on source.
+    expect(mockRetrieveKbArticles).toHaveBeenCalledOnce()
+    expect(mockPostsRetrieve).toHaveBeenCalledOnce()
+    expect(items.map((i) => i.id)).toEqual(['post_top', 'kb_high', 'post_mid'])
+    expect(items).toHaveLength(3)
+  })
+
+  it('a source scoring on a larger scale cannot crowd the others out of the budget (rank interleaving)', async () => {
+    // The embeddings-down failure this pins: the summaries keyword fallback
+    // used to hardcode score 1.0 while KB ts_rank sits well below 1, so a
+    // raw-score merge filled the whole topK with summaries and buried every
+    // KB article. Rank interleaving guarantees each source's best items a
+    // seat regardless of its scale.
+    mockPostsRetrieve.mockResolvedValue([])
+    mockSnippetsRetrieve.mockResolvedValue([])
+    mockRetrieveKbArticles.mockResolvedValue([
+      makeKbArticle('kb_best', { score: 0.08 }),
+      makeKbArticle('kb_second', { score: 0.05 }),
+      makeKbArticle('kb_third', { score: 0.03 }),
+    ])
+    const summary = (id: string, score: number) => ({
+      id,
+      sourceType: 'summary' as const,
+      title: 'Past conversation',
+      excerpt: 'x',
+      score,
+      citation: { type: 'summary' as const, id, title: 'Past conversation', url: '' },
+    })
+    mockConversationSummariesRetrieve.mockResolvedValue([
+      summary('conversation_a', 1),
+      summary('conversation_b', 1),
+      summary('conversation_c', 1),
+      summary('conversation_d', 1),
+      summary('conversation_e', 1),
+    ])
+
+    const items = await retrieveKnowledge('q', 'public', { topK: 5, enabledSources: ALL_SOURCES })
+
+    // Tier by tier: each source's #1 first (summary wins its tier on raw
+    // score), then each #2, then each #3 — the KB survives into the budget
+    // instead of losing every slot to the flat 1.0 scale.
+    expect(items.map((i) => i.id)).toEqual([
+      'conversation_a',
+      'kb_best',
+      'conversation_b',
+      'kb_second',
+      'conversation_c',
+    ])
+  })
+
+  it('zero-score fallback rows seat after every scored row (embeddings-down: KB keyword hits fill topK first)', async () => {
+    // The embeddings-down shape after the summaries fallback stopped
+    // hardcoding 1.0: the summaries ILIKE fallback has no relevance signal
+    // (score 0), while the KB keyword path still produces real ts_rank
+    // scores. Zero-score rows must not compete in the rank tiers at all —
+    // every scored KB row seats first, then the zero-score summaries pad the
+    // remaining budget in their own per-source order.
+    mockPostsRetrieve.mockResolvedValue([])
+    mockSnippetsRetrieve.mockResolvedValue([])
+    mockRetrieveKbArticles.mockResolvedValue([
+      makeKbArticle('kb_best', { score: 0.08 }),
+      makeKbArticle('kb_second', { score: 0.05 }),
+      makeKbArticle('kb_third', { score: 0.03 }),
+    ])
+    const summary = (id: string, score: number) => ({
+      id,
+      sourceType: 'summary' as const,
+      title: 'Past conversation',
+      excerpt: 'x',
+      score,
+      citation: { type: 'summary' as const, id, title: 'Past conversation', url: '' },
+    })
+    mockConversationSummariesRetrieve.mockResolvedValue([
+      summary('conversation_a', 0),
+      summary('conversation_b', 0),
+      summary('conversation_c', 0),
+      summary('conversation_d', 0),
+      summary('conversation_e', 0),
+    ])
+
+    const items = await retrieveKnowledge('q', 'public', { topK: 5, enabledSources: ALL_SOURCES })
+
+    expect(items.map((i) => i.id)).toEqual([
+      'kb_best',
+      'kb_second',
+      'kb_third',
+      'conversation_a',
+      'conversation_b',
+    ])
+  })
+
+  it('sourceTypes undefined consults every registered source (default, unchanged)', async () => {
+    mockRetrieveKbArticles.mockResolvedValue([makeKbArticle('article_1', { score: 0.5 })])
+    mockPostsRetrieve.mockResolvedValue([])
+    mockSnippetsRetrieve.mockResolvedValue([])
+    mockConversationSummariesRetrieve.mockResolvedValue([])
+
+    await retrieveKnowledge('q', 'public', { enabledSources: ALL_SOURCES })
+
+    expect(mockRetrieveKbArticles).toHaveBeenCalled()
+    expect(mockPostsRetrieve).toHaveBeenCalled()
+    expect(mockSnippetsRetrieve).toHaveBeenCalled()
+    expect(mockConversationSummariesRetrieve).toHaveBeenCalled()
+    expect(mockTicketsRetrieve).toHaveBeenCalled()
+    expect(mockChangelogRetrieve).toHaveBeenCalled()
+  })
+
+  it('sourceTypes narrows to the given subset, skipping every other registered source', async () => {
+    mockRetrieveKbArticles.mockResolvedValue([makeKbArticle('article_1', { score: 0.5 })])
+    mockSnippetsRetrieve.mockResolvedValue([
+      {
+        id: 'assistant_snippet_1',
+        sourceType: 'snippet',
+        title: 'Snippet',
+        excerpt: 'x',
+        score: 0.9,
+        citation: { type: 'snippet', id: 'assistant_snippet_1', title: 'Snippet', url: '' },
+      },
+    ])
+
+    const items = await retrieveKnowledge('q', 'public', {
+      enabledSources: ALL_SOURCES,
+      sourceTypes: ['snippet'],
+    })
+
+    expect(mockRetrieveKbArticles).not.toHaveBeenCalled()
+    expect(mockPostsRetrieve).not.toHaveBeenCalled()
+    expect(mockConversationSummariesRetrieve).not.toHaveBeenCalled()
+    expect(mockSnippetsRetrieve).toHaveBeenCalled()
+    expect(items.map((i) => i.id)).toEqual(['assistant_snippet_1'])
+  })
+
+  it('cannot re-enable an unregistered source: sourceTypes only narrows what the snapshot already registered', async () => {
+    // Only the knowledge base is enabled, even though the request asks for
+    // posts too — narrowing can drop, never add.
+    mockRetrieveKbArticles.mockResolvedValue([makeKbArticle('article_1', { score: 0.5 })])
+
+    const items = await retrieveKnowledge('q', 'public', {
+      enabledSources: new Set(['article']),
+      sourceTypes: ['article', 'post'],
+    })
+
+    expect(mockPostsRetrieve).not.toHaveBeenCalled()
+    expect(items.map((i) => i.id)).toEqual(['article_1'])
+  })
+
+  it('forwards customerPrincipalId and conversationId to every source (only the summaries source reads them)', async () => {
+    mockRetrieveKbArticles.mockResolvedValue([])
+    mockPostsRetrieve.mockResolvedValue([])
+    mockSnippetsRetrieve.mockResolvedValue([])
+    mockConversationSummariesRetrieve.mockResolvedValue([])
+
+    await retrieveKnowledge('q', 'public', {
+      enabledSources: ALL_SOURCES,
+      customerPrincipalId: 'principal_customer_1' as never,
+      conversationId: 'conversation_current' as never,
+    })
+
+    expect(mockConversationSummariesRetrieve).toHaveBeenCalledWith(
+      'q',
+      'public',
+      expect.objectContaining({
+        customerPrincipalId: 'principal_customer_1',
+        conversationId: 'conversation_current',
+      })
+    )
+  })
+})

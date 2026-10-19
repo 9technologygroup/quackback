@@ -1,0 +1,798 @@
+import { memo } from 'react'
+import { FormattedMessage } from 'react-intl'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  InboxIcon,
+  AtSymbolIcon,
+  InboxArrowDownIcon,
+  ChevronDownIcon,
+  UserIcon,
+  BookmarkIcon,
+  FunnelIcon,
+  EllipsisHorizontalIcon,
+  StarIcon,
+  SparklesIcon,
+  TicketIcon,
+  BuildingOffice2Icon,
+  RectangleStackIcon,
+  NoSymbolIcon,
+  PencilSquareIcon,
+} from '@heroicons/react/24/solid'
+import { StarIcon as StarOutlineIcon } from '@heroicons/react/24/outline'
+import type { ConversationTagId, SegmentId, TeamId, ConversationViewId } from '@quackback/ids'
+import { fetchConversationTagsWithCountsFn } from '@/lib/server/functions/conversation-tags'
+import { fetchInboxSegmentsWithCountsFn } from '@/lib/server/functions/conversation-segments'
+import {
+  listConversationViewsFn,
+  pinConversationViewFn,
+  unpinConversationViewFn,
+  deleteConversationViewFn,
+} from '@/lib/server/functions/conversation-views'
+import { conversationKeys } from '@/lib/client/queries/conversation-keys'
+import { inboxQueries } from '@/lib/client/queries/inbox'
+import type { ConversationViewDTO } from '@/lib/shared/conversation/views'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { PageHeader } from '@/components/shared/page-header'
+import { FilterSection } from '@/components/shared/filter-section'
+import { PaneAddButton } from '@/components/shared/pane-add-button'
+import { MENU_ROW } from '@/components/ui/menu'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { cn } from '@/lib/shared/utils'
+
+// The active left-nav selection (one view / label / segment / team / custom
+// view at a time) and its key live in lib/ so the route loader + query factory
+// can share them without importing this component. Re-exported here so existing
+// nav consumers are unaffected.
+export {
+  inboxNavKey,
+  isInboxView,
+  isTicketInboxView,
+  type InboxView,
+  type InboxNavItem,
+} from '@/lib/client/conversation/inbox-scope'
+import {
+  inboxNavKey,
+  ticketTypeForView,
+  type InboxView,
+  type InboxNavItem,
+} from '@/lib/client/conversation/inbox-scope'
+import { inboxTeamsQueryOptions, type InboxTeam } from '@/lib/client/queries/inbox-teams'
+import { useFeatureFlag } from '@/lib/client/hooks/use-root-context'
+
+// Start with the broad conversation queue, then progressively narrow to the
+// teammate's own work and secondary personal feeds.
+// Status is no longer a view; it's a list filter. Quinn AI and the Tickets
+// section (below) render as their own nav groups, in that order (§2.3).
+export const CONVERSATION_VIEWS = [
+  { view: 'all', label: 'All conversations', Icon: InboxIcon },
+  { view: 'mine', label: 'Assigned to me', Icon: UserIcon },
+  { view: 'unassigned', label: 'Unassigned', Icon: InboxArrowDownIcon },
+  { view: 'mentions', label: 'Mentions', Icon: AtSymbolIcon },
+  { view: 'created_by_me', label: 'Created by me', Icon: PencilSquareIcon },
+  { view: 'saved', label: 'Saved messages', Icon: BookmarkIcon },
+  // The spam lifecycle's holding pen: spam-ended threads leave every triage
+  // scope above and land here, restorable from the thread.
+  { view: 'spam', label: 'Spam', Icon: NoSymbolIcon },
+] as const
+
+const QUINN_VIEW = { view: 'quinn', label: 'AI agent activity', Icon: SparklesIcon } as const
+
+/**
+ * The solid beaker, drawn here rather than imported: the settings menu's icon
+ * map imports the same icon, and sharing it from the inbox would split it into
+ * a chunk of its own that every settings page requests.
+ */
+function BeakerIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      data-slot="icon"
+      className={className}
+    >
+      <path
+        fillRule="evenodd"
+        d="M10.5 3.798v5.02a3 3 0 0 1-.879 2.121l-2.377 2.377a9.845 9.845 0 0 1 5.091 1.013 8.315 8.315 0 0 0 5.713.636l.285-.071-3.954-3.955a3 3 0 0 1-.879-2.121v-5.02a23.614 23.614 0 0 0-3 0Zm4.5.138a.75.75 0 0 0 .093-1.495A24.837 24.837 0 0 0 12 2.25a25.048 25.048 0 0 0-3.093.191A.75.75 0 0 0 9 3.936v4.882a1.5 1.5 0 0 1-.44 1.06l-6.293 6.294c-1.62 1.621-.903 4.475 1.471 4.88 2.686.46 5.447.698 8.262.698 2.816 0 5.576-.239 8.262-.697 2.373-.406 3.092-3.26 1.47-4.881L15.44 9.879A1.5 1.5 0 0 1 15 8.818V3.936Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  )
+}
+
+const TEST_ITEM: InboxNavItem = { kind: 'view', view: 'test' }
+
+/** The Test view only earns a row while there is test data to look at or clear. */
+export function showsTestView(counts: { test: number } | undefined, active: boolean): boolean {
+  return active || (counts?.test ?? 0) > 0
+}
+
+function TestViewLabel() {
+  return <FormattedMessage id="inbox.view.test" defaultMessage="Test conversations" />
+}
+
+/** The Tickets nav section (UNIFIED-INBOX-SPEC.md §2.3), visible only when
+ *  `supportTickets` is enabled — see `useSupportTicketsEnabled`. */
+export const TICKET_INBOX_VIEWS = [
+  { view: 'tickets_all', label: 'All tickets', Icon: InboxIcon },
+  { view: 'tickets_customer', label: 'Customer', Icon: TicketIcon },
+  { view: 'tickets_back_office', label: 'Back office', Icon: BuildingOffice2Icon },
+  { view: 'tickets_tracker', label: 'Trackers', Icon: RectangleStackIcon },
+] as const
+
+/** Shared (deduped) source of `supportTickets` — gates the Tickets nav section. */
+export function useSupportTicketsEnabled(): boolean {
+  return useFeatureFlag('supportTickets')
+}
+
+/** Shared (deduped) source of the inbox nav-badge counts (mine/unassigned/
+ *  tickets-by-type). */
+export function useInboxCounts() {
+  return useQuery(inboxQueries.counts())
+}
+
+export type ConversationTagWithCount = {
+  id: ConversationTagId
+  name: string
+  color: string
+  count: number
+}
+
+const CONVERSATION_TAG_COUNTS_KEY = ['admin', 'inbox', 'conversation-tags', 'counts'] as const
+
+/** Shared (deduped) source of the labels + per-tag conversation counts. */
+export function useConversationTagsWithCounts() {
+  return useQuery({
+    queryKey: CONVERSATION_TAG_COUNTS_KEY,
+    queryFn: () => fetchConversationTagsWithCountsFn() as Promise<ConversationTagWithCount[]>,
+    staleTime: 60_000,
+  })
+}
+
+export type InboxSegmentWithCount = { id: SegmentId; name: string; color: string; count: number }
+
+const INBOX_SEGMENT_COUNTS_KEY = ['admin', 'inbox', 'segments', 'counts'] as const
+
+/** Shared (deduped) source of the segments + per-segment open-conversation counts. */
+export function useInboxSegmentsWithCounts() {
+  return useQuery({
+    queryKey: INBOX_SEGMENT_COUNTS_KEY,
+    queryFn: () => fetchInboxSegmentsWithCountsFn() as Promise<InboxSegmentWithCount[]>,
+    staleTime: 60_000,
+  })
+}
+
+/** Shared (deduped) source of the custom saved views + the caller's pin state. */
+export function useConversationViews() {
+  return useQuery({
+    queryKey: conversationKeys.agentViews(),
+    queryFn: () => listConversationViewsFn() as Promise<ConversationViewDTO[]>,
+    staleTime: 60_000,
+  })
+}
+
+export { inboxTeamsQueryOptions, type InboxTeam }
+
+export function useInboxTeams(): { data: InboxTeam[] | undefined } {
+  return useQuery(inboxTeamsQueryOptions())
+}
+
+/** Human label for the active scope, resolving a tag/segment/team/view id. */
+export function scopeLabelFor(
+  nav: InboxNavItem,
+  tags?: ConversationTagWithCount[],
+  segments?: InboxSegmentWithCount[],
+  teams?: InboxTeam[],
+  views?: ConversationViewDTO[]
+): string {
+  if (nav.kind === 'tag') return tags?.find((t) => t.id === nav.tagId)?.name ?? 'Label'
+  if (nav.kind === 'segment')
+    return segments?.find((s) => s.id === nav.segmentId)?.name ?? 'Segment'
+  if (nav.kind === 'team') return teams?.find((t) => t.id === nav.teamId)?.name ?? 'Team'
+  if (nav.kind === 'custom') return views?.find((v) => v.id === nav.viewId)?.name ?? 'View'
+  switch (nav.view) {
+    case 'mentions':
+      return 'Mentions'
+    case 'created_by_me':
+      return 'Created by me'
+    case 'spam':
+      return 'Spam'
+    case 'test':
+      return 'Test conversations'
+    case 'quinn':
+      return 'AI agent activity'
+    case 'saved':
+      return 'Saved messages'
+    case 'mine':
+      return 'Assigned to me'
+    case 'unassigned':
+      return 'Unassigned'
+    case 'tickets_all':
+      return 'All tickets'
+    case 'tickets_customer':
+      return 'Customer tickets'
+    case 'tickets_back_office':
+      return 'Back office tickets'
+    case 'tickets_tracker':
+      return 'Trackers'
+    default:
+      return 'All conversations'
+  }
+}
+
+// Mirrors the settings secondary-nav item aesthetic (settings-nav.tsx) so the
+// inbox left pane reads as part of the same admin design system.
+const itemClass = (active: boolean) =>
+  cn(
+    MENU_ROW,
+    'w-full',
+    active
+      ? 'bg-muted text-foreground font-medium'
+      : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+  )
+
+/** A selectable scope row carrying a color + count (a PostTag or a Segment). */
+type ScopeRow = { id: string; name: string; color: string; count: number }
+
+/**
+ * One collapsible nav group of color-dot scope rows (Tags or Segments). Renders
+ * nothing when empty, so an org with no tags/segments shows no empty header. The
+ * `makeItem` adapter turns a row id into the right `InboxNavItem` variant.
+ */
+function ScopeFilterSection({
+  title,
+  rows,
+  activeKey,
+  onSelect,
+  makeItem,
+  showCounts = true,
+}: {
+  title: string
+  rows: ScopeRow[]
+  activeKey: string
+  onSelect: (item: InboxNavItem) => void
+  makeItem: (id: string) => InboxNavItem
+  showCounts?: boolean
+}) {
+  if (rows.length === 0) return null
+  return (
+    <FilterSection title={title}>
+      <div className="space-y-1">
+        {rows.map((r) => {
+          const item = makeItem(r.id)
+          const active = activeKey === inboxNavKey(item)
+          return (
+            <button
+              key={r.id}
+              type="button"
+              onClick={() => onSelect(item)}
+              data-active={active || undefined}
+              className={itemClass(active)}
+            >
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: r.color }}
+              />
+              <span className="min-w-0 flex-1 truncate text-left">{r.name}</span>
+              {showCounts && (
+                <span className="shrink-0 text-[11px] text-muted-foreground">{r.count}</span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </FilterSection>
+  )
+}
+
+/** The mobile (dropdown) equivalent of ScopeFilterSection. */
+function ScopeMenuSection({
+  title,
+  rows,
+  activeKey,
+  onSelect,
+  makeItem,
+  showCounts = true,
+}: {
+  title: string
+  rows: ScopeRow[]
+  activeKey: string
+  onSelect: (item: InboxNavItem) => void
+  makeItem: (id: string) => InboxNavItem
+  showCounts?: boolean
+}) {
+  if (rows.length === 0) return null
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuLabel className="uppercase tracking-wide text-muted-foreground">
+        {title}
+      </DropdownMenuLabel>
+      {rows.map((r) => {
+        const item = makeItem(r.id)
+        return (
+          <DropdownMenuItem
+            key={r.id}
+            onClick={() => onSelect(item)}
+            className={cn('gap-2', activeKey === inboxNavKey(item) && 'text-primary')}
+          >
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ backgroundColor: r.color }}
+            />
+            <span className="min-w-0 flex-1 truncate">{r.name}</span>
+            {showCounts && (
+              <span className="shrink-0 text-xs text-muted-foreground">{r.count}</span>
+            )}
+          </DropdownMenuItem>
+        )
+      })}
+    </>
+  )
+}
+
+const tagNavItem = (id: string): InboxNavItem => ({ kind: 'tag', tagId: id as ConversationTagId })
+const segmentNavItem = (id: string): InboxNavItem => ({
+  kind: 'segment',
+  segmentId: id as SegmentId,
+})
+const teamNavItem = (id: string): InboxNavItem => ({ kind: 'team', teamId: id as TeamId })
+
+/**
+ * Team nav rows, hiding a brand-new workspace's lone seeded default team. The
+ * default "Support" team always exists (it is the routing anchor and can't be
+ * deleted), so don't surface an empty "Teams" section until the workspace
+ * engages with teams: a second team exists, or the seeded team has members.
+ */
+function teamNavRows(teams: InboxTeam[] | undefined): ScopeRow[] {
+  const rows: ScopeRow[] = (teams ?? []).map((t) => ({
+    id: t.id,
+    name: t.name,
+    color: t.color,
+    count: t.memberCount,
+  }))
+  return rows.length > 1 || rows.some((r) => r.count > 0) ? rows : []
+}
+
+/** Pin toggle + delete for one custom view (mutations, invalidating the views list). */
+function useViewMutations() {
+  const queryClient = useQueryClient()
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: conversationKeys.agentViews() })
+    void queryClient.invalidateQueries({ queryKey: conversationKeys.agentConversations() })
+  }
+  const pin = useMutation({
+    mutationFn: (viewId: ConversationViewId) => pinConversationViewFn({ data: { viewId } }),
+    onSuccess: invalidate,
+  })
+  const unpin = useMutation({
+    mutationFn: (viewId: ConversationViewId) => unpinConversationViewFn({ data: { viewId } }),
+    onSuccess: invalidate,
+  })
+  const remove = useMutation({
+    mutationFn: (viewId: ConversationViewId) => deleteConversationViewFn({ data: { viewId } }),
+    onSuccess: invalidate,
+  })
+  return { pin, unpin, remove }
+}
+
+/**
+ * The custom-views nav group (desktop): shared saved views, pinned first, each
+ * with a per-row menu (pin/unpin, edit, delete). The section header carries a
+ * "+" to create a new view. Manage actions are server-authoritative
+ * (conversation.manage_views); the UI offers them and a lacking role gets a 403.
+ */
+function ViewsFilterSection({
+  views,
+  activeKey,
+  onSelect,
+  onCreateView,
+  onEditView,
+}: {
+  views: ConversationViewDTO[]
+  activeKey: string
+  onSelect: (item: InboxNavItem) => void
+  onCreateView?: () => void
+  onEditView?: (view: ConversationViewDTO) => void
+}) {
+  const { pin, unpin, remove } = useViewMutations()
+  // The section is always shown (with its + button) so views can be created
+  // from an empty inbox; when there are none it renders just the create action.
+  return (
+    <FilterSection
+      title="Saved views"
+      action={onCreateView ? <PaneAddButton label="New view" onClick={onCreateView} /> : undefined}
+    >
+      {views.length > 0 && (
+        <div className="space-y-1">
+          {views.map((v) => {
+            const item: InboxNavItem = { kind: 'custom', viewId: v.id }
+            const active = activeKey === inboxNavKey(item)
+            return (
+              <div
+                key={v.id}
+                data-active={active || undefined}
+                className={cn('group flex items-center gap-1', itemClass(active))}
+              >
+                <button
+                  type="button"
+                  onClick={() => onSelect(item)}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                >
+                  {v.isPinned ? (
+                    <StarIcon className="size-4 shrink-0 text-amber-500" />
+                  ) : (
+                    <FunnelIcon className={cn('size-4 shrink-0', active && 'text-primary')} />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">{v.name}</span>
+                </button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={`Manage view ${v.name}`}
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100"
+                    >
+                      <EllipsisHorizontalIcon className="h-4 w-4" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      className="gap-2"
+                      onClick={() => (v.isPinned ? unpin.mutate(v.id) : pin.mutate(v.id))}
+                    >
+                      {v.isPinned ? (
+                        <StarOutlineIcon className="h-4 w-4" />
+                      ) : (
+                        <StarIcon className="h-4 w-4" />
+                      )}
+                      {v.isPinned ? 'Unpin' : 'Pin'}
+                    </DropdownMenuItem>
+                    {onEditView && (
+                      <DropdownMenuItem onClick={() => onEditView(v)}>Edit</DropdownMenuItem>
+                    )}
+                    <DropdownMenuItem
+                      className="text-destructive"
+                      onClick={() => remove.mutate(v.id)}
+                    >
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </FilterSection>
+  )
+}
+
+/** Count badge for a nav row (mine/unassigned/ticket-type badges); renders
+ *  nothing for a zero/undefined count so an empty scope shows no stray "0". */
+function NavRowCount({ count }: { count?: number }) {
+  if (!count) return null
+  return <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{count}</span>
+}
+
+/** Nav-badge count for one conversation scope view, from `useInboxCounts`. */
+function countForConversationView(
+  view: InboxView,
+  counts?: { mine: number; unassigned: number }
+): number | undefined {
+  if (!counts) return undefined
+  if (view === 'mine') return counts.mine
+  if (view === 'unassigned') return counts.unassigned
+  return undefined
+}
+
+function countForTicketView(
+  view: (typeof TICKET_INBOX_VIEWS)[number]['view'],
+  counts?: { ticketsByType: Record<'customer' | 'back_office' | 'tracker', number> }
+): number | undefined {
+  if (!counts) return undefined
+  if (view === 'tickets_all') {
+    return Object.values(counts.ticketsByType).reduce((total, count) => total + count, 0)
+  }
+  return counts.ticketsByType[ticketTypeForView(view)]
+}
+
+/**
+ * Grouped inbox navigation: broad queues first, followed by personal feeds,
+ * ticket scopes, AI activity, and workspace-defined views/taxonomy.
+ * All scopes are mutually exclusive. Desktop-only (lg+); the mobile equivalent
+ * is InboxScopeMenu in the list header. Memoized: the route re-renders on every
+ * URL change, including opening an item, which leaves these props unchanged.
+ */
+export const InboxNavSidebar = memo(function InboxNavSidebar({
+  nav,
+  onSelect,
+  onCreateView,
+  onEditView,
+}: {
+  nav: InboxNavItem
+  onSelect: (item: InboxNavItem) => void
+  onCreateView?: () => void
+  onEditView?: (view: ConversationViewDTO) => void
+}) {
+  const { data: tags } = useConversationTagsWithCounts()
+  const { data: segments } = useInboxSegmentsWithCounts()
+  const { data: teams } = useInboxTeams()
+  const { data: views } = useConversationViews()
+  const { data: counts } = useInboxCounts()
+  const showTickets = useSupportTicketsEnabled()
+  const activeKey = inboxNavKey(nav)
+  const teamRows = teamNavRows(teams)
+  const quinnItem: InboxNavItem = { kind: 'view', view: QUINN_VIEW.view }
+  const quinnActive = activeKey === inboxNavKey(quinnItem)
+  const testActive = activeKey === inboxNavKey(TEST_ITEM)
+
+  return (
+    <nav
+      data-side-pane=""
+      className="hidden w-64 shrink-0 flex-col overflow-hidden border-e border-chrome-hairline bg-background lg:flex xl:w-72"
+    >
+      <div className="px-5 py-3.5">
+        <PageHeader as="h2" title="Support" />
+      </div>
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="px-2.5 pb-5">
+          <FilterSection title="Conversations">
+            <div className="space-y-1">
+              {CONVERSATION_VIEWS.map(({ view, label, Icon }) => {
+                const item: InboxNavItem = { kind: 'view', view }
+                const active = activeKey === inboxNavKey(item)
+                return (
+                  <button
+                    key={view}
+                    type="button"
+                    onClick={() => onSelect(item)}
+                    data-active={active || undefined}
+                    className={itemClass(active)}
+                  >
+                    <Icon className={cn('size-4 shrink-0', active && 'text-primary')} />
+                    <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+                    <NavRowCount count={countForConversationView(view, counts)} />
+                  </button>
+                )
+              })}
+              <button
+                type="button"
+                onClick={() => onSelect(quinnItem)}
+                data-active={quinnActive || undefined}
+                className={itemClass(quinnActive)}
+              >
+                <QUINN_VIEW.Icon className={cn('size-4 shrink-0', quinnActive && 'text-primary')} />
+                <span className="min-w-0 flex-1 truncate text-left">{QUINN_VIEW.label}</span>
+              </button>
+              {showsTestView(counts, testActive) && (
+                <button
+                  type="button"
+                  onClick={() => onSelect(TEST_ITEM)}
+                  data-active={testActive || undefined}
+                  className={itemClass(testActive)}
+                >
+                  <BeakerIcon className={cn('size-4 shrink-0', testActive && 'text-primary')} />
+                  <span className="min-w-0 flex-1 truncate text-left">
+                    <TestViewLabel />
+                  </span>
+                  <NavRowCount count={counts?.test} />
+                </button>
+              )}
+            </div>
+          </FilterSection>
+
+          {showTickets && (
+            <FilterSection title="Tickets">
+              <div className="space-y-1">
+                {TICKET_INBOX_VIEWS.map(({ view, label, Icon }) => {
+                  const item: InboxNavItem = { kind: 'view', view }
+                  const active = activeKey === inboxNavKey(item)
+                  const count = countForTicketView(view, counts)
+                  return (
+                    <button
+                      key={view}
+                      type="button"
+                      onClick={() => onSelect(item)}
+                      data-active={active || undefined}
+                      className={itemClass(active)}
+                    >
+                      <Icon className={cn('size-4 shrink-0', active && 'text-primary')} />
+                      <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+                      <NavRowCount count={count} />
+                    </button>
+                  )
+                })}
+              </div>
+            </FilterSection>
+          )}
+
+          <ScopeFilterSection
+            title="Teams"
+            rows={teamRows}
+            activeKey={activeKey}
+            onSelect={onSelect}
+            makeItem={teamNavItem}
+            showCounts={false}
+          />
+          <ViewsFilterSection
+            views={views ?? []}
+            activeKey={activeKey}
+            onSelect={onSelect}
+            onCreateView={onCreateView}
+            onEditView={onEditView}
+          />
+          <ScopeFilterSection
+            title="Tags"
+            rows={tags ?? []}
+            activeKey={activeKey}
+            onSelect={onSelect}
+            makeItem={tagNavItem}
+          />
+          <ScopeFilterSection
+            title="Segments"
+            rows={segments ?? []}
+            activeKey={activeKey}
+            onSelect={onSelect}
+            makeItem={segmentNavItem}
+          />
+        </div>
+      </ScrollArea>
+    </nav>
+  )
+})
+
+/**
+ * Mobile scope switcher (lg:hidden) shown in the list header, since the nav
+ * sidebar is desktop-only. Same options as the sidebar (views + teams + custom
+ * views + tags + segments), in a dropdown.
+ */
+export function InboxScopeMenu({
+  nav,
+  onSelect,
+}: {
+  nav: InboxNavItem
+  onSelect: (item: InboxNavItem) => void
+}) {
+  const { data: tags } = useConversationTagsWithCounts()
+  const { data: segments } = useInboxSegmentsWithCounts()
+  const { data: teams } = useInboxTeams()
+  const { data: views } = useConversationViews()
+  const { data: counts } = useInboxCounts()
+  const showTickets = useSupportTicketsEnabled()
+  const activeKey = inboxNavKey(nav)
+  const teamRows = teamNavRows(teams)
+  const quinnItem: InboxNavItem = { kind: 'view', view: QUINN_VIEW.view }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="flex items-center gap-1 text-sm font-semibold leading-tight"
+        >
+          <span className="truncate">{scopeLabelFor(nav, tags, segments, teams, views)}</span>
+          <ChevronDownIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-56">
+        <DropdownMenuLabel className="uppercase tracking-wide text-muted-foreground">
+          Conversations
+        </DropdownMenuLabel>
+        {CONVERSATION_VIEWS.map(({ view, label, Icon }) => {
+          const item: InboxNavItem = { kind: 'view', view }
+          const count = countForConversationView(view, counts)
+          return (
+            <DropdownMenuItem
+              key={view}
+              onClick={() => onSelect(item)}
+              className={cn('gap-2', activeKey === inboxNavKey(item) && 'text-primary')}
+            >
+              <Icon className="h-4 w-4" />
+              <span className="min-w-0 flex-1 truncate">{label}</span>
+              <NavRowCount count={count} />
+            </DropdownMenuItem>
+          )
+        })}
+        {showsTestView(counts, activeKey === inboxNavKey(TEST_ITEM)) && (
+          <DropdownMenuItem
+            onClick={() => onSelect(TEST_ITEM)}
+            className={cn('gap-2', activeKey === inboxNavKey(TEST_ITEM) && 'text-primary')}
+          >
+            <BeakerIcon className="h-4 w-4" />
+            <span className="min-w-0 flex-1 truncate">
+              <TestViewLabel />
+            </span>
+            <NavRowCount count={counts?.test} />
+          </DropdownMenuItem>
+        )}
+        {showTickets && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="uppercase tracking-wide text-muted-foreground">
+              Tickets
+            </DropdownMenuLabel>
+            {TICKET_INBOX_VIEWS.map(({ view, label, Icon }) => {
+              const item: InboxNavItem = { kind: 'view', view }
+              const count = countForTicketView(view, counts)
+              return (
+                <DropdownMenuItem
+                  key={view}
+                  onClick={() => onSelect(item)}
+                  className={cn('gap-2', activeKey === inboxNavKey(item) && 'text-primary')}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span className="min-w-0 flex-1 truncate">{label}</span>
+                  <NavRowCount count={count} />
+                </DropdownMenuItem>
+              )
+            })}
+          </>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() => onSelect(quinnItem)}
+          className={cn('gap-2', activeKey === inboxNavKey(quinnItem) && 'text-primary')}
+        >
+          <QUINN_VIEW.Icon className="h-4 w-4" />
+          {QUINN_VIEW.label}
+        </DropdownMenuItem>
+        <ScopeMenuSection
+          title="Teams"
+          rows={teamRows}
+          activeKey={activeKey}
+          onSelect={onSelect}
+          makeItem={teamNavItem}
+          showCounts={false}
+        />
+        {(views ?? []).length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="uppercase tracking-wide text-muted-foreground">
+              Saved views
+            </DropdownMenuLabel>
+            {(views ?? []).map((v) => {
+              const item: InboxNavItem = { kind: 'custom', viewId: v.id }
+              return (
+                <DropdownMenuItem
+                  key={v.id}
+                  onClick={() => onSelect(item)}
+                  className={cn('gap-2', activeKey === inboxNavKey(item) && 'text-primary')}
+                >
+                  {v.isPinned ? (
+                    <StarIcon className="h-4 w-4 text-amber-500" />
+                  ) : (
+                    <FunnelIcon className="h-4 w-4" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">{v.name}</span>
+                </DropdownMenuItem>
+              )
+            })}
+          </>
+        )}
+        <ScopeMenuSection
+          title="Tags"
+          rows={tags ?? []}
+          activeKey={activeKey}
+          onSelect={onSelect}
+          makeItem={tagNavItem}
+        />
+        <ScopeMenuSection
+          title="Segments"
+          rows={segments ?? []}
+          activeKey={activeKey}
+          onSelect={onSelect}
+          makeItem={segmentNavItem}
+        />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}

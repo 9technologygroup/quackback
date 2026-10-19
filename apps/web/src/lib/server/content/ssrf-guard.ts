@@ -19,6 +19,10 @@ import { request as httpsRequest } from 'node:https'
 import { request as httpRequest } from 'node:http'
 import { checkServerIdentity } from 'node:tls'
 import type { IncomingMessage } from 'node:http'
+import {
+  CONNECTOR_MAX_RESPONSE_BYTES,
+  CONNECTOR_REQUEST_TIMEOUT_MS,
+} from '@/lib/shared/assistant/connectors'
 
 const ALLOWED_SCHEMES = new Set(['http:', 'https:'])
 
@@ -61,56 +65,53 @@ function ipv4InRange(ip: number, baseCidr: string): boolean {
 }
 
 /**
- * Extract the embedded IPv4 address from an IPv4-mapped IPv6 address.
- * Handles both dotted-decimal (`::ffff:127.0.0.1`) and hextet
- * (`::ffff:7f00:1`) representations. Returns the IPv4 as a dotted string
- * or null if the input isn't IPv4-mapped.
+ * Parse an IPv6 address (compressed or not, with an optional zone and an
+ * optional dotted IPv4 tail) into its eight hextets, or null.
  */
-function extractMappedIpv4(lowerAddr: string): string | null {
-  if (!lowerAddr.startsWith('::ffff:')) return null
-  const suffix = lowerAddr.slice('::ffff:'.length)
-  // Dotted-decimal form: ::ffff:127.0.0.1
-  if (parseIpv4(suffix) !== null) {
-    return suffix
+function parseIpv6(addr: string): number[] | null {
+  let text = addr.toLowerCase()
+  const zone = text.indexOf('%')
+  if (zone !== -1) text = text.slice(0, zone)
+  const lastColon = text.lastIndexOf(':')
+  if (lastColon === -1) return null
+  const tail = text.slice(lastColon + 1)
+  if (tail.includes('.')) {
+    const v4 = parseIpv4(tail)
+    if (v4 === null) return null
+    text = `${text.slice(0, lastColon + 1)}${(v4 >>> 16).toString(16)}:${(v4 & 0xffff).toString(16)}`
   }
-  // Hextet form: ::ffff:7f00:1 (= ::ffff:127.0.0.1)
-  const hextets = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(suffix)
-  if (hextets) {
-    const hi = parseInt(hextets[1], 16)
-    const lo = parseInt(hextets[2], 16)
-    if (hi > 0xffff || lo > 0xffff) return null
-    const ip = ((hi << 16) | lo) >>> 0
-    const a = (ip >>> 24) & 0xff
-    const b = (ip >>> 16) & 0xff
-    const c = (ip >>> 8) & 0xff
-    const d = ip & 0xff
-    return `${a}.${b}.${c}.${d}`
-  }
-  return null
+  const halves = text.split('::')
+  if (halves.length > 2) return null
+  const head = halves[0] ? halves[0].split(':') : []
+  const rest = halves.length === 2 && halves[1] ? halves[1].split(':') : []
+  const gap = 8 - head.length - rest.length
+  if (halves.length === 1 ? gap !== 0 : gap < 1) return null
+  const parts = [...head, ...new Array<string>(halves.length === 2 ? gap : 0).fill('0'), ...rest]
+  if (!parts.every((part) => /^[0-9a-f]{1,4}$/.test(part))) return null
+  return parts.map((part) => parseInt(part, 16))
 }
 
 /**
- * IPv6 handling: we normalize to lowercase and check leading-segment prefixes.
- * This is a pragmatic approximation — we don't need full RFC 4291 parsing for
- * the small set of ranges we block.
+ * IPv6 ranges a server-side fetch never legitimately targets. Anything that
+ * does not parse as IPv6 fails closed.
  */
 function isPrivateIpv6(addr: string): boolean {
-  const lower = addr.toLowerCase()
-  // IPv4-mapped IPv6 — covers both ::ffff:127.0.0.1 (dotted) and ::ffff:7f00:1 (hextet)
-  const mappedV4 = extractMappedIpv4(lower)
-  if (mappedV4 !== null) {
-    return isPrivateIpv4(mappedV4)
-  }
-  // Documentation (RFC 3849) 2001:db8::/32 — non-routable
-  if (/^2001:0?db8:/.test(lower)) return true
-  // Loopback
-  if (lower === '::1') return true
-  // Unspecified
-  if (lower === '::' || lower === '0:0:0:0:0:0:0:0') return true
-  // Unique local fc00::/7 — first byte 0xfc or 0xfd
-  if (/^(fc|fd)[0-9a-f]{2}:/.test(lower)) return true
-  // Link-local fe80::/10 — fe8x, fe9x, feax, febx
-  if (/^fe[89ab][0-9a-f]:/.test(lower)) return true
+  const h = parseIpv6(addr)
+  if (!h) return true
+  const embeddedV4 = () => `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`
+  // IPv4-mapped ::ffff:0:0/96: judge the embedded IPv4 address.
+  if (h.slice(0, 5).every((x) => x === 0) && h[5] === 0xffff) return isPrivateIpv4(embeddedV4())
+  // ::/96: unspecified, loopback and the deprecated IPv4-compatible form.
+  if (h.slice(0, 6).every((x) => x === 0)) return true
+  // NAT64 64:ff9b::/32, 6to4 2002::/16 and Teredo 2001:0::/32 embed or
+  // tunnel an attacker-chosen IPv4 address.
+  if (h[0] === 0x64 && h[1] === 0xff9b) return true
+  if (h[0] === 0x2002) return true
+  if (h[0] === 0x2001 && (h[1] === 0 || h[1] === 0x0db8)) return true // Teredo, documentation
+  if ((h[0] & 0xfe00) === 0xfc00) return true // unique local fc00::/7
+  if ((h[0] & 0xffc0) === 0xfe80) return true // link-local fe80::/10
+  if ((h[0] & 0xffc0) === 0xfec0) return true // site-local fec0::/10
+  if ((h[0] & 0xff00) === 0xff00) return true // multicast ff00::/8
   return false
 }
 
@@ -122,9 +123,14 @@ function isPrivateIpv4(addr: string): boolean {
     '10.0.0.0/8', // RFC 1918
     '100.64.0.0/10', // CGNAT
     '127.0.0.0/8', // loopback
+    '168.63.129.16/32', // cloud host endpoint
     '169.254.0.0/16', // link-local (includes cloud metadata 169.254.169.254)
     '172.16.0.0/12', // RFC 1918
+    '192.0.0.0/24', // IETF protocol assignments
     '192.168.0.0/16', // RFC 1918
+    '198.18.0.0/15', // benchmarking
+    '224.0.0.0/4', // multicast
+    '240.0.0.0/4', // reserved, including 255.255.255.255
   ]
   return blocklist.some((cidr) => ipv4InRange(ip, cidr))
 }
@@ -333,5 +339,120 @@ export async function safeFetch(url: string, init: SafeFetchInit = {}): Promise<
     req.on('error', reject)
     if (body) req.write(body)
     req.end()
+  })
+}
+
+/**
+ * SSRF-safe fetch that streams the body instead of buffering it.
+ *
+ * Same DNS pin, scheme check, TLS SNI, and no-redirects contract as
+ * `safeFetch`. The MCP streamable-HTTP transport needs a real stream (SSE);
+ * buffering would hold the event stream until the server closed.
+ *
+ * `maxResponseBytes` still applies: the stream is destroyed once the cap is
+ * reached so a hostile peer cannot stream unbounded bytes. Callers that need
+ * a complete body should use `safeFetch` instead.
+ */
+export async function safeFetchStream(url: string, init: SafeFetchInit = {}): Promise<Response> {
+  const safety = await checkUrlSafety(url)
+  if (!safety.safe) throw new SsrfError(safety.reason)
+
+  const parsed = new URL(url)
+  const isHttps = parsed.protocol === 'https:'
+  const requestFn = isHttps ? httpsRequest : httpRequest
+  const {
+    method = 'GET',
+    headers = {},
+    body,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
+    onOverflow = 'error',
+  } = init
+
+  return new Promise<Response>((resolve, reject) => {
+    const req = requestFn(
+      {
+        hostname: safety.address,
+        family: safety.family,
+        port: Number(parsed.port || (isHttps ? 443 : 80)),
+        path: `${parsed.pathname}${parsed.search}`,
+        method,
+        servername: isHttps ? parsed.hostname : undefined,
+        headers: { ...headers, host: parsed.host },
+        timeout: timeoutMs,
+        signal: AbortSignal.timeout(timeoutMs),
+        checkServerIdentity: isHttps
+          ? (_host: string, cert: Parameters<typeof checkServerIdentity>[1]) =>
+              checkServerIdentity(parsed.hostname, cert)
+          : undefined,
+      },
+      (res: IncomingMessage) => {
+        const status = res.statusCode ?? 502
+        const headerEntries: [string, string][] = []
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (typeof v === 'string') headerEntries.push([k, v])
+          else if (Array.isArray(v)) headerEntries.push([k, v.join(', ')])
+        }
+        let total = 0
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            res.on('data', (chunk: Buffer) => {
+              total += chunk.length
+              if (total > maxResponseBytes) {
+                res.destroy()
+                if (onOverflow === 'error') {
+                  controller.error(new ResponseTooLargeError(maxResponseBytes))
+                  return
+                }
+                controller.close()
+                return
+              }
+              controller.enqueue(new Uint8Array(chunk))
+            })
+            res.on('end', () => controller.close())
+            res.on('error', (err) => controller.error(err))
+          },
+          cancel() {
+            res.destroy()
+          },
+        })
+        const nullBody = status < 200 || status === 204 || status === 304
+        resolve(
+          new Response(nullBody ? null : stream, {
+            status,
+            statusText: res.statusMessage ?? '',
+            headers: headerEntries,
+          })
+        )
+      }
+    )
+    req.on('timeout', () => req.destroy(new TimeoutError(timeoutMs)))
+    req.on('error', reject)
+    if (body) req.write(body)
+    req.end()
+  })
+}
+
+/**
+ * Fetch-compatible wrapper around `safeFetchStream` for MCP transports.
+ * Accepts a Request or URL; never follows redirects.
+ */
+export async function safePinnedFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {}
+): Promise<Response> {
+  const request = input instanceof Request ? input : new Request(input, init)
+  const headers: Record<string, string> = {}
+  request.headers.forEach((value, key) => {
+    headers[key] = value
+  })
+  const bodyBuffer = request.body ? Buffer.from(await request.arrayBuffer()) : undefined
+  return safeFetchStream(request.url, {
+    method: request.method,
+    headers,
+    body: bodyBuffer ? bodyBuffer.toString('utf8') : undefined,
+    timeoutMs: CONNECTOR_REQUEST_TIMEOUT_MS,
+    maxResponseBytes: CONNECTOR_MAX_RESPONSE_BYTES,
+    onOverflow: 'error',
   })
 }

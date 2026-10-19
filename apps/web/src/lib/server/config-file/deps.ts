@@ -1,14 +1,30 @@
 import { db, settings, eq } from '@/lib/server/db'
 import { invalidateSettingsCache } from '@/lib/server/domains/settings/settings.helpers'
+import {
+  DEFAULT_PORTAL_CONFIG,
+  DEFAULT_WIDGET_CONFIG,
+  newWorkspaceFlagsForGoals,
+} from '@/lib/server/domains/settings/settings.types'
+import { DEFAULT_ASSISTANT_CONFIG } from '@/lib/shared/assistant/config'
+import { getSetupState } from '@/lib/shared/db-types'
 import { invalidateTierLimitsCache } from '@/lib/server/domains/settings/tier-limits.service'
 import { bumpAuthConfigVersionInTx } from '@/lib/server/auth/config-version'
 import { generateId } from '@quackback/ids'
 import type { ReconcileDeps, SettingsInsert, SettingsRow, SettingsUpdate } from './reconciler'
 import { makeReportStatus } from './report-status'
+import { mutateSetupStateAtomic } from '@/lib/server/setup-state'
+import { mergeSetupState } from './reconciler'
+
+/** The goals a stamped setup state chose, or none (Feedback by default). */
+function stampedGoals(setupState: string | null | undefined) {
+  const state = getSetupState(setupState ?? null)
+  if (state?.goals?.length) return state.goals
+  return state?.useCase ? [state.useCase] : []
+}
 
 /** Production wiring of `ReconcileDeps`. The reconciler is db-agnostic
  *  to keep its tests fast; this is the only place that touches Drizzle
- *  + Redis. */
+ *  + the cache. */
 export function makeReconcileDeps(): ReconcileDeps {
   return {
     readSettings: async () => {
@@ -24,16 +40,25 @@ export function makeReconcileDeps(): ReconcileDeps {
       } satisfies SettingsRow
     },
     updateSettings: async (update: SettingsUpdate) => {
+      const { setupWorkspace, ...columnUpdate } = update
       const row = await db.query.settings.findFirst({ columns: { id: true } })
       if (!row) return
       // Bump auth_config_version atomically with the settings write so
       // other pods drop their stale Better-Auth instance on next
       // request. invalidateSettingsCache (called by the reconciler
-      // after this returns) handles the Redis cross-pod broadcast.
-      await db.transaction(async (tx) => {
-        await tx.update(settings).set(update).where(eq(settings.id, row.id))
-        await bumpAuthConfigVersionInTx(tx)
-      })
+      // after this returns) drops the shared cache rows every pod reads.
+      if (setupWorkspace) {
+        await mutateSetupStateAtomic(async (current, lockedRow, tx) => {
+          await tx.update(settings).set(columnUpdate).where(eq(settings.id, lockedRow.id))
+          await bumpAuthConfigVersionInTx(tx)
+          return { state: mergeSetupState(current, setupWorkspace), value: undefined }
+        })
+      } else {
+        await db.transaction(async (tx) => {
+          await tx.update(settings).set(columnUpdate).where(eq(settings.id, row.id))
+          await bumpAuthConfigVersionInTx(tx)
+        })
+      }
     },
     createSettings: async (insert: SettingsInsert) => {
       // Pass a TypeID string for the id; the typeIdColumn driver
@@ -41,7 +66,7 @@ export function makeReconcileDeps(): ReconcileDeps {
       // default at the column level, so we set it here.
       //
       // onConflictDoNothing on slug guards the narrow race between this
-      // path and onboarding's saveUseCaseFn — both can attempt the
+      // path and onboarding's combined workspace-and-goal step — both can attempt the
       // first INSERT on a fresh install. If we lose the race, the next
       // watcher tick reads the now-existing row and updates it via the
       // normal reconcile path.
@@ -63,8 +88,17 @@ export function makeReconcileDeps(): ReconcileDeps {
           tierLimits: insert.tierLimits,
           managedFieldPaths: insert.managedFieldPaths,
           authConfigVersion: 1,
+          portalConfig: JSON.stringify(DEFAULT_PORTAL_CONFIG),
+          widgetConfig: JSON.stringify(DEFAULT_WIDGET_CONFIG),
+          assistantConfig: DEFAULT_ASSISTANT_CONFIG,
+          featureFlags: JSON.stringify(newWorkspaceFlagsForGoals(stampedGoals(insert.setupState))),
         })
         .onConflictDoNothing({ target: settings.slug })
+    },
+    applyTierLimits: async (limits) => {
+      const { writeTierLimits } = await import('@/lib/server/domains/settings/tier-limits.write')
+      const result = await writeTierLimits(limits as never, { writer: 'config' })
+      return result.changed
     },
     invalidateSettingsCache: async () => {
       await invalidateSettingsCache()

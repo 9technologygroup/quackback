@@ -1,9 +1,11 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, notFound } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { FormattedMessage } from 'react-intl'
 import { z } from 'zod'
 import { RoadmapBoard } from '@/components/public/roadmap-board'
 import { portalQueries } from '@/lib/client/queries/portal'
+import { readBatch } from '@/lib/client/queries/read-batch'
+import { isProductEnabled } from '@/lib/shared/types/settings'
 
 const searchSchema = z.object({
   roadmap: z.string().optional(),
@@ -18,12 +20,15 @@ export const Route = createFileRoute('/_portal/roadmap/')({
   validateSearch: searchSchema,
   loader: async ({ context }) => {
     const { queryClient, settings, baseUrl, userRole } = context
+    if (!isProductEnabled(settings?.featureFlags, 'feedback')) throw notFound()
 
+    // The shell's lists in one request; the columns ask for their posts once it renders.
+    const ensure = readBatch(queryClient)
     const [roadmaps] = await Promise.all([
-      queryClient.ensureQueryData(portalQueries.roadmaps()),
-      queryClient.ensureQueryData(portalQueries.statuses()),
-      queryClient.ensureQueryData(portalQueries.boards()),
-      queryClient.ensureQueryData(portalQueries.tags()),
+      ensure(portalQueries.roadmaps()),
+      ensure(portalQueries.statuses()),
+      ensure(portalQueries.boards()),
+      ensure(portalQueries.tags()),
     ])
 
     return {
@@ -60,9 +65,6 @@ function RoadmapPage() {
   const { roadmap: selectedRoadmapFromUrl } = Route.useSearch()
 
   const { data: roadmaps } = useSuspenseQuery(portalQueries.roadmaps())
-  const { data: statuses } = useSuspenseQuery(portalQueries.statuses())
-
-  const roadmapStatuses = statuses.filter((s) => s.showOnRoadmap)
 
   // Use URL param if present, otherwise fall back to first roadmap
   const initialSelectedId = selectedRoadmapFromUrl ?? firstRoadmapId
@@ -70,9 +72,11 @@ function RoadmapPage() {
   const isTeamMember = userRole === 'admin' || userRole === 'member'
 
   return (
-    // Cap at viewport height so a column with many cards scrolls internally
-    // instead of pushing the body taller. 7rem ≈ PortalHeader.
-    <div className="mx-auto max-w-6xl w-full px-4 sm:px-6 py-8 h-[calc(100dvh-7rem)] flex flex-col min-h-0">
+    // From sm up, cap at viewport height so a column with many cards scrolls
+    // internally instead of pushing the body taller. 7rem ≈ PortalHeader. On a
+    // phone the title and toolbar leave too little of that height, so the
+    // page grows and the columns keep a usable height instead of clipping.
+    <div className="mx-auto max-w-6xl w-full px-4 sm:px-6 py-8 min-h-[calc(100dvh-7rem)] sm:h-[calc(100dvh-7rem)] flex flex-col sm:min-h-0">
       <div className="mb-6 animate-in fade-in duration-200 fill-mode-backwards">
         <h1 className="text-3xl font-bold mb-2">
           <FormattedMessage id="portal.roadmap.title" defaultMessage="Roadmap" />
@@ -90,7 +94,6 @@ function RoadmapPage() {
         style={{ animationDelay: '100ms' }}
       >
         <RoadmapBoard
-          statuses={roadmapStatuses}
           initialRoadmaps={roadmaps}
           initialSelectedRoadmapId={initialSelectedId}
           isTeamMember={isTeamMember}

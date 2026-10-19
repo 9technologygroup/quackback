@@ -1,11 +1,11 @@
-import { pgTable, text, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, text, timestamp, index, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core'
 import { typeIdWithDefault, typeIdColumn } from '@quackback/ids/drizzle'
 import { principal } from './auth'
 
 /**
  * Push notification devices for the mobile agent app. One row per APNs/FCM
- * registration token, owned by the agent's principal. Scoped to the tenant by
- * the database connection (database-per-tenant); no workspace column.
+ * registration token, owned by the agent's principal. Scoped to the workspace by
+ * the database connection (database-per-workspace); no workspace column.
  *
  * Generic by design: registering a device says nothing about "cloud" or any
  * specific app — a self-hoster who never ships an app simply never writes here.
@@ -17,9 +17,7 @@ export const pushDevices = pgTable(
     id: typeIdWithDefault('push_device')('id').primaryKey(),
     // The agent this device belongs to. `cascade` so deleting a principal
     // cleans up their device rows.
-    principalId: typeIdColumn('principal')('principal_id')
-      .notNull()
-      .references(() => principal.id, { onDelete: 'cascade' }),
+    principalId: typeIdColumn('principal')('principal_id').notNull(),
     // The APNs/FCM registration token. Unique so a re-register upserts in place
     // (a token can only ever belong to one principal at a time).
     token: text('token').notNull(),
@@ -29,6 +27,12 @@ export const pushDevices = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    // Named to match the constraint the SQL migration created.
+    foreignKey({
+      name: 'push_devices_principal_id_fkey',
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+    }).onDelete('cascade'),
     uniqueIndex('push_devices_token_idx').on(table.token),
     index('push_devices_principal_idx').on(table.principalId),
   ]

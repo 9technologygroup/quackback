@@ -1,20 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowPathIcon } from '@heroicons/react/24/solid'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { getPortalInviteLinkFn } from '@/lib/server/functions/portal-invites'
 import { cn } from '@/lib/shared/utils'
+import { LocalDate } from '@/components/ui/local-date'
 import type { PortalInvite } from './use-portal-invites'
 
-function formatInviteDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
+const INVITE_DATE: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
 
 export function InviteStatusBadge({ status }: { status: string | null }) {
   switch (status) {
     case 'pending':
       return (
-        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+        <Badge variant="outline" className="text-[11px] px-1.5 py-0">
           Pending
         </Badge>
       )
@@ -22,26 +21,26 @@ export function InviteStatusBadge({ status }: { status: string | null }) {
       return (
         <Badge
           variant="outline"
-          className="border-green-500/30 text-green-600 text-[10px] px-1.5 py-0"
+          className="border-green-500/30 text-green-600 text-[11px] px-1.5 py-0"
         >
           Accepted
         </Badge>
       )
     case 'canceled':
       return (
-        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+        <Badge variant="secondary" className="text-[11px] px-1.5 py-0">
           Revoked
         </Badge>
       )
     case 'expired':
       return (
-        <Badge variant="destructive" className="text-[10px] px-1.5 py-0">
+        <Badge variant="destructive" className="text-[11px] px-1.5 py-0">
           Expired
         </Badge>
       )
     default:
       return (
-        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+        <Badge variant="outline" className="text-[11px] px-1.5 py-0">
           {status ?? 'Unknown'}
         </Badge>
       )
@@ -73,6 +72,20 @@ export function InviteRow({ invite, onRevoke, onResend, revoking, resending }: I
   // reach the admin — surface it here for manual copy rather than losing it.
   const [fallbackLink, setFallbackLink] = useState<string | null>(null)
   const sentDate = invite.lastSentAt ?? invite.createdAt
+  const copyStateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearCopyStateTimeout = () => {
+    if (copyStateTimeoutRef.current !== null) {
+      clearTimeout(copyStateTimeoutRef.current)
+      copyStateTimeoutRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearCopyStateTimeout()
+    }
+  }, [])
 
   const handleRevokeClick = () => {
     if (!confirmRevoke) {
@@ -85,6 +98,7 @@ export function InviteRow({ invite, onRevoke, onResend, revoking, resending }: I
 
   const handleCopyLink = async () => {
     if (copyState === 'copying') return
+    clearCopyStateTimeout()
     setCopyState('copying')
     setFallbackLink(null)
 
@@ -94,7 +108,10 @@ export function InviteRow({ invite, onRevoke, onResend, revoking, resending }: I
       link = result.inviteLink
     } catch {
       setCopyState('error')
-      setTimeout(() => setCopyState('idle'), 3000)
+      copyStateTimeoutRef.current = setTimeout(() => {
+        setCopyState('idle')
+        copyStateTimeoutRef.current = null
+      }, 3000)
       return
     }
 
@@ -103,7 +120,10 @@ export function InviteRow({ invite, onRevoke, onResend, revoking, resending }: I
     try {
       await navigator.clipboard.writeText(link)
       setCopyState('copied')
-      setTimeout(() => setCopyState('idle'), 3000)
+      copyStateTimeoutRef.current = setTimeout(() => {
+        setCopyState('idle')
+        copyStateTimeoutRef.current = null
+      }, 3000)
     } catch {
       setFallbackLink(link)
       setCopyState('idle')
@@ -115,7 +135,9 @@ export function InviteRow({ invite, onRevoke, onResend, revoking, resending }: I
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm">{invite.email}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Sent {formatInviteDate(sentDate)}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Sent <LocalDate date={sentDate} options={INVITE_DATE} locale="en-US" />
+          </p>
         </div>
         <InviteStatusBadge status={invite.status} />
         {invite.status === 'pending' && (

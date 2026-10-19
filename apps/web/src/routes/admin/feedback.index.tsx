@@ -1,77 +1,39 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useSuspenseQuery, useQuery } from '@tanstack/react-query'
 import { adminQueries } from '@/lib/client/queries/admin'
-import { mergeSuggestionQueries } from '@/lib/client/queries/signals'
+import { warmFeedbackPage } from '@/lib/client/queries/feedback-page'
 import { InboxContainer } from '@/components/admin/feedback/inbox-container'
-import { type BoardId, type TagId, type PrincipalId } from '@quackback/ids'
-import type { InboxPostListResult } from '@/lib/shared/db-types'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { ExclamationCircleIcon } from '@heroicons/react/24/solid'
 import { Button } from '@/components/ui/button'
+import { errorMessage } from '@/components/shared/error-page'
+import { adminPageHead } from '@/lib/client/admin-head'
 
 export const Route = createFileRoute('/admin/feedback/')({
-  loaderDeps: ({ search }) => ({
-    board: search.board,
-    tags: search.tags,
-    status: search.status,
-    owner: search.owner,
-    search: search.search,
-    dateFrom: search.dateFrom,
-    dateTo: search.dateTo,
-    minVotes: search.minVotes,
-    responded: search.responded,
-    updatedBefore: search.updatedBefore,
-    sort: search.sort,
-    deleted: search.deleted,
-  }),
+  head: adminPageHead('Feedback'),
+  // Note: No loaderDeps for the filter fields - the loader only runs on
+  // initial route load for SSR (prefetching the default/unfiltered dataset).
+  // Client-side filter changes are handled by InboxContainer's useInboxPosts
+  // (combined with its placeholderData) instead of re-running this loader —
+  // mirrors the documented pattern in src/routes/_portal/index.tsx.
   errorComponent: FeedbackErrorComponent,
-  loader: async ({ deps, context }) => {
+  loader: async ({ context }) => {
     // Protected route - user and principal are guaranteed by parent's beforeLoad auth check
     const {
       user: currentUser,
       principal,
+      permissions,
       queryClient,
     } = context as {
       user: NonNullable<typeof context.user>
       principal: NonNullable<typeof context.principal>
+      permissions: NonNullable<typeof context.permissions>
       queryClient: typeof context.queryClient
     }
 
-    // Parse filter params
-    const boardFilterIds = (deps.board || []) as BoardId[]
-    const tagFilterIds = (deps.tags || []) as TagId[]
-    const statusFilterSlugs = deps.status || []
-    const ownerFilterId = deps.owner
-
-    // Pre-fetch all data in parallel using React Query
-    await Promise.all([
-      queryClient.ensureQueryData(
-        adminQueries.inboxPosts({
-          boardIds: boardFilterIds.length > 0 ? boardFilterIds : undefined,
-          statusSlugs: statusFilterSlugs.length > 0 ? statusFilterSlugs : undefined,
-          tagIds: tagFilterIds.length > 0 ? tagFilterIds : undefined,
-          ownerId:
-            ownerFilterId === 'unassigned' ? null : (ownerFilterId as PrincipalId | undefined),
-          search: deps.search,
-          dateFrom: deps.dateFrom,
-          dateTo: deps.dateTo,
-          minVotes: deps.minVotes ? parseInt(deps.minVotes, 10) : undefined,
-          responded: deps.responded,
-          updatedBefore: deps.updatedBefore,
-          sort: deps.sort,
-          showDeleted: deps.deleted || undefined,
-          limit: 20,
-        })
-      ),
-      queryClient.ensureQueryData(adminQueries.boards()),
-      queryClient.ensureQueryData(adminQueries.tags()),
-      queryClient.ensureQueryData(adminQueries.statuses()),
-      queryClient.ensureQueryData(adminQueries.teamMembers()),
-      queryClient.ensureQueryData(mergeSuggestionQueries.summary()),
-      // Warm the moderation count so the pending-moderation banner renders on
-      // first paint instead of popping in once the query resolves.
-      queryClient.ensureQueryData(adminQueries.moderationStatus()),
-    ])
+    // Awaited so the document hydrates instead of racing a fire-and-forget
+    // prefetch.
+    await warmFeedbackPage(queryClient, permissions)
 
     return {
       currentUser: {
@@ -84,14 +46,15 @@ export const Route = createFileRoute('/admin/feedback/')({
   component: FeedbackIndexPage,
 })
 
-function FeedbackErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
+function FeedbackErrorComponent({ error, reset }: { error: unknown; reset: () => void }) {
+  const message = errorMessage(error)
   return (
     <div className="flex items-center justify-center min-h-[400px] p-4">
       <Alert variant="destructive" className="max-w-2xl">
         <ExclamationCircleIcon className="h-4 w-4" />
         <AlertTitle>Failed to load feedback</AlertTitle>
         <AlertDescription className="mt-2">
-          <p className="mb-4">{error.message}</p>
+          <p className="mb-4">{message}</p>
           <Button onClick={reset} variant="outline" size="sm">
             Try again
           </Button>
@@ -103,40 +66,18 @@ function FeedbackErrorComponent({ error, reset }: { error: Error; reset: () => v
 
 function FeedbackIndexPage() {
   const { currentUser } = Route.useLoaderData()
-  const search = Route.useSearch()
 
-  // Parse filter params
-  const boardFilterIds = (search.board || []) as BoardId[]
-  const tagFilterIds = (search.tags || []) as TagId[]
-  const statusFilterSlugs = search.status || []
-  const ownerFilterId = search.owner
-
-  // Read pre-fetched data from React Query cache
+  // Read pre-fetched reference data from React Query cache. The posts list is
+  // read directly by InboxContainer's own infinite `useInboxPosts` hook — which
+  // shares its query definition with the loader's prefetch (QC-1) — so there's
+  // no separate suspense query for posts here.
   const boardsQuery = useSuspenseQuery(adminQueries.boards())
-  const postsQuery = useSuspenseQuery(
-    adminQueries.inboxPosts({
-      boardIds: boardFilterIds.length > 0 ? boardFilterIds : undefined,
-      statusSlugs: statusFilterSlugs.length > 0 ? statusFilterSlugs : undefined,
-      tagIds: tagFilterIds.length > 0 ? tagFilterIds : undefined,
-      ownerId: ownerFilterId === 'unassigned' ? null : (ownerFilterId as PrincipalId | undefined),
-      search: search.search,
-      dateFrom: search.dateFrom,
-      dateTo: search.dateTo,
-      minVotes: search.minVotes ? parseInt(search.minVotes, 10) : undefined,
-      responded: search.responded,
-      updatedBefore: search.updatedBefore,
-      sort: search.sort,
-      showDeleted: search.deleted || undefined,
-      limit: 20,
-    })
-  )
   const tagsQuery = useSuspenseQuery(adminQueries.tags())
   const statusesQuery = useSuspenseQuery(adminQueries.statuses())
   const membersQuery = useQuery(adminQueries.teamMembers())
 
   return (
     <InboxContainer
-      initialPosts={postsQuery.data as InboxPostListResult}
       boards={boardsQuery.data}
       tags={tagsQuery.data}
       statuses={statusesQuery.data}

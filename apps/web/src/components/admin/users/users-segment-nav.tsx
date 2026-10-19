@@ -2,16 +2,20 @@
 
 import { useState } from 'react'
 import {
-  PlusIcon,
+  FunnelIcon,
   UsersIcon,
+  UserPlusIcon,
   PencilIcon,
   TrashIcon,
   BoltIcon,
   ArrowPathIcon,
   EnvelopeIcon,
+  BuildingOffice2Icon,
 } from '@heroicons/react/24/solid'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FilterSection } from '@/components/shared/filter-section'
+import { PaneAddButton } from '@/components/shared/pane-add-button'
+import { MENU_ICON, MENU_ROW } from '@/components/ui/menu'
 import { cn } from '@/lib/shared/utils'
 import type { SegmentListItem } from '@/lib/client/hooks/use-segments-queries'
 
@@ -34,6 +38,14 @@ interface UsersSegmentNavProps {
   inInvitesMode?: boolean
   /** Pending-invite count for the Invitations entry badge. */
   invitesPendingCount?: number
+  /** `?lifecycle=leads` is set: the All-leads entry renders active. */
+  inLeadsMode?: boolean
+  /** Lead count for the All-leads entry badge. */
+  totalLeadCount?: number
+  /** `?lifecycle=companies` is set: the Companies entry renders active. */
+  inCompaniesMode?: boolean
+  /** Company count for the Companies entry badge. */
+  totalCompanyCount?: number
 }
 
 export function UsersSegmentNav({
@@ -43,8 +55,8 @@ export function UsersSegmentNav({
   onSelectSegment,
   // `onClearSegments` is part of the public prop shape (the mobile
   // selector below + downstream callers still pass it), but the
-  // 'All users' click handler now uses a single navigate that strips
-  // both `invites` and `segments` at once — see the comment on that
+  // 'All users' click handler uses a single navigate that strips
+  // both `invites` and `segments` at once; see the comment on that
   // button. Calling onClearSegments here would re-introduce the race.
   onClearSegments: _onClearSegments,
   totalUserCount,
@@ -55,6 +67,10 @@ export function UsersSegmentNav({
   isEvaluating,
   inInvitesMode,
   invitesPendingCount,
+  inLeadsMode,
+  totalLeadCount,
+  inCompaniesMode,
+  totalCompanyCount,
 }: UsersSegmentNavProps) {
   const hasSelection = selectedSegmentIds.length > 0
   const navigate = useNavigate()
@@ -62,90 +78,154 @@ export function UsersSegmentNav({
   return (
     <div className="space-y-0">
       <div className="pb-4">
-        {/* Views group — top-level navigation between the main user list
-            and the standalone Invitations view. No header here: at one
-            indent level the items read as the sidebar's primary entries
-            and the SEGMENTS subheader below provides the grouping cue. */}
-        <div className="space-y-1">
-          {/* All users — clearing both segment selection and invites mode
+        <FilterSection title="Directory">
+          {/* Directory group: the main user list, leads, companies and the
+            standalone Invitations view. */}
+          <div className="space-y-1">
+            {/* All users: clearing both segment selection and invites mode
               brings the user back here. Both can be active at once
               (e.g. `?segments=abc&invites=pending`), so we strip both
-              in a SINGLE navigate — splitting it across two updates
+              in a SINGLE navigate; splitting it across two updates
               (one for invites, then `onClearSegments` for segments)
               races: the second navigate re-includes the key the first
               one just cleared because it reads search state from a
               snapshot taken before the first navigate settled. */}
-          <button
-            type="button"
-            onClick={() => {
-              if (!inInvitesMode && !hasSelection) return
-              void navigate({
-                from: '/admin/users',
-                search: (prev) => ({
-                  ...prev,
-                  invites: undefined,
-                  segments: undefined,
-                }),
-                replace: true,
-              })
-            }}
-            className={cn(
-              'w-full text-left px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-2',
-              !hasSelection && !inInvitesMode
-                ? 'bg-muted text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-            )}
-          >
-            <UsersIcon className="h-3.5 w-3.5 shrink-0" />
-            <span className="flex-1 truncate">All users</span>
-            <span className="text-xs text-muted-foreground/60 shrink-0 tabular-nums">
-              {totalUserCount}
-            </span>
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!inInvitesMode && !hasSelection && !inLeadsMode && !inCompaniesMode) return
+                void navigate({
+                  from: '/admin/users',
+                  search: (prev) => ({
+                    ...prev,
+                    invites: undefined,
+                    segments: undefined,
+                    lifecycle: undefined,
+                    company: undefined,
+                  }),
+                  replace: true,
+                })
+              }}
+              className={cn(
+                MENU_ROW,
+                'w-full text-left',
+                !hasSelection && !inInvitesMode && !inLeadsMode && !inCompaniesMode
+                  ? 'bg-muted text-foreground font-medium'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              )}
+            >
+              <UsersIcon className={MENU_ICON} />
+              <span className="flex-1 truncate">All users</span>
+              <span className="text-xs text-muted-foreground/60 shrink-0 tabular-nums">
+                {totalUserCount}
+              </span>
+            </button>
 
-          {/* Invitations — sibling of All users. Clicking enters invites
+            {/* All leads: engaged-but-unauthenticated people (anonymous
+              principals). A lifecycle view, not a filter: it swaps the list's
+              population, so segments and invites mode are cleared with it. */}
+            <button
+              type="button"
+              onClick={() => {
+                if (inLeadsMode) return
+                void navigate({
+                  from: '/admin/users',
+                  search: (prev) => ({
+                    ...prev,
+                    invites: undefined,
+                    segments: undefined,
+                    lifecycle: 'leads' as const,
+                    company: undefined,
+                  }),
+                  replace: true,
+                })
+              }}
+              className={cn(
+                MENU_ROW,
+                'w-full text-left',
+                inLeadsMode
+                  ? 'bg-muted text-foreground font-medium'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              )}
+            >
+              <UserPlusIcon className={MENU_ICON} />
+              <span className="flex-1 truncate">All leads</span>
+              {totalLeadCount !== undefined && (
+                <span className="text-xs text-muted-foreground/60 shrink-0 tabular-nums">
+                  {totalLeadCount}
+                </span>
+              )}
+            </button>
+
+            {/* All companies: the directory tab over the B2B company object.
+              A lifecycle view like leads: it swaps the pane's population, so
+              segments and invites mode are cleared with it. */}
+            <button
+              type="button"
+              onClick={() => {
+                if (inCompaniesMode) return
+                void navigate({
+                  from: '/admin/users',
+                  search: (prev) => ({
+                    ...prev,
+                    invites: undefined,
+                    segments: undefined,
+                    lifecycle: 'companies' as const,
+                    company: undefined,
+                  }),
+                  replace: true,
+                })
+              }}
+              className={cn(
+                MENU_ROW,
+                'w-full text-left',
+                inCompaniesMode
+                  ? 'bg-muted text-foreground font-medium'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              )}
+            >
+              <BuildingOffice2Icon className={MENU_ICON} />
+              <span className="flex-1 truncate">All companies</span>
+              {totalCompanyCount !== undefined && (
+                <span className="text-xs text-muted-foreground/60 shrink-0 tabular-nums">
+                  {totalCompanyCount}
+                </span>
+              )}
+            </button>
+
+            {/* Invitations: sibling of All users. Clicking enters invites
               mode with the pending status by default; the InvitationsView
               itself lets admins flip between status sub-tabs. */}
-          <Link
-            to="/admin/users"
-            from="/admin/users"
-            search={(prev) => ({ ...prev, invites: 'pending' as const })}
-            replace
-            className={cn(
-              'w-full text-left px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-2',
-              inInvitesMode
-                ? 'bg-muted text-foreground'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-            )}
-          >
-            <EnvelopeIcon className="h-3.5 w-3.5 shrink-0" />
-            <span className="flex-1 truncate">Invitations</span>
-            {invitesPendingCount !== undefined && invitesPendingCount > 0 && (
-              <span className="text-xs text-muted-foreground/60 shrink-0 tabular-nums">
-                {invitesPendingCount}
-              </span>
-            )}
-          </Link>
-        </div>
+            <Link
+              to="/admin/users"
+              from="/admin/users"
+              search={(prev) => ({ ...prev, invites: 'pending' as const })}
+              replace
+              className={cn(
+                MENU_ROW,
+                'w-full text-left',
+                inInvitesMode
+                  ? 'bg-muted text-foreground font-medium'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              )}
+            >
+              <EnvelopeIcon className={MENU_ICON} />
+              <span className="flex-1 truncate">Invitations</span>
+              {invitesPendingCount !== undefined && invitesPendingCount > 0 && (
+                <span className="text-xs text-muted-foreground/60 shrink-0 tabular-nums">
+                  {invitesPendingCount}
+                </span>
+              )}
+            </Link>
+          </div>
+        </FilterSection>
 
-        {/* Segments group — its own labelled section via the shared
-            FilterSection. The +-button lives in the header's action slot
-            where it belongs (the previous placement under USERS implied
-            'create user'). */}
-        <div className="mt-5">
+        {/* Segments group: its own labelled section via the shared
+            FilterSection, with the add button in the header's action slot. */}
+        <div className="mt-2">
           <FilterSection
             title="Segments"
-            collapsible={false}
-            action={
-              <button
-                type="button"
-                onClick={onCreateSegment}
-                title="Create segment"
-                className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              >
-                <PlusIcon className="h-3 w-3" />
-              </button>
-            }
+            action={<PaneAddButton label="New segment" onClick={onCreateSegment} />}
           >
             {isLoading ? (
               <div className="space-y-1">
@@ -154,11 +234,9 @@ export function UsersSegmentNav({
                 ))}
               </div>
             ) : !segments || segments.length === 0 ? (
-              <p className="text-xs text-muted-foreground px-2.5 py-1.5">
-                No segments yet. Click + to create one.
-              </p>
+              <p className="text-xs text-muted-foreground px-2.5 py-1.5">No segments yet.</p>
             ) : (
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 {segments.map((seg) => (
                   <SegmentNavItem
                     key={seg.id}
@@ -211,8 +289,9 @@ function SegmentNavItem({
       <button
         type="button"
         onClick={(e) => onSelect(e.shiftKey)}
-        className="flex-1 min-w-0 flex items-center gap-2 px-2.5 py-1.5 text-xs font-medium text-left"
+        className={cn(MENU_ROW, 'flex-1 min-w-0 text-left', isSelected && 'font-medium')}
       >
+        <FunnelIcon className={MENU_ICON} />
         <span className="flex-1 truncate">{segment.name}</span>
         {segment.type === 'dynamic' && (
           <BoltIcon className="h-2.5 w-2.5 shrink-0 opacity-50" title="Dynamic segment" />

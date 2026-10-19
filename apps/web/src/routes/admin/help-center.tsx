@@ -1,26 +1,21 @@
-import { createFileRoute, Navigate, Outlet } from '@tanstack/react-router'
-import { z } from 'zod'
-import type { FeatureFlags } from '@/lib/shared/types/settings'
-
-const searchSchema = z.object({
-  status: z.enum(['draft', 'published']).optional(),
-  category: z.string().optional(),
-  search: z.string().optional(),
-  sort: z.enum(['newest', 'oldest']).optional(),
-  deleted: z.boolean().optional(),
-})
+import { createFileRoute, Outlet, redirect } from '@tanstack/react-router'
+import { blankOmittedSearchKeys } from '@/lib/shared/route-search'
+import { getFirstEnabledAdminProductPath, isProductEnabled } from '@/lib/shared/types/settings'
+import { helpCenterSearchSchema } from '@/components/admin/help-center/help-center-search'
+import { adminPageHead } from '@/lib/client/admin-head'
 
 export const Route = createFileRoute('/admin/help-center')({
-  validateSearch: searchSchema,
+  head: adminPageHead('Help center'),
+  validateSearch: (raw: Record<string, unknown>) =>
+    blankOmittedSearchKeys(raw, helpCenterSearchSchema.parse(raw)),
+  beforeLoad: ({ context }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'helpCenter')) {
+      throw redirect({ to: getFirstEnabledAdminProductPath(context.settings?.featureFlags) })
+    }
+  },
   component: HelpCenterLayout,
 })
 
 function HelpCenterLayout() {
-  const { settings } = Route.useRouteContext()
-  const flags = settings?.featureFlags as FeatureFlags | undefined
-  if (!flags?.helpCenter) {
-    return <Navigate to="/admin/feedback" />
-  }
-
   return <Outlet />
 }

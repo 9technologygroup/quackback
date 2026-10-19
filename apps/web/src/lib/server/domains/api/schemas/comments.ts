@@ -30,10 +30,15 @@ const ReactionCountSchema = z.object({
 // Comment list item schema (GET /posts/:id/comments) - threaded with replies
 const CommentListItemSchema: z.ZodType = z.lazy(() =>
   z.object({
-    id: TypeIdSchema.meta({ example: 'comment_01h455vb4pex5vsknk084sn02q' }),
+    id: TypeIdSchema.meta({ example: 'post_comment_01h455vb4pex5vsknk084sn02q' }),
     postId: TypeIdSchema,
     parentId: TypeIdSchema.nullable().meta({ description: 'Parent comment ID for replies' }),
     content: z.string().meta({ example: 'Great idea! This would be very useful.' }),
+    contentJson: z
+      .record(z.string(), z.unknown())
+      .nullable()
+      .optional()
+      .meta({ description: 'Rich text content as TipTap JSON' }),
     authorName: z.string().nullable().meta({ example: 'Jane Doe' }),
     principalId: TypeIdSchema.nullable().meta({
       description: 'Principal ID of the comment author',
@@ -52,10 +57,15 @@ const CommentListItemSchema: z.ZodType = z.lazy(() =>
 
 // Comment detail schema (GET /comments/:id)
 const CommentDetailSchema = z.object({
-  id: TypeIdSchema.meta({ example: 'comment_01h455vb4pex5vsknk084sn02q' }),
+  id: TypeIdSchema.meta({ example: 'post_comment_01h455vb4pex5vsknk084sn02q' }),
   postId: TypeIdSchema,
   parentId: TypeIdSchema.nullable().meta({ description: 'Parent comment ID for replies' }),
   content: z.string().meta({ example: 'Great idea! This would be very useful.' }),
+  contentJson: z
+    .record(z.string(), z.unknown())
+    .nullable()
+    .optional()
+    .meta({ description: 'Rich text content as TipTap JSON' }),
   authorName: z.string().nullable().meta({ example: 'Jane Doe' }),
   authorEmail: z.string().nullable().meta({ example: 'user@example.com' }),
   principalId: TypeIdSchema.nullable().meta({ description: 'Principal ID of the comment author' }),
@@ -73,10 +83,15 @@ const CommentDetailSchema = z.object({
 
 // Comment create/update response schema
 const CommentResponseSchema = z.object({
-  id: TypeIdSchema.meta({ example: 'comment_01h455vb4pex5vsknk084sn02q' }),
+  id: TypeIdSchema.meta({ example: 'post_comment_01h455vb4pex5vsknk084sn02q' }),
   postId: TypeIdSchema,
   parentId: TypeIdSchema.nullable(),
   content: z.string(),
+  contentJson: z
+    .record(z.string(), z.unknown())
+    .nullable()
+    .optional()
+    .meta({ description: 'Rich text content as TipTap JSON' }),
   authorName: z.string().nullable(),
   principalId: TypeIdSchema.nullable(),
   isTeamMember: z.boolean(),

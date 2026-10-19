@@ -14,7 +14,17 @@ import { httpsUrl } from '@/lib/shared/schemas/auth'
  * and prevents the file from growing into a kitchen-sink schema.
  */
 
-const useCaseSchema = z.enum(['saas', 'consumer', 'marketplace', 'internal'])
+const useCaseSchema = z.enum([
+  'product_feedback',
+  'customer_support',
+  'help_center',
+  'status_page',
+  'internal',
+  // Legacy values still accepted in config files
+  'saas',
+  'consumer',
+  'marketplace',
+])
 
 const workspaceSchema = z
   .object({
@@ -27,11 +37,11 @@ const workspaceSchema = z
       .optional(),
     useCase: useCaseSchema.optional(),
     // Force the in-app onboarding wizard to be skipped. Set by the
-    // control-plane on CP-provisioned tenants where the operator did
+    // control-plane on CP-provisioned workspaces where the operator did
     // the equivalent of the wizard out-of-band (named the workspace,
     // picked a plan) before the user ever sees the OSS portal. The
-    // reconciler stamps every setupState.step + completedAt so the
-    // /onboarding/* routes redirect straight to /admin.
+    // reconciler records a managed starting point and completion time so the
+    // user sees the one-time activation handoff before entering the admin app.
     onboardingComplete: z.boolean().optional(),
   })
   .strict()
@@ -66,7 +76,6 @@ const tierFeatureFlagsSchema = z
     customColors: z.boolean().optional(),
     customCss: z.boolean().optional(),
     integrations: z.boolean().optional(),
-    aiFeedbackExtraction: z.boolean().optional(),
   })
   .strict()
   .optional()
@@ -75,7 +84,10 @@ const tierLimitsSchema = z
     maxBoards: tierLimitNumberSchema.optional(),
     maxPosts: tierLimitNumberSchema.optional(),
     maxTeamSeats: tierLimitNumberSchema.optional(),
+    maxStatusComponents: tierLimitNumberSchema.optional(),
+    maxSendingDomains: tierLimitNumberSchema.optional(),
     aiTokensPerMonth: tierLimitNumberSchema.optional(),
+    emailsPerMonth: tierLimitNumberSchema.optional(),
     apiRequestsPerMonth: tierLimitNumberSchema.optional(),
     apiRequestsPerMinute: tierLimitNumberSchema.optional(),
     features: tierFeatureFlagsSchema,

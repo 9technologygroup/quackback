@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
 import { badRequestResponse, handleDomainError } from '@/lib/server/domains/api/responses'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { PostId } from '@quackback/ids'
 import { appJsonResponse, preflightResponse } from '@/lib/server/integrations/apps/cors'
 
@@ -26,7 +27,11 @@ export const Route = createFileRoute('/api/v1/apps/link')({
 
       POST: async ({ request }) => {
         try {
-          const { principalId } = await withApiKeyAuth(request, { role: 'team' })
+          // Linking records a vote for the requester, the same act as a
+          // proxy vote in the admin UI.
+          const { principalId } = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.POST_VOTE_ON_BEHALF,
+          })
 
           const body = await request.json()
           const parsed = linkSchema.safeParse(body)

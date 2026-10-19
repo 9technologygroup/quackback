@@ -68,6 +68,17 @@ async function goToFirstPost(page: Page) {
   await expect(page.getByRole('heading', { name: /\d+ comments?/i })).toBeVisible({
     timeout: 10000,
   })
+  await engageComposer(page)
+}
+
+/**
+ * The composer draws an empty editor and mounts the real one once the pointer
+ * arrives (or on focus), so point at it before driving the editor. A no-op
+ * where there is no composer (signed out, locked board).
+ */
+async function engageComposer(scope: Page | Locator) {
+  const standIn = scope.getByRole('textbox', { name: /write a comment/i }).first()
+  if (await standIn.isVisible()) await standIn.hover()
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +136,12 @@ test.describe('Unauthenticated user — comments section', () => {
   })
 
   // -------------------------------------------------------------------------
+  test('unauthenticated visitors do not see an image insert control', async ({ page }) => {
+    await expect(page.getByText(/sign in to comment/i)).toBeVisible({ timeout: 10000 })
+    await expect(page.getByRole('option', { name: /^image$/i })).toHaveCount(0)
+    await expect(page.getByText('Upload an image', { exact: false })).toHaveCount(0)
+  })
+
   test('comment composer is NOT visible to unauthenticated users', async ({ page }) => {
     // CommentThread renders the "Sign in" prompt instead of a comment form for
     // unauthenticated users. Hidden reply-form textareas inside comments may report
@@ -651,6 +668,10 @@ test.describe('Edge cases — comment content', () => {
 
       const replyBtn = commentItems.first().getByTestId('reply-button')
       await replyBtn.click()
+      await expect(
+        commentItems.first().getByRole('textbox', { name: /write a comment/i })
+      ).toBeVisible({ timeout: 5000 })
+      await engageComposer(commentItems.first())
 
       // The reply form is a nested CommentForm with the same editor data-testid
       const replyEditor = commentItems
@@ -920,6 +941,51 @@ test.describe('Markdown comment rendering', () => {
 
       // Bold marker rendered as <strong>
       await expect(newComment.locator('strong', { hasText: `bold ${marker}` })).toBeVisible()
+    } finally {
+      await page.close()
+    }
+  })
+
+  test('uploading an image into a comment renders it in the thread', async () => {
+    const page = await sharedContext.newPage()
+    try {
+      await goToFirstPost(page)
+      await page.route('**/api/portal/upload', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            publicUrl: 'https://cdn.example.com/portal-images/e2e-comment.png',
+          }),
+        })
+      })
+
+      const editor = commentEditor(page)
+      await editor.click()
+      await clearEditor(editor)
+      await editor.pressSequentially('/image')
+      const imageItem = page
+        .getByRole('option', { name: /^image$/i })
+        .or(page.getByText('Upload an image', { exact: false }))
+      await expect(imageItem.first()).toBeVisible({ timeout: 5000 })
+      const [fileChooser] = await Promise.all([
+        page.waitForEvent('filechooser'),
+        imageItem.first().click(),
+      ])
+      await fileChooser.setFiles({
+        name: 'shot.png',
+        mimeType: 'image/png',
+        buffer: Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+          'base64'
+        ),
+      })
+
+      const submitBtn = page.getByRole('button', { name: /^comment$/i }).first()
+      await submitBtn.click()
+      await expect(page.locator('img[src*="e2e-comment.png"]').first()).toBeVisible({
+        timeout: 15000,
+      })
     } finally {
       await page.close()
     }

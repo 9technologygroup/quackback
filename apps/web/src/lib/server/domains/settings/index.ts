@@ -16,6 +16,9 @@ export type {
   PortalFeatures,
   PortalConfig,
   PortalAccessConfig,
+  PortalNavConfig,
+  PortalNavItemConfig,
+  PortalNavItemType,
   PortalWelcomeCard,
   HeaderDisplayMode,
   ThemeColors,
@@ -30,11 +33,16 @@ export type {
   PublicWidgetConfig,
   UpdateWidgetConfigInput,
   HelpCenterConfig,
+  HelpCenterHeaderLink,
   HelpCenterSeoConfig,
+  HelpCenterDomainConfig,
+  HelpCenterLocalesConfig,
+  HelpCenterLocaleChromeStrings,
+  HelpCenterAutoTranslateConfig,
 } from './settings.types'
 
 // Welcome card constants (no DB dependency)
-export { PORTAL_WELCOME_CARD_TITLE_MAX } from './settings.types'
+export { EMPTY_WELCOME_BODY } from './settings.types'
 
 // Default config values (no DB dependency)
 export {
@@ -46,8 +54,8 @@ export {
   DEFAULT_HELP_CENTER_SEO_CONFIG,
 } from './settings.types'
 
-// Consolidated tenant settings type (in types.ts to avoid server dep leak via barrel)
-export type { TenantSettings, SettingsBrandingData } from './settings.types'
+// Consolidated workspace settings type (in types.ts to avoid server dep leak via barrel)
+export type { WorkspaceSettings, SettingsBrandingData } from './settings.types'
 
 // Verified-domain type — no DB dependency, safe for client-side consumption
 export type { VerifiedDomain } from './settings.types'
@@ -57,3 +65,30 @@ export type { VerifiedDomain } from './settings.types'
 // import it directly in server-only code to avoid leaking DB into the client bundle.
 export type { TierLimits, TierLimit, TierFeatureFlags } from './tier-limits.types'
 export { OSS_TIER_LIMITS } from './tier-limits.types'
+
+// Cloud config — plans and entitlements. Types, catalogues and the disabled
+// default are pure data with no DB dependency, so they are barrel-safe. The
+// resolver (cloud.service.ts) and the gate (entitlements.ts) must NOT be
+// exported here; import them directly in server-only code.
+export type {
+  CloudConfig,
+  BillingStatus,
+  PlanId,
+  PlanIdAlias,
+  PlanDefinition,
+  EntitlementKey,
+  EntitlementDefinition,
+} from './cloud/cloud.types'
+export {
+  PLAN_IDS,
+  PLAN_ID_ALIASES,
+  PLAN_CATALOGUE,
+  PLAN_DEFINITIONS,
+  ENTITLEMENTS,
+  ENTITLEMENT_KEYS,
+  DISABLED_CLOUD_CONFIG,
+  minimumPlanFor,
+  isPlanId,
+  canonicalPlanId,
+  isEntitlementKey,
+} from './cloud/cloud.types'

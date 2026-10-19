@@ -1,0 +1,77 @@
+import { useState } from 'react'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import { assertRoutePermission } from '@/lib/shared/route-permission'
+import { createFileRoute, redirect } from '@tanstack/react-router'
+import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
+import { SettingsPage } from '@/components/admin/settings/settings-page'
+import { AUTOSAVE } from '@/lib/client/autosave'
+import { StatusGeneralCard } from '@/components/admin/settings/status/status-general-card'
+import { StatusVisibilityCard } from '@/components/admin/settings/status/status-visibility-card'
+import { StatusNotificationsCard } from '@/components/admin/settings/status/status-notifications-card'
+import { StatusDangerCard } from '@/components/admin/settings/status/status-danger-card'
+import { updateStatusSettingsFn } from '@/lib/server/functions/status'
+import { statusSettingsQueries } from '@/lib/client/queries/status'
+import { useDebouncedSave } from '@/lib/client/hooks/use-debounced-save'
+import { DEFAULT_STATUS_SETTINGS, type StatusSettings } from '@/lib/shared/status-settings'
+import { isProductEnabled } from '@/lib/shared/types/settings'
+import { adminPageHead } from '@/lib/client/admin-head'
+
+export const Route = createFileRoute('/admin/settings/status')({
+  head: adminPageHead('Status settings'),
+  beforeLoad: ({ context }) => {
+    if (!isProductEnabled(context.settings?.featureFlags, 'status')) {
+      throw redirect({ to: '/admin/settings/general' })
+    }
+  },
+  loader: async ({ context }) => {
+    assertRoutePermission(context.permissions, PERMISSIONS.STATUS_PAGE_MANAGE)
+    await context.queryClient.ensureQueryData(statusSettingsQueries.get())
+    return {}
+  },
+  component: StatusSettingsPage,
+})
+
+function StatusSettingsPage() {
+  const queryClient = useQueryClient()
+  const { data } = useSuspenseQuery(statusSettingsQueries.get())
+  const [settings, setSettings] = useState<StatusSettings>(data ?? DEFAULT_STATUS_SETTINGS)
+
+  // Text fields save debounced (a save per keystroke hammers the server);
+  // switches/radios save immediately. Pending text is preserved across a
+  // save response so an in-flight result can't clobber newer keystrokes.
+  const mutation = useMutation({
+    meta: AUTOSAVE,
+    mutationFn: (patch: Partial<StatusSettings>) => updateStatusSettingsFn({ data: patch }),
+    onSuccess: (saved) => {
+      setSettings((prev) =>
+        textSave.hasPending() ? { ...saved, pageDescription: prev.pageDescription } : saved
+      )
+      queryClient.setQueryData(statusSettingsQueries.get().queryKey, saved)
+    },
+  })
+
+  const { mutate } = mutation
+  const textSave = useDebouncedSave<Partial<StatusSettings>>(mutate, 600)
+
+  function onChange(patch: Partial<StatusSettings>) {
+    setSettings((prev) => ({ ...prev, ...patch }))
+    if ('pageDescription' in patch) {
+      textSave.queue(patch)
+    } else {
+      mutation.mutate(patch)
+    }
+  }
+
+  return (
+    <SettingsPage page="/admin/settings/status">
+      <StatusGeneralCard settings={settings} onChange={onChange} onFlushText={textSave.flush} />
+      <StatusVisibilityCard settings={settings} onChange={onChange} disabled={mutation.isPending} />
+      <StatusNotificationsCard
+        settings={settings}
+        onChange={onChange}
+        disabled={mutation.isPending}
+      />
+      <StatusDangerCard />
+    </SettingsPage>
+  )
+}

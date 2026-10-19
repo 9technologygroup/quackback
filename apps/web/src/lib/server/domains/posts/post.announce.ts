@@ -10,6 +10,7 @@
  */
 
 import { db, boards, posts, principal as principalTable, eq, type Post } from '@/lib/server/db'
+import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import { type PostId, type PrincipalId, type UserId } from '@quackback/ids'
 import { dispatchPostCreated, buildEventActor } from '@/lib/server/events/dispatch'
@@ -42,7 +43,8 @@ export async function announcePublishedPost(
     post: PostSnapshot
     board: { slug: string; name: string }
     author: AuthorSnapshot
-  }
+  },
+  opts?: { skipCreatedWebhook?: boolean; skipMentions?: boolean }
 ): Promise<void> {
   let post: PostSnapshot
   let board: { slug: string; name: string }
@@ -80,24 +82,27 @@ export async function announcePublishedPost(
   }
 
   const actorName = author.displayName ?? author.name
-  await dispatchPostCreated(buildEventActor(author), {
-    id: post.id,
-    title: post.title,
-    content: post.content,
-    boardId: post.boardId,
-    boardSlug: board.slug,
-    authorEmail: realEmail(author.email) ?? undefined,
-    authorName: actorName,
-    voteCount: post.voteCount,
-  })
+  if (!opts?.skipCreatedWebhook) {
+    await dispatchPostCreated(buildEventActor(author), {
+      id: post.id,
+      title: post.title,
+      content: contentJsonToMarkdown(post.contentJson, post.content),
+      boardId: post.boardId,
+      boardSlug: board.slug,
+      authorEmail: realEmail(author.email) ?? undefined,
+      authorName: actorName,
+      voteCount: post.voteCount,
+    })
+  }
 
-  if (post.contentJson) {
+  if (!opts?.skipMentions && post.contentJson) {
     const mentionedIds = extractMentions(post.contentJson)
     if (mentionedIds.size > 0) {
       await syncPostMentions({
         postId: post.id,
         postTitle: post.title,
         postUrl: buildPostUrl(getBaseUrl(), board.slug, post.id),
+        boardId: post.boardId,
         mentionedIds,
         excerptByPrincipalId: extractMentionExcerpts(post.contentJson),
         actor: buildEventActor(author),

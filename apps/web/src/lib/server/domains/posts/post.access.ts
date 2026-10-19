@@ -13,10 +13,17 @@
  * accepts a post id must call this before any mutation. It throws a
  * NotFoundError-shaped error (don't leak existence to denied callers).
  */
-import { db, eq, and, isNull, posts, boards, comments } from '@/lib/server/db'
-import { type CommentId, type PostId } from '@quackback/ids'
+import { db, eq, and, or, isNull, posts, boards, postComments } from '@/lib/server/db'
+import { type PostCommentId, type PostId } from '@quackback/ids'
 import { NotFoundError, ForbiddenError } from '@/lib/shared/errors'
-import { canViewPost, canVotePost, isTeamActor, type Actor } from '@/lib/server/policy'
+import { notTestPrincipal } from '@/lib/server/test-data'
+import {
+  canViewPost,
+  canVotePost,
+  isTeamActor,
+  postViewFilter,
+  type Actor,
+} from '@/lib/server/policy'
 
 /**
  * Resolve a post's board `access` matrix for capability gates, applying the
@@ -36,6 +43,27 @@ export async function loadBoardAccessForPost(postId: PostId) {
   return rows[0]?.access ?? null
 }
 
+/**
+ * Same resolution as {@link loadBoardAccessForPost}, plus the post's own
+ * author and moderation state — the inputs a PER-POST comment capability
+ * needs (`canCommentOnPost`): an author-only board decides the reply right
+ * against the real post's author, which the board matrix alone can't answer.
+ * Returns null on the same soft-delete/missing conditions.
+ */
+export async function loadCommentContextForPost(postId: PostId) {
+  const rows = await db
+    .select({
+      access: boards.access,
+      moderationState: posts.moderationState,
+      principalId: posts.principalId,
+    })
+    .from(posts)
+    .innerJoin(boards, eq(posts.boardId, boards.id))
+    .where(and(eq(posts.id, postId), isNull(posts.deletedAt), isNull(boards.deletedAt)))
+    .limit(1)
+  return rows[0] ?? null
+}
+
 export async function assertPostViewable(postId: PostId, actor: Actor): Promise<void> {
   // Fetch only the fields the policy needs. Soft-deleted post or board
   // is treated as "doesn't exist" — the join uses INNER + isNull
@@ -48,7 +76,14 @@ export async function assertPostViewable(postId: PostId, actor: Actor): Promise<
     })
     .from(posts)
     .innerJoin(boards, eq(posts.boardId, boards.id))
-    .where(and(eq(posts.id, postId), isNull(posts.deletedAt), isNull(boards.deletedAt)))
+    .where(
+      and(
+        eq(posts.id, postId),
+        isNull(posts.deletedAt),
+        isNull(boards.deletedAt),
+        postViewFilter(actor)
+      )
+    )
     .limit(1)
 
   const row = rows[0]
@@ -58,7 +93,10 @@ export async function assertPostViewable(postId: PostId, actor: Actor): Promise<
 
   const decision = canViewPost(
     actor,
-    { moderationState: row.moderationState, principalId: row.principalId },
+    {
+      moderationState: row.moderationState,
+      principalId: row.principalId,
+    },
     { access: row.access }
   )
   if (!decision.allowed) {
@@ -87,7 +125,14 @@ export async function assertPostVotable(postId: PostId, actor: Actor): Promise<v
     })
     .from(posts)
     .innerJoin(boards, eq(posts.boardId, boards.id))
-    .where(and(eq(posts.id, postId), isNull(posts.deletedAt), isNull(boards.deletedAt)))
+    .where(
+      and(
+        eq(posts.id, postId),
+        isNull(posts.deletedAt),
+        isNull(boards.deletedAt),
+        postViewFilter(actor)
+      )
+    )
     .limit(1)
 
   const row = rows[0]
@@ -97,7 +142,10 @@ export async function assertPostVotable(postId: PostId, actor: Actor): Promise<v
 
   const decision = canVotePost(
     actor,
-    { moderationState: row.moderationState, principalId: row.principalId },
+    {
+      moderationState: row.moderationState,
+      principalId: row.principalId,
+    },
     { access: row.access }
   )
   if (!decision.allowed) {
@@ -106,7 +154,10 @@ export async function assertPostVotable(postId: PostId, actor: Actor): Promise<v
     // NotFoundError shape — only "viewable but not votable" lands here.
     const viewDecision = canViewPost(
       actor,
-      { moderationState: row.moderationState, principalId: row.principalId },
+      {
+        moderationState: row.moderationState,
+        principalId: row.principalId,
+      },
       { access: row.access }
     )
     if (!viewDecision.allowed) {
@@ -129,23 +180,32 @@ export async function assertPostVotable(postId: PostId, actor: Actor): Promise<v
  * Throws NotFoundError on every deny path so the response shape is
  * uniform — denied callers can't probe existence by varying inputs.
  */
-export async function assertCommentViewable(commentId: CommentId, actor: Actor): Promise<void> {
+export async function assertCommentViewable(commentId: PostCommentId, actor: Actor): Promise<void> {
   const rows = await db
     .select({
-      isPrivate: comments.isPrivate,
+      isPrivate: postComments.isPrivate,
       postModerationState: posts.moderationState,
       postPrincipalId: posts.principalId,
       access: boards.access,
     })
-    .from(comments)
-    .innerJoin(posts, eq(comments.postId, posts.id))
+    .from(postComments)
+    .innerJoin(posts, eq(postComments.postId, posts.id))
     .innerJoin(boards, eq(posts.boardId, boards.id))
     .where(
       and(
-        eq(comments.id, commentId),
-        isNull(comments.deletedAt),
+        eq(postComments.id, commentId),
+        isNull(postComments.deletedAt),
         isNull(posts.deletedAt),
-        isNull(boards.deletedAt)
+        isNull(boards.deletedAt),
+        postViewFilter(actor),
+        isTeamActor(actor)
+          ? undefined
+          : actor.principalId
+            ? or(
+                notTestPrincipal(postComments.principalId),
+                eq(postComments.principalId, actor.principalId)
+              )
+            : notTestPrincipal(postComments.principalId)
       )
     )
     .limit(1)
@@ -157,7 +217,10 @@ export async function assertCommentViewable(commentId: CommentId, actor: Actor):
 
   const decision = canViewPost(
     actor,
-    { moderationState: row.postModerationState, principalId: row.postPrincipalId },
+    {
+      moderationState: row.postModerationState,
+      principalId: row.postPrincipalId,
+    },
     { access: row.access }
   )
   if (!decision.allowed) {

@@ -57,7 +57,10 @@ vi.mock('@/lib/server/db', () => ({
   },
   posts: mockPosts,
   postStatuses: { id: Symbol('postStatuses.id'), slug: Symbol('postStatuses.slug') },
-  postTags: { postId: Symbol('postTags.postId'), tagId: Symbol('postTags.tagId') },
+  postTagAssignments: {
+    postId: Symbol('postTagAssignments.postId'),
+    tagId: Symbol('postTagAssignments.tagId'),
+  },
   userSegments: {
     principalId: Symbol('userSegments.principalId'),
     segmentId: Symbol('userSegments.segmentId'),
@@ -81,16 +84,15 @@ describe('listInboxPosts — pending moderation exclusion', () => {
     mockPostsFindFirst.mockResolvedValue(null)
   })
 
-  it('excludes pending posts (adds ne(moderationState, "pending")) in normal view', async () => {
+  it('includes pending posts in the normal view so moderators can review them in place', async () => {
     const { listInboxPosts } = await import('../post.inbox')
 
     await listInboxPosts({})
 
-    // ne(posts.moderationState, 'pending') must appear in the normal (non-deleted) view
     const neCall = mockNe.mock.calls.find(
       ([col, val]) => col === mockPostsModerationState && val === 'pending'
     )
-    expect(neCall).toBeDefined()
+    expect(neCall).toBeUndefined()
   })
 
   it('does NOT exclude pending posts (no ne(moderationState)) in the deleted view', async () => {
@@ -104,7 +106,7 @@ describe('listInboxPosts — pending moderation exclusion', () => {
     expect(neCall).toBeUndefined()
   })
 
-  it('isNull(deletedAt) is present in normal view alongside the pending exclusion', async () => {
+  it('isNull(deletedAt) is present in normal view', async () => {
     const { listInboxPosts } = await import('../post.inbox')
 
     await listInboxPosts({})
@@ -115,7 +117,7 @@ describe('listInboxPosts — pending moderation exclusion', () => {
     const neCall = mockNe.mock.calls.find(
       ([col, val]) => col === mockPostsModerationState && val === 'pending'
     )
-    expect(neCall).toBeDefined()
+    expect(neCall).toBeUndefined()
   })
 
   it('isNotNull(deletedAt) is present in the deleted view with no pending exclusion', async () => {

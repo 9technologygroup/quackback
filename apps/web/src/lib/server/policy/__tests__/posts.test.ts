@@ -528,6 +528,7 @@ describe('canCreateComment — board access gate', () => {
     moderationState: 'published' as ModerationState,
     principalId: 'p_other' as PrincipalId,
     isCommentsLocked: false,
+    isMerged: false,
   }
 
   it('portal user CANNOT comment on a post in a team-audience board', () => {
@@ -557,6 +558,7 @@ describe('canCreateComment — post visibility gate', () => {
       moderationState: 'pending' as ModerationState,
       principalId: 'p_other' as PrincipalId,
       isCommentsLocked: false,
+      isMerged: false,
     }
     expect(canCreateComment(portal, pendingPost, publicBoard, 'none').allowed).toBe(false)
   })
@@ -566,6 +568,7 @@ describe('canCreateComment — post visibility gate', () => {
       moderationState: 'pending' as ModerationState,
       principalId: portal.principalId,
       isCommentsLocked: false,
+      isMerged: false,
     }
     expect(canCreateComment(portal, ownPendingPost, publicBoard, 'none').allowed).toBe(true)
   })
@@ -575,6 +578,7 @@ describe('canCreateComment — post visibility gate', () => {
       moderationState: 'pending' as ModerationState,
       principalId: 'p_other' as PrincipalId,
       isCommentsLocked: false,
+      isMerged: false,
     }
     expect(canCreateComment(admin, pendingPost, publicBoard, 'none').allowed).toBe(true)
     expect(canCreateComment(member, pendingPost, publicBoard, 'none').allowed).toBe(true)
@@ -586,6 +590,7 @@ describe('canCreateComment — isCommentsLocked gate', () => {
     moderationState: 'published' as ModerationState,
     principalId: 'p_other' as PrincipalId,
     isCommentsLocked: true,
+    isMerged: false,
   }
 
   it('portal user CANNOT comment when isCommentsLocked=true', () => {
@@ -607,11 +612,144 @@ describe('canCreateComment — isCommentsLocked gate', () => {
   })
 })
 
+describe('canCreateComment — author-only reply policy', () => {
+  // An author-only board keeps every thread readable by whoever the view tier
+  // admits, but only the post's own author (and the team) may answer.
+  const AUTHOR_ONLY_DENY = 'Only the post author and team members can reply on this board'
+  const OTHER = 'p_other' as PrincipalId
+
+  const authorOnly = (overrides: Partial<BoardAccess> = {}): { access: BoardAccess } => ({
+    access: { ...mkAccess('anonymous'), replyPolicy: 'author-only', ...overrides },
+  })
+  const post = (principalId: PrincipalId | null, isCommentsLocked = false) => ({
+    moderationState: 'published' as ModerationState,
+    principalId,
+    isCommentsLocked,
+    isMerged: false,
+  })
+
+  it('the post author CAN reply on their own thread', () => {
+    expect(canCreateComment(portal, post(portal.principalId), authorOnly(), 'none')).toEqual({
+      allowed: true,
+      requiresApproval: false,
+    })
+  })
+
+  it('another signed-in user is denied with the author-only reason', () => {
+    const d = canCreateComment(portal, post(OTHER), authorOnly(), 'none')
+    expect(d.allowed).toBe(false)
+    if (!d.allowed) expect(d.reason).toBe(AUTHOR_ONLY_DENY)
+  })
+
+  it('admin and member reply on anyone’s thread (same bypass as the comments lock)', () => {
+    expect(canCreateComment(admin, post(OTHER), authorOnly(), 'none').allowed).toBe(true)
+    expect(canCreateComment(member, post(OTHER), authorOnly(), 'none').allowed).toBe(true)
+  })
+
+  it('an anonymous viewer is denied even on an anonymously-authored post (null !== null)', () => {
+    // Critical, and the same guard canViewPost's own-pending hatch needs: a
+    // falsy-equal author check would hand every principal-less viewer the
+    // author's reply right on every anonymous post.
+    const d = canCreateComment(anon, post(null), authorOnly(), 'none')
+    expect(d.allowed).toBe(false)
+    if (!d.allowed) expect(d.reason).toBe(AUTHOR_ONLY_DENY)
+  })
+
+  it('a service principal is denied on someone else’s thread but may reply on its own', () => {
+    expect(canCreateComment(service, post(OTHER), authorOnly(), 'none').allowed).toBe(false)
+    expect(canCreateComment(service, post(service.principalId), authorOnly(), 'none').allowed).toBe(
+      true
+    )
+  })
+
+  it("an absent replyPolicy key behaves as 'anyone' (today's boards are unchanged)", () => {
+    expect(canCreateComment(portal, post(OTHER), publicBoard, 'none').allowed).toBe(true)
+  })
+
+  it("an explicit 'anyone' behaves exactly like the absent key", () => {
+    const anyone = authorOnly({ replyPolicy: 'anyone' })
+    expect(canCreateComment(portal, post(OTHER), anyone, 'none').allowed).toBe(true)
+  })
+
+  it('the comment tier still denies first — the policy narrows, it never widens', () => {
+    const d = canCreateComment(
+      portal,
+      post(portal.principalId),
+      authorOnly({ comment: 'team' }),
+      'none'
+    )
+    expect(d.allowed).toBe(false)
+    if (!d.allowed) expect(d.reason).toBe('Only team members can comment on this board')
+  })
+
+  it('lock beats author: the author is denied on their own LOCKED post', () => {
+    const d = canCreateComment(portal, post(portal.principalId, true), authorOnly(), 'none')
+    expect(d.allowed).toBe(false)
+    if (!d.allowed) expect(d.reason).toMatch(/locked/i)
+  })
+
+  it('a non-author on a locked author-only board gets the reply-policy reason (checked first)', () => {
+    const d = canCreateComment(portal, post(OTHER, true), authorOnly(), 'none')
+    expect(d.allowed).toBe(false)
+    if (!d.allowed) expect(d.reason).toBe(AUTHOR_ONLY_DENY)
+  })
+
+  it("the author's own reply is still held when moderation.comments='on'", () => {
+    const held = authorOnly({
+      moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'on' },
+    })
+    expect(canCreateComment(portal, post(portal.principalId), held, 'none')).toEqual({
+      allowed: true,
+      requiresApproval: true,
+    })
+  })
+
+  it('the author can reply on their own PENDING post (view hatch composes)', () => {
+    const ownPending = {
+      moderationState: 'pending' as ModerationState,
+      principalId: portal.principalId,
+      isCommentsLocked: false,
+      isMerged: false,
+    }
+    expect(canCreateComment(portal, ownPending, authorOnly(), 'none').allowed).toBe(true)
+  })
+})
+
+describe('canCreateComment — merged post gate', () => {
+  const mergedPost = {
+    moderationState: 'published' as ModerationState,
+    principalId: 'p_other' as PrincipalId,
+    isCommentsLocked: false,
+    isMerged: true,
+  }
+
+  it('portal user CANNOT comment on a post merged into another', () => {
+    const decision = canCreateComment(portal, mergedPost, publicBoard, 'none')
+    expect(decision.allowed).toBe(false)
+    if (!decision.allowed) expect(decision.reason).toMatch(/merged/i)
+  })
+
+  it('anonymous user CANNOT comment on a post merged into another', () => {
+    expect(canCreateComment(anon, mergedPost, publicBoard, 'none').allowed).toBe(false)
+  })
+
+  it('the author CANNOT comment on their own merged post', () => {
+    const ownMerged = { ...mergedPost, principalId: portal.principalId }
+    expect(canCreateComment(portal, ownMerged, publicBoard, 'none').allowed).toBe(false)
+  })
+
+  it('admin and member CAN comment on a merged post', () => {
+    expect(canCreateComment(admin, mergedPost, publicBoard, 'none').allowed).toBe(true)
+    expect(canCreateComment(member, mergedPost, publicBoard, 'none').allowed).toBe(true)
+  })
+})
+
 describe('canCreateComment — board.access.comment tier gates commenting independent of view', () => {
   const publishedPost = {
     moderationState: 'published' as ModerationState,
     principalId: 'p_other' as PrincipalId,
     isCommentsLocked: false,
+    isMerged: false,
   }
 
   it('rejects anon when comment=authenticated even if view=anonymous', () => {
@@ -676,6 +814,7 @@ describe('canCreateComment — tri-state moderation.comments resolves against wo
     moderationState: 'published' as ModerationState,
     principalId: 'p_other' as PrincipalId,
     isCommentsLocked: false,
+    isMerged: false,
   }
 
   const mkBoard = (comments: BoardAccess['moderation']['comments']) => ({
@@ -1092,6 +1231,7 @@ describe('canCreateComment — service principal + precedence edges', () => {
     moderationState: 'published' as ModerationState,
     principalId: 'p_other' as PrincipalId,
     isCommentsLocked: false,
+    isMerged: false,
   }
   const commentTierBoard = (
     comment: BoardAccess['comment'],
@@ -1157,7 +1297,12 @@ describe('canCreateComment — service principal + precedence edges', () => {
     (state) => {
       const d = canCreateComment(
         portal,
-        { moderationState: state, principalId: 'p_other' as PrincipalId, isCommentsLocked: false },
+        {
+          moderationState: state,
+          principalId: 'p_other' as PrincipalId,
+          isCommentsLocked: false,
+          isMerged: false,
+        },
         publicBoard,
         'none'
       )
@@ -1170,6 +1315,7 @@ describe('canCreateComment — service principal + precedence edges', () => {
       moderationState: 'pending' as ModerationState,
       principalId: portal.principalId,
       isCommentsLocked: false,
+      isMerged: false,
     }
     expect(
       canCreateComment(portal, ownPending, commentTierBoard('anonymous', 'on'), 'none')
@@ -1191,6 +1337,7 @@ describe('canCreateComment — service principal + precedence edges', () => {
       moderationState: 'pending' as ModerationState,
       principalId: trustedPortal.principalId,
       isCommentsLocked: false,
+      isMerged: false,
     }
     expect(canCreateComment(trustedPortal, ownPending, segBoard, 'none').allowed).toBe(true)
   })

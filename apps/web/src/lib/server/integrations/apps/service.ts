@@ -7,15 +7,13 @@
  */
 
 import { db, eq, and, sql, posts, boards, postStatuses, postExternalLinks } from '@/lib/server/db'
-import { createId, fromUuid, type PostId, type PrincipalId, type IntegrationId } from '@quackback/ids'
+import { createId, fromUuid, type PostId, type PrincipalId } from '@quackback/ids'
 import { getExecuteRows } from '@/lib/server/utils'
 import { addVoteOnBehalf } from '@/lib/server/domains/posts/post.voting'
 import { identifyPortalUser } from '@/lib/server/domains/users/user.identify'
 
 export interface LinkTicketInput {
   postId: PostId
-  /** Optional integration record; set so links cascade-delete with it. */
-  integrationId?: IntegrationId
   integrationType: string
   externalId: string
   externalUrl?: string
@@ -51,7 +49,7 @@ export async function linkTicketToPost(
   input: LinkTicketInput,
   _actorPrincipalId: PrincipalId
 ): Promise<LinkTicketResult> {
-  const linkId = createId('linked_entity')
+  const linkId = createId('post_external_link')
 
   // Insert link (idempotent - ON CONFLICT returns existing)
   const [link] = await db
@@ -59,18 +57,11 @@ export async function linkTicketToPost(
     .values({
       id: linkId,
       postId: input.postId,
-      integrationId: input.integrationId ?? null,
       integrationType: input.integrationType,
       externalId: input.externalId,
       externalUrl: input.externalUrl ?? null,
     })
-    .onConflictDoNothing({
-      target: [
-        postExternalLinks.integrationType,
-        postExternalLinks.externalId,
-        postExternalLinks.postId,
-      ],
-    })
+    .onConflictDoNothing()
     .returning({ id: postExternalLinks.id })
 
   // If conflict, fetch existing link
@@ -116,7 +107,8 @@ async function getExistingLinkId(input: LinkTicketInput): Promise<string | null>
     where: and(
       eq(postExternalLinks.integrationType, input.integrationType),
       eq(postExternalLinks.externalId, input.externalId),
-      eq(postExternalLinks.postId, input.postId)
+      eq(postExternalLinks.postId, input.postId),
+      eq(postExternalLinks.syncScope, '')
     ),
     columns: { id: true },
   })
@@ -137,7 +129,8 @@ export async function unlinkTicketFromPost(input: {
       and(
         eq(postExternalLinks.postId, input.postId),
         eq(postExternalLinks.integrationType, input.integrationType),
-        eq(postExternalLinks.externalId, input.externalId)
+        eq(postExternalLinks.externalId, input.externalId),
+        eq(postExternalLinks.syncScope, '')
       )
     )
 }
@@ -174,6 +167,7 @@ export async function getLinkedPosts(input: {
     LEFT JOIN ${postStatuses} ps ON ps.id = p.status_id
     WHERE pel.integration_type = ${input.integrationType}
       AND pel.external_id = ${input.externalId}
+      AND pel.sync_scope = ''
       AND p.deleted_at IS NULL
     ORDER BY pel.created_at DESC
   `)
@@ -194,7 +188,7 @@ export async function getLinkedPosts(input: {
     statusName: r.status_name,
     statusColor: r.status_color,
     board: { name: r.board_name },
-    linkId: fromUuid('linked_entity', r.link_id),
+    linkId: fromUuid('post_external_link', r.link_id),
     linkedAt: typeof r.linked_at === 'string' ? new Date(r.linked_at) : r.linked_at,
   }))
 }

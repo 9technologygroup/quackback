@@ -1,0 +1,475 @@
+import { z } from 'zod'
+import type { AssistantSurface } from './surfaces'
+
+export const ASSISTANT_CONFIG_VERSION = 4 as const
+export const ASSISTANT_NAME_MAX_LENGTH = 80
+export const ASSISTANT_AVATAR_URL_MAX_LENGTH = 2_000
+export const ASSISTANT_ADDITIONAL_INSTRUCTIONS_MAX_LENGTH = 2_000
+
+/** The message of the error a save raises when the settings changed in another session. */
+export const ASSISTANT_REVISION_CONFLICT_MESSAGE =
+  'AI agent settings changed in another session. Reload the latest settings and try again.'
+
+export const ASSISTANT_TONES = ['warm', 'balanced', 'professional'] as const
+export const ASSISTANT_RESPONSE_LENGTHS = ['brief', 'balanced', 'detailed'] as const
+
+export const assistantToneSchema = z.enum(ASSISTANT_TONES)
+export const assistantResponseLengthSchema = z.enum(ASSISTANT_RESPONSE_LENGTHS)
+
+export type AssistantTone = z.infer<typeof assistantToneSchema>
+export type AssistantResponseLength = z.infer<typeof assistantResponseLengthSchema>
+
+function isHttpUrl(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0)
+    if (code <= 0x20 || code === 0x7f) return false
+  }
+
+  try {
+    const protocol = new URL(value).protocol
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function isStoredAssetRef(value: string): boolean {
+  if (!value.startsWith('/api/storage/')) return false
+  try {
+    const parsed = new URL(value, 'https://placeholder.invalid')
+    return parsed.pathname.startsWith('/api/storage/') && parsed.pathname !== '/api/storage/'
+  } catch {
+    return false
+  }
+}
+
+export const assistantAvatarUrlSchema = z
+  .string()
+  .trim()
+  .max(ASSISTANT_AVATAR_URL_MAX_LENGTH)
+  .refine((value) => isHttpUrl(value) || isStoredAssetRef(value), {
+    message: 'Avatar URL must be a stored asset ref or HTTP(S) URL',
+  })
+
+export const assistantIdentitySchema = z.object({
+  name: z.string().trim().min(1).max(ASSISTANT_NAME_MAX_LENGTH),
+  avatarUrl: assistantAvatarUrlSchema.nullable(),
+})
+
+export const assistantVoiceSchema = z.object({
+  tone: assistantToneSchema,
+  responseLength: assistantResponseLengthSchema,
+  additionalInstructions: z.string().max(ASSISTANT_ADDITIONAL_INSTRUCTIONS_MAX_LENGTH),
+})
+
+/**
+ * The two peer agents Quinn drives (D3/D4). A guidance rule, a knowledge map,
+ * and every runtime resolution belong to exactly one of these. `roleToAgent`
+ * below is the single, exhaustive mint point that maps a pipeline role onto
+ * one of these — callers never re-derive it from a role literal (C3).
+ */
+export const ASSISTANT_AGENTS = ['agent', 'copilot', 'workspace'] as const
+export const assistantAgentSchema = z.enum(ASSISTANT_AGENTS)
+export type AssistantAgentKind = z.infer<typeof assistantAgentSchema>
+
+/**
+ * Per-source knowledge toggles, one const array per agent so the vocabulary
+ * lives in exactly one place (C2). The Agent tab never offers team-scoped
+ * sources (D8: no tickets/pastConversations/internalNotes), so its list is a
+ * strict subset — not the same array narrowed.
+ */
+export const ASSISTANT_AGENT_KNOWLEDGE_SOURCES = [
+  'helpCenter',
+  'posts',
+  'changelog',
+  'documents',
+  'status',
+] as const
+export const ASSISTANT_COPILOT_KNOWLEDGE_SOURCES = [
+  'helpCenter',
+  'posts',
+  'pastConversations',
+  'internalNotes',
+  'tickets',
+  'changelog',
+  'documents',
+  'status',
+] as const
+
+export type AssistantAgentKnowledgeSource = (typeof ASSISTANT_AGENT_KNOWLEDGE_SOURCES)[number]
+export type AssistantCopilotKnowledgeSource = (typeof ASSISTANT_COPILOT_KNOWLEDGE_SOURCES)[number]
+
+// The `satisfies Record<...Source, z.ZodType<boolean>>` constraints tie each schema's
+// keys to its vocabulary array (C2): add a source to the array without a schema
+// field here (or a field without an array entry) and this stops typechecking.
+// `documents` carries a default so a config persisted before the documents
+// source existed (no key for it) parses with the source enabled — the same
+// default a fresh install gets — rather than failing the strict read.
+export const assistantAgentKnowledgeSchema = z.object({
+  helpCenter: z.boolean(),
+  posts: z.boolean(),
+  changelog: z.boolean(),
+  documents: z.boolean().default(true),
+  status: z.boolean(),
+} satisfies Record<AssistantAgentKnowledgeSource, z.ZodType<boolean>>)
+export const assistantCopilotKnowledgeSchema = z.object({
+  helpCenter: z.boolean(),
+  posts: z.boolean(),
+  pastConversations: z.boolean(),
+  internalNotes: z.boolean(),
+  tickets: z.boolean(),
+  changelog: z.boolean(),
+  documents: z.boolean().default(true),
+  status: z.boolean(),
+} satisfies Record<AssistantCopilotKnowledgeSource, z.ZodType<boolean>>)
+
+/**
+ * Per-tool permission rule for a BUILT-IN write tool, keyed by tool name:
+ * - `allow` — run without asking (after RBAC)
+ * - `ask` — pause on a persisted proposal a teammate approves or denies
+ * - `deny` — omit the tool from this agent's catalogue entirely
+ *
+ * An absent key changes nothing: the turn's role policy keeps deciding, so a
+ * workspace that never opens the dial behaves exactly as before. Saved per
+ * agent, mirroring the remote-connector dial's vocabulary.
+ */
+export const ASSISTANT_TOOL_RULES = ['allow', 'ask', 'deny'] as const
+export const assistantToolRuleSchema = z.enum(ASSISTANT_TOOL_RULES)
+export type AssistantToolRule = z.infer<typeof assistantToolRuleSchema>
+export const assistantToolRulesSchema = z.record(z.string().min(1), assistantToolRuleSchema)
+export type AssistantToolRules = z.infer<typeof assistantToolRulesSchema>
+
+/** Copilot capabilities gate the teammate-facing Q&A route. */
+export const assistantCopilotCapabilitiesSchema = z.object({
+  qa: z.boolean(),
+})
+
+/** Agent (customer-facing) sub-config: owns voice (D11) and its knowledge map. */
+export const assistantAgentConfigSchema = z.object({
+  voice: assistantVoiceSchema,
+  knowledge: assistantAgentKnowledgeSchema,
+  /** Absent key = role policy decides; see {@link assistantToolRulesSchema}. */
+  toolRules: assistantToolRulesSchema.default({}),
+})
+
+/** Copilot (teammate-facing) sub-config: capabilities + a wider knowledge map, no voice (D11). */
+export const assistantCopilotConfigSchema = z.object({
+  capabilities: assistantCopilotCapabilitiesSchema,
+  knowledge: assistantCopilotKnowledgeSchema,
+  /** Absent key = role policy decides; see {@link assistantToolRulesSchema}. */
+  toolRules: assistantToolRulesSchema.default({}),
+})
+
+export const assistantWorkspaceConfigSchema = assistantCopilotConfigSchema.extend({
+  instructions: z.string().max(2_000).default(''),
+  slack: z.object({
+    enabled: z.boolean().default(false),
+    respondTo: z.literal('mentions_and_dms').default('mentions_and_dms'),
+    allowUnlinkedPublicQa: z.literal(false).default(false),
+  }),
+})
+export type AssistantWorkspaceConfig = z.infer<typeof assistantWorkspaceConfigSchema>
+/**
+ * Internally managed workspace-assistant defaults. Knowledge, tool rules,
+ * capabilities, and instructions are not tenant-editable; only `slack.enabled`
+ * is a user toggle (Settings → Integrations → Slack).
+ */
+export const DEFAULT_WORKSPACE_ASSISTANT: AssistantWorkspaceConfig = {
+  capabilities: { qa: true },
+  knowledge: {
+    helpCenter: true,
+    posts: true,
+    pastConversations: true,
+    internalNotes: true,
+    tickets: true,
+    changelog: true,
+    documents: true,
+    status: true,
+  },
+  toolRules: {},
+  instructions: '',
+  slack: { enabled: false, respondTo: 'mentions_and_dms', allowUnlinkedPublicQa: false },
+}
+
+/** Overlay code-managed workspace defaults, keeping the tenant Slack toggle. */
+export function applyInternalWorkspaceAssistantDefaults(config: AssistantConfig): AssistantConfig {
+  return {
+    ...config,
+    agents: {
+      ...config.agents,
+      workspace: {
+        ...structuredClone(DEFAULT_WORKSPACE_ASSISTANT),
+        slack: config.agents.workspace.slack,
+      },
+    },
+  }
+}
+
+/** Add the disabled workspace agent to v3 while preserving all existing choices. */
+export function migrateAssistantConfig(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input
+  const value = input as Record<string, unknown>
+  if (value.version !== 3 || !value.agents || typeof value.agents !== 'object') return input
+  return {
+    ...value,
+    version: 4,
+    agents: { ...value.agents, workspace: structuredClone(DEFAULT_WORKSPACE_ASSISTANT) },
+  }
+}
+
+// The z.infer of this schema (`AssistantConfig`) has a hand-written structural
+// twin, `StoredAssistantConfig`, in packages/db `schema/auth.ts` (that package
+// can't import this one). A drift tripwire in `__tests__/config.test.ts` fails
+// typecheck if the two diverge — edit both sides together.
+export const assistantConfigSchema = z.object({
+  version: z.literal(ASSISTANT_CONFIG_VERSION),
+  identity: assistantIdentitySchema,
+  agents: z.object({
+    agent: assistantAgentConfigSchema,
+    copilot: assistantCopilotConfigSchema,
+    workspace: assistantWorkspaceConfigSchema,
+  }),
+})
+
+export type AssistantIdentity = z.infer<typeof assistantIdentitySchema>
+export type AssistantVoice = z.infer<typeof assistantVoiceSchema>
+export type AssistantAgentKnowledge = z.infer<typeof assistantAgentKnowledgeSchema>
+export type AssistantCopilotKnowledge = z.infer<typeof assistantCopilotKnowledgeSchema>
+export type AssistantCopilotCapabilities = z.infer<typeof assistantCopilotCapabilitiesSchema>
+export type AssistantAgentConfig = z.infer<typeof assistantAgentConfigSchema>
+export type AssistantCopilotConfig = z.infer<typeof assistantCopilotConfigSchema>
+export type AssistantConfig = z.infer<typeof assistantConfigSchema>
+
+export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
+  version: ASSISTANT_CONFIG_VERSION,
+  identity: {
+    name: 'Quackback AI',
+    avatarUrl: null,
+  },
+  agents: {
+    workspace: structuredClone(DEFAULT_WORKSPACE_ASSISTANT),
+    agent: {
+      voice: {
+        tone: 'balanced',
+        responseLength: 'balanced',
+        additionalInstructions: '',
+      },
+      knowledge: {
+        helpCenter: true,
+        posts: false,
+        changelog: false,
+        documents: true,
+        status: false,
+      },
+      toolRules: {},
+    },
+    copilot: {
+      capabilities: {
+        qa: true,
+      },
+      knowledge: {
+        helpCenter: true,
+        posts: true,
+        pastConversations: true,
+        internalNotes: true,
+        tickets: true,
+        changelog: true,
+        documents: true,
+        status: true,
+      },
+      toolRules: {},
+    },
+  },
+}
+
+export interface AssistantPresetDefinition<Value extends string> {
+  id: Value
+  labelMessageId: string
+  descriptionMessageId: string
+  directive: string
+}
+
+type AssistantPresetCatalogue<Value extends string> = {
+  readonly [Preset in Value]: AssistantPresetDefinition<Preset>
+}
+
+export const ASSISTANT_TONE_CATALOGUE = {
+  warm: {
+    id: 'warm',
+    labelMessageId: 'assistant.voice.tone.warm.label',
+    descriptionMessageId: 'assistant.voice.tone.warm.description',
+    directive:
+      "Use a warm, approachable tone: write in the first person, use contractions, and acknowledge how the customer feels before getting to the answer ('I can see how frustrating that is'). Stay genuine — no over-apologizing, no forced enthusiasm.",
+  },
+  balanced: {
+    id: 'balanced',
+    labelMessageId: 'assistant.voice.tone.balanced.label',
+    descriptionMessageId: 'assistant.voice.tone.balanced.description',
+    directive:
+      'Use a clear, calm, natural tone. Be friendly without adding unnecessary enthusiasm or formality.',
+  },
+  professional: {
+    id: 'professional',
+    labelMessageId: 'assistant.voice.tone.professional.label',
+    descriptionMessageId: 'assistant.voice.tone.professional.description',
+    directive:
+      'Use a polished, professional tone: structured, direct sentences with no exclamation marks, no small talk, and feelings acknowledged at most once, briefly. Stay natural — never legalistic or robotic.',
+  },
+} as const satisfies AssistantPresetCatalogue<AssistantTone>
+
+export const ASSISTANT_RESPONSE_LENGTH_CATALOGUE = {
+  brief: {
+    id: 'brief',
+    labelMessageId: 'assistant.voice.responseLength.brief.label',
+    descriptionMessageId: 'assistant.voice.responseLength.brief.description',
+    directive:
+      'Keep replies short: 1-3 sentences, or a compact list when steps are unavoidable. No preamble, no recap of the question, no closing filler — lead with the answer and stop.',
+  },
+  balanced: {
+    id: 'balanced',
+    labelMessageId: 'assistant.voice.responseLength.balanced.label',
+    descriptionMessageId: 'assistant.voice.responseLength.balanced.description',
+    directive:
+      'Give enough context to make the answer clear, then state the next step. Avoid unnecessary detail.',
+  },
+  detailed: {
+    id: 'detailed',
+    labelMessageId: 'assistant.voice.responseLength.detailed.label',
+    descriptionMessageId: 'assistant.voice.responseLength.detailed.description',
+    directive:
+      'Give a thorough answer: a one-line framing of the situation, ordered steps where applicable, and the relevant caveats, alternatives, or what-to-expect-next. Prefer completeness over brevity, but never pad with detail unrelated to the request.',
+  },
+} as const satisfies AssistantPresetCatalogue<AssistantResponseLength>
+
+export const ASSISTANT_TONE_DIRECTIVES: Record<AssistantTone, string> = {
+  warm: ASSISTANT_TONE_CATALOGUE.warm.directive,
+  balanced: ASSISTANT_TONE_CATALOGUE.balanced.directive,
+  professional: ASSISTANT_TONE_CATALOGUE.professional.directive,
+}
+
+export const ASSISTANT_RESPONSE_LENGTH_DIRECTIVES: Record<AssistantResponseLength, string> = {
+  brief: ASSISTANT_RESPONSE_LENGTH_CATALOGUE.brief.directive,
+  balanced: ASSISTANT_RESPONSE_LENGTH_CATALOGUE.balanced.directive,
+  detailed: ASSISTANT_RESPONSE_LENGTH_CATALOGUE.detailed.directive,
+}
+
+export const ASSISTANT_ROLES = ['customer_support', 'copilot_qa', 'workspace_assistant'] as const
+export const assistantRoleSchema = z.enum(ASSISTANT_ROLES)
+export type AssistantRole = z.infer<typeof assistantRoleSchema>
+
+export interface AssistantRoleDefinition {
+  id: AssistantRole
+  labelMessageId: string
+  descriptionMessageId: string
+}
+
+export type AssistantRoleCatalogue = {
+  readonly [Role in AssistantRole]: AssistantRoleDefinition & {
+    readonly id: Role
+  }
+}
+
+export const ASSISTANT_ROLE_CATALOGUE = {
+  customer_support: {
+    id: 'customer_support',
+    labelMessageId: 'assistant.role.customerSupport.label',
+    descriptionMessageId: 'assistant.role.customerSupport.description',
+  },
+  copilot_qa: {
+    id: 'copilot_qa',
+    labelMessageId: 'assistant.role.copilotQa.label',
+    descriptionMessageId: 'assistant.role.copilotQa.description',
+  },
+  workspace_assistant: {
+    id: 'workspace_assistant',
+    labelMessageId: 'assistant.role.workspace.label',
+    descriptionMessageId: 'assistant.role.workspace.description',
+  },
+} as const satisfies AssistantRoleCatalogue
+
+/**
+ * The sole, exhaustive mint point mapping a pipeline role onto its owning agent
+ * (C3): the customer-facing support role resolves to `agent`; the
+ * teammate-facing Q&A role resolves to `copilot`. Runtime
+ * voice/knowledge/guidance resolution all funnel through this rather than
+ * re-deriving the split from a role literal.
+ * Workspace chat shares Copilot configuration; integration turns keep the
+ * internally managed workspace configuration.
+ */
+export function roleToAgent(role: AssistantRole, surface?: AssistantSurface): AssistantAgentKind {
+  switch (role) {
+    case 'customer_support':
+      return 'agent'
+    case 'copilot_qa':
+      return 'copilot'
+    case 'workspace_assistant':
+      return surface === 'workspace' ? 'copilot' : 'workspace'
+    default: {
+      const exhaustive: never = role
+      throw new Error(`roleToAgent: unhandled assistant role "${exhaustive}"`)
+    }
+  }
+}
+
+/** Removes unsafe ASCII controls without changing meaningful customer-authored text. */
+export function normalizeAssistantText(value: string): string {
+  const characters: string[] = []
+
+  for (const character of value) {
+    const code = character.charCodeAt(0)
+    const isRemovedControl = (code < 0x20 && code !== 0x09 && code !== 0x0a) || code === 0x7f
+    if (!isRemovedControl) characters.push(character)
+  }
+
+  return characters.join('').trim()
+}
+
+const assistantConfigInputSchema = z.object({
+  version: z.literal(ASSISTANT_CONFIG_VERSION),
+  identity: z.object({
+    name: z.string(),
+    avatarUrl: z.string().nullable(),
+  }),
+  agents: z.object({
+    workspace: assistantWorkspaceConfigSchema,
+    agent: z.object({
+      voice: z.object({
+        tone: assistantToneSchema,
+        responseLength: assistantResponseLengthSchema,
+        additionalInstructions: z.string(),
+      }),
+      knowledge: assistantAgentKnowledgeSchema,
+      toolRules: assistantToolRulesSchema.optional(),
+    }),
+    copilot: z.object({
+      capabilities: assistantCopilotCapabilitiesSchema,
+      knowledge: assistantCopilotKnowledgeSchema,
+      toolRules: assistantToolRulesSchema.optional(),
+    }),
+  }),
+})
+
+/** Normalizes a complete V3 input, then validates every persisted boundary. */
+export function normalizeAssistantConfig(input: unknown): AssistantConfig {
+  const parsed = assistantConfigInputSchema.parse(input)
+
+  return assistantConfigSchema.parse({
+    ...parsed,
+    identity: {
+      ...parsed.identity,
+      name: normalizeAssistantText(parsed.identity.name),
+    },
+    agents: {
+      ...parsed.agents,
+      agent: {
+        ...parsed.agents.agent,
+        voice: {
+          ...parsed.agents.agent.voice,
+          additionalInstructions: normalizeAssistantText(
+            parsed.agents.agent.voice.additionalInstructions
+          ),
+        },
+      },
+    },
+  })
+}

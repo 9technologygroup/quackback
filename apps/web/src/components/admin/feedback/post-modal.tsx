@@ -1,21 +1,23 @@
 'use client'
 
-import { Suspense, useState, useEffect, useCallback } from 'react'
+import { Suspense, memo, useState, useCallback } from 'react'
 import { useKeyboardSubmit } from '@/lib/client/hooks/use-keyboard-submit'
+import { CustomerContextPanel } from '@/components/admin/feedback/customer-context-panel'
 import { ModalFooter } from '@/components/shared/modal-footer'
-import { useUrlModal } from '@/lib/client/hooks/use-url-modal'
-import { useSuspenseQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSuspenseQuery, useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import type { JSONContent } from '@tiptap/react'
 import { ChevronLeftIcon, ChevronRightIcon } from '@heroicons/react/24/solid'
 import { toast } from 'sonner'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ModalHeader } from '@/components/shared/modal-header'
-import { UrlModalShell } from '@/components/shared/url-modal-shell'
 import { Button } from '@/components/ui/button'
-import { RichTextEditor } from '@/components/ui/rich-text-editor'
-import { usePostImageUpload } from '@/lib/client/hooks/use-image-upload'
+import { RichTextEditor, type EditorDocument } from '@/components/ui/rich-text-editor'
+import { usePostMediaUpload, usePortalMediaUpload } from '@/lib/client/hooks/use-image-upload'
 import { adminQueries } from '@/lib/client/queries/admin'
+import { postOwnerQueries } from '@/lib/client/queries/post-owner'
 import { mergeSuggestionQueries } from '@/lib/client/queries/signals'
+import { usePermission } from '@/lib/client/hooks/use-permission'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { inboxKeys } from '@/lib/client/hooks/use-inbox-query'
 import {
   MetadataSidebar,
@@ -45,6 +47,7 @@ import {
   useDeletePost,
   useRestorePost,
   useChangePostBoard,
+  useUpdatePostOwner,
 } from '@/lib/client/mutations'
 import {
   DeletePostDialog,
@@ -52,27 +55,24 @@ import {
 } from '@/components/public/post-detail/delete-post-dialog'
 import { usePostExternalLinks } from '@/lib/client/hooks/use-post-external-links-query'
 import { usePostDetailKeyboard } from '@/lib/client/hooks/use-post-detail-keyboard'
-import { addPostToRoadmapFn, removePostFromRoadmapFn } from '@/lib/server/functions/roadmaps'
-import { useRouterState } from '@tanstack/react-router'
+import { retryPostIntegrationSyncFn, setPostEtaFn } from '@/lib/server/functions/posts'
 import {
   type PostId,
-  type StatusId,
-  type TagId,
-  type RoadmapId,
-  type CommentId,
+  type PostStatusId,
+  type PostTagId,
+  type PostCommentId,
   type BoardId,
+  type PrincipalId,
 } from '@quackback/ids'
 import { useDeleteComment, useRestoreComment } from '@/lib/client/mutations/portal-comments'
+import { useLoadMoreAdminComments } from '@/lib/client/mutations/load-more-comments'
+import { InlineModerationActions } from '@/components/shared/inline-moderation-actions'
+import { useApprovePost, useRejectPost } from '@/lib/client/mutations/moderation'
 import type { PostDetails, CurrentUser } from '@/lib/shared/types'
 import {
   toPortalComments,
   getInitialContentJson,
 } from '@/components/admin/feedback/detail/post-utils'
-
-interface PostModalProps {
-  postId: string | undefined
-  currentUser: CurrentUser
-}
 
 interface PostModalContentProps {
   postId: PostId
@@ -81,7 +81,12 @@ interface PostModalContentProps {
   onClose: () => void
 }
 
-function PostModalContent({
+/**
+ * Memoized, and every prop is stable while the post stays open, so the
+ * content (two rich-text editors, the sidebar, the comment thread) renders
+ * only for its own state, not for each navigation around it.
+ */
+export const PostModalContent = memo(function PostModalContent({
   postId,
   currentUser,
   onNavigateToPost,
@@ -90,31 +95,69 @@ function PostModalContent({
   const queryClient = useQueryClient()
 
   // Queries
-  const postQuery = useSuspenseQuery(adminQueries.postDetail(postId))
+  const postQuery = useSuspenseQuery(adminQueries.postDetail(postId, { withPanels: true }))
   const { data: tags = [] } = useQuery(adminQueries.tags())
   const { data: statuses = [] } = useQuery(adminQueries.statuses())
-  const { data: roadmaps = [] } = useQuery(adminQueries.roadmaps())
   const { data: boards = [] } = useQuery(adminQueries.boards())
-  const { data: feedbackSource } = useQuery(adminQueries.postFeedbackSource(postId))
+
+  // Owner (assignee) control — gated on post.set_owner. The roster is fetched
+  // via the same post.set_owner-gated fn the portal uses; the current owner is
+  // resolved from it against the post's ownerPrincipalId (already in payload).
+  const canSetOwner = usePermission(PERMISSIONS.POST_SET_OWNER)
+  const canModerate = usePermission(PERMISSIONS.POST_APPROVE)
+  const canManageIntegrations = usePermission(PERMISSIONS.INTEGRATION_MANAGE)
+  const approvePost = useApprovePost(postId)
+  const rejectPost = useRejectPost(postId)
+  const { data: ownerCandidates } = useQuery({
+    ...postOwnerQueries.candidates(),
+    enabled: canSetOwner,
+  })
 
   const post = postQuery.data as PostDetails
 
+  // "Show more comments" — appends the next keyset page into the same
+  // ['inbox','detail',postId] cache the admin comment mutations patch.
+  const {
+    loadMore: loadMoreComments,
+    isLoading: isLoadingMoreComments,
+    hasMore: hasMoreComments,
+  } = useLoadMoreAdminComments(postId, inboxKeys.detail(postId))
+
   // Image upload
-  const { upload: uploadImage } = usePostImageUpload()
+  const { upload: uploadMedia } = usePostMediaUpload()
+  const { upload: uploadCommentMedia } = usePortalMediaUpload()
 
   // Form state - always in edit mode
   const [title, setTitle] = useState(post.title)
   const [contentJson, setContentJson] = useState<JSONContent | null>(getInitialContentJson(post))
   const [contentMarkdown, setContentMarkdown] = useState(post.content ?? '')
-  const [hasInitialized, setHasInitialized] = useState(false)
 
   // UI state
   const [isUpdating, setIsUpdating] = useState(false)
-  const [pendingRoadmapId, setPendingRoadmapId] = useState<string | null>(null)
   const [showMergeDialog, setShowMergeDialog] = useState(false)
   const [showMergeOthersDialog, setShowMergeOthersDialog] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [activeTab, setActiveTab] = useState<'comments' | 'activity'>('comments')
+
+  // Reset the form when the post changes (prev/next navigation, or a refetch
+  // bringing a new title or body). Adjusted during render rather than in an
+  // effect, which rendered the whole modal a second time on every open.
+  const [formSource, setFormSource] = useState({
+    id: post.id,
+    title: post.title,
+    contentJson: post.contentJson,
+  })
+  if (
+    formSource.id !== post.id ||
+    formSource.title !== post.title ||
+    formSource.contentJson !== post.contentJson
+  ) {
+    setFormSource({ id: post.id, title: post.title, contentJson: post.contentJson })
+    setTitle(post.title)
+    setContentJson(getInitialContentJson(post))
+    setShowMergeDialog(false)
+    setShowMergeOthersDialog(false)
+  }
 
   // Duplicate badge indicator — derived from merge suggestions (deduped by React Query with SimilarPostsCard)
   const { data: mergeSuggestionsData } = useQuery(mergeSuggestionQueries.forPost(postId))
@@ -141,26 +184,28 @@ function PostModalContent({
   const deletePost = useDeletePost()
   const restorePostMutation = useRestorePost()
   const changePostBoard = useChangePostBoard()
+  const updateOwner = useUpdatePostOwner()
+
+  const retryIntegrations = useMutation({
+    mutationFn: () => retryPostIntegrationSyncFn({ data: { id: post.id } }),
+    onSuccess: (result) => {
+      toast.success(
+        result.needsAttention
+          ? 'Some syncs need review. Open Sync history in integration settings.'
+          : result.queued
+            ? 'Integration sync queued'
+            : 'No new sync work to queue'
+      )
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : 'Failed to retry integrations'),
+  })
 
   // External links for cascade delete
-  const externalLinksQuery = usePostExternalLinks(post.id as PostId, showDeleteDialog)
-
-  // Initialize form with post data
-  useEffect(() => {
-    if (post && !hasInitialized) {
-      setTitle(post.title)
-      setContentJson(getInitialContentJson(post))
-      setHasInitialized(true)
-    }
-  }, [post, hasInitialized])
-
-  // Reset when navigating to different post
-  useEffect(() => {
-    setTitle(post.title)
-    setContentJson(getInitialContentJson(post))
-    setShowMergeDialog(false)
-    setShowMergeOthersDialog(false)
-  }, [post.id, post.title, post.contentJson])
+  const externalLinksQuery = usePostExternalLinks(
+    post.id as PostId,
+    showDeleteDialog || canManageIntegrations
+  )
 
   // Keyboard navigation
   usePostDetailKeyboard({
@@ -179,7 +224,7 @@ function PostModalContent({
   })
 
   // Handlers
-  const handleStatusChange = async (statusId: StatusId) => {
+  const handleStatusChange = async (statusId: PostStatusId) => {
     setIsUpdating(true)
     try {
       await updateStatus.mutateAsync({ postId: post.id as PostId, statusId })
@@ -188,7 +233,7 @@ function PostModalContent({
     }
   }
 
-  const handleTagsChange = async (tagIds: TagId[]) => {
+  const handleTagsChange = async (tagIds: PostTagId[]) => {
     setIsUpdating(true)
     try {
       await updateTags.mutateAsync({ postId: post.id as PostId, tagIds, allTags: tags })
@@ -209,29 +254,33 @@ function PostModalContent({
     }
   }
 
-  const handleRoadmapAdd = async (roadmapId: RoadmapId) => {
-    setPendingRoadmapId(roadmapId)
+  const handleOwnerChange = async (ownerId: PrincipalId | null) => {
     try {
-      await addPostToRoadmapFn({ data: { roadmapId, postId: post.id } })
-      queryClient.invalidateQueries({ queryKey: inboxKeys.detail(post.id as PostId) })
-    } finally {
-      setPendingRoadmapId(null)
+      // The mutation applies the change optimistically and invalidates the
+      // inbox detail/list caches, matching the other sidebar callbacks here.
+      await updateOwner.mutateAsync({ postId: post.id as PostId, ownerId })
+      toast.success(ownerId ? 'Owner assigned' : 'Owner unassigned')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update owner')
     }
   }
 
-  const handleRoadmapRemove = async (roadmapId: RoadmapId) => {
-    setPendingRoadmapId(roadmapId)
+  const handleEtaChange = async (eta: string | null) => {
+    setIsUpdating(true)
     try {
-      await removePostFromRoadmapFn({ data: { roadmapId, postId: post.id } })
+      await setPostEtaFn({ data: { id: post.id, eta } })
       queryClient.invalidateQueries({ queryKey: inboxKeys.detail(post.id as PostId) })
+      toast.success(eta ? 'ETA updated' : 'ETA cleared')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update ETA')
     } finally {
-      setPendingRoadmapId(null)
+      setIsUpdating(false)
     }
   }
 
-  const handleContentChange = useCallback((_json: JSONContent, _html: string, markdown: string) => {
-    setContentJson(_json)
-    setContentMarkdown(markdown)
+  const handleContentChange = useCallback((document: EditorDocument) => {
+    setContentJson(document.json())
+    setContentMarkdown(document.markdown())
   }, [])
 
   const handleSubmit = async () => {
@@ -260,10 +309,19 @@ function PostModalContent({
   const handleKeyDown = useKeyboardSubmit(hasChanges ? handleSubmit : () => {})
 
   const currentStatus = statuses.find((s) => s.id === post.statusId)
-  const postRoadmaps = (post.roadmapIds || [])
-    .map((id) => roadmaps.find((r) => r.id === id))
-    .filter(Boolean) as Array<{ id: string; name: string; slug: string }>
+  const currentOwner =
+    (post.ownerPrincipalId &&
+      (ownerCandidates ?? []).find((m) => m.principalId === post.ownerPrincipalId)) ||
+    null
   const manageActions = {
+    onRetryIntegrations:
+      canManageIntegrations &&
+      !post.deletedAt &&
+      post.moderationState === 'published' &&
+      externalLinksQuery.data !== undefined
+        ? () => retryIntegrations.mutate()
+        : undefined,
+    isRetryIntegrationsPending: retryIntegrations.isPending,
     onMergeOthers: () => setShowMergeOthersDialog(true),
     onMergeInto: () => setShowMergeDialog(true),
     onToggleLock: () =>
@@ -347,6 +405,16 @@ function PostModalContent({
           <div className="flex-1 min-w-0">
             {/* Editor area */}
             <div className="p-6" onKeyDown={handleKeyDown}>
+              {post.moderationState === 'pending' && (
+                <InlineModerationActions
+                  pending
+                  noun="post"
+                  className="mb-4"
+                  busy={approvePost.isPending || rejectPost.isPending}
+                  onApprove={canModerate ? () => approvePost.mutate(postId) : undefined}
+                  onReject={canModerate ? () => rejectPost.mutate({ postId }) : undefined}
+                />
+              )}
               {/* Title input */}
               <input
                 type="text"
@@ -362,11 +430,12 @@ function PostModalContent({
               {/* Rich text editor */}
               <RichTextEditor
                 value={contentJson || ''}
-                onChange={handleContentChange}
+                onDocumentChange={handleContentChange}
                 placeholder="Add more details... Type / for commands"
                 minHeight="200px"
                 disabled={updatePost.isPending}
                 borderless
+                toolbarPosition="bottom"
                 features={{
                   headings: true,
                   codeBlocks: true,
@@ -374,13 +443,15 @@ function PostModalContent({
                   blockquotes: true,
                   dividers: true,
                   images: true,
+                  videos: true,
                   tables: true,
                   embeds: true,
                   quackbackEmbeds: true,
                   bubbleMenu: true,
                   slashMenu: true,
                 }}
-                onImageUpload={uploadImage}
+                onImageUpload={uploadMedia}
+                onVideoUpload={uploadMedia}
               />
 
               {/* AI section — summary + similar posts */}
@@ -400,6 +471,7 @@ function PostModalContent({
               postId={postId}
               postTitle={post.title}
               canonicalPostId={post.canonicalPostId as PostId | undefined}
+              mergedPosts={post.mergedPosts}
               showDialog={showMergeDialog}
               onShowDialogChange={setShowMergeDialog}
             />
@@ -445,21 +517,31 @@ function PostModalContent({
                     statuses={statuses}
                     currentStatusId={post.statusId}
                     isTeamMember
-                    onDeleteComment={(commentId: CommentId) =>
+                    onDeleteComment={(commentId: PostCommentId) =>
                       deleteCommentMutation.mutate(commentId)
                     }
                     deletingCommentId={
                       deleteCommentMutation.isPending
-                        ? (deleteCommentMutation.variables as CommentId)
+                        ? (deleteCommentMutation.variables as PostCommentId)
                         : null
                     }
-                    onRestoreComment={(commentId: CommentId) =>
+                    onRestoreComment={(commentId: PostCommentId) =>
                       restoreCommentMutation.mutate(commentId)
                     }
+                    onImageUpload={uploadCommentMedia}
+                    canModerate={canModerate}
                     restoringCommentId={
                       restoreCommentMutation.isPending
-                        ? (restoreCommentMutation.variables as CommentId)
+                        ? (restoreCommentMutation.variables as PostCommentId)
                         : null
+                    }
+                    hasMoreComments={hasMoreComments}
+                    onLoadMoreComments={loadMoreComments}
+                    isLoadingMoreComments={isLoadingMoreComments}
+                    remainingCommentCount={
+                      post.commentsTotalRootCount != null
+                        ? Math.max(0, post.commentsTotalRootCount - post.comments.length)
+                        : undefined
                     }
                   />
                 </Suspense>
@@ -480,32 +562,36 @@ function PostModalContent({
               authorAvatarUrl={(post.principalId && post.avatarUrls?.[post.principalId]) || null}
               authorPrincipalId={post.principalId}
               createdAt={new Date(post.createdAt)}
+              eta={post.eta ?? null}
               tags={post.tags}
-              roadmaps={postRoadmaps}
               canEdit
+              showVoters
               allStatuses={statuses}
               allTags={tags}
-              allRoadmaps={roadmaps}
               allBoards={boards}
               onStatusChange={handleStatusChange}
+              onEtaChange={handleEtaChange}
               onTagsChange={handleTagsChange}
-              onRoadmapAdd={handleRoadmapAdd}
-              onRoadmapRemove={handleRoadmapRemove}
               onBoardChange={handleBoardChange}
-              isUpdating={isUpdating || !!pendingRoadmapId}
+              owner={currentOwner}
+              ownerCandidates={canSetOwner ? ownerCandidates : undefined}
+              onOwnerChange={canSetOwner ? handleOwnerChange : undefined}
+              isUpdating={isUpdating}
               hideSubscribe
               variant="card"
               manageActions={manageActions}
-              feedbackSource={feedbackSource}
             />
           </Suspense>
+
+          {/* Customer context from connected CRM integrations (WO-9), on demand. */}
+          <CustomerContextPanel email={post.authorEmail} />
         </div>
       </ScrollArea>
 
       {/* Footer */}
       <ModalFooter
         onCancel={onClose}
-        submitLabel={updatePost.isPending ? 'Saving...' : 'Save Changes'}
+        submitLabel={updatePost.isPending ? 'Saving...' : 'Save changes'}
         isPending={updatePost.isPending}
         submitType="button"
         onSubmit={handleSubmit}
@@ -536,6 +622,10 @@ function PostModalContent({
             toast.success('Post deleted')
             // Show warnings for failed cascade operations
             if (result.cascadeResults) {
+              if (result.cascadeResults.some((r) => r.success))
+                toast.message('Archive requests saved', {
+                  description: 'Review and finish them in each integration’s Sync history.',
+                })
               for (const r of result.cascadeResults) {
                 if (!r.success) {
                   toast.warning(`Failed to close ${r.integrationType} issue: ${r.error}`)
@@ -551,33 +641,4 @@ function PostModalContent({
       />
     </div>
   )
-}
-
-export function PostModal({ postId: urlPostId, currentUser }: PostModalProps) {
-  const { pathname, search } = useRouterState({ select: (s) => s.location })
-  const { open, validatedId, close, navigateTo } = useUrlModal<PostId>({
-    urlId: urlPostId,
-    idPrefix: 'post',
-    searchParam: 'post',
-    route: pathname,
-    search: search as Record<string, unknown>,
-  })
-
-  return (
-    <UrlModalShell
-      open={open}
-      onOpenChange={(o) => !o && close()}
-      srTitle="Edit post"
-      hasValidId={!!validatedId}
-    >
-      {validatedId && (
-        <PostModalContent
-          postId={validatedId}
-          currentUser={currentUser}
-          onNavigateToPost={navigateTo}
-          onClose={close}
-        />
-      )}
-    </UrlModalShell>
-  )
-}
+})

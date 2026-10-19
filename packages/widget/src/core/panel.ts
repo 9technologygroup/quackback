@@ -14,7 +14,30 @@ export interface PanelHandle {
   iframe: HTMLIFrameElement
   show(): void
   hide(): void
+  /** Grow/shrink the panel for long-form content (transitioned via CSS). */
+  setExpanded(expanded: boolean): void
+  /** Move the panel between bottom corners (rewrites the side-specific CSS). */
+  setPlacement(side: 'left' | 'right'): void
   destroy(): void
+}
+
+/** The frame's accessible name, in the visitor's language where known. */
+const FRAME_TITLE: Record<string, string> = {
+  ar: 'مساعدة',
+  de: 'Hilfe',
+  es: 'Ayuda',
+  fr: 'Aide',
+  pl: 'Pomoc',
+  pt: 'Ajuda',
+  ru: 'Помощь',
+  uk: 'Допомога',
+  zh: '帮助',
+  'zh-tw': '說明',
+}
+
+function frameTitle(locale: string | undefined): string {
+  const tag = (locale ?? '').toLowerCase()
+  return FRAME_TITLE[tag] ?? FRAME_TITLE[tag.split('-')[0]!] ?? 'Help'
 }
 
 export function createPanel(opts: PanelOptions): PanelHandle {
@@ -33,6 +56,9 @@ export function createPanel(opts: PanelOptions): PanelHandle {
 
   const panel = document.createElement('div')
   panel.className = 'quackback-panel quackback-widget-iframe-wrapper'
+  // Closed, the panel is only transparent: inert keeps its frame out of the
+  // host page's tab order and the accessibility tree until it opens.
+  panel.inert = true
   document.body.appendChild(panel)
 
   const iframe = document.createElement('iframe')
@@ -43,7 +69,7 @@ export function createPanel(opts: PanelOptions): PanelHandle {
     colorScheme: 'normal',
   })
   iframe.setAttribute('src', url)
-  iframe.setAttribute('title', 'Feedback Widget')
+  iframe.setAttribute('title', frameTitle(opts.locale))
   iframe.setAttribute(
     'sandbox',
     'allow-scripts allow-forms allow-same-origin allow-popups allow-downloads'
@@ -59,6 +85,7 @@ export function createPanel(opts: PanelOptions): PanelHandle {
     show() {
       if (open) return
       open = true
+      panel.inert = false
       panel.classList.remove('quackback-closing')
       backdrop.classList.remove('quackback-closing')
       void panel.offsetHeight // force reflow
@@ -68,6 +95,7 @@ export function createPanel(opts: PanelOptions): PanelHandle {
     hide() {
       if (!open) return
       open = false
+      panel.inert = true
       panel.classList.remove('quackback-open')
       panel.classList.add('quackback-closing')
       backdrop.classList.remove('quackback-open')
@@ -76,6 +104,12 @@ export function createPanel(opts: PanelOptions): PanelHandle {
         panel.classList.remove('quackback-closing')
         backdrop.classList.remove('quackback-closing')
       }, 300)
+    },
+    setExpanded(expanded) {
+      panel.classList.toggle('quackback-expanded', expanded)
+    },
+    setPlacement(side) {
+      ensureStyles(side)
     },
     destroy() {
       panel.remove()

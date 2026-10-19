@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { CommentId, PrincipalId } from '@quackback/ids'
+import type { PostCommentId, PrincipalId } from '@quackback/ids'
 import {
   ForbiddenError,
   NotFoundError,
@@ -39,7 +39,9 @@ vi.mock('@/lib/server/domains/comments/comment.query', () => ({
   getCommentById: (...args: unknown[]) => mockGetCommentById(...args),
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: {
@@ -47,7 +49,6 @@ vi.mock('@/lib/server/db', () => ({
       },
     },
   },
-  principal: { id: 'id', userId: 'user_id' },
   eq: vi.fn(),
 }))
 
@@ -68,7 +69,7 @@ const COMMENT_ID_STR = 'comment_test123'
 const PRINCIPAL_ID = 'principal_1' as PrincipalId
 
 const mockComment = {
-  id: COMMENT_ID_STR as unknown as CommentId,
+  id: COMMENT_ID_STR as unknown as PostCommentId,
   postId: 'post_test',
   parentId: null,
   content: 'Original comment',
@@ -102,7 +103,11 @@ function makeRequest(method: string, body?: unknown): Request {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockWithApiKeyAuth.mockResolvedValue({ principalId: PRINCIPAL_ID, role: 'admin' })
+  mockWithApiKeyAuth.mockResolvedValue({
+    principalId: PRINCIPAL_ID,
+    role: 'member',
+    permissions: new Set(['comment.edit']),
+  })
   mockParseTypeId.mockImplementation((v: unknown) => v)
   mockUserEditComment.mockResolvedValue(mockUpdatedComment)
   mockSoftDeleteComment.mockResolvedValue(undefined)
@@ -134,7 +139,7 @@ describe('PATCH /api/v1/comments/:commentId', () => {
     expect(mockUserEditComment).toHaveBeenCalledWith(
       COMMENT_ID_STR,
       'Hello world',
-      expect.objectContaining({ principalId: PRINCIPAL_ID }),
+      { principalId: PRINCIPAL_ID, role: 'member', permissions: ['comment.edit'] },
       expect.objectContaining({ contentJson: undefined })
     )
   })
@@ -223,6 +228,12 @@ describe('DELETE /api/v1/comments/:commentId', () => {
     const request = makeRequest('DELETE')
     const response = await handlers.DELETE({ request, params: { commentId: COMMENT_ID_STR } })
     expect(response.status).toBe(204)
+    // The key's resolved authority, not a re-read of its principal's stored role.
+    expect(mockSoftDeleteComment).toHaveBeenCalledWith(COMMENT_ID_STR, {
+      principalId: PRINCIPAL_ID,
+      role: 'member',
+      permissions: ['comment.edit'],
+    })
   })
 
   it('returns 403 when softDeleteComment throws ForbiddenError', async () => {

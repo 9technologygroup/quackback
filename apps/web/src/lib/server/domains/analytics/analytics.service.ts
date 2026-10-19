@@ -12,13 +12,14 @@ import {
   lte,
   and,
   isNull,
+  isNotNull,
   inArray,
   count,
   ne,
   desc,
   posts,
-  votes,
-  comments,
+  postVotes,
+  postComments,
   principal,
   postStatuses,
   boards,
@@ -27,6 +28,7 @@ import {
 } from '@/lib/server/db'
 import { toIsoDateOnly } from '@/lib/shared/utils/date'
 import { logger } from '@/lib/server/logger'
+import { notTestPrincipal } from '@/lib/server/test-data'
 
 const log = logger.child({ component: 'analytics' })
 
@@ -54,20 +56,36 @@ export async function refreshAnalytics(): Promise<void> {
       .select({ value: count() })
       .from(posts)
       .where(
-        and(gte(posts.createdAt, dayStart), lte(posts.createdAt, dayEnd), isNull(posts.deletedAt))
+        and(
+          gte(posts.createdAt, dayStart),
+          lte(posts.createdAt, dayEnd),
+          isNull(posts.deletedAt),
+          notTestPrincipal(posts.principalId)
+        )
       ),
     db
       .select({ value: count() })
-      .from(votes)
-      .where(and(gte(votes.createdAt, dayStart), lte(votes.createdAt, dayEnd))),
-    db
-      .select({ value: count() })
-      .from(comments)
+      .from(postVotes)
+      .innerJoin(posts, eq(posts.id, postVotes.postId))
       .where(
         and(
-          gte(comments.createdAt, dayStart),
-          lte(comments.createdAt, dayEnd),
-          isNull(comments.deletedAt)
+          gte(postVotes.createdAt, dayStart),
+          lte(postVotes.createdAt, dayEnd),
+          notTestPrincipal(posts.principalId),
+          notTestPrincipal(postVotes.principalId)
+        )
+      ),
+    db
+      .select({ value: count() })
+      .from(postComments)
+      .innerJoin(posts, eq(posts.id, postComments.postId))
+      .where(
+        and(
+          gte(postComments.createdAt, dayStart),
+          lte(postComments.createdAt, dayEnd),
+          isNull(postComments.deletedAt),
+          notTestPrincipal(posts.principalId),
+          notTestPrincipal(postComments.principalId)
         )
       ),
     db
@@ -78,20 +96,30 @@ export async function refreshAnalytics(): Promise<void> {
           gte(principal.createdAt, dayStart),
           lte(principal.createdAt, dayEnd),
           ne(principal.type, 'anonymous'),
-          eq(principal.role, 'user')
+          eq(principal.role, 'user'),
+          // A signup is a person with an account. The accountless principals
+          // that share role='user' — the deleted-user placeholder authored
+          // content is re-attributed to — are bookkeeping, not arrivals.
+          isNotNull(principal.userId),
+          notTestPrincipal(principal.id)
         )
       ),
     db
       .select({ slug: postStatuses.slug, value: count() })
       .from(posts)
       .innerJoin(postStatuses, eq(posts.statusId, postStatuses.id))
-      .where(isNull(posts.deletedAt))
+      .where(and(isNull(posts.deletedAt), notTestPrincipal(posts.principalId)))
       .groupBy(postStatuses.slug),
     db
       .select({ boardId: posts.boardId, value: count() })
       .from(posts)
       .where(
-        and(gte(posts.createdAt, dayStart), lte(posts.createdAt, dayEnd), isNull(posts.deletedAt))
+        and(
+          gte(posts.createdAt, dayStart),
+          lte(posts.createdAt, dayEnd),
+          isNull(posts.deletedAt),
+          notTestPrincipal(posts.principalId)
+        )
       )
       .groupBy(posts.boardId),
   ])
@@ -162,17 +190,30 @@ async function refreshTopPosts(): Promise<void> {
       .select({
         postId: posts.id,
         title: posts.title,
-        voteCount: count(votes.id),
+        voteCount: count(postVotes.id),
         boardName: boards.name,
         statusName: postStatuses.name,
       })
       .from(posts)
-      .leftJoin(votes, and(eq(votes.postId, posts.id), gte(votes.createdAt, since)))
+      .leftJoin(
+        postVotes,
+        and(
+          eq(postVotes.postId, posts.id),
+          gte(postVotes.createdAt, since),
+          notTestPrincipal(postVotes.principalId)
+        )
+      )
       .leftJoin(boards, eq(posts.boardId, boards.id))
       .leftJoin(postStatuses, eq(posts.statusId, postStatuses.id))
-      .where(and(isNull(posts.deletedAt), gte(posts.createdAt, since)))
+      .where(
+        and(
+          isNull(posts.deletedAt),
+          gte(posts.createdAt, since),
+          notTestPrincipal(posts.principalId)
+        )
+      )
       .groupBy(posts.id, posts.title, boards.name, postStatuses.name)
-      .orderBy(desc(count(votes.id)))
+      .orderBy(desc(count(postVotes.id)))
       .limit(10)
 
     // Also get comment counts for these posts
@@ -181,18 +222,19 @@ async function refreshTopPosts(): Promise<void> {
     if (postIds.length > 0) {
       const commentRows = await db
         .select({
-          postId: comments.postId,
+          postId: postComments.postId,
           value: count(),
         })
-        .from(comments)
+        .from(postComments)
         .where(
           and(
-            inArray(comments.postId, postIds),
-            gte(comments.createdAt, since),
-            isNull(comments.deletedAt)
+            inArray(postComments.postId, postIds),
+            gte(postComments.createdAt, since),
+            isNull(postComments.deletedAt),
+            notTestPrincipal(postComments.principalId)
           )
         )
-        .groupBy(comments.postId)
+        .groupBy(postComments.postId)
 
       for (const row of commentRows) {
         commentCounts[row.postId] = row.value

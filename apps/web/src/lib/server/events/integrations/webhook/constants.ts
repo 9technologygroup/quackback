@@ -58,6 +58,21 @@ export const WEBHOOK_EVENT_CONFIG = [
     description: 'When a merged post is separated back out',
   },
   {
+    id: 'post.voted',
+    label: 'Post Voted',
+    description: 'When a user votes on a post',
+  },
+  {
+    id: 'post.mentioned',
+    label: 'Post Mention',
+    description: 'When a post @-mentions a teammate or user',
+  },
+  {
+    id: 'post.owner_assigned',
+    label: 'Post Owner Assigned',
+    description: 'When a post is assigned to a new owner',
+  },
+  {
     id: 'comment.created',
     label: 'New Comment',
     description: 'When a comment is posted',
@@ -76,6 +91,36 @@ export const WEBHOOK_EVENT_CONFIG = [
     id: 'changelog.published',
     label: 'Changelog Published',
     description: 'When a changelog entry is published',
+  },
+  {
+    id: 'status.incident_created',
+    label: 'Incident Created',
+    description: 'When an incident is published on the status page',
+  },
+  {
+    id: 'status.incident_updated',
+    label: 'Incident Updated',
+    description: 'When an update is posted to a status page incident',
+  },
+  {
+    id: 'status.maintenance_scheduled',
+    label: 'Maintenance Scheduled',
+    description: 'When a maintenance window is scheduled on the status page',
+  },
+  {
+    id: 'status.maintenance_started',
+    label: 'Maintenance Started',
+    description: 'When a scheduled maintenance window begins',
+  },
+  {
+    id: 'status.maintenance_completed',
+    label: 'Maintenance Completed',
+    description: 'When a maintenance window ends',
+  },
+  {
+    id: 'status.component_changed',
+    label: 'Component Status Changed',
+    description: 'When a status page component changes status',
   },
   {
     id: 'conversation.created',
@@ -98,6 +143,11 @@ export const WEBHOOK_EVENT_CONFIG = [
     description: 'When a conversation priority is changed',
   },
   {
+    id: 'conversation.attribute_changed',
+    label: 'Conversation Attribute Changed',
+    description: 'When a conversation attribute is set or cleared by AI, a teammate, or a customer',
+  },
+  {
     id: 'conversation.csat_submitted',
     label: 'CSAT Submitted',
     description: 'When a visitor submits a satisfaction rating',
@@ -106,6 +156,43 @@ export const WEBHOOK_EVENT_CONFIG = [
     id: 'conversation.csat_comment_added',
     label: 'CSAT Comment Added',
     description: 'When a visitor adds the optional comment to a satisfaction rating',
+  },
+  {
+    id: 'assistant.handed_off',
+    label: 'Assistant Handed Off',
+    description: 'When the AI assistant hands a conversation to the team',
+  },
+  {
+    id: 'assistant.resolved',
+    label: 'Assistant Resolved',
+    description: 'When the AI assistant settles a conversation without handing off',
+  },
+  {
+    id: 'conversation.note_mentioned',
+    label: 'Note Mention',
+    description: 'When an internal note @-mentions a teammate (private content — opt-in)',
+  },
+  {
+    id: 'conversation.customer_unresponsive',
+    label: 'Customer Unresponsive',
+    description:
+      'When the customer has been silent for a workflow-configured time after the last teammate or AI reply',
+  },
+  {
+    id: 'conversation.teammate_unresponsive',
+    label: 'Teammate Unresponsive',
+    description:
+      "When no teammate has replied for a workflow-configured time after the customer's last message",
+  },
+  {
+    id: 'sla.approaching_breach',
+    label: 'SLA Approaching Breach',
+    description: 'When an applied SLA clock enters its lead-time warning window',
+  },
+  {
+    id: 'sla.breached',
+    label: 'SLA Breached',
+    description: 'When an applied SLA clock passes its due date unsettled',
   },
   {
     id: 'message.created',
@@ -121,6 +208,56 @@ export const WEBHOOK_EVENT_CONFIG = [
     id: 'message.deleted',
     label: 'Message Deleted',
     description: 'When a public message is deleted',
+  },
+  {
+    id: 'message.updated',
+    label: 'Message Edited',
+    description: 'When the author edits a public message',
+  },
+  {
+    id: 'ticket.created',
+    label: 'Ticket Created',
+    description: 'When a ticket is opened',
+  },
+  {
+    id: 'ticket.status_changed',
+    label: 'Ticket Status Changed',
+    description: 'When a ticket moves between open, pending, and closed',
+  },
+  {
+    id: 'ticket.assigned',
+    label: 'Ticket Assigned',
+    description: 'When a ticket is assigned to (or unassigned from) an agent or team',
+  },
+  {
+    id: 'ticket.replied',
+    label: 'Ticket Reply',
+    description: 'When an agent or the requester replies on a ticket thread',
+  },
+  {
+    id: 'ticket.note_added',
+    label: 'Ticket Internal Note',
+    description: 'When an agent adds an internal note to a ticket (private content — opt-in)',
+  },
+  {
+    id: 'ticket.external_status_changed',
+    label: 'Linked Issue Status Changed',
+    description: 'When a tracker issue linked to a ticket changes status on the external platform',
+  },
+  {
+    id: 'approval.requested',
+    label: 'Approval Requested',
+    description: 'When an AI assistant or API key asks a person to approve a change',
+  },
+  {
+    id: 'approval.decided',
+    label: 'Approval Decided',
+    description: 'When a person approves or rejects a requested change',
+  },
+  {
+    id: 'approval.applied',
+    label: 'Approval Applied',
+    description: 'When an approved change is applied',
   },
 ] as const satisfies ReadonlyArray<{ id: WebhookEventType; label: string; description: string }>
 
@@ -211,6 +348,7 @@ export interface WebhookTarget {
 }
 
 export interface WebhookConfig {
-  secret: string
+  // The signing secret is not carried in the enqueued job payload; it is loaded
+  // and decrypted by webhook id at delivery time so it never rests in the queue.
   webhookId: WebhookId
 }

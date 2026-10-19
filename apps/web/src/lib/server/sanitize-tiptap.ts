@@ -11,8 +11,30 @@
  */
 
 import { isValidTypeId } from '@quackback/ids'
-import { sanitizeUrl, sanitizeImageUrl, safePositiveInt } from '@/lib/shared/utils/sanitize'
-import { isTrustedAttachmentUrl } from '@/lib/server/storage/trusted-url'
+import {
+  sanitizeUrl,
+  sanitizeImageUrl,
+  sanitizeMediaUrl,
+  safePositiveInt,
+  sanitizeOrderedListStart,
+} from '@/lib/shared/utils/sanitize'
+import { namesPipelineFile, isTrustedInlineMediaUrl } from '@/lib/server/storage/trusted-url'
+import { normalizeVideoMimeType } from '@/lib/shared/storage-config'
+
+function isExtraTrustedImageHost(rawSrc: string, extraHosts: string[] | undefined): boolean {
+  if (!extraHosts?.length) return false
+  try {
+    const u = new URL(rawSrc)
+    if (u.protocol !== 'https:') return false
+    const host = u.hostname.toLowerCase()
+    return extraHosts.some((allowed) => {
+      const a = allowed.toLowerCase()
+      return host === a || host.endsWith(`.${a}`)
+    })
+  } catch {
+    return false
+  }
+}
 import { ARTICLE_SLUG_RE } from '@/lib/shared/embeds/parse-embed-url'
 import type { TiptapContent } from '@/lib/shared/schemas/posts'
 
@@ -36,6 +58,7 @@ const ALLOWED_NODE_TYPES = new Set([
   'image',
   'resizableImage',
   'youtube',
+  'video',
   'horizontalRule',
   'hardBreak',
   'table',
@@ -93,13 +116,29 @@ function sanitizeMark(mark: TiptapMark): TiptapMark | null {
   return { type: mark.type }
 }
 
+export interface SanitizeTiptapOptions {
+  /**
+   * Restrict inline image srcs (`image`/`resizableImage`) to this workspace's
+   * own upload origins, the same guard `chatImage` always gets. Set on
+   * visitor/requester-authored content: an arbitrary external src would let
+   * the author aim a tracking pixel at whichever agent opens the thread.
+   * Agent-authored content stays permissive (external images are legitimate
+   * paste targets there, as in posts).
+   */
+  restrictImagesToTrustedOrigins?: boolean
+  /** Extra hostnames (or parent domains) allowed when image restriction is on.
+   *  GitHub ingest uses this for `*.githubusercontent.com` user-content images. */
+  extraTrustedImageHosts?: string[]
+}
+
 /**
  * Sanitize attributes for a specific node type.
  * Returns a clean attrs object with only safe, validated values.
  */
 function sanitizeAttrs(
   type: string,
-  attrs: Record<string, unknown> | undefined
+  attrs: Record<string, unknown> | undefined,
+  opts?: SanitizeTiptapOptions
 ): Record<string, unknown> | undefined {
   if (!attrs) return undefined
 
@@ -127,7 +166,20 @@ function sanitizeAttrs(
 
     case 'image':
     case 'resizableImage': {
-      const src = sanitizeImageUrl(String(attrs.src ?? ''))
+      const rawSrc = String(attrs.src ?? '')
+      // Pipeline files are attachments, attached by id, never inline.
+      if (namesPipelineFile(rawSrc)) return { src: '', alt: '' }
+      // Untrusted senders may only reference our own upload pipeline — mirror
+      // the chatImage guard below. Clearing (not dropping) keeps the node
+      // shape intact so the serializer renders nothing.
+      if (
+        opts?.restrictImagesToTrustedOrigins &&
+        !isTrustedInlineMediaUrl(rawSrc) &&
+        !isExtraTrustedImageHost(rawSrc, opts.extraTrustedImageHosts)
+      ) {
+        return { src: '', alt: '' }
+      }
+      const src = sanitizeImageUrl(rawSrc)
       if (!src) return { src: '', alt: '' }
       const result: Record<string, unknown> = { src, alt: String(attrs.alt ?? '').slice(0, 500) }
       if (attrs.width !== undefined) result.width = safePositiveInt(attrs.width, 0)
@@ -135,20 +187,39 @@ function sanitizeAttrs(
       // Remove zero-value dimensions
       if (result.width === 0) delete result.width
       if (result.height === 0) delete result.height
+      // `data-keep-ratio` (tiptap-extension-resizable-image) locks the aspect
+      // ratio while a resize handle is dragged — a plain boolean, safe to coerce.
+      if (attrs['data-keep-ratio'] !== undefined) {
+        result['data-keep-ratio'] = Boolean(attrs['data-keep-ratio'])
+      }
       return result
     }
 
     case 'chatImage': {
-      // Inline chat image. Unlike the post/comment `image` node, a chat image
+      // Inline conversation image. Unlike the post/comment `image` node, a conversation image
       // may ONLY point at our own upload pipeline (mirrors the attachment URL
       // guard) — a visitor must not be able to embed a third-party tracking
       // pixel that fires against an agent's browser. An untrusted/empty/unsafe
       // src clears both attrs so the serializer renders nothing.
       const rawSrc = String(attrs.src ?? '')
-      if (!isTrustedAttachmentUrl(rawSrc)) return { src: '', alt: '' }
+      if (!isTrustedInlineMediaUrl(rawSrc)) return { src: '', alt: '' }
       const src = sanitizeImageUrl(rawSrc)
       if (!src) return { src: '', alt: '' }
       return { src, alt: String(attrs.alt ?? '').slice(0, 500) }
+    }
+
+    case 'video': {
+      const rawSrc = String(attrs.src ?? '')
+      // Native video is always an upload, never a remote embed. Keeping it on
+      // the workspace's storage origin prevents a post from becoming a hidden
+      // third-party tracking request.
+      if (!isTrustedInlineMediaUrl(rawSrc)) {
+        return { src: '', mimeType: '', title: '' }
+      }
+      const src = sanitizeMediaUrl(rawSrc)
+      if (!src) return { src: '', mimeType: '', title: '' }
+      const mimeType = normalizeVideoMimeType(attrs.mimeType)
+      return { src, mimeType, title: String(attrs.title ?? '').slice(0, 500) }
     }
 
     case 'taskItem':
@@ -168,7 +239,7 @@ function sanitizeAttrs(
 
     case 'orderedList':
       return attrs.start !== undefined
-        ? { start: safePositiveInt(attrs.start, 1, 999999) }
+        ? { start: sanitizeOrderedListStart(attrs.start) }
         : undefined
 
     case 'mention': {
@@ -185,8 +256,8 @@ function sanitizeAttrs(
     case 'quackbackEmbed': {
       // A Quackback link embed carries only `{ kind, id }`. `kind` must be one
       // of the embeddable entity types, and `id` must be valid for that kind:
-      //   - post / changelog: a real TypeID (charset + round-trip verified)
-      //   - article:          a help-center article slug (lowercase alphanumeric + hyphens)
+      //   - post / changelog / ticket: a real TypeID (charset + round-trip verified)
+      //   - article:                   a help-center article slug (lowercase alphanumeric + hyphens)
       // Anything else strips attrs → the atom node survives but the serializer
       // renders nothing, so a malformed embed can never display.
       const kind = attrs.kind
@@ -197,7 +268,10 @@ function sanitizeAttrs(
         if (!ARTICLE_SLUG_RE.test(id)) return undefined
         return { kind, id }
       }
-      if ((kind !== 'post' && kind !== 'changelog') || !isValidTypeId(id, kind)) {
+      if (
+        (kind !== 'post' && kind !== 'changelog' && kind !== 'ticket') ||
+        !isValidTypeId(id, kind)
+      ) {
         return undefined
       }
       return { kind, id }
@@ -236,7 +310,8 @@ function sanitizeNode(
   depth = 0,
   // Shared mutable counter (created once at the top call, threaded through the
   // recursion) bounding total node count across the whole tree.
-  budget: { count: number } = { count: 0 }
+  budget: { count: number } = { count: 0 },
+  opts?: SanitizeTiptapOptions
 ): TiptapNode | null {
   // Prevent deeply nested content (potential DoS or stack overflow)
   if (depth > 20) return null
@@ -257,7 +332,7 @@ function sanitizeNode(
   }
 
   // Sanitize attributes
-  const attrs = sanitizeAttrs(node.type, node.attrs)
+  const attrs = sanitizeAttrs(node.type, node.attrs, opts)
   if (attrs !== undefined) {
     sanitized.attrs = attrs
   }
@@ -273,7 +348,7 @@ function sanitizeNode(
   // Recursively sanitize child content
   if (node.content && Array.isArray(node.content)) {
     const sanitizedContent = node.content
-      .map((child) => sanitizeNode(child, depth + 1, budget))
+      .map((child) => sanitizeNode(child, depth + 1, budget, opts))
       .filter((child): child is TiptapNode => child !== null)
     if (sanitizedContent.length > 0) {
       sanitized.content = sanitizedContent
@@ -292,11 +367,14 @@ function sanitizeNode(
  * @param content - Raw TipTap JSON from client
  * @returns Sanitized TipTap JSON safe for storage and rendering
  */
-export function sanitizeTiptapContent(content: {
-  type: string
-  content?: unknown[]
-}): TiptapContent {
-  const sanitized = sanitizeNode(content as TiptapNode)
+export function sanitizeTiptapContent(
+  content: {
+    type: string
+    content?: unknown[]
+  },
+  opts?: SanitizeTiptapOptions
+): TiptapContent {
+  const sanitized = sanitizeNode(content as TiptapNode, 0, { count: 0 }, opts)
   if (!sanitized || sanitized.type !== 'doc') {
     return { type: 'doc' } as TiptapContent
   }

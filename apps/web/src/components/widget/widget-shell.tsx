@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { AnimatePresence, m, useReducedMotion } from 'framer-motion'
 import {
   ArrowLeftIcon,
+  ArrowsPointingInIcon,
+  ArrowsPointingOutIcon,
   XMarkIcon,
   HomeIcon,
+  ChatBubbleLeftRightIcon,
   LightBulbIcon,
   NewspaperIcon,
   QuestionMarkCircleIcon,
+  TicketIcon,
   ArrowTopRightOnSquareIcon,
 } from '@heroicons/react/24/solid'
 import { FormattedMessage, useIntl } from 'react-intl'
@@ -13,10 +18,15 @@ import { cn } from '@/lib/shared/utils'
 import { Avatar } from '@/components/ui/avatar'
 import { UserStatsBar } from '@/components/shared/user-stats'
 import { getWidgetAuthHeaders, generateOneTimeToken } from '@/lib/client/widget-auth'
+import { widgetGetUserStatsFn } from '@/lib/server/functions/widget/user'
 import { sendToHost } from '@/lib/client/widget-bridge'
 import { useWidgetAuth } from './widget-auth-provider'
+import { useMessengerUnread } from './use-messenger-unread'
+import { useChangelogUnread } from './use-changelog-unread'
+import { useTicketStageBadge } from './use-ticket-stage-badge'
+import { hasOpenSuggestionPopup } from '@/components/ui/suggestion-popup-marker'
 
-import { type WidgetTab, type EnabledTabs, visibleTabs } from './widget-nav'
+import { type WidgetTab, type EnabledTabs, visibleTabsForVisitor } from './widget-nav'
 export type { WidgetTab }
 
 const TAB_CONFIG: {
@@ -27,22 +37,34 @@ const TAB_CONFIG: {
 }[] = [
   { tab: 'home', icon: HomeIcon, labelId: 'widget.shell.tab.home', defaultLabel: 'Home' },
   {
+    tab: 'messages',
+    icon: ChatBubbleLeftRightIcon,
+    labelId: 'widget.shell.tab.messages',
+    defaultLabel: 'Messages',
+  },
+  {
+    tab: 'tickets',
+    icon: TicketIcon,
+    labelId: 'widget.shell.tab.tickets',
+    defaultLabel: 'Tickets',
+  },
+  {
     tab: 'feedback',
     icon: LightBulbIcon,
     labelId: 'widget.shell.tab.feedback',
     defaultLabel: 'Feedback',
   },
   {
-    tab: 'changelog',
-    icon: NewspaperIcon,
-    labelId: 'widget.shell.tab.changelog',
-    defaultLabel: 'Changelog',
-  },
-  {
     tab: 'help',
     icon: QuestionMarkCircleIcon,
     labelId: 'widget.shell.tab.help',
     defaultLabel: 'Help',
+  },
+  {
+    tab: 'changelog',
+    icon: NewspaperIcon,
+    labelId: 'widget.shell.tab.changelog',
+    defaultLabel: 'Changelog',
   },
 ]
 
@@ -69,6 +91,24 @@ interface WidgetShellProps {
    * separate domain).
    */
   portalOrigin?: string
+  /** Workspace logo shown top-left on Home (null hides it). */
+  logoUrl?: string | null
+  /** Extra header content beside the back button (e.g. the messenger thread's
+   *  assistant identity), keeping the widget to a single header row. */
+  headerContent?: ReactNode
+  /** Full-panel backdrop layer (the Home hero) rendered behind the header row
+   *  and body; the tab bar stays solid above it. */
+  backdrop?: ReactNode
+  /** Hide the bottom tab bar (immersive views like the conversation thread). */
+  hideTabBar?: boolean
+  /** Whether the host panel is expanded for the current view — the tab bar's
+   *  return fade waits for the panel's shrink transition to settle. */
+  panelExpanded?: boolean
+  /** Manual panel-size control beside the close button (expandable views on
+   *  desktop hosts only). Collapsing is sticky — it turns auto-expansion off. */
+  expandControl?: { expanded: boolean; onToggle: () => void }
+  /** Self-hosted always shows the badge. Cloud hides it only after purchase. */
+  showPoweredBy?: boolean
   children: ReactNode
 }
 
@@ -77,25 +117,112 @@ export function WidgetShell({
   activeTab,
   onTabChange,
   onBack,
-  enabledTabs = { feedback: true, changelog: false, help: false, chat: false },
+  enabledTabs = { feedback: true, changelog: false, help: false, messages: false },
   portalAccess,
   portalOrigin,
+  logoUrl = null,
+  headerContent,
+  backdrop,
+  hideTabBar = false,
+  panelExpanded = false,
+  expandControl,
+  showPoweredBy = true,
   children,
 }: WidgetShellProps) {
   const intl = useIntl()
-  const tabsToShow = visibleTabs(enabledTabs)
-  const showTabBar = tabsToShow.length > 1
-  const { user, isIdentified, hmacRequired, closeWidget } = useWidgetAuth()
+  // Tickets whose stage moved since the requester last opened the Tickets tab
+  // badge the launcher (and the tab icon) until they do. Also tells us whether
+  // this visitor has any tickets — the bar never shows an empty Tickets tab,
+  // and withholds the slot (keeping the rest of the bar stable) until known.
+  const { unread: ticketStageUnread, hasTickets } = useTicketStageBadge(
+    enabledTabs.tickets ?? false
+  )
+  const tabsToShow = visibleTabsForVisitor(enabledTabs, hasTickets)
+  const showTabBar = tabsToShow.length > 1 && !hideTabBar
+  // Total unread across all the visitor's conversations, for the Messages tab
+  // badge (only fetched when that tab is actually shown).
+  const messengerUnread = useMessengerUnread(enabledTabs.messages ?? false)
+  // Newly published changelog entries badge the launcher until the visitor
+  // opens the changelog surface (which advances their seen marker).
+  const { unread: changelogUnread } = useChangelogUnread(enabledTabs.changelog ?? false)
+  // Mirror the combined total to the host so the floating launcher shows the
+  // same badge while the widget is closed (the iframe keeps polling even when
+  // hidden).
+  useEffect(() => {
+    sendToHost({
+      type: 'quackback:unread',
+      count: messengerUnread + changelogUnread + ticketStageUnread,
+    })
+  }, [messengerUnread, changelogUnread, ticketStageUnread])
+  const reduceMotion = useReducedMotion()
+  // When the bar was hidden for an EXPANDED view, its return waits for the
+  // host panel's shrink transition (~520ms) before fading in; returning from
+  // a compact immersive view (the thread) fades back almost immediately.
+  const hiddenWhileExpandedRef = useRef(false)
+  useEffect(() => {
+    if (hideTabBar) hiddenWhileExpandedRef.current = panelExpanded
+  }, [hideTabBar, panelExpanded])
+  // `hidden` is a dynamic variant so the exit can read the LATEST expansion
+  // state via AnimatePresence's `custom` (the exiting element's own props are
+  // frozen at its last visible render, when panelExpanded was still false).
+  // On expand the panel grows, so the bar clears the frame at once — a
+  // lingering fade would sit awkwardly over the growing canvas; the compact
+  // immersive thread keeps a short fade out.
+  const tabBarVariants = {
+    visible: {
+      opacity: 1,
+      transition: reduceMotion
+        ? { duration: 0 }
+        : {
+            delay: hiddenWhileExpandedRef.current ? 0.55 : 0.08,
+            duration: 0.25,
+            ease: 'easeOut' as const,
+          },
+    },
+    hidden: (expanded: boolean) => ({
+      opacity: 0,
+      transition:
+        reduceMotion || expanded ? { duration: 0 } : { duration: 0.16, ease: 'easeIn' as const },
+    }),
+  }
+  const { user, isIdentified, hmacRequired, canPortalHandoff, closeWidget } = useWidgetAuth()
 
-  // Global Escape key handler — close widget from anywhere
+  const onHome = activeTab === 'home' && !onBack
+
+  // Global Escape closes the widget — but only when nothing closer owns the
+  // key. A focused field (search box, composer) gets the first press: it
+  // either handles it itself (and preventDefaults) or is blurred, so a second
+  // press closes. Popovers (Radix Select, menus) preventDefault on dismiss;
+  // that runs in the target phase, after this capture listener, so the check
+  // is deferred to a microtask, after the whole dispatch has finished.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
+      if (e.key !== 'Escape') return
+      // Captured before the editor runs: dismissing a slash / emoji / mention
+      // popup removes it from the DOM synchronously, so by the microtask it
+      // is already gone.
+      const suggestionWasOpen = hasOpenSuggestionPopup()
+      queueMicrotask(() => {
+        const target = e.target instanceof HTMLElement ? e.target : null
+        if (target?.isContentEditable) {
+          // The press was spent closing a suggestion popup: keep the draft
+          // focused. Otherwise ProseMirror swallows Escape (preventDefault)
+          // without doing anything visible, so the composer would trap the
+          // key: blur it and let the next press close.
+          if (suggestionWasOpen) return
+          target.blur()
+          return
+        }
+        if (e.defaultPrevented) return
+        if (target?.closest('input, textarea, select, [role="dialog"]')) {
+          target.blur()
+          return
+        }
         closeWidget()
-      }
+      })
     }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
+    document.addEventListener('keydown', handleKeyDown, true)
+    return () => document.removeEventListener('keydown', handleKeyDown, true)
   }, [closeWidget])
 
   // "Go to portal" CTA — shown only when ALL three conditions hold:
@@ -110,6 +237,13 @@ export function WidgetShell({
   const [portalCtaError, setPortalCtaError] = useState(false)
   const handleGoToPortal = useCallback(async () => {
     setPortalCtaError(false)
+    const origin = portalOrigin || window.location.origin
+    // Teammates skip OTT mint entirely — a portal cookie would replace a
+    // dashboard login. Send them to the site unsigned.
+    if (!canPortalHandoff) {
+      sendToHost({ type: 'quackback:navigate', url: `${origin}/?auth=signin` })
+      return
+    }
     const ott = await generateOneTimeToken()
     if (!ott) {
       setPortalCtaError(true)
@@ -118,21 +252,28 @@ export function WidgetShell({
     // Prefer the server-resolved portal origin so the handoff URL targets the
     // portal host — not the widget iframe's origin, which may differ in
     // self-hosted setups where the widget is served from a separate domain.
-    const origin = portalOrigin || window.location.origin
     const portalUrl = `${origin}/auth/widget-handoff?ott=${encodeURIComponent(ott)}`
     sendToHost({ type: 'quackback:navigate', url: portalUrl })
-  }, [])
+  }, [canPortalHandoff, portalOrigin])
 
   return (
-    <div className="flex flex-col h-full bg-background text-foreground overflow-x-hidden">
-      <div className="relative flex items-center justify-between gap-2 px-4 py-3 shrink-0">
-        {/* Left: back button on detail views. */}
-        <div className="flex items-center gap-1">
+    <div className="relative flex flex-col h-full bg-background text-foreground overflow-x-hidden">
+      {/* The Home hero backdrop fills the panel behind the header row and
+          body; the header/content render transparently over it. */}
+      {backdrop}
+      <div className="relative z-10 flex items-center justify-between gap-2 px-4 py-3 shrink-0">
+        {/* Left: back button on detail views; workspace logo on Home. min-w-0 so
+            header content (presence copy) truncates instead of pushing the
+            right-zone controls. */}
+        <div className="flex min-w-0 items-center gap-1">
+          {onHome && logoUrl && (
+            <img src={logoUrl} alt="" className="h-6 max-w-[120px] object-contain" />
+          )}
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted transition-colors"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-muted transition-colors"
               aria-label={intl.formatMessage({
                 id: 'widget.shell.aria.goBack',
                 defaultMessage: 'Go back',
@@ -141,6 +282,7 @@ export function WidgetShell({
               <ArrowLeftIcon className="w-5 h-5 text-muted-foreground" />
             </button>
           )}
+          {headerContent}
         </div>
 
         {/* Center: the title is absolutely centered on the header midpoint so it
@@ -155,6 +297,10 @@ export function WidgetShell({
                 id="widget.shell.heading.feedback"
                 defaultMessage="Share your ideas"
               />
+            ) : activeTab === 'messages' ? (
+              <FormattedMessage id="widget.shell.heading.messages" defaultMessage="Messages" />
+            ) : activeTab === 'tickets' ? (
+              <FormattedMessage id="widget.shell.heading.tickets" defaultMessage="Your tickets" />
             ) : activeTab === 'help' ? (
               <FormattedMessage id="widget.shell.heading.help" defaultMessage="Help & Support" />
             ) : (
@@ -180,10 +326,34 @@ export function WidgetShell({
             </button>
           )}
           {user && <UserAvatarPopover user={user} />}
+          {expandControl && (
+            <button
+              type="button"
+              onClick={expandControl.onToggle}
+              className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted transition-colors"
+              aria-label={
+                expandControl.expanded
+                  ? intl.formatMessage({
+                      id: 'widget.shell.aria.collapse',
+                      defaultMessage: 'Collapse widget',
+                    })
+                  : intl.formatMessage({
+                      id: 'widget.shell.aria.expand',
+                      defaultMessage: 'Expand widget',
+                    })
+              }
+            >
+              {expandControl.expanded ? (
+                <ArrowsPointingInIcon className="w-4.5 h-4.5 text-muted-foreground" />
+              ) : (
+                <ArrowsPointingOutIcon className="w-4.5 h-4.5 text-muted-foreground" />
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={closeWidget}
-            className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-muted"
             aria-label={intl.formatMessage({
               id: 'widget.shell.aria.close',
               defaultMessage: 'Close feedback widget',
@@ -203,63 +373,125 @@ export function WidgetShell({
         </p>
       )}
 
-      <div className="flex-1 overflow-hidden min-h-0">{children}</div>
+      <div className="relative z-10 flex-1 overflow-hidden min-h-0">{children}</div>
 
-      {/* Bottom tab bar + footer */}
+      {/* Bottom tab bar + footer — solid so the hero backdrop never bleeds through. */}
       <div
-        className="border-t border-border/40 shrink-0"
+        className="relative z-10 border-t border-border/40 shrink-0 bg-background"
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       >
-        {showTabBar && (
-          <div className="flex">
-            {tabsToShow.map((tab) => {
-              const cfg = TAB_CONFIG.find((c) => c.tab === tab)
-              if (!cfg) return null
-              const Icon = cfg.icon
-              return (
-                <button
-                  key={tab}
-                  type="button"
-                  onClick={() => onTabChange(tab)}
-                  className={cn(
-                    'flex-1 flex flex-col items-center gap-0.5 py-2 transition-colors',
-                    activeTab === tab
-                      ? 'text-primary'
-                      : 'text-muted-foreground/60 hover:text-muted-foreground'
-                  )}
-                >
-                  <Icon className="w-5 h-5" />
-                  <span className="text-xs font-medium">
-                    <FormattedMessage id={cfg.labelId} defaultMessage={cfg.defaultLabel} />
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-        )}
+        <AnimatePresence initial={false} custom={panelExpanded}>
+          {showTabBar && (
+            <m.div
+              key="tab-bar"
+              custom={panelExpanded}
+              variants={tabBarVariants}
+              initial={{ opacity: 0 }}
+              animate="visible"
+              exit="hidden"
+            >
+              <div className="flex">
+                {tabsToShow.map((tab) => {
+                  const cfg = TAB_CONFIG.find((c) => c.tab === tab)
+                  if (!cfg) return null
+                  const Icon = cfg.icon
+                  const active = activeTab === tab
+                  return (
+                    // The label stays foreground-coloured when active: `primary`
+                    // is the workspace brand colour, and a light brand (yellow,
+                    // lime) on the panel background fails text contrast. The
+                    // icon carries the tint; aria-current carries the state.
+                    <button
+                      key={tab}
+                      type="button"
+                      onClick={() => onTabChange(tab)}
+                      aria-current={active ? 'page' : undefined}
+                      className={cn(
+                        'flex-1 flex flex-col items-center gap-0.5 py-2 transition-colors',
+                        active
+                          ? 'text-foreground'
+                          : 'text-muted-foreground/60 hover:text-muted-foreground'
+                      )}
+                    >
+                      <div className="relative">
+                        <Icon className={cn('w-5 h-5', active && 'text-primary')} />
+                        {tab === 'changelog' && changelogUnread > 0 && (
+                          <span
+                            className="absolute -top-0.5 -end-1 size-2 rounded-full bg-primary ring-2 ring-background"
+                            aria-label={intl.formatMessage(
+                              {
+                                id: 'widget.shell.tab.changelog.unread',
+                                defaultMessage:
+                                  '{count, plural, one {# new update} other {# new updates}}',
+                              },
+                              { count: changelogUnread }
+                            )}
+                          />
+                        )}
+                        {tab === 'messages' && messengerUnread > 0 && (
+                          <span
+                            className="absolute -top-1 -end-1.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-primary px-1 text-xs font-semibold leading-none text-primary-foreground"
+                            aria-label={intl.formatMessage(
+                              {
+                                id: 'widget.shell.tab.messages.unread',
+                                defaultMessage: '{count} unread',
+                              },
+                              { count: messengerUnread }
+                            )}
+                          >
+                            {messengerUnread > 9 ? '9+' : messengerUnread}
+                          </span>
+                        )}
+                        {tab === 'tickets' && ticketStageUnread > 0 && (
+                          <span
+                            className="absolute -top-1 -end-1.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-primary px-1 text-xs font-semibold leading-none text-primary-foreground"
+                            aria-label={intl.formatMessage(
+                              {
+                                id: 'widget.shell.tab.messages.unread',
+                                defaultMessage: '{count} unread',
+                              },
+                              { count: ticketStageUnread }
+                            )}
+                          >
+                            {ticketStageUnread > 9 ? '9+' : ticketStageUnread}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs font-medium">
+                        <FormattedMessage id={cfg.labelId} defaultMessage={cfg.defaultLabel} />
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </m.div>
+          )}
+        </AnimatePresence>
 
-        <div className="border-t border-border/20 py-2 flex items-center justify-center">
-          <a
-            href={`https://quackback.io?utm_campaign=${encodeURIComponent(orgSlug || 'unknown')}&utm_content=widget&utm_medium=referral&utm_source=powered-by`}
-            target="_blank"
-            className="group inline-flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-all"
-          >
-            <img
-              src="/logo.png"
-              alt=""
-              width={11}
-              height={11}
-              className="opacity-60 group-hover:opacity-100 transition-opacity"
-            />
-            <span>
-              <FormattedMessage
-                id="widget.shell.poweredBy"
-                defaultMessage="Powered by {brand}"
-                values={{ brand: <span className="font-medium">Quackback</span> }}
+        {showPoweredBy ? (
+          <div className="border-t border-border/20 py-2 flex items-center justify-center">
+            <a
+              href={`https://quackback.io?utm_campaign=${encodeURIComponent(orgSlug || 'unknown')}&utm_content=widget&utm_medium=referral&utm_source=powered-by`}
+              target="_blank"
+              className="group inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-all"
+            >
+              <img
+                src="/logo.png"
+                alt=""
+                width={11}
+                height={11}
+                className="opacity-60 group-hover:opacity-100 transition-opacity"
               />
-            </span>
-          </a>
-        </div>
+              <span>
+                <FormattedMessage
+                  id="widget.shell.poweredBy"
+                  defaultMessage="Powered by {brand}"
+                  values={{ brand: <span className="font-medium">Quackback</span> }}
+                />
+              </span>
+            </a>
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -296,7 +528,7 @@ function UserAvatarPopover({
           defaultMessage: 'User menu',
         })}
       >
-        <Avatar src={user.avatarUrl} name={user.name} className="size-8 text-[10px]" />
+        <Avatar src={user.avatarUrl} name={user.name} className="size-8 text-xs" />
       </button>
 
       {open && (
@@ -311,7 +543,10 @@ function UserAvatarPopover({
             </div>
           </div>
           <div className="border-t border-border px-3 py-2.5">
-            <UserStatsBar compact headers={getWidgetAuthHeaders()} />
+            <UserStatsBar
+              compact
+              fetchStats={() => widgetGetUserStatsFn({ headers: getWidgetAuthHeaders() })}
+            />
           </div>
         </div>
       )}

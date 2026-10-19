@@ -75,7 +75,10 @@ export const NotFoundErrorSchema = z
 export const ValidationErrorSchema = z
   .object({
     error: z.object({
-      code: z.literal('VALIDATION_ERROR'),
+      code: z.enum(['VALIDATION_ERROR', 'BAD_REQUEST']).meta({
+        description:
+          'Either code means the request was rejected as invalid. Read message and details for the reason.',
+      }),
       message: z.string(),
       details: z.record(z.string(), z.unknown()).optional(),
     }),

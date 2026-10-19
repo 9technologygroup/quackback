@@ -1,0 +1,136 @@
+/**
+ * Lifecycle stepper for the incident editor: the visible path an incident
+ * (investigating → identified → monitoring → resolved) or maintenance window
+ * (scheduled → in progress → verifying → completed) moves through.
+ *
+ * It is also the composer's stage selector — clicking a step chooses the
+ * status the next update posts as. This replaces the old status dropdown
+ * buried in the "Post update" form, which hid resolving behind a select.
+ */
+import { CheckIcon } from '@heroicons/react/24/solid'
+import { cn } from '@/lib/shared/utils'
+import {
+  LIFECYCLE_COLORS,
+  LIFECYCLE_LABELS,
+  isTerminalLifecycle,
+  lifecycleValuesForKind,
+  type StatusIncidentKind,
+  type StatusIncidentLifecycle,
+} from './status-admin-colors'
+
+interface StatusLifecycleStepperProps {
+  kind: StatusIncidentKind
+  /** The incident's current lifecycle status. */
+  current: StatusIncidentLifecycle
+  /** The stage the next posted update will carry. */
+  target: StatusIncidentLifecycle
+  /** First-update timestamp per stage, for the hint line under passed steps. */
+  reachedAt?: Partial<Record<StatusIncidentLifecycle, string>>
+  onSelect: (stage: StatusIncidentLifecycle) => void
+  disabled?: boolean
+  /** False keeps a resolved/completed row closed: earlier stages, which
+   *  would reopen it, can't be picked (a logged past incident). */
+  canReopen?: boolean
+}
+
+function shortTime(iso: string): string {
+  const d = new Date(iso)
+  const sameDay = d.toDateString() === new Date().toDateString()
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+export function StatusLifecycleStepper({
+  kind,
+  current,
+  target,
+  reachedAt,
+  onSelect,
+  disabled,
+  canReopen = true,
+}: StatusLifecycleStepperProps) {
+  const stages = lifecycleValuesForKind(kind)
+  const currentIndex = stages.indexOf(current)
+  const closed = !canReopen && isTerminalLifecycle(current)
+  // Picking an earlier stage on a resolved/completed row reopens it.
+  const reopening = isTerminalLifecycle(current) && stages.indexOf(target) < currentIndex
+
+  return (
+    <div className="flex items-start" role="radiogroup" aria-label="Lifecycle stage">
+      {stages.map((stage, i) => {
+        const isDone = i < currentIndex
+        const isCurrent = i === currentIndex
+        const isTarget = stage === target && !isCurrent
+        const color = LIFECYCLE_COLORS[stage]
+        const stageDisabled = disabled || (closed && i < currentIndex)
+
+        return (
+          <button
+            key={stage}
+            type="button"
+            role="radio"
+            aria-checked={stage === target}
+            disabled={stageDisabled}
+            onClick={() => onSelect(stage)}
+            className={cn(
+              'group relative flex-1 flex flex-col items-center gap-1.5 pb-0.5 outline-none',
+              stageDisabled ? 'cursor-default' : 'cursor-pointer'
+            )}
+          >
+            {/* connector to the next step */}
+            {i < stages.length - 1 && (
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'absolute top-3 left-[calc(50%+16px)] right-[calc(-50%+16px)] h-0.5 rounded-full',
+                  isDone ? 'bg-emerald-500/50' : 'bg-border'
+                )}
+              />
+            )}
+
+            <span
+              className={cn(
+                'relative z-[1] flex h-6 w-6 items-center justify-center rounded-full border-2 text-[11px] font-semibold transition-colors',
+                'bg-card text-muted-foreground border-border',
+                (isDone || isCurrent) && 'text-white',
+                isTarget && 'ring-2 ring-ring/40',
+                !stageDisabled && 'group-hover:border-foreground/40'
+              )}
+              style={
+                isDone
+                  ? { backgroundColor: '#10b981', borderColor: '#10b981' }
+                  : isCurrent
+                    ? { backgroundColor: color, borderColor: color }
+                    : isTarget
+                      ? { borderColor: color, color }
+                      : undefined
+              }
+            >
+              {isDone || isCurrent ? <CheckIcon className="h-3.5 w-3.5" /> : i + 1}
+            </span>
+
+            <span
+              className={cn(
+                'text-xs font-medium leading-none',
+                isCurrent || isTarget ? 'text-foreground font-semibold' : 'text-muted-foreground'
+              )}
+            >
+              {LIFECYCLE_LABELS[stage]}
+            </span>
+
+            <span className="text-[11px] leading-none text-muted-foreground/70 h-3">
+              {isCurrent
+                ? 'current'
+                : isTarget
+                  ? reopening
+                    ? 'reopens here'
+                    : 'next update posts here'
+                  : (isDone && reachedAt?.[stage] && shortTime(reachedAt[stage])) || ' '}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}

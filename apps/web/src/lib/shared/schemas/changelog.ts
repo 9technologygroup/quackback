@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod'
+import { PageLimitSchema } from './taxonomy'
 import { tiptapContentSchema } from './posts'
 
 /**
@@ -24,8 +25,19 @@ export const createChangelogSchema = z.object({
   content: z.string(),
   contentJson: tiptapContentSchema.nullable().optional(),
   linkedPostIds: z.array(z.string()).optional(),
+  categoryIds: z.array(z.string()).optional(),
   publishState: publishStateSchema,
   displayDate: z.coerce.date().nullable().optional(),
+  /** Hero image URL shown atop the public entry detail page; null clears it. */
+  featuredImageUrl: z.string().max(2048).nullable().optional(),
+  /**
+   * Publish-notification targeting: a non-empty list restricts the
+   * subscriber fan-out to members of those segments; omitted/[] broadcasts
+   * to every subscriber.
+   */
+  segmentIds: z.array(z.string()).max(50).optional(),
+  /** Publish-time "Send email to subscribers" checkbox; default true. */
+  notify: z.boolean().optional(),
 })
 
 /**
@@ -37,8 +49,19 @@ export const updateChangelogSchema = z.object({
   content: z.string().optional(),
   contentJson: tiptapContentSchema.nullable().optional(),
   linkedPostIds: z.array(z.string()).optional(),
+  categoryIds: z.array(z.string()).optional(),
   publishState: publishStateSchema.optional(),
   displayDate: z.coerce.date().nullable().optional(),
+  /** Hero image URL shown atop the public entry detail page; null clears it. */
+  featuredImageUrl: z.string().max(2048).nullable().optional(),
+  /**
+   * Publish-notification targeting: a non-empty list restricts the
+   * subscriber fan-out to members of those segments; omitted/[] broadcasts
+   * to every subscriber.
+   */
+  segmentIds: z.array(z.string()).max(50).optional(),
+  /** Publish-time "Send email to subscribers" checkbox; default true. */
+  notify: z.boolean().optional(),
 })
 
 /**
@@ -47,7 +70,8 @@ export const updateChangelogSchema = z.object({
 export const listChangelogsSchema = z.object({
   status: z.enum(['draft', 'scheduled', 'published', 'all']).optional(),
   cursor: z.string().optional(),
-  limit: z.number().int().positive().max(100).optional(),
+  limit: PageLimitSchema,
+  sort: z.enum(['newest', 'oldest']).optional(),
 })
 
 /**
@@ -65,11 +89,18 @@ export const deleteChangelogSchema = z.object({
 })
 
 /**
+ * Top-viewed changelogs params schema
+ */
+export const topViewedChangelogsSchema = z.object({
+  limit: z.number().int().positive().max(20).optional(),
+})
+
+/**
  * List public changelogs params schema
  */
 export const listPublicChangelogsSchema = z.object({
   cursor: z.string().optional(),
-  limit: z.number().int().positive().max(100).optional(),
+  limit: PageLimitSchema,
 })
 
 // Export types inferred from schemas

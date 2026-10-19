@@ -3,6 +3,7 @@ import {
   ACCESS_TIERS,
   ACCESS_TIER_RANK,
   MODERATION_RULE_VALUES,
+  REPLY_POLICIES,
   type BoardAccess,
 } from '@/lib/shared/db-types'
 
@@ -23,6 +24,48 @@ export type BoardPreset = z.infer<typeof boardPresetSchema>
  * insert) and the client mutation hook (optimistic row) so both sides
  * agree on the shape — drift here would surface as a flicker on create.
  */
+const INHERIT_MODERATION = {
+  anonPosts: 'inherit',
+  signedPosts: 'inherit',
+  comments: 'inherit',
+} as const
+
+/**
+ * Fill leftover board.access rows that predate vote/comment/moderation.
+ * Missing moderation is inherit (workspace default), not a crash.
+ *
+ * `replyPolicy` is PRESERVED when present and never injected when absent:
+ * absent is already the permissive default (resolveReplyPolicy), and adding
+ * the key here would make a normalized legacy row stop deep-equalling
+ * DEFAULT_BOARD_ACCESS.
+ */
+export function normalizeBoardAccess(access: Partial<BoardAccess> | null | undefined): BoardAccess {
+  const view = access?.view ?? 'team'
+  const submit = access?.submit ?? view
+  const vote = access?.vote ?? submit
+  const comment = access?.comment ?? submit
+  const segments = access?.segments
+  const moderation = access?.moderation
+  return {
+    view,
+    vote,
+    comment,
+    submit,
+    segments: {
+      view: segments?.view ?? [],
+      vote: segments?.vote ?? [],
+      comment: segments?.comment ?? [],
+      submit: segments?.submit ?? [],
+    },
+    moderation: {
+      anonPosts: moderation?.anonPosts ?? INHERIT_MODERATION.anonPosts,
+      signedPosts: moderation?.signedPosts ?? INHERIT_MODERATION.signedPosts,
+      comments: moderation?.comments ?? INHERIT_MODERATION.comments,
+    },
+    ...(access?.replyPolicy ? { replyPolicy: access.replyPolicy } : {}),
+  }
+}
+
 export function accessForPreset(preset: BoardPreset): BoardAccess {
   if (preset === 'private') {
     return {
@@ -43,6 +86,33 @@ export function accessForPreset(preset: BoardPreset): BoardAccess {
     segments: { view: [], vote: [], comment: [], submit: [] },
     moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
   }
+}
+
+export type AccessPresetKind = 'public' | 'private' | 'custom'
+
+function segmentsEmpty(access: BoardAccess): boolean {
+  return (
+    access.segments.view.length === 0 &&
+    access.segments.vote.length === 0 &&
+    access.segments.comment.length === 0 &&
+    access.segments.submit.length === 0
+  )
+}
+
+function sameActionTiers(a: BoardAccess, b: BoardAccess): boolean {
+  return a.view === b.view && a.vote === b.vote && a.comment === b.comment && a.submit === b.submit
+}
+
+/**
+ * Classify a stored access matrix as one of the two create-time presets,
+ * or `custom` when the four action tiers or any segment allowlist differ.
+ * Moderation is ignored — it is a separate policy surface.
+ */
+export function presetForAccess(access: BoardAccess): AccessPresetKind {
+  if (!segmentsEmpty(access)) return 'custom'
+  if (sameActionTiers(access, accessForPreset('public'))) return 'public'
+  if (sameActionTiers(access, accessForPreset('private'))) return 'private'
+  return 'custom'
 }
 
 export const createBoardSchema = z.object({
@@ -75,6 +145,7 @@ export type DeleteBoardInput = z.infer<typeof deleteBoardSchema>
 
 const tierSchema = z.enum(ACCESS_TIERS)
 const moderationRuleSchema = z.enum(MODERATION_RULE_VALUES)
+const replyPolicySchema = z.enum(REPLY_POLICIES)
 
 /**
  * Validation for the per-action `BoardAccess` payload
@@ -95,6 +166,11 @@ const moderationRuleSchema = z.enum(MODERATION_RULE_VALUES)
  * Moderation rules are tri-state (`inherit | on | off`) — see
  * resolveModerationRule in policy/posts.ts for how `inherit` resolves
  * against the workspace requireApproval default.
+ *
+ * `replyPolicy` is optional: an omitted key is the permissive default
+ * (`'anyone'`), so a board that never touches the setting keeps writing the
+ * exact shape it always did. It carries no tier-rank invariant — it narrows
+ * WHO may reply within the comment tier, per post, and never widens it.
  */
 export const boardAccessSchema = z
   .object({
@@ -113,6 +189,7 @@ export const boardAccessSchema = z
       signedPosts: moderationRuleSchema,
       comments: moderationRuleSchema,
     }),
+    replyPolicy: replyPolicySchema.optional(),
   })
   .superRefine((val, ctx) => {
     if (ACCESS_TIER_RANK[val.vote] < ACCESS_TIER_RANK[val.view]) {

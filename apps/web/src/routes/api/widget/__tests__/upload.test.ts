@@ -10,17 +10,35 @@ vi.mock('@/lib/server/storage/s3', async () => {
   return createS3MockFactory()
 })
 
+const mockGetSettings = vi.fn()
+vi.mock('@/lib/server/functions/workspace', () => ({
+  getSettings: (...args: unknown[]) => mockGetSettings(...args),
+}))
+
+const mockIncrementBucket = vi.fn()
+const mockBucketRetryAfter = vi.fn()
+vi.mock('@/lib/server/utils/rate-bucket', () => ({
+  incrementBucket: (...args: unknown[]) => mockIncrementBucket(...args),
+  bucketRetryAfter: (...args: unknown[]) => mockBucketRetryAfter(...args),
+}))
+
 import { auth } from '@/lib/server/auth'
-import { isS3Configured, uploadObject } from '@/lib/server/storage/s3'
+import { isS3Usable, uploadObject } from '@/lib/server/storage/s3'
 import { handleWidgetUpload } from '../upload'
 
-function makeRequest(file?: File, token?: string): Request {
+function makeRequest(
+  file?: File,
+  token?: string,
+  extraHeaders: Record<string, string> = {}
+): Request {
   const formData = new FormData()
   if (file) formData.append('file', file)
+  const headers: Record<string, string> = { ...extraHeaders }
+  if (token) headers.Authorization = `Bearer ${token}`
   return new Request('http://localhost/api/widget/upload', {
     method: 'POST',
     body: formData,
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers,
   })
 }
 
@@ -34,7 +52,10 @@ function authAs() {
 describe('POST /api/widget/upload', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(isS3Configured).mockReturnValue(true)
+    vi.mocked(isS3Usable).mockReturnValue(true)
+    mockGetSettings.mockResolvedValue({ id: 'settings_1' })
+    mockIncrementBucket.mockResolvedValue({ count: 1 })
+    mockBucketRetryAfter.mockResolvedValue(42)
   })
 
   it('returns 401 when there is no valid widget session', async () => {
@@ -46,7 +67,7 @@ describe('POST /api/widget/upload', () => {
 
   it('returns 503 when S3 is not configured', async () => {
     authAs()
-    vi.mocked(isS3Configured).mockReturnValue(false)
+    vi.mocked(isS3Usable).mockReturnValue(false)
     const res = await handleWidgetUpload({ request: makeRequest(undefined, 'valid-token') })
     expect(res.status).toBe(503)
   })
@@ -87,9 +108,44 @@ describe('POST /api/widget/upload', () => {
     const body = await res.json()
     expect(body).toHaveProperty('publicUrl')
     expect(uploadObject).toHaveBeenCalledWith(
-      expect.stringContaining('widget-images'),
-      expect.any(Buffer),
+      expect.stringContaining('widget-media'),
+      expect.anything(),
       'image/webp'
     )
+  })
+
+  it('returns 503 when the workspace is unavailable', async () => {
+    authAs()
+    mockGetSettings.mockResolvedValue(null)
+    const res = await handleWidgetUpload({ request: makeRequest(undefined, 'valid-token') })
+    expect(res.status).toBe(503)
+    expect(mockIncrementBucket).not.toHaveBeenCalled()
+  })
+
+  it('keys the workspace bucket off the resolved workspace id, not the Host header', async () => {
+    // A caller could vary the Host header per request to dodge a Host-keyed
+    // bucket. Since Round 2, the workspace bucket is keyed on settings.id, so
+    // the bucket key stays fixed regardless of what Host is sent.
+    authAs()
+    mockGetSettings.mockResolvedValue({ id: 'settings_fixed' })
+    await handleWidgetUpload({
+      request: makeRequest(undefined, 'valid-token', { Host: 'attacker-controlled.example' }),
+    })
+    const keys = mockIncrementBucket.mock.calls.map((call) => (call[0] as { key: string }).key)
+    expect(keys).toContain('widget-upload:workspace:settings_fixed')
+    expect(keys.some((k: string) => k.includes('attacker-controlled.example'))).toBe(false)
+  })
+
+  it('429s when the workspace bucket is over the limit, even from a fresh session/IP', async () => {
+    authAs()
+    mockIncrementBucket.mockImplementation(async (spec: { key: string }) => ({
+      count: spec.key.includes(':workspace:') ? 21 : 1,
+    }))
+    const file = mockImageFile('shot.webp', 'image/webp')
+    const res = await handleWidgetUpload({
+      request: makeRequest(file, 'valid-token', { Host: 'yet-another-host.example' }),
+    })
+    expect(res.status).toBe(429)
+    expect(uploadObject).not.toHaveBeenCalled()
   })
 })

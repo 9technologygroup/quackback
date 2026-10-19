@@ -14,6 +14,7 @@ import {
   and,
   desc,
   isNull,
+  isNotNull,
   sql,
   inAppNotifications,
   posts,
@@ -23,7 +24,13 @@ import {
 import type { NotificationId, PrincipalId } from '@quackback/ids'
 import { createId } from '@quackback/ids'
 import { NotFoundError } from '@/lib/shared/errors'
-import { ANONYMOUS_ACTOR, boardViewFilter, canViewPost, type Actor } from '@/lib/server/policy'
+import {
+  ANONYMOUS_ACTOR,
+  boardViewFilter,
+  canViewPost,
+  postTestViewFilter,
+  type Actor,
+} from '@/lib/server/policy'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'notifications' })
@@ -65,6 +72,84 @@ export async function createNotificationsBatch(
     .returning()
 
   return rows.map((r) => r.id)
+}
+
+/** The bell line once several approval requests wait on one person. */
+/** The wording of an approval bell that counts several new requests. */
+const APPROVAL_BELLS_TITLE = ' new approval requests'
+
+/**
+ * An approval bell's title: the requests that arrived since the person last
+ * read it. It counts arrivals, not what is still waiting; the queue shows that.
+ */
+export function approvalBellTitle(count: number): string {
+  return count === 1 ? 'New approval request' : `${count}${APPROVAL_BELLS_TITLE}`
+}
+
+/**
+ * Ring the approval bell, batched per person: one unread row counts the
+ * requests that arrived since the person last read it, and moves to the top
+ * with each new one. A single request keeps its own summary as the body.
+ *
+ * One statement. A partial unique index allows one unread approval bell per
+ * person, so an insert for someone who already has one becomes an increment
+ * of that row. Postgres locks the row it conflicts with, so requests that
+ * arrive together can neither add a second row nor lose a count.
+ */
+export async function ringApprovalBells(
+  inputs: CreateNotificationInput[],
+  tx?: Transaction
+): Promise<NotificationId[]> {
+  // One row per person: a statement may update a conflicting row only once.
+  const byPerson = new Map(inputs.map((input) => [input.principalId, input]))
+  if (byPerson.size === 0) return []
+  const count = sql`coalesce((${inAppNotifications.metadata}->>'count')::int, 1) + 1`
+  const rows = await (tx ?? db)
+    .insert(inAppNotifications)
+    .values(
+      [...byPerson.values()].map((input) => ({
+        id: createId('notification'),
+        principalId: input.principalId,
+        type: 'approval_requested',
+        title: approvalBellTitle(1),
+        body: input.body ?? null,
+        metadata: { ...input.metadata, count: 1 },
+      }))
+    )
+    .onConflictDoUpdate({
+      target: inAppNotifications.principalId,
+      targetWhere: sql`type = 'approval_requested' AND read_at IS NULL AND archived_at IS NULL`,
+      set: {
+        title: sql`(${count})::text || ${APPROVAL_BELLS_TITLE}`,
+        body: null,
+        metadata: sql`excluded.metadata || jsonb_build_object('count', ${count})`,
+        createdAt: sql`now()`,
+      },
+    })
+    .returning({ id: inAppNotifications.id })
+  return rows.map((row) => row.id)
+}
+
+/**
+ * Read a person's unread approval bell, as opening the approvals queue does:
+ * the next request then starts a new count. Returns how many rows it read.
+ */
+export async function markApprovalBellsRead(
+  principalId: PrincipalId,
+  tx?: Transaction
+): Promise<number> {
+  const rows = await (tx ?? db)
+    .update(inAppNotifications)
+    .set({ readAt: new Date() })
+    .where(
+      and(
+        eq(inAppNotifications.principalId, principalId),
+        eq(inAppNotifications.type, 'approval_requested'),
+        isNull(inAppNotifications.readAt)
+      )
+    )
+    .returning({ id: inAppNotifications.id })
+  return rows.length
 }
 
 /**
@@ -137,7 +222,14 @@ export async function getNotificationsForMember(
       boardAccess: boards.access,
     })
     .from(inAppNotifications)
-    .leftJoin(posts, and(eq(inAppNotifications.postId, posts.id), isNull(posts.deletedAt)))
+    .leftJoin(
+      posts,
+      and(
+        eq(inAppNotifications.postId, posts.id),
+        isNull(posts.deletedAt),
+        postTestViewFilter(actor)
+      )
+    )
     .leftJoin(
       boards,
       and(eq(posts.boardId, boards.id), isNull(boards.deletedAt), boardViewFilter(actor))
@@ -147,18 +239,19 @@ export async function getNotificationsForMember(
     .limit(limit)
     .offset(offset)
 
-  // Count total (for pagination)
-  const totalResult = await db
-    .select({ count: sql<number>`count(*)::int`.as('count') })
-    .from(inAppNotifications)
-    .where(where)
+  // Total (for pagination) and unread counts are independent of each other and
+  // of the list query above, so fire them in parallel rather than serially.
+  const [totalResult, unreadResult] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(*)::int`.as('count') })
+      .from(inAppNotifications)
+      .where(where),
+    db
+      .select({ count: sql<number>`count(*)::int`.as('count') })
+      .from(inAppNotifications)
+      .where(and(baseWhere, isNull(inAppNotifications.readAt))),
+  ])
   const total = totalResult[0]?.count ?? 0
-
-  // Count unread
-  const unreadResult = await db
-    .select({ count: sql<number>`count(*)::int`.as('count') })
-    .from(inAppNotifications)
-    .where(and(baseWhere, isNull(inAppNotifications.readAt)))
   const unreadCount = unreadResult[0]?.count ?? 0
 
   const notifications: NotificationWithPost[] = rows.map((row) => {
@@ -292,10 +385,7 @@ export async function archiveNotification(
   principalId: PrincipalId,
   notificationId: NotificationId
 ): Promise<void> {
-  log.debug(
-    { principal_id: principalId, notification_id: notificationId },
-    'archive notification'
-  )
+  log.debug({ principal_id: principalId, notification_id: notificationId }, 'archive notification')
   const existing = await db.query.inAppNotifications.findFirst({
     where: and(
       eq(inAppNotifications.id, notificationId),
@@ -314,14 +404,23 @@ export async function archiveNotification(
 }
 
 /**
- * Archive all notifications for a member
+ * Archive all notifications for a member. Pass `{ onlyRead: true }` to
+ * archive just the read ones, leaving unread notifications in place.
  */
-export async function archiveAllNotifications(principalId: PrincipalId): Promise<void> {
-  log.debug({ principal_id: principalId }, 'archive all notifications')
+export async function archiveAllNotifications(
+  principalId: PrincipalId,
+  options: { onlyRead?: boolean } = {}
+): Promise<void> {
+  const { onlyRead = false } = options
+  log.debug({ principal_id: principalId, only_read: onlyRead }, 'archive all notifications')
   await db
     .update(inAppNotifications)
     .set({ archivedAt: new Date() })
     .where(
-      and(eq(inAppNotifications.principalId, principalId), isNull(inAppNotifications.archivedAt))
+      and(
+        eq(inAppNotifications.principalId, principalId),
+        isNull(inAppNotifications.archivedAt),
+        onlyRead ? isNotNull(inAppNotifications.readAt) : undefined
+      )
     )
 }

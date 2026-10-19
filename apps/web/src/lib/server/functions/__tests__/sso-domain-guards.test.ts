@@ -8,9 +8,11 @@
  *  - lookupAuthMethodsFn returns the same shape regardless of whether
  *    an account exists at the supplied email (no enumeration vector).
  *
- * Uses the same `createServerFn` capture pattern as the other
- * `functions/__tests__` suites — handlers are recorded in import
- * order via a mocked builder, then invoked by index.
+ * Uses the `createServerFn` capture pattern from the sibling suites, with the
+ * mocked `.handler(fn)` returning the handler itself so each server function is
+ * reached by its own name. Indexing a positional array breaks silently the
+ * moment a function is added above another in the file under test — it keeps
+ * running, against the wrong handler.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -18,30 +20,18 @@ import type { AuthConfig } from '@/lib/server/domains/settings/settings.types'
 
 type AnyHandler = (args: { data: Record<string, unknown> }) => Promise<unknown>
 
-// Per-module handler arrays so tests don't have to count past unrelated
-// server-fn declarations in the file under test.
-const handlersByModule = new Map<string, AnyHandler[]>()
-let currentModule = ''
-
 vi.mock('@tanstack/react-start', () => ({
   createServerFn: () => {
     const chain = {
-      validator() {
-        return chain
-      },
-      handler(fn: AnyHandler) {
-        const arr = handlersByModule.get(currentModule) ?? []
-        arr.push(fn)
-        handlersByModule.set(currentModule, arr)
-        return chain
-      },
+      validator: () => chain,
+      handler: (fn: AnyHandler) => fn,
     }
     return chain
   },
 }))
 
 const hoisted = vi.hoisted(() => ({
-  mockGetTenantSettings: vi.fn(),
+  mockGetWorkspaceSettings: vi.fn(),
   mockRequireAuth: vi.fn(),
   mockUpdateAuthConfig: vi.fn(),
   mockSetSsoDomainSubtree: vi.fn(),
@@ -69,10 +59,13 @@ vi.mock('@/lib/server/functions/auth-helpers', () => ({
 
 const mockSetVerifiedDomainEnforced = vi.fn()
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
-  getTenantSettings: hoisted.mockGetTenantSettings,
+  getWorkspaceSettings: hoisted.mockGetWorkspaceSettings,
   updateAuthConfig: hoisted.mockUpdateAuthConfig,
   setSsoDomainSubtree: hoisted.mockSetSsoDomainSubtree,
   setVerifiedDomainEnforced: mockSetVerifiedDomainEnforced,
+  // Enforcement stamps the domain's verification alongside the flag, so the
+  // mock has to expose it or every enforcement path throws on a missing export.
+  stampVerifiedDomain: vi.fn(async () => undefined),
 }))
 
 vi.mock('@/lib/server/auth/sso-secret', () => ({
@@ -104,7 +97,7 @@ vi.mock('@/lib/server/domains/platform-credentials/platform-credential.service',
 // (listIdentityProviders) and the canonical registration gate
 // (getRegisteredOidcProviderIds), instead of reading authConfig.ssoOidc +
 // verifiedDomains directly. The mocks below synthesize a single 'sso' provider
-// from the same getTenantSettings / tier / secret knobs the tests already
+// from the same getWorkspaceSettings / tier / secret knobs the tests already
 // toggle, so the migrated single-provider scenarios stay green.
 vi.mock('@/lib/server/domains/settings/identity-providers.service', () => ({
   listIdentityProviders: hoisted.mockListIdentityProviders,
@@ -149,19 +142,20 @@ vi.mock('@/lib/server/auth/recovery-codes-status', () => ({
   hasActiveRecoveryCodes: hoisted.mockHasActiveRecoveryCodes,
 }))
 
-vi.mock('@/lib/server/db', () => {
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
   const updateMock = vi.fn().mockReturnValue({ set: setMock })
   const txMock = { update: updateMock }
   hoisted.mockDbUpdate.mockImplementation(updateMock)
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       transaction: async (fn: (tx: typeof txMock) => Promise<void>) => {
         hoisted.mockDbTransaction()
         await fn(txMock)
       },
     },
-    settings: { id: 'settings_id' },
   }
 })
 
@@ -200,11 +194,11 @@ beforeEach(() => {
   })
 
   // Synthesize the 'sso' provider + its registration/creds snapshot from the
-  // tenant/tier/secret knobs each test sets, mirroring how the real registry
+  // workspace/tier/secret knobs each test sets, mirroring how the real registry
   // would derive them for a single migrated 'sso' provider.
   hoisted.mockListIdentityProviders.mockImplementation(async () => {
-    const tenant = await hoisted.mockGetTenantSettings()
-    const sso = tenant?.authConfig?.ssoOidc
+    const workspace = await hoisted.mockGetWorkspaceSettings()
+    const sso = workspace?.authConfig?.ssoOidc
     if (!sso) return []
     return [
       {
@@ -213,14 +207,14 @@ beforeEach(() => {
         enabled: sso.enabled === true,
         autoCreateUsers: sso.autoCreateUsers ?? true,
         autoProvisionRole: sso.autoProvisionRole ?? null,
-        attributeMapping: sso.attributeMapping ?? null,
-        domains: tenant?.verifiedDomains ?? [],
+        claimMapping: sso.attributeMapping ? { role: sso.attributeMapping } : null,
+        domains: workspace?.verifiedDomains ?? [],
       },
     ]
   })
   hoisted.mockGetRegisteredOidcProviderIds.mockImplementation(async () => {
-    const tenant = await hoisted.mockGetTenantSettings()
-    const sso = tenant?.authConfig?.ssoOidc
+    const workspace = await hoisted.mockGetWorkspaceSettings()
+    const sso = workspace?.authConfig?.ssoOidc
     const tier = await hoisted.mockGetTierLimits()
     const ids = new Set<string>()
     if (!tier?.features?.customOidcProvider) return ids
@@ -253,32 +247,18 @@ const verifiedDomainRow = {
 
 const enforcedDomainRow = { ...verifiedDomainRow, enforced: true }
 
-// Load the SSO module ONCE and resolve handlers by their position in
-// the file. Order matches the export sequence in sso.ts:
-//   0: clearSsoClientSecretFn
-//   1: removeVerifiedDomainFn
-//   2: getVerifiedDomainsFn
-//   3: listIdentityProvidersFn
-//   4: upsertIdentityProviderFn
-//   5: deleteIdentityProviderFn
-//   6: setProviderCredentialsFn
-//   7: addProviderDomainFn
-//   8: verifyProviderDomainFn
-//   9: setDomainEnforcedFn
-currentModule = 'sso'
-await import('../sso')
-const ssoHandlers = handlersByModule.get('sso')!
-const clearSsoClientSecret = ssoHandlers[0]
-const setDomainEnforced = ssoHandlers[9]
+// Under the mock above each export IS its handler, so these are the real
+// functions by name and stay correct however the files are reordered.
+const { clearSsoClientSecretFn, setDomainEnforcedFn } = await import('../sso')
+const { lookupAuthMethodsFn } = await import('../auth')
 
-currentModule = 'auth'
-await import('../auth')
-const authHandlers = handlersByModule.get('auth')!
-const lookupAuthMethods = authHandlers[0]
+const clearSsoClientSecret = clearSsoClientSecretFn as unknown as AnyHandler
+const setDomainEnforced = setDomainEnforcedFn as unknown as AnyHandler
+const lookupAuthMethods = lookupAuthMethodsFn as unknown as AnyHandler
 
 describe('clearSsoClientSecretFn refusals', () => {
   it('refuses when any verified domain has enforcement on', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [enforcedDomainRow],
     })
@@ -288,7 +268,7 @@ describe('clearSsoClientSecretFn refusals', () => {
   })
 
   it('refuses when a domain is verified (even without enforcement)', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [verifiedDomainRow],
     })
@@ -298,7 +278,7 @@ describe('clearSsoClientSecretFn refusals', () => {
   })
 
   it('allows clearing when no verified-domain rows exist', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [],
     })
@@ -308,7 +288,7 @@ describe('clearSsoClientSecretFn refusals', () => {
   })
 
   it('allows clearing when only pending (unverified) domain rows exist', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [{ ...verifiedDomainRow, verifiedAt: null }],
     })
@@ -320,7 +300,7 @@ describe('clearSsoClientSecretFn refusals', () => {
 
 describe('lookupAuthMethodsFn — no enumeration leak', () => {
   it('returns sso-redirect for verified-domain email when that domain row is enforced', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [enforcedDomainRow],
       publicAuthConfig: { oauth: { password: false, google: true } },
@@ -331,7 +311,7 @@ describe('lookupAuthMethodsFn — no enumeration leak', () => {
   })
 
   it('returns sso-default for verified-domain email when that domain row is not enforced', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [verifiedDomainRow],
       publicAuthConfig: { oauth: { password: false, google: true } },
@@ -346,7 +326,7 @@ describe('lookupAuthMethodsFn — no enumeration leak', () => {
   })
 
   it('returns methods for non-verified-domain email', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [verifiedDomainRow],
       publicAuthConfig: { oauth: { password: false, google: true } },
@@ -359,7 +339,7 @@ describe('lookupAuthMethodsFn — no enumeration leak', () => {
   })
 
   it('returns identical shape for known-vs-unknown emails (no enumeration)', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [verifiedDomainRow],
       publicAuthConfig: { oauth: { password: true } },
@@ -382,7 +362,7 @@ describe('lookupAuthMethodsFn — SSO registration drift', () => {
     hoisted.mockGetTierLimits.mockResolvedValue({
       features: { customOidcProvider: false },
     })
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [verifiedDomainRow],
       publicAuthConfig: { oauth: { password: false } },
@@ -398,7 +378,7 @@ describe('lookupAuthMethodsFn — SSO registration drift', () => {
 
   it('falls through to methods when client secret is missing', async () => {
     hoisted.mockHasSsoClientSecret.mockResolvedValue(false)
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [verifiedDomainRow],
       publicAuthConfig: { oauth: { password: false } },
@@ -413,7 +393,7 @@ describe('lookupAuthMethodsFn — SSO registration drift', () => {
   })
 
   it('still returns sso-redirect when all preconditions hold (enforced row)', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { ssoOidc: ssoConfig },
       verifiedDomains: [enforcedDomainRow],
       publicAuthConfig: { oauth: { password: false } },
@@ -433,7 +413,7 @@ describe('lookupAuthMethodsFn — SSO deliberately disabled with stale verified-
   // available" implies the admin needs to fix something, which is
   // wrong when they deliberately disabled it.
   it('falls through to methods (not sso-unavailable) when ssoOidc.enabled=false and a verified-domain row exists', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: {
         ssoOidc: { ...ssoConfig, enabled: false },
       },
@@ -450,7 +430,7 @@ describe('lookupAuthMethodsFn — SSO deliberately disabled with stale verified-
   })
 
   it('falls through to methods even when the stale verified-domain row was enforced=true', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: {
         ssoOidc: { ...ssoConfig, enabled: false },
       },
@@ -463,7 +443,7 @@ describe('lookupAuthMethodsFn — SSO deliberately disabled with stale verified-
   })
 
   it('falls through to methods when ssoOidc is entirely absent (never configured)', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: {},
       verifiedDomains: [verifiedDomainRow],
       publicAuthConfig: { oauth: { password: true } },
@@ -476,7 +456,7 @@ describe('lookupAuthMethodsFn — SSO deliberately disabled with stale verified-
 
 describe('lookupAuthMethodsFn — team magic-link toggle', () => {
   it('returns publicAuthConfig.oauth.magicLink=false when admin disabled the toggle', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { oauth: { password: true, magicLink: false } },
       verifiedDomains: [],
       publicAuthConfig: { oauth: { password: true, magicLink: false } },
@@ -492,8 +472,8 @@ describe('lookupAuthMethodsFn — team magic-link toggle', () => {
     })
   })
 
-  it('defaults publicAuthConfig.oauth.magicLink=true when key is absent (pre-0.12 tenants)', async () => {
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+  it('defaults publicAuthConfig.oauth.magicLink=true when key is absent (pre-0.12 workspaces)', async () => {
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: { oauth: { password: true } },
       verifiedDomains: [],
       publicAuthConfig: { oauth: { password: true, magicLink: true } },
@@ -510,7 +490,7 @@ describe('lookupAuthMethodsFn — ssoOidc.required is inert (workspace-wide mode
   it('ignores ssoOidc.required in the unified sign-in config (workspace-wide mode removed)', async () => {
     // The `required` flag is inert; team users at non-verified-domain
     // emails should fall through to the methods form, not `sso-redirect`.
-    hoisted.mockGetTenantSettings.mockResolvedValue({
+    hoisted.mockGetWorkspaceSettings.mockResolvedValue({
       authConfig: {
         oauth: { password: true },
         openSignup: false,

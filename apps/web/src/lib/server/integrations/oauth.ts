@@ -25,6 +25,26 @@ export function parseCookies(cookieHeader: string): Record<string, string> {
 }
 
 export function buildCallbackUri(integration: string, request: Request): string {
+  const gateway = process.env.INTEGRATION_OAUTH_GATEWAY_URL
+  if (gateway) {
+    let url: URL
+    try {
+      url = new URL(gateway)
+    } catch {
+      throw new Error('INTEGRATION_OAUTH_GATEWAY_URL must be an HTTPS origin')
+    }
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/' ||
+      url.search ||
+      url.hash
+    ) {
+      throw new Error('INTEGRATION_OAUTH_GATEWAY_URL must be an HTTPS origin')
+    }
+    return `${url.origin}/oauth/${integration}/callback`
+  }
   const host = request.headers.get('host')
   const protocol = request.headers.get('x-forwarded-proto') || 'https'
   return `${protocol}://${host}/oauth/${integration}/callback`
@@ -54,6 +74,6 @@ export function clearCookie(name: string, isSecure: boolean): string {
  * Validate that a domain is a valid return domain.
  * For self-hosted, all domains are considered valid.
  */
-export function isValidTenantDomain(_domain: string): boolean {
+export function isValidWorkspaceDomain(_domain: string): boolean {
   return true
 }

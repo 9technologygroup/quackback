@@ -132,7 +132,7 @@ test.describe('view tier — board-list visibility', () => {
 async function composerState(page: Page, boardSlug: string) {
   await page.goto(`/?board=${boardSlug}`)
   await page.waitForLoadState('networkidle')
-  const composer = page.getByRole('textbox', { name: /what'?s your idea/i }).first()
+  const composer = page.getByPlaceholder(/what'?s your idea/i).first()
   await composer.click()
   await composer.fill(`E2E access probe ${Date.now()}`)
   await page.waitForTimeout(400)
@@ -173,7 +173,7 @@ async function postState(page: Page, board: { slug: string; postId: string }) {
   await page.goto(`/b/${board.slug}/posts/${board.postId}`)
   await page.waitForLoadState('networkidle')
   const body = (await page.locator('main, body').first().innerText()).toLowerCase()
-  const denied = /post not found|tripped us up|flown the pond/.test(body)
+  const denied = /post not found|page not found/.test(body)
   return {
     denied,
     renders: !denied && body.includes('e2e access probe post'),
@@ -293,7 +293,7 @@ test.describe('vote tier — vote affordance + gating', () => {
 async function submitFeedback(page: Page, boardSlug: string, title: string) {
   await page.goto(`/?board=${boardSlug}`)
   await page.waitForLoadState('networkidle')
-  const composer = page.getByRole('textbox', { name: /what'?s your idea/i }).first()
+  const composer = page.getByPlaceholder(/what'?s your idea/i).first()
   await composer.click()
   await composer.fill(title)
   const submit = page.getByRole('button', { name: /^submit/i }).first()
@@ -314,7 +314,7 @@ async function feedShowsPost(page: Page, boardSlug: string, title: string): Prom
  *  unique text (a post title, or a comment's body). Posts and comments render as
  *  <li>s in the same queue, each carrying its own Approve/Reject buttons. */
 async function queueRow(adminPage: Page, uniqueText: string) {
-  await adminPage.goto('/admin/moderation')
+  await adminPage.goto('/admin/feedback/moderation')
   await adminPage.waitForLoadState('networkidle')
   return adminPage.locator('li').filter({ hasText: uniqueText }).first()
 }
@@ -327,6 +327,8 @@ async function submitComment(page: Page, board: { slug: string; postId: string }
     .locator('form')
     .filter({ has: page.getByTestId('comment-form-editor') })
     .first()
+  // The composer mounts its editor once pointed at or focused.
+  await form.getByRole('textbox', { name: /write a comment/i }).click()
   const editor = form.locator('[contenteditable="true"]').first()
   await editor.click()
   await editor.pressSequentially(text) // TipTap editor — type rather than fill

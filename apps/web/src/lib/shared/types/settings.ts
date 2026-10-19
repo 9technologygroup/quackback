@@ -4,28 +4,54 @@
  * Re-exported from the server domain for architectural compliance — type-only
  * imports are erased at compile time and never affect the bundle.
  *
- * Note: FEATURE_FLAG_REGISTRY and DEFAULT_PORTAL_CONFIG are runtime constants
- * also re-exported here because settings.types has no DB dependencies and the
- * constants are needed in route files and components.
+ * Note: DEFAULT_PORTAL_CONFIG is a runtime constant also re-exported here
+ * because settings.types has no DB dependencies and the constants are needed
+ * in route files and components.
  */
 
 export type {
   PortalConfig,
+  PortalNavConfig,
+  PortalNavItemConfig,
+  PortalNavItemType,
   PortalWelcomeCard,
-  TenantSettings,
+  HeaderDisplayMode,
+  WorkspaceSettings,
   HelpCenterConfig,
+  HelpCenterHeaderLink,
+  HelpCenterDomainConfig,
+  HelpCenterSeoConfig,
+  HelpCenterLocalesConfig,
+  HelpCenterLocaleChromeStrings,
+  HelpCenterAutoTranslateConfig,
   AuthConfig,
   VerifiedDomain,
 } from '@/lib/server/domains/settings'
 
-// FeatureFlags and FEATURE_FLAG_REGISTRY live only in settings.types (not barrel-exported)
-export type { FeatureFlags } from '@/lib/server/domains/settings/settings.types'
+// FeatureFlags lives only in settings.types (not barrel-exported)
+export type {
+  FeatureFlags,
+  ProductId,
+  WidgetHomeCard,
+  WidgetHomeCardType,
+  WidgetCardAudience,
+  WidgetHomeConfig,
+  WidgetHeroPatternId,
+} from '@/lib/server/domains/settings/settings.types'
 
 // Runtime constants — safe because settings.types has no DB dependencies
 export {
-  FEATURE_FLAG_REGISTRY,
-  LAB_SECTIONS,
+  DEFAULT_FEATURE_FLAGS,
+  featureFlagsForUseCase,
+  enableFlagsForUseCase,
+  PRODUCT_DEFINITIONS,
+  getFirstEnabledAdminProductPath,
+  newWorkspaceFlagsForGoals,
+  getProductFlagUpdate,
+  isProductEnabled,
   DEFAULT_AUTH_CONFIG,
   DEFAULT_PORTAL_CONFIG,
-  PORTAL_WELCOME_CARD_TITLE_MAX,
+  DEFAULT_HELP_CENTER_CONFIG,
+  DEFAULT_WIDGET_HOME_CARDS,
+  EMPTY_WELCOME_BODY,
 } from '@/lib/server/domains/settings/settings.types'

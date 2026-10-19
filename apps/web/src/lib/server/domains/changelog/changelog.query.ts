@@ -15,17 +15,22 @@ import {
   lte,
   gt,
   or,
+  asc,
   desc,
   inArray,
   sql,
 } from '@/lib/server/db'
-import type { BoardId, ChangelogId, PrincipalId, PostId, StatusId } from '@quackback/ids'
+import type { BoardId, ChangelogId, PrincipalId, PostId, PostStatusId } from '@quackback/ids'
 import { computeStatus } from './changelog.service'
+import { getCategoriesForEntries } from './changelog-category.service'
+import { contentJsonForClient } from '@/lib/server/content/storage-read-urls'
+import { resignStoredAssetUrl } from '@/lib/server/storage/s3'
 import type {
   ListChangelogParams,
   ChangelogEntryWithDetails,
   ChangelogListResult,
   ChangelogAuthor,
+  TopViewedChangelogEntry,
 } from './changelog.types'
 
 /**
@@ -35,11 +40,21 @@ import type {
  * @returns Paginated list of changelog entries
  */
 export async function listChangelogs(params: ListChangelogParams): Promise<ChangelogListResult> {
-  const { status = 'all', cursor, limit = 20 } = params
+  const { status = 'all', cursor, limit = 20, sort = 'newest' } = params
+  const oldestFirst = sort === 'oldest'
   const now = new Date()
+
+  const after = oldestFirst ? gt : lt
+  const direction = oldestFirst ? asc : desc
 
   // Build where conditions - always exclude soft-deleted entries
   const conditions: SQL<unknown>[] = [isNull(changelogEntries.deletedAt)]
+
+  if (params.search?.trim()) {
+    conditions.push(
+      sql`to_tsvector('english', coalesce(${changelogEntries.title}, '') || ' ' || coalesce(${changelogEntries.content}, '')) @@ websearch_to_tsquery('english', ${params.search.trim()})`
+    )
+  }
 
   // Filter by status
   if (status === 'draft') {
@@ -52,7 +67,8 @@ export async function listChangelogs(params: ListChangelogParams): Promise<Chang
     conditions.push(lte(changelogEntries.publishedAt, now))
   }
 
-  // Cursor-based pagination (cursor is the last entry ID)
+  // Cursor-based pagination (cursor is the last entry ID); the keyset walks
+  // the same (createdAt, id) order the page is sorted by, in either direction.
   if (cursor) {
     const cursorEntry = await db.query.changelogEntries.findFirst({
       where: eq(changelogEntries.id, cursor as ChangelogId),
@@ -61,10 +77,10 @@ export async function listChangelogs(params: ListChangelogParams): Promise<Chang
     if (cursorEntry) {
       conditions.push(
         or(
-          lt(changelogEntries.createdAt, cursorEntry.createdAt),
+          after(changelogEntries.createdAt, cursorEntry.createdAt),
           and(
             eq(changelogEntries.createdAt, cursorEntry.createdAt),
-            lt(changelogEntries.id, cursor as ChangelogId)
+            after(changelogEntries.id, cursor as ChangelogId)
           )
         )!
       )
@@ -74,7 +90,7 @@ export async function listChangelogs(params: ListChangelogParams): Promise<Chang
   // Fetch entries
   const entries = await db.query.changelogEntries.findMany({
     where: and(...conditions),
-    orderBy: [desc(changelogEntries.createdAt), desc(changelogEntries.id)],
+    orderBy: [direction(changelogEntries.createdAt), direction(changelogEntries.id)],
     limit: limit + 1, // Fetch one extra to check hasMore
   })
 
@@ -131,33 +147,42 @@ export async function listChangelogs(params: ListChangelogParams): Promise<Chang
   }
 
   // Get status info for all linked posts
-  const statusIds = new Set<StatusId>()
+  const statusIds = new Set<PostStatusId>()
   allLinkedPosts.forEach((lp) => {
     if (lp.post.statusId) statusIds.add(lp.post.statusId)
   })
 
-  const statusMap = new Map<StatusId, { name: string; color: string }>()
+  const statusMap = new Map<PostStatusId, { name: string; color: string }>()
   if (statusIds.size > 0) {
     const statuses = await db.query.postStatuses.findMany({
-      where: inArray(postStatuses.id, Array.from(statusIds) as StatusId[]),
+      where: inArray(postStatuses.id, Array.from(statusIds) as PostStatusId[]),
       columns: { id: true, name: true, color: true },
     })
     statuses.forEach((s) => statusMap.set(s.id, { name: s.name, color: s.color }))
   }
 
+  // Categories (labels) for all entries.
+  const categoriesMap = await getCategoriesForEntries(entryIds)
+
   // Transform to output format
   const result: ChangelogEntryWithDetails[] = items.map((entry) => {
     const entryLinkedPosts = linkedPostsMap.get(entry.id) ?? []
+    const entryCategories = categoriesMap.get(entry.id) ?? []
     return {
       id: entry.id,
       title: entry.title,
       content: entry.content,
-      contentJson: entry.contentJson,
+      contentJson: contentJsonForClient(entry.contentJson),
       principalId: entry.principalId,
       publishedAt: entry.publishedAt,
       displayDate: entry.displayDate,
+      featuredImageUrl: entry.featuredImageUrl
+        ? resignStoredAssetUrl(entry.featuredImageUrl)
+        : entry.featuredImageUrl,
+      segmentIds: (entry.segmentIds ?? []) as ChangelogEntryWithDetails['segmentIds'],
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
+      viewCount: entry.viewCount,
       author: entry.principalId ? (authorMap.get(entry.principalId) ?? null) : null,
       linkedPosts: entryLinkedPosts.map((lp) => ({
         id: lp.post.id,
@@ -165,6 +190,7 @@ export async function listChangelogs(params: ListChangelogParams): Promise<Chang
         voteCount: lp.post.voteCount,
         status: lp.post.statusId ? (statusMap.get(lp.post.statusId) ?? null) : null,
       })),
+      categories: entryCategories.map((c) => ({ id: c.id, name: c.name, color: c.color })),
       status: computeStatus(entry.publishedAt),
     }
   })
@@ -243,4 +269,38 @@ export async function searchShippedPosts(params: {
     .limit(limit)
 
   return results
+}
+
+/**
+ * Rank published changelog entries by in-app view count, most-viewed first.
+ * Drafts and scheduled entries are excluded — they've never been publicly
+ * viewable, so their view_count is always zero and would only pad a ranking
+ * that's meant to surface what readers actually engaged with.
+ *
+ * @param params - Ranking parameters
+ * @returns Top entries ordered by view_count descending
+ */
+export async function listTopViewedChangelogs(
+  params: { limit?: number } = {}
+): Promise<TopViewedChangelogEntry[]> {
+  const { limit = 5 } = params
+  const now = new Date()
+
+  const entries = await db.query.changelogEntries.findMany({
+    where: and(
+      isNull(changelogEntries.deletedAt),
+      isNotNull(changelogEntries.publishedAt),
+      lte(changelogEntries.publishedAt, now)
+    ),
+    orderBy: [desc(changelogEntries.viewCount), desc(changelogEntries.id)],
+    limit,
+    columns: { id: true, title: true, viewCount: true, publishedAt: true },
+  })
+
+  return entries.map((entry) => ({
+    id: entry.id,
+    title: entry.title,
+    viewCount: entry.viewCount,
+    publishedAt: entry.publishedAt as Date,
+  }))
 }

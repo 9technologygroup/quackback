@@ -19,7 +19,7 @@
  * the login UI would render a button that 404s on click.
  */
 
-import { getTenantSettings } from '@/lib/server/domains/settings/settings.service'
+import { getWorkspaceSettings } from '@/lib/server/domains/settings/settings.service'
 import { getTierLimits } from '@/lib/server/domains/settings/tier-limits.service'
 import { getConfiguredIntegrationTypes } from '@/lib/server/domains/platform-credentials/platform-credential.service'
 import {
@@ -28,6 +28,17 @@ import {
 } from '@/lib/server/domains/settings/identity-providers.service'
 import { AUTH_CREDENTIAL_PREFIX, getAllAuthProviders } from './auth-providers'
 import { isSignInMethodEnabled } from '@/lib/shared/signin-methods'
+import { cacheGet, cacheSet, CACHE_KEYS } from '@/lib/server/cache'
+import { localCacheGet, localCacheSet, settingsLocalTtlMs } from '@/lib/server/local-cache'
+
+/**
+ * TTL for the cached registered-provider list. A generous backstop: every
+ * write that could change the list (identity_provider / sso_verified_domain
+ * mutations, platform-credential save/delete, authConfig.oauth toggles)
+ * already invalidates the key eagerly, so this only bounds the window for a
+ * missed invalidation.
+ */
+const REGISTERED_AUTH_PROVIDERS_TTL_SECONDS = 300
 
 /**
  * The set of OIDC provider `registrationId`s the auth runtime registers
@@ -64,9 +75,40 @@ export async function getRegisteredOidcProviderIds(
   return ids
 }
 
+/**
+ * The registered-provider id list surfaced to the login UI on every app
+ * bootstrap. Cached in Redis (~5min TTL) because it runs on a hot bootstrap
+ * path and otherwise issues DB reads against identity_provider +
+ * sso_verified_domain on every request. Invalidated eagerly by every write
+ * that can change the list (via `invalidateSettingsCache()` and the
+ * platform-credential save/delete flows), so a stale list can only survive the
+ * TTL window if an invalidation is ever missed.
+ *
+ * Redis outages degrade gracefully: `cacheGet` returns null on failure, so we
+ * fall through to a fresh compute, and `cacheSet` swallows its own errors.
+ *
+ * Like the settings it is derived from, the list is also held in this process
+ * for the settings window (`settingsLocalTtlMs`), dropped at once by the same
+ * invalidations, so a busy process skips the cache read on most bootstraps.
+ */
 export async function getRegisteredAuthProviders(): Promise<string[]> {
-  const [tenantSettings, configuredTypes, identityProviders] = await Promise.all([
-    getTenantSettings(),
+  const key = CACHE_KEYS.REGISTERED_AUTH_PROVIDERS
+  const local = localCacheGet<string[]>(key)
+  if (local !== undefined) return [...local]
+
+  let ids = await cacheGet<string[]>(key)
+  if (!ids) {
+    ids = await computeRegisteredAuthProviders()
+    await cacheSet(key, ids, REGISTERED_AUTH_PROVIDERS_TTL_SECONDS)
+  }
+  const ttlMs = settingsLocalTtlMs()
+  if (ttlMs > 0) localCacheSet(key, [...ids], ttlMs)
+  return ids
+}
+
+async function computeRegisteredAuthProviders(): Promise<string[]> {
+  const [workspaceSettings, configuredTypes, identityProviders] = await Promise.all([
+    getWorkspaceSettings(),
     getConfiguredIntegrationTypes(),
     listIdentityProviders(),
   ])
@@ -80,7 +122,7 @@ export async function getRegisteredAuthProviders(): Promise<string[]> {
   // on the Better-Auth instance only when `authConfig.oauth` has it enabled.
   // Default-false: if the admin hasn't opted in, the runtime skips
   // registration even if creds exist, and we mirror that here.
-  const unifiedOAuth = (tenantSettings?.authConfig?.oauth ?? {}) as Record<
+  const unifiedOAuth = (workspaceSettings?.authConfig?.oauth ?? {}) as Record<
     string,
     boolean | undefined
   >

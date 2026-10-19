@@ -2,20 +2,34 @@
  * Internal shared helpers for settings sub-modules.
  * NOT part of the public API — import from settings.service instead.
  */
-import { db } from '@/lib/server/db'
-import { cacheDel, CACHE_KEYS } from '@/lib/server/redis'
-import { NotFoundError, InternalError, ValidationError } from '@/lib/shared/errors'
+import { db, eq, settings, type Database, type Transaction } from '@/lib/server/db'
+import { cacheDel, CACHE_KEYS } from '@/lib/server/cache'
+import { DomainException, InternalError, NotFoundError } from '@/lib/shared/errors'
 import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
+import { isEmptyTiptapDoc } from '@/lib/shared/utils/is-empty-tiptap-doc'
 import { logger } from '@/lib/server/logger'
 import {
   DEFAULT_PORTAL_CONFIG,
-  PORTAL_WELCOME_CARD_TITLE_MAX,
+  DEFAULT_WIDGET_CONFIG,
+  EMPTY_WELCOME_BODY,
+  LEGACY_PORTAL_CONFIG,
+  LEGACY_WIDGET_CONFIG,
+  type PortalConfig,
   type PortalWelcomeCard,
+  type WidgetConfig,
+  workspaceAllowsAnonymous,
 } from './settings.types'
+import type { TiptapContent } from '@/lib/shared/db-types'
 
 const log = logger.child({ component: 'settings-helpers' })
 
 export type SettingsRecord = NonNullable<Awaited<ReturnType<typeof db.query.settings.findFirst>>>
+
+function storedJsonIsBlank(json: string | null): boolean {
+  if (!json) return true
+  const trimmed = json.trim()
+  return trimmed === '' || trimmed === 'null'
+}
 
 /** @internal */
 export function parseJsonConfig<T extends object>(json: string | null, defaultValue: T): T {
@@ -25,6 +39,28 @@ export function parseJsonConfig<T extends object>(json: string | null, defaultVa
   } catch {
     return defaultValue
   }
+}
+
+/**
+ * Merge stored JSON over `legacyDefault` so missing nested keys keep their
+ * historical off values. Null/empty blobs use `currentDefault` (new installs).
+ */
+export function parseStoredConfig<T extends object>(
+  json: string | null,
+  currentDefault: T,
+  legacyDefault: T
+): T {
+  if (storedJsonIsBlank(json)) return currentDefault
+  try {
+    return deepMerge(legacyDefault, JSON.parse(json as string))
+  } catch {
+    return currentDefault
+  }
+}
+
+/** @internal */
+export function parseWidgetConfig(json: string | null): WidgetConfig {
+  return parseStoredConfig(json, DEFAULT_WIDGET_CONFIG, LEGACY_WIDGET_CONFIG)
 }
 
 /** @internal */
@@ -62,16 +98,67 @@ export function deepMerge<T extends object>(target: T, source: Partial<T>): T {
   return result
 }
 
+/*
+ * The settings row is read through one of two tiers.
+ *
+ * - requireSettings(): the row, read fresh from the database. Every
+ *   read-modify-write starts from a fresh read (writeMetadataKey reads under
+ *   the row lock), so a write is never based on a copy.
+ * - requireSettingsCached() / findSettingsCached(): the row inside the workspace
+ *   settings (getWorkspaceSettings), for every read-only path. A request reads
+ *   it at most once whichever of the two it asks through, this process reuses
+ *   it for a few seconds (local-cache.ts) and the kv cache for longer.
+ *   invalidateSettingsCache(), which every settings write calls, forgets all
+ *   three, so the writing request and the next one see the write; another
+ *   process sees it once its local copy expires. Date columns arrive as ISO
+ *   strings after the kv round trip.
+ *
+ * A getter whose value can feed a write takes a SettingsFreshness argument:
+ * 'fresh' when the caller derives what it writes (or deletes) from the value.
+ */
+
 /** @internal */
-export async function requireSettings(): Promise<SettingsRecord> {
-  const org = await db.query.settings.findFirst()
+export async function requireSettings(
+  executor: Database | Transaction = db
+): Promise<SettingsRecord> {
+  const org = await executor.query.settings.findFirst()
   if (!org) throw new NotFoundError('SETTINGS_NOT_FOUND', 'Settings not found')
   return org
 }
 
+/** Which tier a getter reads: 'fresh' when its value feeds a write. */
+export type SettingsFreshness = 'cached' | 'fresh'
+
+/** @internal */
+export function readSettingsRow(freshness: SettingsFreshness = 'cached'): Promise<SettingsRecord> {
+  return freshness === 'fresh' ? requireSettings() : requireSettingsCached()
+}
+
+/** @internal */
+export async function requireSettingsCached(): Promise<SettingsRecord> {
+  const org = await findSettingsCached()
+  if (!org) throw new NotFoundError('SETTINGS_NOT_FOUND', 'Settings not found')
+  return org
+}
+
+/**
+ * {@link requireSettingsCached} for callers that treat a missing row as a
+ * state rather than an error: null before the workspace has one.
+ *
+ * @internal
+ */
+export async function findSettingsCached(): Promise<SettingsRecord | null> {
+  // Dynamic import: settings.service imports these helpers at module scope,
+  // so a static import here would be a load-time cycle.
+  const { getWorkspaceSettingsRow } = await import('./settings.service')
+  return getWorkspaceSettingsRow()
+}
+
 /** @internal */
 export function wrapDbError(operation: string, error: unknown): never {
-  if (error instanceof NotFoundError || error instanceof ValidationError) throw error
+  // Named refusals (402/403/404/…) must stay themselves. Wrapping a
+  // TierLimitError here turned branding custom-colour saves into 500s.
+  if (error instanceof DomainException) throw error
   const message = error instanceof Error ? error.message : 'Unknown error'
   throw new InternalError('DATABASE_ERROR', `Failed to ${operation}: ${message}`, error)
 }
@@ -79,13 +166,169 @@ export function wrapDbError(operation: string, error: unknown): never {
 /** @internal */
 export async function invalidateSettingsCache(): Promise<void> {
   log.info('invalidating settings cache')
-  await cacheDel(CACHE_KEYS.TENANT_SETTINGS)
+  // REGISTERED_AUTH_PROVIDERS is derived from authConfig.oauth (part of workspace
+  // settings) and the identity_provider list; every identity-provider write
+  // funnels through here, so drop it alongside the settings row.
+  await cacheDel(CACHE_KEYS.WORKSPACE_SETTINGS, CACHE_KEYS.REGISTERED_AUTH_PROVIDERS)
+}
+
+/**
+ * The `settings.metadata` bag as an object to change one key of.
+ *
+ * The bag is one text column that many writers keep a key in, including
+ * writers that are not settings pages, so a write must carry every key it
+ * found. An absent bag (NULL, blank or JSON `null`) holds nothing and starts
+ * empty. A bag that is present but is not a JSON object cannot be carried, and
+ * writing a fresh object over it would erase every key in it, so this throws
+ * instead and the write is abandoned with the stored text untouched.
+ *
+ * @internal
+ */
+export function parseMetadataBag(
+  stored: string | null,
+  context: { settingsId: string; key: string }
+): Record<string, unknown> {
+  if (storedJsonIsBlank(stored)) return {}
+  let bag: unknown = null
+  let parseError: unknown
+  try {
+    bag = JSON.parse(stored as string)
+  } catch (error) {
+    parseError = error
+  }
+  if (typeof bag === 'object' && bag !== null && !Array.isArray(bag)) {
+    return bag as Record<string, unknown>
+  }
+  const err = new InternalError(
+    'SETTINGS_METADATA_INVALID',
+    'Stored workspace metadata is not a JSON object, so it was left unchanged',
+    parseError
+  )
+  log.error(
+    { err, settingsId: context.settingsId, key: context.key, storedLength: stored?.length },
+    'settings metadata is not a JSON object; refusing to overwrite it'
+  )
+  throw err
+}
+
+/**
+ * Write one key in the `settings.metadata` JSON bag, keeping every sibling
+ * key, then bust the settings cache once the write has committed.
+ *
+ * The read, the change and the write happen under the settings row lock, so
+ * two writers of different keys cannot lose each other's key. A bag that is
+ * present but unreadable is refused rather than replaced (see
+ * {@link parseMetadataBag}).
+ *
+ * `value` may be a function of the stored bag, for a partial update that
+ * merges over what is stored: it is called with the locked row's text, the
+ * text this write replaces, never an earlier or cached read. Returns the value
+ * written.
+ *
+ * @internal
+ */
+export async function writeMetadataKey<T>(
+  key: string,
+  value: T | ((storedMetadata: string | null) => T),
+  options: SettingsWriteOptions = {}
+): Promise<T> {
+  const write = async (tx: Database | Transaction) => {
+    const [row] = await tx
+      .select({ id: settings.id, metadata: settings.metadata })
+      .from(settings)
+      .limit(1)
+      .for('update')
+    if (!row) throw new NotFoundError('SETTINGS_NOT_FOUND', 'Settings not found')
+
+    const bag = parseMetadataBag(row.metadata, { settingsId: row.id, key })
+    const computed =
+      typeof value === 'function'
+        ? (value as (storedMetadata: string | null) => T)(row.metadata)
+        : value
+    bag[key] = computed
+    await tx
+      .update(settings)
+      .set({ metadata: JSON.stringify(bag) })
+      .where(eq(settings.id, row.id))
+    return computed
+  }
+  const next = options.executor ? await write(options.executor) : await db.transaction(write)
+  if (!options.executor) await invalidateSettingsCache()
+  return next
+}
+
+/**
+ * Stored welcome card, including the legacy `{ enabled, title, body }`
+ * shape repaired by {@link resolveWelcomeCard} on read.
+ *
+ * @internal
+ */
+export type StoredWelcomeCard = {
+  enabled?: boolean
+  title?: string
+  body?: TiptapContent
+}
+
+/**
+ * Read-time repair of a stored welcome card to `{ body }`.
+ *
+ * - `enabled: true` and a non-empty title → prepend a level-2 heading
+ *   node to `body.content`, then drop `title` and `enabled`.
+ * - `enabled: false` → empty body (intentionally discards disabled drafts).
+ * - `enabled` absent (the post-simplification `{ body }` write) → body as stored.
+ *
+ * @internal
+ */
+export function resolveWelcomeCard(
+  card: StoredWelcomeCard | PortalWelcomeCard | undefined
+): PortalWelcomeCard {
+  if (!card) return { body: EMPTY_WELCOME_BODY }
+
+  const stored = card as StoredWelcomeCard
+  if (stored.enabled === false) return { body: EMPTY_WELCOME_BODY }
+
+  const body = stored.body ?? EMPTY_WELCOME_BODY
+  if (stored.enabled !== true) return { body }
+
+  const title = stored.title?.trim() ?? ''
+  if (!title) return { body }
+
+  const heading: TiptapContent = {
+    type: 'heading',
+    attrs: { level: 2 },
+    content: [{ type: 'text', text: title }],
+  }
+  return {
+    body: {
+      type: 'doc',
+      content: [heading, ...(body.content ?? [])],
+    },
+  }
+}
+
+/**
+ * Parse stored portalConfig and repair the welcome card to `{ body }`.
+ *
+ * @internal
+ */
+export function parsePortalConfig(json: string | null): PortalConfig {
+  const parsed = parseStoredConfig(json, DEFAULT_PORTAL_CONFIG, LEGACY_PORTAL_CONFIG)
+  return {
+    ...parsed,
+    // The anonymous switch reads the way the server gates it: on only when
+    // stored as on. Merging in the default would show it on (and write it on
+    // with the next unrelated save) while every gate denies.
+    features: { ...parsed.features, allowAnonymous: workspaceAllowsAnonymous(json) },
+    welcomeCard: resolveWelcomeCard(parsed.welcomeCard),
+  }
 }
 
 /**
  * Merge a partial `welcomeCard` update into the stored card. Unlike
  * {@link deepMerge}, the `body` field is replaced wholesale — a TipTap
  * doc with no `content` must clear the previous content, not retain it.
+ * The result is always the resolved `{ body }` shape (legacy enabled/title
+ * are dropped on write).
  *
  * @internal
  */
@@ -95,27 +338,27 @@ export function mergeWelcomeCard(
 ): PortalWelcomeCard {
   const base = existing ?? DEFAULT_PORTAL_CONFIG.welcomeCard!
   if (!input) return existing ?? base
-  return { ...base, ...input }
+  return { body: input.body ?? base.body }
 }
 
 /**
- * Project a stored welcome card for public consumption. Disabled cards
- * have draft title/body that must not leak through the public portal
- * config endpoint.
+ * Project a stored welcome card for public consumption. Empty bodies
+ * (including legacy disabled cards after {@link resolveWelcomeCard})
+ * are omitted so the portal renderer has nothing to show.
  *
  * @internal
  */
 export function publicWelcomeCard(
-  card: PortalWelcomeCard | undefined
+  card: StoredWelcomeCard | PortalWelcomeCard | undefined
 ): PortalWelcomeCard | undefined {
-  if (!card?.enabled) return undefined
-  return card
+  const resolved = resolveWelcomeCard(card)
+  if (isEmptyTiptapDoc(resolved.body)) return undefined
+  return resolved
 }
 
 /**
  * Normalize a partial `welcomeCard` update before it's merged into stored
- * portalConfig. Trims the title, enforces the length cap, and runs the
- * TipTap body through the standard sanitizer.
+ * portalConfig. Runs the TipTap body through the standard sanitizer.
  *
  * @internal
  */
@@ -124,18 +367,13 @@ export function normalizeWelcomeCardInput(
 ): Partial<PortalWelcomeCard> | undefined {
   if (!input) return input
   const normalized: Partial<PortalWelcomeCard> = { ...input }
-  if (typeof input.title === 'string') {
-    const trimmed = input.title.trim()
-    if (trimmed.length > PORTAL_WELCOME_CARD_TITLE_MAX) {
-      throw new ValidationError(
-        'WELCOME_CARD_TITLE_TOO_LONG',
-        `Welcome card title must be ${PORTAL_WELCOME_CARD_TITLE_MAX} characters or fewer`
-      )
-    }
-    normalized.title = trimmed
-  }
   if (input.body !== undefined) {
     normalized.body = sanitizeTiptapContent(input.body)
   }
   return normalized
+}
+
+/** A caller transaction owns commit and cache invalidation. */
+export interface SettingsWriteOptions {
+  executor?: Database | Transaction
 }

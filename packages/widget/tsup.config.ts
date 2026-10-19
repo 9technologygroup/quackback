@@ -7,9 +7,12 @@ export default defineConfig([
     entry: {
       index: 'src/index.ts',
       'react/index': 'src/react/index.ts',
+      version: 'src/version.ts',
     },
     format: ['esm', 'cjs'],
-    dts: true,
+    // Declarations come from `tsc --emitDeclarationOnly` (TypeScript 7).
+    // tsup's dts worker still imports the old compiler API (`ts.sys`).
+    dts: false,
     sourcemap: true,
     target: 'es2020',
     clean: true,

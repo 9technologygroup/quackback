@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock the email package before importing the handler
 vi.mock('@quackback/email', () => ({
@@ -6,16 +6,83 @@ vi.mock('@quackback/email', () => ({
   sendNewCommentEmail: vi.fn(),
   sendChangelogPublishedEmail: vi.fn(),
   sendPostMentionEmail: vi.fn().mockResolvedValue({ sent: true }),
+  sendTicketEventEmail: vi.fn().mockResolvedValue({ sent: true }),
+  sendNoteMentionEmail: vi.fn().mockResolvedValue({ sent: true }),
 }))
 
+/**
+ * The sending-identity guard, re-asked at SEND time.
+ *
+ * The target builder resolved a From when the event was enqueued; this hook
+ * runs after the queue, which can be minutes later and is certainly after a
+ * scheduled re-check could have un-verified the domain. Mocked here so this
+ * suite can pin THAT the guard runs and that its answer is what goes out — the
+ * rule it applies has its own tests.
+ */
+const permittedSendingIdentity = vi.fn<(from: string | null) => Promise<string | null>>(
+  async (from) => from
+)
+vi.mock('@/lib/server/domains/channel-accounts/outbound-identity', () => ({
+  permittedSendingIdentity: (from: string | null) => permittedSendingIdentity(from),
+}))
+
+const { emailBudgetAvailable } = vi.hoisted(() => ({
+  emailBudgetAvailable: vi.fn(async () => true),
+}))
+vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
+  emailBudgetAvailable: () => emailBudgetAvailable(),
+}))
+
+/**
+ * The `email` child logger, observed: the real logger with only this handler's
+ * warn and error spied, so the level a failed send is reported at is readable.
+ */
+const emailLog = vi.hoisted(() => ({ warn: vi.fn(), error: vi.fn() }))
+vi.mock('@/lib/server/logger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/server/logger')>()
+  const realChild = actual.logger.child.bind(actual.logger)
+  const logger = Object.create(actual.logger)
+  logger.child = (bindings: Record<string, unknown>) => {
+    const child = realChild(bindings)
+    if (bindings.component !== 'email') return child
+    return Object.assign(Object.create(child), { warn: emailLog.warn, error: emailLog.error })
+  }
+  return { ...actual, logger }
+})
+
+// Threading helpers are pure but read env-derived domains; force a known domain
+// so the created-root Message-ID assertion is deterministic.
+vi.stubEnv('EMAIL_FROM', 'Support <support@acme.test>')
+
 import { emailHook } from '../handlers/email'
-import { sendStatusChangeEmail, sendNewCommentEmail, sendPostMentionEmail } from '@quackback/email'
-import type { EmailTarget, EmailConfig } from '../hook-types'
+// The real error class, from the transport module rather than the mocked
+// package entry: a hand-written stand-in for it stops tracking the shape the
+// moment the shape changes, which is how the classification regression this
+// guards against went unnoticed.
+import { SesEmailError } from '@quackback/email/ses'
+import { currentEmailIdempotencyKey } from '@quackback/email/idempotency'
+import {
+  sendStatusChangeEmail,
+  sendNewCommentEmail,
+  sendChangelogPublishedEmail,
+  sendPostMentionEmail,
+  sendTicketEventEmail,
+  sendNoteMentionEmail,
+} from '@quackback/email'
+import type {
+  EmailTarget,
+  EmailConfig,
+  TicketEmailConfig,
+  NoteMentionEmailConfig,
+} from '../hook-types'
 import type { EventData } from '../types'
 
 const mockStatusChangeEmail = vi.mocked(sendStatusChangeEmail)
 const mockNewCommentEmail = vi.mocked(sendNewCommentEmail)
+const mockChangelogPublishedEmail = vi.mocked(sendChangelogPublishedEmail)
 const mockPostMentionEmail = vi.mocked(sendPostMentionEmail)
+const mockTicketEventEmail = vi.mocked(sendTicketEventEmail)
+const mockNoteMentionEmail = vi.mocked(sendNoteMentionEmail)
 
 // The email handler only reads event.type, so data is irrelevant for these tests
 const statusChangedEvent = {
@@ -40,7 +107,10 @@ const postCreatedEvent = {
 } as EventData
 
 const baseTarget: EmailTarget = {
-  email: 'user@example.com',
+  // The delivery handler receives an address that was already resolved at
+  // construction; the brand does not survive the outbox's JSON round trip, so
+  // a fixture asserts it the same way the handler does.
+  email: 'user@example.com' as EmailTarget['email'],
   unsubscribeUrl: 'https://example.com/unsubscribe',
 }
 
@@ -52,6 +122,44 @@ const baseConfig = {
 } satisfies EmailConfig
 
 describe('emailHook', () => {
+  beforeEach(() => {
+    emailBudgetAvailable.mockReset()
+    emailBudgetAvailable.mockResolvedValue(true)
+  })
+
+  describe('idempotency', () => {
+    // The key a provider dedupes on, read from inside the send exactly as the
+    // transport reads it.
+    async function keyFor(jobId: string | undefined): Promise<string | undefined> {
+      let seen: string | undefined
+      mockStatusChangeEmail.mockImplementationOnce(async () => {
+        seen = currentEmailIdempotencyKey()
+        return { sent: true }
+      })
+      await emailHook.run(
+        statusChangedEvent,
+        baseTarget,
+        { ...baseConfig, previousStatus: 'open', newStatus: 'in_progress' },
+        jobId === undefined ? undefined : { jobId }
+      )
+      return seen
+    }
+
+    it('sends the same key on every attempt of one hook job, and a new one per job', async () => {
+      const first = await keyFor('evt-1:email:user@example.com')
+      const retry = await keyFor('evt-1:email:user@example.com')
+      const other = await keyFor('evt-2:email:user@example.com')
+      expect(first).toMatch(/^qb-[0-9a-f]{64}$/)
+      expect(retry).toBe(first)
+      expect(other).toMatch(/^qb-[0-9a-f]{64}$/)
+      expect(other).not.toBe(first)
+    })
+
+    it('sends no key for a run with no job id', async () => {
+      expect(await keyFor(undefined)).toBeUndefined()
+    })
+  })
+
   describe('when email is configured (sent: true)', () => {
     it('sends status change email and returns success', async () => {
       mockStatusChangeEmail.mockResolvedValue({ sent: true })
@@ -98,6 +206,69 @@ describe('emailHook', () => {
         logoUrl: 'https://example.com/logo.png',
       })
     })
+    it('sends changelog published email with the full rendered body and returns success', async () => {
+      mockChangelogPublishedEmail.mockResolvedValue({ sent: true })
+      const changelogPublishedEvent = {
+        id: 'evt-test',
+        type: 'changelog.published',
+        timestamp: new Date().toISOString(),
+        actor: { type: 'user', displayName: 'Test User' },
+      } as EventData
+
+      const result = await emailHook.run(changelogPublishedEvent, baseTarget, {
+        workspaceName: 'TestWorkspace',
+        logoUrl: 'https://example.com/logo.png',
+        changelogTitle: 'May Release',
+        changelogUrl: 'https://example.com/changelog/changelog_01',
+        contentPreview: 'short preview',
+        contentHtml: '<p>Intro</p><p><img src="https://example.com/x.png" alt="Shot" /></p>',
+      })
+
+      expect(result).toEqual({ success: true })
+      expect(mockChangelogPublishedEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: 'user@example.com',
+          changelogTitle: 'May Release',
+          changelogUrl: 'https://example.com/changelog/changelog_01',
+          contentPreview: 'short preview',
+          contentHtml: '<p>Intro</p><p><img src="https://example.com/x.png" alt="Shot" /></p>',
+        })
+      )
+    })
+
+    it('skips changelog mail when the monthly broadcast budget is exhausted', async () => {
+      mockChangelogPublishedEmail.mockClear()
+      emailBudgetAvailable.mockResolvedValueOnce(false)
+      const changelogPublishedEvent = {
+        id: 'evt-test',
+        type: 'changelog.published',
+        timestamp: new Date().toISOString(),
+        actor: { type: 'user', displayName: 'Test User' },
+      } as EventData
+
+      const result = await emailHook.run(changelogPublishedEvent, baseTarget, {
+        workspaceName: 'TestWorkspace',
+        changelogTitle: 'May Release',
+        changelogUrl: 'https://example.com/changelog/changelog_01',
+      })
+
+      expect(result).toEqual({ success: true })
+      expect(mockChangelogPublishedEmail).not.toHaveBeenCalled()
+    })
+
+    it('still sends feedback status mail when the broadcast budget is exhausted', async () => {
+      emailBudgetAvailable.mockResolvedValueOnce(false)
+      mockStatusChangeEmail.mockResolvedValue({ sent: true })
+
+      const result = await emailHook.run(statusChangedEvent, baseTarget, {
+        ...baseConfig,
+        previousStatus: 'open',
+        newStatus: 'in_progress',
+      })
+
+      expect(result).toEqual({ success: true })
+      expect(mockStatusChangeEmail).toHaveBeenCalled()
+    })
   })
 
   describe('when email is not configured (sent: false)', () => {
@@ -129,8 +300,21 @@ describe('emailHook', () => {
   })
 
   describe('error handling', () => {
+    /**
+     * The error the transport really throws, not an approximation of it. A
+     * connection that is refused reaches the send path already wrapped: the
+     * socket code survives on `code`, there is no HTTP status, and the wrapper
+     * declares itself retryable. This hook reads `code`, so a transport that
+     * dropped it in favour of the SDK's generic error name would make a network
+     * blip look like a permanent failure and kill the job.
+     */
     it('returns failure with shouldRetry for network errors', async () => {
-      const error = Object.assign(new Error('Connection refused'), { code: 'ECONNREFUSED' })
+      const error = new SesEmailError(
+        'SES email send failed: connect ECONNREFUSED 127.0.0.1:443',
+        null,
+        'ECONNREFUSED',
+        true
+      )
       mockStatusChangeEmail.mockRejectedValue(error)
 
       const result = await emailHook.run(statusChangedEvent, baseTarget, {
@@ -140,8 +324,28 @@ describe('emailHook', () => {
       })
 
       expect(result.success).toBe(false)
-      expect(result.error).toBe('Connection refused')
+      expect(result.error).toBe('SES email send failed: connect ECONNREFUSED 127.0.0.1:443')
       expect(result.shouldRetry).toBe(true)
+    })
+
+    /**
+     * The same failure as it arrives if the transport keeps only the SDK's
+     * error name. Nothing downstream can tell this from a rejected message, so
+     * the job dies on the first blip — which is what this hook must never do
+     * with a recoverable one.
+     */
+    it('would not retry the same failure stripped of its socket code', async () => {
+      mockStatusChangeEmail.mockRejectedValue(
+        new SesEmailError('SES email send failed: connect ECONNREFUSED', null, 'Error', false)
+      )
+
+      const result = await emailHook.run(statusChangedEvent, baseTarget, {
+        ...baseConfig,
+        previousStatus: 'open',
+        newStatus: 'closed',
+      })
+
+      expect(result.shouldRetry).toBe(false)
     })
 
     it('returns failure without retry for non-retryable errors', async () => {
@@ -156,6 +360,69 @@ describe('emailHook', () => {
       expect(result.success).toBe(false)
       expect(result.error).toBe('Invalid template')
       expect(result.shouldRetry).toBe(false)
+    })
+  })
+
+  /**
+   * A throttled send on a bulk announcement is expected and retried by the
+   * queue. It is a warning until the attempt that ends the job, so an error
+   * line keeps meaning mail that did not go.
+   */
+  describe('log level of a failed send', () => {
+    const statusConfig = { ...baseConfig, previousStatus: 'open', newStatus: 'closed' }
+    const throttled = () =>
+      new SesEmailError(
+        'SES email send failed: Maximum sending rate exceeded.',
+        429,
+        'TooManyRequestsException',
+        true
+      )
+
+    beforeEach(() => {
+      emailLog.warn.mockClear()
+      emailLog.error.mockClear()
+    })
+
+    it('warns about a throttled send the queue will try again', async () => {
+      mockStatusChangeEmail.mockRejectedValue(throttled())
+      const result = await emailHook.run(statusChangedEvent, baseTarget, statusConfig, {
+        jobId: 'job-1',
+        finalAttempt: false,
+      })
+      expect(result.shouldRetry).toBe(true)
+      expect(emailLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event_type: 'post.status_changed' }),
+        'email send failed'
+      )
+      expect(emailLog.error).not.toHaveBeenCalled()
+    })
+
+    it('reports the same failure at error on the last attempt', async () => {
+      mockStatusChangeEmail.mockRejectedValue(throttled())
+      await emailHook.run(statusChangedEvent, baseTarget, statusConfig, {
+        jobId: 'job-1',
+        finalAttempt: true,
+      })
+      expect(emailLog.error).toHaveBeenCalledWith(expect.anything(), 'email send failed')
+      expect(emailLog.warn).not.toHaveBeenCalled()
+    })
+
+    it('reports a failure no retry can fix at error, attempts left or not', async () => {
+      mockStatusChangeEmail.mockRejectedValue(
+        new SesEmailError('SES email send failed: not verified', 400, 'MessageRejected', false)
+      )
+      await emailHook.run(statusChangedEvent, baseTarget, statusConfig, {
+        jobId: 'job-1',
+        finalAttempt: false,
+      })
+      expect(emailLog.error).toHaveBeenCalledWith(expect.anything(), 'email send failed')
+      expect(emailLog.warn).not.toHaveBeenCalled()
+    })
+
+    it('reports at error when the caller cannot say whether another attempt follows', async () => {
+      mockStatusChangeEmail.mockRejectedValue(throttled())
+      await emailHook.run(statusChangedEvent, baseTarget, statusConfig)
+      expect(emailLog.error).toHaveBeenCalledWith(expect.anything(), 'email send failed')
     })
   })
 
@@ -225,5 +492,206 @@ describe('emailHook — post.mentioned', () => {
         excerpt: 'Hey @alice, what do you think?',
       })
     )
+  })
+})
+
+describe('emailHook — ticket + SLA lifecycle', () => {
+  const evt = (type: string): EventData =>
+    ({
+      id: 'evt-t',
+      type,
+      timestamp: new Date().toISOString(),
+      actor: { type: 'user' },
+    }) as EventData
+
+  const ticketConfig = (
+    over: Partial<TicketEmailConfig>
+  ): TicketEmailConfig & Record<string, unknown> => ({
+    kind: 'created',
+    workspaceName: 'Acme',
+    ticketLabel: '#1',
+    title: 'Cannot log in',
+    ticketId: 'ticket_1',
+    ctaUrl: 'https://p/support/ticket/ticket_1',
+    ...over,
+  })
+
+  beforeEach(() => {
+    mockTicketEventEmail.mockClear()
+    mockTicketEventEmail.mockResolvedValue({ sent: true })
+    permittedSendingIdentity.mockReset().mockImplementation(async (from) => from)
+  })
+
+  it.each([
+    ['ticket.created', 'created'],
+    ['ticket.replied', 'reply'],
+    ['ticket.status_changed', 'status_resolved'],
+    ['ticket.assigned', 'assigned'],
+    ['sla.approaching_breach', 'sla_warning'],
+    ['sla.breached', 'sla_breach'],
+  ] as const)('routes %s → sendTicketEventEmail(kind=%s)', async (type, kind) => {
+    const config = kind.startsWith('sla')
+      ? ticketConfig({
+          kind,
+          ticketId: undefined,
+          ctaUrl: 'https://p/admin/inbox?i=conversation_1',
+        })
+      : ticketConfig({ kind })
+    const result = await emailHook.run(evt(type), baseTarget, config)
+    expect(result).toEqual({ success: true })
+    expect(mockTicketEventEmail).toHaveBeenCalledTimes(1)
+    expect(mockTicketEventEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'user@example.com', kind, ctaUrl: config.ctaUrl })
+    )
+  })
+
+  it('created email carries the deterministic ticket root id as its own Message-ID', async () => {
+    await emailHook.run(evt('ticket.created'), baseTarget, ticketConfig({ kind: 'created' }))
+    expect(mockTicketEventEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'ticket-1@acme.test',
+        inReplyTo: undefined,
+        references: undefined,
+      })
+    )
+  })
+
+  it('a later ticket email mints a fresh Message-ID and References the root', async () => {
+    await emailHook.run(evt('ticket.replied'), baseTarget, ticketConfig({ kind: 'reply' }))
+    const args = mockTicketEventEmail.mock.calls[0][0]
+    expect(args.messageId).toMatch(/^ticket-1\..+@acme\.test$/)
+    expect(args.inReplyTo).toBe('ticket-1@acme.test')
+    expect(args.references).toEqual(['ticket-1@acme.test'])
+  })
+
+  it('an SLA email (no ticket id) threads on nothing', async () => {
+    await emailHook.run(
+      evt('sla.breached'),
+      baseTarget,
+      ticketConfig({ kind: 'sla_breach', ticketId: undefined })
+    )
+    const args = mockTicketEventEmail.mock.calls[0][0]
+    expect(args.messageId).toBeUndefined()
+    expect(args.inReplyTo).toBeUndefined()
+    expect(args.references).toBeUndefined()
+  })
+
+  it('re-asks the guard at send time, and sends as the answer it gives', async () => {
+    // Not the address the payload carried. Between enqueue and send, a domain
+    // can stop being verified — the scheduled re-check demotes one whose
+    // records have gone — and the send is the moment the claim is made.
+    permittedSendingIdentity.mockResolvedValue('support@tenant-a.example')
+    await emailHook.run(
+      evt('ticket.created'),
+      baseTarget,
+      ticketConfig({ kind: 'created', from: 'stale@tenant-a.example' })
+    )
+    expect(permittedSendingIdentity).toHaveBeenCalledWith('stale@tenant-a.example')
+    expect(mockTicketEventEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ from: 'support@tenant-a.example' })
+    )
+  })
+
+  it('falls back to the platform sender when the guard refuses', async () => {
+    // A refusal is a fallback, not a dropped mail: the message still goes, from
+    // an address that is honestly ours.
+    permittedSendingIdentity.mockResolvedValue(null)
+    await emailHook.run(
+      evt('ticket.created'),
+      baseTarget,
+      ticketConfig({ kind: 'created', from: 'support@tenant-a.example' })
+    )
+    expect(mockTicketEventEmail).toHaveBeenCalledWith(expect.objectContaining({ from: undefined }))
+  })
+
+  it('still rejects a genuinely unsupported type', async () => {
+    const result = await emailHook.run(
+      { id: 'x', type: 'post.created', timestamp: '', actor: { type: 'user' } } as EventData,
+      baseTarget,
+      baseConfig
+    )
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('Unsupported event type')
+  })
+})
+
+describe('emailHook — conversation.note_mentioned', () => {
+  const noteMentionedEvent = {
+    id: 'evt-note-mention',
+    type: 'conversation.note_mentioned',
+    timestamp: new Date().toISOString(),
+    actor: { type: 'user', principalId: 'principal_author', displayName: 'Jane' },
+    data: {
+      conversationId: 'conversation_1',
+      conversationMessageId: 'conversation_msg_1',
+      mentionedPrincipalIds: ['principal_one'],
+      authorName: 'Jane',
+      preview: 'can you take a look at the refund policy here?',
+    },
+  } as unknown as EventData
+
+  const noteMentionConfig: NoteMentionEmailConfig & Record<string, unknown> = {
+    workspaceName: 'Acme Support',
+    conversationId: 'conversation_1',
+    authorName: 'Jane',
+    preview: 'can you take a look at the refund policy here?',
+    ctaUrl: 'https://w.example/admin/inbox?i=conversation_1',
+    preferencesUrl: 'https://w.example/settings/preferences',
+  }
+
+  beforeEach(() => {
+    mockNoteMentionEmail.mockClear()
+    mockNoteMentionEmail.mockResolvedValue({ sent: true })
+  })
+
+  it('sends the note-mention alert with the author, preview and inbox link', async () => {
+    const result = await emailHook.run(noteMentionedEvent, baseTarget, noteMentionConfig)
+
+    expect(result).toEqual({ success: true })
+    expect(mockNoteMentionEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'user@example.com',
+        authorName: 'Jane',
+        preview: 'can you take a look at the refund policy here?',
+        conversationUrl: 'https://w.example/admin/inbox?i=conversation_1',
+        workspaceName: 'Acme Support',
+        preferencesUrl: 'https://w.example/settings/preferences',
+        logoUrl: undefined,
+      })
+    )
+  })
+
+  it('mints a fresh Message-ID and References the conversation note-thread root', async () => {
+    await emailHook.run(noteMentionedEvent, baseTarget, noteMentionConfig)
+    const args = mockNoteMentionEmail.mock.calls[0][0]
+    expect(args.messageId).toMatch(/^note\.1\..+@acme\.test$/)
+    expect(args.inReplyTo).toBe('note.1@acme.test')
+    expect(args.references).toEqual(['note.1@acme.test'])
+  })
+
+  it('threads every alert on one conversation together while keeping ids unique', async () => {
+    await emailHook.run(noteMentionedEvent, baseTarget, noteMentionConfig)
+    await emailHook.run(noteMentionedEvent, baseTarget, noteMentionConfig)
+    const [first, second] = mockNoteMentionEmail.mock.calls.map((c) => c[0])
+    expect(first.messageId).not.toBe(second.messageId)
+    expect(first.references).toEqual(second.references)
+  })
+
+  it('threads on nothing when the config carries no conversation id', async () => {
+    await emailHook.run(noteMentionedEvent, baseTarget, {
+      ...noteMentionConfig,
+      conversationId: '',
+    })
+    const args = mockNoteMentionEmail.mock.calls[0][0]
+    expect(args.messageId).toBeUndefined()
+    expect(args.inReplyTo).toBeUndefined()
+    expect(args.references).toBeUndefined()
+  })
+
+  it('reports success without sending when email is not configured', async () => {
+    mockNoteMentionEmail.mockResolvedValue({ sent: false })
+    expect(await emailHook.run(noteMentionedEvent, baseTarget, noteMentionConfig)).toEqual({
+      success: true,
+    })
   })
 })

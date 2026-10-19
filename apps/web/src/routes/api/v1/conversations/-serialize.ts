@@ -1,4 +1,4 @@
-import type { ConversationDTO, ChatMessageDTO } from '@/lib/shared/chat/types'
+import type { ConversationDTO, ConversationMessageDTO } from '@/lib/shared/conversation/types'
 import { realEmail } from '@/lib/shared/anonymous-email'
 
 /** Public, stable conversation shape for the read API. */
@@ -19,7 +19,7 @@ export function serializeConversation(dto: ConversationDTO) {
 }
 
 /** Public, stable message shape for the read API. */
-export function serializeMessage(dto: ChatMessageDTO) {
+export function serializeMessage(dto: ConversationMessageDTO) {
   return {
     id: dto.id,
     conversationId: dto.conversationId,
@@ -29,5 +29,6 @@ export function serializeMessage(dto: ChatMessageDTO) {
     authorName: dto.author?.displayName ?? null,
     content: dto.content,
     createdAt: dto.createdAt,
+    editedAt: dto.editedAt ?? null,
   }
 }

@@ -1,42 +1,23 @@
-import { createFileRoute, notFound, Outlet } from '@tanstack/react-router'
-import {
-  getPublicCategoryBySlugFn,
-  listPublicArticlesForCategoryFn,
-  listPublicCategoriesFn,
-} from '@/lib/server/functions/help-center'
-import { getSubcategories } from '@/components/help-center/help-center-utils'
+import { createFileRoute, redirect, notFound, Outlet } from '@tanstack/react-router'
+import { getPublicCategoryBySlugFn } from '@/lib/server/functions/help-center'
+import { hcCollectionPath } from '@/lib/shared/help-center-url'
+import type { HelpCenterConfig } from '@/lib/shared/types/settings'
 
+/**
+ * Legacy `/hc/categories/{slug}` → `/hc/{locale}/collections/{urlId}-{slug}`.
+ */
 export const Route = createFileRoute('/_portal/hc/categories/$categorySlug')({
-  loader: async ({ params }) => {
-    let category: Awaited<ReturnType<typeof getPublicCategoryBySlugFn>>
-    try {
-      category = await getPublicCategoryBySlugFn({ data: { slug: params.categorySlug } })
-    } catch {
-      throw notFound()
-    }
-
-    const [articles, allCategories] = await Promise.all([
-      listPublicArticlesForCategoryFn({ data: { categoryId: category.id } }),
-      listPublicCategoriesFn({ data: {} }),
-    ])
-
-    const subcategories = getSubcategories(allCategories, category.id)
-
-    const subcategoryArticles = await Promise.all(
-      subcategories.map(async (sub) => ({
-        ...sub,
-        articles: await listPublicArticlesForCategoryFn({ data: { categoryId: sub.id } }),
-      }))
-    )
-
-    return { category, articles, subcategories: subcategoryArticles, allCategories }
-  },
-  head: ({ loaderData }) => {
-    if (!loaderData) return {}
-    const { category } = loaderData
-    return {
-      meta: [{ title: `${category.name} - Help Center` }],
-    }
+  beforeLoad: async ({ params, context }) => {
+    const locale =
+      (context.settings?.helpCenterConfig as HelpCenterConfig | undefined)?.locales?.default ?? 'en'
+    const category = await getPublicCategoryBySlugFn({
+      data: { slug: params.categorySlug },
+    }).catch(() => null)
+    if (!category) throw notFound()
+    throw redirect({
+      href: hcCollectionPath({ locale, urlId: category.urlId, slug: category.slug }),
+      statusCode: 301,
+    })
   },
   component: () => <Outlet />,
 })

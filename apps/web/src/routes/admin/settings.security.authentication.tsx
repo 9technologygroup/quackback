@@ -1,50 +1,67 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import { assertRoutePermission } from '@/lib/shared/route-permission'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 import { settingsQueries } from '@/lib/client/queries/settings'
 import { adminQueries } from '@/lib/client/queries/admin'
-import { ShieldCheckIcon } from '@heroicons/react/24/solid'
-import { BackLink } from '@/components/ui/back-link'
-import { PageHeader } from '@/components/shared/page-header'
+import { SettingsPage } from '@/components/admin/settings/settings-page'
 import { AuthSettings, type AuthTab } from '@/components/admin/settings/security/auth-settings'
+import { readBatch } from '@/lib/client/queries/read-batch'
+import { warmQuery } from '@/lib/client/queries/warm-query'
+import { adminPageHead } from '@/lib/client/admin-head'
 
 const searchSchema = z.object({
-  // The Security/authentication page splits by CONCERN, not by surface:
+  // The Access & Security page splits by CONCERN, not by surface:
   //   - portal-access: who can view the portal (visibility, domains,
   //                    invites, segments, widget sign-in)
   //   - sign-in:       authentication methods for both surfaces in one
   //                    place (password + 2FA, magic link, social, OIDC)
   //                    with per-surface toggles inline.
+  //   - audit-log:     admin action history (merged from the retired
+  //                    standalone route).
   //
   // Backward compat: the old `team-access` tab is coerced to `sign-in`
   // so stale bookmarks don't crash.
   tab: z.preprocess(
     (v) => (v === 'team-access' ? 'sign-in' : v),
-    z.enum(['portal-access', 'sign-in']).optional()
+    z.enum(['portal-access', 'sign-in', 'audit-log']).optional()
   ),
 })
 
 export const Route = createFileRoute('/admin/settings/security/authentication')({
+  head: adminPageHead('Authentication settings'),
   validateSearch: searchSchema,
-  loader: async ({ context }) => {
-    const { requireWorkspaceRole } = await import('@/lib/server/functions/workspace-utils')
-    await requireWorkspaceRole({ data: { allowedRoles: ['admin'] } })
+  loader: async ({ context, location }) => {
+    assertRoutePermission(context.permissions, PERMISSIONS.AUTH_MANAGE)
 
     const { queryClient } = context
-    // Both tabs are loaded up front so switching tabs doesn't trigger
-    // a server round-trip. Auth config + portal config + provider
-    // credential status are cheap (settings cache hits).
-    await Promise.all([
-      queryClient.ensureQueryData(settingsQueries.authConfig()),
-      queryClient.ensureQueryData(settingsQueries.portalConfig()),
-      queryClient.ensureQueryData(adminQueries.authProviderStatus()),
-      // Prefetch for <IdentityProvidersSection> (Sign-in tab) which suspends.
-      queryClient.ensureQueryData(settingsQueries.identityProviders()),
-      // Prefetch for <RecoveryCodesSection> (Sign-in tab) which suspends.
-      queryClient.ensureQueryData(adminQueries.recoveryCodes()),
+    // The portal access tab (the default) lists the segments a private portal
+    // can admit, read under segment.view.
+    const tab = (location.search as { tab?: unknown }).tab ?? 'portal-access'
+    const warmSegments =
+      tab === 'portal-access' && !!context.permissions?.includes(PERMISSIONS.SEGMENT_VIEW)
+    // Auth + SSO reads are cheap and never 402. The audit feed is an Enterprise
+    // entitlement: prefetching it here took down Portal access and Sign-in
+    // on every other plan. The audit tab loads that query only when entitled.
+    const { listEntitlementsFn } = await import('@/lib/server/functions/entitlement-status')
+    const { ensureBillingCatalogue } = await import('@/lib/client/queries/billing')
+    const ensure = readBatch(queryClient)
+    const [, entitlements] = await Promise.all([
+      Promise.all([
+        ensure(settingsQueries.authConfig()),
+        ensure(settingsQueries.verifiedDomains()),
+        ensure(settingsQueries.portalConfig()),
+        ensure(adminQueries.authProviderStatus()),
+        ensure(settingsQueries.identityProviders()),
+        ensure(adminQueries.recoveryCodes()),
+        warmSegments ? warmQuery(ensure, adminQueries.segments()) : undefined,
+      ]),
+      listEntitlementsFn(),
+      ensureBillingCatalogue(queryClient, context.billingEnabled),
     ])
 
-    return {}
+    return { ssoEntitled: entitlements.sso, auditEntitled: entitlements.auditLog }
   },
   component: AuthenticationPage,
 })
@@ -57,26 +74,21 @@ function AuthenticationPage() {
   const portalConfigQuery = useSuspenseQuery(settingsQueries.portalConfig())
   const credentialStatusQuery = useSuspenseQuery(adminQueries.authProviderStatus())
 
-  // Tier flag from the root context (already populated by BootstrapData
-  // for every admin route).
-  const ctx = Route.useRouteContext()
-  const customOidcProviderTier =
-    (ctx as { tierLimits?: { features?: { customOidcProvider?: boolean } } }).tierLimits?.features
-      ?.customOidcProvider !== false
+  const { ssoEntitled, auditEntitled } = Route.useLoaderData()
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div className="lg:hidden">
-        <BackLink to="/admin/settings">Settings</BackLink>
-      </div>
-      <PageHeader icon={ShieldCheckIcon} title="Security" description="Choose how users sign in." />
+    <SettingsPage
+      page="/admin/settings/security/authentication"
+      width={tab === 'audit-log' ? 'wide' : 'form'}
+    >
       <AuthSettings
         tab={tab}
         teamAuthConfig={authConfigQuery.data}
         portalConfig={portalConfigQuery.data}
         credentialStatus={credentialStatusQuery.data}
-        customOidcProviderTier={customOidcProviderTier}
+        customOidcProviderTier={ssoEntitled}
+        auditEntitled={auditEntitled}
       />
-    </div>
+    </SettingsPage>
   )
 }

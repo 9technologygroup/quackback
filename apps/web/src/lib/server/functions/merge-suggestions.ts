@@ -10,11 +10,12 @@ import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import type { PostId } from '@quackback/ids'
 import { requireAuth } from './auth-helpers'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import {
-  getPendingSuggestionsForPost,
   getPendingMergeSuggestionSummary,
   getMergeSuggestionCountsForPosts,
 } from '@/lib/server/domains/merge-suggestions/merge-suggestion.service'
+import { loadMergeSuggestionsPanel } from '@/lib/server/domains/posts/post.admin-panels'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'merge-suggestions' })
@@ -34,24 +35,15 @@ const getMergeSuggestionsSchema = z.object({
 export const getMergeSuggestionsForPostFn = createServerFn({ method: 'GET' })
   .validator(getMergeSuggestionsSchema)
   .handler(async ({ data }) => {
-    await requireAuth({ roles: ['admin', 'member'] })
-    try {
-      const suggestions = await getPendingSuggestionsForPost(data.postId as PostId)
-      return suggestions.map((s) => ({
-        ...s,
-        createdAt: s.createdAt instanceof Date ? s.createdAt.toISOString() : s.createdAt,
-      }))
-    } catch (error) {
-      log.error({ err: error }, 'get merge suggestions for post failed')
-      return []
-    }
+    await requireAuth({ permission: PERMISSIONS.POST_VIEW_PRIVATE })
+    return loadMergeSuggestionsPanel(data.postId as PostId)
   })
 
 /**
  * Get total pending merge suggestion count (for summary bar).
  */
 export const fetchMergeSuggestionSummaryFn = createServerFn({ method: 'GET' }).handler(async () => {
-  await requireAuth({ roles: ['admin', 'member'] })
+  await requireAuth({ permission: PERMISSIONS.POST_VIEW_PRIVATE })
   try {
     return getPendingMergeSuggestionSummary()
   } catch (error) {
@@ -66,7 +58,7 @@ export const fetchMergeSuggestionSummaryFn = createServerFn({ method: 'GET' }).h
 export const fetchMergeSuggestionCountsForPostsFn = createServerFn({ method: 'POST' })
   .validator(z.object({ postIds: z.array(z.string()) }))
   .handler(async ({ data }) => {
-    await requireAuth({ roles: ['admin', 'member'] })
+    await requireAuth({ permission: PERMISSIONS.POST_VIEW_PRIVATE })
     try {
       return getMergeSuggestionCountsForPosts(data.postIds as PostId[])
     } catch (error) {

@@ -1,79 +1,333 @@
-import { describe, it, expect } from 'vitest'
-import { pickOnboardingStep } from '../-onboarding-step'
+import { describe, expect, it } from 'vitest'
+import { isSetupBlocked, mayForwardCompletedSetup, pickOnboardingStep } from '../-onboarding-step'
+import { DEFAULT_SETUP_STATE, type SetupState } from '@/lib/shared/db-types'
 
-describe('pickOnboardingStep', () => {
-  it('routes unauthenticated visitors to /onboarding/account', () => {
+function state(overrides: Partial<SetupState> = {}): SetupState {
+  return {
+    version: 2,
+    steps: { core: true, workspace: false, startingPoint: null },
+    ...overrides,
+  }
+}
+
+const principalRecord = { id: 'p1', role: 'admin' }
+
+describe('pickOnboardingStep V2', () => {
+  it('routes unauthenticated visitors to account creation', () => {
     expect(pickOnboardingStep({ session: null, state: null })).toBe('/onboarding/account')
   })
 
-  it('routes invitees to /auth/login', () => {
+  // Someone who is signed in but does not own setup has to land somewhere they
+  // can act on. Sending them to a sign-in route sends them back through the
+  // root gate, which returns them here, which sends them out again: the wizard
+  // has to answer with a page of its own instead.
+  it('routes a signed-in visitor with no principal to the terminal no-access page', () => {
     expect(
       pickOnboardingStep({
         session: { userId: 'u1' },
-        state: { needsInvitation: true, setupState: null, principalRecord: null },
+        state: { setupClaimedByOther: true, setupState: null, principalRecord: null },
       })
-    ).toBe('/auth/login')
+    ).toBe('/onboarding/no-access')
   })
 
-  it('routes mid-wizard users to /onboarding/boards when useCase + workspace are both done', () => {
+  // The variant that matters more: every account gets a principal at creation,
+  // so a non-owner signing in on the account screen arrives WITH one. Routing
+  // on the principal's presence sent them into the workspace form, where the
+  // bootstrap guard refused them mid-wizard.
+  it('routes a signed-in non-owner who already has a principal to the same page', () => {
     expect(
       pickOnboardingStep({
-        session: { userId: 'u1' },
+        session: { userId: 'u_visitor' },
         state: {
-          setupState: {
-            version: 1,
-            useCase: 'saas',
-            steps: { core: false, workspace: true, boards: false },
-          },
-          principalRecord: { id: 'p1', role: 'admin' },
+          setupClaimedByOther: true,
+          setupState: null,
+          principalRecord: { id: 'p_visitor', role: 'user' },
         },
       })
-    ).toBe('/onboarding/boards')
+    ).toBe('/onboarding/no-access')
   })
 
-  it('routes users with a useCase but no workspace to /onboarding/workspace', () => {
+  // The mirror image: nobody owns setup, so this caller may claim it even
+  // though their principal was created with the default role.
+  it('lets a first user with a default-role principal reach the workspace step', () => {
     expect(
       pickOnboardingStep({
-        session: { userId: 'u1' },
+        session: { userId: 'u_first' },
         state: {
-          setupState: {
-            version: 1,
-            useCase: 'saas',
-            steps: { core: false, workspace: false, boards: false },
-          },
-          principalRecord: { id: 'p1', role: 'admin' },
+          setupClaimedByOther: false,
+          setupState: null,
+          principalRecord: { id: 'p_first', role: 'user' },
         },
       })
     ).toBe('/onboarding/workspace')
   })
 
-  it('routes pre-seeded workspace WITHOUT useCase back to /onboarding/usecase', () => {
-    // Regression: when /api/v1/admin/setup pre-seeds
-    // setupState.steps.workspace without a useCase, the wizard's
-    // dynamic stepper still shows Use case as a remaining step.
-    // pickOnboardingStep used to drop the user straight on
-    // /onboarding/boards — silently checking off Use case. First-
-    // incomplete ordering keeps stepper + router agreed.
+  // A workspace a control plane created reads unclaimed until its owner
+  // arrives. Routing on `setupClaimedByOther` alone therefore walked a stranger
+  // into the workspace form — and, before the promoter refused, all the way to
+  // admin. Routing them to the terminal page is the same answer the form now
+  // gives, arrived at before they fill it in.
+  it('routes an arrival on a provisioned workspace to the terminal page', () => {
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u_visitor' },
+        state: {
+          setupClaimedByOther: false,
+          setupOpenToClaim: false,
+          setupState: null,
+          principalRecord: { id: 'p_visitor', role: 'user' },
+        },
+      })
+    ).toBe('/onboarding/no-access')
+  })
+
+  // A finished self-hosted install whose human admins are gone. Not
+  // provisioned, so `setupOpenToClaim` stays true, but the workspace step
+  // refuses the claim, so a non-admin who signs in must not be routed there.
+  it('routes a non-admin on a finished install with no admin to the terminal page', () => {
+    const state = {
+      setupClaimedByOther: false,
+      setupOpenToClaim: true,
+      setupClosedReason: 'setupComplete' as const,
+      setupState: null,
+      principalRecord: { id: 'p_visitor', role: 'user' },
+    }
+    expect(isSetupBlocked(state)).toBe(true)
+    expect(pickOnboardingStep({ session: { userId: 'u_visitor' }, state })).toBe(
+      '/onboarding/no-access'
+    )
+  })
+
+  // The control: one fact different, and the same caller belongs in the wizard.
+  it('still sends the first user of an unprovisioned install to the claim step', () => {
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u_first' },
+        state: {
+          setupClaimedByOther: false,
+          setupOpenToClaim: true,
+          setupState: null,
+          principalRecord: { id: 'p_first', role: 'user' },
+        },
+      })
+    ).toBe('/onboarding/workspace')
+  })
+
+  // The recorded owner of a provisioned workspace already holds admin, so the
+  // same "not open to claim" fact must not shut them out of their own setup.
+  it('does not shut the recorded owner out of a provisioned workspace', () => {
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u_owner' },
+        state: {
+          setupClaimedByOther: false,
+          setupOpenToClaim: false,
+          setupState: null,
+          principalRecord: { id: 'p_owner', role: 'admin' },
+        },
+      })
+    ).toBe('/onboarding/workspace')
+  })
+
+  it('sends a provisioned owner to Home after workspace details', () => {
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u_owner' },
+        state: {
+          setupClaimedByOther: false,
+          setupOpenToClaim: false,
+          setupState: state({ workspaceDetailsSeenAt: '2026-08-14T10:00:00.000Z' }),
+          principalRecord: { id: 'p_owner', role: 'admin' },
+        },
+      })
+    ).toBe('/admin')
+  })
+
+  it('skips the Cloud details form when a friendly hostname already exists', () => {
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u_owner' },
+        state: {
+          setupClaimedByOther: false,
+          setupOpenToClaim: false,
+          setupState: state(),
+          principalRecord: { id: 'p_owner', role: 'admin' },
+          platformHostname: 'acme.quackback.co.uk',
+        },
+      })
+    ).toBe('/admin')
+  })
+
+  it('does not let a pre-seeded outcome skip cloud workspace details', () => {
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u_owner' },
+        state: {
+          setupClaimedByOther: false,
+          setupOpenToClaim: false,
+          setupState: state({ useCase: 'product_feedback' }),
+          principalRecord: { id: 'p_owner', role: 'admin' },
+        },
+      })
+    ).toBe('/onboarding/workspace')
+  })
+
+  it('sends a provision-stamped owner to Home instead of a goal picker', () => {
+    const stamped = state({
+      workspaceDetailsSeenAt: '2026-08-14T10:00:00.000Z',
+      useCase: 'product_feedback',
+      completionSource: 'managed',
+      steps: {
+        core: true,
+        workspace: true,
+        startingPoint: {
+          outcome: 'product_feedback',
+          resourceType: 'none',
+          source: 'managed',
+          resolution: 'configured',
+          completedAt: '2026-08-14T10:00:00.000Z',
+        },
+      },
+    })
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u_owner' },
+        state: {
+          setupClaimedByOther: false,
+          setupOpenToClaim: false,
+          setupState: stamped,
+          principalRecord: { id: 'p_owner', role: 'admin' },
+        },
+      })
+    ).toBe('/admin')
+  })
+
+  // The workspace step is where a workspace is claimed, and the declarative
+  // config file can stamp the wizard's steps before anyone has ever signed in.
+  // Routing on the stamp alone sent the first user past the only place that
+  // hands out the first admin, into steps that then refuse them.
+  it('sends the first user of a pre-stamped workspace to the claim step anyway', () => {
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u_first' },
+        state: {
+          setupClaimedByOther: false,
+          setupState: state({
+            useCase: 'product_feedback',
+            steps: { core: true, workspace: true, startingPoint: null },
+          }),
+          principalRecord: { id: 'p_first', role: 'user' },
+        },
+      })
+    ).toBe('/onboarding/workspace')
+  })
+
+  // A workspace that arrives with its owner already seeded starts on the
+  // shipped setup state. That owner exists here already, so the wizard must
+  // open at the workspace step rather than ask them to create an account.
+  it('starts a seeded owner at the workspace step, not account creation', () => {
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'user_owner' },
+        state: {
+          setupClaimedByOther: false,
+          setupState: DEFAULT_SETUP_STATE,
+          principalRecord: { id: 'p_owner', role: 'admin' },
+        },
+      })
+    ).toBe('/onboarding/workspace')
+  })
+
+  it('combines a missing workspace or goal into one step', () => {
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u1' },
+        state: { setupState: state(), principalRecord },
+      })
+    ).toBe('/onboarding/workspace')
+  })
+
+  it('routes a configured workspace to Home', () => {
     expect(
       pickOnboardingStep({
         session: { userId: 'u1' },
         state: {
-          setupState: {
-            version: 1,
-            steps: { core: true, workspace: true, boards: false },
-          },
-          principalRecord: { id: 'p1', role: 'admin' },
+          setupState: state({
+            useCase: 'product_feedback',
+            steps: { core: true, workspace: true, startingPoint: null },
+          }),
+          principalRecord,
         },
       })
-    ).toBe('/onboarding/usecase')
+    ).toBe('/admin')
   })
 
-  it('falls back to /onboarding/usecase when nothing has been chosen', () => {
+  it('skips the Ready hallway once identity is saved', () => {
+    const completedAt = '2026-07-13T10:00:00.000Z'
+    const setupState = state({
+      useCase: 'customer_support',
+      steps: {
+        core: true,
+        workspace: true,
+        startingPoint: {
+          outcome: 'customer_support',
+          resourceType: 'messenger',
+          source: 'wizard',
+          resolution: 'configured',
+          completedAt,
+        },
+      },
+      completedAt,
+    })
     expect(
       pickOnboardingStep({
         session: { userId: 'u1' },
-        state: { setupState: null, principalRecord: null },
+        state: { setupState, principalRecord },
       })
-    ).toBe('/onboarding/usecase')
+    ).toBe('/admin')
+    expect(
+      pickOnboardingStep({
+        session: { userId: 'u1' },
+        state: {
+          setupState: { ...setupState, activationHandoffSeenAt: completedAt },
+          principalRecord,
+        },
+      })
+    ).toBe('/admin')
+  })
+})
+
+/**
+ * The wizard layout forwards past the steps when the setup state reads
+ * complete. Two callers must never be forwarded, because for them the step it
+ * forwards to sends them straight back: the terminal refusal, and anyone who
+ * has not been made an admin yet.
+ */
+describe('mayForwardCompletedSetup', () => {
+  it('forwards an admin on a wizard step', () => {
+    expect(mayForwardCompletedSetup({ pathname: '/onboarding/boards', userRole: 'admin' })).toBe(
+      true
+    )
+  })
+
+  it('never forwards anyone off the terminal refusal', () => {
+    expect(mayForwardCompletedSetup({ pathname: '/onboarding/no-access', userRole: 'admin' })).toBe(
+      false
+    )
+  })
+
+  // A config file can stamp a setup state complete before anyone has signed in.
+  // Forwarding this caller to the handoff walks them past the only step that
+  // hands out the first admin, and every later action then refuses them.
+  it('does not forward a caller who does not hold admin yet', () => {
+    expect(mayForwardCompletedSetup({ pathname: '/onboarding/workspace', userRole: 'user' })).toBe(
+      false
+    )
+    expect(mayForwardCompletedSetup({ pathname: '/onboarding/workspace', userRole: null })).toBe(
+      false
+    )
+    expect(
+      mayForwardCompletedSetup({ pathname: '/onboarding/workspace', userRole: 'member' })
+    ).toBe(false)
   })
 })

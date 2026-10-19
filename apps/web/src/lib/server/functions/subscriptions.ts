@@ -6,8 +6,11 @@ import { z } from 'zod'
 import { createServerFn } from '@tanstack/react-start'
 import { type PostId, type PrincipalId } from '@quackback/ids'
 import { requireAuth } from './auth-helpers'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import type { SubscriptionLevel } from '@/lib/server/domains/subscriptions/subscription.service'
-import { db, votes, eq, and } from '@/lib/server/db'
+import { db, postVotes, eq, and, inArray } from '@/lib/server/db'
+import { relatedPostIdsSubquery } from '@/lib/server/domains/posts/post.merge-ids'
+import { isUnsubscribeToken } from '@/lib/shared/unsubscribe-token'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'subscriptions' })
@@ -41,25 +44,20 @@ export const fetchSubscriptionStatus = createServerFn({ method: 'GET' })
   .validator(getSubscriptionStatusSchema)
   .handler(async ({ data }) => {
     log.debug({ post_id: data.postId }, 'fetch subscription status')
-    try {
-      const auth = await requireAuth({ roles: ['admin', 'member', 'user'] })
-      // Same gate as the write paths below. Without it, an authenticated
-      // portal user could probe any postId to confirm existence and
-      // learn their prior subscription level on team-only / segment-
-      // restricted boards. The round-2 fix patched a same-named
-      // function in functions/portal.ts; this is the one the
-      // subscription-bell UI actually imports.
-      await gateSubscriptionWrite(data.postId as PostId, auth)
+    const auth = await requireAuth()
+    // Same gate as the write paths below. Without it, an authenticated
+    // portal user could probe any postId to confirm existence and
+    // learn their prior subscription level on team-only / segment-
+    // restricted boards. The round-2 fix patched a same-named
+    // function in functions/portal.ts; this is the one the
+    // subscription-bell UI actually imports.
+    await gateSubscriptionWrite(data.postId as PostId, auth)
 
-      const { getSubscriptionStatus } =
-        await import('@/lib/server/domains/subscriptions/subscription.service')
-      const result = await getSubscriptionStatus(auth.principal.id, data.postId as PostId)
-      log.debug({ level: result.level }, 'subscription status fetched')
-      return result
-    } catch (error) {
-      log.error({ err: error }, 'fetch subscription status failed')
-      throw error
-    }
+    const { getSubscriptionStatus } =
+      await import('@/lib/server/domains/subscriptions/subscription.service')
+    const result = await getSubscriptionStatus(auth.principal.id, data.postId as PostId)
+    log.debug({ level: result.level }, 'subscription status fetched')
+    return result
   })
 
 // Helper: portal + per-post audience gate shared by all three write paths.
@@ -87,63 +85,48 @@ export const subscribeToPostFn = createServerFn({ method: 'POST' })
   .validator(subscribeToPostSchema)
   .handler(async ({ data }) => {
     log.debug({ post_id: data.postId, level: data.level }, 'subscribe to post')
-    try {
-      const auth = await requireAuth({ roles: ['admin', 'member', 'user'] })
-      await gateSubscriptionWrite(data.postId as PostId, auth)
+    const auth = await requireAuth()
+    await gateSubscriptionWrite(data.postId as PostId, auth)
 
-      const { subscribeToPost } =
-        await import('@/lib/server/domains/subscriptions/subscription.service')
-      await subscribeToPost(auth.principal.id, data.postId as PostId, data.reason || 'manual', {
-        level: data.level as SubscriptionLevel,
-      })
-      log.info({ post_id: data.postId }, 'post subscribed')
-      return { postId: data.postId }
-    } catch (error) {
-      log.error({ err: error }, 'subscribe to post failed')
-      throw error
-    }
+    const { subscribeToPost } =
+      await import('@/lib/server/domains/subscriptions/subscription.service')
+    await subscribeToPost(auth.principal.id, data.postId as PostId, data.reason || 'manual', {
+      level: data.level as SubscriptionLevel,
+    })
+    log.info({ post_id: data.postId }, 'post subscribed')
+    return { postId: data.postId }
   })
 
 export const unsubscribeFromPostFn = createServerFn({ method: 'POST' })
   .validator(unsubscribeFromPostSchema)
   .handler(async ({ data }) => {
     log.debug({ post_id: data.postId }, 'unsubscribe from post')
-    try {
-      const auth = await requireAuth({ roles: ['admin', 'member', 'user'] })
-      await gateSubscriptionWrite(data.postId as PostId, auth)
+    const auth = await requireAuth()
+    await gateSubscriptionWrite(data.postId as PostId, auth)
 
-      const { unsubscribeFromPost } =
-        await import('@/lib/server/domains/subscriptions/subscription.service')
-      await unsubscribeFromPost(auth.principal.id, data.postId as PostId)
-      log.info({ post_id: data.postId }, 'post unsubscribed')
-      return { postId: data.postId }
-    } catch (error) {
-      log.error({ err: error }, 'unsubscribe from post failed')
-      throw error
-    }
+    const { unsubscribeFromPost } =
+      await import('@/lib/server/domains/subscriptions/subscription.service')
+    await unsubscribeFromPost(auth.principal.id, data.postId as PostId)
+    log.info({ post_id: data.postId }, 'post unsubscribed')
+    return { postId: data.postId }
   })
 
 export const updateSubscriptionLevelFn = createServerFn({ method: 'POST' })
   .validator(updateSubscriptionLevelSchema)
   .handler(async ({ data }) => {
     log.debug({ post_id: data.postId, level: data.level }, 'update subscription level')
-    try {
-      const auth = await requireAuth({ roles: ['admin', 'member', 'user'] })
-      await gateSubscriptionWrite(data.postId as PostId, auth)
+    const auth = await requireAuth()
+    await gateSubscriptionWrite(data.postId as PostId, auth)
 
-      const { updateSubscriptionLevel } =
-        await import('@/lib/server/domains/subscriptions/subscription.service')
-      await updateSubscriptionLevel(
-        auth.principal.id,
-        data.postId as PostId,
-        data.level as SubscriptionLevel
-      )
-      log.info({ post_id: data.postId }, 'subscription level updated')
-      return { postId: data.postId }
-    } catch (error) {
-      log.error({ err: error }, 'update subscription level failed')
-      throw error
-    }
+    const { updateSubscriptionLevel } =
+      await import('@/lib/server/domains/subscriptions/subscription.service')
+    await updateSubscriptionLevel(
+      auth.principal.id,
+      data.postId as PostId,
+      data.level as SubscriptionLevel
+    )
+    log.info({ post_id: data.postId }, 'subscription level updated')
+    return { postId: data.postId }
   })
 
 // Admin mutation: update any voter's subscription level
@@ -162,52 +145,54 @@ export const adminUpdateVoterSubscriptionFn = createServerFn({ method: 'POST' })
       { post_id: data.postId, principal_id: data.principalId, level: data.level },
       'admin update voter subscription'
     )
-    try {
-      await requireAuth({ roles: ['admin', 'member'] })
+    await requireAuth({ permission: PERMISSIONS.POST_VOTE_ON_BEHALF })
 
-      const targetPrincipalId = data.principalId as PrincipalId
-      const targetPostId = data.postId as PostId
+    const targetPrincipalId = data.principalId as PrincipalId
+    const targetPostId = data.postId as PostId
 
-      const { unsubscribeFromPost, subscribeToPost, updateSubscriptionLevel } =
-        await import('@/lib/server/domains/subscriptions/subscription.service')
+    const { unsubscribeFromPost, subscribeToPost, updateSubscriptionLevel } =
+      await import('@/lib/server/domains/subscriptions/subscription.service')
 
-      // Verify the principal actually has a vote on this post
-      const [vote] = await db
-        .select({ id: votes.id })
-        .from(votes)
-        .where(and(eq(votes.postId, targetPostId), eq(votes.principalId, targetPrincipalId)))
-        .limit(1)
-      if (!vote) {
-        throw new Error('Principal does not have a vote on this post')
-      }
-      if (data.level === 'none') {
-        await unsubscribeFromPost(targetPrincipalId, targetPostId)
-      } else {
-        // Pass level directly to avoid intermediate over-subscribed state
-        await subscribeToPost(targetPrincipalId, targetPostId, 'manual', {
-          level: data.level as SubscriptionLevel,
-        })
-        await updateSubscriptionLevel(
-          targetPrincipalId,
-          targetPostId,
-          data.level as SubscriptionLevel
+    // Verify the principal has a vote on this thread (canonical or a
+    // merged source). Subscription writes go to the vote's post so a
+    // source-only voter is not rejected as "does not have a vote".
+    const [vote] = await db
+      .select({ id: postVotes.id, postId: postVotes.postId })
+      .from(postVotes)
+      .where(
+        and(
+          inArray(postVotes.postId, relatedPostIdsSubquery(targetPostId)),
+          eq(postVotes.principalId, targetPrincipalId)
         )
-      }
-
-      log.info({ post_id: data.postId }, 'voter subscription updated')
-      return { postId: data.postId, principalId: data.principalId, level: data.level }
-    } catch (error) {
-      log.error({ err: error }, 'admin update voter subscription failed')
-      throw error
+      )
+      .limit(1)
+    if (!vote) {
+      throw new Error('Principal does not have a vote on this post')
     }
+    const votePostId = vote.postId
+    if (data.level === 'none') {
+      await unsubscribeFromPost(targetPrincipalId, votePostId)
+    } else {
+      // Pass level directly to avoid intermediate over-subscribed state
+      await subscribeToPost(targetPrincipalId, votePostId, 'manual', {
+        level: data.level as SubscriptionLevel,
+      })
+      await updateSubscriptionLevel(targetPrincipalId, votePostId, data.level as SubscriptionLevel)
+    }
+
+    log.info({ post_id: data.postId }, 'voter subscription updated')
+    return { postId: data.postId, principalId: data.principalId, level: data.level }
   })
 
-// Token-based unsubscribe (no auth required - token is the auth)
-const processUnsubscribeTokenSchema = z.object({
-  token: z.string().uuid(),
+// Token-based unsubscribe (no auth required - token is the auth).
+// The token is accepted as any string and checked in the handler, so a
+// malformed link gets the typed `invalid` result rather than a thrown
+// validation error.
+const unsubscribeTokenInputSchema = z.object({
+  token: z.string(),
 })
 
-export type ProcessUnsubscribeTokenInput = z.infer<typeof processUnsubscribeTokenSchema>
+export type ProcessUnsubscribeTokenInput = z.infer<typeof unsubscribeTokenInputSchema>
 
 export interface UnsubscribeResult {
   success: boolean
@@ -219,9 +204,12 @@ export interface UnsubscribeResult {
 }
 
 export const processUnsubscribeTokenFn = createServerFn({ method: 'POST' })
-  .validator(processUnsubscribeTokenSchema)
+  .validator(unsubscribeTokenInputSchema)
   .handler(async ({ data }): Promise<UnsubscribeResult> => {
     log.debug('process unsubscribe token')
+    if (!isUnsubscribeToken(data.token)) {
+      return { success: false, error: 'invalid' }
+    }
     try {
       const { processUnsubscribeToken } =
         await import('@/lib/server/domains/subscriptions/subscription.service')
@@ -243,5 +231,31 @@ export const processUnsubscribeTokenFn = createServerFn({ method: 'POST' })
     } catch (error) {
       log.error({ err: error }, 'process unsubscribe token failed')
       return { success: false, error: 'failed' }
+    }
+  })
+
+export type UnsubscribePreview =
+  | { status: 'confirm'; action: string; postTitle?: string }
+  | { status: 'error'; error: 'invalid' | 'failed' }
+
+/**
+ * Read-only: what the link would unsubscribe from. Opening the page calls only
+ * this, so a scanner that prefetches the link changes nothing.
+ */
+export const previewUnsubscribeTokenFn = createServerFn({ method: 'GET' })
+  .validator(unsubscribeTokenInputSchema)
+  .handler(async ({ data }): Promise<UnsubscribePreview> => {
+    if (!isUnsubscribeToken(data.token)) {
+      return { status: 'error', error: 'invalid' }
+    }
+    try {
+      const { previewUnsubscribeToken } =
+        await import('@/lib/server/domains/subscriptions/subscription.service')
+      const preview = await previewUnsubscribeToken(data.token)
+      if (!preview) return { status: 'error', error: 'invalid' }
+      return { status: 'confirm', action: preview.action, postTitle: preview.postTitle }
+    } catch (error) {
+      log.error({ err: error }, 'preview unsubscribe token failed')
+      return { status: 'error', error: 'failed' }
     }
   })

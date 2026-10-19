@@ -1,11 +1,14 @@
 import type { PrincipalId, UserId, WorkspaceId } from '@quackback/ids'
-import { generateId } from '@quackback/ids'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import type { Role } from '@/lib/server/auth'
-import { auth } from '@/lib/server/auth'
-import { db, session, principal, eq, and, gt } from '@/lib/server/db'
+import { isTeamMember, sessionRole } from '@/lib/shared/roles'
+import { db, session, eq, and, gt } from '@/lib/server/db'
+import { ensurePrincipalForUser } from '@/lib/server/domains/principals/principal.factory'
+import { resolveUserAvatarUrl } from '@/lib/server/domains/principals/principal-display'
+import { rawSessionToken } from '@/lib/server/auth/session-token'
 import { shouldRollSession, WIDGET_SESSION_TTL_MS } from './widget-session-roll'
 import { logger } from '@/lib/server/logger'
+import type { AuthContext } from './auth-helpers'
 
 const log = logger.child({ component: 'widget-auth' })
 
@@ -26,6 +29,8 @@ export interface WidgetAuthContext {
     role: Role
     type: string
   }
+  /** False for workspace teammates — the widget must not mint a portal OTT. */
+  canPortalHandoff: boolean
 }
 
 /**
@@ -42,105 +47,94 @@ export async function getWidgetSession(opts?: {
   roll?: boolean
 }): Promise<WidgetAuthContext | null> {
   log.debug('get widget session')
-  try {
-    const headers = getRequestHeaders()
-    const authHeader = headers.get('authorization')
-    // Bearer is the widget's sole credential — the visitor's localStorage token.
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) || null : null
-    if (!token) return null
+  const headers = getRequestHeaders()
+  const authHeader = headers.get('authorization')
+  // Bearer is the widget's sole credential — the visitor's localStorage token.
+  // Anonymous sessions persist the signed set-auth-token form; normalize to
+  // the raw token the session table stores before comparing.
+  const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) || null : null
+  if (!bearer) return null
+  const token = rawSessionToken(bearer)
 
-    const sessionRecord = await db.query.session.findFirst({
-      where: and(eq(session.token, token), gt(session.expiresAt, new Date())),
-      with: { user: true },
-    })
+  const sessionRecord = await db.query.session.findFirst({
+    where: and(eq(session.token, token), gt(session.expiresAt, new Date())),
+    with: { user: true },
+  })
 
-    if (!sessionRecord?.user) return null
+  if (!sessionRecord?.user) return null
 
-    const userId = sessionRecord.userId as UserId
+  const userId = sessionRecord.userId as UserId
 
-    const { getSettings } = await import('./workspace')
-    const appSettings = await getSettings()
-    if (!appSettings) return null
+  const { getSettings } = await import('./workspace')
+  const appSettings = await getSettings()
+  if (!appSettings) return null
 
-    let principalRecord = await db.query.principal.findFirst({
-      where: eq(principal.userId, userId),
-    })
+  const { principal: principalRecord } = await ensurePrincipalForUser({
+    userId,
+    role: 'user',
+    displayName: sessionRecord.user.name,
+    avatarUrl: sessionRecord.user.image ?? null,
+  })
 
-    if (!principalRecord) {
-      const [created] = await db
-        .insert(principal)
-        .values({
-          id: generateId('principal'),
-          userId,
-          role: 'user',
-          displayName: sessionRecord.user.name,
-          avatarUrl: sessionRecord.user.image ?? null,
-          createdAt: new Date(),
-        })
-        .returning()
-      principalRecord = created
-    }
+  // Roll the session's expiry forward on active use so a returning visitor
+  // isn't cut off 7 days after their first mint. Gated to ≥24h since the last
+  // touch so rapid reloads don't each write.
+  if (opts?.roll && shouldRollSession(sessionRecord.updatedAt, Date.now())) {
+    const nowDate = new Date()
+    await db
+      .update(session)
+      .set({ expiresAt: new Date(nowDate.getTime() + WIDGET_SESSION_TTL_MS), updatedAt: nowDate })
+      .where(eq(session.token, token))
+  }
 
-    // Roll the session's expiry forward on active use so a returning visitor
-    // isn't cut off 7 days after their first mint. Gated to ≥24h since the last
-    // touch so rapid reloads don't each write.
-    if (opts?.roll && shouldRollSession(sessionRecord.updatedAt, Date.now())) {
-      const nowDate = new Date()
-      await db
-        .update(session)
-        .set({ expiresAt: new Date(nowDate.getTime() + WIDGET_SESSION_TTL_MS), updatedAt: nowDate })
-        .where(eq(session.token, token))
-    }
-
-    return {
-      settings: {
-        id: appSettings.id as WorkspaceId,
-        slug: appSettings.slug,
-        name: appSettings.name,
-      },
-      user: {
-        id: userId,
-        email: sessionRecord.user.email!, // Session users always have email
-        name: sessionRecord.user.name,
-        image: sessionRecord.user.image ?? null,
-      },
-      principal: {
-        id: principalRecord.id as PrincipalId,
-        role: principalRecord.role as Role,
-        type: principalRecord.type ?? 'user',
-      },
-    }
-  } catch (error) {
-    log.error({ err: error }, 'get widget session failed')
-    throw error
+  return {
+    settings: {
+      id: appSettings.id as WorkspaceId,
+      slug: appSettings.slug,
+      name: appSettings.name,
+    },
+    user: {
+      id: userId,
+      email: sessionRecord.user.email!, // Session users always have email
+      name: sessionRecord.user.name,
+      image: resolveUserAvatarUrl({
+        userImage: sessionRecord.user.image,
+        userImageKey: sessionRecord.user.imageKey,
+      }),
+    },
+    principal: {
+      id: principalRecord.id as PrincipalId,
+      // This function is widget-only. Always present portal-tier so a
+      // teammate (or a same-origin dashboard cookie reused as Bearer) cannot
+      // exercise team actions through widget endpoints.
+      role: sessionRole(principalRecord.role as Role, 'widget'),
+      type: principalRecord.type ?? 'user',
+    },
+    // A test customer must never reach a same-origin portal cookie: it would
+    // replace the teammate's own session in that browser.
+    canPortalHandoff: !isTeamMember(principalRecord.role) && !principalRecord.testOwnerPrincipalId,
   }
 }
 
-/**
- * Fallback auth for widget endpoints: check for a Better Auth session cookie.
- * This covers anonymous users who signed in via the anonymous plugin.
- * Returns a minimal auth context (principalId + type) or null.
- */
-export async function getWidgetBetterAuthFallback(
-  request: Request
-): Promise<{ principalId: PrincipalId; type: string } | null> {
-  try {
-    const sessionResult = await auth.api.getSession({
-      headers: new Headers(request.headers),
-    })
-    if (!sessionResult?.user) return null
-
-    const userId = sessionResult.user.id as UserId
-    const principalRecord = await db.query.principal.findFirst({
-      where: eq(principal.userId, userId),
-    })
-    if (!principalRecord) return null
-
-    return {
-      principalId: principalRecord.id as PrincipalId,
-      type: principalRecord.type,
-    }
-  } catch {
-    return null
+function toAuthContext(w: WidgetAuthContext): AuthContext {
+  return {
+    settings: { ...w.settings, logoKey: null },
+    user: w.user,
+    principal: w.principal,
+    permissions: [],
+    scope: 'widget',
   }
+}
+
+/** Widget BFF entry: Bearer session required. Never use requireAuth on widget surfaces. */
+export async function requireWidgetAuth(): Promise<AuthContext> {
+  const w = await getWidgetSession()
+  if (!w) throw new Error('Authentication required')
+  return toAuthContext(w)
+}
+
+/** Widget BFF entry: Bearer session if present. */
+export async function getOptionalWidgetAuth(): Promise<AuthContext | null> {
+  const w = await getWidgetSession()
+  return w ? toAuthContext(w) : null
 }

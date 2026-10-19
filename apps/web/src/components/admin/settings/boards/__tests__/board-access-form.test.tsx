@@ -9,17 +9,19 @@
  *   - "Private" preset locks everything to team
  *   - Custom tile is a non-interactive status indicator
  *   - Tier hierarchy: raising View auto-clamps Vote/Comment/Submit
- *   - Workspace anonymous-* feature flags block the Anyone cell + banner
+ *   - Workspace anonymous-* feature flags block the Everyone cell + banner
  *   - Auto-bump when workspace flips off while a cell sits on Anonymous
- *   - Save payload preserves `moderation` round-trip (passthrough only —
+ *   - Changes autosave; the payload preserves `moderation` round-trip (passthrough only;
  *     editing moderation lives in `<BoardModerationForm>`)
+ *   - The reply policy switch reads and autosaves `access.replyPolicy`, and a
+ *     save keeps every other access key
  *
  * The mutation, segments, and portalConfig queries are mocked. The
  * portalConfig mock is mutable so tests can flip workspace flags between
  * renders.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BoardAccessForm, PRESET_META } from '../board-access-form'
 import { DEFAULT_BOARD_ACCESS, type BoardAccess } from '@/lib/shared/db-types'
@@ -33,17 +35,22 @@ import type { BoardId } from '@quackback/ids'
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
     to,
+    search,
     children,
     className,
   }: {
     to: string
+    search?: { tab?: string }
     children: React.ReactNode
     className?: string
-  }) => (
-    <a href={to} className={className}>
-      {children}
-    </a>
-  ),
+  }) => {
+    const qs = search?.tab ? `?tab=${search.tab}` : ''
+    return (
+      <a href={`${to}${qs}`} className={className}>
+        {children}
+      </a>
+    )
+  },
 }))
 
 const mutate = vi.fn()
@@ -159,19 +166,21 @@ beforeEach(() => {
 describe('<BoardAccessForm> matrix visibility', () => {
   it('matrix is always visible, even for a preset-matching board', () => {
     renderForm(PUBLIC_ACCESS)
-    expect(screen.getByRole('button', { name: 'View: Anyone' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Vote: Signed-in' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Comment: Signed-in' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Submit posts: Signed-in' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'View: Everyone' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Vote: Signed-in users' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Comment: Signed-in users' })).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Submit posts: Signed-in users' })
+    ).toBeInTheDocument()
   })
 
   it('exposes all four action rows in the matrix', () => {
     renderForm(PUBLIC_ACCESS)
-    // Each action × Anyone column should exist
-    expect(screen.getByRole('button', { name: 'View: Anyone' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Vote: Anyone' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Comment: Anyone' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Submit posts: Anyone' })).toBeInTheDocument()
+    // Each action × Everyone column should exist
+    expect(screen.getByRole('button', { name: 'View: Everyone' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Vote: Everyone' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Comment: Everyone' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Submit posts: Everyone' })).toBeInTheDocument()
   })
 })
 
@@ -182,7 +191,7 @@ describe('<BoardAccessForm> matrix visibility', () => {
 describe('<BoardAccessForm> presets', () => {
   it('renders Public preset as active for asymmetric Public access', () => {
     renderForm(PUBLIC_ACCESS)
-    const publicBtn = screen.getByRole('button', { name: 'Public' })
+    const publicBtn = screen.getByRole('button', { name: 'Everyone' })
     expect(publicBtn.getAttribute('aria-pressed')).toBe('true')
   })
 
@@ -195,7 +204,7 @@ describe('<BoardAccessForm> presets', () => {
       segments: { view: [], vote: [], comment: [], submit: [] },
       moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
     })
-    const privateBtn = screen.getByRole('button', { name: 'Private' })
+    const privateBtn = screen.getByRole('button', { name: 'Team only' })
     expect(privateBtn.getAttribute('aria-pressed')).toBe('true')
   })
 
@@ -208,50 +217,54 @@ describe('<BoardAccessForm> presets', () => {
       segments: { view: [], vote: [], comment: [], submit: [] },
       moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Public' }))
-    expect(isCellSelected('View', 'Anyone')).toBe(true)
-    expect(isCellSelected('Vote', 'Signed-in')).toBe(true)
-    expect(isCellSelected('Comment', 'Signed-in')).toBe(true)
-    expect(isCellSelected('Submit posts', 'Signed-in')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Everyone' }))
+    expect(isCellSelected('View', 'Everyone')).toBe(true)
+    expect(isCellSelected('Vote', 'Signed-in users')).toBe(true)
+    expect(isCellSelected('Comment', 'Signed-in users')).toBe(true)
+    expect(isCellSelected('Submit posts', 'Signed-in users')).toBe(true)
   })
 
-  it('clicking a preset surfaces the save bar (preset change is dirty, not a reset)', () => {
+  it('clicking a preset marks the form dirty so it autosaves', () => {
     // Regression: applying a preset via form.reset() re-baselined the
-    // defaults so isDirty stayed false and the save dock never appeared,
-    // leaving the user unable to save a preset change. Presets must mark
-    // the form dirty.
-    renderForm({
-      view: 'team',
-      vote: 'team',
-      comment: 'team',
-      submit: 'team',
-      segments: { view: [], vote: [], comment: [], submit: [] },
-      moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
-    })
-    // Save bar hidden initially (clean form).
-    expect(
-      screen.getByRole('region', { name: /save changes/i }).getAttribute('data-dirty')
-    ).toBeNull()
-    // Click a different preset → form is now dirty → save bar appears.
-    fireEvent.click(screen.getByRole('button', { name: 'Public' }))
-    expect(screen.getByRole('region', { name: /save changes/i }).getAttribute('data-dirty')).toBe(
-      'true'
-    )
-    expect(screen.getByRole('button', { name: /save changes/i })).not.toBeDisabled()
+    // defaults so isDirty stayed false and the change was never saved.
+    // Presets must mark the form dirty.
+    vi.useFakeTimers()
+    try {
+      renderForm({
+        view: 'team',
+        vote: 'team',
+        comment: 'team',
+        submit: 'team',
+        segments: { view: [], vote: [], comment: [], submit: [] },
+        moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+      })
+      expect(mutate).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Everyone' }))
+      act(() => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(mutate).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('preset flips to Custom after editing a cell, and back to Public when restored', () => {
     renderForm(PUBLIC_ACCESS)
     // Start in Public
-    expect(screen.getByRole('button', { name: 'Public' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Everyone' }).getAttribute('aria-pressed')).toBe(
+      'true'
+    )
     // Tweak Vote → Team only ⇒ Custom
     clickTierCell('Vote', 'Team only')
-    expect(screen.getByRole('button', { name: 'Public' }).getAttribute('aria-pressed')).toBe(
+    expect(screen.getByRole('button', { name: 'Everyone' }).getAttribute('aria-pressed')).toBe(
       'false'
     )
     // Restore Vote → Signed-in ⇒ Public again
-    clickTierCell('Vote', 'Signed-in')
-    expect(screen.getByRole('button', { name: 'Public' }).getAttribute('aria-pressed')).toBe('true')
+    clickTierCell('Vote', 'Signed-in users')
+    expect(screen.getByRole('button', { name: 'Everyone' }).getAttribute('aria-pressed')).toBe(
+      'true'
+    )
   })
 
   it('Custom tile is non-interactive (role=status, not button)', () => {
@@ -270,10 +283,20 @@ describe('<BoardAccessForm> presets', () => {
     expect(status.getAttribute('aria-pressed')).toBe('true')
   })
 
-  it('Auth-only and Team-only preset tiles are removed', () => {
+  it('offers Everyone and Team only presets, named like the Boards list badges', () => {
     renderForm(PUBLIC_ACCESS)
     expect(screen.queryByRole('button', { name: 'Auth only' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Team only' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Public' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Private' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Team only' })).toHaveAttribute(
+      'aria-pressed',
+      'false'
+    )
+  })
+
+  it('shows no open-to-restrictive legend', () => {
+    renderForm(PUBLIC_ACCESS)
+    expect(screen.queryByText(/More restrictive/)).not.toBeInTheDocument()
   })
 })
 
@@ -307,9 +330,9 @@ describe('<BoardAccessForm> tier hierarchy', () => {
       segments: { view: [], vote: [], comment: [], submit: [] },
       moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
     })
-    expect(screen.getByRole('button', { name: 'Vote: Anyone' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Comment: Anyone' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Submit posts: Anyone' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Vote: Everyone' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Comment: Everyone' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Submit posts: Everyone' })).toBeDisabled()
   })
 })
 
@@ -318,7 +341,7 @@ describe('<BoardAccessForm> tier hierarchy', () => {
 // ---------------------------------------------------------------------------
 
 describe('<BoardAccessForm> workspace ceiling', () => {
-  it('disables Anyone cell on Vote/Comment/Submit rows when master switch is off', async () => {
+  it('disables Everyone cell on Vote/Comment/Submit rows when master switch is off', async () => {
     setWsFlags({ allowAnonymous: false })
     renderForm({
       view: 'anonymous',
@@ -329,18 +352,18 @@ describe('<BoardAccessForm> workspace ceiling', () => {
       moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
     })
     await waitFor(() => {
-      const voteAnon = screen.getByRole('button', { name: 'Vote: Anyone' })
+      const voteAnon = screen.getByRole('button', { name: 'Vote: Everyone' })
       expect(voteAnon).toBeDisabled()
       expect(voteAnon.getAttribute('data-disabled-reason')).toBe('workspace')
     })
-    const commentAnon = screen.getByRole('button', { name: 'Comment: Anyone' })
+    const commentAnon = screen.getByRole('button', { name: 'Comment: Everyone' })
     expect(commentAnon).toBeDisabled()
     expect(commentAnon.getAttribute('data-disabled-reason')).toBe('workspace')
-    const submitAnon = screen.getByRole('button', { name: 'Submit posts: Anyone' })
+    const submitAnon = screen.getByRole('button', { name: 'Submit posts: Everyone' })
     expect(submitAnon).toBeDisabled()
     expect(submitAnon.getAttribute('data-disabled-reason')).toBe('workspace')
-    // View row's Anyone cell is unaffected — view has no workspace ceiling.
-    expect(screen.getByRole('button', { name: 'View: Anyone' })).not.toBeDisabled()
+    // View row's Everyone cell is unaffected: view has no workspace ceiling.
+    expect(screen.getByRole('button', { name: 'View: Everyone' })).not.toBeDisabled()
   })
 
   it('shows the workspace-policy banner listing all three blocked actions together', async () => {
@@ -354,6 +377,11 @@ describe('<BoardAccessForm> workspace ceiling', () => {
       expect(banner.textContent).toMatch(/Submit/)
       expect(banner.textContent).not.toMatch(/\bView\b/)
     })
+    const link = screen.getByRole('link', { name: /Workspace access/i })
+    expect(link).toHaveAttribute(
+      'href',
+      '/admin/settings/security/authentication?tab=portal-access'
+    )
   })
 
   it('auto-bumps Anonymous cells on all three rows when the master switch flips off', async () => {
@@ -367,40 +395,53 @@ describe('<BoardAccessForm> workspace ceiling', () => {
       moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
     })
     await waitFor(() => {
-      expect(isCellSelected('Vote', 'Signed-in')).toBe(true)
+      expect(isCellSelected('Vote', 'Signed-in users')).toBe(true)
     })
-    expect(isCellSelected('Comment', 'Signed-in')).toBe(true)
-    expect(isCellSelected('Submit posts', 'Signed-in')).toBe(true)
+    expect(isCellSelected('Comment', 'Signed-in users')).toBe(true)
+    expect(isCellSelected('Submit posts', 'Signed-in users')).toBe(true)
   })
 })
 
 // ---------------------------------------------------------------------------
-// Save / discard
+// Autosave
 // ---------------------------------------------------------------------------
 
-describe('<BoardAccessForm> save', () => {
-  it('Save dock is collapsed until form is dirty', () => {
-    renderForm(PUBLIC_ACCESS)
-    const region = screen.getByRole('region', { name: /save changes/i })
-    expect(region.getAttribute('data-dirty')).toBeNull()
+function flushAutosave() {
+  act(() => {
+    vi.advanceTimersByTime(1000)
+  })
+}
+
+describe('<BoardAccessForm> autosave', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
-  it('Save dock surfaces once the form is dirty', () => {
+  it('renders no save dock or Save button', () => {
     renderForm(PUBLIC_ACCESS)
     clickTierCell('Comment', 'Team only')
-    const region = screen.getByRole('region', { name: /save changes/i })
-    expect(region.getAttribute('data-dirty')).toBe('true')
+    expect(screen.queryByRole('region', { name: /save changes/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /save changes/i })).not.toBeInTheDocument()
   })
 
-  it('disables Save when any action is on Segments tier with empty list', () => {
+  it('does not save until a cell changes', () => {
     renderForm(PUBLIC_ACCESS)
-    // Pick Segments on View — empty list ⇒ save disabled
-    clickTierCell('View', 'Segments')
-    const save = screen.getByRole('button', { name: /save changes/i })
-    expect(save).toBeDisabled()
+    flushAutosave()
+    expect(mutate).not.toHaveBeenCalled()
   })
 
-  it('submits the BoardAccess payload preserving moderation overrides', async () => {
+  it('does not save while an action is on Segments with no segment, and says why', () => {
+    renderForm(PUBLIC_ACCESS)
+    clickTierCell('View', 'Specific segments')
+    flushAutosave()
+    expect(mutate).not.toHaveBeenCalled()
+    expect(screen.getByText(/no segments are selected/i)).toBeInTheDocument()
+  })
+
+  it('saves the BoardAccess payload preserving moderation overrides', () => {
     renderForm({
       view: 'anonymous',
       vote: 'authenticated',
@@ -410,59 +451,122 @@ describe('<BoardAccessForm> save', () => {
       // Non-default moderation values to verify the form preserves them on save.
       moderation: { anonPosts: 'on', signedPosts: 'on', comments: 'off' },
     })
-    // Mark dirty by tweaking a cell.
     clickTierCell('Comment', 'Team only')
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    await waitFor(() =>
-      expect(mutate).toHaveBeenCalledWith({
-        boardId: BOARD_ID,
-        access: expect.objectContaining({
-          comment: 'team',
-          segments: expect.objectContaining({
-            view: expect.any(Array),
-            vote: expect.any(Array),
-            comment: expect.any(Array),
-            submit: expect.any(Array),
-          }),
-          moderation: { anonPosts: 'on', signedPosts: 'on', comments: 'off' },
+    flushAutosave()
+    expect(mutate).toHaveBeenCalledTimes(1)
+    expect(mutate).toHaveBeenCalledWith({
+      boardId: BOARD_ID,
+      access: expect.objectContaining({
+        comment: 'team',
+        segments: expect.objectContaining({
+          view: expect.any(Array),
+          vote: expect.any(Array),
+          comment: expect.any(Array),
+          submit: expect.any(Array),
         }),
-      })
-    )
+        moderation: { anonPosts: 'on', signedPosts: 'on', comments: 'off' },
+      }),
+    })
   })
 
-  it('Discard restores the original access', () => {
+  it('does not save when a change is undone before the pause ends', () => {
     renderForm(PUBLIC_ACCESS)
     clickTierCell('Comment', 'Team only')
-    expect(isCellSelected('Comment', 'Team only')).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: /discard/i }))
-    expect(isCellSelected('Comment', 'Signed-in')).toBe(true)
-    expect(isCellSelected('Comment', 'Team only')).toBe(false)
+    clickTierCell('Comment', 'Signed-in users')
+    flushAutosave()
+    expect(mutate).not.toHaveBeenCalled()
   })
 
-  it('raising view to team clears stale segment lists on cascaded actions', async () => {
+  it('does not save when a segment is ticked and unticked before the pause ends', () => {
+    renderForm({
+      ...PUBLIC_ACCESS,
+      vote: 'segments',
+      segments: { view: [], vote: ['seg_alpha'], comment: [], submit: [] },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Vote: Specific segments' }))
+    const beta = () => screen.getByText('Beta').closest('button') as HTMLButtonElement
+    fireEvent.click(beta())
+    fireEvent.click(beta())
+    flushAutosave()
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it('does not save just because the board was opened with a workspace ceiling', async () => {
+    vi.useRealTimers()
+    setWsFlags({ allowAnonymous: false })
+    renderForm({
+      ...PUBLIC_ACCESS,
+      vote: 'anonymous',
+      comment: 'anonymous',
+      submit: 'anonymous',
+    })
+    await waitFor(() => {
+      expect(isCellSelected('Vote', 'Signed-in users')).toBe(true)
+    })
+    await new Promise((r) => setTimeout(r, 800))
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it('keeps the bumped value in the next saved payload', async () => {
+    vi.useRealTimers()
+    setWsFlags({ allowAnonymous: false })
+    renderForm({
+      ...PUBLIC_ACCESS,
+      vote: 'anonymous',
+      comment: 'anonymous',
+      submit: 'anonymous',
+    })
+    await waitFor(() => {
+      expect(isCellSelected('Vote', 'Signed-in users')).toBe(true)
+    })
+    clickTierCell('Comment', 'Team only')
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1))
+    expect(mutate.mock.calls[0][0].access).toMatchObject({
+      vote: 'authenticated',
+      comment: 'team',
+      submit: 'authenticated',
+    })
+  })
+
+  it('keeps a queued edit when an older refetch lands before the save fires', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const ui = (access: BoardAccess) => (
+      <QueryClientProvider client={client}>
+        <BoardAccessForm board={{ id: BOARD_ID, access }} />
+      </QueryClientProvider>
+    )
+    const { rerender } = render(ui(PUBLIC_ACCESS))
+    clickTierCell('Comment', 'Team only')
+    rerender(ui({ ...PUBLIC_ACCESS, submit: 'team' }))
+    expect(isCellSelected('Comment', 'Team only')).toBe(true)
+    flushAutosave()
+    expect(mutate).toHaveBeenCalledTimes(1)
+    expect(mutate.mock.calls[0][0].access).toMatchObject({ comment: 'team' })
+  })
+
+  it('raising view to team clears stale segment lists on cascaded actions', () => {
     renderForm(PUBLIC_ACCESS)
     // 1. set Submit posts -> Segments; the empty-list picker opens.
-    clickTierCell('Submit posts', 'Segments')
+    clickTierCell('Submit posts', 'Specific segments')
     // 2. pick a segment from the open picker so submit.segments is non-empty.
     const alphaOption = screen.getByText('Alpha').closest('button')!
     fireEvent.click(alphaOption)
     // 3. raise View -> Team only (cascades vote/comment/submit up to team).
     clickTierCell('View', 'Team only')
-    // 4. save and assert the cascaded submit dropped its stale segment list.
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    await waitFor(() =>
-      expect(mutate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          access: expect.objectContaining({
-            submit: 'team',
-            segments: expect.objectContaining({ submit: [] }),
-          }),
-        })
-      )
+    // 4. the autosave carries the cascaded submit without its stale segment list.
+    flushAutosave()
+    expect(mutate).toHaveBeenCalledTimes(1)
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        access: expect.objectContaining({
+          submit: 'team',
+          segments: expect.objectContaining({ submit: [] }),
+        }),
+      })
     )
   })
 
-  it('clicking a preset clears stale segment selections', async () => {
+  it('clicking a preset clears stale segment selections', () => {
     renderForm({
       view: 'segments',
       vote: 'segments',
@@ -476,17 +580,125 @@ describe('<BoardAccessForm> save', () => {
       },
       moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Public' }))
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    await waitFor(() =>
-      expect(mutate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          access: expect.objectContaining({
-            segments: { view: [], vote: [], comment: [], submit: [] },
-          }),
-        })
-      )
+    fireEvent.click(screen.getByRole('button', { name: 'Everyone' }))
+    flushAutosave()
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        access: expect.objectContaining({
+          segments: { view: [], vote: [], comment: [], submit: [] },
+        }),
+      })
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Replies (access.replyPolicy)
+// ---------------------------------------------------------------------------
+
+describe('<BoardAccessForm> reply policy', () => {
+  const REPLY_LABEL = 'Only the post author and team members can reply'
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function replySwitch() {
+    return screen.getByRole('switch', { name: REPLY_LABEL })
+  }
+
+  it('renders the switch off when access.replyPolicy is absent', () => {
+    renderForm(PUBLIC_ACCESS)
+    expect(replySwitch()).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it("renders the switch off for an explicit replyPolicy: 'anyone'", () => {
+    renderForm({ ...PUBLIC_ACCESS, replyPolicy: 'anyone' })
+    expect(replySwitch()).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it("renders the switch on for replyPolicy: 'author-only'", () => {
+    renderForm({ ...PUBLIC_ACCESS, replyPolicy: 'author-only' })
+    expect(replySwitch()).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('opening the board saves nothing', () => {
+    renderForm({ ...PUBLIC_ACCESS, replyPolicy: 'author-only' })
+    flushAutosave()
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it("autosaves replyPolicy: 'author-only' with every other access key unchanged", () => {
+    const access: BoardAccess = {
+      view: 'anonymous',
+      vote: 'authenticated',
+      comment: 'authenticated',
+      submit: 'segments',
+      segments: { view: [], vote: [], comment: [], submit: ['seg_alpha'] },
+      moderation: { anonPosts: 'on', signedPosts: 'inherit', comments: 'off' },
+    }
+    renderForm(access)
+    fireEvent.click(replySwitch())
+    expect(replySwitch()).toHaveAttribute('aria-checked', 'true')
+    flushAutosave()
+    expect(mutate).toHaveBeenCalledTimes(1)
+    expect(mutate).toHaveBeenCalledWith({
+      boardId: BOARD_ID,
+      access: { ...access, replyPolicy: 'author-only' },
+    })
+  })
+
+  it("switching off saves an explicit replyPolicy: 'anyone'", () => {
+    const access: BoardAccess = { ...PUBLIC_ACCESS, replyPolicy: 'author-only' }
+    renderForm(access)
+    fireEvent.click(replySwitch())
+    expect(replySwitch()).toHaveAttribute('aria-checked', 'false')
+    flushAutosave()
+    expect(mutate).toHaveBeenCalledTimes(1)
+    expect(mutate).toHaveBeenCalledWith({
+      boardId: BOARD_ID,
+      access: { ...access, replyPolicy: 'anyone' },
+    })
+  })
+
+  it('does not save when the switch is turned back before the pause ends', () => {
+    renderForm({ ...PUBLIC_ACCESS, replyPolicy: 'author-only' })
+    fireEvent.click(replySwitch())
+    fireEvent.click(replySwitch())
+    flushAutosave()
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it('a tier change keeps an existing author-only replyPolicy', () => {
+    const access: BoardAccess = { ...PUBLIC_ACCESS, replyPolicy: 'author-only' }
+    renderForm(access)
+    clickTierCell('Comment', 'Team only')
+    flushAutosave()
+    expect(mutate).toHaveBeenCalledWith({
+      boardId: BOARD_ID,
+      access: { ...access, comment: 'team' },
+    })
+  })
+
+  it('a preset click keeps an existing author-only replyPolicy', () => {
+    renderForm({
+      view: 'team',
+      vote: 'team',
+      comment: 'team',
+      submit: 'team',
+      segments: { view: [], vote: [], comment: [], submit: [] },
+      moderation: { anonPosts: 'inherit', signedPosts: 'inherit', comments: 'inherit' },
+      replyPolicy: 'author-only',
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Everyone' }))
+    flushAutosave()
+    expect(mutate).toHaveBeenCalledWith({
+      boardId: BOARD_ID,
+      access: { ...accessForPreset('public'), replyPolicy: 'author-only' },
+    })
   })
 })
 

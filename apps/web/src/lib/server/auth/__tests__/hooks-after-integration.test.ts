@@ -24,7 +24,7 @@
  * mocked dependency graph and checking the side-effect tape.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { makeAuthConfig, makeTenant, makeVerifiedDomain } from './_helpers'
+import { makeAuthConfig, makeWorkspace, makeVerifiedDomain } from './_helpers'
 
 // Better-Auth's middleware factory is identity for the test — `hooksAfter`
 // becomes the inner async function directly callable.
@@ -44,7 +44,17 @@ const mockPrincipalFindFirst = vi.fn(async () =>
 const mockUserFindFirst = vi.fn()
 const mockAccountFindFirst = vi.fn()
 const mockTxPrincipalFindFirst = vi.fn()
-const mockTxExecute = vi.fn(async () => undefined)
+/**
+ * The transaction's executor answers BY STATEMENT, as the real one does: the
+ * advisory lock returns nothing, the provenance read returns a settings row.
+ * `stamp: null` is an install nobody provisioned, which is the workspace shape
+ * every case in this file is about.
+ */
+const mockTxExecute = vi.fn(async (statement?: { strings?: TemplateStringsArray }) => {
+  const text = (statement?.strings ?? []).join('')
+  if (!text.includes('cloud_workspace_key')) return undefined
+  return [{ stamp_column: null, metadata: null }] as unknown as undefined
+})
 const mockTxUpdateSet = vi.fn((patch: { role?: 'admin' | 'member' | 'user' }) => {
   if (patch.role) state.role = patch.role
 })
@@ -53,11 +63,12 @@ const mockUpdateSet = vi.fn((patch: { role?: 'admin' | 'member' | 'user' }) => {
 })
 const mockSessionDelete = vi.fn(async () => undefined)
 const mockDelete = vi.fn()
-const mockGetTenantSettings = vi.fn()
+const mockGetWorkspaceSettings = vi.fn()
 const mockGetPublicPortalConfig = vi.fn()
 const mockRecordAuditEvent = vi.fn(async (_spec: unknown) => undefined)
 const mockDeleteSessionCookie = vi.fn((_ctx: unknown) => undefined)
 const mockHasPlatformCredentials = vi.fn(async (_type: string) => true)
+const throwOnMetadataWrite = { value: false }
 
 vi.mock('@/lib/server/db', () => {
   const tx = {
@@ -79,11 +90,15 @@ vi.mock('@/lib/server/db', () => {
         account: { findFirst: mockAccountFindFirst },
       },
       update: () => ({
-        set: (patch: { role?: 'admin' | 'member' | 'user' }) => {
+        set: (patch: { role?: 'admin' | 'member' | 'user'; metadata?: string }) => {
           mockUpdateSet(patch)
+          if (throwOnMetadataWrite.value && typeof patch.metadata === 'string') {
+            throw new Error('claim-attribute db down')
+          }
           return { where: async () => undefined }
         },
       }),
+      select: () => ({ from: async () => [{ key: 'department', type: 'string' }] }),
       delete: (table: { __name: string }) => {
         mockDelete(table)
         if (table.__name === 'session') return { where: mockSessionDelete }
@@ -102,12 +117,14 @@ vi.mock('@/lib/server/db', () => {
     account: { __name: 'account', userId: 'account.userId', providerId: 'account.providerId' },
     and: vi.fn((...parts: unknown[]) => ({ op: 'and', parts })),
     eq: vi.fn((col: unknown, val: unknown) => ({ op: 'eq', col, val })),
+    desc: vi.fn((col: unknown) => ({ op: 'desc', col })),
     sql: (strings: TemplateStringsArray) => ({ strings }),
+    userAttributeDefinitions: { __name: 'user_attribute_definitions' },
   }
 })
 
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
-  getTenantSettings: (...a: unknown[]) => mockGetTenantSettings(...a),
+  getWorkspaceSettings: (...a: unknown[]) => mockGetWorkspaceSettings(...a),
   getPublicPortalConfig: (...a: unknown[]) => mockGetPublicPortalConfig(...a),
 }))
 
@@ -139,12 +156,12 @@ vi.mock('@/lib/server/domains/settings/tier-limits.service', () => ({
 
 // Task 12/13: hooksAfter loads the provider registry on callback paths and
 // threads it to the after-hooks. Mock both; derive the single owning
-// provider 'sso' from the tenant's verified domains AND its ssoOidc config so
+// provider 'sso' from the workspace's verified domains AND its ssoOidc config so
 // the enforced / not-enforced scenarios carry through to
 // handleCallbackPolicyCleanup, and so handleAutoProvisionAfter reads the
 // provider's per-provider provisioning config (autoCreateUsers / role).
 const mockListIdentityProviders = vi.fn(async () => {
-  const tenant = (await mockGetTenantSettings()) as
+  const workspace = (await mockGetWorkspaceSettings()) as
     | {
         verifiedDomains?: unknown[]
         authConfig?: {
@@ -157,7 +174,7 @@ const mockListIdentityProviders = vi.fn(async () => {
         }
       }
     | undefined
-  const sso = tenant?.authConfig?.ssoOidc
+  const sso = workspace?.authConfig?.ssoOidc
   return [
     {
       id: 'idp_sso',
@@ -165,8 +182,8 @@ const mockListIdentityProviders = vi.fn(async () => {
       enabled: sso?.enabled !== false,
       autoCreateUsers: sso?.autoCreateUsers ?? true,
       autoProvisionRole: sso?.autoProvisionRole ?? null,
-      attributeMapping: sso?.attributeMapping ?? null,
-      domains: tenant?.verifiedDomains ?? [],
+      claimMapping: sso?.attributeMapping ? { role: sso.attributeMapping } : null,
+      domains: workspace?.verifiedDomains ?? [],
     },
   ]
 })
@@ -200,6 +217,7 @@ function ssoCallbackCtx(opts: { userId: string; email: string; token: string }) 
 
 beforeEach(() => {
   vi.clearAllMocks()
+  throwOnMetadataWrite.value = false
   state.role = 'user'
   mockTxPrincipalFindFirst.mockResolvedValue({ id: 'principal_existing_admin' })
   mockUserFindFirst.mockResolvedValue({ createdAt: new Date(Date.now() - 60 * 60_000) })
@@ -210,8 +228,8 @@ beforeEach(() => {
 
 describe('hooksAfter — successful SSO sign-in by brand-new verified-domain user', () => {
   beforeEach(() => {
-    mockGetTenantSettings.mockResolvedValue(
-      makeTenant({
+    mockGetWorkspaceSettings.mockResolvedValue(
+      makeWorkspace({
         authConfig: makeAuthConfig({
           ssoOidc: { autoCreateUsers: true, autoProvisionRole: 'member' },
         }),
@@ -234,7 +252,9 @@ describe('hooksAfter — successful SSO sign-in by brand-new verified-domain use
   it('updates the principal role to "member" (auto-provision wrote)', async () => {
     await hooksAfter(ssoCallbackCtx({ userId: 'user_new', email: 'alice@acme.com', token: 'tok' }))
 
-    expect(mockUpdateSet).toHaveBeenCalledWith({ role: 'member' })
+    // setPrincipalRole serializes every non-admin role write through a
+    // transaction (last-admin lock), so the promotion lands on the tx mock.
+    expect(mockTxUpdateSet).toHaveBeenCalledWith({ role: 'member' })
   })
 
   it('emits an auth.signin.success audit (proves audit ran last and saw a surviving session)', async () => {
@@ -251,8 +271,8 @@ describe('hooksAfter — successful SSO sign-in by brand-new verified-domain use
 
 describe('hooksAfter — bootstrap precedes auto-provision', () => {
   it('promotes the first SSO user to admin even when autoProvisionRole="member"', async () => {
-    mockGetTenantSettings.mockResolvedValue(
-      makeTenant({
+    mockGetWorkspaceSettings.mockResolvedValue(
+      makeWorkspace({
         authConfig: makeAuthConfig({
           ssoOidc: { autoCreateUsers: true, autoProvisionRole: 'member' },
         }),
@@ -271,8 +291,10 @@ describe('hooksAfter — bootstrap precedes auto-provision', () => {
 
     // Bootstrap promoted to admin (in the tx).
     expect(mockTxUpdateSet).toHaveBeenCalledWith({ role: 'admin' })
-    // Auto-provision did NOT touch the role (admin is not 'user').
+    // Auto-provision did NOT touch the role (admin is not 'user') — check both
+    // write paths (setPrincipalRole txs non-admin writes).
     expect(mockUpdateSet).not.toHaveBeenCalledWith({ role: 'member' })
+    expect(mockTxUpdateSet).not.toHaveBeenCalledWith({ role: 'member' })
     // Session survived → cleanup passed.
     expect(mockSessionDelete).not.toHaveBeenCalled()
   })
@@ -282,8 +304,8 @@ describe('hooksAfter — short-circuit on blocked sign-in', () => {
   it('skips the success audit when cleanup throws (admin tries credential at enforced verified domain)', async () => {
     // Per-domain enforcement. Admin tried password at a verified-domain
     // email (post-session compensating cleanup path via /sign-in/social).
-    mockGetTenantSettings.mockResolvedValue(
-      makeTenant({
+    mockGetWorkspaceSettings.mockResolvedValue(
+      makeWorkspace({
         authConfig: makeAuthConfig({ ssoOidc: { enabled: true } }),
         verifiedDomains: [makeVerifiedDomain('acme.com', true)],
       })
@@ -313,5 +335,63 @@ describe('hooksAfter — short-circuit on blocked sign-in', () => {
       .map(([spec]) => spec as { event: string })
       .find((spec) => spec.event === 'auth.signin.success')
     expect(successAudit).toBeUndefined()
+  })
+})
+
+describe('hooksAfter — claim attribute write failure does not block sign-in', () => {
+  it('swallows a DB throw, leaves the session, and continues the chain', async () => {
+    mockGetWorkspaceSettings.mockResolvedValue(
+      makeWorkspace({
+        authConfig: makeAuthConfig({
+          ssoOidc: { autoCreateUsers: true, autoProvisionRole: 'member' },
+        }),
+        verifiedDomains: [makeVerifiedDomain('acme.com', false)],
+      })
+    )
+    state.role = 'user'
+    mockListIdentityProviders.mockResolvedValue([
+      {
+        id: 'idp_sso',
+        registrationId: 'sso',
+        enabled: true,
+        autoCreateUsers: true,
+        autoProvisionRole: 'member',
+        claimMapping: {
+          attributes: { map: [{ claimPath: 'department', attributeKey: 'department' }] },
+        },
+        domains: [
+          {
+            name: 'acme.com',
+            verifiedAt: '2026-05-01T00:00:00.000Z',
+            enforced: false,
+          },
+        ],
+      },
+    ] as never)
+    mockUserFindFirst.mockResolvedValue({
+      createdAt: new Date(Date.now() - 60 * 60_000),
+      metadata: '{}',
+    })
+    const payload = Buffer.from(
+      JSON.stringify({
+        department: 'Engineering',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      })
+    ).toString('base64url')
+    mockAccountFindFirst.mockResolvedValue({
+      idToken: `h.${payload}.s`,
+      accountId: 'sub-1',
+    })
+    throwOnMetadataWrite.value = true
+
+    await expect(
+      hooksAfter(ssoCallbackCtx({ userId: 'user_new', email: 'alice@acme.com', token: 'tok' }))
+    ).resolves.toBeUndefined()
+
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: expect.any(String) })
+    )
+    expect(mockSessionDelete).not.toHaveBeenCalled()
+    expect(mockDeleteSessionCookie).not.toHaveBeenCalled()
   })
 })

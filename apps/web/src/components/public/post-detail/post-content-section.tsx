@@ -1,19 +1,34 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 import { useIntl, FormattedMessage } from 'react-intl'
 import { useKeyboardSubmit } from '@/lib/client/hooks/use-keyboard-submit'
 import type { JSONContent } from '@tiptap/react'
 import { PostContent } from '@/components/public/post-content'
 import { Button } from '@/components/ui/button'
-import { RichTextEditor, type EditorFeatures } from '@/components/ui/rich-text-editor'
+import type { EditorDocument, EditorFeatures } from '@/components/ui/rich-text-editor'
 import { Skeleton } from '@/components/ui/skeleton'
+
+// The full rich-text editor drags in a heavy chunk (ProseMirror + lowlight
+// syntax grammars) that the portal post-detail READ view never needs — the
+// author composer only mounts when `isEditing` flips true. Deferring it via
+// React.lazy keeps that chunk out of the post-detail route's initial closure.
+const LazyRichTextEditor = lazy(() =>
+  import('@/components/ui/rich-text-editor').then((m) => ({ default: m.RichTextEditor }))
+)
+
+/** Placeholder matching the editor's minHeight so the composer layout stays
+ *  stable while the editor chunk streams in. */
+function EditorPlaceholder(): React.ReactElement {
+  return <Skeleton className="w-full rounded-md" style={{ minHeight: '150px' }} />
+}
 import { StatusBadge } from '@/components/ui/status-badge'
 import type { EditPostInput } from '@/lib/client/mutations'
 import type { PublicPostDetailView } from '@/lib/client/queries/portal-detail'
 import { SimilarPostsSection } from './similar-posts-section'
 import { PostActionsMenu } from './post-actions-menu'
 import type { PostId } from '@quackback/ids'
+import { InlineModerationActions } from '@/components/shared/inline-moderation-actions'
 
 export function PostContentSectionSkeleton(): React.ReactElement {
   return (
@@ -72,12 +87,17 @@ interface PostContentSectionProps {
   isSaving?: boolean
   /** Editor features for inline editing (defaults to simple user-friendly options) */
   editorFeatures?: EditorFeatures
+  canModerate?: boolean
+  moderationBusy?: boolean
+  onApprove?: () => void
+  onReject?: () => void
 }
 
 /** Default editor features for end users */
 const DEFAULT_USER_EDITOR_FEATURES: EditorFeatures = {
   headings: true,
   images: true,
+  videos: true,
   codeBlocks: true,
   bubbleMenu: true,
   slashMenu: true,
@@ -105,6 +125,10 @@ export function PostContentSection({
   onImageUpload,
   isSaving = false,
   editorFeatures = DEFAULT_USER_EDITOR_FEATURES,
+  canModerate = false,
+  moderationBusy = false,
+  onApprove,
+  onReject,
 }: PostContentSectionProps): React.ReactElement {
   const intl = useIntl()
   const [editTitle, setEditTitle] = useState(post.title)
@@ -123,9 +147,9 @@ export function PostContentSection({
 
   const showActionsMenu = (canEdit || canDelete) && onEditStart && onDelete && !isEditing
 
-  const handleContentChange = useCallback((_json: JSONContent, _html: string, markdown: string) => {
-    setEditContentJson(_json)
-    setEditMarkdown(markdown)
+  const handleContentChange = useCallback((document: EditorDocument) => {
+    setEditContentJson(document.json())
+    setEditMarkdown(document.markdown())
   }, [])
 
   function handleSave(): void {
@@ -169,23 +193,32 @@ export function PostContentSection({
             maxLength={200}
             autoFocus
             disabled={isSaving}
+            aria-label={intl.formatMessage({
+              id: 'portal.postDetail.edit.titleLabel',
+              defaultMessage: 'Post title',
+            })}
             className="w-full bg-transparent border-0 outline-none text-xl sm:text-2xl font-semibold text-foreground placeholder:text-muted-foreground/60 placeholder:font-normal caret-primary mb-4"
           />
 
-          {/* Rich text editor */}
-          <RichTextEditor
-            value={editContentJson || ''}
-            onChange={handleContentChange}
-            placeholder={intl.formatMessage({
-              id: 'portal.postDetail.edit.detailsPlaceholder',
-              defaultMessage: 'Add more details...',
-            })}
-            minHeight="150px"
-            disabled={isSaving}
-            borderless
-            features={editorFeatures}
-            onImageUpload={onImageUpload}
-          />
+          {/* Rich text editor — lazy-loaded so its chunk never lands in the
+              read-view bundle. Only mounts here inside the isEditing branch. */}
+          <Suspense fallback={<EditorPlaceholder />}>
+            <LazyRichTextEditor
+              value={editContentJson || ''}
+              onDocumentChange={handleContentChange}
+              placeholder={intl.formatMessage({
+                id: 'portal.postDetail.edit.detailsPlaceholder',
+                defaultMessage: 'Add more details... Type / for commands',
+              })}
+              minHeight="150px"
+              disabled={isSaving}
+              borderless
+              toolbarPosition="bottom"
+              features={editorFeatures}
+              onImageUpload={onImageUpload}
+              onVideoUpload={onImageUpload}
+            />
+          </Suspense>
         </div>
 
         {/* Footer with actions */}
@@ -234,6 +267,17 @@ export function PostContentSection({
       </div>
 
       <h1 className="text-xl sm:text-2xl font-semibold text-foreground mb-4">{post.title}</h1>
+
+      {post.moderationState === 'pending' && (
+        <InlineModerationActions
+          pending
+          noun="post"
+          className="mb-4"
+          busy={moderationBusy}
+          onApprove={canModerate ? onApprove : undefined}
+          onReject={canModerate ? onReject : undefined}
+        />
+      )}
 
       <PostContent
         content={post.content}

@@ -8,6 +8,7 @@
 
 import { db, postActivity, eq, desc, principal as principalTable } from '@/lib/server/db'
 import type { PostId, PrincipalId } from '@quackback/ids'
+import { isOnTeam } from '@/lib/server/domains/principals/principal-standing'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'activity' })
@@ -31,8 +32,6 @@ export type ActivityType =
   | 'owner.unassigned'
   | 'tags.added'
   | 'tags.removed'
-  | 'roadmap.added'
-  | 'roadmap.removed'
   | 'comments.locked'
   | 'comments.unlocked'
   | 'comment.pinned'
@@ -40,6 +39,7 @@ export type ActivityType =
   | 'comment.deleted'
   | 'comment.removed'
   | 'comment.restored'
+  | 'external.status_changed'
 
 export interface CreateActivityOpts {
   postId: PostId
@@ -52,11 +52,19 @@ export interface ActivityRow {
   id: string
   postId: string
   principalId: string | null
-  type: ActivityType
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // Stored rows may contain retired activity values. Reads keep the raw string,
+  // while CreateActivityOpts only accepts currently supported variants.
+  type: string
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   metadata: Record<string, any>
   createdAt: Date
+  /** Read live from the actor's principal, so it is whatever name they hold now. */
   actorName: string | null
+  /**
+   * The actor is a teammate or a service principal today, so the team controls
+   * actorName. False for portal users, former teammates and missing actors.
+   */
+  actorOnTeam: boolean
 }
 
 // ============================================
@@ -98,6 +106,8 @@ export async function getActivityForPost(postId: PostId): Promise<ActivityRow[]>
       metadata: postActivity.metadata,
       createdAt: postActivity.createdAt,
       actorName: principalTable.displayName,
+      actorType: principalTable.type,
+      actorRole: principalTable.role,
     })
     .from(postActivity)
     .leftJoin(principalTable, eq(postActivity.principalId, principalTable.id))
@@ -105,5 +115,8 @@ export async function getActivityForPost(postId: PostId): Promise<ActivityRow[]>
     .orderBy(desc(postActivity.createdAt))
     .limit(200)
 
-  return rows as ActivityRow[]
+  return rows.map(({ actorType, actorRole, ...row }) => ({
+    ...row,
+    actorOnTeam: isOnTeam({ type: actorType, role: actorRole }),
+  })) as ActivityRow[]
 }

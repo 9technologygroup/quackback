@@ -1,7 +1,8 @@
 import { pgTable, text, timestamp, varchar, index, unique, foreignKey } from 'drizzle-orm/pg-core'
 import { relations } from 'drizzle-orm'
 import { typeIdWithDefault, typeIdColumn, typeIdColumnNullable } from '@quackback/ids/drizzle'
-import { posts, comments } from './posts'
+import { posts } from './posts'
+import { tickets } from './tickets'
 import { integrations } from './integrations'
 
 /**
@@ -13,16 +14,25 @@ import { integrations } from './integrations'
 export const postExternalLinks = pgTable(
   'post_external_links',
   {
-    id: typeIdWithDefault('linked_entity')('id').primaryKey(),
+    id: typeIdWithDefault('post_external_link')('id').primaryKey(),
     postId: typeIdColumn('post')('post_id').notNull(),
     // Nullable: sidebar-created links don't require a full integration record
     integrationId: typeIdColumnNullable('integration')('integration_id'),
     integrationType: varchar('integration_type', { length: 50 }).notNull(),
     externalId: text('external_id').notNull(),
+    /** Empty for references; only explicitly established sync links have an ownership scope. */
+    syncScope: text('sync_scope').notNull().default(''),
     /** Human-friendly display label (e.g. "QUA-24", "#142"). Falls back to externalId when null. */
     externalDisplayId: text('external_display_id'),
     externalUrl: text('external_url'),
     status: varchar('status', { length: 20 }).notNull().default('active'),
+    /** Cached remote presentation (WO-14) — display only, refreshed by inbound webhooks. */
+    remoteTitle: text('remote_title'),
+    remoteState: varchar('remote_state', { length: 64 }),
+    remoteStateAt: timestamp('remote_state_at', { withTimezone: true }),
+    /** Provenance (WO-14): which seam created the link — 'event' | 'push' | 'reference' | 'sidebar'. */
+    origin: varchar('origin', { length: 20 }),
+    createdByPrincipalId: text('created_by_principal_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -36,14 +46,15 @@ export const postExternalLinks = pgTable(
       columns: [table.integrationId],
       foreignColumns: [integrations.id],
     }).onDelete('cascade'),
-    // Allow one ticket to link to multiple posts (unique per type+externalId+postId)
+    // Allow one ticket to link to multiple posts (unique per type+externalId+postId).
+    // Columns listed alphabetically: drizzle-kit introspects multi-column UNIQUE
+    // constraints in alphabetical order, and the drift check compares that order.
     unique('post_external_links_type_external_post_unique').on(
-      table.integrationType,
       table.externalId,
-      table.postId
+      table.integrationType,
+      table.postId,
+      table.syncScope
     ),
-    index('post_external_links_post_id_idx').on(table.postId),
-    index('post_external_links_type_external_id_idx').on(table.integrationType, table.externalId),
     index('post_external_links_post_status_idx').on(table.postId, table.status),
   ]
 )
@@ -61,66 +72,68 @@ export const postExternalLinksRelations = relations(postExternalLinks, ({ one })
 }))
 
 /**
- * External links between comments and external platform comments, for
- * two-way comment mirroring (currently GitHub issue comments).
- *
- * Serves three jobs at once:
- *  - **Echo guard.** A row with `direction: 'inbound'` marks a comment that
- *    originated externally, so the outbound hook knows not to send it back.
- *    The inbound path writes this row *before* dispatching `comment.created`
- *    (see the GitHub inbound handler) — dispatching first would race the
- *    outbound hook and loop.
- *  - **Idempotency.** `(integration_type, external_id)` is unique, so webhook
- *    redelivery is a no-op rather than a duplicate comment.
- *  - **Traceability.** Links each side to the other for debugging.
+ * External links between tickets and external platform issues (a deliberate
+ * sibling of post_external_links, not a second nullable parent on it — the
+ * post table's postId is notNull and its consumers assume post-only). Created
+ * when a teammate manually links a ticket to an existing tracker issue; used
+ * for reverse lookups when inbound webhooks report issue state changes.
  */
-export const commentExternalLinks = pgTable(
-  'comment_external_links',
+export const ticketExternalLinks = pgTable(
+  'ticket_external_links',
   {
-    id: typeIdWithDefault('linked_entity')('id').primaryKey(),
-    commentId: typeIdColumn('comment')('comment_id').notNull(),
+    id: typeIdWithDefault('ticket_external_link')('id').primaryKey(),
+    ticketId: typeIdColumn('ticket')('ticket_id').notNull(),
+    // Nullable to mirror post_external_links (sidebar-style links without a
+    // full integration record); the manual link path always sets it.
     integrationId: typeIdColumnNullable('integration')('integration_id'),
     integrationType: varchar('integration_type', { length: 50 }).notNull(),
-    /** Provider-side comment id (e.g. GitHub issue-comment id). */
     externalId: text('external_id').notNull(),
+    syncScope: text('sync_scope').notNull().default(''),
+    /** Human-friendly display label (e.g. "acme/widgets#142"). Falls back to externalId when null. */
+    externalDisplayId: text('external_display_id'),
     externalUrl: text('external_url'),
-    /**
-     * Which way this comment travelled. 'inbound' = created on the external
-     * platform and mirrored into Quackback; 'outbound' = authored in Quackback
-     * and pushed out. Only 'inbound' suppresses outbound sync.
-     */
-    direction: varchar('direction', { length: 10 }).notNull(),
+    status: varchar('status', { length: 20 }).notNull().default('active'),
+    /** Cached remote presentation (WO-14) — display only, refreshed by inbound webhooks. */
+    remoteTitle: text('remote_title'),
+    remoteState: varchar('remote_state', { length: 64 }),
+    remoteStateAt: timestamp('remote_state_at', { withTimezone: true }),
+    /** Provenance (WO-14): which seam created the link — 'event' | 'push' | 'reference' | 'sidebar'. */
+    origin: varchar('origin', { length: 20 }),
+    createdByPrincipalId: text('created_by_principal_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     foreignKey({
-      name: 'comment_external_links_comment_fk',
-      columns: [table.commentId],
-      foreignColumns: [comments.id],
+      name: 'ticket_external_links_ticket_fk',
+      columns: [table.ticketId],
+      foreignColumns: [tickets.id],
     }).onDelete('cascade'),
     foreignKey({
-      name: 'comment_external_links_integration_fk',
+      name: 'ticket_external_links_integration_fk',
       columns: [table.integrationId],
       foreignColumns: [integrations.id],
     }).onDelete('cascade'),
-    // One external comment maps to exactly one Quackback comment — this is the
-    // idempotency guarantee for webhook redelivery.
-    unique('comment_external_links_type_external_unique').on(
+    // Allow one issue to link to multiple tickets (unique per type+externalId+ticketId).
+    // Columns listed alphabetically: drizzle-kit introspects multi-column UNIQUE
+    // constraints in alphabetical order, and the drift check compares that order.
+    unique('ticket_external_links_type_external_ticket_unique').on(
+      table.externalId,
       table.integrationType,
-      table.externalId
+      table.syncScope,
+      table.ticketId
     ),
-    // Echo-guard lookup: "does this comment already have an inbound link?"
-    index('comment_external_links_comment_id_idx').on(table.commentId),
+    index('ticket_external_links_type_external_id_idx').on(table.integrationType, table.externalId),
+    index('ticket_external_links_ticket_status_idx').on(table.ticketId, table.status),
   ]
 )
 
-export const commentExternalLinksRelations = relations(commentExternalLinks, ({ one }) => ({
-  comment: one(comments, {
-    fields: [commentExternalLinks.commentId],
-    references: [comments.id],
+export const ticketExternalLinksRelations = relations(ticketExternalLinks, ({ one }) => ({
+  ticket: one(tickets, {
+    fields: [ticketExternalLinks.ticketId],
+    references: [tickets.id],
   }),
   integration: one(integrations, {
-    fields: [commentExternalLinks.integrationId],
+    fields: [ticketExternalLinks.integrationId],
     references: [integrations.id],
   }),
 }))

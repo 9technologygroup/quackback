@@ -32,7 +32,9 @@ vi.mock('../merge-suggestion.service', () => ({
 const mockPostFindFirst = vi.fn()
 const mockLimit = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       posts: {
@@ -52,20 +54,16 @@ vi.mock('@/lib/server/db', () => ({
       set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
     })),
   },
-  posts: {
-    id: 'id',
-    deletedAt: 'deleted_at',
-    canonicalPostId: 'canonical_post_id',
-    embedding: 'embedding',
-    mergeCheckedAt: 'merge_checked_at',
-    updatedAt: 'updated_at',
-  },
   and: vi.fn(),
   isNull: vi.fn(),
   isNotNull: vi.fn(),
   desc: vi.fn(),
   eq: vi.fn(),
   notInArray: vi.fn(),
+}))
+
+vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
+  aiBudgetAvailable: vi.fn(async () => true),
 }))
 
 vi.mock('@/lib/server/domains/ai/config', () => ({

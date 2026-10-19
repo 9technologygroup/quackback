@@ -29,14 +29,29 @@ describe('sdk', () => {
       'fetch',
       vi.fn(async () => ({ ok: true, json: async () => ({ theme: {} }) }))
     )
+    // The panel preloads in an idle slot; flush it synchronously so tests can
+    // keep asserting the iframe right after init. Deferral itself is covered
+    // by its own test below.
+    vi.stubGlobal(
+      'requestIdleCallback',
+      vi.fn((cb: () => void) => {
+        cb()
+        return 1
+      })
+    )
+    vi.stubGlobal('cancelIdleCallback', vi.fn())
   })
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    delete (window as { __QUACKBACK_CONFIG__?: unknown }).__QUACKBACK_CONFIG__
+  })
 
   it('init creates a launcher and iframe', () => {
     const sdk = createSDK()
     sdk.dispatch('init', { instanceUrl: ORIGIN })
     expect(document.querySelector('button[aria-label="Open feedback widget"]')).not.toBeNull()
-    expect(document.querySelector('iframe[title="Feedback Widget"]')).not.toBeNull()
+    expect(document.querySelector('iframe.quackback-widget-iframe')).not.toBeNull()
   })
 
   it('init with { launcher: false } does not create a button', () => {
@@ -72,7 +87,7 @@ describe('sdk', () => {
     sdk.dispatch('init', { instanceUrl: ORIGIN })
     expect(() => sdk.dispatch('init', { instanceUrl: 'not a url' })).toThrow()
     // The good first instance is untouched.
-    expect(document.querySelector('iframe[title="Feedback Widget"]')).not.toBeNull()
+    expect(document.querySelector('iframe.quackback-widget-iframe')).not.toBeNull()
   })
 
   it('init defaults identity to anonymous once iframe is ready', () => {
@@ -127,6 +142,28 @@ describe('sdk', () => {
     expect(launcher).not.toBeNull()
     expect(launcher.style.display).not.toBe('none')
     spy.mockRestore()
+  })
+
+  it('keeps the closed panel out of the tab order and names the frame', () => {
+    stubIframe()
+    const sdk = createSDK()
+    sdk.dispatch('init', { instanceUrl: ORIGIN })
+    const iframe = document.querySelector('iframe.quackback-widget-iframe') as HTMLIFrameElement
+    const panel = iframe.parentElement as HTMLElement
+    expect(iframe.title).toBe('Help')
+    expect(panel.inert).toBe(true)
+    sdk.dispatch('open')
+    expect(panel.inert).toBe(false)
+    sdk.dispatch('close')
+    expect(panel.inert).toBe(true)
+  })
+
+  it('names the frame in the visitor language', () => {
+    const sdk = createSDK()
+    sdk.dispatch('init', { instanceUrl: ORIGIN, locale: 'de' })
+    expect(
+      (document.querySelector('iframe.quackback-widget-iframe') as HTMLIFrameElement).title
+    ).toBe('Hilfe')
   })
 
   it('isOpen tracks panel state', () => {
@@ -184,6 +221,19 @@ describe('sdk', () => {
       { type: 'quackback:open', data: { postId: 'post_01h' } },
       ORIGIN
     )
+    sdk.dispatch('open', {
+      view: 'new-post',
+      title: 'Bug:',
+      body: 'steps',
+      board: 'bug-reports',
+    })
+    expect(postMessage).toHaveBeenLastCalledWith(
+      {
+        type: 'quackback:open',
+        data: { view: 'new-post', title: 'Bug:', body: 'steps', board: 'bug-reports' },
+      },
+      ORIGIN
+    )
     spy.mockRestore()
   })
 
@@ -222,7 +272,7 @@ describe('sdk', () => {
     expect(launcher()?.style.display).toBe('flex')
   })
 
-  it('launcher starts hidden and reveals shortly after server config fetch resolves', async () => {
+  it('launcher starts hidden and reveals as soon as the config fetch resolves', async () => {
     stubIframe()
     let resolveFetch!: (value: unknown) => void
     vi.stubGlobal(
@@ -241,13 +291,49 @@ describe('sdk', () => {
     ) as HTMLButtonElement
     expect(btn.style.opacity).toBe('0')
     resolveFetch({ ok: true, json: async () => ({ theme: {} }) })
-    // Let the fetch → json → applyServerTheme → finally chain settle.
+    // Let the fetch → json → applyServerConfig → finally chain settle. Colors
+    // are applied before the reveal, so there is no flash to wait out.
     await new Promise((r) => setTimeout(r, 0))
-    // Still hidden — the launcher waits a short beat after the fetch resolves.
-    expect(btn.style.opacity).toBe('0')
-    // Then it reveals.
-    await new Promise((r) => setTimeout(r, 700))
     expect(btn.style.opacity).toBe('1')
+  })
+
+  it('baked __QUACKBACK_CONFIG__ reveals the launcher instantly without a config fetch', () => {
+    stubIframe()
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    window.__QUACKBACK_CONFIG__ = {
+      theme: { lightPrimary: '#ff0000', lightPrimaryForeground: '#ffffff', themeMode: 'light' },
+      launcherGreeting: 'Hi there!',
+    }
+    const sdk = createSDK()
+    sdk.dispatch('init', { instanceUrl: ORIGIN })
+    const btn = document.querySelector(
+      'button[aria-label="Open feedback widget"]'
+    ) as HTMLButtonElement
+    expect(btn.style.opacity).toBe('1')
+    expect(btn.style.backgroundColor).toBe('#ff0000')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('panel creation waits for the idle slot; open() forces it immediately', () => {
+    stubIframe()
+    // Capture the idle callback instead of flushing it synchronously.
+    let idleCb: (() => void) | null = null
+    vi.stubGlobal(
+      'requestIdleCallback',
+      vi.fn((cb: () => void) => {
+        idleCb = cb
+        return 1
+      })
+    )
+    const sdk = createSDK()
+    sdk.dispatch('init', { instanceUrl: ORIGIN })
+    expect(document.querySelector('iframe.quackback-widget-iframe')).toBeNull()
+    sdk.dispatch('open')
+    expect(document.querySelector('iframe.quackback-widget-iframe')).not.toBeNull()
+    // The idle slot firing later must not create a second panel.
+    idleCb?.()
+    expect(document.querySelectorAll('iframe.quackback-widget-iframe')).toHaveLength(1)
   })
 
   it('launcher reveals via fallback timer if config fetch never resolves', async () => {
@@ -320,9 +406,89 @@ describe('sdk', () => {
     stubIframe()
     const sdk = createSDK()
     sdk.dispatch('init', { instanceUrl: ORIGIN })
-    expect(document.querySelector('iframe[title="Feedback Widget"]')).not.toBeNull()
+    expect(document.querySelector('iframe.quackback-widget-iframe')).not.toBeNull()
     sdk.dispatch('destroy')
-    expect(document.querySelector('iframe[title="Feedback Widget"]')).toBeNull()
+    expect(document.querySelector('iframe.quackback-widget-iframe')).toBeNull()
     expect(document.querySelector('button[aria-label="Open feedback widget"]')).toBeNull()
+  })
+
+  it('an iframe unread count drives the launcher badge and unread subscribers', () => {
+    const sdk = createSDK()
+    sdk.dispatch('init', { instanceUrl: ORIGIN })
+    const handler = vi.fn()
+    sdk.dispatch('on', 'unread', handler)
+
+    window.dispatchEvent(
+      new MessageEvent('message', { origin: ORIGIN, data: { type: 'quackback:unread', count: 5 } })
+    )
+
+    // Host subscribers get the count...
+    expect(handler).toHaveBeenCalledWith({ count: 5 })
+    // ...and the launcher shows the badge.
+    const badge = (
+      document.querySelector('button[aria-label="Open feedback widget"]') as HTMLButtonElement
+    ).lastElementChild as HTMLElement
+    expect(badge.style.display).toBe('flex')
+    expect(badge.textContent).toBe('5')
+  })
+})
+
+describe('sdk server-driven launcher config', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    document.head.innerHTML = ''
+    vi.stubGlobal(
+      'requestIdleCallback',
+      vi.fn((cb: () => void) => {
+        cb()
+        return 1
+      })
+    )
+    vi.stubGlobal('cancelIdleCallback', vi.fn())
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    delete (window as { __QUACKBACK_CONFIG__?: unknown }).__QUACKBACK_CONFIG__
+  })
+
+  it('server config position and label reach the launcher, overriding init placement', () => {
+    stubIframe()
+    window.__QUACKBACK_CONFIG__ = { position: 'left', launcherLabel: 'Chat with us' }
+    const sdk = createSDK()
+    sdk.dispatch('init', { instanceUrl: ORIGIN, placement: 'right' })
+    const btn = document.querySelector('button[aria-label="Chat with us"]') as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    expect(btn.style.left).toBe('24px')
+    expect(btn.style.right).toBe('')
+    expect(btn.textContent).toContain('Chat with us')
+  })
+
+  it('a fetched server config positions and labels the launcher', async () => {
+    stubIframe()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ position: 'left', launcherLabel: 'Feedback' }),
+      }))
+    )
+    const sdk = createSDK()
+    sdk.dispatch('init', { instanceUrl: ORIGIN })
+    await new Promise((r) => setTimeout(r, 0))
+    const btn = document.querySelector('button[aria-label="Feedback"]') as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    expect(btn.style.left).toBe('24px')
+  })
+
+  it('no server position keeps the init placement', () => {
+    stubIframe()
+    window.__QUACKBACK_CONFIG__ = { theme: {} }
+    const sdk = createSDK()
+    sdk.dispatch('init', { instanceUrl: ORIGIN, placement: 'left' })
+    const btn = document.querySelector(
+      'button[aria-label="Open feedback widget"]'
+    ) as HTMLButtonElement
+    expect(btn.style.left).toBe('24px')
   })
 })

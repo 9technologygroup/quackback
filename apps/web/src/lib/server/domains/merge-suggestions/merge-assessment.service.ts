@@ -4,8 +4,10 @@
  * Single batched LLM call to verify true duplicates and determine merge direction.
  */
 
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
-import { withRetry } from '@/lib/server/domains/ai/retry'
+import { z } from 'zod'
+import { config } from '@/lib/server/config'
+import { isAiClientConfigured } from '@/lib/server/domains/ai/config'
+import { structuredChat } from '@/lib/server/domains/ai/structured-chat'
 import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
 import { logger } from '@/lib/server/logger'
 import type { PostId } from '@quackback/ids'
@@ -14,18 +16,42 @@ import type { MergeCandidate } from './merge-search.service'
 
 const log = logger.child({ component: 'merge-assessment' })
 
+/**
+ * `chat({ outputSchema })` collapses "empty response", "response wasn't
+ * valid JSON", and "response didn't match the schema" into one thrown
+ * `Error` tagged with one of these `code`s (see @tanstack/ai's
+ * `finalizationError` handling) — the structured-output analogue of this
+ * service's old empty-response / JSON.parse-failure branches, both of which
+ * logged and returned `[]` rather than throwing. A transport/network
+ * failure throws too, but without this `code`, so it still propagates
+ * exactly as an uncaught `withRetry` failure did before.
+ */
+const STRUCTURED_OUTPUT_ERROR_CODES = new Set([
+  'structured-output-parse-failed',
+  'structured-output-validation-failed',
+  'structured-output-missing-result',
+])
+
+function isStructuredOutputError(err: unknown): boolean {
+  return STRUCTURED_OUTPUT_ERROR_CODES.has(
+    (err as { code?: string } | null | undefined)?.code ?? ''
+  )
+}
+
 const SYSTEM_PROMPT = `You are a duplicate-detection assistant for a customer feedback platform used by product managers.
 You will be given a reference post and one or more posts to compare. For each comparison post, determine whether it is truly a DUPLICATE of the reference — meaning they request the exact same thing, just worded differently.
 
-Return strict JSON only — an array of objects:
-[
-  {
-    "candidatePostId": "string",
-    "isDuplicate": boolean,
-    "confidence": number,
-    "reasoning": "string"
-  }
-]
+Return strict JSON only:
+{
+  "results": [
+    {
+      "candidatePostId": "string",
+      "isDuplicate": boolean,
+      "confidence": number,
+      "reasoning": "string"
+    }
+  ]
+}
 
 Rules:
 - A TRUE duplicate means the posts request the EXACT SAME feature, fix, or change. If merged into one post, every voter on both posts would agree they wanted the same thing.
@@ -33,7 +59,19 @@ Rules:
 - "reasoning" is a 1-sentence summary shown to product managers. Describe the shared customer need — e.g. "Both request the ability to export data as PDF." NEVER use labels like "source post", "candidate post", "Post A", "Post B", or "reference post". Just describe what the posts have in common.
 - Be VERY conservative: when in doubt, mark isDuplicate as false.
 - NOT duplicates: posts about the same product/area but different features, posts with overlapping keywords but different actual requests, posts that are merely related or in the same category.
-- Example: "Add dark mode to the dashboard" and "Support dark theme across the app" ARE duplicates (same request). "Add dark mode" and "Improve dashboard loading speed" are NOT (same area, different requests).`
+- Example: "Add dark mode to the dashboard" and "Support dark theme across the app" ARE duplicates (same request). "Add dark mode" and "Improve dashboard loading speed" are NOT (same area, different requests).
+
+Example output (one entry per comparison post, "candidatePostId" copied verbatim from its listed id):
+{
+  "results": [
+    {
+      "candidatePostId": "post_01h4kxt2e8z9y3b1n72k9q5m8p",
+      "isDuplicate": true,
+      "confidence": 0.9,
+      "reasoning": "Both request the ability to export data as PDF."
+    }
+  ]
+}`
 
 interface PostInfo {
   id: PostId
@@ -49,6 +87,18 @@ export interface MergeAssessment {
 
 const CONFIDENCE_THRESHOLD = 0.75
 
+// Avoid z.record() — Zod emits `propertyNames`, which OpenAI Structured Outputs reject.
+const MergeAssessmentItemSchema = z.strictObject({
+  candidatePostId: z.string(),
+  isDuplicate: z.boolean(),
+  confidence: z.number(),
+  reasoning: z.string(),
+})
+
+const MergeAssessmentResponseSchema = z.object({
+  results: z.array(MergeAssessmentItemSchema).catch([]),
+})
+
 /**
  * Assess merge candidates using LLM verification.
  * Returns only confirmed duplicates above confidence threshold.
@@ -60,47 +110,28 @@ export async function assessMergeCandidates(
 ): Promise<MergeAssessment[]> {
   await enforceAiTokenBudget()
 
-  const openai = getOpenAI()
-  if (!openai || candidates.length === 0) return []
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || candidates.length === 0)
+    return []
 
   const userPrompt = buildPrompt(sourcePost, candidates)
 
-  const { result: completion } = await withRetry(() =>
-    openai.chat.completions.create({
-      model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userPrompt },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.1,
-      max_completion_tokens: 1000,
-    })
-  )
-
-  const responseText = completion.choices[0]?.message?.content
-  if (!responseText) {
-    log.error('empty llm response')
-    return []
-  }
-
-  let parsed: unknown
+  let object: z.infer<typeof MergeAssessmentResponseSchema>
   try {
-    parsed = JSON.parse(stripCodeFences(responseText))
-  } catch {
-    log.error({ response_length: responseText.length }, 'failed to parse llm json')
+    object = await structuredChat({
+      model,
+      systemPrompts: [SYSTEM_PROMPT],
+      messages: [{ role: 'user', content: userPrompt }],
+      schema: MergeAssessmentResponseSchema,
+      maxTokens: 1000,
+    })
+  } catch (err) {
+    if (!isStructuredOutputError(err)) throw err
+    log.error({ err }, 'failed to parse llm json')
     return []
   }
-
-  // Handle both array and { results: [...] } shapes
-  const results = Array.isArray(parsed)
-    ? parsed
-    : Array.isArray((parsed as Record<string, unknown>)?.results)
-      ? (parsed as { results: unknown[] }).results
-      : []
 
   const assessments: MergeAssessment[] = []
-  for (const item of results) {
+  for (const item of object.results) {
     const r = item as Record<string, unknown>
     if (
       r.isDuplicate === true &&

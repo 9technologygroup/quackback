@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // ─── Mocks (factories must not reference outer variables) ────────────
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       user: { findFirst: vi.fn() },
@@ -12,10 +14,6 @@ vi.mock('@/lib/server/db', () => ({
     update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn() })) })),
     select: vi.fn(() => ({ from: vi.fn(() => []) })),
   },
-  user: {},
-  session: {},
-  principal: {},
-  userAttributeDefinitions: {},
   eq: vi.fn(),
   and: vi.fn(),
   gt: vi.fn(),
@@ -41,6 +39,7 @@ vi.mock('@/lib/server/domains/users/user.attributes', () => ({
   mergeMetadata: vi.fn((_existing: string | null, valid: Record<string, unknown>) =>
     JSON.stringify({ ...valid })
   ),
+  EXTERNAL_ID_KEY: '_externalUserId',
 }))
 vi.mock('@/lib/server/widget/identity-token', () => ({
   verifyHS256JWT: vi.fn(),

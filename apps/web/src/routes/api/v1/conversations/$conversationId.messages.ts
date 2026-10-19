@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
 import { successResponse, handleDomainError } from '@/lib/server/domains/api/responses'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { serializeMessage } from './-serialize'
 import type { ConversationId, SegmentId } from '@quackback/ids'
 
@@ -11,7 +12,7 @@ export const Route = createFileRoute('/api/v1/conversations/$conversationId/mess
       /** GET /api/v1/conversations/:id/messages — internal notes excluded unless includeInternal=true. */
       GET: async ({ request, params }) => {
         try {
-          const auth = await withApiKeyAuth(request, { role: 'team' })
+          const auth = await withApiKeyAuth(request, { permission: PERMISSIONS.CONVERSATION_VIEW })
           const conversationId = parseTypeId<ConversationId>(
             params.conversationId,
             'conversation',
@@ -27,8 +28,9 @@ export const Route = createFileRoute('/api/v1/conversations/$conversationId/mess
           const includeInternal = url.searchParams.get('includeInternal') === 'true'
 
           const { assertConversationViewable } =
-            await import('@/lib/server/domains/chat/chat.service')
-          const { listMessages } = await import('@/lib/server/domains/chat/chat.query')
+            await import('@/lib/server/domains/conversation/conversation.service')
+          const { listMessages } =
+            await import('@/lib/server/domains/conversation/conversation.query')
 
           // team-role API key: canViewConversation short-circuits on role; segments unused
           const actor = {
@@ -36,6 +38,7 @@ export const Route = createFileRoute('/api/v1/conversations/$conversationId/mess
             role: auth.role,
             principalType: 'service' as const,
             segmentIds: new Set<SegmentId>(),
+            permissions: auth.permissions,
           }
 
           // 404 if the conversation doesn't exist or isn't viewable (before listing messages).
@@ -45,6 +48,7 @@ export const Route = createFileRoute('/api/v1/conversations/$conversationId/mess
             before: cursor,
             limit,
             includeInternal,
+            preferAccountName: true,
           })
           return successResponse(result.messages.map(serializeMessage), {
             pagination: { cursor: result.nextCursor, hasMore: result.hasMore },

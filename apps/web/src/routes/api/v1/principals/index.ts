@@ -1,39 +1,40 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
 import { successResponse, handleDomainError } from '@/lib/server/domains/api/responses'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+
+/** Handlers shared with the deprecated /api/v1/members alias. */
+export const listPrincipalsHandlers = {
+  /**
+   * GET /api/v1/principals
+   * List all team members (admin and member roles)
+   */
+  GET: async ({ request }: { request: Request }) => {
+    try {
+      await withApiKeyAuth(request, { permission: PERMISSIONS.MEMBER_VIEW })
+
+      // Import service function
+      const { listTeamMembers } = await import('@/lib/server/domains/principals/principal.service')
+
+      const members = await listTeamMembers()
+
+      return successResponse(
+        members.map((m) => ({
+          id: m.id,
+          userId: m.userId,
+          name: m.name,
+          email: m.email,
+          image: m.image,
+          role: m.role,
+          createdAt: m.createdAt.toISOString(),
+        }))
+      )
+    } catch (error) {
+      return handleDomainError(error)
+    }
+  },
+}
 
 export const Route = createFileRoute('/api/v1/principals/')({
-  server: {
-    handlers: {
-      /**
-       * GET /api/v1/principals
-       * List all team members (admin and member roles)
-       */
-      GET: async ({ request }) => {
-        try {
-          await withApiKeyAuth(request, { role: 'team' })
-
-          // Import service function
-          const { listTeamMembers } =
-            await import('@/lib/server/domains/principals/principal.service')
-
-          const members = await listTeamMembers()
-
-          return successResponse(
-            members.map((m) => ({
-              id: m.id,
-              userId: m.userId,
-              name: m.name,
-              email: m.email,
-              image: m.image,
-              role: m.role,
-              createdAt: m.createdAt.toISOString(),
-            }))
-          )
-        } catch (error) {
-          return handleDomainError(error)
-        }
-      },
-    },
-  },
+  server: { handlers: listPrincipalsHandlers },
 })

@@ -1,18 +1,21 @@
+import { FORM_WIDTH_CLASS } from '@/components/admin/settings/settings-page'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowRightOnRectangleIcon, GlobeAltIcon } from '@heroicons/react/24/solid'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PortalAuthTab } from './portal-auth-tab'
 import { SignInProvidersTab } from './sign-in-providers-tab'
+import { AuditLogPage } from './audit-log-page'
+import { UpgradeScreen } from '@/components/admin/upgrade'
 import type { AuthConfig, PortalConfig } from '@/lib/shared/types/settings'
 
 /**
- * The Security/authentication page tabs split by concern, not by surface:
+ * The Access & Security page tabs split by concern, not by surface:
  *  - `portal-access` — who can view the portal (visibility, domains, invites, segments, widget)
  *  - `sign-in`       — authentication providers for both surfaces in one place
  *                       (password + 2FA enforcement, magic link, social, custom OIDC)
  *                       with per-surface toggles inline.
+ *  - `audit-log`     — what admins changed (compliance review + CSV export).
  */
-export type AuthTab = 'portal-access' | 'sign-in'
+export type AuthTab = 'portal-access' | 'sign-in' | 'audit-log'
 
 interface AuthSettingsProps {
   /** Current selected tab. URL-driven via `?tab=` so the choice is
@@ -25,6 +28,8 @@ interface AuthSettingsProps {
   credentialStatus: Record<string, boolean> & { _emailConfigured?: boolean }
   /** Tier flag for portal custom OIDC — passed through to <SignInProvidersTab>. */
   customOidcProviderTier: boolean
+  /** When false the audit tab stays mounted as an upgrade notice, not a throwing list. */
+  auditEntitled: boolean
 }
 
 /**
@@ -41,6 +46,7 @@ export function AuthSettings({
   portalConfig,
   credentialStatus,
   customOidcProviderTier,
+  auditEntitled,
 }: AuthSettingsProps) {
   // No `from` — passes an absolute `to`, so binding the navigate hook
   // to a route would just append paths under TanStack Router's
@@ -63,21 +69,17 @@ export function AuthSettings({
           replace: true,
         })
       }}
+      variant="line"
       className="space-y-6"
     >
-      <TabsList>
-        <TabsTrigger value="portal-access">
-          <GlobeAltIcon />
-          Portal access
-        </TabsTrigger>
-        <TabsTrigger value="sign-in">
-          <ArrowRightOnRectangleIcon />
-          Sign-in
-        </TabsTrigger>
+      <TabsList className={FORM_WIDTH_CLASS}>
+        <TabsTrigger value="portal-access">Portal access</TabsTrigger>
+        <TabsTrigger value="sign-in">Sign-in</TabsTrigger>
+        <TabsTrigger value="audit-log">Audit log</TabsTrigger>
       </TabsList>
 
       <TabsContent value="portal-access">
-        <PortalAuthTab portalConfig={portalConfig} />
+        <PortalAuthTab portalConfig={portalConfig} teamOpenSignup={teamAuthConfig.openSignup} />
       </TabsContent>
 
       <TabsContent value="sign-in">
@@ -86,6 +88,10 @@ export function AuthSettings({
           credentialStatus={credentialStatus}
           customOidcProviderTier={customOidcProviderTier}
         />
+      </TabsContent>
+
+      <TabsContent value="audit-log">
+        {auditEntitled ? <AuditLogPage /> : <UpgradeScreen entitlement="auditLog" />}
       </TabsContent>
     </Tabs>
   )

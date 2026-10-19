@@ -1,0 +1,331 @@
+import { describe, it, expect, vi, beforeAll } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import postgres from 'postgres'
+import { z } from 'zod'
+
+// A real, non-transactional pool that bypasses config.ts's full env validation
+// (which the app's `db` singleton requires) — the same pattern
+// frequency-cap-race.test.ts and db-test-fixture.ts use for DB-backed tests.
+// emit.ts itself only imports table objects + `sql` from here (it takes the tx
+// as a parameter), so those still come through from the original module.
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  // oxlint-disable-next-line no-restricted-imports -- sanctioned test fixture, same as db-test-fixture.ts
+  const { createDb } = await import('@quackback/db/client')
+  const url =
+    process.env.DATABASE_URL ?? 'postgresql://postgres:password@localhost:5432/quackback_test'
+  return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
+    db: createDb(url, { max: 5, prepare: false }),
+  }
+})
+
+vi.mock('@/lib/server/workspaces/workspace-context', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/workspaces/workspace-context')>()),
+  getCurrentWorkspace: () => ({ workspaceKey: 'ws_emit' }),
+}))
+
+import { db, events, auditLog, eq, and, sql } from '@/lib/server/db'
+import { getExecuteRows } from '@/lib/server/utils/execute-rows'
+import { createId } from '@quackback/ids'
+import { emit, inherit } from '../emit'
+import type { EventDefinition } from '../catalogue/define'
+import type { DomainEvent } from '../envelope'
+
+/**
+ * WO-1 — `emit()` writes the outbox row in the caller's transaction, rolls back
+ * with an aborted tx, rejects bad payloads, and only writes an audit row when
+ * the definition opts in. Runs against the shared quackback_test DB (0192
+ * applied).
+ */
+
+const auditedDef: EventDefinition<{ postId: string; note: string }> = {
+  type: 'test.emit_audited',
+  entity: 'post',
+  version: 1,
+  payload: z.object({ postId: z.string(), note: z.string() }),
+  exposure: { webhook: false, workflow: false, notification: null, activity: null, audit: true },
+  category: 'feedback',
+  requiredScope: 'read:feedback',
+  emits: 'always',
+}
+
+const plainDef: EventDefinition<{ postId: string }> = {
+  type: 'test.emit_plain',
+  entity: 'post',
+  version: 2,
+  payload: z.object({ postId: z.string() }),
+  exposure: { webhook: true, workflow: false, notification: null, activity: null, audit: false },
+  category: 'feedback',
+  requiredScope: 'read:feedback',
+  emits: 'always',
+}
+
+describe('emit()', () => {
+  beforeAll(async () => {
+    const url =
+      process.env.DATABASE_URL ?? 'postgresql://postgres:password@localhost:5432/quackback_test'
+    const admin = postgres(url, { max: 1, onnotice: () => {} })
+    try {
+      await admin.unsafe(
+        readFileSync(
+          path.resolve(
+            __dirname,
+            '../../../../../../../packages/db/drizzle/0253_event_dispatch_owner.sql'
+          ),
+          'utf8'
+        )
+      )
+      await admin.unsafe(
+        readFileSync(
+          path.resolve(
+            __dirname,
+            '../../../../../../../packages/db/drizzle/0254_event_dispatch_owner_default_job.sql'
+          ),
+          'utf8'
+        )
+      )
+    } finally {
+      await admin.end({ timeout: 2 })
+    }
+  })
+
+  it('inserts exactly one events row with the envelope fields', async () => {
+    const entityId = createId('post')
+    const eventId = await db.transaction((tx) =>
+      emit(tx, plainDef, {
+        payload: { postId: entityId },
+        actor: { type: 'user', id: createId('principal') },
+        entityId,
+        context: { source: 'api', correlationId: 'corr-1' },
+      })
+    )
+
+    const rows = await db.select().from(events).where(eq(events.eventId, eventId))
+    expect(rows).toHaveLength(1)
+    const row = rows[0]
+    expect(row.type).toBe('test.emit_plain')
+    expect(row.entityType).toBe('post')
+    expect(row.entityId).toBe(entityId)
+    expect(row.actorType).toBe('user')
+    expect(row.schemaVersion).toBe(2)
+    expect(row.payload).toEqual({ postId: entityId })
+    expect((row.context as { depth: number; source: string }).depth).toBe(0)
+    expect((row.context as { source: string }).source).toBe('api')
+    expect(row.publishedAt).toBeNull()
+    expect(row.dispatchOwner).toBe('job')
+    const jobs = await db.execute(sql`
+      SELECT queue FROM job_queue
+      WHERE queue = 'event-dispatch' AND payload->>'eventId' = ${eventId}
+    `)
+    expect(getExecuteRows(jobs).length).toBeGreaterThan(0)
+  })
+
+  it('rolls back the event when the surrounding transaction aborts', async () => {
+    const entityId = createId('post')
+    await expect(
+      db.transaction(async (tx) => {
+        await emit(tx, auditedDef, {
+          payload: { postId: entityId, note: 'nope' },
+          actor: { type: 'service' },
+          entityId,
+        })
+        throw new Error('abort the tx')
+      })
+    ).rejects.toThrow('abort the tx')
+
+    const rows = await db.select().from(events).where(eq(events.entityId, entityId))
+    expect(rows).toHaveLength(0)
+    const leftover = await db.execute(sql`
+      SELECT 1 FROM job_queue WHERE queue = 'event-dispatch'
+        AND payload->>'eventId' IN (
+          SELECT event_id FROM events WHERE entity_id = ${entityId}
+        )
+    `)
+    expect(getExecuteRows(leftover).length).toBe(0)
+    const leftoverAudit = await db.select().from(auditLog).where(eq(auditLog.targetId, entityId))
+    expect(leftoverAudit).toHaveLength(0)
+  })
+
+  it('commits event, audit, and dispatch job together', async () => {
+    const entityId = createId('post')
+    const eventId = await db.transaction((tx) =>
+      emit(tx, auditedDef, {
+        payload: { postId: entityId, note: 'atomic' },
+        actor: { type: 'user', id: createId('principal') },
+        entityId,
+      })
+    )
+    const eventRows = await db.select().from(events).where(eq(events.eventId, eventId))
+    const auditRows = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.eventType, 'test.emit_audited'), eq(auditLog.targetId, entityId)))
+    const jobs = await db.execute(sql`
+      SELECT queue FROM job_queue
+      WHERE queue = 'event-dispatch' AND payload->>'eventId' = ${eventId}
+    `)
+    expect(eventRows).toHaveLength(1)
+    expect(eventRows[0].dispatchOwner).toBe('job')
+    expect(auditRows).toHaveLength(1)
+    expect(getExecuteRows(jobs).length).toBeGreaterThan(0)
+  })
+
+  it('queues a job per reaction queue in the same tx, only for a type that has reactions', async () => {
+    const reactedDef: EventDefinition<{ ticketId: string }> = {
+      ...plainDef,
+      type: 'ticket.status_changed',
+      entity: 'ticket',
+      payload: z.object({ ticketId: z.string() }),
+    }
+    const reactionJobsFor = async (eventId: string) =>
+      getExecuteRows<{ queue: string; dedupe_key: string }>(
+        await db.execute(sql`
+          SELECT queue, dedupe_key FROM job_queue
+          WHERE queue IN ('event-reactions', 'event-summaries')
+            AND payload->>'eventId' = ${eventId}
+          ORDER BY queue
+        `)
+      )
+
+    const reactedEntity = createId('ticket')
+    const reactedId = await db.transaction((tx) =>
+      emit(tx, reactedDef, {
+        payload: { ticketId: reactedEntity },
+        actor: { type: 'service' },
+        entityId: reactedEntity,
+      })
+    )
+    // The ordered reactions and the close summary each get their own job.
+    expect(await reactionJobsFor(reactedId)).toEqual([
+      { queue: 'event-reactions', dedupe_key: `event-reactions:${reactedId}` },
+      { queue: 'event-summaries', dedupe_key: `event-summaries:${reactedId}` },
+    ])
+
+    const plainEntity = createId('post')
+    const plainId = await db.transaction((tx) =>
+      emit(tx, plainDef, {
+        payload: { postId: plainEntity },
+        actor: { type: 'service' },
+        entityId: plainEntity,
+      })
+    )
+    expect(await reactionJobsFor(plainId)).toEqual([])
+
+    let rolledBackId = ''
+    await expect(
+      db.transaction(async (tx) => {
+        rolledBackId = await emit(tx, reactedDef, {
+          payload: { ticketId: createId('ticket') },
+          actor: { type: 'service' },
+          entityId: reactedEntity,
+        })
+        throw new Error('abort the tx')
+      })
+    ).rejects.toThrow('abort the tx')
+    expect(await reactionJobsFor(rolledBackId)).toEqual([])
+
+    // Committed to the shared database: leave no reaction job for another
+    // suite's drain to claim.
+    await db.execute(sql`
+      DELETE FROM job_queue
+      WHERE queue IN ('event-reactions', 'event-summaries')
+        AND payload->>'eventId' IN (${reactedId}, ${plainId})
+    `)
+  })
+
+  it('rejects a payload that fails the catalogue zod schema', async () => {
+    const entityId = createId('post')
+    await expect(
+      db.transaction((tx) =>
+        emit(tx, plainDef, {
+          // @ts-expect-error — deliberately wrong payload shape
+          payload: { wrong: 1 },
+          actor: { type: 'system' },
+          entityId,
+        })
+      )
+    ).rejects.toBeInstanceOf(z.ZodError)
+
+    const rows = await db.select().from(events).where(eq(events.entityId, entityId))
+    expect(rows).toHaveLength(0)
+  })
+
+  it('writes an audit_log row in the same tx iff exposure.audit is true', async () => {
+    const auditedEntity = createId('post')
+    await db.transaction((tx) =>
+      emit(tx, auditedDef, {
+        payload: { postId: auditedEntity, note: 'hi' },
+        actor: { type: 'user', id: createId('principal') },
+        entityId: auditedEntity,
+      })
+    )
+    const auditRows = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.eventType, 'test.emit_audited'), eq(auditLog.targetId, auditedEntity)))
+    expect(auditRows).toHaveLength(1)
+    expect(auditRows[0].afterValue).toEqual({ postId: auditedEntity, note: 'hi' })
+
+    const plainEntity = createId('post')
+    await db.transaction((tx) =>
+      emit(tx, plainDef, {
+        payload: { postId: plainEntity },
+        actor: { type: 'user' },
+        entityId: plainEntity,
+      })
+    )
+    const noAudit = await db.select().from(auditLog).where(eq(auditLog.targetId, plainEntity))
+    expect(noAudit).toHaveLength(0)
+  })
+
+  it('stamps the active boundary attribution onto the audit row it writes', async () => {
+    const { runWithAuditAttribution, apiKeyAttribution } =
+      await import('@/lib/server/audit/attribution')
+    const creator = createId('principal')
+    const keyId = createId('api_key')
+    const auditedEntity = createId('post')
+    await runWithAuditAttribution(
+      apiKeyAttribution({ id: keyId, name: 'Zapier', createdById: creator }, 'api'),
+      () =>
+        db.transaction((tx) =>
+          emit(tx, auditedDef, {
+            payload: { postId: auditedEntity, note: 'hi' },
+            actor: { type: 'service', id: createId('principal') },
+            entityId: auditedEntity,
+          })
+        )
+    )
+    const [row] = await db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.eventType, 'test.emit_audited'), eq(auditLog.targetId, auditedEntity)))
+    expect(row).toMatchObject({
+      channel: 'api',
+      credentialKind: 'api_key',
+      credentialId: keyId,
+      clientName: 'Zapier',
+      onBehalfOfPrincipalId: creator,
+    })
+  })
+
+  it('inherit() bumps depth and threads causation from a parent event', () => {
+    const parent: DomainEvent = {
+      eventId: createId('event'),
+      seq: 1n,
+      type: 'post.created',
+      entityType: 'post',
+      entityId: createId('post'),
+      actorType: 'user',
+      payload: {},
+      context: { depth: 0, correlationId: 'corr-9', source: 'api' },
+      schemaVersion: 1,
+      occurredAt: new Date(),
+    }
+    const child = inherit(parent, 'workflow')
+    expect(child.depth).toBe(1)
+    expect(child.causationId).toBe(parent.eventId)
+    expect(child.correlationId).toBe('corr-9')
+    expect(child.source).toBe('workflow')
+  })
+})

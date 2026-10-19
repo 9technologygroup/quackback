@@ -12,6 +12,16 @@ const LOCALIZED_ROUTE_IDS = new Set([
   '/auth/recovery',
   '/auth/reset-password',
   '/widget',
+  '/unsubscribe',
+  // The AI & Automation pages under settings. The settings layout and the other
+  // settings pages stay English.
+  '/admin/settings/agent',
+  '/admin/settings/copilot',
+  '/admin/settings/skills',
+  '/admin/settings/connectors',
+  '/admin/settings/connectors_/$connectorId',
+  '/admin/settings/workflows',
+  '/admin/settings_/workflows/$workflowId',
 ])
 
 /**

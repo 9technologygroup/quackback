@@ -1,9 +1,25 @@
 import { describe, it, expect, vi } from 'vitest'
 
-vi.mock('@/lib/server/db', () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const chain = { set: () => ({ where: vi.fn() }) }
-  const tx = { update: () => chain }
+  const tx = {
+    update: () => chain,
+    // The read a read-modify-write takes under the row lock. Only the locking
+    // form is faked, so an unlocked read fails here.
+    select: () => ({
+      from: () => ({
+        limit: () => ({
+          for: async (strength: string) => {
+            if (strength !== 'update') throw new Error(`unexpected lock: ${strength}`)
+            return [{ id: 's1', authConfig: '{"oauth":{}}' }]
+          },
+        }),
+      }),
+    }),
+  }
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       query: {
         settings: {
@@ -20,16 +36,14 @@ vi.mock('@/lib/server/db', () => {
       }),
     },
     eq: vi.fn(),
-    settings: { id: 'id', authConfig: 'auth_config' },
-    ssoVerifiedDomain: { id: 'id', createdAt: 'created_at' },
   }
 })
 
-vi.mock('@/lib/server/redis', () => ({
+vi.mock('@/lib/server/cache', () => ({
   cacheGet: vi.fn().mockResolvedValue(null),
   cacheSet: vi.fn(),
   cacheDel: vi.fn(),
-  CACHE_KEYS: { TENANT_SETTINGS: 'tenant' },
+  CACHE_KEYS: { WORKSPACE_SETTINGS: 'workspace' },
 }))
 
 vi.mock('@/lib/server/config-file/managed-guard', () => ({ assertNotManaged: vi.fn() }))
@@ -38,7 +52,10 @@ vi.mock('@/lib/server/domains/settings/tier-limits.service', () => ({
   getTierLimits: vi.fn().mockResolvedValue({ features: { customOidcProvider: true } }),
 }))
 
-vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({ enforceFeatureGate: vi.fn() }))
+vi.mock('@/lib/server/domains/settings/tier-enforce', () => ({
+  enforceFeatureGate: vi.fn(),
+  assertTierFeature: vi.fn(),
+}))
 
 vi.mock('@/lib/server/content/ssrf-guard', () => ({
   checkUrlSafety: vi.fn().mockResolvedValue({ safe: true }),
@@ -178,7 +195,7 @@ describe('updateAuthConfig — 2FA requires password (Option A coupling)', () =>
   })
 
   it('treats absent password key as enabled (default-true per DEFAULT_AUTH_CONFIG)', async () => {
-    // Pre-migration tenant: oauth has no `password` key. Per the
+    // Pre-migration workspace: oauth has no `password` key. Per the
     // existing default-true contract, password is considered ON, so
     // enabling 2FA is permitted.
     const { db } = await import('@/lib/server/db')

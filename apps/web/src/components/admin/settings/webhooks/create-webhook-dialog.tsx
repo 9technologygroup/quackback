@@ -5,9 +5,9 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useRouter } from '@tanstack/react-router'
 import { SecretRevealDialog } from '@/components/shared/secret-reveal-dialog'
 import { Button } from '@/components/ui/button'
+import { CheckboxGroup } from '@/components/ui/checkbox-group'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -17,14 +17,20 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { createWebhookFn } from '@/lib/server/functions/webhooks'
+import { isPlanRefusal } from '@/lib/shared/describe-upgrade'
 import { WEBHOOK_EVENTS, WEBHOOK_EVENT_CONFIG } from '@/lib/shared/webhook-events'
 
 interface CreateWebhookDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onPlanRefusal?: () => void
 }
 
-export function CreateWebhookDialog({ open, onOpenChange }: CreateWebhookDialogProps) {
+export function CreateWebhookDialog({
+  open,
+  onOpenChange,
+  onPlanRefusal,
+}: CreateWebhookDialogProps) {
   const router = useRouter()
   const queryClient = useQueryClient()
   const [isPending, startTransition] = useTransition()
@@ -62,6 +68,10 @@ export function CreateWebhookDialog({ open, onOpenChange }: CreateWebhookDialogP
       // Show secret reveal
       setCreatedSecret(result.secret)
     } catch (err) {
+      if (isPlanRefusal(err)) {
+        onPlanRefusal?.()
+        return
+      }
       setError(err instanceof Error ? err.message : 'Failed to create webhook')
     }
   }
@@ -86,9 +96,9 @@ export function CreateWebhookDialog({ open, onOpenChange }: CreateWebhookDialogP
       <SecretRevealDialog
         open={open}
         onOpenChange={handleClose}
-        title="Webhook Created"
+        title="Webhook created"
         description="Save your signing secret now. You won't be able to see it again."
-        secretLabel="Signing Secret"
+        secretLabel="Signing secret"
         secretValue={createdSecret}
         confirmLabel="I've saved my secret"
       >
@@ -110,9 +120,9 @@ export function CreateWebhookDialog({ open, onOpenChange }: CreateWebhookDialogP
   // Create form view
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Create Webhook</DialogTitle>
+          <DialogTitle>Create webhook</DialogTitle>
           <DialogDescription>
             Configure an endpoint to receive event notifications.
           </DialogDescription>
@@ -136,26 +146,18 @@ export function CreateWebhookDialog({ open, onOpenChange }: CreateWebhookDialogP
 
             <div className="space-y-2">
               <Label>Events</Label>
-              <div className="space-y-2">
-                {WEBHOOK_EVENT_CONFIG.map((event) => (
-                  <label
-                    key={event.id}
-                    className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/50 transition-colors"
-                  >
-                    <Checkbox
-                      checked={selectedEvents.includes(event.id)}
-                      onCheckedChange={() => toggleEvent(event.id)}
-                      disabled={isPending}
-                      className="mt-0.5"
-                      aria-label={`Subscribe to ${event.label} events`}
-                    />
-                    <div>
-                      <p className="text-sm font-medium">{event.label}</p>
-                      <p className="text-xs text-muted-foreground">{event.description}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
+              <CheckboxGroup
+                className="space-y-2"
+                items={WEBHOOK_EVENT_CONFIG.map((event) => ({
+                  value: event.id,
+                  label: event.label,
+                  description: event.description,
+                  ariaLabel: `Subscribe to ${event.label} events`,
+                }))}
+                selected={selectedEvents}
+                onToggle={toggleEvent}
+                disabled={isPending}
+              />
             </div>
 
             {error && <p className="text-sm text-destructive">{error}</p>}
@@ -166,7 +168,7 @@ export function CreateWebhookDialog({ open, onOpenChange }: CreateWebhookDialogP
               Cancel
             </Button>
             <Button type="submit" disabled={isPending || !url || selectedEvents.length === 0}>
-              {isPending ? 'Creating...' : 'Create Webhook'}
+              {isPending ? 'Creating...' : 'Create webhook'}
             </Button>
           </DialogFooter>
         </form>

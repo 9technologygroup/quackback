@@ -19,7 +19,9 @@ vi.mock('@tanstack/react-router', () => ({
   createFileRoute: vi.fn(() => (opts: unknown) => ({ options: opts })),
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       user: { findFirst: (...args: unknown[]) => mockUserFindFirst(...args) },
@@ -30,10 +32,12 @@ vi.mock('@/lib/server/db', () => ({
     insert: () => ({
       values: (v: unknown) => {
         insertValues(v)
-        return {
+        const chain = {
           returning: async () => [{ id: 'inserted' }],
           onConflictDoUpdate: async () => undefined,
+          onConflictDoNothing: () => chain,
         }
+        return chain
       },
     }),
     update: () => ({
@@ -43,11 +47,6 @@ vi.mock('@/lib/server/db', () => ({
       },
     }),
   },
-  user: { externalId: 'external_id' },
-  session: {},
-  principal: {},
-  segments: {},
-  widgetIdentifiedSession: { sessionId: 'session_id' },
   eq: vi.fn(),
   and: vi.fn(),
   gt: vi.fn(),
@@ -79,6 +78,7 @@ vi.mock('@/lib/server/widget/identity-token', () => ({
 vi.mock('@/lib/server/domains/users/user.attributes', () => ({
   validateAndCoerceAttributes: vi.fn(async () => ({ valid: {}, removals: [], errors: [] })),
   mergeMetadata: vi.fn(() => null),
+  EXTERNAL_ID_KEY: '_externalUserId',
 }))
 
 vi.mock('@/lib/server/domains/segments/segment-membership.service', () => ({
@@ -130,6 +130,7 @@ describe('POST /api/widget/identify — external_id resolution (verified path)',
 
     expect(res.status).toBe(200)
     expect(userInsertValues()?.externalId).toBe('sub_alice')
+    expect(userInsertValues()?.emailVerified).toBe(true)
   })
 
   it('resolves a returning sub to the same user and adopts the new email', async () => {
@@ -139,6 +140,7 @@ describe('POST /api/widget/identify — external_id resolution (verified path)',
       .mockResolvedValueOnce({
         id: 'user_bob',
         email: 'bob-old@acme.com',
+        emailVerified: false,
         externalId: 'sub_bob',
         name: 'Bob',
         image: null,
@@ -154,7 +156,71 @@ describe('POST /api/widget/identify — external_id resolution (verified path)',
     // No new user row — resolved by the stable subject, not the email.
     expect(userInsertValues()).toBeUndefined()
     // sub is authoritative: the changed email is adopted onto the same account.
-    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ email: 'bob-new@acme.com' }))
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ email: 'bob-new@acme.com', emailVerified: true })
+    )
+    const body = (await res.json()) as { user?: { email?: string; name?: string } }
+    expect(body.user?.email).toBe('bob-new@acme.com')
+  })
+
+  it('rejects a verified email claim that belongs to another account', async () => {
+    mockVerifyJWT.mockReturnValue({
+      sub: 'sub_bob',
+      email: 'taken@acme.com',
+      name: 'Bob',
+    })
+    mockUserFindFirst
+      .mockResolvedValueOnce({
+        id: 'user_bob',
+        email: 'bob-old@acme.com',
+        externalId: 'sub_bob',
+        name: 'Bob',
+        image: null,
+        metadata: null,
+      })
+      .mockResolvedValueOnce({ id: 'user_other' })
+    mockPrincipalFindFirst.mockResolvedValue({ id: 'principal_bob', role: 'user' })
+
+    const res = await postIdentify({ ssoToken: 'jwt' })
+
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error?: { code?: string } }
+    expect(body.error?.code).toBe('EMAIL_IN_USE')
+    expect(updateSet).not.toHaveBeenCalled()
+    expect(userInsertValues()).toBeUndefined()
+  })
+
+  it('releases an external_id bound to a user with no principal and creates a clean record', async () => {
+    mockVerifyJWT.mockReturnValue({
+      sub: 'staff-admin',
+      email: 'new@acme.com',
+      name: 'Si Cruse',
+    })
+    mockUserFindFirst
+      // external_id still points at the Remove-from-portal husk…
+      .mockResolvedValueOnce({
+        id: 'user_husk',
+        email: 'kira-probe@example.com',
+        externalId: 'staff-admin',
+        name: 'Old Name',
+        image: null,
+        metadata: '{"_externalUserId":"staff-admin"}',
+      })
+      // …after release, email lookup misses so we insert a new user.
+      .mockResolvedValueOnce(null)
+    mockPrincipalFindFirst.mockResolvedValue(null)
+
+    const res = await postIdentify({ ssoToken: 'jwt' })
+
+    expect(res.status).toBe(200)
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ externalId: null, metadata: expect.anything() })
+    )
+    expect(userInsertValues()).toMatchObject({
+      email: 'new@acme.com',
+      name: 'Si Cruse',
+      externalId: 'staff-admin',
+    })
   })
 
   it('backfills external_id when the user is first matched by email', async () => {
@@ -179,18 +245,12 @@ describe('POST /api/widget/identify — external_id resolution (verified path)',
   })
 })
 
-describe('POST /api/widget/identify — external_id is untrusted on the unverified path', () => {
-  it('never looks up or stores external_id for an unverified id+email body', async () => {
-    mockUserFindFirst.mockResolvedValue(null) // single email lookup, then create
-    mockPrincipalFindFirst.mockResolvedValue(null)
-
+describe('POST /api/widget/identify — no unverified path exists (GH issue #300)', () => {
+  it('rejects an id+email body outright; no lookups, no user row, no external_id', async () => {
     const res = await postIdentify({ id: 'client_sub', email: 'dan@acme.com' })
 
-    expect(res.status).toBe(200)
-    // Only the email lookup runs — no external_id probe on the unverified path.
-    expect(mockUserFindFirst).toHaveBeenCalledTimes(1)
-    // The client-supplied sub is NOT persisted as an identity key.
-    const created = userInsertValues()
-    expect(created?.externalId ?? null).toBeNull()
+    expect(res.status).toBe(400)
+    expect(mockUserFindFirst).not.toHaveBeenCalled()
+    expect(userInsertValues()).toBeUndefined()
   })
 })

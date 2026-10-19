@@ -11,13 +11,17 @@ const mockSessionFindFirst = vi.fn()
 const mockPrincipalFindFirst = vi.fn()
 const mockInsert = vi.fn()
 const mockReturning = vi.fn()
-const mockValues = vi.fn(() => ({ returning: mockReturning }))
+const mockValues = vi.fn(() => {
+  const chain = { returning: mockReturning, onConflictDoNothing: () => chain }
+  return chain
+})
 
 vi.mock('@/lib/server/db', () => ({
   db: {
     query: {
       session: { findFirst: (...args: unknown[]) => mockSessionFindFirst(...args) },
       principal: { findFirst: (...args: unknown[]) => mockPrincipalFindFirst(...args) },
+      user: { findFirst: async () => ({ metadata: null }) },
     },
     insert: (...args: unknown[]) => {
       mockInsert(...args)
@@ -26,6 +30,7 @@ vi.mock('@/lib/server/db', () => ({
   },
   session: { token: 'token', expiresAt: 'expiresAt', userId: 'userId' },
   principal: { userId: 'userId' },
+  user: { id: 'id' },
   eq: vi.fn(),
   and: vi.fn(),
   gt: vi.fn(),
@@ -44,7 +49,22 @@ vi.mock('@/lib/server/functions/workspace', () => ({
   })),
 }))
 
+vi.mock('@/lib/server/storage/s3', () => ({
+  getPublicUrlOrNull: vi.fn((key: string | null | undefined) =>
+    key ? `https://cdn.example/${key}` : null
+  ),
+}))
+
 import { getWidgetSession } from '../widget-auth'
+
+function widgetSession(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: 'user_1',
+    scope: 'widget',
+    user: { id: 'user_1', email: 'jane@acme.com', name: 'Jane', image: null },
+    ...overrides,
+  }
+}
 
 describe('getWidgetSession', () => {
   beforeEach(() => {
@@ -88,12 +108,31 @@ describe('getWidgetSession', () => {
     expect(result).toBeNull()
   })
 
+  it('normalizes the signed bearer form to the raw token for the lookup', async () => {
+    // The auth library's set-auth-token header carries `<token>.<signature>`;
+    // the DB stores the raw token, so the lookup must use the prefix.
+    mockGet.mockReturnValue('Bearer raw-token-123.c2lnbmF0dXJl')
+    mockSessionFindFirst.mockResolvedValue(widgetSession())
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_1',
+      role: 'user',
+      type: 'anonymous',
+    })
+
+    const result = await getWidgetSession()
+
+    const { eq } = await import('@/lib/server/db')
+    expect(eq).toHaveBeenCalledWith('token', 'raw-token-123')
+    expect(result).not.toBeNull()
+  })
+
   it('should return auth context for valid session with existing principal', async () => {
     mockGet.mockReturnValue('Bearer valid-token-123')
-    mockSessionFindFirst.mockResolvedValue({
-      userId: 'user_1',
-      user: { id: 'user_1', email: 'jane@acme.com', name: 'Jane', image: 'https://avatar.url' },
-    })
+    mockSessionFindFirst.mockResolvedValue(
+      widgetSession({
+        user: { id: 'user_1', email: 'jane@acme.com', name: 'Jane', image: 'https://avatar.url' },
+      })
+    )
     mockPrincipalFindFirst.mockResolvedValue({
       id: 'principal_1',
       role: 'user',
@@ -106,15 +145,28 @@ describe('getWidgetSession', () => {
       settings: { id: 'ws_123', slug: 'acme', name: 'Acme Inc' },
       user: { id: 'user_1', email: 'jane@acme.com', name: 'Jane', image: 'https://avatar.url' },
       principal: { id: 'principal_1', role: 'user', type: 'user' },
+      canPortalHandoff: true,
     })
+  })
+
+  it("vetoes the portal handoff for a teammate's test customer", async () => {
+    mockGet.mockReturnValue('Bearer customer-session-1')
+    mockSessionFindFirst.mockResolvedValue(widgetSession())
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_1',
+      role: 'user',
+      type: 'anonymous',
+      testOwnerPrincipalId: 'principal_owner',
+    })
+
+    const result = await getWidgetSession()
+
+    expect(result?.canPortalHandoff).toBe(false)
   })
 
   it('should auto-create principal when none exists', async () => {
     mockGet.mockReturnValue('Bearer valid-token-123')
-    mockSessionFindFirst.mockResolvedValue({
-      userId: 'user_1',
-      user: { id: 'user_1', email: 'jane@acme.com', name: 'Jane', image: null },
-    })
+    mockSessionFindFirst.mockResolvedValue(widgetSession())
     mockPrincipalFindFirst.mockResolvedValue(null)
     mockReturning.mockResolvedValue([{ id: 'principal_mock123', role: 'user' }])
 
@@ -134,15 +186,17 @@ describe('getWidgetSession', () => {
       settings: { id: 'ws_123', slug: 'acme', name: 'Acme Inc' },
       user: { id: 'user_1', email: 'jane@acme.com', name: 'Jane', image: null },
       principal: { id: 'principal_mock123', role: 'user', type: 'user' },
+      canPortalHandoff: true,
     })
   })
 
   it('should handle null image gracefully', async () => {
     mockGet.mockReturnValue('Bearer valid-token-123')
-    mockSessionFindFirst.mockResolvedValue({
-      userId: 'user_1',
-      user: { id: 'user_1', email: 'test@test.com', name: 'Test', image: null },
-    })
+    mockSessionFindFirst.mockResolvedValue(
+      widgetSession({
+        user: { id: 'user_1', email: 'test@test.com', name: 'Test', image: null },
+      })
+    )
     mockPrincipalFindFirst.mockResolvedValue({
       id: 'principal_1',
       role: 'member',
@@ -152,7 +206,80 @@ describe('getWidgetSession', () => {
     const result = await getWidgetSession()
 
     expect(result?.user.image).toBeNull()
-    expect(result?.principal.role).toBe('member')
+    expect(result?.principal.role).toBe('user')
     expect(result?.principal.type).toBe('user')
+  })
+
+  it('presents a teammate principal as portal-tier on a widget session', async () => {
+    mockGet.mockReturnValue('Bearer valid-token-123')
+    mockSessionFindFirst.mockResolvedValue(widgetSession())
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_admin',
+      role: 'admin',
+      type: 'user',
+    })
+
+    const result = await getWidgetSession()
+
+    expect(result?.principal.role).toBe('user')
+    expect(result?.principal.id).toBe('principal_admin')
+    expect(result?.canPortalHandoff).toBe(false)
+  })
+
+  it('accepts a portal-scoped session and still presents portal-tier', async () => {
+    mockGet.mockReturnValue('Bearer valid-token-123')
+    mockSessionFindFirst.mockResolvedValue(widgetSession({ scope: 'portal' }))
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_admin',
+      role: 'admin',
+      type: 'user',
+    })
+
+    const result = await getWidgetSession()
+
+    expect(result?.principal.role).toBe('user')
+  })
+
+  it('demotes a dashboard-scoped teammate session presented as a widget Bearer', async () => {
+    mockGet.mockReturnValue('Bearer dashboard-token')
+    mockSessionFindFirst.mockResolvedValue(
+      widgetSession({
+        scope: 'dashboard',
+      })
+    )
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_admin',
+      role: 'admin',
+      type: 'user',
+    })
+
+    const result = await getWidgetSession()
+
+    expect(result).not.toBeNull()
+    expect(result?.principal.role).toBe('user')
+  })
+
+  it('resolves an uploaded imageKey when user.image is null', async () => {
+    mockGet.mockReturnValue('Bearer valid-token-123')
+    mockSessionFindFirst.mockResolvedValue(
+      widgetSession({
+        user: {
+          id: 'user_1',
+          email: 'test@test.com',
+          name: 'Test',
+          image: null,
+          imageKey: 'avatars/me.png',
+        },
+      })
+    )
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_1',
+      role: 'member',
+      type: 'user',
+    })
+
+    const result = await getWidgetSession()
+
+    expect(result?.user.image).toBe('https://cdn.example/avatars/me.png')
   })
 })

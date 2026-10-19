@@ -59,6 +59,8 @@ vi.mock('@/lib/client/hooks/use-auth-broadcast', () => ({
   }),
   openAuthPopup: vi.fn(),
   postAuthSuccess: vi.fn(),
+  postAuthError: vi.fn(),
+  useAuthBroadcast: vi.fn(),
 }))
 
 // OtpCodeStep imports input-otp, which schedules real setTimeouts on mount.
@@ -149,6 +151,43 @@ describe('PortalAuthFormInline — OAuth-only Stage 1 (#231)', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /sign in with custom oidc/i }))
     expect(await screen.findByText(/failed to initiate sign in/i)).toBeInTheDocument()
+  })
+
+  it('renders the uploaded provider logo on the OAuth tile', () => {
+    getEnabledOAuthProvidersMock.mockReturnValue([
+      {
+        id: 'oidc_acme',
+        name: 'Acme',
+        type: 'generic-oauth',
+        logoUrl: 'https://cdn.test/idp-logos/acme.png',
+      },
+    ])
+    render(
+      <PortalAuthFormInline
+        mode="login"
+        authConfig={{ found: true, oauth: { password: false, magicLink: false, oidc_acme: true } }}
+      />
+    )
+    const button = screen.getByRole('button', { name: /sign in with acme/i })
+    expect(button.querySelector('img')).toHaveAttribute(
+      'src',
+      'https://cdn.test/idp-logos/acme.png'
+    )
+  })
+
+  it('falls back to no image when a provider has no logo and no bundled icon', () => {
+    getEnabledOAuthProvidersMock.mockReturnValue([
+      { id: 'oidc_acme', name: 'Acme', type: 'generic-oauth', logoUrl: null },
+    ])
+    render(
+      <PortalAuthFormInline
+        mode="login"
+        authConfig={{ found: true, oauth: { password: false, magicLink: false, oidc_acme: true } }}
+      />
+    )
+    expect(
+      screen.getByRole('button', { name: /sign in with acme/i }).querySelector('img')
+    ).toBeNull()
   })
 })
 
@@ -253,5 +292,28 @@ describe('PortalAuthFormInline — post-sign-in navigation', () => {
     })
     // Navigation is solely the dialog opener's responsibility via the broadcast.
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  // The success path cleared `loadingAction` nowhere: only `catch` did. Inside a
+  // dialog that closes on success nobody saw it; on a page that stays mounted
+  // the button spins forever after a sign-in that already worked, and every
+  // control on the form stays disabled behind `loadingAction !== null`.
+  it('stops spinning once a password sign-in succeeds', async () => {
+    vi.mocked(authClient.signIn.email).mockResolvedValueOnce({ data: {}, error: null } as never)
+
+    renderForm({ mode: 'login', invitationId: 'inv_test', callbackUrl: '/admin' })
+
+    const passwordInput = await screen.findByLabelText(/password/i)
+    fireEvent.change(passwordInput, { target: { value: 'correct-password' } })
+    fireEvent.click(screen.getByRole('button', { name: /^sign in$/i }))
+
+    await waitFor(() => {
+      expect(vi.mocked(postAuthSuccess)).toHaveBeenCalled()
+    })
+    await waitFor(() => {
+      expect(screen.queryByText(/signing in\.\.\./i)).toBeNull()
+    })
+    expect(screen.getByRole('button', { name: /^sign in$/i })).not.toBeDisabled()
+    expect(passwordInput).not.toBeDisabled()
   })
 })

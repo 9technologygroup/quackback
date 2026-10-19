@@ -16,7 +16,7 @@
  */
 
 import type { TiptapContent } from '@/lib/server/db'
-import { isS3Configured, uploadImageBuffer } from '@/lib/server/storage/s3'
+import { isS3Usable, uploadImageBuffer } from '@/lib/server/storage/s3'
 import { safeFetch, SsrfError, ResponseTooLargeError, TimeoutError } from './ssrf-guard'
 import { sniffImageMime, ALLOWED_REHOST_MIMES } from './magic-bytes'
 import { logger } from '@/lib/server/logger'
@@ -29,12 +29,13 @@ const FETCH_TIMEOUT_MS = Number(process.env.REHOST_FETCH_TIMEOUT_MS) || 10_000
 
 const IMAGE_NODE_TYPES = new Set(['image', 'resizableImage'])
 
-export type RehostContentType = 'post' | 'changelog' | 'help-center'
+export type RehostContentType = 'post' | 'changelog' | 'help-center' | 'comment'
 
 const PREFIX_BY_CONTENT_TYPE: Record<RehostContentType, string> = {
   post: 'post-images',
   changelog: 'changelog-images',
   'help-center': 'help-center',
+  comment: 'comment-images',
 }
 
 export interface RehostOptions {
@@ -263,7 +264,7 @@ export async function rehostExternalImages(
 ): Promise<TiptapContent> {
   try {
     if (!json || typeof json !== 'object') return json
-    if (!isS3Configured()) {
+    if (!isS3Usable()) {
       log.debug('s3 not configured, skipping rehost')
       return json
     }

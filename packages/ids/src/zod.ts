@@ -7,7 +7,8 @@
 
 import { z } from 'zod'
 import { TypeID } from 'typeid-js'
-import { ID_PREFIXES, type IdPrefix } from './prefixes'
+import { ID_PREFIXES, prefixMatches, type IdPrefix } from './prefixes'
+import { ensureTypeId, isValidTypeId } from './core'
 import type { TypeId } from './types'
 
 /**
@@ -34,17 +35,16 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 export function typeIdSchema<P extends IdPrefix>(prefix: P) {
   // Simplified for TanStack Start compatibility
   // Returns ZodEffects<ZodString> without branded types for better type inference
-  return z.string().refine(
-    (val) => {
-      try {
-        const tid = TypeID.fromString(val)
-        return tid.getType() === prefix
-      } catch {
-        return false
-      }
-    },
-    { message: `Invalid ${prefix} ID format. Expected: ${prefix}_<base32>` }
-  )
+  return z.string().transform((val, ctx) => {
+    if (!isValidTypeId(val, prefix)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Invalid ${prefix} ID format. Expected: ${prefix}_<base32>`,
+      })
+      return z.NEVER
+    }
+    return ensureTypeId(val, prefix)
+  })
 }
 
 // ============================================
@@ -74,8 +74,8 @@ export function flexibleIdSchema<P extends IdPrefix>(prefix: P) {
     try {
       const tid = TypeID.fromString(val)
 
-      // Validate prefix matches
-      if (tid.getType() !== prefix) {
+      // Validate prefix matches (aliases of the expected prefix are ok)
+      if (!prefixMatches(tid.getType(), prefix)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: `Expected ${prefix} ID, got ${tid.getType()} ID`,
@@ -113,12 +113,15 @@ export function flexibleToTypeIdSchema<P extends IdPrefix>(prefix: P) {
     if (val.includes('_')) {
       try {
         const tid = TypeID.fromString(val)
-        if (tid.getType() !== prefix) {
+        if (!prefixMatches(tid.getType(), prefix)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: `Expected ${prefix} ID, got ${tid.getType()} ID`,
           })
           return z.NEVER
+        }
+        if (tid.getType() !== prefix) {
+          return TypeID.fromUUID(prefix, tid.toUUID()).toString() as TypeId<P>
         }
         return val as TypeId<P>
       } catch {
@@ -170,25 +173,30 @@ export const uuidSchema = z.string().regex(UUID_REGEX, 'Invalid UUID format')
 // Strict TypeID schemas (only accept TypeID format)
 export const postIdSchema = typeIdSchema(ID_PREFIXES.post)
 export const boardIdSchema = typeIdSchema(ID_PREFIXES.board)
-export const commentIdSchema = typeIdSchema(ID_PREFIXES.comment)
-export const voteIdSchema = typeIdSchema(ID_PREFIXES.vote)
-export const tagIdSchema = typeIdSchema(ID_PREFIXES.tag)
-export const statusIdSchema = typeIdSchema(ID_PREFIXES.status)
-export const reactionIdSchema = typeIdSchema(ID_PREFIXES.reaction)
+export const articleIdSchema = typeIdSchema(ID_PREFIXES.kb_article)
+export const commentIdSchema = typeIdSchema(ID_PREFIXES.post_comment)
+export const voteIdSchema = typeIdSchema(ID_PREFIXES.post_vote)
+export const tagIdSchema = typeIdSchema(ID_PREFIXES.post_tag)
+export const postStatusIdSchema = typeIdSchema(ID_PREFIXES.post_status)
+export const postCommentReactionIdSchema = typeIdSchema(ID_PREFIXES.post_comment_reaction)
+export const conversationMessageReactionIdSchema = typeIdSchema(
+  ID_PREFIXES.conversation_message_reaction
+)
 export const roadmapIdSchema = typeIdSchema(ID_PREFIXES.roadmap)
+export const roadmapColumnIdSchema = typeIdSchema(ID_PREFIXES.roadmap_column)
 export const changelogIdSchema = typeIdSchema(ID_PREFIXES.changelog)
 export const conversationIdSchema = typeIdSchema(ID_PREFIXES.conversation)
-export const chatMessageIdSchema = typeIdSchema(ID_PREFIXES.chat_message)
+export const conversationMessageIdSchema = typeIdSchema(ID_PREFIXES.conversation_message)
 export const integrationIdSchema = typeIdSchema(ID_PREFIXES.integration)
 export const workspaceIdSchema = typeIdSchema(ID_PREFIXES.workspace)
 export const userIdSchema = typeIdSchema(ID_PREFIXES.user)
 export const principalIdSchema = typeIdSchema(ID_PREFIXES.principal)
 export const sessionIdSchema = typeIdSchema(ID_PREFIXES.session)
 export const inviteIdSchema = typeIdSchema(ID_PREFIXES.invite)
-export const subscriptionIdSchema = typeIdSchema(ID_PREFIXES.subscription)
-export const invoiceIdSchema = typeIdSchema(ID_PREFIXES.invoice)
 export const domainIdSchema = typeIdSchema(ID_PREFIXES.domain)
 export const segmentIdSchema = typeIdSchema(ID_PREFIXES.segment)
+export const importRunIdSchema = typeIdSchema(ID_PREFIXES.import_run)
+export const exportRunIdSchema = typeIdSchema(ID_PREFIXES.export_run)
 
 // Feedback aggregation schemas
 export const feedbackSourceIdSchema = typeIdSchema(ID_PREFIXES.feedback_source)
@@ -200,12 +208,18 @@ export const externalUserMappingIdSchema = typeIdSchema(ID_PREFIXES.user_mapping
 export const flexibleSegmentIdSchema = flexibleIdSchema(ID_PREFIXES.segment)
 export const flexiblePostIdSchema = flexibleIdSchema(ID_PREFIXES.post)
 export const flexibleBoardIdSchema = flexibleIdSchema(ID_PREFIXES.board)
-export const flexibleCommentIdSchema = flexibleIdSchema(ID_PREFIXES.comment)
-export const flexibleVoteIdSchema = flexibleIdSchema(ID_PREFIXES.vote)
-export const flexibleTagIdSchema = flexibleIdSchema(ID_PREFIXES.tag)
-export const flexibleStatusIdSchema = flexibleIdSchema(ID_PREFIXES.status)
-export const flexibleReactionIdSchema = flexibleIdSchema(ID_PREFIXES.reaction)
+export const flexibleCommentIdSchema = flexibleIdSchema(ID_PREFIXES.post_comment)
+export const flexibleVoteIdSchema = flexibleIdSchema(ID_PREFIXES.post_vote)
+export const flexibleTagIdSchema = flexibleIdSchema(ID_PREFIXES.post_tag)
+export const flexiblePostStatusIdSchema = flexibleIdSchema(ID_PREFIXES.post_status)
+export const flexiblePostCommentReactionIdSchema = flexibleIdSchema(
+  ID_PREFIXES.post_comment_reaction
+)
+export const flexibleConversationMessageReactionIdSchema = flexibleIdSchema(
+  ID_PREFIXES.conversation_message_reaction
+)
 export const flexibleRoadmapIdSchema = flexibleIdSchema(ID_PREFIXES.roadmap)
+export const flexibleRoadmapColumnIdSchema = flexibleIdSchema(ID_PREFIXES.roadmap_column)
 export const flexibleChangelogIdSchema = flexibleIdSchema(ID_PREFIXES.changelog)
 export const flexibleIntegrationIdSchema = flexibleIdSchema(ID_PREFIXES.integration)
 export const flexibleWorkspaceIdSchema = flexibleIdSchema(ID_PREFIXES.workspace)
@@ -213,8 +227,6 @@ export const flexibleUserIdSchema = flexibleIdSchema(ID_PREFIXES.user)
 export const flexiblePrincipalIdSchema = flexibleIdSchema(ID_PREFIXES.principal)
 export const flexibleSessionIdSchema = flexibleIdSchema(ID_PREFIXES.session)
 export const flexibleInviteIdSchema = flexibleIdSchema(ID_PREFIXES.invite)
-export const flexibleSubscriptionIdSchema = flexibleIdSchema(ID_PREFIXES.subscription)
-export const flexibleInvoiceIdSchema = flexibleIdSchema(ID_PREFIXES.invoice)
 export const flexibleDomainIdSchema = flexibleIdSchema(ID_PREFIXES.domain)
 export const flexibleFeedbackSourceIdSchema = flexibleIdSchema(ID_PREFIXES.feedback_source)
 export const flexibleRawFeedbackItemIdSchema = flexibleIdSchema(ID_PREFIXES.raw_feedback)
@@ -240,5 +252,5 @@ export function flexibleIdArraySchema<P extends IdPrefix>(prefix: P) {
 }
 
 // Pre-built array schemas (strict TypeID only)
-export const tagIdsSchema = typeIdArraySchema(ID_PREFIXES.tag)
+export const tagIdsSchema = typeIdArraySchema(ID_PREFIXES.post_tag)
 export const postIdsSchema = typeIdArraySchema(ID_PREFIXES.post)

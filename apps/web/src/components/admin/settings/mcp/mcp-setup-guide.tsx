@@ -10,6 +10,9 @@ import {
   type SyntaxLang,
 } from '@/components/admin/settings/widget/highlighted-code'
 import { cn } from '@/lib/shared/utils'
+import { useCopyToClipboard } from '@/lib/client/hooks/use-copy-to-clipboard'
+import { INLINE_LINK } from '@/components/admin/settings/inline-link'
+import { NewTabHint } from '@/components/ui/button'
 
 // ——————————————————————————————————————————————————
 // Client icons (Simple Icons, 24x24 viewBox)
@@ -109,7 +112,7 @@ function vscodeConfig(url: string) {
         {
           type: 'promptString',
           id: 'quackback-api-key',
-          description: 'Quackback API Key (qb_...)',
+          description: 'Quackback API key (qb_...)',
           password: true,
         },
       ],
@@ -196,8 +199,8 @@ const CLIENTS: ClientDef[] = [
     lang: 'js',
     note: 'Add to your project root.',
     variants: [
-      { id: 'oauth', label: 'OAuth (recommended)', code: claudeCodeOAuthConfig },
-      { id: 'api-key', label: 'API Key', code: claudeCodeApiKeyConfig },
+      { id: 'oauth', label: 'OAuth', code: claudeCodeOAuthConfig },
+      { id: 'api-key', label: 'API key', code: claudeCodeApiKeyConfig },
     ],
   },
   {
@@ -231,8 +234,8 @@ const CLIENTS: ClientDef[] = [
     lang: 'js',
     note: 'Requires mcp-remote bridge (Node.js must be installed).',
     variants: [
-      { id: 'oauth', label: 'OAuth (recommended)', code: claudeDesktopOAuthConfig },
-      { id: 'api-key', label: 'API Key', code: claudeDesktopApiKeyConfig },
+      { id: 'oauth', label: 'OAuth', code: claudeDesktopOAuthConfig },
+      { id: 'api-key', label: 'API key', code: claudeDesktopApiKeyConfig },
     ],
   },
 ]
@@ -252,7 +255,6 @@ const MCP_TOOLS = [
   'restore_post',
   'merge_post',
   'unmerge_post',
-  'manage_roadmap_post',
   'create_changelog',
   'update_changelog',
   'delete_changelog',
@@ -270,8 +272,8 @@ const MCP_TOOLS = [
 export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
   const [selectedClient, setSelectedClient] = useState('claude-code')
   const [selectedVariant, setSelectedVariant] = useState('oauth')
-  const [copiedCode, setCopiedCode] = useState(false)
-  const [copiedEndpoint, setCopiedEndpoint] = useState(false)
+  const { copied: copiedCode, copy: copyCode } = useCopyToClipboard()
+  const { copied: copiedEndpoint, copy: copyEndpoint } = useCopyToClipboard()
 
   const client = CLIENTS.find((c) => c.id === selectedClient) ?? CLIENTS[0]
 
@@ -293,32 +295,31 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
   }, [client, selectedVariant])
 
   async function handleCopyCode() {
-    await navigator.clipboard.writeText(codeOutput)
-    setCopiedCode(true)
-    setTimeout(() => setCopiedCode(false), 2000)
+    await copyCode(codeOutput)
   }
 
   async function handleCopyEndpoint() {
-    await navigator.clipboard.writeText(endpointUrl)
-    setCopiedEndpoint(true)
-    setTimeout(() => setCopiedEndpoint(false), 2000)
+    await copyEndpoint(endpointUrl)
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden flex flex-col min-h-[480px]">
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] flex-1">
+    <div
+      data-settings-card=""
+      className="rounded-xl border border-border bg-card overflow-hidden flex flex-col"
+    >
+      <div className="grid grid-cols-1 flex-1">
         {/* ─── Left: Configuration ─── */}
-        <div className="flex flex-col border-b lg:border-b-0 lg:border-r border-border divide-y divide-border">
+        <div className="flex flex-col divide-y divide-border">
           {/* Header */}
-          <div className="p-5">
-            <h3 className="text-sm font-semibold text-foreground">Setup Guide</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">
+          <div className="px-4 py-3 sm:px-6 sm:py-4">
+            <h2 className="text-base font-semibold">Setup guide</h2>
+            <p className="text-xs text-muted-foreground mt-1">
               Connect an AI tool to your MCP server
             </p>
           </div>
 
           {/* Step 1: Endpoint */}
-          <div className="p-5 space-y-2">
+          <div className="p-4 sm:p-6 space-y-2">
             <div className="flex items-center gap-2">
               <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/10 text-primary text-[11px] font-bold shrink-0">
                 1
@@ -331,12 +332,12 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
                 onClick={handleCopyEndpoint}
                 className="group flex items-center gap-1.5 w-full text-left"
               >
-                <code className="flex-1 text-[10px] font-mono text-foreground bg-muted/30 border border-border/50 rounded px-2 py-1.5 truncate">
+                <code className="flex-1 text-xs font-mono text-foreground bg-muted/30 border border-border/50 rounded px-2 py-1.5 truncate">
                   {endpointUrl}
                 </code>
                 <span className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors">
                   {copiedEndpoint ? (
-                    <CheckIcon className="h-3.5 w-3.5 text-green-500" />
+                    <CheckIcon className="h-3.5 w-3.5 text-success" />
                   ) : (
                     <ClipboardDocumentIcon className="h-3.5 w-3.5" />
                   )}
@@ -346,7 +347,7 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
           </div>
 
           {/* Step 2: Auth */}
-          <div className="p-5 space-y-2">
+          <div className="p-4 sm:p-6 space-y-2">
             <div className="flex items-center gap-2">
               <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/10 text-primary text-[11px] font-bold shrink-0">
                 2
@@ -358,16 +359,16 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
               <Link
                 to="/admin/settings/developers"
                 search={{ tab: 'keys' as const }}
-                className="text-primary hover:underline"
+                className={INLINE_LINK}
               >
                 API key
               </Link>{' '}
-              or OAuth (browser login). Claude Code and Claude Desktop support both.
+              or OAuth (browser login, recommended). Claude Code and Claude Desktop support both.
             </p>
           </div>
 
           {/* Step 3: Client */}
-          <div className="flex-1 p-5 space-y-3">
+          <div className="flex-1 p-4 sm:p-6 space-y-3">
             <div className="flex items-center gap-2">
               <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/10 text-primary text-[11px] font-bold shrink-0">
                 3
@@ -402,7 +403,7 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
                 })}
               </div>
 
-              {/* Variant selector (OAuth / API Key) */}
+              {/* Variant selector (OAuth / API key) */}
               {client.variants && (
                 <div className="flex gap-1">
                   {client.variants.map((v) => (
@@ -411,7 +412,7 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
                       type="button"
                       onClick={() => setSelectedVariant(v.id)}
                       className={cn(
-                        'px-2 py-0.5 rounded text-[10px] font-medium transition-colors',
+                        'px-2 py-0.5 rounded text-xs font-medium transition-colors',
                         selectedVariant === v.id
                           ? 'bg-foreground/10 text-foreground'
                           : 'text-muted-foreground hover:text-foreground'
@@ -423,13 +424,50 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
                 </div>
               )}
 
+              {/* Code panel, then its caption */}
+              <div className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-border">
+                {/* File tab header */}
+                <div
+                  className="flex items-center justify-between shrink-0 px-1"
+                  style={{ backgroundColor: '#252526' }}
+                >
+                  <div className="flex items-center">
+                    <span className="px-3 py-2 text-[11px] font-mono text-white/90 border-b-2 border-primary">
+                      {client.filename}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopyCode}
+                    className="flex items-center gap-1 px-2.5 py-1.5 mr-1 rounded text-[11px] text-white/40 hover:text-white/70 transition-colors"
+                  >
+                    {copiedCode ? (
+                      <>
+                        <CheckIcon className="h-3 w-3 text-success" />
+                        <span className="text-success">Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <ClipboardDocumentIcon className="h-3 w-3" />
+                        <span>Copy</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Syntax-highlighted code */}
+                <div className="flex-1 overflow-auto">
+                  <HighlightedCode code={codeOutput} lang="js" />
+                </div>
+              </div>
+
               {/* Client note */}
               <p className="text-[11px] text-muted-foreground">{client.note}</p>
             </div>
           </div>
 
           {/* Tools summary */}
-          <div className="p-5 space-y-2">
+          <div className="p-4 sm:p-6 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-foreground">
                 {MCP_TOOLS.length} tools available
@@ -438,9 +476,10 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
                 href="https://www.quackback.io/docs/mcp/reference"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                className={`${INLINE_LINK} inline-flex items-center gap-1 text-[11px]`}
               >
                 Reference
+                <NewTabHint />
                 <ArrowTopRightOnSquareIcon className="h-3 w-3" />
               </a>
             </div>
@@ -448,49 +487,12 @@ export function McpSetupGuide({ endpointUrl }: McpSetupGuideProps) {
               {MCP_TOOLS.map((tool) => (
                 <span
                   key={tool}
-                  className="text-[10px] font-mono bg-muted/50 text-muted-foreground px-1.5 py-0.5 rounded"
+                  className="text-xs font-mono bg-muted/50 text-muted-foreground px-1.5 py-0.5 rounded"
                 >
                   {tool}
                 </span>
               ))}
             </div>
-          </div>
-        </div>
-
-        {/* ─── Right: Code Panel ─── */}
-        <div className="flex flex-col">
-          {/* File tab header */}
-          <div
-            className="flex items-center justify-between shrink-0 px-1"
-            style={{ backgroundColor: '#252526' }}
-          >
-            <div className="flex items-center">
-              <span className="px-3 py-2 text-[11px] font-mono text-white/90 border-b-2 border-primary">
-                {client.filename}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={handleCopyCode}
-              className="flex items-center gap-1 px-2.5 py-1.5 mr-1 rounded text-[11px] text-white/40 hover:text-white/70 transition-colors"
-            >
-              {copiedCode ? (
-                <>
-                  <CheckIcon className="h-3 w-3 text-green-400" />
-                  <span className="text-green-400">Copied</span>
-                </>
-              ) : (
-                <>
-                  <ClipboardDocumentIcon className="h-3 w-3" />
-                  <span>Copy</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Syntax-highlighted code */}
-          <div className="flex-1 overflow-auto">
-            <HighlightedCode code={codeOutput} lang="js" />
           </div>
         </div>
       </div>

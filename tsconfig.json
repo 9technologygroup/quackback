@@ -9,9 +9,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "declaration": true,
-    "declarationMap": true,
-    "composite": true,
+    "noUncheckedSideEffectImports": true,
     "types": ["node"]
   }
 }

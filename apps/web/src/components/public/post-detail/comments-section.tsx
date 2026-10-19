@@ -3,8 +3,9 @@ import { useMemo } from 'react'
 import { useIntl } from 'react-intl'
 import { portalDetailQueries, type PublicCommentView } from '@/lib/client/queries/portal-detail'
 import { AuthCommentsSection } from '@/components/public/auth-comments-section'
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { CommentId, PostId } from '@quackback/ids'
+import type { PostCommentId, PostId } from '@quackback/ids'
 
 /**
  * Recursively count all live (non-deleted) comments including nested replies
@@ -34,14 +35,18 @@ function CommentSkeleton() {
   )
 }
 
-export function CommentsSectionSkeleton() {
+export function CommentsSectionSkeleton({ count = 3 }: { count?: number }) {
+  // Reserve one row per real comment (capped) so resolution doesn't shift
+  // the layout; a post with no comments still gets one row for the header
+  // and composer area.
+  const rows = Math.max(1, Math.min(count, 6))
   return (
     <div className="p-6">
       <Skeleton className="h-4 w-24 mb-4" />
       <div className="space-y-6">
-        <CommentSkeleton />
-        <CommentSkeleton />
-        <CommentSkeleton />
+        {Array.from({ length: rows }, (_, i) => (
+          <CommentSkeleton key={i} />
+        ))}
       </div>
     </div>
   )
@@ -55,7 +60,7 @@ interface CommentsSectionProps {
   /** Enable comment pinning (admin only) */
   canPinComments?: boolean
   /** Callback when comment is pinned */
-  onPinComment?: (commentId: CommentId) => void
+  onPinComment?: (commentId: PostCommentId) => void
   /** Callback when comment is unpinned */
   onUnpinComment?: () => void
   /** Whether pin/unpin is in progress */
@@ -74,13 +79,26 @@ interface CommentsSectionProps {
   /** Whether the current user is a team member */
   isTeamMember?: boolean
   /** Callback when a comment is deleted */
-  onDeleteComment?: (commentId: CommentId) => void
+  onDeleteComment?: (commentId: PostCommentId) => void
   /** ID of the comment currently being deleted */
-  deletingCommentId?: CommentId | null
+  deletingCommentId?: PostCommentId | null
   /** Callback when a comment is restored (team only) */
-  onRestoreComment?: (commentId: CommentId) => void
+  onRestoreComment?: (commentId: PostCommentId) => void
   /** ID of the comment currently being restored */
-  restoringCommentId?: CommentId | null
+  restoringCommentId?: PostCommentId | null
+  // Pagination ("show more comments")
+  /** Whether more root comments can be loaded beyond what's rendered. */
+  hasMoreComments?: boolean
+  /** Load the next page of root comments (appends into the tree). */
+  onLoadMoreComments?: () => void
+  /** Whether the next page is currently loading. */
+  isLoadingMoreComments?: boolean
+  /** Remaining root comments not yet loaded (for the button label). */
+  remainingCommentCount?: number
+  /** When set, comment composers expose image insert. */
+  onImageUpload?: (file: File) => Promise<string>
+  /** Team members with post.approve can approve/reject pending comments inline. */
+  canModerate?: boolean
 }
 
 export function CommentsSection({
@@ -101,6 +119,12 @@ export function CommentsSection({
   deletingCommentId,
   onRestoreComment,
   restoringCommentId,
+  hasMoreComments = false,
+  onLoadMoreComments,
+  isLoadingMoreComments = false,
+  remainingCommentCount,
+  onImageUpload,
+  canModerate = false,
 }: CommentsSectionProps) {
   const intl = useIntl()
   const commentCount = useMemo(() => countAllComments(comments), [comments])
@@ -125,6 +149,11 @@ export function CommentsSection({
   // Use server-detected team membership when not in explicit admin mode
   const effectiveIsTeamMember = isTeamMember ?? data?.isTeamMember ?? false
 
+  // Why the composer is closed on an author-only board. Undefined in admin mode
+  // (the query is disabled there), which the thread reads as 'anyone' — admin
+  // commenting is unaffected by the board's reply rule.
+  const replyPolicy = data?.replyPolicy
+
   return (
     <div
       className="p-6 animate-in fade-in duration-200 fill-mode-backwards"
@@ -144,6 +173,7 @@ export function CommentsSection({
         postId={postId}
         comments={comments}
         allowCommenting={allowCommenting}
+        replyPolicy={replyPolicy}
         user={adminUser ?? data?.user}
         lockedMessage={lockedMessage}
         pinnedCommentId={pinnedCommentId}
@@ -154,12 +184,49 @@ export function CommentsSection({
         statuses={statuses}
         currentStatusId={currentStatusId}
         isTeamMember={effectiveIsTeamMember}
+        // Portal links to the public profile; admin uses the enriched hover
+        // card and navigates to /admin/users?selected=.
+        linkAuthors
+        authorLinkTo={adminUser ? 'admin' : 'portal'}
         onDeleteComment={onDeleteComment}
         deletingCommentId={deletingCommentId}
         onRestoreComment={onRestoreComment}
         restoringCommentId={restoringCommentId}
         hideCommentForm={disableCommenting && !!adminUser}
+        onImageUpload={onImageUpload}
+        canModerate={canModerate}
       />
+
+      {hasMoreComments && onLoadMoreComments && (
+        <div className="mt-4 flex justify-center">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={isLoadingMoreComments}
+            onClick={onLoadMoreComments}
+          >
+            {isLoadingMoreComments
+              ? intl.formatMessage({
+                  id: 'portal.postDetail.comments.loadingMore',
+                  defaultMessage: 'Loading...',
+                })
+              : remainingCommentCount && remainingCommentCount > 0
+                ? intl.formatMessage(
+                    {
+                      id: 'portal.postDetail.comments.showMoreCount',
+                      defaultMessage:
+                        'Show {count, plural, one {# more comment} other {# more comments}}',
+                    },
+                    { count: remainingCommentCount }
+                  )
+                : intl.formatMessage({
+                    id: 'portal.postDetail.comments.showMore',
+                    defaultMessage: 'Show more comments',
+                  })}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

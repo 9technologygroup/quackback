@@ -7,9 +7,10 @@
 import { useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { createCommentFn, addReactionFn, removeReactionFn } from '@/lib/server/functions/comments'
 import { inboxKeys } from '@/lib/client/hooks/use-inbox-query'
-import type { PostDetails, CommentReaction, CommentWithReplies } from '@/lib/shared/types'
+import { updatePostInInboxLists } from '@/lib/client/mutations/inbox-list-cache'
+import type { PostDetails, PostCommentReaction, CommentWithReplies } from '@/lib/shared/types'
 import type { InboxPostListResult } from '@/lib/shared/db-types'
-import type { CommentId, PrincipalId, PostId } from '@quackback/ids'
+import type { PostCommentId, PrincipalId, PostId } from '@quackback/ids'
 import { addReplyToTree, replaceOptimisticInTree } from '@/lib/client/utils/comment-tree-helpers'
 
 // ============================================================================
@@ -18,14 +19,14 @@ import { addReplyToTree, replaceOptimisticInTree } from '@/lib/client/utils/comm
 
 interface ToggleReactionInput {
   postId: PostId
-  commentId: CommentId
+  commentId: PostCommentId
   emoji: string
   /** Whether the current user has already reacted with this emoji */
   hasReacted: boolean
 }
 
 interface ToggleReactionResponse {
-  reactions: CommentReaction[]
+  reactions: PostCommentReaction[]
 }
 
 interface AddCommentInput {
@@ -42,39 +43,25 @@ interface AddCommentInput {
 // Helper Functions
 // ============================================================================
 
-/** Update a post in all list caches */
+/** Update a post in all infinite inbox list caches (skips non-list siblings). */
 function updatePostInLists(
   queryClient: ReturnType<typeof useQueryClient>,
   postId: PostId,
   updater: (post: { commentCount: number }) => { commentCount: number }
 ): void {
-  queryClient.setQueriesData<InfiniteData<InboxPostListResult>>(
-    { queryKey: inboxKeys.lists() },
-    (old) => {
-      if (!old) return old
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          items: page.items.map((post) =>
-            post.id === postId ? { ...post, ...updater(post) } : post
-          ),
-        })),
-      }
-    }
-  )
+  updatePostInInboxLists(queryClient, postId, (post) => ({ ...post, ...updater(post) }))
 }
 
 /** Optimistically update reactions in nested comment structure */
 function updateCommentsReaction(
   comments: CommentWithReplies[],
-  commentId: CommentId,
+  commentId: PostCommentId,
   emoji: string
 ): CommentWithReplies[] {
   return comments.map((comment) => {
     if (comment.id === commentId) {
       const existingReaction = comment.reactions?.find((r) => r.emoji === emoji)
-      let newReactions: CommentReaction[]
+      let newReactions: PostCommentReaction[]
 
       if (existingReaction?.hasReacted) {
         newReactions = comment.reactions
@@ -105,8 +92,8 @@ function updateCommentsReaction(
 /** Update reactions from server response */
 function updateCommentReactionsFromServer(
   comments: CommentWithReplies[],
-  commentId: CommentId,
-  reactions: CommentReaction[]
+  commentId: PostCommentId,
+  reactions: PostCommentReaction[]
 ): CommentWithReplies[] {
   return comments.map((comment) => {
     if (comment.id === commentId) {
@@ -185,7 +172,7 @@ export function useAddComment() {
         data: {
           postId: postId as PostId,
           content: content.trim(),
-          parentId: (parentId || undefined) as CommentId | undefined,
+          parentId: (parentId || undefined) as PostCommentId | undefined,
           isPrivate,
         },
       }),
@@ -200,12 +187,12 @@ export function useAddComment() {
       })
 
       const optimisticComment: CommentWithReplies = {
-        id: `comment_temp${Date.now()}` as CommentId,
+        id: `comment_temp${Date.now()}` as PostCommentId,
         postId: typedPostId,
         content,
         authorName: authorName || null,
         principalId: principalId as PrincipalId,
-        parentId: (parentId || null) as CommentId | null,
+        parentId: (parentId || null) as PostCommentId | null,
         isTeamMember: !!principalId,
         isPrivate: isPrivate ?? false,
         createdAt: new Date(),
@@ -218,7 +205,7 @@ export function useAddComment() {
 
       if (previousDetail) {
         const updatedComments = parentId
-          ? addReplyToTree(previousDetail.comments, parentId as CommentId, optimisticComment)
+          ? addReplyToTree(previousDetail.comments, parentId as PostCommentId, optimisticComment)
           : [...previousDetail.comments, optimisticComment]
         queryClient.setQueryData<PostDetails>(inboxKeys.detail(typedPostId), {
           ...previousDetail,
@@ -249,7 +236,7 @@ export function useAddComment() {
     },
     onSuccess: (data, { postId, content, parentId }) => {
       const typedPostId = postId as PostId
-      const serverComment = data as { comment: { id: CommentId; createdAt: Date } }
+      const serverComment = data as { comment: { id: PostCommentId; createdAt: Date } }
 
       queryClient.setQueryData<PostDetails>(inboxKeys.detail(typedPostId), (old) => {
         if (!old) return old

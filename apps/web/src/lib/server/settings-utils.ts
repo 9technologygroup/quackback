@@ -5,7 +5,13 @@
  * All images are stored in S3.
  */
 
+import { absolutizeOffHostAssetUrl } from '@/lib/server/storage/asset-url'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
+
+function offHostPublicUrl(key: string | null | undefined): string | null {
+  const stored = getPublicUrlOrNull(key)
+  return stored ? absolutizeOffHostAssetUrl(stored) : stored
+}
 
 export interface LogoData {
   url: string | null
@@ -21,11 +27,12 @@ export interface BrandingData {
 }
 
 /**
- * Get the first (and only) settings record for single workspace deployment.
+ * The workspace's settings row, from the settings the request already holds:
+ * every reader here is read-only.
  */
 async function getSettingsRecord() {
-  const { db } = await import('@/lib/server/db')
-  return db.query.settings.findFirst()
+  const { findSettingsCached } = await import('@/lib/server/domains/settings/settings.helpers')
+  return findSettingsCached()
 }
 
 /**
@@ -35,20 +42,7 @@ export async function getSettingsLogoData(): Promise<LogoData | null> {
   const record = await getSettingsRecord()
   if (!record) return null
 
-  const url = getPublicUrlOrNull(record.logoKey)
-  if (!url) return null
-
-  return { url }
-}
-
-/**
- * Get favicon data for the settings.
- */
-export async function getSettingsFaviconData(): Promise<{ url: string } | null> {
-  const record = await getSettingsRecord()
-  if (!record) return null
-
-  const url = getPublicUrlOrNull(record.faviconKey)
+  const url = offHostPublicUrl(record.logoKey)
   if (!url) return null
 
   return { url }
@@ -58,6 +52,19 @@ export interface HeaderLogoData {
   url: string | null
   displayMode: string | null
   displayName: string | null
+}
+
+/**
+ * Get favicon data for the settings.
+ */
+export async function getSettingsFaviconData(): Promise<LogoData | null> {
+  const record = await getSettingsRecord()
+  if (!record) return null
+
+  const url = getPublicUrlOrNull(record.faviconKey)
+  if (!url) return null
+
+  return { url }
 }
 
 /**
@@ -81,7 +88,7 @@ export async function getSettingsBrandingData(): Promise<BrandingData | null> {
   if (!record) return null
   return {
     name: record.name,
-    logoUrl: getPublicUrlOrNull(record.logoKey),
+    logoUrl: offHostPublicUrl(record.logoKey),
     faviconUrl: getPublicUrlOrNull(record.faviconKey),
     headerLogoUrl: getPublicUrlOrNull(record.headerLogoKey),
     headerDisplayMode: record.headerDisplayMode,

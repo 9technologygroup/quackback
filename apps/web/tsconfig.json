@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["dom", "dom.iterable", "ES2022"],
+    "lib": ["dom", "dom.iterable", "ES2022", "ES2023.Array"],
     "types": ["bun", "@testing-library/jest-dom"],
     "allowJs": true,
     "skipLibCheck": true,
@@ -12,9 +12,9 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "noUncheckedSideEffectImports": true,
     "jsx": "react-jsx",
     "incremental": true,
-    "composite": true,
     "paths": {
       "@/*": ["./src/*"]
     },

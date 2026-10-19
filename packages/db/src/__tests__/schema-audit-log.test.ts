@@ -36,6 +36,25 @@ describe('audit_log schema', () => {
     expect(cols.occurredAt.notNull).toBe(true)
   })
 
+  it('exposes nullable attribution columns: channel, credential, client and on-behalf-of', () => {
+    const cols = getTableColumns(auditLog)
+    expect(cols.channel.name).toBe('channel')
+    expect(cols.credentialKind.name).toBe('credential_kind')
+    expect(cols.credentialId.name).toBe('credential_id')
+    expect(cols.clientName.name).toBe('client_name')
+    expect(cols.onBehalfOfPrincipalId.name).toBe('on_behalf_of_principal_id')
+    for (const col of [
+      cols.channel,
+      cols.credentialKind,
+      cols.credentialId,
+      cols.clientName,
+      cols.onBehalfOfPrincipalId,
+    ]) {
+      expect(col.notNull).toBe(false)
+      expect(col.hasDefault).toBe(false)
+    }
+  })
+
   it('actor user is nullable so we keep rows when admins are removed', () => {
     const cols = getTableColumns(auditLog)
     expect(cols.actorUserId.notNull).toBe(false)

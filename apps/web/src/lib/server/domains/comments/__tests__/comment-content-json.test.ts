@@ -5,21 +5,21 @@
  * TipTap doc instead of parsing markdown on every render.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CommentId, PostId, PrincipalId, SegmentId } from '@quackback/ids'
+import type { PostCommentId, PostId, PrincipalId, SegmentId } from '@quackback/ids'
 import type { Actor } from '@/lib/server/policy/types'
 
 const insertedComments: Record<string, unknown>[] = []
 const insertedEditHistory: Record<string, unknown>[] = []
 const updatedComments: Record<string, unknown>[] = []
 
-vi.mock('@/lib/server/db', async () => {
+vi.mock('@/lib/server/db', async (importOriginal) => {
   const { sql: realSql } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm')
 
   function chain(label: string) {
     const c: Record<string, unknown> = {}
     c.values = vi.fn((row: Record<string, unknown>) => {
       if (label === 'comments') insertedComments.push(row)
-      if (label === 'commentEditHistory') insertedEditHistory.push(row)
+      if (label === 'postCommentEditHistory') insertedEditHistory.push(row)
       return c
     })
     c.set = vi.fn((row: Record<string, unknown>) => {
@@ -32,7 +32,7 @@ vi.mock('@/lib/server/db', async () => {
         const last = updatedComments.at(-1) ?? insertedComments.at(-1) ?? {}
         return [
           {
-            id: 'comment_existing' as unknown as CommentId,
+            id: 'comment_existing' as unknown as PostCommentId,
             postId: 'post_p' as unknown as PostId,
             content: last.content ?? 'Hi',
             contentJson: last.contentJson ?? null,
@@ -59,6 +59,7 @@ vi.mock('@/lib/server/db', async () => {
   }
 
   return {
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       query: {
         posts: {
@@ -66,7 +67,7 @@ vi.mock('@/lib/server/db', async () => {
             id: 'post_p',
             title: 'P',
             boardId: 'board_b',
-            statusId: 'status_open',
+            statusId: 'post_status_open',
             isCommentsLocked: false,
             moderationState: 'published',
             principalId: null,
@@ -84,7 +85,7 @@ vi.mock('@/lib/server/db', async () => {
             },
           }),
         },
-        comments: {
+        postComments: {
           findFirst: vi.fn().mockResolvedValue({
             id: 'comment_existing',
             postId: 'post_p',
@@ -99,7 +100,7 @@ vi.mock('@/lib/server/db', async () => {
           findMany: vi.fn().mockResolvedValue([]),
         },
         postStatuses: {
-          findFirst: vi.fn().mockResolvedValue({ id: 'status_open', name: 'Open' }),
+          findFirst: vi.fn().mockResolvedValue({ id: 'post_status_open', name: 'Open' }),
         },
       },
       transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(tx)),
@@ -111,13 +112,13 @@ vi.mock('@/lib/server/db', async () => {
     isNull: vi.fn(),
     asc: vi.fn(),
     sql: realSql,
-    comments: { __name: 'comments', id: 'id', postId: 'postId', parentId: 'parentId' },
+    postComments: { __name: 'comments', id: 'id', postId: 'postId', parentId: 'parentId' },
     posts: { __name: 'posts', id: 'id', commentCount: 'comment_count' },
     boards: { id: 'id' },
     postStatuses: { id: 'id' },
     postActivity: {},
-    commentReactions: {},
-    commentEditHistory: { __name: 'commentEditHistory' },
+    postCommentReactions: {},
+    postCommentEditHistory: { __name: 'postCommentEditHistory' },
   }
 })
 
@@ -135,6 +136,14 @@ vi.mock('@/lib/server/domains/settings/settings.service', () => ({
   getPortalConfig: vi.fn().mockResolvedValue({
     moderationDefault: { requireApproval: 'none' },
   }),
+}))
+
+vi.mock('@/lib/server/content/rehost-images', () => ({
+  rehostExternalImages: vi.fn(async (json: unknown) => json),
+}))
+
+vi.mock('@/lib/server/audit/log', () => ({
+  recordAuditEvent: vi.fn(),
 }))
 
 const portalActor: Actor = {
@@ -187,6 +196,37 @@ describe('createComment contentJson dual-write', () => {
     )
     expect(insertedComments[0].contentJson).toEqual(providedJson)
   })
+
+  it('stores client markdown verbatim when the comment has no images', async () => {
+    const { createComment } = await import('../comment.service')
+    const markdown = '**bold** body with a [link](https://example.com)'
+    await createComment(
+      { postId: 'post_p' as unknown as PostId, content: markdown },
+      { principalId: 'principal_a' as unknown as PrincipalId, role: 'user' },
+      portalActor,
+      { skipDispatch: true }
+    )
+    expect(insertedComments[0].content).toBe(markdown)
+  })
+
+  it('projects image markdown into content when the doc has an image', async () => {
+    const { createComment } = await import('../comment.service')
+    const providedJson = {
+      type: 'doc',
+      content: [{ type: 'image', attrs: { src: 'https://cdn.example.com/x.png', alt: 'shot' } }],
+    }
+    await createComment(
+      {
+        postId: 'post_p' as unknown as PostId,
+        content: 'see screenshot',
+        contentJson: providedJson,
+      },
+      { principalId: 'principal_a' as unknown as PrincipalId, role: 'user' },
+      portalActor,
+      { skipDispatch: true }
+    )
+    expect(String(insertedComments[0].content)).toMatch(/!\[/)
+  })
 })
 
 describe('userEditComment contentJson dual-write', () => {
@@ -198,7 +238,7 @@ describe('userEditComment contentJson dual-write', () => {
 
   it('updates contentJson alongside content and stores previousContentJson in history', async () => {
     const { userEditComment } = await import('../comment.permissions')
-    await userEditComment('comment_existing' as unknown as CommentId, '*italic* edited', {
+    await userEditComment('comment_existing' as unknown as PostCommentId, '*italic* edited', {
       principalId: 'principal_author' as unknown as PrincipalId,
       role: 'user',
     })
@@ -207,5 +247,30 @@ describe('userEditComment contentJson dual-write', () => {
     expect(updatedComments[0].contentJson).not.toBeNull()
     expect(insertedEditHistory[0]).toMatchObject({ previousContent: 'Old content' })
     expect(insertedEditHistory[0]).toHaveProperty('previousContentJson')
+  })
+})
+
+describe('updateComment contentJson-only sanitizes', () => {
+  beforeEach(() => {
+    insertedComments.length = 0
+    updatedComments.length = 0
+  })
+
+  it('strips a hostile image src on a contentJson-only update', async () => {
+    const { updateComment } = await import('../comment.service')
+    await updateComment(
+      'comment_existing' as unknown as PostCommentId,
+      {
+        contentJson: {
+          type: 'doc',
+          content: [
+            { type: 'image', attrs: { src: 'https://evil.example.com/track.gif', alt: 'x' } },
+          ],
+        },
+      },
+      { principalId: 'principal_author' as unknown as PrincipalId, role: 'user' }
+    )
+    const json = JSON.stringify(updatedComments[0].contentJson)
+    expect(json).not.toContain('evil.example.com')
   })
 })

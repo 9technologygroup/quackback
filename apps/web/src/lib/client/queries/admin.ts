@@ -1,13 +1,11 @@
 import { queryOptions } from '@tanstack/react-query'
-import type { BoardId, TagId, PrincipalId, PostId, RoadmapId } from '@quackback/ids'
+import type { PostId, RoadmapId } from '@quackback/ids'
+import type { AdminPostPanel } from '@/lib/server/domains/posts/post.admin-panels'
 import {
-  fetchInboxPosts,
-  fetchBoardsList,
-  fetchBoardsForSettings,
   fetchTagsList,
   fetchStatusesList,
   fetchTeamMembers,
-  searchMembersFn,
+  searchPeopleFn,
   fetchOnboardingStatus,
   fetchIntegrationsList,
   fetchIntegrationCatalog,
@@ -16,100 +14,99 @@ import {
   listSegmentsFn,
   listUserAttributesFn,
 } from '@/lib/server/functions/admin'
+import { fetchBoardsFn, fetchBoardsWithCountsFn } from '@/lib/server/functions/boards'
 import { fetchPlatformCredentialsMaskedFn } from '@/lib/server/functions/platform-credentials'
 import {
   fetchAuthProviderStatusFn,
   fetchAuthProviderCredentialsMaskedFn,
 } from '@/lib/server/functions/auth-provider-credentials'
 import { listAuditEventsFn } from '@/lib/server/functions/audit-log'
+import { listCompanyAttributesFn } from '@/lib/server/functions/company-attributes'
 import { listRecoveryCodesFn } from '@/lib/server/functions/recovery-codes'
 import { getModerationStatus } from '@/lib/server/functions/moderation'
 import { fetchApiKeys } from '@/lib/server/functions/api-keys'
 import { fetchWebhooks } from '@/lib/server/functions/webhooks'
 import { fetchRoadmaps } from '@/lib/server/functions/roadmaps'
-import {
-  fetchPostWithDetails,
-  fetchPostVotersFn,
-  fetchPostFeedbackSourceFn,
-} from '@/lib/server/functions/posts'
+import { fetchPostWithDetails, fetchPostVotersFn } from '@/lib/server/functions/posts'
 import { fetchMergePreviewFn } from '@/lib/server/functions/post-merge'
 import { fetchPublicStatuses } from '@/lib/server/functions/portal'
 import type { PortalUserListParams } from '@/lib/shared/types'
+import { mergeSuggestionQueries } from '@/lib/client/queries/signals'
+import { postOwnerQueries } from '@/lib/client/queries/post-owner'
+import { postExternalLinksQuery } from '@/lib/client/hooks/use-post-external-links-query'
+import { customerContextQuery } from '@/lib/client/queries/customer-context'
+import { readsToLoad, seedReads } from '@/lib/client/queries/read-batch'
 
 /**
- * Inbox/Feedback filter params
+ * The queries behind the panels beside a post in the admin post modal, by the
+ * name the post detail request loads each under (see post.admin-panels). The
+ * customer-context query is keyed by the author's email, unknown until the
+ * post has loaded once.
  */
-export interface InboxPostListParams {
-  boardIds?: BoardId[]
-  statusSlugs?: string[]
-  tagIds?: TagId[]
-  ownerId?: PrincipalId | null | undefined
-  search?: string
-  dateFrom?: string
-  dateTo?: string
-  minVotes?: number
-  minComments?: number
-  responded?: 'all' | 'responded' | 'unresponded'
-  updatedBefore?: string
-  sort?: 'newest' | 'oldest' | 'votes'
-  showDeleted?: boolean
-  cursor?: string
-  limit?: number
+function postPanelQueries(postId: PostId, authorEmail: string | null | undefined) {
+  return {
+    voters: adminQueries.postVoters(postId),
+    mergeSuggestions: mergeSuggestionQueries.forPost(postId),
+    externalLinks: postExternalLinksQuery(postId),
+    ownerCandidates: postOwnerQueries.candidates(),
+    customerContext: authorEmail ? customerContextQuery(authorEmail) : null,
+  } satisfies Record<AdminPostPanel, unknown>
 }
 
 /**
  * Query options factory for admin routes.
  * Uses server functions (createServerFn) to keep database code server-only.
  * These are used with ensureQueryData() in loaders and useSuspenseQuery() in components.
+ *
+ * NOTE (QC-1): the inbox posts list is no longer defined here. Its loader
+ * prefetch and its renderer now share ONE infinite-query definition —
+ * `inboxPostsInfiniteOptions` in lib/client/hooks/use-inbox-query.ts — so post
+ * mutations that invalidate `inboxKeys.lists()` reach the cache the UI renders.
  */
 export const adminQueries = {
-  /**
-   * List inbox posts with filtering
-   */
-  inboxPosts: (filters: InboxPostListParams) =>
-    queryOptions({
-      queryKey: ['admin', 'inbox', 'posts', filters],
-      queryFn: async () => {
-        const data = await fetchInboxPosts({ data: filters })
-        // Deserialize date strings from server response
-        return {
-          ...data,
-          items: (data?.items ?? []).map((p) => ({
-            ...p,
-            createdAt: new Date(p.createdAt),
-            updatedAt: new Date(p.updatedAt),
-            deletedAt: p.deletedAt ? new Date(p.deletedAt) : null,
-          })),
-        }
-      },
-      staleTime: 30 * 1000, // 30s - frequently updated
-    }),
-
   /**
    * List all boards
    */
   boards: () =>
     queryOptions({
       queryKey: ['admin', 'boards'],
-      queryFn: async () => {
-        const data = await fetchBoardsList()
-        return data.map((b) => ({
+      queryFn: () => fetchBoardsFn(),
+      staleTime: 5 * 60 * 1000, // 5min - reference data, rarely changes during session
+      // Date coercion happens per observer, so the cache holds one raw copy
+      // shared with boardsForSettings below.
+      select: (data) =>
+        data.map((b) => ({
           ...b,
           createdAt: new Date(b.createdAt),
           updatedAt: new Date(b.updatedAt),
-        }))
-      },
-      staleTime: 5 * 60 * 1000, // 5min - reference data, rarely changes during session
+        })),
     }),
 
   /**
-   * List boards for settings page (includes additional metadata)
+   * The same board list as `boards`, without the Date coercion.
+   *
+   * Shares `boards`' query key deliberately: both now resolve to the identical
+   * zero-argument `fetchBoardsFn`, so a separate key meant fetching the same
+   * payload twice and holding two copies whenever a screen mounted both (the
+   * post modal lives in the admin root layout, so `?post=` on a settings screen
+   * did exactly that). Invalidating either name refreshes both.
    */
   boardsForSettings: () =>
     queryOptions({
-      queryKey: ['admin', 'settings', 'boards'],
-      queryFn: () => fetchBoardsForSettings(),
+      queryKey: ['admin', 'boards'],
+      queryFn: () => fetchBoardsFn(),
       staleTime: 5 * 60 * 1000, // 5min - reference data
+    }),
+
+  /**
+   * Board list with post counts for the settings hub. Isolated query key
+   * so counting does not inflate the app-wide `['admin', 'boards']` cache.
+   */
+  boardsWithCounts: () =>
+    queryOptions({
+      queryKey: ['admin', 'boards', 'with-counts'],
+      queryFn: () => fetchBoardsWithCountsFn(),
+      staleTime: 5 * 60 * 1000,
     }),
 
   /**
@@ -161,12 +158,13 @@ export const adminQueries = {
     }),
 
   /**
-   * Search members (typeahead for author selector)
+   * Search people (portal users included) for on-behalf typeaheads:
+   * the author selector and the proxy-vote picker.
    */
-  searchMembers: (params: { search?: string; limit?: number }) =>
+  searchPeople: (params: { search?: string; limit?: number }) =>
     queryOptions({
-      queryKey: ['admin', 'members', 'search', params],
-      queryFn: () => searchMembersFn({ data: params }),
+      queryKey: ['admin', 'people', 'search', params],
+      queryFn: () => searchPeopleFn({ data: params }),
       staleTime: 30 * 1000,
     }),
 
@@ -187,6 +185,7 @@ export const adminQueries = {
             page: filters.page,
             limit: filters.limit,
             segmentIds: filters.segmentIds,
+            lifecycle: filters.lifecycle,
           },
         }),
       staleTime: 30 * 1000,
@@ -209,7 +208,8 @@ export const adminQueries = {
     queryOptions({
       queryKey: ['admin', 'onboarding'],
       queryFn: () => fetchOnboardingStatus(),
-      staleTime: 0, // Always fresh during onboarding
+      staleTime: 0,
+      refetchOnWindowFocus: true,
     }),
 
   /**
@@ -268,12 +268,26 @@ export const adminQueries = {
   /**
    * Get post details by ID
    * NOTE: Uses same query key as inboxKeys.detail() for cache consistency with mutations
+   *
+   * `withPanels` also loads, in the same request, the modal panels whose caches
+   * are empty or stale, and seeds each panel's own query with the result.
    */
-  postDetail: (postId: PostId) =>
+  postDetail: (postId: PostId, options?: { withPanels?: boolean }) =>
     queryOptions({
       queryKey: ['inbox', 'detail', postId],
-      queryFn: async () => {
-        const data = await fetchPostWithDetails({ data: { id: postId } })
+      queryFn: async ({ client }) => {
+        const cached = client.getQueryData<{ authorEmail?: string | null }>([
+          'inbox',
+          'detail',
+          postId,
+        ])
+        const panels = options?.withPanels
+          ? readsToLoad(client, postPanelQueries(postId, cached?.authorEmail))
+          : []
+        const { panels: loaded, ...data } = await fetchPostWithDetails({
+          data: { id: postId, ...(panels.length > 0 ? { panels } : {}) },
+        })
+        if (loaded) seedReads(client, postPanelQueries(postId, data.authorEmail), loaded)
         // Deserialize nested date strings from server response
         type ServerComment = (typeof data.comments)[0]
         type DeserializedComment = Omit<ServerComment, 'createdAt' | 'replies'> & {
@@ -290,6 +304,7 @@ export const adminQueries = {
           createdAt: new Date(data.createdAt),
           updatedAt: new Date(data.updatedAt),
           deletedAt: data.deletedAt ? new Date(data.deletedAt) : null,
+          eta: data.eta ? new Date(data.eta) : null,
           summaryUpdatedAt: data.summaryUpdatedAt ? new Date(data.summaryUpdatedAt) : null,
           comments: data.comments.map(deserializeComment),
           pinnedComment: data.pinnedComment
@@ -308,14 +323,6 @@ export const adminQueries = {
       queryKey: ['inbox', 'voters', postId],
       queryFn: () => fetchPostVotersFn({ data: { id: postId } }),
       staleTime: 30 * 1000,
-    }),
-
-  /** Feedback source for a post (if created from the feedback pipeline) */
-  postFeedbackSource: (postId: PostId) =>
-    queryOptions({
-      queryKey: ['inbox', 'feedback-source', postId],
-      queryFn: () => fetchPostFeedbackSourceFn({ data: { id: postId } }),
-      staleTime: 60 * 1000,
     }),
 
   /**
@@ -427,6 +434,16 @@ export const adminQueries = {
     queryOptions({
       queryKey: ['admin', 'userAttributes'],
       queryFn: () => listUserAttributesFn(),
+      staleTime: 60 * 1000,
+    }),
+
+  /**
+   * List all company attribute definitions
+   */
+  companyAttributes: () =>
+    queryOptions({
+      queryKey: ['admin', 'companyAttributes'],
+      queryFn: () => listCompanyAttributesFn(),
       staleTime: 60 * 1000,
     }),
 

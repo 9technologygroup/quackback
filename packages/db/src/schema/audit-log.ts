@@ -10,7 +10,7 @@
  * leave a coherent trace; `actor_user_id` is nullable so user deletion
  * preserves the audit row.
  */
-import { pgTable, text, timestamp, index, jsonb } from 'drizzle-orm/pg-core'
+import { pgTable, text, timestamp, index, jsonb, foreignKey } from 'drizzle-orm/pg-core'
 import { typeIdWithDefault, typeIdColumnNullable } from '@quackback/ids/drizzle'
 import { user } from './auth'
 
@@ -20,9 +20,7 @@ export const auditLog = pgTable(
     id: typeIdWithDefault('audit')('id').primaryKey(),
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
     /** Null when the actor's user row has been deleted. */
-    actorUserId: typeIdColumnNullable('user')('actor_user_id').references(() => user.id, {
-      onDelete: 'set null',
-    }),
+    actorUserId: typeIdColumnNullable('user')('actor_user_id'),
     /** Denormalised so deletions don't anonymise old rows. */
     actorEmail: text('actor_email'),
     /** Actor's role at write time ('admin' | 'member' | 'user' | 'service'). */
@@ -31,9 +29,9 @@ export const auditLog = pgTable(
     actorUserAgent: text('actor_user_agent'),
     /** Correlation handle — value of x-request-id / x-correlation-id header, if present. */
     requestId: text('request_id'),
-    /** Denormalised principal type at write time ('user' | 'service' | 'anonymous' | 'system' | 'api_key'). */
+    /** Denormalised principal type at write time ('user' | 'service' | 'anonymous' | 'system' | 'api_key' | 'support'). */
     actorType: text('actor_type'),
-    /** Auth method used for sign-in events ('password' | 'sso' | 'magic_link' | 'ott' | 'api_key' | 'session'). */
+    /** Auth method used for sign-in events ('password' | 'sso' | 'oauth' | 'magic_link' | 'ott' | 'api_key' | 'session'). */
     authMethod: text('auth_method'),
     /** Dotted taxonomy — see `AuditEventType`. */
     eventType: text('event_type').notNull(),
@@ -45,11 +43,42 @@ export const auditLog = pgTable(
     beforeValue: jsonb('before_value'),
     afterValue: jsonb('after_value'),
     metadata: jsonb('metadata'),
+    /**
+     * What carried the change: 'ui' | 'api' | 'mcp' | 'assistant' | 'workflow' |
+     * 'system'. Null on rows written before attribution existed and on paths
+     * no boundary attributes.
+     */
+    channel: text('channel'),
+    /** The credential that made the change: 'api_key' | 'oauth_client', or null. */
+    credentialKind: text('credential_kind'),
+    /** The API key id or OAuth client id. */
+    credentialId: text('credential_id'),
+    /** The credential's name at write time: the key name or the OAuth client's registered name. */
+    clientName: text('client_name'),
+    /**
+     * The person a credential acts for: the OAuth user, or the teammate who
+     * created the API key. No foreign key, like the denormalised actor fields.
+     */
+    onBehalfOfPrincipalId: typeIdColumnNullable('principal')('on_behalf_of_principal_id'),
   },
   (table) => [
-    index('audit_log_occurred_at_idx').on(table.occurredAt),
-    index('audit_log_actor_user_id_occurred_at_idx').on(table.actorUserId, table.occurredAt),
-    index('audit_log_event_type_occurred_at_idx').on(table.eventType, table.occurredAt),
+    // Named to match the constraint the SQL migration created.
+    foreignKey({
+      name: 'audit_log_actor_user_id_fkey',
+      columns: [table.actorUserId],
+      foreignColumns: [user.id],
+    }).onDelete('set null'),
+    // occurred_at is DESC (nullsFirst = postgres default for plain DESC)
+    // to serve the newest-first feed, matching the migration.
+    index('audit_log_occurred_at_idx').on(table.occurredAt.desc().nullsFirst()),
+    index('audit_log_actor_user_id_occurred_at_idx').on(
+      table.actorUserId,
+      table.occurredAt.desc().nullsFirst()
+    ),
+    index('audit_log_event_type_occurred_at_idx').on(
+      table.eventType,
+      table.occurredAt.desc().nullsFirst()
+    ),
     index('audit_log_request_id_idx').on(table.requestId),
   ]
 )

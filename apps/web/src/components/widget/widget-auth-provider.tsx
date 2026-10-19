@@ -19,7 +19,7 @@ import {
   clearPersistedToken,
 } from '@/lib/client/widget-auth'
 import { sendToHost } from '@/lib/client/widget-bridge'
-import { widgetQueryKeys } from '@/lib/client/hooks/use-widget-vote'
+import { INITIAL_SESSION_VERSION, widgetQueryKeys } from '@/lib/client/hooks/use-widget-vote'
 import { authClient } from '@/lib/client/auth-client'
 import { resolveIdentifyAction, type SessionSource } from './identify-precedence'
 import type { WidgetMetadata, WidgetEventName, WidgetEventMap } from '@/lib/shared/widget/types'
@@ -27,7 +27,6 @@ import { normalizeLocale, DEFAULT_LOCALE, type SupportedLocale } from '@/lib/sha
 import { htmlLangDir } from '@/lib/shared/document-locale'
 import { useIntlSetup } from '@/lib/client/hooks/use-intl-setup'
 import { onIntlError } from '@/lib/client/intl-error'
-import { createWidgetIdentifyTokenFn } from '@/lib/server/functions/widget'
 
 interface WidgetUser {
   id: string
@@ -39,14 +38,26 @@ interface WidgetUser {
 interface WidgetAuthContextValue {
   user: WidgetUser | null
   isIdentified: boolean
+  /**
+   * Whether the widget knows yet who this visitor is. False from mount until
+   * the portal session hydrates or the SDK's first `quackback:identify`
+   * (named, anonymous, or clear) has been handled — the SDK always sends one
+   * right after `quackback:ready`. While false, `isIdentified === false` means
+   * "not yet", not "anonymous"; identity-dependent chrome (the Tickets tab)
+   * should hold its initial state rather than commit to the anonymous shape.
+   */
+  identityResolved: boolean
   /** Whether verified identity is required (inline email capture disabled) */
   hmacRequired: boolean
+  /**
+   * Whether this identity may mint a portal one-time token. False for workspace
+   * teammates so "Go to portal" / "View on board" do not replace a dashboard login.
+   */
+  canPortalHandoff: boolean
   /** Ensures a session exists (identified or anonymous). Returns true if ready. */
   ensureSession: () => Promise<boolean>
   /** Ensures a session exists before performing a write action. Creates anonymous session if needed. */
   ensureSessionThen: (callback: () => void | Promise<void>) => Promise<void>
-  /** Identify by email (inline capture). Returns true on success. */
-  identifyWithEmail: (email: string, name?: string) => Promise<boolean>
   closeWidget: () => void
   /** Emit an event to the parent SDK via postMessage */
   emitEvent: <T extends WidgetEventName>(name: T, payload: WidgetEventMap[T]) => void
@@ -54,6 +65,9 @@ interface WidgetAuthContextValue {
   metadata: WidgetMetadata | null
   /** Increments when the session token changes — use in query keys to trigger refetch */
   sessionVersion: number
+  /** Latest sessionVersion, readable inside async handlers after ensureSession()
+   *  may have bumped it (the rendered `sessionVersion` closure would be stale). */
+  getSessionVersion: () => number
 }
 
 const WidgetAuthContext = createContext<WidgetAuthContextValue | null>(null)
@@ -71,11 +85,17 @@ interface WidgetAuthProviderProps {
   portalSessionToken?: string | null
   /** When true, inline email capture is disabled and the host app must sign users. */
   hmacRequired?: boolean
+  /** False when the same-origin portal cookie belongs to a workspace teammate. */
+  canPortalHandoff?: boolean
   /** Locale resolved on the server (Accept-Language header + ?locale=
    *  override). Deriving it from navigator at render time diverges from
    *  SSR and triggers React hydration error #418 — see issue #133. An SDK
    *  postMessage (quackback:locale) still overrides it after mount. */
   initialLocale?: SupportedLocale
+  /** Catalog slice for `initialLocale`, loaded server-side in the widget
+   *  layout loader so the first render is translated without a client
+   *  catalog fetch. A runtime locale change still fetches the new catalog. */
+  initialMessages?: Record<string, string>
   children: ReactNode
 }
 
@@ -83,20 +103,56 @@ export function WidgetAuthProvider({
   portalUser,
   portalSessionToken,
   hmacRequired,
+  canPortalHandoff: canPortalHandoffFromPortal,
   initialLocale,
+  initialMessages,
   children,
 }: WidgetAuthProviderProps) {
   const queryClient = useQueryClient()
+  // A portal session the page hands the widget is adopted before the first
+  // render, so every identity-keyed read starts on it, one version past the
+  // anonymous server-rendered baseline. Adopted in an effect after mount, each
+  // of those reads ran once without it and then again for the new version.
+  const [portalSessionAdopted] = useState(() => {
+    if (!portalSessionToken || typeof window === 'undefined') return false
+    setWidgetToken(portalSessionToken)
+    return true
+  })
+  const initialSessionVersion = INITIAL_SESSION_VERSION + (portalSessionAdopted ? 1 : 0)
   const [user, setUser] = useState<WidgetUser | null>(null)
-  const [sessionVersion, setSessionVersion] = useState(0)
+  const [canPortalHandoff, setCanPortalHandoff] = useState(canPortalHandoffFromPortal ?? true)
+  const [sessionVersion, setSessionVersion] = useState(initialSessionVersion)
+  const [identityResolved, setIdentityResolved] = useState(false)
   const isIdentified = user !== null
-  const sessionReadyRef = useRef(false)
-  const sessionSourceRef = useRef<SessionSource>(null)
+  const sessionReadyRef = useRef(portalSessionAdopted)
+  const sessionSourceRef = useRef<SessionSource>(portalSessionAdopted ? 'portal' : null)
+
+  // Durable device id from the host page (visitor analytics layer 2). Linked
+  // to the session's principal server-side; deduped per (device, token) so
+  // auth-state changes re-link at most once each.
+  const deviceIdRef = useRef<string | null>(null)
+  const lastDeviceLinkRef = useRef<string | null>(null)
+  const attemptDeviceLink = useCallback(() => {
+    const deviceId = deviceIdRef.current
+    const token = getWidgetToken()
+    if (!deviceId || !token) return
+    const linkKey = `${deviceId}:${token}`
+    if (lastDeviceLinkRef.current === linkKey) return
+    lastDeviceLinkRef.current = linkKey
+    void fetch('/api/widget/device', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ deviceId }),
+    }).catch(() => {})
+  }, [])
+  useEffect(() => {
+    attemptDeviceLink()
+  }, [attemptDeviceLink, user, sessionVersion])
 
   // i18n locale state — seeded from the SSR-resolved prop only, so the
   // first client render matches the server (see issue #133).
   const [locale, setLocale] = useState<SupportedLocale>(initialLocale ?? DEFAULT_LOCALE)
-  const messages = useIntlSetup(locale)
+  const messages = useIntlSetup(locale, initialMessages)
 
   // The widget is its own iframe document, and its locale can change at runtime
   // (the `quackback:locale` postMessage below). Unlike the portal, the root
@@ -108,7 +164,8 @@ export function WidgetAuthProvider({
     document.documentElement.dir = dir
   }, [locale])
 
-  const sessionVersionRef = useRef(0)
+  const sessionVersionRef = useRef(initialSessionVersion)
+  const getSessionVersion = useCallback(() => sessionVersionRef.current, [])
   const storeToken = useCallback((token: string) => {
     setWidgetToken(token)
     sessionReadyRef.current = true
@@ -211,13 +268,19 @@ export function WidgetAuthProvider({
 
   /** Shared success path for both SDK identify and inline email capture */
   const applyIdentifyResult = useCallback(
-    (result: { sessionToken: string; user: WidgetUser; votedPostIds?: string[] }) => {
+    (result: {
+      sessionToken: string
+      user: WidgetUser
+      votedPostIds?: string[]
+      canPortalHandoff?: boolean
+    }) => {
       storeToken(result.sessionToken)
       // Any anonymous session was merged into this identified user server-side,
       // so drop its persisted token. Identified tokens are never persisted —
       // they're re-established via SDK identify / portal passthrough on load.
       clearPersistedToken()
       setUser(result.user)
+      setCanPortalHandoff(result.canPortalHandoff !== false)
       if (result.votedPostIds) {
         queryClient.setQueryData(
           widgetQueryKeys.votedPosts.bySession(sessionVersionRef.current),
@@ -230,44 +293,11 @@ export function WidgetAuthProvider({
     [storeToken, queryClient]
   )
 
-  const identifyPromiseRef = useRef<Promise<boolean> | null>(null)
-  const identifyWithEmail = useCallback(
-    (email: string, name?: string): Promise<boolean> => {
-      if (identifyPromiseRef.current) return identifyPromiseRef.current
-
-      const p = (async () => {
-        try {
-          if (hmacRequired) return false
-
-          const previousToken = getWidgetToken()
-          const { ssoToken } = await createWidgetIdentifyTokenFn({
-            data: { email, name: name || email.split('@')[0] },
-          })
-
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-          if (previousToken) {
-            headers.Authorization = `Bearer ${previousToken}`
-          }
-
-          const response = await fetch('/api/widget/identify', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(previousToken ? { ssoToken, previousToken } : { ssoToken }),
-          })
-          if (!response.ok) return false
-          applyIdentifyResult(await response.json())
-          return true
-        } catch {
-          return false
-        } finally {
-          identifyPromiseRef.current = null
-        }
-      })()
-      identifyPromiseRef.current = p
-      return p
-    },
-    [applyIdentifyResult, hmacRequired]
-  )
+  // NOTE: there is deliberately no inline email-capture identify. A verified
+  // session comes only from an ssoToken signed by the customer's backend (SDK
+  // identify / portal passthrough) — see GH issue #300. Anonymous visitors keep
+  // anonymous sessions; the future assistant collects contact info as lead data
+  // on the principal instead of minting user sessions.
 
   // If a portal session token was extracted during SSR, use it directly as the
   // widget's Bearer token. This works in both same-origin AND cross-origin iframes
@@ -276,16 +306,23 @@ export function WidgetAuthProvider({
   // SDK identify() calls via postMessage will override this if received.
   const portalHydratedRef = useRef(false)
   useEffect(() => {
-    if (!portalSessionToken || portalHydratedRef.current || sessionReadyRef.current) return
+    if (!portalSessionToken || portalHydratedRef.current) return
+    // A token known at mount was adopted before the first render (above); one
+    // that arrives later is adopted here, unless a session is already ready.
+    if (!portalSessionAdopted) {
+      if (sessionReadyRef.current) return
+      sessionSourceRef.current = 'portal'
+      storeToken(portalSessionToken)
+    }
     portalHydratedRef.current = true
-    sessionSourceRef.current = 'portal'
-    storeToken(portalSessionToken)
     if (portalUser) {
       setUser(portalUser)
+      setCanPortalHandoff(canPortalHandoffFromPortal !== false)
       sendToHost({ type: 'quackback:identify-result', success: true, user: portalUser })
       sendToHost({ type: 'quackback:auth-change', user: portalUser })
     }
-  }, [portalSessionToken, portalUser, storeToken])
+    setIdentityResolved(true)
+  }, [portalSessionToken, portalSessionAdopted, portalUser, canPortalHandoffFromPortal, storeToken])
 
   // Restore a persisted anonymous session on mount so a returning visitor's
   // conversation is visible immediately, without waiting for a write. Skipped
@@ -348,6 +385,11 @@ export function WidgetAuthProvider({
         applyIdentifyResult(await response.json())
       } catch {
         sendToHost({ type: 'quackback:identify-result', success: false, error: 'NETWORK_ERROR' })
+      } finally {
+        // Resolved only once the round trip settles: between the message and
+        // the response `user` is still null, and consumers must not read that
+        // window as "this visitor is anonymous".
+        setIdentityResolved(true)
       }
     }
 
@@ -355,6 +397,8 @@ export function WidgetAuthProvider({
       // Don't eagerly create anonymous session — it will be created lazily
       // on first write action (vote, comment, post) via ensureSessionThen.
       setUser(null)
+      setCanPortalHandoff(true)
+      setIdentityResolved(true)
       sendToHost({ type: 'quackback:identify-result', success: true, user: null })
       sendToHost({ type: 'quackback:auth-change', user: null })
     }
@@ -376,6 +420,12 @@ export function WidgetAuthProvider({
         return
       }
 
+      if (msg.type === 'quackback:device' && typeof msg.data === 'string' && msg.data) {
+        deviceIdRef.current = msg.data.slice(0, 128)
+        attemptDeviceLink()
+        return
+      }
+
       if (msg.type === 'quackback:identify') {
         const action = resolveIdentifyAction({
           identifyData: msg.data,
@@ -392,6 +442,8 @@ export function WidgetAuthProvider({
             sessionVersionRef.current += 1
             setSessionVersion(sessionVersionRef.current)
             setUser(null)
+            setCanPortalHandoff(true)
+            setIdentityResolved(true)
             sendToHost({ type: 'quackback:identify-result', success: true, user: null })
             sendToHost({ type: 'quackback:auth-change', user: null })
             break
@@ -404,6 +456,7 @@ export function WidgetAuthProvider({
             break
           case 'skip':
             // Portal session takes precedence — ack without changing state
+            setIdentityResolved(true)
             sendToHost({ type: 'quackback:identify-result', success: true, user: user ?? null })
             sendToHost({ type: 'quackback:auth-change', user: user ?? null })
             break
@@ -421,25 +474,29 @@ export function WidgetAuthProvider({
     () => ({
       user,
       isIdentified,
+      identityResolved,
       hmacRequired: hmacRequired ?? false,
+      canPortalHandoff,
       ensureSession,
       ensureSessionThen,
-      identifyWithEmail,
       closeWidget,
       emitEvent,
       metadata: widgetMetadata,
       sessionVersion,
+      getSessionVersion,
     }),
     [
       user,
       isIdentified,
+      identityResolved,
+      canPortalHandoff,
       ensureSession,
       ensureSessionThen,
-      identifyWithEmail,
       closeWidget,
       emitEvent,
       widgetMetadata,
       sessionVersion,
+      getSessionVersion,
     ]
   )
 

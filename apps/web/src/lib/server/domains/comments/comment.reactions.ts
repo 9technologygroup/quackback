@@ -4,31 +4,39 @@
  * Handles adding and removing emoji reactions on comments.
  */
 
-import { db, eq, and, commentReactions, principal } from '@/lib/server/db'
-import { type CommentId, type PrincipalId } from '@quackback/ids'
+import { db, eq, and, postCommentReactions, principal } from '@/lib/server/db'
+import { type PostCommentId, type PrincipalId } from '@quackback/ids'
 import { aggregateReactions } from '@/lib/shared'
 import { type Actor } from '@/lib/server/policy'
 import { assertCommentViewable } from '@/lib/server/domains/posts/post.access'
 import type { CommentReactionCount, ReactionResult } from './comment.types'
 import { logger } from '@/lib/server/logger'
+import { notTestPrincipal } from '@/lib/server/test-data'
+import { ValidationError } from '@/lib/shared/errors'
+import { isReactionEmoji, REACTION_EMOJI_MESSAGE } from '@/lib/shared/reaction-emoji'
 
 const log = logger.child({ component: 'comment-reactions' })
 
 /** Load a comment's reactions aggregated with the reactors' display names (for
  *  the hover tooltip) and the viewer's hasReacted flag. */
 async function aggregatedReactionsFor(
-  commentId: CommentId,
+  commentId: PostCommentId,
   viewerPrincipalId: PrincipalId
 ): Promise<CommentReactionCount[]> {
   const rows = await db
     .select({
-      emoji: commentReactions.emoji,
-      principalId: commentReactions.principalId,
+      emoji: postCommentReactions.emoji,
+      principalId: postCommentReactions.principalId,
       displayName: principal.displayName,
     })
-    .from(commentReactions)
-    .leftJoin(principal, eq(principal.id, commentReactions.principalId))
-    .where(eq(commentReactions.commentId, commentId))
+    .from(postCommentReactions)
+    .leftJoin(principal, eq(principal.id, postCommentReactions.principalId))
+    .where(
+      and(
+        eq(postCommentReactions.commentId, commentId),
+        notTestPrincipal(postCommentReactions.principalId)
+      )
+    )
   return aggregateReactions(rows, viewerPrincipalId)
 }
 
@@ -44,11 +52,14 @@ async function aggregatedReactionsFor(
  * @returns Result containing reaction status or an error
  */
 export async function addReaction(
-  commentId: CommentId,
+  commentId: PostCommentId,
   emoji: string,
   principalId: PrincipalId,
   actor: Actor
 ): Promise<ReactionResult> {
+  // Every surface adds reactions through here, so this is where free text is
+  // turned away. Removal accepts any stored value, so older rows can go.
+  if (!isReactionEmoji(emoji)) throw new ValidationError('VALIDATION_ERROR', REACTION_EMOJI_MESSAGE)
   log.info({ comment_id: commentId, emoji }, 'add reaction')
   // Single chokepoint for comment access: audience + moderation +
   // isPrivate + isNull(deletedAt) on comment/post/board. Previously this
@@ -59,7 +70,7 @@ export async function addReaction(
 
   // Atomically insert reaction (uses unique constraint to prevent duplicates)
   const inserted = await db
-    .insert(commentReactions)
+    .insert(postCommentReactions)
     .values({
       commentId,
       principalId,
@@ -84,7 +95,7 @@ export async function addReaction(
  * @returns Result containing reaction status or an error
  */
 export async function removeReaction(
-  commentId: CommentId,
+  commentId: PostCommentId,
   emoji: string,
   principalId: PrincipalId,
   actor: Actor
@@ -95,12 +106,12 @@ export async function removeReaction(
 
   // Directly delete (no need to check first - idempotent operation)
   await db
-    .delete(commentReactions)
+    .delete(postCommentReactions)
     .where(
       and(
-        eq(commentReactions.commentId, commentId),
-        eq(commentReactions.principalId, principalId),
-        eq(commentReactions.emoji, emoji)
+        eq(postCommentReactions.commentId, commentId),
+        eq(postCommentReactions.principalId, principalId),
+        eq(postCommentReactions.emoji, emoji)
       )
     )
 

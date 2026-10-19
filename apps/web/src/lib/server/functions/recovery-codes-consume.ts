@@ -18,13 +18,13 @@
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { z } from 'zod'
-import type { SsoRecoveryCodeId } from '@quackback/ids'
+import type { UserId, SsoRecoveryCodeId } from '@quackback/ids'
 import { and, db, eq, isNull, sql, ssoRecoveryCode, user } from '@/lib/server/db'
 import { recordAuditEvent } from '@/lib/server/audit/log'
 import { hashRecoveryCode, verifyRecoveryCode } from '@/lib/server/auth/recovery-codes'
 import { mintMagicLinkUrl } from '@/lib/server/auth/magic-link-mint'
 import { getClientIp } from '@/lib/server/domains/api/rate-limit'
-import { bucketRetryAfter, incrementBucket } from '@/lib/server/utils/redis-rate-bucket'
+import { bucketRetryAfter, incrementBucket } from '@/lib/server/utils/rate-bucket'
 import { config } from '@/lib/server/config'
 import { logger } from '@/lib/server/logger'
 
@@ -41,7 +41,7 @@ type ConsumeResult = { ok: true; redirectUrl: string } | { ok: false; error: str
  * 5 attempts per 5 minutes per (ip, email). Both success and failure
  * count toward the cap, matching GitHub / Linear practice. Combined
  * with the 60-bit recovery-code entropy this makes blind brute-force
- * impractical. Fail-open on Redis errors via the shared bucket
+ * impractical. Fail-open on store errors via the shared bucket
  * primitive.
  */
 const RECOVERY_ATTEMPT_LIMIT = 5
@@ -182,7 +182,7 @@ export const consumeRecoveryCodeFn = createServerFn({ method: 'POST' })
     // are logged inside sendRecoveryCodeUsedEmail's error path; the
     // user still sees the audit row server-side.
     void sendRecoveryCodeAlert({
-      email: userRow.email ?? data.email,
+      userId: userRow.id as UserId,
       headers,
       occurredAt: new Date(),
     })
@@ -190,8 +190,16 @@ export const consumeRecoveryCodeFn = createServerFn({ method: 'POST' })
     return { ok: true, redirectUrl }
   })
 
+/**
+ * Account class. Keyed on the user id rather than an address.
+ *
+ * The previous `userRow.email ?? data.email` fallback was unreachable — the row
+ * was found BY that address — but it was still raw request input standing in as
+ * a security recipient, which is the exact shape this module exists to make
+ * impossible. Removed rather than left as a comment saying it is fine.
+ */
 async function sendRecoveryCodeAlert(opts: {
-  email: string
+  userId: UserId
   headers: Headers
   occurredAt: Date
 }): Promise<void> {
@@ -199,12 +207,19 @@ async function sendRecoveryCodeAlert(opts: {
     const { sendRecoveryCodeUsedEmail, isEmailConfigured } = await import('@quackback/email')
     if (!isEmailConfigured()) return
 
-    const { getTenantSettings } = await import('@/lib/server/domains/settings/settings.service')
-    const tenant = await getTenantSettings()
+    const { resolveAccountRecipient } = await import('@/lib/server/email/recipient')
+    const to = await resolveAccountRecipient(opts.userId)
+    if (!to) {
+      log.warn({ user_id: opts.userId }, 'recovery-code alert skipped: no deliverable address')
+      return
+    }
+
+    const { getWorkspaceSettings } = await import('@/lib/server/domains/settings/settings.service')
+    const workspace = await getWorkspaceSettings()
 
     await sendRecoveryCodeUsedEmail({
-      to: opts.email,
-      workspaceName: tenant?.settings?.name,
+      to,
+      workspaceName: workspace?.settings?.name,
       ipAddress: getClientIp(opts.headers) || null,
       userAgent: opts.headers.get('user-agent'),
       occurredAt: opts.occurredAt.toUTCString(),

@@ -1,0 +1,522 @@
+/**
+ * Shared plumbing for the MCP tool modules: result wrappers, cursor codecs,
+ * authorization guards, annotations, and the `registerTool` helper that owns
+ * guard placement so individual tools declare `{ scope, teamOnly, feature,
+ * permissions }` metadata instead of hand-copying guard calls.
+ */
+
+import { z } from 'zod'
+import type { McpServer, ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js'
+import type { SegmentId } from '@quackback/ids'
+import { isTeamMember } from '@/lib/shared/roles'
+import { isFeatureEnabled } from '@/lib/server/domains/settings/settings.service'
+import { segmentIdsForPrincipal } from '@/lib/server/domains/segments/segment-membership.service'
+import { DomainException } from '@/lib/shared/errors'
+import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
+import type { ConversationAttachment, TiptapContent } from '@/lib/server/db'
+import type { Actor } from '@/lib/server/policy/types'
+import { hasApiScope } from '@/lib/server/domains/api-keys/api-key-scopes'
+import { resolveActorPermissions } from '@/lib/server/policy/permissions'
+import type { PermissionKey } from '@/lib/shared/permissions'
+import { principalIdsOnTeam } from '@/lib/server/domains/principals/principal-standing'
+import { logger } from '@/lib/server/logger'
+import type { McpAuthContext, McpScope } from '../types'
+import {
+  UNTRUSTED_TOOL_FIELDS,
+  markUntrusted,
+  withItemFacts,
+  type McpToolName,
+  type UntrustedSpec,
+} from '../untrusted'
+import { recordMcpToolCall, type McpToolErrorCode } from '../tool-call-audit'
+
+const log = logger.child({ component: 'mcp-tools' })
+
+// ============================================================================
+// Result wrappers
+// ============================================================================
+
+/** Wrap a data object as a successful MCP tool result (pretty-printed, for single-entity responses). */
+export function jsonResult(data: unknown): CallToolResult {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+  }
+}
+
+/** Wrap a data object as a compact MCP tool result (no pretty-print, for list responses). */
+export function compactJsonResult(data: unknown): CallToolResult {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(data) }],
+  }
+}
+
+/** Convert a domain error to an MCP tool error result. */
+export function errorResult(err: unknown): CallToolResult {
+  let message: string
+  if (err instanceof DomainException) {
+    message = `${err.message} (code: ${err.code})`
+  } else if (err instanceof Error) {
+    message = err.message
+  } else {
+    message = 'Unknown error'
+  }
+  return {
+    isError: true,
+    content: [{ type: 'text', text: `Error: ${message}` }],
+  }
+}
+
+// ============================================================================
+// Cursor codecs
+// ============================================================================
+
+/** Parse an ISO datetime or a relative window (`7d`, `this_month`) into a Date. */
+export function parseFlexibleDate(value?: string): Date | undefined {
+  if (!value) return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  const iso = Date.parse(trimmed)
+  if (!Number.isNaN(iso)) return new Date(iso)
+  const rel = trimmed.toLowerCase().replace(/\s+/g, '_')
+  const now = new Date()
+  if (rel === 'today') {
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  }
+  if (rel === 'this_week') {
+    const day = now.getUTCDay() || 7
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - day + 1))
+  }
+  if (rel === 'this_month') {
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
+  }
+  const match = rel.match(/^(\d+)(_)?(d|day|days|h|hr|hour|hours)$/)
+  if (!match) return undefined
+  const amount = Number(match[1])
+  const unit = match[3]
+  const ms = unit.startsWith('h') ? amount * 60 * 60 * 1000 : amount * 24 * 60 * 60 * 1000
+  return new Date(now.getTime() - ms)
+}
+
+/** Encode a search cursor with entity type to prevent cross-entity misuse. */
+export function encodeSearchCursor(entity: string, value: number | string): string {
+  return Buffer.from(JSON.stringify({ entity, value })).toString('base64url')
+}
+
+/** Decode a search cursor. Returns entity and value, or defaults. */
+export function decodeSearchCursor(cursor?: string): { entity: string; value: number | string } {
+  if (!cursor) return { entity: '', value: 0 }
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8'))
+    return { entity: decoded.entity ?? '', value: decoded.value ?? 0 }
+  } catch {
+    return { entity: '', value: 0 }
+  }
+}
+
+// ============================================================================
+// Authorization guards
+// ============================================================================
+
+/** Return an error if the token is missing a required scope. */
+export function requireScope(auth: McpAuthContext, scope: McpScope): CallToolResult | null {
+  if (hasApiScope(auth.scopes, scope)) return null
+  return {
+    isError: true,
+    content: [{ type: 'text', text: `Error: Insufficient scope. Required: ${scope}` }],
+  }
+}
+
+/** Return an error if the user doesn't have an admin or member role. */
+export function requireTeamRole(auth: McpAuthContext): CallToolResult | null {
+  if (isTeamMember(auth.role)) return null
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text',
+        text: 'Error: This operation requires a team member (admin or member) role.',
+      },
+    ],
+  }
+}
+
+/**
+ * The caller's resolved permission set: an API key's role preset intersected
+ * with its creator's current permissions, or an OAuth or in-app caller's own
+ * assignment-derived set. A context built without one (a synthetic actor)
+ * falls back to its role's preset, as the policy layer's can() does.
+ */
+function heldPermissions(auth: McpAuthContext): ReadonlySet<PermissionKey> {
+  return auth.permissions ?? resolveActorPermissions(auth.role)
+}
+
+/** Return an error if the caller does not hold every permission in the list. */
+export function requirePermissions(
+  auth: McpAuthContext,
+  required: readonly PermissionKey[]
+): CallToolResult | null {
+  const held = heldPermissions(auth)
+  const missing = required.find((permission) => !held.has(permission))
+  if (!missing) return null
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text',
+        text: `Error: This operation requires the '${missing}' permission. Ask a workspace owner or an admin to grant it.`,
+      },
+    ],
+  }
+}
+
+/** Feature flags a tool can require before its scope/role guards run. */
+type ToolFeature = 'helpCenter' | 'copilotHome'
+
+const FEATURE_DENIALS: Record<ToolFeature, string> = {
+  helpCenter: 'Error: Help center is not enabled. Enable it in Settings → General.',
+  copilotHome: 'Error: Settings tools follow Copilot on Home. Turn it on in Settings → Labs.',
+}
+
+/** Return an error if the help center feature is disabled. */
+export async function requireHelpCenter(): Promise<CallToolResult | null> {
+  if (await isFeatureEnabled('helpCenter')) return null
+  return {
+    isError: true,
+    content: [
+      {
+        type: 'text',
+        text: FEATURE_DENIALS.helpCenter,
+      },
+    ],
+  }
+}
+
+// ============================================================================
+// Tool registration
+// ============================================================================
+
+async function requireFeature(feature: ToolFeature): Promise<CallToolResult | null> {
+  if (feature === 'helpCenter') return requireHelpCenter()
+  if (await isFeatureEnabled(feature)) return null
+  return { isError: true, content: [{ type: 'text', text: FEATURE_DENIALS[feature] }] }
+}
+
+export interface ToolDef<TArgs> {
+  /** Must be declared in UNTRUSTED_TOOL_FIELDS (../untrusted). */
+  name: McpToolName
+  description: string
+  schema: z.ZodRawShape
+  annotations: ToolAnnotations
+  /**
+   * Scope every invocation must hold. Omit ONLY for tools that dispatch on
+   * their arguments and gate per-branch in the handler (search, get_details).
+   */
+  scope?: McpScope
+  /** Additionally require an admin/member (team) role. */
+  teamOnly?: boolean
+  /** Feature flag that must be enabled, checked before the scope/role guards. */
+  feature?: ToolFeature
+  /**
+   * Permissions the caller's resolved set must hold before the handler runs:
+   * every key listed, or every key a function derives from the arguments
+   * (a field-by-field update, a per-area or per-destination tool). `'none'`
+   * marks a tool any caller the scope admits may run, portal users included,
+   * whose domain policy gates the effect (voting, commenting as yourself).
+   * Required, so a tool cannot be gated on scope and team role alone.
+   */
+  permissions: ToolPermissions<TArgs>
+  handler: (args: TArgs) => Promise<CallToolResult>
+}
+
+export type ToolPermissions<TArgs> =
+  | readonly [PermissionKey, ...PermissionKey[]]
+  | ((args: TArgs, auth: McpAuthContext) => readonly PermissionKey[])
+  | 'none'
+
+function requiredPermissions<TArgs>(
+  declared: ToolPermissions<TArgs>,
+  args: TArgs,
+  auth: McpAuthContext
+): readonly PermissionKey[] {
+  if (declared === 'none') return []
+  return typeof declared === 'function' ? declared(args, auth) : declared
+}
+
+/**
+ * Register a tool with its authorization contract applied declaratively.
+ * Guard order is feature flag, then scope, then team role — the same order the
+ * hand-written guards used, so denial messages are unchanged — then the
+ * tool's declared permissions against the caller's resolved set, the same
+ * intersection the REST API gates on.
+ *
+ * Error ownership also lives here: any error the handler throws becomes the
+ * standard errorResult, so handlers only add try/catch when a branch needs a
+ * more specific mapping (e.g. get_details' invalid-TypeID message).
+ *
+ * So does untrusted marking: every successful result passes through
+ * markUntrusted with the tool's UNTRUSTED_TOOL_FIELDS declaration, which adds
+ * the `untrusted` descriptor when the result holds text from outside the team.
+ */
+export function registerTool<TArgs>(
+  server: McpServer,
+  auth: McpAuthContext,
+  def: ToolDef<TArgs>
+): void {
+  const untrusted: UntrustedSpec | undefined = UNTRUSTED_TOOL_FIELDS[def.name]
+  if (!untrusted) {
+    throw new Error(`MCP tool "${def.name}" has no UNTRUSTED_TOOL_FIELDS declaration`)
+  }
+  const audited = def.annotations.readOnlyHint !== true
+  const wrapped = (async (args: TArgs, extra?: unknown): Promise<CallToolResult> => {
+    const { result, errorCode } = await runGuardedTool(auth, def, args, untrusted)
+    // Every call that can change something is audited, refused ones included,
+    // on the result the caller receives.
+    if (audited) {
+      await recordMcpToolCall({ auth, tool: def.name, args, result, errorCode, extra })
+    }
+    return result
+  }) as unknown as ToolCallback<never>
+
+  // MCP SDK still types against an older Zod shape; the runtime schema is ours.
+  server.tool(def.name, def.description, def.schema as never, def.annotations, wrapped)
+}
+
+/** Run a tool behind its guards, naming the outcome for the audit. */
+async function runGuardedTool<TArgs>(
+  auth: McpAuthContext,
+  def: ToolDef<TArgs>,
+  args: TArgs,
+  untrusted: UntrustedSpec
+): Promise<{ result: CallToolResult; errorCode: McpToolErrorCode | null }> {
+  if (def.feature) {
+    const denied = await requireFeature(def.feature)
+    if (denied) return { result: denied, errorCode: 'FEATURE_DISABLED' }
+  }
+  if (def.scope) {
+    const denied = requireScope(auth, def.scope)
+    if (denied) return { result: denied, errorCode: 'INSUFFICIENT_SCOPE' }
+  }
+  if (def.teamOnly) {
+    const denied = requireTeamRole(auth)
+    if (denied) return { result: denied, errorCode: 'FORBIDDEN' }
+  }
+  try {
+    const denied = requirePermissions(auth, requiredPermissions(def.permissions, args, auth))
+    if (denied) return { result: denied, errorCode: 'MISSING_PERMISSION' }
+    const result = markUntrusted(await def.handler(args), untrusted)
+    return { result, errorCode: result.isError ? 'TOOL_ERROR' : null }
+  } catch (err) {
+    return {
+      result: errorResult(err),
+      errorCode: err instanceof DomainException ? err.code : 'INTERNAL_ERROR',
+    }
+  }
+}
+
+// ============================================================================
+// Shared formatters
+// ============================================================================
+
+/** Build the agent-author object used by the conversation write tools (reply, suggest, share). */
+export function agentFromMcpAuth(auth: McpAuthContext) {
+  return { principalId: auth.principalId, displayName: auth.name, email: auth.email }
+}
+
+/**
+ * Turn the `fileIds` a reply/note tool was called with into the attachment
+ * refs `resolveAttachments` expects. Only `fileId` is filled in — the service
+ * rebuilds url/name/contentType/size from the stored row, so nothing else on
+ * this ref is trusted. Undefined (not an empty array) when there are none, so
+ * a caller that forwards this straight into a service input leaves that
+ * field absent rather than an empty list.
+ */
+export function attachmentsFromFileIds(
+  fileIds: string[] | undefined
+): ConversationAttachment[] | undefined {
+  if (!fileIds || fileIds.length === 0) return undefined
+  return fileIds.map((fileId) => ({ fileId })) as ConversationAttachment[]
+}
+
+// ============================================================================
+// Policy actors
+// ============================================================================
+
+/** MCP callers are human (OAuth / legacy human-backed keys) or service principals. */
+export function principalTypeOf(auth: McpAuthContext): 'user' | 'service' {
+  return auth.userId ? 'user' : 'service'
+}
+
+/**
+ * Policy actor for the agent-side conversation tools. The conversation gates
+ * (canViewConversation / canActAsAgent) short-circuit on the team role, so
+ * segment memberships are never consulted and stay empty. A permission ceiling
+ * on the context (an API key's resolved authority) rides along.
+ */
+export function mcpAgentActor(auth: McpAuthContext): Actor {
+  return {
+    principalId: auth.principalId,
+    role: auth.role,
+    principalType: principalTypeOf(auth),
+    segmentIds: new Set<SegmentId>(),
+    permissions: auth.permissions,
+  }
+}
+
+/**
+ * Policy actor carrying the caller's REAL role and resolved segment
+ * memberships, for gates that apply board tiers / moderation to the writer
+ * (create_post, comment tools). Team roles keep their legitimate bypass;
+ * portal users are gated exactly as the portal paths gate them.
+ */
+export async function mcpMemberActor(auth: McpAuthContext): Promise<Actor> {
+  return {
+    principalId: auth.principalId,
+    role: auth.role,
+    principalType: principalTypeOf(auth),
+    segmentIds: await segmentIdsForPrincipal(auth.principalId),
+    permissions: auth.permissions,
+  }
+}
+
+/** An object in a result that shows someone's name: its path there, and whose name it is. */
+export type AuthorAt = readonly [path: string, principalId: string | null | undefined]
+
+/**
+ * Attach whether each listed object's author is on the team today, as
+ * `authorOnTeam` facts at the object's path (see withItemFacts). Names are
+ * read live, so only a current teammate's or service principal's name is the
+ * team's. One principal read covers the whole result, and none happens when no
+ * object names an author. If the read fails, no author counts as on the team,
+ * so every name is marked rather than the call failing.
+ */
+export async function withAuthorFacts(
+  result: CallToolResult,
+  authors: ReadonlyArray<AuthorAt>
+): Promise<CallToolResult> {
+  let onTeam: Set<string>
+  try {
+    onTeam = await principalIdsOnTeam(authors.map(([, principalId]) => principalId))
+  } catch (err) {
+    log.warn({ err }, 'author standing lookup failed, marking every author name')
+    onTeam = new Set()
+  }
+  return withItemFacts(
+    result,
+    Object.fromEntries(
+      authors.map(([path, principalId]) => [
+        path,
+        { authorOnTeam: !!principalId && onTeam.has(principalId) },
+      ])
+    )
+  )
+}
+
+/** Format a help center article as a tool result, with its author's standing attached. */
+export async function articleResult(article: {
+  id: string
+  slug: string
+  title: string
+  content: string
+  contentJson: TiptapContent | null
+  description: string | null
+  position: number | null
+  category: { id: string; slug: string; name: string }
+  author: { id: string; name: string; avatarUrl: string | null } | null
+  publishedAt: Date | null
+  viewCount: number
+  helpfulCount: number
+  notHelpfulCount: number
+  createdAt: Date
+  updatedAt: Date
+}): Promise<CallToolResult> {
+  return withAuthorFacts(
+    jsonResult({
+      id: article.id,
+      slug: article.slug,
+      title: article.title,
+      content: contentJsonToMarkdown(article.contentJson, article.content),
+      description: article.description,
+      position: article.position,
+      category: article.category,
+      author: article.author,
+      publishedAt: article.publishedAt,
+      viewCount: article.viewCount,
+      helpfulCount: article.helpfulCount,
+      notHelpfulCount: article.notHelpfulCount,
+      createdAt: article.createdAt,
+      updatedAt: article.updatedAt,
+    }),
+    [['author', article.author?.id]]
+  )
+}
+
+/** Format a help center category as a tool result. */
+export function categoryResult(category: {
+  id: string
+  slug: string
+  name: string
+  description: string | null
+  icon: string | null
+  parentId: string | null
+  isPublic: boolean
+  position: number
+  createdAt: Date
+  updatedAt: Date
+}): CallToolResult {
+  return jsonResult({
+    id: category.id,
+    slug: category.slug,
+    name: category.name,
+    description: category.description,
+    icon: category.icon,
+    parentId: category.parentId,
+    isPublic: category.isPublic,
+    position: category.position,
+    createdAt: category.createdAt,
+    updatedAt: category.updatedAt,
+  })
+}
+
+// ============================================================================
+// Annotations
+// ============================================================================
+
+export const READ_ONLY: ToolAnnotations = { readOnlyHint: true, openWorldHint: false }
+export const WRITE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false,
+}
+export const DESTRUCTIVE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: false,
+}
+
+// ============================================================================
+// Shared description blocks
+// ============================================================================
+
+/**
+ * Shared "Content format" block appended to rich-content tool descriptions.
+ * Kept as a single constant so the auto-rehost behavior stays DRY across
+ * create_post / create_changelog / update_changelog / create_article / update_article.
+ */
+export const CONTENT_FORMAT_BLOCK = `
+
+Content format: GitHub-flavored Markdown (GFM).
+Supported: headings (#, ##, ###), bold/italic/strikethrough, links, ordered/bulleted lists, task lists (- [ ]), inline and fenced code blocks with language hints, blockquotes, tables, horizontal rules, images.
+Images: \`![alt](https://...)\`. External URLs are fetched server-side and re-uploaded to workspace storage on save (auto-rehost). Supported image types: PNG, JPEG, WebP, GIF, AVIF. Max 10 MB per image, max 20 images per save. Images exceeding these limits keep their original URL as a fallback.
+Example: "## New feature\\n\\nAdds **dark mode**. See screenshot:\\n\\n![dark mode](https://example.com/dark.png)"`
+
+/**
+ * Shared tail for rich-content field `.describe()` blurbs. Each schema
+ * prepends its own lead ("Post content (max N characters).", ...) so the
+ * format/rehost wording stays identical across posts, changelog, and
+ * help-center tools.
+ */
+export const CONTENT_FIELD_DESCRIBE =
+  'Markdown (GFM). Images via ![alt](url) are auto-rehosted to workspace storage on save. See tool description for full format details.'

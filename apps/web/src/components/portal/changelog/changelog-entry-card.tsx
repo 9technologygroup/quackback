@@ -1,7 +1,8 @@
 import { Link } from '@tanstack/react-router'
 import { LinkIcon, ChevronUpIcon } from '@heroicons/react/24/outline'
-import { RichTextContent, isRichTextContent } from '@/components/ui/rich-text-editor'
+import { RichTextContent, isRichTextContent } from '@/components/ui/rich-text-content'
 import { StatusBadge } from '@/components/ui/status-badge'
+import { LocalDate } from '@/components/ui/local-date'
 import type { ChangelogId, PostId } from '@quackback/ids'
 import type { JSONContent } from '@tiptap/react'
 import type { TiptapContent } from '@/lib/shared/db-types'
@@ -18,6 +19,12 @@ interface LinkedPost {
   } | null
 }
 
+interface CategoryBadge {
+  id: string
+  name: string
+  color: string
+}
+
 interface ChangelogEntryCardProps {
   id: ChangelogId
   title: string
@@ -25,16 +32,12 @@ interface ChangelogEntryCardProps {
   contentJson: TiptapContent | null
   publishedAt: string
   linkedPosts: LinkedPost[]
+  categories?: CategoryBadge[]
   className?: string
 }
 
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  })
-}
+/** The entry's date, e.g. "October 1, 2026", in the reader's zone once hydrated. */
+const ENTRY_DATE: Intl.DateTimeFormatOptions = { month: 'long', day: 'numeric', year: 'numeric' }
 
 export function ChangelogEntryCard({
   id,
@@ -43,23 +46,43 @@ export function ChangelogEntryCard({
   contentJson,
   publishedAt,
   linkedPosts,
+  categories = [],
   className,
 }: ChangelogEntryCardProps) {
   return (
     <article className={cn('flex gap-8 lg:gap-16', className)}>
       {/* Date sidebar */}
       <div className="hidden md:block w-40 shrink-0 pt-1">
-        <time dateTime={publishedAt} className="text-sm text-muted-foreground">
-          {formatDate(publishedAt)}
-        </time>
+        <LocalDate
+          date={publishedAt}
+          options={ENTRY_DATE}
+          className="text-sm text-muted-foreground"
+        />
       </div>
 
       {/* Main content */}
       <div className="flex-1 min-w-0">
         {/* Mobile date */}
-        <time dateTime={publishedAt} className="md:hidden text-sm text-muted-foreground mb-4 block">
-          {formatDate(publishedAt)}
-        </time>
+        <LocalDate
+          date={publishedAt}
+          options={ENTRY_DATE}
+          className="md:hidden text-sm text-muted-foreground mb-4 block"
+        />
+
+        {/* Category labels */}
+        {categories.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {categories.map((category) => (
+              <span
+                key={category.id}
+                className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+                style={{ backgroundColor: category.color + '1a', color: category.color }}
+              >
+                {category.name}
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Title with permalink */}
         <Link

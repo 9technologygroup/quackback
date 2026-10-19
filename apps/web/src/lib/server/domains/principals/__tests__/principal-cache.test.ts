@@ -11,7 +11,11 @@ import type { PrincipalId, UserId } from '@quackback/ids'
 
 const mockCacheDel = vi.fn()
 
-vi.mock('@/lib/server/redis', () => ({
+vi.mock('@/lib/server/domains/principals/membership-sync', () => ({
+  enqueueMembershipSync: vi.fn(async () => {}),
+}))
+
+vi.mock('@/lib/server/cache', () => ({
   cacheDel: (...args: unknown[]) => mockCacheDel(...args),
   CACHE_KEYS: {
     PRINCIPAL_BY_USER: (userId: string) => `principal:user:${userId}`,
@@ -22,21 +26,21 @@ const mockFindFirst = vi.fn()
 const mockSelect = vi.fn()
 const mockUpdate = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: { principal: { findFirst: (...a: unknown[]) => mockFindFirst(...a) } },
     select: (...a: unknown[]) => mockSelect(...a),
     update: (...a: unknown[]) => mockUpdate(...a),
   },
-  // Drizzle helpers / table identifiers — only need to be defined, not functional.
+  // Drizzle helpers — only need to be defined, not functional.
   eq: vi.fn(),
   ne: vi.fn(),
   and: vi.fn(),
   or: vi.fn(),
   sql: vi.fn(() => ({ as: vi.fn() })),
   ilike: vi.fn(),
-  principal: { id: 'id', userId: 'userId', role: 'role', type: 'type' },
-  user: {},
 }))
 
 const { updateMemberRole, removeTeamMember } = await import('../principal.service')
@@ -71,7 +75,7 @@ describe('updateMemberRole', () => {
       role: 'admin',
     })
 
-    await updateMemberRole(TARGET, 'member', ACTING)
+    await updateMemberRole(TARGET, 'member', ACTING, null, undefined, { granterRole: 'admin' })
 
     expect(mockCacheDel).toHaveBeenCalledWith(`principal:user:${TARGET_USER}`)
   })
@@ -85,8 +89,21 @@ describe('updateMemberRole', () => {
       role: 'admin',
     })
 
-    await updateMemberRole(TARGET, 'member', ACTING)
+    await updateMemberRole(TARGET, 'member', ACTING, null, undefined, { granterRole: 'admin' })
 
+    expect(mockCacheDel).not.toHaveBeenCalled()
+  })
+
+  it('refuses to change the role of a support principal', async () => {
+    mockFindFirst.mockResolvedValue({
+      id: TARGET,
+      userId: TARGET_USER,
+      type: 'support',
+      role: 'admin',
+    })
+    await expect(updateMemberRole(TARGET, 'member', ACTING)).rejects.toMatchObject({
+      code: 'MEMBER_NOT_FOUND',
+    })
     expect(mockCacheDel).not.toHaveBeenCalled()
   })
 })
@@ -103,5 +120,18 @@ describe('removeTeamMember', () => {
     await removeTeamMember(TARGET, ACTING)
 
     expect(mockCacheDel).toHaveBeenCalledWith(`principal:user:${TARGET_USER}`)
+  })
+
+  it('refuses to remove a support principal', async () => {
+    mockFindFirst.mockResolvedValue({
+      id: TARGET,
+      userId: TARGET_USER,
+      type: 'support',
+      role: 'admin',
+    })
+    await expect(removeTeamMember(TARGET, ACTING)).rejects.toMatchObject({
+      code: 'MEMBER_NOT_FOUND',
+    })
+    expect(mockCacheDel).not.toHaveBeenCalled()
   })
 })

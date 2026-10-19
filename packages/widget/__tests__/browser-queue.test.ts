@@ -29,7 +29,7 @@ function mockSDK(): unknown[][] {
 function installQueueStub(): void {
   const q: IArguments[] = []
   const queueFn = function (this: void) {
-    // eslint-disable-next-line prefer-rest-params
+    // oxlint-disable-next-line prefer-rest-params
     q.push(arguments)
   } as ((...args: unknown[]) => unknown) & { q: IArguments[] }
   queueFn.q = q
@@ -43,10 +43,21 @@ describe('browser-queue', () => {
     delete (window as Window).__QUACKBACK_URL__
     document.body.innerHTML = ''
     document.head.innerHTML = ''
+    // Flush the real SDK's idle-time panel preload synchronously so the
+    // end-to-end tests can assert panel DOM right after init.
+    vi.stubGlobal(
+      'requestIdleCallback',
+      vi.fn((cb: () => void) => {
+        cb()
+        return 1
+      })
+    )
+    vi.stubGlobal('cancelIdleCallback', vi.fn())
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('replays queued commands through the SDK after the script loads', async () => {

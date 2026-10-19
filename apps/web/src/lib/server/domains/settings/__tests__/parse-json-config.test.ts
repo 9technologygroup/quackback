@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseJsonConfig } from '../settings.helpers'
+import { parseJsonConfig, parsePortalConfig, parseWidgetConfig } from '../settings.helpers'
 import {
   DEFAULT_AUTH_CONFIG,
   DEFAULT_PORTAL_CONFIG,
@@ -9,8 +9,12 @@ import {
 } from '../settings.types'
 
 describe('DEFAULT_PORTAL_CONFIG', () => {
-  it('DEFAULT_PORTAL_CONFIG carries a moderationDefault of none', () => {
-    expect(DEFAULT_PORTAL_CONFIG.moderationDefault).toEqual({ requireApproval: 'none' })
+  it('DEFAULT_PORTAL_CONFIG carries a moderationDefault of none with holds off', () => {
+    expect(DEFAULT_PORTAL_CONFIG.moderationDefault).toEqual({
+      requireApproval: 'none',
+      holdImages: false,
+      holdLinks: false,
+    })
   })
 
   it('DEFAULT_PORTAL_CONFIG has widgetSignIn defaulting to false', () => {
@@ -23,6 +27,7 @@ describe('PublicPortalConfig.portalAccess', () => {
     // Verify the type carries widgetSignIn (build-time type assertion via satisfies)
     const cfg = {
       features: DEFAULT_PORTAL_CONFIG.features,
+      openSignup: true,
       portalAccess: { isPrivate: true, widgetSignIn: false },
     } satisfies PublicPortalConfig
     expect(cfg.portalAccess?.isPrivate).toBe(true)
@@ -32,6 +37,7 @@ describe('PublicPortalConfig.portalAccess', () => {
   it('portalAccess.widgetSignIn is boolean', () => {
     const cfg: PublicPortalConfig = {
       features: DEFAULT_PORTAL_CONFIG.features,
+      openSignup: true,
       portalAccess: { isPrivate: false, widgetSignIn: true },
     }
     expect(typeof cfg.portalAccess?.widgetSignIn).toBe('boolean')
@@ -99,7 +105,7 @@ describe('parseJsonConfig', () => {
     const result = parseJsonConfig(stored, DEFAULT_WIDGET_CONFIG)
 
     expect(result.enabled).toBe(true)
-    expect(result.identifyVerification).toBe(false)
+    expect(result.tabs?.home).toBe(true)
   })
 
   it('preserves default authConfig.oauth.password when stored oauth omits it (bug fix)', () => {
@@ -116,6 +122,19 @@ describe('parseJsonConfig', () => {
     // Count of enabled methods must be >= 2 so email isn't the "last" one
     const enabledCount = Object.values(result.oauth).filter(Boolean).length
     expect(enabledCount).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe('parsePortalConfig anonymous switch', () => {
+  it('reads the switch as the gates do: on only when stored as on', () => {
+    expect(parsePortalConfig(JSON.stringify({ openSignup: true })).features.allowAnonymous).toBe(
+      false
+    )
+    expect(parsePortalConfig(null).features.allowAnonymous).toBe(false)
+    expect(
+      parsePortalConfig(JSON.stringify({ features: { allowAnonymous: true } })).features
+        .allowAnonymous
+    ).toBe(true)
   })
 })
 
@@ -149,5 +168,35 @@ describe('workspaceAllowsAnonymous', () => {
   it('fails closed on malformed JSON instead of throwing', () => {
     expect(() => workspaceAllowsAnonymous('{ not valid json')).not.toThrow()
     expect(workspaceAllowsAnonymous('{ not valid json')).toBe(false)
+  })
+})
+
+describe('parseWidgetConfig', () => {
+  it('uses the new defaults for a blank blob', () => {
+    expect(parseWidgetConfig(null).tabs?.messenger).toBe(true)
+    expect(parseWidgetConfig(null).tabs?.tickets).toBe(true)
+    expect(parseWidgetConfig(null).tabs?.changelog).toBe(true)
+    expect(parseWidgetConfig(null).messenger?.assistant?.respond).toBe(true)
+  })
+
+  it('keeps missing messenger, changelog, and respond keys off on a stored config', () => {
+    const result = parseWidgetConfig(JSON.stringify({ enabled: true, tabs: { feedback: true } }))
+    expect(result.enabled).toBe(true)
+    expect(result.tabs?.feedback).toBe(true)
+    expect(result.tabs?.messenger).toBe(false)
+    expect(result.tabs?.changelog).toBe(false)
+    expect(result.messenger?.assistant?.respond).toBe(false)
+  })
+})
+
+describe('parsePortalConfig', () => {
+  it('uses portal chats on for a blank blob', () => {
+    expect(parsePortalConfig(null).support?.enabled).toBe(true)
+  })
+
+  it('keeps missing portal chats off on a stored config', () => {
+    expect(
+      parsePortalConfig(JSON.stringify({ features: { allowAnonymous: true } })).support?.enabled
+    ).toBe(false)
   })
 })

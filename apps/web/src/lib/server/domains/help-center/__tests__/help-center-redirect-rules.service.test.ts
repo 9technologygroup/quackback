@@ -1,0 +1,281 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { KbArticleId, KbCategoryId, HcRedirectRuleId } from '@quackback/ids'
+
+const mockArticleFindFirst = vi.fn()
+const mockCategoryFindFirst = vi.fn()
+const mockRuleFindFirst = vi.fn()
+const mockSelectFrom = vi.fn()
+const mockDeleteWhere = vi.fn()
+const insertValuesCalls: unknown[][] = []
+
+function createInsertChain() {
+  const chain: Record<string, unknown> = {}
+  chain.values = vi.fn((...args: unknown[]) => {
+    insertValuesCalls.push(args)
+    return chain
+  })
+  chain.returning = vi.fn().mockResolvedValue([
+    {
+      id: 'hc_redirect_rule_new1' as HcRedirectRuleId,
+      path: '/old-slug',
+      targetType: 'article',
+      targetId: 'article_1',
+      createdAt: new Date('2026-01-01'),
+    },
+  ])
+  return chain
+}
+
+vi.mock('@/lib/server/db', () => ({
+  db: {
+    query: {
+      helpCenterArticles: { findFirst: (...args: unknown[]) => mockArticleFindFirst(...args) },
+      helpCenterCategories: { findFirst: (...args: unknown[]) => mockCategoryFindFirst(...args) },
+      helpCenterRedirectRules: { findFirst: (...args: unknown[]) => mockRuleFindFirst(...args) },
+    },
+    select: vi.fn(() => ({ from: (...args: unknown[]) => mockSelectFrom(...args) })),
+    insert: vi.fn(() => createInsertChain()),
+    delete: vi.fn(() => ({ where: (...args: unknown[]) => mockDeleteWhere(...args) })),
+  },
+  eq: (...args: unknown[]) => ({ op: 'eq', args }),
+  and: (...args: unknown[]) => ({ op: 'and', args }),
+  inArray: (...args: unknown[]) => ({ op: 'inArray', args }),
+  desc: (...args: unknown[]) => ({ op: 'desc', args }),
+  helpCenterRedirectRules: {
+    path: 'path',
+    targetType: 'target_type',
+    targetId: 'target_id',
+    id: 'id',
+  },
+  helpCenterArticles: { id: 'id', categoryId: 'category_id' },
+  helpCenterCategories: { id: 'id' },
+}))
+
+const {
+  createRedirectRule,
+  deleteRedirectRule,
+  deleteRedirectRulesForTarget,
+  listRedirectRules,
+  resolveRedirectRule,
+} = await import('../help-center-redirect-rules.service')
+
+beforeEach(() => {
+  mockArticleFindFirst.mockReset()
+  mockCategoryFindFirst.mockReset()
+  mockRuleFindFirst.mockReset()
+  mockSelectFrom.mockReset()
+  mockDeleteWhere.mockReset()
+  insertValuesCalls.length = 0
+})
+
+describe('createRedirectRule', () => {
+  it('creates a rule pointing at a published article', async () => {
+    mockArticleFindFirst.mockResolvedValue({
+      title: 'Getting started',
+      publishedAt: new Date('2026-01-01'),
+      deletedAt: null,
+    })
+
+    const rule = await createRedirectRule({
+      path: 'old-slug',
+      targetType: 'article',
+      targetId: 'article_1' as KbArticleId,
+    })
+
+    expect(insertValuesCalls[0][0]).toMatchObject({
+      path: '/old-slug',
+      targetType: 'article',
+      targetId: 'article_1',
+    })
+    expect(rule.targetLabel).toBe('Getting started')
+  })
+
+  it('normalizes the path (adds leading slash, collapses slashes, drops trailing slash)', async () => {
+    mockArticleFindFirst.mockResolvedValue({
+      title: 'Foo',
+      publishedAt: new Date(),
+      deletedAt: null,
+    })
+
+    await createRedirectRule({
+      path: 'foo//bar/',
+      targetType: 'article',
+      targetId: 'article_1' as KbArticleId,
+    })
+
+    expect(insertValuesCalls[0][0]).toMatchObject({ path: '/foo/bar' })
+  })
+
+  it('rejects an unpublished article target', async () => {
+    mockArticleFindFirst.mockResolvedValue({
+      title: 'Draft',
+      publishedAt: null,
+      deletedAt: null,
+    })
+
+    await expect(
+      createRedirectRule({
+        path: '/foo',
+        targetType: 'article',
+        targetId: 'article_1' as KbArticleId,
+      })
+    ).rejects.toThrow(/published/i)
+    expect(insertValuesCalls).toHaveLength(0)
+  })
+
+  it('rejects a target that does not exist', async () => {
+    mockArticleFindFirst.mockResolvedValue(undefined)
+
+    await expect(
+      createRedirectRule({
+        path: '/foo',
+        targetType: 'article',
+        targetId: 'article_missing' as KbArticleId,
+      })
+    ).rejects.toThrow()
+  })
+
+  it('rejects a private category target', async () => {
+    mockCategoryFindFirst.mockResolvedValue({ name: 'Internal', isPublic: false, deletedAt: null })
+
+    await expect(
+      createRedirectRule({
+        path: '/foo',
+        targetType: 'category',
+        targetId: 'kb_category_1' as KbCategoryId,
+      })
+    ).rejects.toThrow(/public/i)
+  })
+
+  it('surfaces a unique-path conflict as a friendly error', async () => {
+    mockArticleFindFirst.mockResolvedValue({
+      title: 'Foo',
+      publishedAt: new Date(),
+      deletedAt: null,
+    })
+    const { db } = await import('@/lib/server/db')
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockRejectedValue({ code: '23505' }),
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+
+    await expect(
+      createRedirectRule({
+        path: '/foo',
+        targetType: 'article',
+        targetId: 'article_1' as KbArticleId,
+      })
+    ).rejects.toThrow(/already exists/i)
+  })
+})
+
+describe('listRedirectRules', () => {
+  it('resolves target labels in two batched lookups, not per row', async () => {
+    mockSelectFrom
+      .mockReturnValueOnce({
+        orderBy: vi.fn().mockResolvedValue([
+          {
+            id: 'hc_redirect_rule_1' as HcRedirectRuleId,
+            path: '/old',
+            targetType: 'article',
+            targetId: 'article_1',
+            createdAt: new Date('2026-01-01'),
+          },
+          {
+            id: 'hc_redirect_rule_2' as HcRedirectRuleId,
+            path: '/older',
+            targetType: 'article',
+            targetId: 'article_2',
+            createdAt: new Date('2026-01-02'),
+          },
+          {
+            id: 'hc_redirect_rule_3' as HcRedirectRuleId,
+            path: '/old-cat',
+            targetType: 'category',
+            targetId: 'kb_category_1',
+            createdAt: new Date('2026-01-03'),
+          },
+        ]),
+      })
+      .mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue([
+          { id: 'article_1', title: 'Getting started' },
+          { id: 'article_2', title: 'Billing' },
+        ]),
+      })
+      .mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue([{ id: 'kb_category_1', name: 'Guides' }]),
+      })
+
+    const rules = await listRedirectRules()
+    expect(rules).toHaveLength(3)
+    expect(rules.map((rule) => rule.targetLabel)).toEqual(['Getting started', 'Billing', 'Guides'])
+    expect(mockSelectFrom).toHaveBeenCalledTimes(3)
+    expect(mockArticleFindFirst).not.toHaveBeenCalled()
+    expect(mockCategoryFindFirst).not.toHaveBeenCalled()
+  })
+})
+
+describe('deleteRedirectRule / deleteRedirectRulesForTarget', () => {
+  it('deletes a single rule by id', async () => {
+    await deleteRedirectRule('hc_redirect_rule_1' as HcRedirectRuleId)
+    expect(mockDeleteWhere).toHaveBeenCalled()
+  })
+
+  it('deletes every rule pointing at a target', async () => {
+    await deleteRedirectRulesForTarget('article', 'article_1')
+    expect(mockDeleteWhere).toHaveBeenCalled()
+  })
+
+  it('matches redirect targets stored as kb_article_ when deleting an article_ id', async () => {
+    const { generateId } = await import('@quackback/ids')
+    const canonical = generateId('article')
+    const legacy = `kb_article_${canonical.slice('article_'.length)}`
+    await deleteRedirectRulesForTarget('article', canonical)
+    const clause = JSON.stringify(mockDeleteWhere.mock.calls[0]?.[0])
+    expect(clause).toContain(canonical)
+    expect(clause).toContain(legacy)
+  })
+})
+
+describe('resolveRedirectRule', () => {
+  it('returns null when no rule matches the path', async () => {
+    mockRuleFindFirst.mockResolvedValue(undefined)
+    expect(await resolveRedirectRule('/nope')).toBeNull()
+  })
+
+  it('resolves an article rule to its canonical /hc path', async () => {
+    mockRuleFindFirst.mockResolvedValue({
+      targetType: 'article',
+      targetId: 'article_1',
+    })
+    mockArticleFindFirst.mockResolvedValue({
+      slug: 'getting-started',
+      publishedAt: new Date(),
+      deletedAt: null,
+      category: { slug: 'basics' },
+    })
+
+    expect(await resolveRedirectRule('/old-slug')).toBe('/hc/articles/basics/getting-started')
+  })
+
+  it('returns null when the article target is no longer published', async () => {
+    mockRuleFindFirst.mockResolvedValue({ targetType: 'article', targetId: 'article_1' })
+    mockArticleFindFirst.mockResolvedValue({
+      slug: 'getting-started',
+      publishedAt: null,
+      deletedAt: null,
+      category: { slug: 'basics' },
+    })
+
+    expect(await resolveRedirectRule('/old-slug')).toBeNull()
+  })
+
+  it('resolves a category rule to its canonical /hc path', async () => {
+    mockRuleFindFirst.mockResolvedValue({ targetType: 'category', targetId: 'kb_category_1' })
+    mockCategoryFindFirst.mockResolvedValue({ slug: 'billing', isPublic: true, deletedAt: null })
+
+    expect(await resolveRedirectRule('/old-category')).toBe('/hc/categories/billing')
+  })
+})

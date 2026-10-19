@@ -13,7 +13,7 @@ function reactorTooltip(reactors: string[] | undefined, count: number): string {
 }
 
 /**
- * A single reaction pill (emoji + count) shared by chat messages and feedback
+ * A single reaction pill (emoji + count) shared by conversation messages and feedback
  * comments: toggles the caller's reaction on click and, on hover, shows who
  * reacted with that emoji.
  */
@@ -33,7 +33,7 @@ export function ReactionChip({
   disabled?: boolean
 }) {
   return (
-    <TooltipProvider delayDuration={200}>
+    <TooltipProvider delay={200}>
       <Tooltip>
         <TooltipTrigger asChild>
           <button

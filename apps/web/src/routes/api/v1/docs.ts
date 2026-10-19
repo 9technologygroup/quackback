@@ -395,7 +395,7 @@ export const Route = createFileRoute('/api/v1/docs')({
       border-bottom-color: var(--border-emphasis) !important;
     }
 
-    /* Tag name */
+    /* PostTag name */
     .swagger-ui .opblock-tag > a,
     .swagger-ui .opblock-tag > a > span {
       font-family: var(--font-sans) !important;
@@ -406,7 +406,7 @@ export const Route = createFileRoute('/api/v1/docs')({
       color: var(--text-primary) !important;
     }
 
-    /* Tag description - hide it since it looks bad inline */
+    /* PostTag description - hide it since it looks bad inline */
     .swagger-ui .opblock-tag > small {
       display: none !important;
     }
@@ -1311,6 +1311,7 @@ export const Route = createFileRoute('/api/v1/docs')({
           headers: {
             'Content-Type': 'text/html; charset=utf-8',
             'Cache-Control': 'public, max-age=3600',
+            Vary: 'Host',
           },
         })
       },

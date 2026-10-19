@@ -8,7 +8,9 @@ import {
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
 import { parseTypeId } from '@/lib/server/domains/api/validation'
-import type { CommentId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import type { PostCommentId } from '@quackback/ids'
+import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
 
 // Input validation schema
 const updateCommentSchema = z.object({
@@ -25,9 +27,13 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
        */
       GET: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.POST_VIEW_PRIVATE })
 
-          const commentId = parseTypeId<CommentId>(params.commentId, 'comment', 'comment ID')
+          const commentId = parseTypeId<PostCommentId>(
+            params.commentId,
+            'post_comment',
+            'comment ID'
+          )
 
           const { getCommentById } = await import('@/lib/server/domains/comments/comment.query')
 
@@ -37,7 +43,8 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
             id: comment.id,
             postId: comment.postId,
             parentId: comment.parentId,
-            content: comment.content,
+            content: contentJsonToMarkdown(comment.contentJson, comment.content),
+            contentJson: comment.contentJson ?? null,
             authorName: comment.authorName,
             authorEmail: comment.authorEmail,
             principalId: comment.principalId,
@@ -57,9 +64,15 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
        */
       PATCH: async ({ request, params }) => {
         try {
-          const { principalId } = await withApiKeyAuth(request, { role: 'team' })
+          const auth = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.COMMENT_EDIT,
+          })
 
-          const commentId = parseTypeId<CommentId>(params.commentId, 'comment', 'comment ID')
+          const commentId = parseTypeId<PostCommentId>(
+            params.commentId,
+            'post_comment',
+            'comment ID'
+          )
 
           const body = await request.json()
           const parsed = updateCommentSchema.safeParse(body)
@@ -74,22 +87,17 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
             await import('@/lib/server/domains/comments/comment.permissions')
           const { db, principal, eq } = await import('@/lib/server/db')
 
-          const principalRecord = await db.query.principal.findFirst({
-            where: eq(principal.id, principalId),
-            with: { user: { columns: { name: true } } },
-          })
-
           const result = await userEditComment(
             commentId,
             parsed.data.content,
             {
-              principalId,
-              role: (principalRecord?.role as 'admin' | 'member' | 'user') ?? 'user',
+              principalId: auth.principalId,
+              role: auth.role,
+              permissions: [...auth.permissions],
             },
             {
               contentJson: (parsed.data.contentJson ?? undefined) as
-                | import('@/lib/shared/db-types').TiptapContent
-                | undefined,
+                import('@/lib/shared/db-types').TiptapContent | undefined,
             }
           )
 
@@ -102,7 +110,8 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
             id: result.id,
             postId: result.postId,
             parentId: result.parentId,
-            content: result.content,
+            content: contentJsonToMarkdown(result.contentJson, result.content),
+            contentJson: result.contentJson ?? null,
             authorName: commentMember?.user?.name ?? null,
             principalId: result.principalId,
             isTeamMember: result.isTeamMember,
@@ -120,21 +129,23 @@ export const Route = createFileRoute('/api/v1/comments/$commentId')({
        */
       DELETE: async ({ request, params }) => {
         try {
-          const { principalId } = await withApiKeyAuth(request, { role: 'team' })
+          const auth = await withApiKeyAuth(request, {
+            permission: PERMISSIONS.COMMENT_EDIT,
+          })
 
-          const commentId = parseTypeId<CommentId>(params.commentId, 'comment', 'comment ID')
+          const commentId = parseTypeId<PostCommentId>(
+            params.commentId,
+            'post_comment',
+            'comment ID'
+          )
 
           const { softDeleteComment } =
             await import('@/lib/server/domains/comments/comment.permissions')
-          const { db, principal, eq } = await import('@/lib/server/db')
-
-          const principalRecord = await db.query.principal.findFirst({
-            where: eq(principal.id, principalId),
-          })
 
           await softDeleteComment(commentId, {
-            principalId,
-            role: (principalRecord?.role as 'admin' | 'member' | 'user') ?? 'user',
+            principalId: auth.principalId,
+            role: auth.role,
+            permissions: [...auth.permissions],
           })
 
           return noContentResponse()

@@ -1,14 +1,16 @@
 import { type ReactNode } from 'react'
+import { FormattedMessage } from 'react-intl'
 import { useQuery } from '@tanstack/react-query'
-import { format } from 'date-fns'
+import { LocalDate } from '@/components/ui/local-date'
 import { ChevronUpIcon } from '@heroicons/react/24/solid'
 import type { PostId } from '@quackback/ids'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { Avatar } from '@/components/ui/avatar'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { TimeAgo } from '@/components/ui/time-ago'
 import { getEmbedPreviewFn } from '@/lib/server/functions/embeds'
 import { usePostVote } from '@/lib/client/hooks/use-post-vote'
-import { cn, getInitials } from '@/lib/shared/utils'
+import { priorityMeta } from '@/lib/shared/conversation/priority-meta'
+import { cn } from '@/lib/shared/utils'
 
 const voteBoxCls =
   'flex w-11 shrink-0 flex-col items-center justify-center gap-0.5 rounded-md border py-1.5'
@@ -57,7 +59,7 @@ function InteractiveVoteBox({
         voteBoxCls,
         'transition-colors',
         hasVoted
-          ? 'border-post-card-voted/60 bg-post-card-voted/15 text-post-card-voted'
+          ? 'border-post-card-voted/60 bg-post-card-voted/15 bg-clip-padding text-post-card-voted'
           : 'border-border/50 bg-muted/40 text-muted-foreground hover:bg-muted/60 hover:text-foreground/80',
         isPending && 'cursor-wait opacity-70'
       )}
@@ -78,9 +80,9 @@ const shellCls =
  * - `navigate` (default): same-tab `<a href>` to the relative portal path. Used
  *   by post bodies / changelog / comments display.
  * - `newTab`: `<a target="_blank">` to the absolute portal URL. Used by the
- *   widget chat, whose iframe origin may differ from the portal's.
+ *   widget messenger, whose iframe origin may differ from the portal's.
  * - `modal`: a clickable region that calls `onOpenInModal(postId)` instead of
- *   navigating. Used by the admin chat so a shared post opens in place (like
+ *   navigating. Used by the admin conversation view so a shared post opens in place (like
  *   clicking a roadmap item) rather than leaving the inbox.
  */
 export type EmbedOpenMode = 'navigate' | 'newTab' | 'modal'
@@ -152,13 +154,13 @@ export function QuackbackEmbedCard({
   onOpenInModal,
   getAuthHeaders,
 }: {
-  kind: 'post' | 'changelog' | 'article'
+  kind: 'post' | 'changelog' | 'article' | 'ticket'
   id: string
   /** Live surfaces (default) get a working vote button + a clickable card; the
    *  in-editor preview passes `false` for an inert, non-navigating card. */
   interactive?: boolean
   /** How a click opens the target — see {@link EmbedOpenMode}. Defaults to
-   *  same-tab navigation; chat surfaces override (widget → newTab, admin →
+   *  same-tab navigation; conversation surfaces override (widget → newTab, admin →
    *  modal). Ignored when `interactive` is false. */
   openMode?: EmbedOpenMode
   /** Required for `modal` mode: opens the referenced post in place. */
@@ -196,10 +198,29 @@ export function QuackbackEmbedCard({
   }
 
   if ('unavailable' in data) {
-    const label = kind === 'post' ? 'post' : kind === 'article' ? 'article' : 'update'
     return (
       <div className={`${shellCls} px-3 py-2.5 text-xs text-muted-foreground`}>
-        This {label} is unavailable
+        {kind === 'post' ? (
+          <FormattedMessage
+            id="ui.embedCard.unavailable.post"
+            defaultMessage="This post is unavailable"
+          />
+        ) : kind === 'article' ? (
+          <FormattedMessage
+            id="ui.embedCard.unavailable.article"
+            defaultMessage="This article is unavailable"
+          />
+        ) : kind === 'ticket' ? (
+          <FormattedMessage
+            id="ui.embedCard.unavailable.ticket"
+            defaultMessage="This ticket is unavailable"
+          />
+        ) : (
+          <FormattedMessage
+            id="ui.embedCard.unavailable.update"
+            defaultMessage="This update is unavailable"
+          />
+        )}
       </div>
     )
   }
@@ -231,7 +252,7 @@ export function QuackbackEmbedCard({
               {data.tags.slice(0, 3).map((tag) => (
                 <span
                   key={tag.id}
-                  className="inline-flex items-center rounded px-1.5 py-0 text-[10px] font-medium"
+                  className="inline-flex items-center rounded px-1.5 py-0 text-[11px] font-medium"
                   style={
                     tag.color ? { backgroundColor: `${tag.color}20`, color: tag.color } : undefined
                   }
@@ -240,23 +261,23 @@ export function QuackbackEmbedCard({
                 </span>
               ))}
               {data.tags.length > 3 && (
-                <span className="text-[10px] text-muted-foreground/60">
-                  +{data.tags.length - 3}
-                </span>
+                <span className="text-xs text-muted-foreground/60">+{data.tags.length - 3}</span>
               )}
             </div>
           )}
 
           <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Avatar className="size-4">
-              {data.authorAvatarUrl && (
-                <AvatarImage src={data.authorAvatarUrl} alt={data.authorName ?? 'Anonymous'} />
+            <Avatar
+              className="size-4"
+              src={data.authorAvatarUrl}
+              name={data.authorName}
+              fallbackClassName="bg-muted text-xs"
+            />
+            <span className="truncate">
+              {data.authorName ?? (
+                <FormattedMessage id="ui.embedCard.anonymous" defaultMessage="Anonymous" />
               )}
-              <AvatarFallback className="bg-muted text-[8px]">
-                {getInitials(data.authorName)}
-              </AvatarFallback>
-            </Avatar>
-            <span className="truncate">{data.authorName ?? 'Anonymous'}</span>
+            </span>
             {data.createdAt && (
               <>
                 <span className="text-muted-foreground/40">·</span>
@@ -284,8 +305,8 @@ export function QuackbackEmbedCard({
   if (data.kind === 'article') {
     const articleInner = (
       <div className="p-3">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
-          Help article
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
+          <FormattedMessage id="ui.embedCard.article" defaultMessage="Help article" />
         </p>
         <h3 className="mt-0.5 line-clamp-1 text-sm font-semibold text-foreground">{data.title}</h3>
         {data.excerpt && (
@@ -297,8 +318,7 @@ export function QuackbackEmbedCard({
     // Help-center articles have no "open in modal" concept — modal surfaces
     // open them in a new tab rather than navigating away from the inbox.
     const arOpenMode = openMode === 'modal' ? 'newTab' : openMode
-    const arHref =
-      arOpenMode === 'newTab' ? data.url : `/hc/articles/${data.categorySlug}/${data.articleId}`
+    const arHref = data.url
     return (
       <EmbedShell href={arHref} openMode={arOpenMode}>
         {articleInner}
@@ -306,23 +326,72 @@ export function QuackbackEmbedCard({
     )
   }
 
+  if (data.kind === 'ticket') {
+    const priority = priorityMeta(data.priority)
+    const ticketInner = (
+      <div className="p-3">
+        <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
+          <span>
+            <FormattedMessage id="ui.embedCard.ticket" defaultMessage="Support ticket" />
+          </span>
+          <span className="text-muted-foreground/40">·</span>
+          <span className="font-mono normal-case tracking-normal">{data.reference}</span>
+        </div>
+        <h3 className="mt-0.5 line-clamp-1 text-sm font-semibold text-foreground">{data.title}</h3>
+        <div className="mt-1.5 flex items-center gap-2.5">
+          {data.statusLabel && <StatusBadge name={data.statusLabel} color={data.statusColor} />}
+          {data.priority !== 'none' && (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <span
+                className="size-1.5 shrink-0 rounded-full"
+                style={{ backgroundColor: priority.color }}
+                aria-hidden="true"
+              />
+              {priority.label}
+            </span>
+          )}
+        </div>
+      </div>
+    )
+    if (!interactive) return <div className={shellCls}>{ticketInner}</div>
+    // A ticket has no in-place modal in the conversation surfaces, so modal
+    // callers open its thread in a new tab (like article/changelog). The
+    // destination is the pair's conversation on the converged Messages
+    // surface; an internal ticket (no pair) keeps the server-built admin URL.
+    const tkOpenMode = openMode === 'modal' ? 'newTab' : openMode
+    const tkHref =
+      tkOpenMode === 'newTab'
+        ? data.url
+        : data.conversationId
+          ? `/support/${data.conversationId}`
+          : data.url
+    return (
+      <EmbedShell href={tkHref} openMode={tkOpenMode}>
+        {ticketInner}
+      </EmbedShell>
+    )
+  }
+
   // Changelog: a compact card (no vote tally — changelog entries aren't voted on).
   const changelogInner = (
     <div className="p-3">
-      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
-        Changelog
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
+        <FormattedMessage id="ui.embedCard.changelog" defaultMessage="Changelog" />
       </p>
       <h3 className="mt-0.5 line-clamp-1 text-sm font-semibold text-foreground">{data.title}</h3>
       {data.publishedAt && (
         <p className="mt-1 text-[11px] text-muted-foreground">
-          {format(new Date(data.publishedAt), 'MMM d, yyyy')}
+          <LocalDate
+            date={data.publishedAt}
+            options={{ month: 'short', day: 'numeric', year: 'numeric' }}
+          />
         </p>
       )}
     </div>
   )
   if (!interactive) return <div className={shellCls}>{changelogInner}</div>
   // A changelog entry has no post to open in place, so modal surfaces (admin
-  // chat) open it in a new tab rather than navigating away from the inbox.
+  // conversation view) open it in a new tab rather than navigating away from the inbox.
   const clOpenMode = openMode === 'modal' ? 'newTab' : openMode
   const clHref = clOpenMode === 'newTab' ? data.url : `/changelog/${data.entryId}`
   return (

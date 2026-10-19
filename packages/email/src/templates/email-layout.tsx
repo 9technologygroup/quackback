@@ -10,6 +10,7 @@ import {
   Link,
 } from '@react-email/components'
 import { layout, branding, typography, utils, colors, DEFAULT_LOGO_URL } from './shared-styles'
+import { useEmailShowPoweredBy } from '../powered-by'
 
 interface EmailLayoutProps {
   preview: string
@@ -17,6 +18,15 @@ interface EmailLayoutProps {
   logoAlt?: string
   children: React.ReactNode
   footer?: React.ReactNode
+  /**
+   * Override the process-wide Powered-by flag. Capability-free templates
+   * (no link, no code, no token) pass false so the footer cannot add an anchor.
+   */
+  showPoweredBy?: boolean
+  /** Language of the email's copy (BCP-47), for screen readers and mail clients. */
+  lang?: string
+  /** Text direction of the copy; `rtl` lays the email out right to left. */
+  dir?: 'ltr' | 'rtl'
 }
 
 /**
@@ -31,15 +41,21 @@ export function EmailLayout({
   logoAlt = 'Quackback',
   children,
   footer,
+  showPoweredBy: showPoweredByOverride,
+  lang,
+  dir,
 }: EmailLayoutProps) {
+  const fromContext = useEmailShowPoweredBy()
+  const showPoweredBy = showPoweredByOverride ?? fromContext
   return (
-    <Html>
+    <Html lang={lang ?? 'en'} dir={dir ?? 'ltr'}>
       <Head />
       <Preview>{preview}</Preview>
       <Body style={layout.main}>
         {/* Wrapper Section provides background color for clients that strip <body> styles */}
         <Section style={{ backgroundColor: colors.background }}>
-          <Container style={layout.container}>
+          {/* dir again here: some clients drop the <html> attributes. */}
+          <Container style={layout.container} dir={dir}>
             {/* Logo */}
             <Section style={branding.logoContainer}>
               <Img
@@ -55,6 +71,13 @@ export function EmailLayout({
 
             {/* Footer */}
             {footer}
+            {showPoweredBy ? (
+              <Text style={typography.footer}>
+                <Link href="https://quackback.io" style={{ ...utils.link, fontSize: '13px' }}>
+                  Powered by Quackback
+                </Link>
+              </Text>
+            ) : null}
           </Container>
         </Section>
       </Body>
@@ -72,10 +95,12 @@ export function NotificationFooter({
   reason,
   unsubscribeUrl,
   unsubscribeLabel = 'Unsubscribe from this post',
+  preferencesUrl,
 }: {
   reason: string
   unsubscribeUrl: string
   unsubscribeLabel?: string
+  preferencesUrl?: string
 }) {
   return (
     <Text style={typography.footer}>
@@ -84,6 +109,14 @@ export function NotificationFooter({
       <Link href={unsubscribeUrl} style={{ ...utils.link, fontSize: '13px' }}>
         {unsubscribeLabel}
       </Link>
+      {preferencesUrl ? (
+        <>
+          {' · '}
+          <Link href={preferencesUrl} style={{ ...utils.link, fontSize: '13px' }}>
+            Manage notification preferences
+          </Link>
+        </>
+      ) : null}
     </Text>
   )
 }

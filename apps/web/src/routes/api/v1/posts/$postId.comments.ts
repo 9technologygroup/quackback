@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { InternalError, NotFoundError, ValidationError } from '@/lib/shared/errors'
 import {
   successResponse,
@@ -10,7 +11,8 @@ import {
 } from '@/lib/server/domains/api/responses'
 import { parseTypeId, parseOptionalTypeId } from '@/lib/server/domains/api/validation'
 import type { Role } from '@/lib/shared/roles'
-import type { PostId, CommentId, PrincipalId } from '@quackback/ids'
+import type { PostId, PostCommentId, PrincipalId } from '@quackback/ids'
+import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
 
 // Input validation schema
 const createCommentSchema = z.object({
@@ -31,7 +33,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId/comments')({
        */
       GET: async ({ request, params }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.POST_VIEW_PRIVATE })
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')
 
@@ -43,7 +45,8 @@ export const Route = createFileRoute('/api/v1/posts/$postId/comments')({
             id: c.id,
             postId: c.postId,
             parentId: c.parentId,
-            content: c.content,
+            content: contentJsonToMarkdown(c.contentJson, c.content),
+            contentJson: c.contentJson ?? null,
             authorName: c.authorName,
             principalId: c.principalId,
             isTeamMember: c.isTeamMember,
@@ -68,7 +71,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId/comments')({
        */
       POST: async ({ request, params }) => {
         try {
-          const auth = await withApiKeyAuth(request, { role: 'team' })
+          const auth = await withApiKeyAuth(request, { permission: PERMISSIONS.COMMENT_MODERATE })
 
           const postId = parseTypeId<PostId>(params.postId, 'post', 'post ID')
 
@@ -81,9 +84,9 @@ export const Route = createFileRoute('/api/v1/posts/$postId/comments')({
             })
           }
 
-          const parentId = parseOptionalTypeId<CommentId>(
+          const parentId = parseOptionalTypeId<PostCommentId>(
             parsed.data.parentId,
-            'comment',
+            'post_comment',
             'parent ID'
           )
 
@@ -156,6 +159,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId/comments')({
             role: auth.role as import('@/lib/server/policy/types').Role,
             principalType: callerType === 'service' ? ('service' as const) : ('user' as const),
             segmentIds: callerSegmentIds,
+            permissions: auth.permissions,
           }
 
           const result = await createComment(
@@ -163,8 +167,7 @@ export const Route = createFileRoute('/api/v1/posts/$postId/comments')({
               postId,
               content: parsed.data.content,
               contentJson: (parsed.data.contentJson ?? undefined) as
-                | import('@/lib/shared/db-types').TiptapContent
-                | undefined,
+                import('@/lib/shared/db-types').TiptapContent | undefined,
               parentId,
               isPrivate: parsed.data.isPrivate,
               createdAt,

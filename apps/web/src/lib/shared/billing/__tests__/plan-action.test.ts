@@ -1,0 +1,134 @@
+import { describe, expect, it } from 'vitest'
+import { billingPlanAction, isPlanDowngrade, type CataloguePlanId } from '../plan-action'
+import type { BillingProjectionOverview } from '@/lib/server/domains/billing/projection-overview'
+
+const unpaidFree: BillingProjectionOverview = {
+  plan: 'free',
+  planName: 'Free',
+  status: null,
+  trialActive: false,
+  trialExpiresAt: null,
+  renewalAt: null,
+  cancellationAt: null,
+  canUpgrade: true,
+  canManageBilling: false,
+  purchasablePlans: [
+    { id: 'pro', name: 'Pro' },
+    { id: 'business', name: 'Business' },
+    { id: 'enterprise', name: 'Enterprise' },
+  ],
+  seats: { used: 1, pending: 0, members: 1, purchased: null },
+  ai: null,
+  hideBranding: false,
+}
+
+describe('billingPlanAction', () => {
+  it('offers a 7-day trial of untried paid plans on Free', () => {
+    expect(billingPlanAction('free', unpaidFree).kind).toBe('current')
+    expect(billingPlanAction('pro', unpaidFree)).toEqual({ kind: 'trial', planId: 'pro' })
+    expect(billingPlanAction('business', unpaidFree)).toEqual({
+      kind: 'trial',
+      planId: 'business',
+    })
+  })
+
+  it('does not re-trial a plan already in the ledger', () => {
+    expect(billingPlanAction('pro', unpaidFree, ['pro'])).toEqual({
+      kind: 'subscribe',
+      planId: 'pro',
+    })
+    expect(billingPlanAction('business', unpaidFree, ['pro'])).toEqual({
+      kind: 'trial',
+      planId: 'business',
+    })
+  })
+
+  it('ends an active trial via Free and converts other plans via checkout', () => {
+    const trialing: BillingProjectionOverview = {
+      ...unpaidFree,
+      plan: 'pro',
+      planName: 'Pro',
+      trialActive: true,
+      trialExpiresAt: '2026-09-01T00:00:00.000Z',
+    }
+    expect(billingPlanAction('pro', trialing).kind).toBe('current')
+    expect(billingPlanAction('free', trialing).kind).toBe('downgrade')
+    expect(billingPlanAction('business', trialing)).toEqual({
+      kind: 'subscribe',
+      planId: 'business',
+    })
+  })
+
+  it('switches paid plans and always allows a Free downgrade', () => {
+    const paid: BillingProjectionOverview = {
+      ...unpaidFree,
+      plan: 'pro',
+      planName: 'Pro',
+      status: 'active',
+      canUpgrade: false,
+      canManageBilling: true,
+      renewalAt: '2026-09-14T00:00:00.000Z',
+    }
+    expect(billingPlanAction('pro', paid).kind).toBe('current')
+    expect(billingPlanAction('business', paid)).toEqual({ kind: 'switch', planId: 'business' })
+    expect(billingPlanAction('free', paid)).toEqual({ kind: 'downgrade', planId: 'free' })
+    expect(billingPlanAction('pro', { ...paid, plan: 'business', planName: 'Business' })).toEqual({
+      kind: 'downgrade',
+      planId: 'pro',
+    })
+  })
+
+  it('ranks a lower plan as a downgrade', () => {
+    expect(isPlanDowngrade('scale', 'pro')).toBe(true)
+    expect(isPlanDowngrade('pro', 'pro')).toBe(false)
+    expect(isPlanDowngrade('pro', 'free')).toBe(true)
+    expect(isPlanDowngrade('enterprise', 'business')).toBe(true)
+  })
+
+  it('does not let a complimentary grant self-downgrade', () => {
+    const grant: BillingProjectionOverview = {
+      ...unpaidFree,
+      plan: 'enterprise',
+      planName: 'Enterprise',
+      status: null,
+      canUpgrade: true,
+      canManageBilling: false,
+    }
+    expect(billingPlanAction('enterprise', grant).kind).toBe('current')
+    expect(billingPlanAction('free', grant).kind).toBe('unavailable')
+    expect(billingPlanAction('business', grant)).toEqual({
+      kind: 'subscribe',
+      planId: 'business',
+    })
+  })
+
+  it('treats an ended trial as choosing a plan, with Free as a gated downgrade', () => {
+    const ended: BillingProjectionOverview = {
+      ...unpaidFree,
+      trialEnded: true,
+      trialPlanId: 'business',
+      trialPlanName: 'Business',
+      trialExpiresAt: '2026-08-18T00:00:00.000Z',
+    }
+    expect(billingPlanAction('business', ended)).toEqual({
+      kind: 'subscribe',
+      planId: 'business',
+    })
+    expect(billingPlanAction('pro', ended)).toEqual({ kind: 'subscribe', planId: 'pro' })
+    expect(billingPlanAction('free', ended).kind).toBe('downgrade')
+  })
+
+  it('covers every catalogue id', () => {
+    const ids: CataloguePlanId[] = ['free', 'pro', 'business', 'enterprise']
+    for (const id of ids) {
+      expect(billingPlanAction(id, unpaidFree).kind).toBeTruthy()
+    }
+  })
+
+  it('treats leftover growth/scale as the current pro/enterprise actions', () => {
+    expect(billingPlanAction('growth', unpaidFree)).toEqual(billingPlanAction('pro', unpaidFree))
+    expect(billingPlanAction('scale', unpaidFree)).toEqual(
+      billingPlanAction('enterprise', unpaidFree)
+    )
+  })
+})

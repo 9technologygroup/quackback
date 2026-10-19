@@ -1,4 +1,4 @@
-import { isSafeCallbackUrl } from './routing'
+import { isSafeCallbackUrl, isTeamCallback } from './routing'
 
 export interface AuthPromptParams {
   mode?: 'login' | 'signup'
@@ -30,6 +30,16 @@ export function safeSigninRedirect(
   return buildSigninRedirect(callbackUrl, { mode: opts?.mode, error: d.error })
 }
 
+/** Absolute-path form of the sign-in landing, for use as an OAuth
+ *  `errorCallbackURL`: the portal root with the dialog requested and the
+ *  destination carried. Better-Auth appends its `error=<code>` query
+ *  param onto this URL, which `parseAuthPromptSearch` then picks up. */
+export function signinErrorLanding(callbackUrl?: string): string {
+  const params = new URLSearchParams({ auth: 'signin' })
+  if (callbackUrl && isSafeCallbackUrl(callbackUrl)) params.set('callbackUrl', callbackUrl)
+  return `/?${params.toString()}`
+}
+
 /** Builds the redirect that replaces a former `/auth/login` target:
  *  the portal root with the dialog requested and the destination carried. */
 export function buildSigninRedirect(
@@ -42,4 +52,10 @@ export function buildSigninRedirect(
   }
   if (opts.error) search.error = opts.error
   return { to: '/', search }
+}
+
+/** The sign-in destination for a team page: the deep link (path, query, hash)
+ *  when it is a same-origin team path, else `/admin`. */
+export function teamSigninCallback(callbackUrl: string | undefined): string {
+  return isSafeCallbackUrl(callbackUrl) && isTeamCallback(callbackUrl) ? callbackUrl : '/admin'
 }

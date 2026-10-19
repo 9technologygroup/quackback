@@ -7,16 +7,15 @@ import {
   badRequestResponse,
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import { HexColorSchema } from '@/lib/shared/schemas/taxonomy'
 
 // Input validation schema
 const createTagSchema = z.object({
   name: z.string().min(1, 'Name is required').max(50),
-  color: z
-    .string()
-    .regex(/^#[0-9A-Fa-f]{6}$/, 'Color must be a valid hex color')
-    .optional()
-    .default('#6b7280'),
+  color: HexColorSchema.optional().default('#6b7280'),
   description: z.string().max(200).optional(),
+  isPublic: z.boolean().optional(),
 })
 
 export const Route = createFileRoute('/api/v1/tags/')({
@@ -28,12 +27,12 @@ export const Route = createFileRoute('/api/v1/tags/')({
        */
       GET: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request)
 
           // Import service function
-          const { listTags } = await import('@/lib/server/domains/tags/tag.service')
+          const { listPostTags } = await import('@/lib/server/domains/post-tags/post-tag.service')
 
-          const tags = await listTags()
+          const tags = await listPostTags()
 
           return successResponse(
             tags.map((tag) => ({
@@ -41,6 +40,7 @@ export const Route = createFileRoute('/api/v1/tags/')({
               name: tag.name,
               color: tag.color,
               description: tag.description,
+              isPublic: tag.isPublic,
               createdAt: tag.createdAt.toISOString(),
             }))
           )
@@ -55,7 +55,7 @@ export const Route = createFileRoute('/api/v1/tags/')({
        */
       POST: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.TAG_MANAGE })
 
           // Parse and validate body
           const body = await request.json()
@@ -68,12 +68,13 @@ export const Route = createFileRoute('/api/v1/tags/')({
           }
 
           // Import service function
-          const { createTag } = await import('@/lib/server/domains/tags/tag.service')
+          const { createPostTag } = await import('@/lib/server/domains/post-tags/post-tag.service')
 
-          const tag = await createTag({
+          const tag = await createPostTag({
             name: parsed.data.name,
             color: parsed.data.color,
             description: parsed.data.description,
+            isPublic: parsed.data.isPublic,
           })
 
           return createdResponse({
@@ -81,6 +82,7 @@ export const Route = createFileRoute('/api/v1/tags/')({
             name: tag.name,
             color: tag.color,
             description: tag.description,
+            isPublic: tag.isPublic,
             createdAt: tag.createdAt.toISOString(),
           })
         } catch (error) {

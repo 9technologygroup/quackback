@@ -12,14 +12,29 @@ vi.mock('@/lib/server/domains/settings/tier-limits.service', () => ({
   getTierLimits: vi.fn(),
 }))
 
-vi.mock('@/lib/server/db', () => {
-  const tx = { update: hoisted.mockDbUpdate }
+vi.mock('@/lib/server/db', async (importOriginal) => {
+  const tx = {
+    update: hoisted.mockDbUpdate,
+    // The read a read-modify-write takes under the row lock. Only the locking
+    // form is faked, so an unlocked read fails here.
+    select: () => ({
+      from: () => ({
+        limit: () => ({
+          for: async (strength: string) => {
+            if (strength !== 'update') throw new Error(`unexpected lock: ${strength}`)
+            return [{ id: 's1', authConfig: '{"oauth":{}}' }]
+          },
+        }),
+      }),
+    }),
+  }
   return {
+    // Spread the real db module so tables/operators stay current; override only what this suite drives.
+    ...(await importOriginal<typeof import('@/lib/server/db')>()),
     db: {
       update: hoisted.mockDbUpdate,
-      transaction: async (fn: (tx: { update: typeof hoisted.mockDbUpdate }) => unknown) => fn(tx),
+      transaction: async (fn: (t: typeof tx) => unknown) => fn(tx),
     },
-    settings: { id: 'id', authConfigVersion: 'auth_config_version' },
     eq: vi.fn(),
   }
 })
@@ -32,7 +47,7 @@ vi.mock('@/lib/server/auth', () => ({
   resetAuth: vi.fn(),
 }))
 
-vi.mock('@/lib/server/redis', () => ({
+vi.mock('@/lib/server/cache', () => ({
   cacheGet: vi.fn(),
   cacheSet: vi.fn(),
   cacheDel: vi.fn(),
@@ -50,7 +65,7 @@ vi.mock('../settings.helpers', () => ({
 }))
 
 // updateAuthConfig runs assertNotManaged() at its head; the gate
-// dynamic-imports getTenantSettings, which would crash without this
+// dynamic-imports getWorkspaceSettings, which would crash without this
 // stub. The tier gate is the unit under test, so let every path through.
 vi.mock('@/lib/server/config-file/managed-guard', () => ({
   assertNotManaged: vi.fn(async () => {}),

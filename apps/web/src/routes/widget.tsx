@@ -1,12 +1,18 @@
-import { createFileRoute, Outlet, redirect } from '@tanstack/react-router'
+import { createFileRoute, Outlet, redirect, useRouter } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders, setResponseHeader } from '@tanstack/react-start/server'
 import { z } from 'zod'
-import { generateThemeCSS } from '@/lib/shared/theme'
-import { resolveLocale } from '@/lib/shared/i18n'
+import { generateWorkspaceThemeCSS, readFontSans } from '@/lib/shared/theme'
+import { resolveLocale, loadWidgetMessages } from '@/lib/shared/i18n'
 import { WidgetAuthProvider } from '@/components/widget/widget-auth-provider'
+import { FileViewerProvider } from '@/components/shared/files/file-viewer-context'
 import { extractSessionTokenFromCookie } from '@/lib/server/functions/portal-session-token'
+import { fetchUserAvatar } from '@/lib/server/functions/portal'
 import { redactSettingsForClient } from '@/lib/shared/redact-portal-config'
+import { escapeInlineStyle } from '@/lib/shared/safe-inline-content'
+import { Button } from '@/components/ui/button'
+import { useBrandingFont } from '@/lib/client/hooks/use-branding-font'
+import { isTeamMember } from '@/lib/shared/roles'
 
 const setIframeHeaders = createServerFn({ method: 'GET' }).handler(async () => {
   setResponseHeader('Content-Security-Policy', 'frame-ancestors *')
@@ -41,11 +47,17 @@ export const Route = createFileRoute('/widget')({
   // setIframeHeaders() can set frame-ancestors/X-Frame-Options on the
   // document response, and the locale is resolved from Accept-Language.
   ssr: 'data-only',
-  validateSearch: (search: Record<string, unknown>): { locale?: string } => ({
+  validateSearch: (
+    search: Record<string, unknown>
+  ): { locale?: string; theme?: 'light' | 'dark' } => ({
     locale: typeof search.locale === 'string' ? search.locale : undefined,
+    // Forces the widget document's theme regardless of visitor preference or
+    // branding themeMode. Used by the admin settings preview's Light/Dark
+    // toggle; resolved in __root so it never persists to the theme cookie.
+    theme: search.theme === 'light' || search.theme === 'dark' ? search.theme : undefined,
   }),
   loader: async ({ context, location }) => {
-    const { settings, session } = context
+    const { settings, session, userRole } = context
 
     const org = settings?.settings
     if (!org) {
@@ -59,13 +71,12 @@ export const Route = createFileRoute('/widget')({
     const customCss = settings.customCss ?? ''
     const themeMode = brandingConfig.themeMode ?? 'user'
 
-    const hasThemeConfig = brandingConfig.light || brandingConfig.dark
-    const themeStyles = hasThemeConfig ? generateThemeCSS(brandingConfig) : ''
+    const themeStyles = generateWorkspaceThemeCSS(brandingConfig)
 
     // If user is logged into the portal (same-origin), extract the signed
     // session cookie so the widget can reuse it directly as a Bearer token.
     // This prevents duplicate anonymous users and bypasses HMAC requirements.
-    const portalUser =
+    const portalUserBase =
       session?.user && session.user.principalType !== 'anonymous'
         ? {
             id: session.user.id,
@@ -75,17 +86,32 @@ export const Route = createFileRoute('/widget')({
           }
         : null
 
+    // location.search isn't generically typed inside the loader — cast to
+    // the validateSearch shape, matching the pattern in _portal/index.tsx.
+    const { locale: explicitLocale } = location.search as { locale?: string }
+
     // Extract the signed session cookie during SSR — this is the only point
     // where the cookie is available in cross-origin iframes (SameSite=Lax
     // sends cookies for the initial iframe navigation but NOT for subsequent
     // fetch/XHR from within the iframe). The token in the iframe's serialized
     // HTML is safe: cross-origin parent pages cannot read iframe content.
-    const portalSessionToken = session?.user ? await getPortalSessionToken() : null
-
-    // location.search isn't generically typed inside the loader — cast to
-    // the validateSearch shape, matching the pattern in _portal/index.tsx.
-    const { locale: explicitLocale } = location.search as { locale?: string }
-    const locale = await getWidgetLocale({ data: { explicitLocale } })
+    // Independent of locale resolution, so run both concurrently.
+    const [portalSessionToken, locale, portalAvatar] = await Promise.all([
+      session?.user ? getPortalSessionToken() : Promise.resolve(null),
+      getWidgetLocale({ data: { explicitLocale } }),
+      portalUserBase
+        ? fetchUserAvatar({
+            data: { userId: portalUserBase.id, fallbackImageUrl: portalUserBase.avatarUrl },
+          })
+        : Promise.resolve(null),
+    ])
+    const portalUser = portalUserBase
+      ? { ...portalUserBase, avatarUrl: portalAvatar?.avatarUrl ?? portalUserBase.avatarUrl }
+      : null
+    // Serialize the widget's catalog slice into loader data so the first
+    // client render is already translated (the route is ssr: 'data-only' —
+    // there's no SSR HTML to seed from).
+    const messages = await loadWidgetMessages(locale)
 
     return {
       org: redactSettingsForClient(org),
@@ -93,29 +119,72 @@ export const Route = createFileRoute('/widget')({
       themeMode,
       themeStyles,
       customCss,
+      configFontSans: readFontSans(brandingConfig.light),
       portalUser,
       portalSessionToken,
       hmacRequired: settings?.publicWidgetConfig?.hmacRequired ?? false,
+      canPortalHandoff: !isTeamMember(userRole),
       locale,
+      messages,
     }
   },
   head: () => ({ meta: [] }),
   component: WidgetLayout,
+  errorComponent: WidgetErrorComponent,
 })
 
+/**
+ * Compact error fallback for the widget iframe. No marketing chrome or "Go
+ * home" link — this renders inside a customer's embedded widget, so it's a
+ * small centered message with a retry action.
+ */
+function WidgetErrorComponent() {
+  const router = useRouter()
+
+  return (
+    <div className="flex min-h-[200px] items-center justify-center px-4">
+      <div className="text-center">
+        <p className="text-[13px] text-muted-foreground">Something went wrong.</p>
+        <Button className="mt-3" size="sm" variant="outline" onClick={() => router.invalidate()}>
+          Retry
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function WidgetLayout() {
-  const { themeStyles, customCss, portalUser, portalSessionToken, hmacRequired, locale } =
-    Route.useLoaderData()
+  const {
+    themeStyles,
+    customCss,
+    configFontSans,
+    portalUser,
+    portalSessionToken,
+    hmacRequired,
+    canPortalHandoff,
+    locale,
+    messages,
+  } = Route.useLoaderData()
+
+  // Widget documents render branding fonts the same way the portal does (the
+  // custom CSS / theme config font-family cascades into the iframe below) —
+  // load the chosen family on demand instead of shipping every self-hosted
+  // family's @font-face rules to every embedded widget.
+  useBrandingFont(customCss, configFontSans)
 
   return (
     <WidgetAuthProvider
       portalUser={portalUser}
       portalSessionToken={portalSessionToken}
       hmacRequired={hmacRequired}
+      canPortalHandoff={canPortalHandoff}
       initialLocale={locale}
+      initialMessages={messages}
     >
-      {themeStyles && <style dangerouslySetInnerHTML={{ __html: themeStyles }} />}
-      {customCss && <style dangerouslySetInnerHTML={{ __html: customCss }} />}
+      {themeStyles && (
+        <style dangerouslySetInnerHTML={{ __html: escapeInlineStyle(themeStyles) }} />
+      )}
+      {customCss && <style dangerouslySetInnerHTML={{ __html: escapeInlineStyle(customCss) }} />}
       <style
         dangerouslySetInnerHTML={{
           __html: `
@@ -129,7 +198,9 @@ function WidgetLayout() {
           `,
         }}
       />
-      <Outlet />
+      <FileViewerProvider compact>
+        <Outlet />
+      </FileViewerProvider>
     </WidgetAuthProvider>
   )
 }

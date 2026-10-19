@@ -13,7 +13,6 @@ function setupMinimalConfig() {
   process.env.DATABASE_URL = 'postgres://localhost/quackback'
   process.env.BASE_URL = 'http://localhost:3000'
   process.env.SECRET_KEY = 'test-secret-key-that-is-at-least-32-characters-long'
-  process.env.REDIS_URL = 'redis://localhost:6379'
 }
 
 // Hoist the mock factory so it's available before module imports
@@ -52,12 +51,18 @@ describe('db module', () => {
       setupMinimalConfig()
 
       const { db } = await import('../db')
+      // Same module registry as db.ts after resetModules, so the same logger.
+      const { countingQueryLogger } = await import('../request-metrics')
 
       // Access db to trigger initialization
       const query = db.query
 
       expect(mockCreateDb).toHaveBeenCalledTimes(1)
-      expect(mockCreateDb).toHaveBeenCalledWith('postgres://localhost/quackback', { max: 50 })
+      expect(mockCreateDb).toHaveBeenCalledWith('postgres://localhost/quackback', {
+        max: 10,
+        idleTimeout: 20,
+        logger: countingQueryLogger,
+      })
       expect(query).toBeDefined()
     })
 
@@ -78,7 +83,6 @@ describe('db module', () => {
       // Set up config without DATABASE_URL
       process.env.BASE_URL = 'http://localhost:3000'
       process.env.SECRET_KEY = 'test-secret-key-that-is-at-least-32-characters-long'
-      process.env.REDIS_URL = 'redis://localhost:6379'
       delete (process.env as Record<string, string | undefined>).DATABASE_URL
 
       const { db } = await import('../db')

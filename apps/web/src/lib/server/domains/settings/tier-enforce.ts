@@ -1,12 +1,14 @@
 import { TierLimitError } from '../../errors/tier-limit-error'
-import { aiTokensThisMonth } from '../ai/usage-counter'
+import { getAiBudgetStatus } from '../ai/ai-budget'
+import { aiAllowance, type AiCreditsState } from '@/lib/shared/billing/ai-credits'
 import { getTierLimits } from './tier-limits.service'
 import type { TierFeatureFlags } from './tier-limits.types'
+import { db, emailSendingDomains, isNull, sql, statusComponents } from '@/lib/server/db'
 
 interface EnforceCountLimitArgs {
   /** Null = unlimited. */
   limit: number | null
-  /** Lazy — only called when limit is set, so unlimited tenants pay nothing. */
+  /** Lazy — only called when limit is set, so unlimited workspaces pay nothing. */
   currentCount: () => Promise<number>
   /** Matches the TierLimits key (e.g. 'maxBoards'). */
   name: string
@@ -55,25 +57,149 @@ export async function assertTierFeature(
 }
 
 /**
- * Pre-call gate for any LLM-driven AI service. Refuses when the tenant
- * has used up its monthly token budget. Token usage is recorded after
- * each call by withUsageLogging, so this is a "you're already at/over"
- * check — small overruns are possible if many calls fire concurrently.
+ * Refuses to create another status component once the active (non-deleted)
+ * count would meet the plan's `maxStatusComponents` limit. Unlimited by
+ * default (no tier-limits row, or an explicit null) — matches every other
+ * count limit's OSS default. Call this from every status-component create
+ * path: the public REST API's `POST /api/v1/status/components` handler, and
+ * the admin server-fn create action.
+ */
+export async function enforceStatusComponentLimit(): Promise<void> {
+  const limits = await getTierLimits()
+  await enforceCountLimit({
+    limit: limits.maxStatusComponents,
+    name: 'maxStatusComponents',
+    friendly: 'status components',
+    currentCount: async () => {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(statusComponents)
+        .where(isNull(statusComponents.deletedAt))
+      return row?.count ?? 0
+    },
+  })
+}
+
+/**
+ * Refuses to add another sending domain once the plan's `maxSendingDomains`
+ * limit is reached.
+ *
+ * The only count limit here that guards something outside this workspace.
+ * Adding a sending domain creates an identity on the mail provider account
+ * every workspace shares, and that account has an identity quota — so the
+ * failure mode of no ceiling is not one workspace overspending its plan, it is
+ * one workspace exhausting a resource the rest depend on.
+ *
+ * ## The count runs on the caller's executor, on purpose
+ *
+ * Every other limit here reads and throws, and the window between the read and
+ * the create is harmless because the resource being overspent belongs to the
+ * workspace overspending it. This one is different, so the caller passes the
+ * transaction it is about to insert in and holds a lock across both — see
+ * `createSendingDomain`, which is the only caller and the only insert path. The
+ * limit is passed in for the same reason: reading it inside the transaction
+ * would put a settings query inside a lock that nothing else needs to wait on.
+ *
+ * ## Why the default is still unlimited
+ *
+ * A self-hoster runs the whole provider account and every identity on it is
+ * theirs; a ceiling there would be a number invented to constrain someone with
+ * nobody to take the resource from. On a fleet the ceiling is not optional and
+ * it is not a default: the control plane writes a `maxSendingDomains` into every
+ * tenant's tier limits, and a tenant whose limits were never written can add
+ * domains without one. That is the same posture as every other limit in this
+ * file — the mechanism is shared and the values are the deployment's — and it
+ * is why the fleet's provisioning path must write the value rather than rely on
+ * anything here.
+ */
+export async function enforceSendingDomainLimit(
+  limit: number | null,
+  exec: Pick<typeof db, 'select'>
+): Promise<void> {
+  await enforceCountLimit({
+    limit,
+    name: 'maxSendingDomains',
+    friendly: 'sending domains',
+    currentCount: async () => {
+      const [row] = await exec
+        .select({ count: sql<number>`count(*)::int` })
+        .from(emailSendingDomains)
+      return row?.count ?? 0
+    },
+  })
+}
+
+/**
+ * Pre-call gate for any LLM-driven AI service. Refuses when the workspace
+ * has used up its token allowance for the current window (the calendar
+ * month, or the whole trial while one is running; see `ai-budget.ts`).
+ * Token usage is recorded after each call by withUsageLogging, so this is a
+ * "you're already at/over" check: small overruns are possible if many calls
+ * fire concurrently.
  *
  * 0 budget blocks AI entirely. Null = unlimited (the OSS default).
  */
 export async function enforceAiTokenBudget(): Promise<void> {
-  const limits = await getTierLimits()
-  if (limits.aiTokensPerMonth === null) return
-  const used = await aiTokensThisMonth()
-  if (used < limits.aiTokensPerMonth) return
+  const status = await getAiBudgetStatus()
+  if (status.cap === null || !status.exhausted) return
+  const period = status.window.kind === 'trial' ? 'this trial' : 'this month'
   throw new TierLimitError({
     limit: 'aiTokensPerMonth',
-    current: used,
-    max: limits.aiTokensPerMonth,
+    current: status.used,
+    max: status.cap,
     message:
-      limits.aiTokensPerMonth === 0
+      status.cap === 0
         ? 'AI features are not included on your plan. Upgrade to enable them.'
-        : `You've used your AI token budget for this month (${used.toLocaleString()} of ${limits.aiTokensPerMonth.toLocaleString()}). Upgrade to increase it.`,
+        : `You've used your AI token budget for ${period} (${status.used.toLocaleString()} of ${status.cap.toLocaleString()}). Upgrade to increase it.`,
+  })
+}
+
+/**
+ * Whether AI can run in the current allowance window (the calendar month, or
+ * the whole trial while one runs): no cap, under the cap, none on the plan, or
+ * used up, and when a month's used-up allowance comes back.
+ */
+export async function aiAllowanceNow(): Promise<{
+  credits: AiCreditsState
+  resetsAt: string | null
+  trial: boolean
+}> {
+  const status = await getAiBudgetStatus()
+  return aiAllowance(status.cap, status.used, status.window)
+}
+
+/** True when {@link enforceAiTokenBudget} would not throw. */
+export async function aiBudgetAvailable(): Promise<boolean> {
+  const status = await getAiBudgetStatus()
+  return !status.exhausted
+}
+
+/** True when {@link enforceEmailBudget} would not throw. */
+export async function emailBudgetAvailable(): Promise<boolean> {
+  try {
+    await enforceEmailBudget()
+    return true
+  } catch (err) {
+    const { TierLimitError } = await import('@/lib/server/errors/tier-limit-error')
+    if (err instanceof TierLimitError) return false
+    throw err
+  }
+}
+
+/** Pre-compose gate for billable outbound mail. Null = unlimited. */
+export async function enforceEmailBudget(): Promise<void> {
+  const limits = await getTierLimits()
+  if (limits.emailsPerMonth === null) return
+  const { emailsSentThisMonth } = await import('@/lib/server/email/email-budget')
+  const used = await emailsSentThisMonth()
+  if (used < limits.emailsPerMonth) return
+  throw new TierLimitError({
+    limit: 'emailsPerMonth',
+    current: used,
+    max: limits.emailsPerMonth,
+    message:
+      limits.emailsPerMonth === 0
+        ? 'Outbound email is not included on your plan. Upgrade to enable it.'
+        : `You've reached your email budget for this month (${used.toLocaleString()} of ${limits.emailsPerMonth.toLocaleString()}). Upgrade to increase it.`,
   })
 }

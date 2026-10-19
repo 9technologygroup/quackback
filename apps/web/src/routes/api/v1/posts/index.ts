@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { withApiKeyAuth } from '@/lib/server/domains/api/auth'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { InternalError, NotFoundError, ValidationError } from '@/lib/shared/errors'
 import {
   successResponse,
@@ -14,7 +15,7 @@ import {
   parseTypeIdArray,
 } from '@/lib/server/domains/api/validation'
 import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
-import type { BoardId, PostId, PrincipalId, StatusId, TagId } from '@quackback/ids'
+import type { BoardId, PrincipalId, PostStatusId, PostTagId } from '@quackback/ids'
 import { segmentIdsForPrincipal } from '@/lib/server/domains/segments/segment-membership.service'
 import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
@@ -27,15 +28,6 @@ const createPostSchema = z.object({
   tagIds: z.array(z.string()).optional(),
   createdAt: z.string().datetime().optional(),
   authorPrincipalId: z.string().optional(),
-  // Optional: link the created post to an external tracker item (e.g. a
-  // GitHub issue) so status-sync and idempotent re-imports work.
-  link: z
-    .object({
-      integrationType: z.string().min(1),
-      externalId: z.string().min(1),
-      externalUrl: z.string().url().optional(),
-    })
-    .optional(),
 })
 
 export const Route = createFileRoute('/api/v1/posts/')({
@@ -47,7 +39,7 @@ export const Route = createFileRoute('/api/v1/posts/')({
        */
       GET: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.POST_VIEW_PRIVATE })
 
           const url = new URL(request.url)
 
@@ -75,7 +67,9 @@ export const Route = createFileRoute('/api/v1/posts/')({
           const { listInboxPosts } = await import('@/lib/server/domains/posts/post.inbox')
 
           const tagIdArray = tagIdsParam
-            ? (tagIdsParam.split(',').filter((id) => id && isValidTypeId(id, 'tag')) as TagId[])
+            ? (tagIdsParam
+                .split(',')
+                .filter((id) => id && isValidTypeId(id, 'post_tag')) as PostTagId[])
             : undefined
 
           const dateFrom = dateFromParam ? new Date(dateFromParam) : undefined
@@ -86,6 +80,7 @@ export const Route = createFileRoute('/api/v1/posts/')({
           }
 
           const result = await listInboxPosts({
+            excludeTest: true,
             boardIds: boardId ? [boardId] : undefined,
             statusSlugs: statusSlug ? [statusSlug] : undefined,
             tagIds: tagIdArray,
@@ -138,7 +133,7 @@ export const Route = createFileRoute('/api/v1/posts/')({
        */
       POST: async ({ request }) => {
         try {
-          const auth = await withApiKeyAuth(request, { role: 'team' })
+          const auth = await withApiKeyAuth(request, { permission: PERMISSIONS.POST_CREATE })
 
           const body = await request.json()
           const parsed = createPostSchema.safeParse(body)
@@ -150,12 +145,12 @@ export const Route = createFileRoute('/api/v1/posts/')({
           }
 
           const boardId = parseTypeId<BoardId>(parsed.data.boardId, 'board', 'board ID')
-          const statusId = parseOptionalTypeId<StatusId>(
+          const statusId = parseOptionalTypeId<PostStatusId>(
             parsed.data.statusId,
-            'status',
+            'post_status',
             'status ID'
           )
-          const tagIds = parseTypeIdArray<TagId>(parsed.data.tagIds, 'tag', 'tag IDs')
+          const tagIds = parseTypeIdArray<PostTagId>(parsed.data.tagIds, 'post_tag', 'tag IDs')
 
           // Admin-only override; mirrors how createdAt is gated below.
           const overridePrincipalId =
@@ -225,6 +220,7 @@ export const Route = createFileRoute('/api/v1/posts/')({
             role: auth.role,
             principalType: callerType === 'service' ? ('service' as const) : ('user' as const),
             segmentIds: callerSegmentIds,
+            permissions: auth.permissions,
           }
 
           const result = await createPost(
@@ -246,30 +242,6 @@ export const Route = createFileRoute('/api/v1/posts/')({
             },
             { skipDispatch: auth.importMode, headers: request.headers }
           )
-
-          // Optionally link the new post to an external tracker item. The post
-          // already exists, so a link failure must not fail the create —
-          // best-effort, logged, and the 201 still returns.
-          if (parsed.data.link) {
-            try {
-              const { linkTicketToPost } = await import('@/lib/server/integrations/apps/service')
-              await linkTicketToPost(
-                {
-                  postId: result.id as PostId,
-                  integrationType: parsed.data.link.integrationType,
-                  externalId: parsed.data.link.externalId,
-                  externalUrl: parsed.data.link.externalUrl,
-                },
-                targetPrincipalId
-              )
-            } catch (linkError) {
-              const { logger } = await import('@/lib/server/logger')
-              logger.error(
-                { err: linkError, post_id: result.id },
-                'post created but external link failed'
-              )
-            }
-          }
 
           return createdResponse({
             id: result.id,

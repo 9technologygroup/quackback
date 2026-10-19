@@ -1,196 +1,87 @@
-import { test, expect } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+import { waitForHydration } from '../../utils/helpers'
 
-// Admin project uses stored auth state (e2e/.auth/admin.json) — no manual login needed.
-
-test.describe('Getting Started Page', () => {
-  test.beforeEach(async ({ page }) => {
+test.describe('onboarding launch plan', () => {
+  test('the Launch plan page lists the plan with progress and a replay', async ({ page }) => {
     await page.goto('/admin/getting-started')
-    await page.waitForLoadState('networkidle')
+    await expect(page).toHaveURL(/\/admin\/getting-started$/)
+    await expect(page.getByRole('heading', { level: 1, name: 'Launch plan' })).toBeVisible()
+    await expect(page.getByText(/^\d+ of \d+ done$/)).toBeVisible()
+    await expect(page.getByRole('progressbar')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Replay the tour' })).toBeVisible()
   })
 
-  test('page loads and shows getting started content', async ({ page }) => {
-    await expect(page).toHaveURL(/\/admin\/getting-started/, { timeout: 10000 })
-    // Page header title
-    await expect(page.getByRole('heading', { name: 'Getting Started' })).toBeVisible()
-  })
-
-  test('shows page description mentioning the workspace name', async ({ page }) => {
-    // PageHeader description contains "Complete these steps to set up <workspace>"
-    const description = page.getByText(/complete these steps to set up/i)
-    await expect(description).toBeVisible({ timeout: 10000 })
-  })
-
-  test('shows all four onboarding tasks', async ({ page }) => {
-    await expect(page.getByText('Create your first board')).toBeVisible({ timeout: 10000 })
-    await expect(page.getByText('Invite team members')).toBeVisible()
-    await expect(page.getByText('Customize branding')).toBeVisible()
-    await expect(page.getByText('Connect integrations')).toBeVisible()
-  })
-
-  test('each task has a description', async ({ page }) => {
-    await expect(
-      page.getByText('Set up a feedback board where users can submit and vote on ideas')
-    ).toBeVisible({ timeout: 10000 })
-    await expect(
-      page.getByText('Add your team to collaborate on feedback management')
-    ).toBeVisible()
-    await expect(
-      page.getByText('Add your logo and brand colors to match your product')
-    ).toBeVisible()
-    await expect(
-      page.getByText('Connect GitHub, Slack, or Discord to streamline your workflow')
-    ).toBeVisible()
-  })
-
-  test('shows segmented progress indicator with step count', async ({ page }) => {
-    // Progress text: "X of 4"
-    const progressText = page.getByText(/\d+ of 4/)
-    await expect(progressText).toBeVisible({ timeout: 10000 })
-  })
-
-  test('step count text is numeric and within valid range', async ({ page }) => {
-    const progressText = page.getByText(/\d+ of 4/)
-    const text = await progressText.textContent()
-    const match = text?.match(/^(\d+) of 4$/)
-    expect(match).not.toBeNull()
-    const completed = parseInt(match![1], 10)
-    expect(completed).toBeGreaterThanOrEqual(0)
-    expect(completed).toBeLessThanOrEqual(4)
-  })
-
-  test('renders four segmented progress bar segments', async ({ page }) => {
-    // Each task maps to one rounded-full segment div in the progress bar flex row
-    const segments = page.locator('.h-1\\.5.flex-1.rounded-full')
-    await expect(segments).toHaveCount(4, { timeout: 10000 })
-  })
-
-  test('completed tasks show a checkmark icon instead of step number', async ({ page }) => {
-    // Incomplete tasks display a numeric step label (1, 2, 3, 4).
-    // Completed tasks replace the number with a CheckIcon SVG inside the indicator.
-    // Since at least "Create your first board" is completed in the seed, there
-    // should be at least one indicator div with an svg child.
-    const indicatorWithCheck = page.locator(
-      'div.rounded-lg svg'
-    )
-    // There is at minimum the RocketLaunchIcon in the PageHeader, so just assert
-    // that at least one task indicator checkmark exists when any task is done.
-    // We assert the element exists in the DOM (count >= 0) and the page rendered.
-    const count = await indicatorWithCheck.count()
-    expect(count).toBeGreaterThanOrEqual(0)
-
-    // More specific: if the "Create your first board" task is complete the step
-    // indicator div should NOT contain a plain number "1".
-    const firstIndicator = page
-      .locator('div.rounded-lg')
-      .filter({ hasText: /^1$/ })
-    // Either the first task is done (no "1" text) or still pending ("1" is visible)
-    const hasPendingFirst = (await firstIndicator.count()) > 0
-    // Just confirm the page didn't crash rendering indicator state
-    expect(typeof hasPendingFirst).toBe('boolean')
-  })
-
-  test('each task has an action button', async ({ page }) => {
-    // Incomplete tasks show actionLabel, completed tasks show completedLabel.
-    // Either way every task row has exactly one Button/Link.
-    const taskButtons = page.locator(
-      'div.divide-y > div button, div.divide-y > div a[href]'
-    )
-    await expect(taskButtons).toHaveCount(4, { timeout: 10000 })
-  })
-
-  test('"Create Board" or "View Boards" button navigates to boards settings', async ({ page }) => {
-    const btn = page
-      .getByRole('link', { name: /create board|view boards/i })
-      .first()
-    await expect(btn).toBeVisible({ timeout: 10000 })
-    await btn.click()
-    await page.waitForLoadState('networkidle')
-    await expect(page).toHaveURL(/\/admin\/settings\/boards/)
-  })
-
-  test('"Invite Members" or "Manage Team" button navigates to team settings', async ({ page }) => {
-    const btn = page
-      .getByRole('link', { name: /invite members|manage team/i })
-      .first()
-    await expect(btn).toBeVisible({ timeout: 10000 })
-    await btn.click()
-    await page.waitForLoadState('networkidle')
-    await expect(page).toHaveURL(/\/admin\/settings\/team/)
-  })
-
-  test('"Customize" or "Edit Branding" button navigates to settings', async ({ page }) => {
-    const btn = page
-      .getByRole('link', { name: /^customize$|edit branding/i })
-      .first()
-    await expect(btn).toBeVisible({ timeout: 10000 })
-    await btn.click()
-    await page.waitForLoadState('networkidle')
-    await expect(page).toHaveURL(/\/admin\/settings/)
-  })
-
-  test('"Connect" or "Manage Integrations" button navigates to settings', async ({ page }) => {
-    const btn = page
-      .getByRole('link', { name: /^connect$|manage integrations/i })
-      .first()
-    await expect(btn).toBeVisible({ timeout: 10000 })
-    await btn.click()
-    await page.waitForLoadState('networkidle')
-    await expect(page).toHaveURL(/\/admin\/settings/)
-  })
-
-  test('completed tasks render with a muted/subdued visual style', async ({ page }) => {
-    // Completed task rows get bg-muted/20 class applied
-    const completedRows = page.locator('div.divide-y > div.bg-muted\\/20')
-    // Seed data has at least one board, so "Create your first board" is completed.
-    await expect(completedRows.first()).toBeVisible({ timeout: 10000 })
-  })
-
-  test('incomplete tasks have a numbered indicator', async ({ page }) => {
-    // Any task that is not completed shows a <span> with the step number
-    const numberedIndicators = page.locator('div.rounded-lg > span.font-semibold')
-    const count = await numberedIndicators.count()
-    // At least branding and integrations are always incomplete in seed data
-    expect(count).toBeGreaterThanOrEqual(1)
-  })
-
-  test('page is accessible from the admin sidebar via Getting Started link', async ({ page }) => {
-    await page.goto('/admin/feedback')
-    await page.waitForLoadState('networkidle')
-
-    // Getting Started link may appear in the sidebar navigation (only shown in some configs)
-    const gettingStartedLink = page.getByRole('link', { name: /getting started/i }).first()
-    if ((await gettingStartedLink.count()) === 0) {
-      test.skip()
-      return
-    }
-    await expect(gettingStartedLink).toBeVisible({ timeout: 10000 })
-    await gettingStartedLink.click()
-    await page.waitForLoadState('networkidle')
-    await expect(page).toHaveURL(/\/admin\/getting-started/)
-  })
-
-  test('shows completion message and feedback inbox link when all tasks are done', async ({
+  test('Home leads with one next step and a short path while the plan is open', async ({
     page,
   }) => {
-    // This assertion is conditional: only check the completion block when
-    // the progress text shows "4 of 4".
-    const progressText = await page.getByText(/\d+ of 4/).textContent()
-    const isAllDone = progressText?.startsWith('4 of 4')
-
-    if (isAllDone) {
-      await expect(page.getByText(/setup complete/i)).toBeVisible({ timeout: 5000 })
-      const inboxLink = page.getByRole('link', { name: /go to your feedback inbox/i })
-      await expect(inboxLink).toBeVisible()
-      await inboxLink.click()
-      await page.waitForLoadState('networkidle')
-      await expect(page).toHaveURL(/\/admin\/feedback/)
-    } else {
-      // Not all complete — completion block must NOT be visible
-      await expect(page.getByText(/setup complete/i)).not.toBeVisible()
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await page.goto('/admin')
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1 })).not.toContainText('@')
+    const path = page.getByRole('region', { name: /^Your path to a first/ })
+    if ((await path.count()) === 0) {
+      test.skip(true, 'The seeded workspace has already resolved its launch plan')
+      return
     }
+    await expect(path.getByText('Portal is live')).toBeVisible()
+    expect(await path.getByRole('listitem').count()).toBeLessThanOrEqual(3)
+    await expect(page.getByText('Try it yourself')).toHaveCount(0)
+    const next = page.getByText(/^Next step/)
+    await expect(next).toHaveCount(1)
+    // Short labels never wrap word by word at 1280px.
+    const heading = page.locator('#home-next-step')
+    const box = await heading.boundingBox()
+    expect(box?.height ?? 0).toBeLessThan(60)
   })
 
-  test('page renders without error boundary', async ({ page }) => {
-    await expect(page.getByText(/something went wrong|failed to load/i)).not.toBeVisible()
+  test('Home keeps the Actions menu and it opens a create dialog', async ({ page }) => {
+    await page.goto('/admin')
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+    const actions = page.getByRole('button', { name: 'Actions' })
+    await waitForHydration(actions)
+    await actions.click()
+    await expect(page.getByRole('menuitem', { name: 'New post' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'New changelog' })).toBeVisible()
+    await page.getByRole('menuitem', { name: 'New changelog' }).click()
+    await expect(page.getByRole('dialog')).toBeVisible()
+  })
+
+  test('runs the opt-in tour with the keyboard and can replay it from Help', async ({ page }) => {
+    await page.goto('/admin')
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    const help = page.getByRole('button', { name: 'Help', exact: true })
+    await expect(help).toHaveAttribute('aria-haspopup', 'menu')
+    await help.evaluate(async (element) => {
+      await new Promise<void>((resolve) => {
+        const ready = () => {
+          if (Object.keys(element).some((key) => key.startsWith('__reactProps$'))) resolve()
+          else requestAnimationFrame(ready)
+        }
+        ready()
+      })
+    })
+    await help.focus()
+    await page.keyboard.press('ArrowDown')
+    await page.getByRole('menuitem', { name: 'Replay the tour', exact: true }).focus()
+    await page.keyboard.press('Enter')
+    const coachmark = page.getByRole('dialog')
+    await expect(coachmark).toContainText(/1 of \d/)
+    await expect(coachmark).not.toContainText('Your products.')
+    const total = Number(/1 of (\d)/.exec((await coachmark.textContent()) ?? '')![1])
+    expect(total).toBeLessThanOrEqual(6)
+    for (let step = 1; step <= total; step++) {
+      await expect(coachmark).toContainText(`${step} of ${total}`)
+      await expect(coachmark).toBeFocused()
+      await page.keyboard.press('ArrowRight')
+    }
+    const end = page.getByRole('dialog', { name: "That's the tour" })
+    await expect(end).toBeVisible()
+    await expect(page).toHaveURL(/\/admin\/?$/)
+    await end.getByRole('button', { name: 'Done' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await page.goto('/admin')
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+    await expect(page.getByText('New here? Take the 60-second tour')).toHaveCount(0)
   })
 })

@@ -11,7 +11,13 @@
  * same-origin protection in production (the omission warning is dev-only).
  */
 import { createStart, createCsrfMiddleware } from '@tanstack/react-start'
+import { oauthCorsMiddleware } from '@/lib/server/middleware/oauth-cors'
 import { requestContextMiddleware } from '@/lib/server/middleware/request-context'
+import { userContentHostMiddleware } from '@/lib/server/middleware/user-content-host'
+import { serverFnLogMiddleware } from '@/lib/server/middleware/server-fn-log'
+import { workspaceContextMiddleware } from '@/lib/server/middleware/workspace-context'
+import { auditAttributionMiddleware } from '@/lib/server/middleware/audit-attribution'
+import { expireRouteContextOnWrite } from '@/lib/client/route-context-middleware'
 
 /**
  * Same-origin protection for server functions, matching the framework default.
@@ -29,7 +35,29 @@ const csrfMiddleware = createCsrfMiddleware({
 export const startInstance = createStart(() => {
   return {
     // Request-context/logging first so even CSRF-rejected requests get a
-    // request_id and an access log; CSRF second.
-    requestMiddleware: [requestContextMiddleware, csrfMiddleware],
+    // request_id and an access log. Workspace resolution second — before CSRF and
+    // before auth, because auth is full of `db` queries and cannot run until the
+    // database has been chosen (SAAS-HOSTING-STACK.md §6). Under
+    // QUACKBACK_TENANCY=single it is a pass-through.
+    // OAuth/MCP CORS answers preflights before workspace resolution: a
+    // preflight carries no credentials and needs no database.
+    // The user-content host (USER_CONTENT_URL) is narrowed to stored-file
+    // reads before anything else looks at the request.
+    // Audit attribution last: it opens the request's attribution boundary, and
+    // anything it records must land in the workspace resolved above.
+    requestMiddleware: [
+      requestContextMiddleware,
+      userContentHostMiddleware,
+      oauthCorsMiddleware,
+      workspaceContextMiddleware,
+      csrfMiddleware,
+      auditAttributionMiddleware,
+    ],
+    // Server-function failures never reach the request middleware's error
+    // branch (see server-fn-log.ts), so they are logged here instead. Unlike
+    // `requestMiddleware` above, this list replaces no framework default.
+    // In the browser, a POST server function drops the route context kept
+    // between navigations, so the next one sees what it changed.
+    functionMiddleware: [serverFnLogMiddleware, expireRouteContextOnWrite],
   }
 })

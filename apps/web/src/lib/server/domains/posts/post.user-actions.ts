@@ -9,7 +9,7 @@ import {
   db,
   posts,
   boards,
-  comments,
+  postComments,
   postEditHistory,
   eq,
   and,
@@ -19,8 +19,7 @@ import {
 } from '@/lib/server/db'
 import { type PostId, type PrincipalId, type UserId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
-import { isTeamMember } from '@/lib/shared/roles'
-import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
+import { isTeamMember, Role } from '@/lib/shared/roles'
 import { createActivity } from '@/lib/server/domains/activity/activity.service'
 import {
   dispatchPostDeleted,
@@ -29,7 +28,12 @@ import {
 } from '@/lib/server/events/dispatch'
 import { DEFAULT_PORTAL_CONFIG, type PortalConfig } from '@/lib/server/domains/settings'
 import type { UserEditPostInput } from './post.types'
+import { markdownToTiptapJson } from '@/lib/server/markdown-tiptap'
+import { contentHoldReason } from '@/lib/server/content/content-holds'
+import { recordAuditEvent } from '@/lib/server/audit/log'
 import { logger } from '@/lib/server/logger'
+import { recalculateCanonicalVoteCount } from './post.merge-ids'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const log = logger.child({ component: 'post-user-actions' })
 
@@ -58,6 +62,10 @@ async function getPortalConfig(): Promise<PortalConfig> {
       ...DEFAULT_PORTAL_CONFIG.features,
       ...(config?.features ?? {}),
     },
+    moderationDefault: {
+      ...DEFAULT_PORTAL_CONFIG.moderationDefault,
+      ...(config?.moderationDefault ?? {}),
+    },
   }
 }
 
@@ -67,11 +75,11 @@ async function hasCommentsFromOthers(
 ): Promise<boolean> {
   if (!authorPrincipalId) return false
 
-  const otherComment = await db.query.comments.findFirst({
+  const otherComment = await db.query.postComments.findFirst({
     where: and(
-      eq(comments.postId, postId),
-      sql`${comments.principalId} != ${authorPrincipalId}`,
-      isNull(comments.deletedAt)
+      eq(postComments.postId, postId),
+      sql`${postComments.principalId} != ${authorPrincipalId}`,
+      isNull(postComments.deletedAt)
     ),
   })
 
@@ -81,8 +89,8 @@ async function hasCommentsFromOthers(
 async function getCommentCount(postId: PostId): Promise<number> {
   const result = await db
     .select({ count: sql<number>`count(*)` })
-    .from(comments)
-    .where(and(eq(comments.postId, postId), isNull(comments.deletedAt)))
+    .from(postComments)
+    .where(and(eq(postComments.postId, postId), isNull(postComments.deletedAt)))
 
   return result[0]?.count ?? 0
 }
@@ -103,7 +111,7 @@ async function getCommentCount(postId: PostId): Promise<number> {
 export async function userEditPost(
   postId: PostId,
   input: UserEditPostInput,
-  actor: { principalId: PrincipalId; role: 'admin' | 'member' | 'user' }
+  actor: { principalId: PrincipalId; role: Role }
 ): Promise<Post> {
   log.info({ post_id: postId, principal_id: actor.principalId, role: actor.role }, 'user edit post')
   // Validate input first (no DB needed)
@@ -180,6 +188,18 @@ export async function userEditPost(
     })
   }
 
+  const authorIsTeam = isTeamMember(actor.role)
+  const nextJson = input.contentJson ?? markdownToTiptapJson(input.content.trim())
+  const holdReason = authorIsTeam
+    ? null
+    : contentHoldReason(
+        config.moderationDefault,
+        nextJson,
+        `${input.title.trim()}\n${input.content.trim()}`
+      )
+  const wasPublished = existingPost.moderationState === 'published'
+  const rehold = Boolean(holdReason && wasPublished)
+
   // Update the post
   const [updatedPost] = await db
     .update(posts)
@@ -188,12 +208,23 @@ export async function userEditPost(
       content: input.content.trim(),
       contentJson: input.contentJson,
       updatedAt: new Date(),
+      ...(rehold ? { moderationState: 'pending' as const } : {}),
     })
     .where(eq(posts.id, postId))
     .returning()
 
   if (!updatedPost) {
     throw new NotFoundError('POST_NOT_FOUND', `Post with ID ${postId} not found`)
+  }
+
+  if (rehold) {
+    await recordAuditEvent({
+      event: 'post.moderation.held',
+      actor: { role: actor.role, type: 'user' },
+      target: { type: 'post', id: postId },
+      after: { moderationState: 'pending' },
+      metadata: { reason: holdReason, previouslyPublished: true },
+    })
   }
 
   // Regenerate embedding (and cascade to merge check) after user edit
@@ -215,7 +246,8 @@ export async function userEditPost(
  */
 export async function softDeletePost(
   postId: PostId,
-  actor: { principalId: PrincipalId; role: 'admin' | 'member' | 'user'; userId?: UserId }
+  actor: { principalId: PrincipalId; role: Role; userId?: UserId },
+  beforeDelete?: (tx: import('@/lib/server/db').Transaction) => Promise<void>
 ): Promise<void> {
   log.info(
     { post_id: postId, principal_id: actor.principalId, role: actor.role },
@@ -270,18 +302,23 @@ export async function softDeletePost(
     }
   }
 
-  // Set deletedAt and deletedByPrincipalId
-  const [updatedPost] = await db
-    .update(posts)
-    .set({
-      deletedAt: new Date(),
-      deletedByPrincipalId: actor.principalId,
-    })
-    .where(eq(posts.id, postId))
-    .returning()
+  // Capture selected syncs in the same commit as deletion.
+  const updatedPost = await db.transaction(async (tx) => {
+    if (beforeDelete) await beforeDelete(tx)
+    const [updated] = await tx
+      .update(posts)
+      .set({ deletedAt: new Date(), deletedByPrincipalId: actor.principalId })
+      .where(eq(posts.id, postId))
+      .returning()
+    return updated
+  })
 
   if (!updatedPost) {
     throw new NotFoundError('POST_NOT_FOUND', `Post with ID ${postId} not found`)
+  }
+
+  if (existingPost.canonicalPostId) {
+    await recalculateCanonicalVoteCount(existingPost.canonicalPostId as PostId)
   }
 
   createActivity({
@@ -350,6 +387,10 @@ export async function restorePost(
 
   if (!restoredPost) {
     throw new NotFoundError('POST_NOT_FOUND', `Post with ID ${postId} not found`)
+  }
+
+  if (restoredPost.canonicalPostId) {
+    await recalculateCanonicalVoteCount(restoredPost.canonicalPostId as PostId)
   }
 
   createActivity({

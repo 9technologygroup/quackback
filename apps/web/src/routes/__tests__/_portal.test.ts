@@ -11,6 +11,7 @@
  * vi.mock before the module loads we can spy on emit behavior.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { QueryClient } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
 // Mocks — must be hoisted before any import of _portal.tsx
@@ -24,19 +25,30 @@ vi.mock('@/lib/server/functions/portal-access', () => ({
 }))
 
 // Stub enough of the portal route's other dependencies to avoid import errors
-vi.mock('@/lib/server/functions/portal', () => ({ fetchUserAvatar: vi.fn() }))
+vi.mock('@/lib/server/functions/portal', () => ({
+  fetchUserAvatar: vi.fn(async () => ({ avatarUrl: null, hasCustomAvatar: false })),
+}))
 vi.mock('@/lib/server/domains/settings/redact', () => ({
   redactSettingsForClient: vi.fn((x: unknown) => x),
 }))
 vi.mock('@/lib/shared/theme', () => ({
   generateThemeCSS: vi.fn(() => ''),
+  generateWorkspaceThemeCSS: vi.fn(() => ''),
+  readFontSans: vi.fn(() => null),
 }))
-vi.mock('@/lib/shared/i18n', () => ({ resolveLocale: vi.fn(async () => 'en') }))
+vi.mock('@/lib/shared/i18n', () => ({
+  resolveLocale: vi.fn(async () => 'en'),
+  loadMessages: vi.fn(async () => ({})),
+  loadPortalMessages: vi.fn(async () => ({})),
+  DEFAULT_LOCALE: 'en',
+  SUPPORTED_LOCALES: ['en', 'de', 'fr', 'es', 'ar', 'ru', 'pt-br', 'zh-cn', 'zh-tw', 'nl', 'pl'],
+}))
 vi.mock('@/lib/shared/types/settings', () => ({
   DEFAULT_PORTAL_CONFIG: { oauth: {}, access: {} },
   DEFAULT_AUTH_CONFIG: { oauth: { google: true, github: true, password: true }, openSignup: false },
 }))
 vi.mock('@tanstack/react-start', () => ({
+  createServerOnlyFn: <T>(fn: T) => fn,
   createServerFn: () => {
     const chain = {
       validator() {
@@ -51,9 +63,14 @@ vi.mock('@tanstack/react-start', () => ({
 }))
 vi.mock('@tanstack/react-start/server', () => ({
   getRequestHeaders: () => new Headers(),
+  setResponseHeader: vi.fn(),
 }))
 vi.mock('@/lib/server/functions/instant-sso', () => ({
   resolveInstantSsoRedirectFn: vi.fn(),
+}))
+vi.mock('@/lib/server/functions/notifications', () => ({
+  getUnreadCountFn: vi.fn(async () => ({ count: 0 })),
+  getNotificationsFn: vi.fn(),
 }))
 
 // ---------------------------------------------------------------------------
@@ -70,6 +87,7 @@ function makeContext(sessionUser?: {
   principalType: 'user' | 'anonymous' | 'service'
 }) {
   return {
+    queryClient: new QueryClient(),
     session: sessionUser
       ? {
           user: {

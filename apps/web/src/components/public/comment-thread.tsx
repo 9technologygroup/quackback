@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState, type ComponentProps } from 'react'
 import { useIntl } from 'react-intl'
 import {
   ArrowRightIcon,
@@ -11,7 +11,7 @@ import {
 } from '@heroicons/react/24/solid'
 import { PencilSquareIcon, TrashIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { CheckBadgeIcon } from '@heroicons/react/24/solid'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { Avatar } from '@/components/ui/avatar'
 import { ReactionChip } from '@/components/shared/reaction-chip'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -23,15 +23,35 @@ import { addReactionFn, removeReactionFn } from '@/lib/server/functions/comments
 import { useEditComment } from '@/lib/client/mutations/portal-comments'
 import type { CommentReactionCount } from '@/lib/shared'
 import type { PublicCommentView } from '@/lib/client/queries/portal-detail'
-import { cn, getInitials } from '@/lib/shared/utils'
+import { cn } from '@/lib/shared/utils'
 import { StatusBadge } from '@/components/ui/status-badge'
-import { CommentContent } from '@/components/public/comment-content'
+import { CommentContent, useCommentDoc } from '@/components/public/comment-content'
+import { AuthorHoverCard } from '@/components/public/author-hover-card'
+import { AdminAuthorHoverCard } from '@/components/admin/admin-author-hover-card'
 import { CommentForm, type CreateCommentMutation } from './comment-form'
-import { RichTextEditor } from '@/components/ui/rich-text-editor'
+import {
+  LazyRichTextEditor,
+  RichTextEditorPlaceholder,
+} from '@/components/ui/lazy-rich-text-editor'
 import { COMMENT_EDITOR_FEATURES } from './comment-editor-features'
-import { commentMarkdownToTiptapJson } from '@/lib/server/markdown-tiptap'
-import type { TiptapContent } from '@/lib/shared/db-types'
-import type { CommentId, PostId, PrincipalId } from '@quackback/ids'
+import type { ReplyPolicy, TiptapContent } from '@/lib/shared/db-types'
+import type { PostCommentId, PostId, PrincipalId } from '@quackback/ids'
+import { InlineModerationActions } from '@/components/shared/inline-moderation-actions'
+import { useApproveComment, useRejectComment } from '@/lib/client/mutations/moderation'
+import { useOpenedOnce } from '@/lib/client/hooks/use-opened-once'
+
+// Asked only when someone deletes a comment, so it loads on first use.
+const LazyConfirmDialog = lazy(() =>
+  import('@/components/shared/confirm-dialog').then((m) => ({ default: m.ConfirmDialog }))
+)
+
+function ConfirmDialog(props: ComponentProps<typeof LazyConfirmDialog>) {
+  return (
+    <Suspense fallback={null}>
+      <LazyConfirmDialog {...props} />
+    </Suspense>
+  )
+}
 
 /**
  * Groups root-level comments so consecutive private comments are wrapped
@@ -108,6 +128,12 @@ interface CommentThreadProps {
    * authn): show "You don't have access" instead of a sign-in prompt.
    */
   noAccess?: boolean
+  /**
+   * The board's reply rule, as reported by the server. `'author-only'` narrows
+   * the `noAccess` notice from the generic tier denial to "this thread belongs
+   * to its author". Undefined (admin mode, legacy payloads) means `'anyone'`.
+   */
+  replyPolicy?: ReplyPolicy
   user?: { name: string | null; email: string; principalId?: PrincipalId }
   /** Logo URL for the team badge (from branding settings) */
   teamBadgeLogoUrl?: string
@@ -125,7 +151,7 @@ interface CommentThreadProps {
   /** Enable comment pinning (admin only) */
   canPinComments?: boolean
   /** Callback when comment is pinned */
-  onPinComment?: (commentId: CommentId) => void
+  onPinComment?: (commentId: PostCommentId) => void
   /** Callback when comment is unpinned */
   onUnpinComment?: () => void
   /** Whether pin/unpin is in progress */
@@ -137,16 +163,23 @@ interface CommentThreadProps {
   currentStatusId?: string | null
   /** Whether the current user is a team member */
   isTeamMember?: boolean
+  /** Link comment authors to a profile behind a hover card. */
+  linkAuthors?: boolean
+  /** Destination for author links. Admin uses the enriched hover card. */
+  authorLinkTo?: 'portal' | 'admin'
   /** Hide the comment form area entirely (for readonly previews) */
   hideCommentForm?: boolean
   /** Callback when a comment is deleted */
-  onDeleteComment?: (commentId: CommentId) => void
+  onDeleteComment?: (commentId: PostCommentId) => void
   /** ID of the comment currently being deleted (for loading state) */
-  deletingCommentId?: CommentId | null
+  deletingCommentId?: PostCommentId | null
   /** Callback when a comment is restored (team only) */
-  onRestoreComment?: (commentId: CommentId) => void
+  onRestoreComment?: (commentId: PostCommentId) => void
   /** ID of the comment currently being restored */
-  restoringCommentId?: CommentId | null
+  restoringCommentId?: PostCommentId | null
+  /** When set, comment composers expose image insert. */
+  onImageUpload?: (file: File) => Promise<string>
+  canModerate?: boolean
 }
 
 export function CommentThread({
@@ -154,6 +187,7 @@ export function CommentThread({
   comments,
   allowCommenting = true,
   noAccess = false,
+  replyPolicy,
   user,
   teamBadgeLogoUrl,
   teamBadgeLabel,
@@ -168,11 +202,15 @@ export function CommentThread({
   statuses,
   currentStatusId,
   isTeamMember,
+  linkAuthors = false,
+  authorLinkTo = 'portal',
   hideCommentForm = false,
   onDeleteComment,
   deletingCommentId,
   onRestoreComment,
   restoringCommentId,
+  onImageUpload,
+  canModerate = false,
 }: CommentThreadProps) {
   const intl = useIntl()
   const sortedComments = [...comments].sort((a, b) => {
@@ -196,6 +234,7 @@ export function CommentThread({
           statuses={statuses}
           currentStatusId={currentStatusId}
           isTeamMember={isTeamMember}
+          onImageUpload={onImageUpload}
         />
       )
     }
@@ -211,14 +250,22 @@ export function CommentThread({
 
     // Signed in but denied by the board's comment tier (segments/team) — an
     // authorization failure, not authentication. State it; no sign-in affordance.
+    // An author-only board names its rule instead: the viewer's account is fine,
+    // this thread just isn't theirs. Signed-out viewers fall through to the
+    // sign-in CTA below, since they may yet sign in as the author.
     if (noAccess) {
       return (
         <div className="flex items-center justify-center gap-3 py-4 px-4 bg-muted/30 [border-radius:var(--radius)] border border-border/30">
           <p className="text-sm text-muted-foreground">
-            {intl.formatMessage({
-              id: 'portal.commentThread.noAccess',
-              defaultMessage: "You don't have access to comment on this board",
-            })}
+            {replyPolicy === 'author-only'
+              ? intl.formatMessage({
+                  id: 'portal.commentThread.authorOnlyReplies',
+                  defaultMessage: 'Only the post author and team members can reply on this board',
+                })
+              : intl.formatMessage({
+                  id: 'portal.commentThread.noAccess',
+                  defaultMessage: "You don't have access to comment on this board",
+                })}
           </p>
         </div>
       )
@@ -247,7 +294,7 @@ export function CommentThread({
         <p className="text-muted-foreground text-center py-4">
           {intl.formatMessage({
             id: 'portal.commentThread.empty',
-            defaultMessage: 'No comments yet. Be the first to share your thoughts!',
+            defaultMessage: 'No comments yet. Be the first to share your thoughts.',
           })}
         </p>
       ) : (
@@ -265,10 +312,14 @@ export function CommentThread({
             onUnpinComment,
             isPinPending,
             isTeamMember,
+            linkAuthors,
+            authorLinkTo,
             onDeleteComment,
             deletingCommentId,
             onRestoreComment,
             restoringCommentId,
+            onImageUpload,
+            canModerate,
           })}
         </div>
       )}
@@ -288,21 +339,26 @@ interface CommentItemProps {
   pinnedCommentId?: string | null
   // Admin mode props
   canPinComments?: boolean
-  onPinComment?: (commentId: CommentId) => void
+  onPinComment?: (commentId: PostCommentId) => void
   onUnpinComment?: () => void
   isPinPending?: boolean
   /** Whether the current user is a team member */
   isTeamMember?: boolean
+  /** Link the author name to a profile behind a hover card. */
+  linkAuthors?: boolean
+  authorLinkTo?: 'portal' | 'admin'
   /** Callback when a comment is deleted */
-  onDeleteComment?: (commentId: CommentId) => void
+  onDeleteComment?: (commentId: PostCommentId) => void
   /** ID of the comment currently being deleted */
-  deletingCommentId?: CommentId | null
+  deletingCommentId?: PostCommentId | null
   /** Callback when a comment is restored (team only) */
-  onRestoreComment?: (commentId: CommentId) => void
+  onRestoreComment?: (commentId: PostCommentId) => void
   /** ID of the comment currently being restored */
-  restoringCommentId?: CommentId | null
+  restoringCommentId?: PostCommentId | null
   /** Whether this comment is rendered inside a PrivateNoteCard (suppresses per-comment private styling) */
   insidePrivateCard?: boolean
+  onImageUpload?: (file: File) => Promise<string>
+  canModerate?: boolean
 }
 
 const MAX_NESTING_DEPTH = 5
@@ -322,14 +378,22 @@ function CommentItem({
   onUnpinComment,
   isPinPending = false,
   isTeamMember,
+  linkAuthors = false,
+  authorLinkTo = 'portal',
   onDeleteComment,
   deletingCommentId,
   onRestoreComment,
   restoringCommentId,
   insidePrivateCard = false,
+  onImageUpload,
+  canModerate = false,
 }: CommentItemProps) {
   const intl = useIntl()
+  const approveComment = useApproveComment(postId)
+  const rejectComment = useRejectComment(postId)
   const [showReplyForm, setShowReplyForm] = useState(false)
+  // The reply composer, and the editor it brings, mounts when Reply first opens it.
+  const replyFormMounted = useOpenedOnce(showReplyForm)
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [reactions, setReactions] = useState<CommentReactionCount[]>(comment.reactions)
   const [isPending, setIsPending] = useState(false)
@@ -338,15 +402,14 @@ function CommentItem({
   const [editContent, setEditContent] = useState(comment.content)
   const editJsonRef = useRef<TiptapContent | null>(comment.contentJson ?? null)
   const [editError, setEditError] = useState<string | null>(null)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const deleteConfirmMounted = useOpenedOnce(deleteConfirmOpen)
 
-  // Stored doc preferred; legacy rows fall back to a markdown parse.
-  const editInitialJson = useMemo<TiptapContent>(() => {
-    if (comment.contentJson) return comment.contentJson
-    return commentMarkdownToTiptapJson(comment.content)
-  }, [comment.contentJson, comment.content])
+  // Null while a legacy markdown-only row's parse loads, once editing starts.
+  const editInitialJson = useCommentDoc(comment.content, comment.contentJson, isEditing)
 
   const editMutation = useEditComment({
-    commentId: comment.id as CommentId,
+    commentId: comment.id as PostCommentId,
     postId,
   })
 
@@ -401,7 +464,14 @@ function CommentItem({
       await editMutation.mutateAsync({ content: trimmed, contentJson: editJsonRef.current })
       setIsEditing(false)
     } catch (err) {
-      setEditError(err instanceof Error ? err.message : 'Failed to save edit')
+      setEditError(
+        err instanceof Error
+          ? err.message
+          : intl.formatMessage({
+              id: 'portal.commentThread.editFailed',
+              defaultMessage: 'Failed to save edit',
+            })
+      )
     }
   }
 
@@ -421,9 +491,7 @@ function CommentItem({
         >
           <div className="py-2">
             <div className="flex items-center gap-2">
-              <Avatar className="h-8 w-8 shrink-0 opacity-40">
-                <AvatarFallback className="text-xs">?</AvatarFallback>
-              </Avatar>
+              <Avatar className="h-8 w-8 shrink-0 opacity-40" fallback="?" />
               <span className="text-sm text-muted-foreground italic">
                 {intl.formatMessage({
                   id: 'portal.commentThread.deleted',
@@ -490,6 +558,8 @@ function CommentItem({
                     onUnpinComment={onUnpinComment}
                     isPinPending={isPinPending}
                     isTeamMember={isTeamMember}
+                    linkAuthors={linkAuthors}
+                    authorLinkTo={authorLinkTo}
                     onDeleteComment={onDeleteComment}
                     deletingCommentId={deletingCommentId}
                     onRestoreComment={onRestoreComment}
@@ -522,32 +592,53 @@ function CommentItem({
           className={cn(
             'py-2',
             isPinned && 'bg-primary/[0.04] border border-primary/15 rounded-lg px-3 -mx-3',
+            comment.moderationState === 'pending' &&
+              'rounded-lg border border-amber-500/25 bg-amber-500/[0.04] px-3 -mx-3',
             isDeleted && isTeamMember && 'opacity-50'
           )}
         >
           <div className="flex items-center gap-2">
-            <Avatar className="h-8 w-8 shrink-0">
-              {comment.avatarUrl && (
-                <AvatarImage
-                  src={comment.avatarUrl}
-                  alt={
-                    comment.authorName ||
+            <Avatar
+              className="h-8 w-8 shrink-0"
+              src={comment.avatarUrl}
+              name={comment.authorName}
+              fallbackClassName="text-xs"
+            />
+            {linkAuthors && comment.principalId ? (
+              authorLinkTo === 'admin' ? (
+                <AdminAuthorHoverCard
+                  principalId={comment.principalId}
+                  displayName={comment.authorName}
+                  className="font-medium text-sm"
+                >
+                  {comment.authorName ||
                     intl.formatMessage({
-                      id: 'portal.commentThread.authorAlt',
-                      defaultMessage: 'Comment author',
-                    })
-                  }
-                />
-              )}
-              <AvatarFallback className="text-xs">{getInitials(comment.authorName)}</AvatarFallback>
-            </Avatar>
-            <span className="font-medium text-sm">
-              {comment.authorName ||
-                intl.formatMessage({
-                  id: 'portal.commentThread.authorFallback',
-                  defaultMessage: 'Anonymous',
-                })}
-            </span>
+                      id: 'portal.commentThread.authorFallback',
+                      defaultMessage: 'Anonymous',
+                    })}
+                </AdminAuthorHoverCard>
+              ) : (
+                <AuthorHoverCard
+                  principalId={comment.principalId}
+                  displayName={comment.authorName}
+                  className="font-medium text-sm"
+                >
+                  {comment.authorName ||
+                    intl.formatMessage({
+                      id: 'portal.commentThread.authorFallback',
+                      defaultMessage: 'Anonymous',
+                    })}
+                </AuthorHoverCard>
+              )
+            ) : (
+              <span className="font-medium text-sm">
+                {comment.authorName ||
+                  intl.formatMessage({
+                    id: 'portal.commentThread.authorFallback',
+                    defaultMessage: 'Anonymous',
+                  })}
+              </span>
+            )}
             {comment.isTeamMember && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -598,7 +689,7 @@ function CommentItem({
               </Tooltip>
             )}
             {comment.isPrivate && !insidePrivateCard && (
-              <Badge className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-0">
+              <Badge className="text-[11px] px-1.5 py-0 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-0">
                 <LockClosedIcon className="h-2.5 w-2.5 me-0.5" />
                 {intl.formatMessage({
                   id: 'portal.commentThread.internalNote',
@@ -607,7 +698,7 @@ function CommentItem({
               </Badge>
             )}
             {isPinned && (
-              <Badge className="text-[10px] px-1.5 py-0 bg-primary/15 text-primary border-0">
+              <Badge className="text-[11px] px-1.5 py-0 bg-primary/15 text-primary border-0">
                 <MapPinIcon className="h-2.5 w-2.5 me-0.5" />
                 {intl.formatMessage({
                   id: 'portal.commentThread.pinnedBadge',
@@ -645,18 +736,26 @@ function CommentItem({
                   }
                 }}
               >
-                <RichTextEditor
-                  value={editInitialJson}
-                  borderless
-                  minHeight="64px"
-                  autofocus="end"
-                  features={COMMENT_EDITOR_FEATURES}
-                  disabled={editMutation.isPending}
-                  onChange={(json, _html, markdown) => {
-                    editJsonRef.current = json as TiptapContent
-                    setEditContent(markdown ?? '')
-                  }}
-                />
+                {editInitialJson ? (
+                  <Suspense fallback={<RichTextEditorPlaceholder minHeight="64px" />}>
+                    <LazyRichTextEditor
+                      value={editInitialJson}
+                      borderless
+                      minHeight="64px"
+                      autofocus="end"
+                      features={COMMENT_EDITOR_FEATURES}
+                      onImageUpload={onImageUpload}
+                      onVideoUpload={onImageUpload}
+                      disabled={editMutation.isPending}
+                      onDocumentChange={(document) => {
+                        editJsonRef.current = document.json() as TiptapContent
+                        setEditContent(document.markdown())
+                      }}
+                    />
+                  </Suspense>
+                ) : (
+                  <RichTextEditorPlaceholder minHeight="64px" />
+                )}
               </div>
               {editError && <p className="text-xs text-destructive mt-1">{editError}</p>}
               <div className="flex items-center gap-2 mt-2">
@@ -702,6 +801,18 @@ function CommentItem({
               content={comment.content}
               contentJson={comment.contentJson ?? null}
               className="text-sm mt-1.5 ms-10 text-foreground/90 leading-relaxed"
+            />
+          )}
+          {comment.moderationState === 'pending' && (
+            <InlineModerationActions
+              pending
+              noun="comment"
+              className="mt-2 ms-10"
+              busy={approveComment.isPending || rejectComment.isPending}
+              onApprove={canModerate ? () => approveComment.mutate(comment.id) : undefined}
+              onReject={
+                canModerate ? () => rejectComment.mutate({ commentId: comment.id }) : undefined
+              }
             />
           )}
 
@@ -805,7 +916,9 @@ function CommentItem({
                 variant="ghost"
                 size="sm"
                 className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                onClick={isPinned ? onUnpinComment : () => onPinComment?.(comment.id as CommentId)}
+                onClick={
+                  isPinned ? onUnpinComment : () => onPinComment?.(comment.id as PostCommentId)
+                }
                 disabled={isPinPending}
               >
                 <MapPinIcon className="h-3 w-3 me-1" />
@@ -824,7 +937,7 @@ function CommentItem({
                 variant="ghost"
                 size="sm"
                 className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => onRestoreComment!(comment.id as CommentId)}
+                onClick={() => onRestoreComment!(comment.id as PostCommentId)}
                 disabled={isBeingRestored}
               >
                 <ArrowUturnLeftIcon className="h-3 w-3 me-1" />
@@ -862,7 +975,7 @@ function CommentItem({
                 variant="ghost"
                 size="sm"
                 className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive"
-                onClick={() => onDeleteComment!(comment.id as CommentId)}
+                onClick={() => setDeleteConfirmOpen(true)}
                 disabled={isBeingDeleted}
               >
                 <TrashIcon className="h-3 w-3 me-1" />
@@ -877,6 +990,34 @@ function CommentItem({
                     })}
               </Button>
             )}
+            {canDelete && deleteConfirmMounted && (
+              <ConfirmDialog
+                open={deleteConfirmOpen}
+                onOpenChange={setDeleteConfirmOpen}
+                title={intl.formatMessage({
+                  id: 'portal.commentThread.deleteConfirmTitle',
+                  defaultMessage: 'Delete this comment?',
+                })}
+                description={intl.formatMessage({
+                  id: 'portal.commentThread.deleteConfirmDescription',
+                  defaultMessage: "It will be removed from the thread. This can't be undone.",
+                })}
+                confirmLabel={intl.formatMessage({
+                  id: 'portal.commentThread.delete',
+                  defaultMessage: 'Delete',
+                })}
+                cancelLabel={intl.formatMessage({
+                  id: 'portal.commentThread.keepIt',
+                  defaultMessage: 'Keep it',
+                })}
+                variant="destructive"
+                isPending={isBeingDeleted}
+                onConfirm={() => {
+                  onDeleteComment!(comment.id as PostCommentId)
+                  setDeleteConfirmOpen(false)
+                }}
+              />
+            )}
           </div>
 
           {/* Reply form */}
@@ -888,18 +1029,21 @@ function CommentItem({
             }}
           >
             <div className="overflow-hidden">
-              <div className="mt-3 ms-10 max-w-lg p-3 bg-muted/30 [border-radius:var(--radius)] border border-border/30">
-                <CommentForm
-                  postId={postId}
-                  parentId={comment.id}
-                  onSuccess={() => setShowReplyForm(false)}
-                  onCancel={() => setShowReplyForm(false)}
-                  user={user}
-                  createComment={createComment}
-                  isTeamMember={isTeamMember}
-                  defaultPrivate={comment.isPrivate}
-                />
-              </div>
+              {replyFormMounted && (
+                <div className="mt-3 ms-10 max-w-lg p-3 bg-muted/30 [border-radius:var(--radius)] border border-border/30">
+                  <CommentForm
+                    postId={postId}
+                    parentId={comment.id}
+                    onSuccess={() => setShowReplyForm(false)}
+                    onCancel={() => setShowReplyForm(false)}
+                    user={user}
+                    createComment={createComment}
+                    isTeamMember={isTeamMember}
+                    defaultPrivate={comment.isPrivate}
+                    onImageUpload={onImageUpload}
+                  />
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -930,11 +1074,15 @@ function CommentItem({
                   onUnpinComment={onUnpinComment}
                   isPinPending={isPinPending}
                   isTeamMember={isTeamMember}
+                  linkAuthors={linkAuthors}
+                  authorLinkTo={authorLinkTo}
                   onDeleteComment={onDeleteComment}
                   deletingCommentId={deletingCommentId}
                   onRestoreComment={onRestoreComment}
                   restoringCommentId={restoringCommentId}
                   insidePrivateCard={insidePrivateCard}
+                  onImageUpload={onImageUpload}
+                  canModerate={canModerate}
                 />
               ))}
             </div>

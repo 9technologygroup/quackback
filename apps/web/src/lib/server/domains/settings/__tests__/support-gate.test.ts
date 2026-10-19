@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 const hoisted = vi.hoisted(() => ({
   mockIsFeatureEnabled: vi.fn(),
   mockGetPortalConfig: vi.fn(),
-  mockIsLiveChatEnabled: vi.fn(),
+  mockIsMessengerEnabled: vi.fn(),
 }))
 
 vi.mock('../settings.service', () => ({
@@ -12,15 +12,59 @@ vi.mock('../settings.service', () => ({
 }))
 
 vi.mock('../settings.widget', () => ({
-  isLiveChatEnabled: hoisted.mockIsLiveChatEnabled,
+  isMessengerEnabled: hoisted.mockIsMessengerEnabled,
 }))
 
 import { isPortalSupportEnabled, isConversationsEnabled } from '../settings.support'
 import { DEFAULT_PORTAL_CONFIG } from '../settings.types'
+import {
+  isPortalSupportSurfaceEnabled,
+  isWidgetMessengerEnabled,
+} from '@/lib/shared/support-surfaces'
 
 describe('DEFAULT_PORTAL_CONFIG.support', () => {
-  it('is disabled by default so shipping the gate changes nothing for existing workspaces', () => {
-    expect(DEFAULT_PORTAL_CONFIG.support?.enabled).toBe(false)
+  it('is on by default so Support ON is enough to start portal chats', () => {
+    expect(DEFAULT_PORTAL_CONFIG.support?.enabled).toBe(true)
+  })
+})
+
+describe('isPortalSupportSurfaceEnabled', () => {
+  it.each([
+    { tickets: false, inbox: true, enabled: true, expected: true },
+    { tickets: false, inbox: false, enabled: true, expected: false },
+    { tickets: false, inbox: true, enabled: false, expected: false },
+    { tickets: true, inbox: false, enabled: false, expected: true },
+    { tickets: true, inbox: true, enabled: false, expected: true },
+  ])(
+    'tickets=$tickets inbox=$inbox enabled=$enabled → $expected',
+    ({ tickets, inbox, enabled, expected }) => {
+      expect(
+        isPortalSupportSurfaceEnabled(
+          { supportTickets: tickets, supportInbox: inbox },
+          { support: { enabled } }
+        )
+      ).toBe(expected)
+    }
+  )
+})
+
+describe('isWidgetMessengerEnabled', () => {
+  it('requires the inbox flag, widget master, and Messages tab', () => {
+    expect(
+      isWidgetMessengerEnabled({ supportInbox: true }, { enabled: true, tabs: { messenger: true } })
+    ).toBe(true)
+    expect(
+      isWidgetMessengerEnabled(
+        { supportInbox: true },
+        { enabled: false, tabs: { messenger: true } }
+      )
+    ).toBe(false)
+    expect(
+      isWidgetMessengerEnabled(
+        { supportInbox: false },
+        { enabled: true, tabs: { messenger: true } }
+      )
+    ).toBe(false)
   })
 })
 
@@ -30,39 +74,52 @@ describe('isPortalSupportEnabled', () => {
   })
 
   it.each([
-    { flag: true, support: { enabled: true }, expected: true },
-    { flag: false, support: { enabled: true }, expected: false },
-    { flag: true, support: { enabled: false }, expected: false },
-    { flag: true, support: undefined, expected: false },
-  ])('flag=$flag support=$support → $expected', async ({ flag, support, expected }) => {
-    hoisted.mockIsFeatureEnabled.mockResolvedValue(flag)
-    hoisted.mockGetPortalConfig.mockResolvedValue({ support })
-    expect(await isPortalSupportEnabled()).toBe(expected)
-  })
+    { inbox: true, tickets: false, support: { enabled: true }, expected: true },
+    { inbox: false, tickets: false, support: { enabled: true }, expected: false },
+    { inbox: true, tickets: false, support: { enabled: false }, expected: false },
+    { inbox: true, tickets: false, support: undefined, expected: false },
+    { inbox: false, tickets: true, support: { enabled: false }, expected: true },
+  ])(
+    'inbox=$inbox tickets=$tickets support=$support → $expected',
+    async ({ inbox, tickets, support, expected }) => {
+      hoisted.mockIsFeatureEnabled.mockImplementation(async (flag: string) =>
+        flag === 'supportTickets' ? tickets : flag === 'supportInbox' ? inbox : false
+      )
+      hoisted.mockGetPortalConfig.mockResolvedValue({ support })
+      expect(await isPortalSupportEnabled()).toBe(expected)
+    }
+  )
 
-  it('checks the supportInbox feature flag specifically', async () => {
+  it('checks the supportInbox and supportTickets flags', async () => {
     hoisted.mockIsFeatureEnabled.mockResolvedValue(true)
     hoisted.mockGetPortalConfig.mockResolvedValue({ support: { enabled: true } })
     await isPortalSupportEnabled()
     expect(hoisted.mockIsFeatureEnabled).toHaveBeenCalledWith('supportInbox')
+    expect(hoisted.mockIsFeatureEnabled).toHaveBeenCalledWith('supportTickets')
   })
 })
 
 describe('isConversationsEnabled', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    hoisted.mockIsFeatureEnabled.mockResolvedValue(true)
   })
 
+  // Converged Messages: tickets count as a conversation surface — every
+  // customer ticket is a conversation pair, so an email-first workspace with
+  // the messenger off still lists and replies to its threads.
   it.each([
-    { widget: true, portalSupport: false, expected: true },
-    { widget: false, portalSupport: true, expected: true },
-    { widget: true, portalSupport: true, expected: true },
-    { widget: false, portalSupport: false, expected: false },
+    { widget: true, portalSupport: false, tickets: false, expected: true },
+    { widget: false, portalSupport: true, tickets: false, expected: true },
+    { widget: true, portalSupport: true, tickets: false, expected: true },
+    { widget: false, portalSupport: false, tickets: true, expected: true },
+    { widget: false, portalSupport: false, tickets: false, expected: false },
   ])(
-    'widget=$widget portalSupport=$portalSupport → $expected',
-    async ({ widget, portalSupport, expected }) => {
-      hoisted.mockIsLiveChatEnabled.mockResolvedValue(widget)
+    'widget=$widget portalSupport=$portalSupport tickets=$tickets → $expected',
+    async ({ widget, portalSupport, tickets, expected }) => {
+      hoisted.mockIsFeatureEnabled.mockImplementation(async (flag: string) =>
+        flag === 'supportTickets' ? tickets : true
+      )
+      hoisted.mockIsMessengerEnabled.mockResolvedValue(widget)
       hoisted.mockGetPortalConfig.mockResolvedValue({ support: { enabled: portalSupport } })
       expect(await isConversationsEnabled()).toBe(expected)
     }

@@ -10,18 +10,43 @@ import {
   and,
   isNull,
   sql,
-  comments,
-  commentEditHistory,
+  postComments,
+  postCommentEditHistory,
   posts,
-  type Comment,
+  principal,
+  type PostComment,
 } from '@/lib/server/db'
-import { type CommentId, type PrincipalId } from '@quackback/ids'
+import { type PostCommentId, type PrincipalId } from '@quackback/ids'
 import { NotFoundError, ValidationError, ForbiddenError } from '@/lib/shared/errors'
-import { isTeamMember } from '@/lib/shared/roles'
+import { Role } from '@/lib/shared/roles'
+import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
+import { resolveActorPermissions } from '@/lib/server/policy/permissions'
+import { adjustCanonicalCommentCount } from '@/lib/server/domains/posts/post.merge-ids'
+import { notTestPrincipal } from '@/lib/server/test-data'
+
+/**
+ * Minimal actor shape the comment policy consumes. `permissions` is the
+ * gate-resolved (assignment-derived) set from requireAuth/getOptionalAuth;
+ * when absent the checks fall back to the legacy preset expansion.
+ */
+export interface CommentActor {
+  principalId: PrincipalId
+  role: Role
+  permissions?: readonly PermissionKey[]
+}
+
+function actorHolds(actor: CommentActor, permission: PermissionKey): boolean {
+  return actor.permissions
+    ? actor.permissions.includes(permission)
+    : resolveActorPermissions(actor.role).has(permission)
+}
 import { createActivity } from '@/lib/server/domains/activity/activity.service'
 import { dispatchCommentUpdated, buildEventActor } from '@/lib/server/events/dispatch'
-import { commentMarkdownToTiptapJson } from '@/lib/server/markdown-tiptap'
-import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
+import { getPortalConfig } from '@/lib/server/domains/settings/settings.service'
+import { recordAuditEvent } from '@/lib/server/audit/log'
+import { isTeamMember as roleIsTeamMember } from '@/lib/shared/roles'
+import { prepareCommentContent } from './comment-content'
+import { contentHoldReason } from '@/lib/server/content/content-holds'
 import type { TiptapContent } from '@/lib/shared/db-types'
 import type { CommentPermissionCheckResult } from './comment.types'
 import { logger } from '@/lib/server/logger'
@@ -36,9 +61,9 @@ const log = logger.child({ component: 'comment-permissions' })
  * Check if a comment has any reply from a team member
  * Recursively checks all descendants
  */
-export async function hasTeamMemberReply(commentId: CommentId): Promise<boolean> {
-  const replies = await db.query.comments.findMany({
-    where: and(eq(comments.parentId, commentId), isNull(comments.deletedAt)),
+export async function hasTeamMemberReply(commentId: PostCommentId): Promise<boolean> {
+  const replies = await db.query.postComments.findMany({
+    where: and(eq(postComments.parentId, commentId), isNull(postComments.deletedAt)),
   })
 
   for (const reply of replies) {
@@ -66,13 +91,13 @@ export async function hasTeamMemberReply(commentId: CommentId): Promise<boolean>
  * @returns Result containing permission check result
  */
 export async function canEditComment(
-  commentId: CommentId,
-  actor: { principalId: PrincipalId; role: 'admin' | 'member' | 'user' }
+  commentId: PostCommentId,
+  actor: CommentActor
 ): Promise<CommentPermissionCheckResult> {
   log.debug({ comment_id: commentId }, 'can edit comment check')
   // Get the comment
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
   })
 
   if (!comment) {
@@ -84,8 +109,8 @@ export async function canEditComment(
     return { allowed: false, reason: 'Cannot edit a deleted comment' }
   }
 
-  // Team members (admin, member) can always edit
-  if (isTeamMember(actor.role)) {
+  // Operators holding comment.edit can edit any comment.
+  if (actorHolds(actor, PERMISSIONS.COMMENT_EDIT)) {
     return { allowed: true }
   }
 
@@ -115,13 +140,13 @@ export async function canEditComment(
  * @returns Result containing permission check result
  */
 export async function canDeleteComment(
-  commentId: CommentId,
-  actor: { principalId: PrincipalId; role: 'admin' | 'member' | 'user' }
+  commentId: PostCommentId,
+  actor: CommentActor
 ): Promise<CommentPermissionCheckResult> {
   log.debug({ comment_id: commentId }, 'can delete comment check')
   // Get the comment
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
   })
 
   if (!comment) {
@@ -133,8 +158,8 @@ export async function canDeleteComment(
     return { allowed: false, reason: 'Comment has already been deleted' }
   }
 
-  // Team members (admin, member) can always delete
-  if (isTeamMember(actor.role)) {
+  // Operators holding comment.edit can delete any comment.
+  if (actorHolds(actor, PERMISSIONS.COMMENT_EDIT)) {
     return { allowed: true }
   }
 
@@ -169,11 +194,11 @@ export async function canDeleteComment(
  * @returns Result containing updated comment or error
  */
 export async function userEditComment(
-  commentId: CommentId,
+  commentId: PostCommentId,
   content: string,
-  actor: { principalId: PrincipalId; role: 'admin' | 'member' | 'user' },
+  actor: CommentActor,
   options?: { contentJson?: TiptapContent | null }
-): Promise<Comment> {
+): Promise<PostComment> {
   log.debug({ comment_id: commentId }, 'user edit comment')
   // Check permission first
   const permResult = await canEditComment(commentId, actor)
@@ -181,8 +206,8 @@ export async function userEditComment(
     throw new ForbiddenError('EDIT_NOT_ALLOWED', permResult.reason || 'Edit not allowed')
   }
 
-  const existingComment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const existingComment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
     with: { post: { with: { board: true } } },
   })
   if (!existingComment) {
@@ -201,16 +226,25 @@ export async function userEditComment(
   }
 
   const trimmed = content.trim()
-  // Sanitize caller-supplied JSON before storage so the render fast-path
-  // can trust it. See resolveContentJson in comment.service.ts for the
-  // same policy on creates.
-  const nextContentJson = options?.contentJson
-    ? sanitizeTiptapContent(options.contentJson)
-    : commentMarkdownToTiptapJson(trimmed)
+  const authorIsTeamMember = roleIsTeamMember(actor.role)
+  const prepared = await prepareCommentContent({
+    content: trimmed,
+    contentJson: options?.contentJson,
+    authorIsTeamMember,
+    principalId: actor.principalId,
+  })
+
+  const portalConfig = await getPortalConfig()
+  const holdReason = authorIsTeamMember
+    ? null
+    : contentHoldReason(portalConfig.moderationDefault, prepared.contentJson, prepared.content)
+  const wasPublished = existingComment.moderationState === 'published'
+  const nextModerationState =
+    holdReason && wasPublished ? ('pending' as const) : existingComment.moderationState
 
   const updatedComment = await db.transaction(async (tx) => {
     if (actor.principalId) {
-      await tx.insert(commentEditHistory).values({
+      await tx.insert(postCommentEditHistory).values({
         commentId,
         editorPrincipalId: actor.principalId,
         previousContent: existingComment.content,
@@ -219,17 +253,57 @@ export async function userEditComment(
     }
 
     const [result] = await tx
-      .update(comments)
-      .set({ content: trimmed, contentJson: nextContentJson, updatedAt: new Date() })
-      .where(eq(comments.id, commentId))
+      .update(postComments)
+      .set({
+        content: prepared.content,
+        contentJson: prepared.contentJson,
+        updatedAt: new Date(),
+        ...(nextModerationState !== existingComment.moderationState
+          ? { moderationState: nextModerationState }
+          : {}),
+      })
+      .where(eq(postComments.id, commentId))
       .returning()
 
     if (!result) {
       throw new NotFoundError('COMMENT_NOT_FOUND', `Comment with ID ${commentId} not found`)
     }
 
+    if (wasPublished && nextModerationState === 'pending' && !result.isPrivate) {
+      const counted = await tx
+        .update(posts)
+        .set({ commentCount: sql`GREATEST(${posts.commentCount} - 1, 0)` })
+        .where(
+          and(
+            eq(posts.id, existingComment.postId),
+            and(
+              notTestPrincipal(posts.principalId),
+              notTestPrincipal(
+                sql`(SELECT ${principal.id} FROM ${principal} WHERE ${eq(principal.id, result.principalId)})`
+              )
+            )!
+          )
+        )
+        .returning({ id: posts.id })
+      if (counted.length > 0) await adjustCanonicalCommentCount(existingComment.postId, -1, tx)
+    }
+
     return result
   })
+
+  if (wasPublished && nextModerationState === 'pending') {
+    await recordAuditEvent({
+      event: 'comment.moderation.held',
+      actor: { role: actor.role, type: 'user' },
+      target: { type: 'comment', id: commentId },
+      after: { moderationState: 'pending' },
+      metadata: {
+        postId: existingComment.postId,
+        reason: holdReason,
+        previouslyPublished: true,
+      },
+    })
+  }
 
   dispatchCommentUpdated(
     buildEventActor({ principalId: actor.principalId }),
@@ -258,8 +332,8 @@ export async function userEditComment(
  * @returns Result indicating success or error
  */
 export async function softDeleteComment(
-  commentId: CommentId,
-  actor: { principalId: PrincipalId; role: 'admin' | 'member' | 'user' }
+  commentId: PostCommentId,
+  actor: CommentActor
 ): Promise<void> {
   log.info({ comment_id: commentId }, 'soft delete comment')
   // Check permission first
@@ -269,8 +343,8 @@ export async function softDeleteComment(
   }
 
   // Get the comment to find its post (needed for auto-unpin check)
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, commentId),
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, commentId),
     with: { post: true },
   })
 
@@ -282,12 +356,12 @@ export async function softDeleteComment(
   // Guard: only update comments that aren't already soft-deleted (idempotent)
   const wasDeleted = await db.transaction(async (tx) => {
     const [updatedComment] = await tx
-      .update(comments)
+      .update(postComments)
       .set({
         deletedAt: new Date(),
         deletedByPrincipalId: actor.principalId,
       })
-      .where(and(eq(comments.id, commentId), isNull(comments.deletedAt)))
+      .where(and(eq(postComments.id, commentId), isNull(postComments.deletedAt)))
       .returning()
 
     if (!updatedComment) {
@@ -307,16 +381,26 @@ export async function softDeleteComment(
       !updatedComment.isPrivate && updatedComment.moderationState !== 'pending'
     const shouldUnpin = comment.post?.pinnedCommentId === commentId
 
-    if (shouldDecrementCount || shouldUnpin) {
-      await tx
+    if (shouldUnpin) {
+      await tx.update(posts).set({ pinnedCommentId: null }).where(eq(posts.id, comment.postId))
+    }
+    if (shouldDecrementCount) {
+      const counted = await tx
         .update(posts)
-        .set({
-          ...(shouldDecrementCount
-            ? { commentCount: sql`GREATEST(0, ${posts.commentCount} - 1)` }
-            : {}),
-          ...(shouldUnpin ? { pinnedCommentId: null } : {}),
-        })
-        .where(eq(posts.id, comment.postId))
+        .set({ commentCount: sql`GREATEST(0, ${posts.commentCount} - 1)` })
+        .where(
+          and(
+            eq(posts.id, comment.postId),
+            and(
+              notTestPrincipal(posts.principalId),
+              notTestPrincipal(
+                sql`(SELECT ${principal.id} FROM ${principal} WHERE ${eq(principal.id, updatedComment.principalId)})`
+              )
+            )!
+          )
+        )
+        .returning({ id: posts.id })
+      if (counted.length > 0) await adjustCanonicalCommentCount(comment.postId, -1, tx)
     }
 
     return true

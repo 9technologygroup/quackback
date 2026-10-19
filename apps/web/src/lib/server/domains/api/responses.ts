@@ -157,7 +157,7 @@ const NOT_FOUND_RESOURCES: Record<string, string> = {
   BOARD_NOT_FOUND: 'Board',
   POST_NOT_FOUND: 'Post',
   COMMENT_NOT_FOUND: 'Comment',
-  TAG_NOT_FOUND: 'Tag',
+  TAG_NOT_FOUND: 'PostTag',
   STATUS_NOT_FOUND: 'Status',
   MEMBER_NOT_FOUND: 'Member',
   USER_NOT_FOUND: 'User',
@@ -169,7 +169,13 @@ const NOT_FOUND_RESOURCES: Record<string, string> = {
   SEGMENT_NOT_FOUND: 'Segment',
   WEBHOOK_NOT_FOUND: 'Webhook',
   PRINCIPAL_NOT_FOUND: 'User',
-  POST_NOT_IN_ROADMAP: 'Post in roadmap',
+  STATUS_COMPONENT_NOT_FOUND: 'Status component',
+  STATUS_GROUP_NOT_FOUND: 'Status component group',
+  STATUS_INCIDENT_NOT_FOUND: 'Status incident',
+  STATUS_TEMPLATE_NOT_FOUND: 'Status incident template',
+  APPROVAL_NOT_FOUND: 'Approval',
+  SETTINGS_AREA_NOT_FOUND: 'Settings area',
+  SETTINGS_RECEIPT_NOT_FOUND: 'Settings receipt',
 }
 
 /**
@@ -225,6 +231,14 @@ export function handleDomainError(error: unknown): Response {
           if (s === 403) return forbiddenResponse(domainError.message)
           if (s === 404) return notFoundResponse(domainError.message)
           if (s === 409) return conflictResponse(domainError.message)
+          // Preconditions and locks keep their own codes: a client branches on them.
+          if (s === 412 || s === 423 || s === 428) {
+            const details =
+              'cause' in domainError && domainError.cause && typeof domainError.cause === 'object'
+                ? (domainError.cause as Record<string, unknown>)
+                : undefined
+            return errorResponse(domainError.code, domainError.message, s, details)
+          }
         }
         log.error({ err: error }, 'unhandled domain error')
         return internalErrorResponse()

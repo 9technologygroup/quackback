@@ -23,28 +23,29 @@ const mockFindFirst = vi.fn()
 const mockIsEmailConfigured = vi.fn()
 const mockGetConfiguredIntegrationTypes = vi.fn()
 
-vi.mock('@/lib/server/redis', () => ({
+vi.mock('@/lib/server/cache', () => ({
   cacheGet: vi.fn().mockResolvedValue(null),
   cacheSet: vi.fn(),
   cacheDel: vi.fn(),
-  CACHE_KEYS: { TENANT_SETTINGS: 'settings:tenant' },
+  CACHE_KEYS: { WORKSPACE_SETTINGS: 'settings:workspace' },
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       settings: { findFirst: (...args: unknown[]) => mockFindFirst(...args) },
     },
     select: () => ({
       from: () => ({
+        where: () => Promise.resolve([]),
         limit: () => Promise.resolve([]),
         orderBy: () => Promise.resolve([]),
       }),
     }),
   },
   eq: vi.fn(),
-  settings: { id: 'id' },
-  ssoVerifiedDomain: { createdAt: 'created_at' },
 }))
 
 vi.mock('@quackback/email', () => ({
@@ -101,7 +102,7 @@ describe('getPublicAuthConfig — magicLink passthrough', () => {
   })
 
   it('drops magicLink when email is NOT configured (no point surfacing a button that would silently fail)', async () => {
-    mockIsEmailConfigured.mockReturnValueOnce(false)
+    mockIsEmailConfigured.mockReturnValue(false)
     const result = await getPublicAuthConfig()
     // Without email transport, magicLink should not be in the
     // passthrough list and thus gets the credential-gate treatment,
@@ -121,7 +122,7 @@ describe('getPublicAuthConfig — magicLink passthrough', () => {
   })
 
   it('keeps OAuth providers when their credential IS configured', async () => {
-    mockGetConfiguredIntegrationTypes.mockResolvedValueOnce(new Set(['auth_google']))
+    mockGetConfiguredIntegrationTypes.mockResolvedValue(new Set(['auth_google']))
     const result = await getPublicAuthConfig()
     expect(result?.oauth.google).toBe(true)
     expect(result?.oauth.github).toBeFalsy() // no auth_github credential

@@ -5,10 +5,11 @@
  * Summaries include a prose overview, urgency level, key quotes, and next steps.
  */
 
+import { z } from 'zod'
 import {
   db,
   posts,
-  comments,
+  postComments,
   eq,
   and,
   or,
@@ -18,14 +19,41 @@ import {
   sql,
   notInArray,
 } from '@/lib/server/db'
-import { getOpenAI, stripCodeFences } from '@/lib/server/domains/ai/config'
+import { config } from '@/lib/server/config'
+import { isAiClientConfigured } from '@/lib/server/domains/ai/config'
+import { structuredChat } from '@/lib/server/domains/ai/structured-chat'
 import { getChatModel } from '@/lib/server/domains/ai/models'
-import { withRetry } from '@/lib/server/domains/ai/retry'
-import { enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
+import { TierLimitError } from '@/lib/server/errors/tier-limit-error'
+import { aiBudgetAvailable, enforceAiTokenBudget } from '@/lib/server/domains/settings/tier-enforce'
+import { commentPlainText } from '@/lib/server/markdown-tiptap'
+import { withWorkspaceSweepReentrancyGuard } from '@/lib/server/sweep-lock'
 import type { PostId } from '@quackback/ids'
+import { isTestCustomer, notTestPrincipal } from '@/lib/server/test-data'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'summary' })
+
+/**
+ * `chat({ outputSchema })` collapses "empty response", "response wasn't
+ * valid JSON", and "response didn't match the schema" into one thrown
+ * `Error` tagged with one of these `code`s (see @tanstack/ai's
+ * `finalizationError` handling) — the structured-output analogue of this
+ * service's old empty-response / JSON.parse / shape-guard branches, all of
+ * which logged and returned rather than throwing. A transport/network
+ * failure throws too, but without this `code`, so it still propagates
+ * exactly as an uncaught `withRetry` failure did before.
+ */
+const STRUCTURED_OUTPUT_ERROR_CODES = new Set([
+  'structured-output-parse-failed',
+  'structured-output-validation-failed',
+  'structured-output-missing-result',
+])
+
+function isStructuredOutputError(err: unknown): boolean {
+  return STRUCTURED_OUTPUT_ERROR_CODES.has(
+    (err as { code?: string } | null | undefined)?.code ?? ''
+  )
+}
 
 const SYSTEM_PROMPT = `You are a product feedback analyst writing post briefs for a PM's triage queue.
 Your job is to surface what matters for prioritization, not restate the obvious.
@@ -55,7 +83,14 @@ Rules for "keyQuotes" (0-2):
 Rules for "nextSteps" (0-2):
 - Start each with a verb: "Investigate...", "Reproduce...", "Respond to..."
 - Only include when the discussion has enough specificity for a real action.
-- Never include generic advice like "Consider user feedback."`
+- Never include generic advice like "Consider user feedback."
+
+Example output:
+{
+  "summary": "CSV exports silently drop columns with special characters, affecting 3 users. Team acknowledged but no fix timeline given.",
+  "keyQuotes": ["Half our accounting columns just vanish from the export..."],
+  "nextSteps": ["Reproduce the export with non-ASCII column headers"]
+}`
 
 interface PostSummaryJson {
   summary: string
@@ -63,45 +98,65 @@ interface PostSummaryJson {
   nextSteps: string[]
 }
 
+// `summary` mirrors the old typeof-guard: a missing/wrong-typed value fails
+// validation, which the caller maps to the old "invalid shape" log+return.
+// `keyQuotes`/`nextSteps` mirror the old Array.isArray coercion: `.catch([])`
+// swallows a missing or wrong-shaped value locally (without failing the rest
+// of the object), replacing it with `[]` exactly like the old manual coercion.
+const PostSummarySchema = z.object({
+  summary: z.string(),
+  keyQuotes: z.array(z.string()).catch([]),
+  nextSteps: z.array(z.string()).catch([]),
+})
+
 /**
  * Generate and save an AI summary for a post.
  * Fetches the post title, content, and comments, then calls the LLM.
  */
 export async function generateAndSavePostSummary(postId: PostId): Promise<void> {
+  // Plan gate before the budget: whether summaries are included at all is a
+  // cheaper question than how much of the month's allowance is left, and a
+  // workspace without them should never pay the usage read. No-op on any
+  // install without a plan, which is every self-hosted one — see
+  // domains/settings/cloud/entitlements.ts.
+  const { requireEntitlement } = await import('@/lib/server/domains/settings/cloud/entitlements')
+  await requireEntitlement('aiInsights')
   await enforceAiTokenBudget()
 
-  const openai = getOpenAI()
   const model = getChatModel('summary')
-  if (!openai || !model) return
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !model) return
 
   // Fetch post (include existing summary for continuity on updates)
   const post = await db.query.posts.findFirst({
     where: eq(posts.id, postId),
-    columns: { title: true, content: true, summaryJson: true },
+    columns: { title: true, content: true, summaryJson: true, principalId: true },
   })
   if (!post) {
     log.warn({ post_id: postId }, 'post not found for summary')
     return
   }
+  // A test customer's idea spends no AI tokens.
+  if (await isTestCustomer(post.principalId)) return
 
   // Fetch comments (lightweight: just content and author name)
-  const postComments = await db
+  const commentRows = await db
     .select({
-      content: comments.content,
-      isTeamMember: comments.isTeamMember,
+      content: postComments.content,
+      contentJson: postComments.contentJson,
+      isTeamMember: postComments.isTeamMember,
     })
-    .from(comments)
-    .where(and(eq(comments.postId, postId), isNull(comments.deletedAt)))
-    .orderBy(comments.createdAt)
+    .from(postComments)
+    .where(and(eq(postComments.postId, postId), isNull(postComments.deletedAt)))
+    .orderBy(postComments.createdAt)
 
   // Build prompt input
   let input = `# ${post.title}\n\n${post.content}`
 
-  if (postComments.length > 0) {
+  if (commentRows.length > 0) {
     input += '\n\n## Comments\n'
-    for (const c of postComments) {
+    for (const c of commentRows) {
       const prefix = c.isTeamMember ? '[Team]' : '[User]'
-      input += `\n${prefix}: ${c.content}`
+      input += `\n${prefix}: ${commentPlainText(c)}`
     }
   }
 
@@ -122,48 +177,19 @@ export async function generateAndSavePostSummary(postId: PostId): Promise<void> 
       '\n\nA previous summary is included. Update it to reflect the current state of the discussion — preserve existing context that is still relevant, and incorporate any new information from recent comments.'
     : SYSTEM_PROMPT
 
-  const { result: completion } = await withRetry(() =>
-    openai.chat.completions.create({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: input },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-      max_completion_tokens: 1000,
-    })
-  )
-
-  const responseText = completion.choices[0]?.message?.content
-  if (!responseText) {
-    log.error({ post_id: postId }, 'empty summary response')
-    return
-  }
-
   let summaryJson: PostSummaryJson
   try {
-    summaryJson = JSON.parse(stripCodeFences(responseText))
-  } catch {
-    log.error(
-      { post_id: postId, response_length: responseText.length },
-      'failed to parse summary json'
-    )
+    summaryJson = await structuredChat({
+      model,
+      systemPrompts: [systemPrompt],
+      messages: [{ role: 'user', content: input }],
+      schema: PostSummarySchema,
+      maxTokens: 1000,
+    })
+  } catch (err) {
+    if (!isStructuredOutputError(err)) throw err
+    log.error({ post_id: postId, err }, 'failed to parse summary json')
     return
-  }
-
-  // Validate shape
-  if (typeof summaryJson.summary !== 'string') {
-    log.error({ post_id: postId }, 'invalid summary shape')
-    return
-  }
-
-  // Coerce arrays
-  if (!Array.isArray(summaryJson.keyQuotes)) {
-    summaryJson.keyQuotes = []
-  }
-  if (!Array.isArray(summaryJson.nextSteps)) {
-    summaryJson.nextSteps = []
   }
 
   await db
@@ -172,18 +198,16 @@ export async function generateAndSavePostSummary(postId: PostId): Promise<void> 
       summaryJson,
       summaryModel: model,
       summaryUpdatedAt: new Date(),
-      summaryCommentCount: postComments.length,
+      summaryCommentCount: commentRows.length,
     })
     .where(eq(posts.id, postId))
 
-  log.info({ post_id: postId, comment_count: postComments.length }, 'post summary generated')
+  log.info({ post_id: postId, comment_count: commentRows.length }, 'post summary generated')
 }
 
 const SWEEP_BATCH_SIZE = 50
 const SWEEP_BATCH_DELAY_MS = 500
 const SWEEP_ABORT_AFTER_EMPTY_BATCHES = 2
-
-let _sweepInProgress = false
 
 /**
  * Refresh stale summaries.
@@ -191,30 +215,41 @@ let _sweepInProgress = false
  * Finds all posts where the summary is missing or the live comment count has
  * changed, and processes them in batches until none remain. See #180 for why
  * the sweep needs an attempted-set, circuit breaker, and reentrancy guard.
+ *
+ * The reentrancy guard is keyed by workspace (`withWorkspaceSweepReentrancyGuard`):
+ * a process-wide boolean would let whichever workspace this fleet pass reached
+ * first suppress every other workspace's sweep for as long as it runs.
  */
 export async function refreshStaleSummaries(): Promise<void> {
   // Fast-path skip when AI is off OR the summary model is unset/disabled —
   // otherwise the sweep would query a batch and per-post no-op until the
   // circuit breaker trips.
-  if (!getOpenAI() || !getChatModel('summary')) return
-  if (_sweepInProgress) return
-  _sweepInProgress = true
-  try {
-    await _doSweep()
-  } finally {
-    _sweepInProgress = false
+  if (!isAiClientConfigured(config.openaiApiKey, config.openaiBaseUrl) || !getChatModel('summary'))
+    return
+  // Same gate `generateAndSavePostSummary` applies per post, asked once up front.
+  // Without it a workspace on a plan without AI insights queried a batch of stale
+  // posts every sweep and failed each one with TIER_LIMIT_EXCEEDED, for ever.
+  const { hasEntitlement } = await import('@/lib/server/domains/settings/cloud/entitlements')
+  if (!(await hasEntitlement('aiInsights'))) {
+    log.debug('summary sweep skipped: ai insights not entitled')
+    return
   }
+  if (!(await aiBudgetAvailable())) {
+    log.debug('summary sweep skipped: ai budget unavailable')
+    return
+  }
+  await withWorkspaceSweepReentrancyGuard('summary_sweep', _doSweep)
 }
 
 async function _doSweep(): Promise<void> {
   const liveCommentCountSq = db
     .select({
-      postId: comments.postId,
+      postId: postComments.postId,
       count: sql<number>`count(*)::int`.as('live_count'),
     })
-    .from(comments)
-    .where(isNull(comments.deletedAt))
-    .groupBy(comments.postId)
+    .from(postComments)
+    .where(isNull(postComments.deletedAt))
+    .groupBy(postComments.postId)
     .as('live_cc')
 
   // Failed rows stay stale (summaryJson NULL); without skipping them we'd
@@ -225,6 +260,7 @@ async function _doSweep(): Promise<void> {
   let totalProcessed = 0
   let totalFailed = 0
   let consecutiveEmptyBatches = 0
+  let stoppedByBudget = false
 
   while (true) {
     const stalePosts = await db
@@ -234,6 +270,8 @@ async function _doSweep(): Promise<void> {
       .where(
         and(
           isNull(posts.deletedAt),
+          // A test customer's idea spends no AI tokens.
+          notTestPrincipal(posts.principalId),
           or(
             isNull(posts.summaryJson),
             ne(posts.summaryCommentCount, sql`coalesce(${liveCommentCountSq.count}, 0)`)
@@ -258,10 +296,21 @@ async function _doSweep(): Promise<void> {
         totalProcessed++
         batchSucceeded++
       } catch (err) {
+        // The budget ran out mid-run: every remaining post would be refused
+        // the same way, so stop instead of logging an error per post.
+        if (err instanceof TierLimitError) {
+          log.info(
+            { processed: totalProcessed, limit: err.limit },
+            'summary sweep stopped: ai budget exhausted'
+          )
+          stoppedByBudget = true
+          break
+        }
         totalFailed++
         log.error({ post_id: id, err }, 'failed to refresh post summary')
       }
     }
+    if (stoppedByBudget) break
 
     // Two consecutive zero-success batches almost always means a systemic
     // problem (bad model id, revoked key, upstream down). One zero-success

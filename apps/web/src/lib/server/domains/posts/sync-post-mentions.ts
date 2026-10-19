@@ -7,22 +7,24 @@
  *
  *  - Validate proposed targets server-side (drop anonymous/service/deleted).
  *  - Insert rows for newly-mentioned eligible principals.
- *  - Dispatch post.mentioned for each (skipping self-mentions).
+ *  - Dispatch post.mentioned for each, self-mentions included; the notification
+ *    target is what skips telling someone about their own mention.
  *  - Delete rows for principals no longer mentioned in the document.
  *  - Skip dispatch for principals already-notified (idempotent re-edit).
  *  - After dispatch, mark notifiedAt = now() so future edits don't re-fire.
  */
 
-// Per eslint.config.js — app files must import schema via @/lib/server/db,
+// Per .oxlintrc.json — app files must import schema via @/lib/server/db,
 // NOT directly from @quackback/db.
 import { db, postMentions, principal, eq, and, inArray } from '@/lib/server/db'
 import { dispatchPostMentioned, type EventActor } from '../../events/dispatch'
-import type { PostId, PrincipalId } from '@quackback/ids'
+import type { BoardId, PostId, PrincipalId } from '@quackback/ids'
 
 export interface SyncPostMentionsInput {
   postId: PostId
   postTitle: string
   postUrl: string
+  boardId?: BoardId
   mentionedIds: Set<PrincipalId>
   /** Per-principal excerpt (paragraph text containing the mention) for email body. */
   excerptByPrincipalId: Map<PrincipalId, string>
@@ -30,7 +32,7 @@ export interface SyncPostMentionsInput {
 }
 
 export async function syncPostMentions(input: SyncPostMentionsInput): Promise<void> {
-  const { postId, postTitle, postUrl, mentionedIds, actor } = input
+  const { postId, postTitle, postUrl, boardId, mentionedIds, actor } = input
   const actorPrincipalId = actor.principalId as PrincipalId | undefined
 
   // Server-side eligibility validation (defense against tampered clients).
@@ -86,18 +88,11 @@ export async function syncPostMentions(input: SyncPostMentionsInput): Promise<vo
   }
 
   for (const { principalId } of inserted) {
-    if (actorPrincipalId !== undefined && principalId === actorPrincipalId) {
-      // Self-mention: mark notified, skip dispatch.
-      await db
-        .update(postMentions)
-        .set({ notifiedAt: new Date() })
-        .where(and(eq(postMentions.postId, postId), eq(postMentions.principalId, principalId)))
-      continue
-    }
     await dispatchPostMentioned(actor, {
       postId,
       postTitle,
       postUrl,
+      boardId,
       mentionedPrincipalId: principalId,
       mentioningPrincipalId: actorPrincipalId as PrincipalId,
       excerpt: input.excerptByPrincipalId.get(principalId) ?? '',

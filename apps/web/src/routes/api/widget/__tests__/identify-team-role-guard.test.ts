@@ -1,16 +1,14 @@
 /**
- * Team-role guard on POST /api/widget/identify.
+ * POST /api/widget/identify — verified identify for any matching account,
+ * including teammates, plus the GH #300 / A6 pins.
  *
- * Background: the route mints a normal Better Auth session token and returns
- * it as a Bearer. The `bearer()` plugin is registered globally, so that token
- * satisfies `auth.api.getSession()` everywhere — including the admin-only
- * `requireAuth({ roles: ['admin'] })` path. Without this guard, "knowing an
- * admin's email" in unverified mode escalates to full admin takeover.
- *
- * The guard refuses to mint sessions for emails whose principal is admin or
- * member. Customer-tier collisions (role='user') remain allowed — that's the
- * documented unverified trust model. The verified (ssoToken) path is exempt:
- * HMAC vouches for the claim.
+ * Widget sessions are audience-scoped (`scope=widget`) and cannot satisfy
+ * team/permission gates, so a signed ssoToken that resolves to an admin or
+ * member mints a customer widget session instead of 403ing. The stored
+ * teammate role is left alone; dashboard profile fields are not overwritten
+ * from the host-app JWT. Also covers: an id+email body must never mint a
+ * session regardless of whose email it names (GH issue #300), and the
+ * atomic (SQL, not JS-merge) metadata write.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -18,13 +16,18 @@ const mockUserFindFirst = vi.fn()
 const mockPrincipalFindFirst = vi.fn()
 const mockSessionFindFirst = vi.fn()
 const mockInsert = vi.fn()
+const mockInsertValues = vi.fn()
 const mockUpdate = vi.fn()
+const mockUpdateSet = vi.fn()
+const mockVerifyJWT = vi.fn()
 
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: vi.fn(() => (opts: unknown) => ({ options: opts })),
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       user: { findFirst: (...args: unknown[]) => mockUserFindFirst(...args) },
@@ -35,22 +38,27 @@ vi.mock('@/lib/server/db', () => ({
     insert: (...args: unknown[]) => {
       mockInsert(...args)
       return {
-        values: () => ({
-          returning: async () => [{ id: 'newly_inserted' }],
-          onConflictDoUpdate: async () => undefined,
-        }),
+        values: (v: unknown) => {
+          mockInsertValues(v)
+          const chain = {
+            returning: async () => [{ id: 'newly_inserted' }],
+            onConflictDoUpdate: async () => undefined,
+            onConflictDoNothing: () => chain,
+          }
+          return chain
+        },
       }
     },
     update: (...args: unknown[]) => {
       mockUpdate(...args)
-      return { set: () => ({ where: async () => undefined }) }
+      return {
+        set: (s: unknown) => {
+          mockUpdateSet(s)
+          return { where: async () => undefined }
+        },
+      }
     },
   },
-  user: {},
-  session: {},
-  principal: {},
-  segments: {},
-  widgetIdentifiedSession: { sessionId: 'session_id' },
   eq: vi.fn(),
   and: vi.fn(),
   gt: vi.fn(),
@@ -76,12 +84,16 @@ vi.mock('@/lib/server/auth/identify-merge', () => ({
 }))
 
 vi.mock('@/lib/server/widget/identity-token', () => ({
-  verifyHS256JWT: vi.fn(() => ({ sub: 'sso-user', email: 'sso@acme.com', name: 'SSO User' })),
+  verifyHS256JWT: (...args: unknown[]) => mockVerifyJWT(...args),
+}))
+
+vi.mock('@/lib/server/auth/country-capture', () => ({
+  captureCountryFromHeaders: () => 'US',
 }))
 
 vi.mock('@/lib/server/domains/users/user.attributes', () => ({
   validateAndCoerceAttributes: vi.fn(async () => ({ valid: {}, removals: [], errors: [] })),
-  mergeMetadata: vi.fn(() => null),
+  EXTERNAL_ID_KEY: '_externalUserId',
 }))
 
 vi.mock('@/lib/server/domains/segments/segment-membership.service', () => ({
@@ -120,11 +132,14 @@ beforeEach(() => {
   mockPrincipalFindFirst.mockReset()
   mockSessionFindFirst.mockResolvedValue(null)
   mockInsert.mockReset()
+  mockInsertValues.mockReset()
   mockUpdate.mockReset()
+  mockUpdateSet.mockReset()
+  mockVerifyJWT.mockReturnValue({ sub: 'sso-user', email: 'sso@acme.com', name: 'SSO User' })
 })
 
-describe('POST /api/widget/identify — team-role guard (unverified path)', () => {
-  it('refuses with 403 IDENTITY_LOCKED when the email belongs to an admin', async () => {
+describe('POST /api/widget/identify — rejects any body without a signed ssoToken', () => {
+  it('rejects an id+email body naming an admin email and mints nothing', async () => {
     mockUserFindFirst.mockResolvedValue({
       id: 'user_admin',
       email: 'admin@acme.com',
@@ -137,79 +152,216 @@ describe('POST /api/widget/identify — team-role guard (unverified path)', () =
 
     const res = await postIdentify({ id: 'attacker-supplied', email: 'admin@acme.com' })
 
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(400)
     const body = (await res.json()) as { error?: { code?: string } }
-    expect(body.error?.code).toBe('IDENTITY_LOCKED')
-    // No session should be minted on the rejection path.
+    expect(body.error?.code).toBe('VALIDATION_ERROR')
+    // No session (or any row) may be created on the rejection path.
     expect(mockInsert).not.toHaveBeenCalled()
     expect(mockUpdate).not.toHaveBeenCalled()
+    // The rejection happens at the schema boundary, before any user lookup.
+    expect(mockUserFindFirst).not.toHaveBeenCalled()
   })
 
-  it('refuses with 403 IDENTITY_LOCKED when the email belongs to a member', async () => {
-    mockUserFindFirst.mockResolvedValue({
-      id: 'user_member',
-      email: 'member@acme.com',
-      name: 'Member',
-      image: null,
-      imageKey: null,
-      metadata: null,
-    })
-    mockPrincipalFindFirst.mockResolvedValue({ role: 'member' })
-
+  it('rejects an id+email body naming a member email', async () => {
     const res = await postIdentify({ id: 'attacker-supplied', email: 'member@acme.com' })
-
-    expect(res.status).toBe(403)
-    const body = (await res.json()) as { error?: { code?: string } }
-    expect(body.error?.code).toBe('IDENTITY_LOCKED')
+    expect(res.status).toBe(400)
+    expect(mockInsert).not.toHaveBeenCalled()
   })
 
-  it('allows the unverified path when the email belongs to a role=user principal', async () => {
-    // Customer-tier collision: documented trust model accepts this.
+  it('rejects an id+email body even for a plain customer email', async () => {
+    // Unverified identify is gone entirely — not just team-guarded.
+    const res = await postIdentify({ id: 'foo', email: 'customer@acme.com' })
+    expect(res.status).toBe(400)
+    expect(mockInsert).not.toHaveBeenCalled()
+  })
+
+  it('rejects a first-time email with no existing user', async () => {
+    mockUserFindFirst.mockResolvedValue(null)
+    const res = await postIdentify({ id: 'new-id', email: 'first-time@acme.com' })
+    expect(res.status).toBe(400)
+    expect(mockInsert).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /api/widget/identify — teammate identities mint a widget session', () => {
+  it('mints a widget session when the ssoToken resolves to an admin principal', async () => {
     mockUserFindFirst.mockResolvedValue({
-      id: 'user_customer',
-      email: 'customer@acme.com',
-      name: 'Customer',
+      id: 'user_admin_sso',
+      email: 'sso@acme.com',
+      name: 'Dashboard Admin Name',
       image: null,
       imageKey: null,
       metadata: null,
+      externalId: 'sso-user',
     })
-    mockPrincipalFindFirst.mockResolvedValue({ role: 'user' })
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_admin_sso',
+      role: 'admin',
+      type: 'user',
+    })
 
-    const res = await postIdentify({ id: 'foo', email: 'customer@acme.com' })
+    const res = await postIdentify({ ssoToken: 'jwt.token.here' })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { sessionToken?: string; canPortalHandoff?: boolean }
+    expect(body.sessionToken).toBeTruthy()
+    expect(body.canPortalHandoff).toBe(false)
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ scope: 'widget' }))
+  })
+
+  it('mints a widget session when the ssoToken resolves to a member principal', async () => {
+    mockUserFindFirst.mockResolvedValue({
+      id: 'user_member_sso',
+      email: 'sso@acme.com',
+      name: 'Dashboard Member Name',
+      image: null,
+      imageKey: null,
+      metadata: null,
+      externalId: 'sso-user',
+    })
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_member_sso',
+      role: 'member',
+      type: 'user',
+    })
+
+    const res = await postIdentify({ ssoToken: 'jwt.token.here' })
+
+    expect(res.status).toBe(200)
+    expect(mockInsert).toHaveBeenCalled()
+  })
+
+  it('does not reuse a portal-scoped session for a teammate identify', async () => {
+    mockUserFindFirst.mockResolvedValue({
+      id: 'user_admin_sso',
+      email: 'sso@acme.com',
+      name: 'Dashboard Admin Name',
+      image: null,
+      imageKey: null,
+      metadata: null,
+      externalId: 'sso-user',
+    })
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_admin_sso',
+      role: 'admin',
+      type: 'user',
+    })
+    mockSessionFindFirst.mockResolvedValue({
+      id: 'sess_portal',
+      token: 'portal-token',
+      scope: 'portal',
+    })
+
+    const res = await postIdentify({ ssoToken: 'jwt.token.here' })
 
     expect(res.status).toBe(200)
     const body = (await res.json()) as { sessionToken?: string }
-    expect(body.sessionToken).toBeTypeOf('string')
+    expect(body.sessionToken).not.toBe('portal-token')
+    expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ scope: 'widget' }))
   })
 
-  it('allows the unverified path when no user exists for the email yet', async () => {
-    // No collision — first-time identify creates a fresh user + principal.
+  it('does not overwrite a teammate dashboard profile from the host-app JWT', async () => {
+    mockVerifyJWT.mockReturnValue({
+      sub: 'sso-user',
+      email: 'sso@acme.com',
+      name: 'Host App Name',
+      avatarUrl: 'https://host.example/avatar.png',
+    })
+    mockUserFindFirst.mockResolvedValue({
+      id: 'user_admin_sso',
+      email: 'sso@acme.com',
+      name: 'Dashboard Admin Name',
+      image: 'https://dashboard.example/avatar.png',
+      imageKey: null,
+      metadata: '{"plan":"internal"}',
+      country: 'GB',
+      externalId: 'dashboard-subject',
+    })
+    mockPrincipalFindFirst.mockResolvedValue({
+      id: 'principal_admin_sso',
+      role: 'admin',
+      type: 'user',
+    })
+
+    const res = await postIdentify({ ssoToken: 'jwt.token.here' })
+
+    expect(res.status).toBe(200)
+    const setArgs = mockUpdateSet.mock.calls.map((c) => c[0] as Record<string, unknown>)
+    expect(setArgs.some((s) => 'name' in s)).toBe(false)
+    expect(setArgs.some((s) => 'image' in s)).toBe(false)
+    expect(setArgs.some((s) => 'metadata' in s)).toBe(false)
+    expect(setArgs.some((s) => 'email' in s)).toBe(false)
+    expect(setArgs.some((s) => 'country' in s)).toBe(false)
+    expect(setArgs.some((s) => 'externalId' in s)).toBe(false)
+  })
+})
+
+describe('POST /api/widget/identify — the verified (ssoToken) path for a portal identity', () => {
+  it('succeeds and mints a session when the resolved principal is a plain portal user', async () => {
+    mockUserFindFirst.mockResolvedValue({
+      id: 'user_portal_sso',
+      email: 'sso@acme.com',
+      name: 'Portal User',
+      image: null,
+      imageKey: null,
+      metadata: null,
+    })
+    mockPrincipalFindFirst.mockResolvedValue({ id: 'principal_portal_sso', role: 'user' })
+
+    const res = await postIdentify({ ssoToken: 'jwt.token.here' })
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { sessionToken?: string; canPortalHandoff?: boolean }
+    expect(body.sessionToken).toBeTruthy()
+    expect(body.canPortalHandoff).toBe(true)
+  })
+
+  it('succeeds for a brand-new identity (no existing user, no existing principal)', async () => {
     mockUserFindFirst.mockResolvedValue(null)
-    // After the user insert, the principal lookup also returns null and is created.
     mockPrincipalFindFirst.mockResolvedValue(null)
 
-    const res = await postIdentify({ id: 'new-id', email: 'first-time@acme.com' })
+    const res = await postIdentify({ ssoToken: 'jwt.token.here' })
 
     expect(res.status).toBe(200)
   })
 })
 
-describe('POST /api/widget/identify — team-role guard does NOT apply to verified path', () => {
-  it('allows ssoToken identify even when the email backs an admin', async () => {
-    // verifyHS256JWT mock above returns sso@acme.com; we map an admin to it.
-    mockUserFindFirst.mockResolvedValue({
-      id: 'user_admin_sso',
+describe('POST /api/widget/identify — atomic metadata write', () => {
+  it('merges custom attributes via an atomic SQL expression, not a JS read/merge/write', async () => {
+    mockVerifyJWT.mockReturnValue({
+      sub: 'sso-user',
       email: 'sso@acme.com',
-      name: 'SSO Admin',
+      name: 'SSO User',
+      plan: 'enterprise',
+    })
+    const { validateAndCoerceAttributes } =
+      await import('@/lib/server/domains/users/user.attributes')
+    vi.mocked(validateAndCoerceAttributes).mockResolvedValueOnce({
+      valid: { plan: 'enterprise' },
+      removals: [],
+      errors: [],
+    })
+    mockUserFindFirst.mockResolvedValue({
+      id: 'user_attrs_sso',
+      email: 'sso@acme.com',
+      name: 'SSO User',
       image: null,
       imageKey: null,
-      metadata: null,
+      metadata: '{"existing":"value"}',
     })
-    mockPrincipalFindFirst.mockResolvedValue({ role: 'admin' })
+    mockPrincipalFindFirst.mockResolvedValue({ id: 'principal_attrs_sso', role: 'user' })
 
     const res = await postIdentify({ ssoToken: 'jwt.token.here' })
 
-    // HMAC vouches for this claim — the guard must NOT engage.
     expect(res.status).toBe(200)
+    expect(mockUpdateSet).toHaveBeenCalled()
+    const setArgs = mockUpdateSet.mock.calls.map((c) => c[0] as Record<string, unknown>)
+    const updateWithMetadata = setArgs.find((s) => 'metadata' in s)
+    expect(updateWithMetadata).toBeDefined()
+    // The mocked `sql` tag returns only the literal text preceding the first
+    // interpolation — a plain JSON string (what a JS mergeMetadata call would
+    // produce) would never match this, so this pins the write to the atomic
+    // coalesce/jsonb SQL expression instead of a read-then-write.
+    expect(updateWithMetadata?.metadata).toBe('((coalesce(nullif(')
   })
 })

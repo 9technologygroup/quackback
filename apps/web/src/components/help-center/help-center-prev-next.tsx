@@ -1,25 +1,34 @@
 import { Link } from '@tanstack/react-router'
+import { FormattedMessage } from 'react-intl'
+import { DEFAULT_LOCALE } from '@/lib/shared/i18n'
+import { hcArticlePath } from '@/lib/shared/help-center-url'
 
 interface ArticleLink {
+  id: string
+  urlId: number
   slug: string
   title: string
 }
 
 interface HelpCenterPrevNextProps {
-  categorySlug: string
   prev: ArticleLink | null
   next: ArticleLink | null
+  locale?: string
 }
 
-export function HelpCenterPrevNext({ categorySlug, prev, next }: HelpCenterPrevNextProps) {
+export function HelpCenterPrevNext({ prev, next, locale }: HelpCenterPrevNextProps) {
   if (!prev && !next) return null
+  const loc = locale ?? DEFAULT_LOCALE
+
+  const hrefFor = (article: ArticleLink) =>
+    hcArticlePath({ locale: loc, urlId: article.urlId, slug: article.slug }) as '/hc'
 
   return (
     <div className="mt-10 pt-8 border-t border-border/40 flex items-start justify-between gap-4">
       {prev ? (
-        <Link to={`/hc/articles/${categorySlug}/${prev.slug}` as '/hc'} className="group text-left">
+        <Link to={hrefFor(prev)} className="group text-left">
           <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-            &larr; Previous
+            &larr; <FormattedMessage id="portal.hc.prevNext.previous" defaultMessage="Previous" />
           </span>
           <p className="text-sm font-medium text-foreground group-hover:text-primary transition-colors mt-0.5">
             {prev.title}
@@ -29,12 +38,9 @@ export function HelpCenterPrevNext({ categorySlug, prev, next }: HelpCenterPrevN
         <div />
       )}
       {next ? (
-        <Link
-          to={`/hc/articles/${categorySlug}/${next.slug}` as '/hc'}
-          className="group text-right"
-        >
+        <Link to={hrefFor(next)} className="group text-right">
           <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-            Next &rarr;
+            <FormattedMessage id="portal.hc.prevNext.next" defaultMessage="Next" /> &rarr;
           </span>
           <p className="text-sm font-medium text-foreground group-hover:text-primary transition-colors mt-0.5">
             {next.title}

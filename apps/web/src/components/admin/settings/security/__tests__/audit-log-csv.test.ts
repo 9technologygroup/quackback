@@ -30,6 +30,12 @@ function row(overrides: Partial<AuditEventRow> = {}): AuditEventRow {
     requestId: null,
     actorType: null,
     authMethod: null,
+    channel: null,
+    credentialKind: null,
+    credentialId: null,
+    clientName: null,
+    onBehalfOfPrincipalId: null,
+    onBehalfOfName: null,
     ...overrides,
   }
 }
@@ -56,5 +62,62 @@ describe('rowsToCsv — audit-log observability columns', () => {
     // Should not contain the literal string "null" — empty CSV cell instead.
     expect(csv).not.toMatch(/,null,/)
     expect(csv).not.toMatch(/,null$/)
+  })
+})
+
+describe('rowsToCsv: attribution columns', () => {
+  it('exports how each change arrived, which credential made it and for whom', () => {
+    const csv = rowsToCsv([
+      row({
+        eventType: 'mcp.tool_call',
+        channel: 'mcp',
+        credentialKind: 'oauth_client',
+        credentialId: 'client_desktop',
+        clientName: 'Claude Desktop',
+        onBehalfOfPrincipalId: 'principal_01h455vb4pex5vsknk084sn02r',
+        onBehalfOfName: 'James Morton',
+      }),
+    ])
+    const [header, dataRow] = csv.split('\n')
+    const columns = header.split(',')
+    const cells = dataRow.split(',')
+    const cell = (name: string) => cells[columns.indexOf(name)]
+    expect(cell('channel')).toBe('mcp')
+    expect(cell('credential_kind')).toBe('oauth_client')
+    expect(cell('credential_id')).toBe('client_desktop')
+    expect(cell('client_name')).toBe('Claude Desktop')
+    expect(cell('on_behalf_of_principal_id')).toBe('principal_01h455vb4pex5vsknk084sn02r')
+    expect(cell('on_behalf_of')).toBe('James Morton')
+  })
+})
+
+describe('rowsToCsv: spreadsheet formula injection', () => {
+  it('neutralises any cell a spreadsheet would read as a formula, in every column', () => {
+    const csv = rowsToCsv([
+      row({
+        actorEmail: '@SUM(1+1)',
+        targetType: '+cmd',
+        targetId: '-2+3',
+        clientName: '=HYPERLINK("https://evil.example","Claude")',
+        credentialId: '\tclient',
+        requestId: '\rreq',
+      }),
+    ])
+    const [header, dataRow] = csv.split('\n')
+    const columns = header.split(',')
+    const cells = dataRow.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/)
+    const cell = (name: string) => cells[columns.indexOf(name)]
+    expect(cell('actor_email')).toBe("'@SUM(1+1)")
+    expect(cell('target_type')).toBe("'+cmd")
+    expect(cell('target_id')).toBe("'-2+3")
+    expect(cell('client_name')).toBe('"\'=HYPERLINK(""https://evil.example"",""Claude"")"')
+    expect(cell('credential_id')).toBe("'\tclient")
+    expect(cell('request_id')).toBe('"\'\rreq"')
+  })
+
+  it('leaves ordinary values alone', () => {
+    const csv = rowsToCsv([row({ clientName: 'Claude Desktop', targetId: 'post_01h455' })])
+    expect(csv).toContain(',Claude Desktop,')
+    expect(csv).toContain(',post_01h455,')
   })
 })

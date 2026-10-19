@@ -36,7 +36,7 @@ export interface WorkingMethodInputs {
   providers: ReadonlyArray<{ id: string; enabled: boolean; configured: boolean }>
   /** The unified workspace sign-in config — `authConfig.oauth`. */
   oauth: Record<string, boolean | undefined>
-  /** Whether SMTP/Resend delivery is wired (gates magic-link usability). */
+  /** Whether an outbound transport is wired (gates magic-link usability). */
   emailConfigured: boolean
   /** Social provider ids to consider (e.g. google, github). */
   socialIds: readonly string[]
@@ -67,6 +67,27 @@ export function hasAnyWorkingSignInMethod(snap: WorkingMethodInputs): boolean {
     if (isSignInMethodEnabled(snap.oauth, id) && snap.configuredSocialIds.has(id)) return true
   }
   return false
+}
+
+/**
+ * Pure decision: is the workspace reachable ONLY through an identity provider?
+ * True when at least one IdP works and no password, magic link, or social does.
+ *
+ * This is the second route to SSO-only, and it used to be the unguarded one.
+ * Per-domain enforcement demands a break-glass recovery code before it will
+ * turn on, but turning off password + magic link on the sign-in methods tab
+ * reaches the same end state and was gated only by "at least one method
+ * survives". A provider whose email addresses are placeholders can never pass
+ * domain verification, so this path is the ONLY way such a workspace becomes
+ * SSO-only — which made it exactly the wrong one to leave unguarded.
+ */
+export function isSsoOnlySignIn(snap: WorkingMethodInputs): boolean {
+  const anyProviderWorks = snap.tierEnabled && snap.providers.some((p) => p.enabled && p.configured)
+  if (!anyProviderWorks) return false
+
+  // Take the providers out of the picture — matching how isOnlyWorkingSignInMethod
+  // below drops just its target — and ask whether anything else is still a way in.
+  return !hasAnyWorkingSignInMethod({ ...snap, providers: [] })
 }
 
 /**
@@ -131,10 +152,10 @@ export async function checkIsOnlyWorkingSignInMethod(
    *  (e.g. the upsert path), avoiding a second `listIdentityProviders()`. */
   knownProviders?: IdentityProvider[]
 ): Promise<boolean> {
-  const { getTenantSettings } = await import('@/lib/server/domains/settings/settings.service')
-  const tenant = await getTenantSettings()
+  const { getWorkspaceSettings } = await import('@/lib/server/domains/settings/settings.service')
+  const workspace = await getWorkspaceSettings()
   const inputs = await gatherWorkingMethodInputs(
-    (tenant?.authConfig?.oauth ?? {}) as Record<string, boolean | undefined>,
+    (workspace?.authConfig?.oauth ?? {}) as Record<string, boolean | undefined>,
     knownProviders
   )
   return isOnlyWorkingSignInMethod({ ...inputs, targetIdpId })
@@ -151,4 +172,38 @@ export async function wouldLeaveNoWorkingSignInMethod(
 ): Promise<boolean> {
   const inputs = await gatherWorkingMethodInputs(proposedOauth)
   return !hasAnyWorkingSignInMethod(inputs)
+}
+
+/**
+ * Both sign-in-method verdicts for a proposed config, from ONE snapshot.
+ *
+ * The auth-config save needs both, and `gatherWorkingMethodInputs` runs an
+ * uncached `listIdentityProviders()` — two full-table reads — so asking the two
+ * questions separately doubled that on the normal save path for no reason.
+ */
+export async function evaluateProposedSignInMethods(
+  proposedOauth: Record<string, boolean | undefined>
+): Promise<{ leavesNoMethod: boolean; leavesSsoOnly: boolean }> {
+  const inputs = await gatherWorkingMethodInputs(proposedOauth)
+  return {
+    leavesNoMethod: !hasAnyWorkingSignInMethod(inputs),
+    leavesSsoOnly: isSsoOnlySignIn(inputs),
+  }
+}
+
+/**
+ * THE break-glass precondition for reaching an SSO-only workspace, shared by
+ * both routes that can get there: per-domain enforcement and the sign-in
+ * methods save. Throws when no active recovery code exists.
+ *
+ * Deliberately one function rather than a copied check. Two implementations of
+ * one rule in two code paths is the failure this branch exists to remove, and
+ * a duplicate here would drift the same way.
+ */
+export async function assertBreakGlassAvailable(): Promise<void> {
+  const { hasActiveRecoveryCodes } = await import('@/lib/server/auth/recovery-codes-status')
+  if (!(await hasActiveRecoveryCodes())) {
+    const { ForbiddenError } = await import('@/lib/shared/errors')
+    throw new ForbiddenError('RECOVERY_CODES_REQUIRED', 'recovery_codes_required')
+  }
 }

@@ -6,28 +6,24 @@
  * segment weighting (e.g., MRR, company size, contract value).
  */
 import { pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
-import { typeIdWithDefault } from '@quackback/ids/drizzle'
+import { generateId } from '@quackback/ids'
+import { typeIdTextColumn } from '@quackback/ids/drizzle'
 
 /** Supported data types for user attributes */
 export type UserAttributeType = 'string' | 'number' | 'boolean' | 'date' | 'currency'
 
 /** Currency code (ISO 4217) for currency-type attributes */
 export type CurrencyCode =
-  | 'USD'
-  | 'EUR'
-  | 'GBP'
-  | 'JPY'
-  | 'CAD'
-  | 'AUD'
-  | 'CHF'
-  | 'CNY'
-  | 'INR'
-  | 'BRL'
+  'USD' | 'EUR' | 'GBP' | 'JPY' | 'CAD' | 'AUD' | 'CHF' | 'CNY' | 'INR' | 'BRL'
 
 export const userAttributeDefinitions = pgTable(
   'user_attribute_definitions',
   {
-    id: typeIdWithDefault('user_attr')('id').primaryKey(),
+    // text, not uuid — the original migration stored the UUID form as text
+    // (see typeIdTextColumn). A later uuid migration can switch to typeIdWithDefault.
+    id: typeIdTextColumn('user_attr')('id')
+      .primaryKey()
+      .$defaultFn(() => generateId('user_attr')),
     /** The JSON key inside user.metadata, e.g. "mrr", "company_size" */
     key: text('key').notNull(),
     /** Human-readable label shown in the UI, e.g. "Monthly Revenue" */

@@ -2,20 +2,29 @@
  * Pure help center sitemap URL builders.
  * Builds SitemapUrl[] from categories and articles for the help center sitemap.
  */
-import type { SitemapUrl } from '@/lib/server/sitemap'
+import type { SitemapUrl, SitemapAlternate } from '@/lib/server/sitemap'
+import { hcArticlePath, hcCollectionPath, localizedHcPath } from './help-center-url'
+import { DEFAULT_LOCALE } from './i18n'
 
 export interface SitemapCategory {
+  id: string
+  urlId: number
   slug: string
 }
 
 export interface SitemapArticle {
+  id: string
+  urlId: number
   slug: string
   updatedAt: string
   category: { slug: string }
 }
 
 /**
- * Build sitemap URLs for the help center.
+ * Build sitemap URLs for the help center. `baseUrl` is the site origin (no
+ * path) -- every canonical /hc page lives under the `/hc` prefix on both the
+ * default host and the (v1 fallback-shape) custom domain, so every entry
+ * here does too.
  * - Landing page (no lastmod)
  * - Each category page (no lastmod)
  * - Each article page (with lastmod from updatedAt)
@@ -23,24 +32,122 @@ export interface SitemapArticle {
 export function buildHelpCenterSitemapUrls(
   baseUrl: string,
   categories: SitemapCategory[],
-  articles: SitemapArticle[]
+  articles: SitemapArticle[],
+  locale: string = DEFAULT_LOCALE
 ): SitemapUrl[] {
   const urls: SitemapUrl[] = []
 
   // Landing page
-  urls.push({ loc: baseUrl })
+  urls.push({ loc: `${baseUrl}/hc` })
 
-  // Category pages
+  // Collection pages
   for (const cat of categories) {
-    urls.push({ loc: `${baseUrl}/categories/${cat.slug}` })
+    urls.push({
+      loc: `${baseUrl}${hcCollectionPath({ locale, urlId: cat.urlId, slug: cat.slug })}`,
+    })
   }
 
   // Article pages
   for (const article of articles) {
     urls.push({
-      loc: `${baseUrl}/articles/${article.category.slug}/${article.slug}`,
+      loc: `${baseUrl}${hcArticlePath({ locale, urlId: article.urlId, slug: article.slug })}`,
       lastmod: article.updatedAt.split('T')[0],
     })
+  }
+
+  return urls
+}
+
+// ============================================================================
+// Multi-locale sitemap (domains/languages §2)
+// ============================================================================
+
+export interface LocaleSitemapCategory {
+  id: string
+  urlId: number
+  slug: string
+}
+
+export interface LocaleSitemapArticle {
+  id: string
+  urlId: number
+  slug: string
+  updatedAt: string
+  category: { slug: string }
+}
+
+export interface LocaleSitemapEntry {
+  locale: string
+  categories: LocaleSitemapCategory[]
+  articles: LocaleSitemapArticle[]
+}
+
+function buildAlternates(
+  pathsByLocale: Map<string, string>,
+  defaultLocale: string
+): SitemapAlternate[] {
+  const alternates: SitemapAlternate[] = [...pathsByLocale.entries()].map(([hreflang, href]) => ({
+    hreflang,
+    href,
+  }))
+  const defaultHref = pathsByLocale.get(defaultLocale)
+  if (defaultHref) alternates.push({ hreflang: 'x-default', href: defaultHref })
+  return alternates
+}
+
+/**
+ * Build sitemap URLs across every enabled help-center locale, with
+ * cross-locale hreflang alternates for any category/article visible in more
+ * than one locale (domains/languages §2). `perLocale` must include an entry
+ * for the default locale (its gating is the existing published/public
+ * predicate, not translation-based).
+ */
+export function buildHelpCenterSitemapUrlsMultiLocale(
+  baseUrl: string,
+  defaultLocale: string,
+  perLocale: LocaleSitemapEntry[]
+): SitemapUrl[] {
+  const urls: SitemapUrl[] = []
+
+  const landingByLocale = new Map(
+    perLocale.map(({ locale }) => [locale, `${baseUrl}${localizedHcPath(locale, '/hc')}`])
+  )
+  for (const locale of landingByLocale.keys()) {
+    urls.push({
+      loc: landingByLocale.get(locale)!,
+      alternates: buildAlternates(landingByLocale, defaultLocale),
+    })
+  }
+
+  const categoryPathsById = new Map<string, Map<string, string>>()
+  for (const { locale, categories } of perLocale) {
+    for (const cat of categories) {
+      const path = `${baseUrl}${hcCollectionPath({ locale, urlId: cat.urlId, slug: cat.slug })}`
+      if (!categoryPathsById.has(cat.id)) categoryPathsById.set(cat.id, new Map())
+      categoryPathsById.get(cat.id)!.set(locale, path)
+    }
+  }
+  for (const pathsByLocale of categoryPathsById.values()) {
+    const alternates = buildAlternates(pathsByLocale, defaultLocale)
+    for (const loc of pathsByLocale.values()) {
+      urls.push({ loc, alternates })
+    }
+  }
+
+  const articlesById = new Map<string, Map<string, { path: string; lastmod: string }>>()
+  for (const { locale, articles } of perLocale) {
+    for (const article of articles) {
+      const path = `${baseUrl}${hcArticlePath({ locale, urlId: article.urlId, slug: article.slug })}`
+      if (!articlesById.has(article.id)) articlesById.set(article.id, new Map())
+      articlesById.get(article.id)!.set(locale, { path, lastmod: article.updatedAt.split('T')[0] })
+    }
+  }
+  for (const byLocale of articlesById.values()) {
+    const pathsOnly = new Map([...byLocale].map(([locale, v]) => [locale, v.path]))
+    const alternates = buildAlternates(pathsOnly, defaultLocale)
+    for (const { path, lastmod } of byLocale.values()) {
+      urls.push({ loc: path, lastmod, alternates })
+    }
   }
 
   return urls

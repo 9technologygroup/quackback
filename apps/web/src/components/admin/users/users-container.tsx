@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
+import { useQuery, useInfiniteQuery } from '@tanstack/react-query'
 import { UsersLayout } from '@/components/admin/users/users-layout'
 import { UsersSegmentNav } from '@/components/admin/users/users-segment-nav'
 import { UsersList } from '@/components/admin/users/users-list'
-import { UserDetail } from '@/components/admin/users/user-detail'
 import { InvitationsView } from '@/components/admin/users/invitations-view'
 import { useUsersFilters } from '@/components/admin/users/use-users-filters'
 import { usePortalInvites } from '@/components/admin/users/use-portal-invites'
@@ -16,33 +16,66 @@ import {
 import { useRemovePortalUser } from '@/lib/client/mutations'
 import { useSegments, type SegmentListItem } from '@/lib/client/hooks/use-segments-queries'
 import { useUserAttributes } from '@/lib/client/hooks/use-user-attributes-queries'
+import { useCompanyAttributes } from '@/lib/client/hooks/use-company-attributes-queries'
 import {
   useCreateSegment,
   useUpdateSegment,
   useDeleteSegment,
   useEvaluateSegment,
 } from '@/lib/client/mutations'
-import { SegmentFormDialog } from '@/components/admin/segments/segment-form'
 import type { SegmentFormValues, RuleCondition } from '@/components/admin/segments/segment-form'
 import {
   getAutoColor,
   serializeCondition,
   deserializeCondition,
 } from '@/components/admin/segments/segment-utils'
+import { canReadCompanies, companiesDirectoryQueries } from '@/lib/client/queries/users-page'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
-import type { PortalUserListResultView } from '@/lib/shared/types'
+import { useOpenedOnce } from '@/lib/client/hooks/use-opened-once'
 import type { PrincipalId, SegmentId } from '@quackback/ids'
 import type { SegmentCondition } from '@/lib/shared/db-types'
 
+// The segment rule builder and the new-person form load the first time one of
+// their dialogs opens, not with the page.
+const SegmentFormDialog = lazy(() =>
+  import('@/components/admin/segments/segment-form').then((m) => ({
+    default: m.SegmentFormDialog,
+  }))
+)
+const NewPersonDialog = lazy(() =>
+  import('@/components/admin/users/new-person-dialog').then((m) => ({
+    default: m.NewPersonDialog,
+  }))
+)
+
+// The page opens on the people list. A person's profile (with its composer and
+// channel icons) and the Companies tab load the first time one is shown.
+const UserDetail = lazy(() =>
+  import('@/components/admin/users/user-detail').then((m) => ({ default: m.UserDetail }))
+)
+const CompaniesView = lazy(() =>
+  import('@/components/admin/users/companies-view').then((m) => ({ default: m.CompaniesView }))
+)
+const CompanyDetail = lazy(() =>
+  import('@/components/admin/users/company-detail').then((m) => ({ default: m.CompanyDetail }))
+)
+
 interface UsersContainerProps {
-  initialUsers: PortalUserListResultView
   currentMemberRole: string
 }
 
-export function UsersContainer({ initialUsers, currentMemberRole }: UsersContainerProps) {
+export function UsersContainer({ currentMemberRole }: UsersContainerProps) {
   // URL-based filter state
-  const { filters, setFilters, clearFilters, selectedUserId, setSelectedUserId, hasActiveFilters } =
-    useUsersFilters()
+  const {
+    filters,
+    setFilters,
+    clearFilters,
+    selectedUserId,
+    setSelectedUserId,
+    selectedCompanyId,
+    setSelectedCompanyId,
+    hasActiveFilters,
+  } = useUsersFilters()
 
   // The `?invites=<status>` param flips the entire main pane to the
   // Invitations view. Reading it via the route's typed search keeps
@@ -60,17 +93,17 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
     enabled: currentMemberRole === 'admin',
   })
 
-  // Server state - Users list (with infinite query for pagination)
+  // Server state - Users list (with infinite query for pagination). The route
+  // loader prefetches the default/unfiltered dataset into this same infinite
+  // cache (QC-1: one shared query definition), so the first paint reads warm
+  // data and mutations that invalidate usersKeys reach what the list renders.
   const {
     data: usersData,
     isLoading,
     isFetchingNextPage: isLoadingMore,
     hasNextPage: hasMore,
     fetchNextPage,
-  } = usePortalUsers({
-    filters,
-    initialData: initialUsers,
-  })
+  } = usePortalUsers({ filters })
 
   const users = flattenUsers(usersData)
 
@@ -79,12 +112,35 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
     principalId: selectedUserId as PrincipalId | null,
   })
 
-  // Total user count (always unfiltered, for "All users" label)
+  // Lifecycle view counts (always unfiltered, for the nav labels)
   const { data: totalUserCount } = useTotalUserCount()
+  const { data: totalLeadCount } = useTotalUserCount('leads')
+  const inLeadsMode = filters.lifecycle === 'leads'
+  const inCompaniesMode = filters.lifecycle === 'companies'
+
+  // Companies directory (the Companies lifecycle tab). Fetched only for team
+  // roles — the server fn is gated on company.view, which both presets hold.
+  const companiesEnabled = canReadCompanies(currentMemberRole)
+  const {
+    data: companyPages,
+    isLoading: isLoadingCompanies,
+    isFetchingNextPage: isLoadingMoreCompanies,
+    hasNextPage: hasMoreCompanies,
+    fetchNextPage: fetchMoreCompanies,
+  } = useInfiniteQuery({
+    ...companiesDirectoryQueries.page(filters.search, filters.companyAttrs),
+    enabled: companiesEnabled,
+  })
+  const companies = companyPages?.pages.flatMap((p) => p.items)
+  const { data: companyCount } = useQuery({
+    ...companiesDirectoryQueries.count(),
+    enabled: companiesEnabled,
+  })
 
   // Segments data
   const { data: segments, isLoading: isLoadingSegments } = useSegments()
   const { data: customAttributes } = useUserAttributes()
+  const { data: companyAttributes } = useCompanyAttributes()
 
   // Segment mutations
   const createSegment = useCreateSegment()
@@ -97,7 +153,13 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
 
   // Segment dialog state
   const [createOpen, setCreateOpen] = useState(false)
+  // "New user" (ad-hoc contact) dialog state
+  const [newPersonOpen, setNewPersonOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<SegmentListItem | null>(null)
+  // Each dialog mounts on its first open and stays mounted, so closing it
+  // still animates.
+  const newPersonOpened = useOpenedOnce(newPersonOpen)
+  const segmentFormOpened = useOpenedOnce(createOpen || !!editTarget)
   const [deleteTarget, setDeleteTarget] = useState<SegmentListItem | null>(null)
   const [evaluatingId, setEvaluatingId] = useState<string | null>(null)
 
@@ -119,17 +181,19 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
 
   const handleSelectSegment = (segmentId: string, shiftKey: boolean) => {
     const currentIds = filters.segmentIds ?? []
+    // Segments are populated by identified users, so selecting one always
+    // returns to the users view (leads can't be segment members).
     if (shiftKey) {
       // Shift-click: toggle the segment in/out of multi-selection
       const isSelected = currentIds.includes(segmentId)
       const newIds = isSelected
         ? currentIds.filter((id) => id !== segmentId)
         : [...currentIds, segmentId]
-      setFilters({ segmentIds: newIds.length > 0 ? newIds : undefined })
+      setFilters({ segmentIds: newIds.length > 0 ? newIds : undefined, lifecycle: undefined })
     } else {
       // Normal click: replace selection with just this segment (or deselect if already sole selection)
       const isSoleSelection = currentIds.length === 1 && currentIds[0] === segmentId
-      setFilters({ segmentIds: isSoleSelection ? undefined : [segmentId] })
+      setFilters({ segmentIds: isSoleSelection ? undefined : [segmentId], lifecycle: undefined })
     }
   }
 
@@ -149,7 +213,7 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
           ? {
               match: values.rules.match,
               conditions: values.rules.conditions.map((c) =>
-                serializeCondition(c, customAttributes)
+                serializeCondition(c, customAttributes, companyAttributes)
               ),
             }
           : undefined,
@@ -172,7 +236,7 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
             ? {
                 match: values.rules.match,
                 conditions: values.rules.conditions.map((c) =>
-                  serializeCondition(c, customAttributes)
+                  serializeCondition(c, customAttributes, companyAttributes)
                 ),
               }
             : null
@@ -223,20 +287,51 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
             isEvaluating={evaluatingId}
             inInvitesMode={inInvitesMode}
             invitesPendingCount={invitesPendingCount}
+            inLeadsMode={inLeadsMode}
+            totalLeadCount={totalLeadCount}
+            inCompaniesMode={inCompaniesMode}
+            totalCompanyCount={companyCount}
           />
         }
       >
         {inInvitesMode ? (
           <InvitationsView status={invitesStatus ?? 'pending'} />
+        ) : inCompaniesMode ? (
+          <Suspense fallback={null}>
+            {selectedCompanyId ? (
+              <CompanyDetail
+                companyId={selectedCompanyId}
+                onClose={() => setSelectedCompanyId(null)}
+                canManage={currentMemberRole === 'admin'}
+              />
+            ) : (
+              <CompaniesView
+                companies={companies}
+                isLoading={isLoadingCompanies}
+                hasMore={!!hasMoreCompanies}
+                isLoadingMore={isLoadingMoreCompanies}
+                onLoadMore={() => fetchMoreCompanies()}
+                totalCount={companyCount}
+                search={filters.search}
+                onSearchChange={(value) => setFilters({ search: value })}
+                companyAttrs={filters.companyAttrs}
+                onCompanyAttrsChange={(encoded) => setFilters({ companyAttrs: encoded })}
+                onSelectCompany={setSelectedCompanyId}
+                canManage={currentMemberRole === 'admin'}
+              />
+            )}
+          </Suspense>
         ) : selectedUserId ? (
-          <UserDetail
-            user={selectedUser ?? null}
-            isLoading={isLoadingUser}
-            onClose={() => setSelectedUserId(null)}
-            onRemoveUser={handleRemoveUser}
-            isRemovePending={removePortalUser.isPending}
-            currentMemberRole={currentMemberRole}
-          />
+          <Suspense fallback={null}>
+            <UserDetail
+              user={selectedUser ?? null}
+              isLoading={isLoadingUser}
+              onClose={() => setSelectedUserId(null)}
+              onRemoveUser={handleRemoveUser}
+              isRemovePending={removePortalUser.isPending}
+              currentMemberRole={currentMemberRole}
+            />
+          </Suspense>
         ) : (
           <UsersList
             users={users}
@@ -255,45 +350,64 @@ export function UsersContainer({ initialUsers, currentMemberRole }: UsersContain
             selectedSegmentIds={filters.segmentIds ?? []}
             onSelectSegment={handleSelectSegment}
             onClearSegments={handleClearSegments}
+            onNewPerson={currentMemberRole === 'admin' ? () => setNewPersonOpen(true) : undefined}
+            canManage={currentMemberRole === 'admin'}
           />
         )}
       </UsersLayout>
 
-      {/* Create dialog */}
-      <SegmentFormDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        onSubmit={handleCreateSegment}
-        isPending={createSegment.isPending}
-        customAttributes={customAttributes}
-      />
+      {/* New user (ad-hoc contact) dialog */}
+      {newPersonOpened && (
+        <Suspense fallback={null}>
+          <NewPersonDialog
+            open={newPersonOpen}
+            onOpenChange={setNewPersonOpen}
+            onViewPerson={(principalId) => setSelectedUserId(principalId)}
+          />
+        </Suspense>
+      )}
 
-      {/* Edit dialog */}
-      <SegmentFormDialog
-        open={!!editTarget}
-        onOpenChange={(open) => !open && setEditTarget(null)}
-        initialValues={
-          editTarget
-            ? {
-                id: editTarget.id as SegmentId,
-                name: editTarget.name,
-                description: editTarget.description ?? '',
-                type: editTarget.type as 'manual' | 'dynamic',
-                rules: editTarget.rules
-                  ? {
-                      match: editTarget.rules.match,
-                      conditions: editTarget.rules.conditions.map((c: SegmentCondition) =>
-                        deserializeCondition(c, customAttributes)
-                      ) as unknown as RuleCondition[],
-                    }
-                  : { match: 'all', conditions: [] },
-              }
-            : undefined
-        }
-        onSubmit={handleUpdateSegment}
-        isPending={updateSegment.isPending}
-        customAttributes={customAttributes}
-      />
+      {segmentFormOpened && (
+        <Suspense fallback={null}>
+          {/* Create dialog */}
+          <SegmentFormDialog
+            open={createOpen}
+            onOpenChange={setCreateOpen}
+            onSubmit={handleCreateSegment}
+            isPending={createSegment.isPending}
+            customAttributes={customAttributes}
+            companyAttributes={companyAttributes}
+          />
+
+          {/* Edit dialog */}
+          <SegmentFormDialog
+            open={!!editTarget}
+            onOpenChange={(open) => !open && setEditTarget(null)}
+            initialValues={
+              editTarget
+                ? {
+                    id: editTarget.id as SegmentId,
+                    name: editTarget.name,
+                    description: editTarget.description ?? '',
+                    type: editTarget.type as 'manual' | 'dynamic',
+                    rules: editTarget.rules
+                      ? {
+                          match: editTarget.rules.match,
+                          conditions: editTarget.rules.conditions.map((c: SegmentCondition) =>
+                            deserializeCondition(c, customAttributes, companyAttributes)
+                          ) as unknown as RuleCondition[],
+                        }
+                      : { match: 'all', conditions: [] },
+                  }
+                : undefined
+            }
+            onSubmit={handleUpdateSegment}
+            isPending={updateSegment.isPending}
+            customAttributes={customAttributes}
+            companyAttributes={companyAttributes}
+          />
+        </Suspense>
+      )}
 
       {/* Delete confirm */}
       <ConfirmDialog

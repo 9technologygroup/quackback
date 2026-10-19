@@ -1,0 +1,284 @@
+import { isSafeCallbackUrl } from '@/lib/shared/routing'
+
+export type OriginTransferResult =
+  | { kind: 'redirect'; to: string; cookies: string[] }
+  | { kind: 'error'; status: 'invalid' | 'error' }
+
+/** A redirect that also knows who it signed in; the id never leaves the server. */
+type SignedInRedirect = Extract<OriginTransferResult, { kind: 'redirect' }> & { userId?: string }
+
+export function isCanonicalIdentityHost(host: string | null, canonicalOrigin: string): boolean {
+  if (!host) return false
+  const requested = host.trim().toLowerCase().replace(/:\d+$/, '')
+  return requested === new URL(canonicalOrigin).hostname
+}
+
+/** Who the verify response signed in, when its body says. */
+async function signedInUserId(response: Response): Promise<string | null> {
+  if (typeof response.json !== 'function') return null
+  const body: unknown = await response.json().catch(() => null)
+  const user = body && typeof body === 'object' && 'user' in body ? body.user : null
+  const id = user && typeof user === 'object' && 'id' in user ? user.id : null
+  return typeof id === 'string' ? id : null
+}
+
+function responseCookies(response: Response): string[] {
+  const fromGetter = response.headers.getSetCookie?.() ?? []
+  if (fromGetter.length > 0) return fromGetter
+  const single = response.headers.get('set-cookie')
+  return single ? [single] : []
+}
+
+/**
+ * Internal verify Request for a browser GET that arrived from another origin.
+ *
+ * Visit workspace is a control-plane POST that 302s here. The GET keeps
+ * `Referer: https://app.quackback.io/…` and often a Cookie (CDN, prior
+ * visit). Better Auth CSRF treats Referer as Origin when Origin is
+ * absent, and refuses anything not on the workspace allowlist — so a
+ * freshly minted OTT looks expired. Verify as this workspace instead.
+ */
+export function ottVerifyRequest(ott: string, headers?: Headers): Request {
+  const requestHeaders = new Headers(headers)
+  requestHeaders.delete('content-length')
+  requestHeaders.delete('referer')
+  requestHeaders.delete('origin')
+  requestHeaders.set('content-type', 'application/json')
+
+  const host = headers?.get('host')?.trim()
+  const proto = (headers?.get('x-forwarded-proto') ?? 'https').split(',')[0]?.trim() || 'https'
+  const origin = host ? `${proto}://${host}` : 'http://auth.local'
+  requestHeaders.set('origin', origin)
+
+  return new Request(`${origin}/api/auth/one-time-token/verify`, {
+    method: 'POST',
+    headers: requestHeaders,
+    body: JSON.stringify({ token: ott }),
+  })
+}
+
+async function verifyOttCookies(
+  ott: string,
+  returnTo: string,
+  headers?: Headers
+): Promise<SignedInRedirect | Extract<OriginTransferResult, { kind: 'error' }>> {
+  try {
+    const { auth } = await import('@/lib/server/auth')
+    const response = await auth.handler(ottVerifyRequest(ott, headers))
+    if (!response.ok) return { kind: 'error', status: 'invalid' }
+    const cookies = responseCookies(response)
+    if (cookies.length === 0) return { kind: 'error', status: 'error' }
+    const userId = await signedInUserId(response)
+    return { kind: 'redirect', to: returnTo, cookies, ...(userId ? { userId } : {}) }
+  } catch {
+    return { kind: 'error', status: 'invalid' }
+  }
+}
+
+/** Same-browser remount after a successful consume still has the session. */
+async function continueIfAlreadySignedIn(
+  returnTo: string,
+  headers?: Headers
+): Promise<SignedInRedirect | Extract<OriginTransferResult, { kind: 'error' }>> {
+  if (!headers) return { kind: 'error', status: 'invalid' }
+  try {
+    const { auth } = await import('@/lib/server/auth')
+    const session = await auth.api.getSession({ headers })
+    if (session?.user) {
+      return { kind: 'redirect', to: returnTo, cookies: [], userId: session.user.id }
+    }
+  } catch {
+    // The token already failed closed; absence of a session stays invalid.
+  }
+  return { kind: 'error', status: 'invalid' }
+}
+
+async function consumeOrContinueExistingSession(
+  ott: string,
+  returnTo: string,
+  headers?: Headers
+): Promise<SignedInRedirect | Extract<OriginTransferResult, { kind: 'error' }>> {
+  const verified = await verifyOttCookies(ott, returnTo, headers)
+  if (verified.kind === 'redirect') return verified
+  const existing = await continueIfAlreadySignedIn(returnTo, headers)
+  return existing.kind === 'redirect' ? existing : verified
+}
+
+type OpenHandoffOttSnapshot = { ott: string; value: string; expiresAt: Date }
+
+/**
+ * Better Auth deletes the verification row on first verify. Open is a GET
+ * the browser (and a prefetch) can hit twice, so we snapshot the row and
+ * put it back for the rest of its TTL. Rename-transfer stays single-use.
+ */
+async function snapshotOpenHandoffOtt(ott: string): Promise<OpenHandoffOttSnapshot | null> {
+  try {
+    const { db, verification, eq } = await import('@/lib/server/db')
+    const [row] = await db
+      .select({ value: verification.value, expiresAt: verification.expiresAt })
+      .from(verification)
+      .where(eq(verification.identifier, `one-time-token:${ott}`))
+      .limit(1)
+    if (!row || row.expiresAt <= new Date()) return null
+    return { ott, value: row.value, expiresAt: row.expiresAt }
+  } catch {
+    return null
+  }
+}
+
+async function restoreOpenHandoffOtt(snapshot: OpenHandoffOttSnapshot): Promise<void> {
+  try {
+    const { db, verification, eq } = await import('@/lib/server/db')
+    const [existing] = await db
+      .select({ id: verification.id })
+      .from(verification)
+      .where(eq(verification.identifier, `one-time-token:${snapshot.ott}`))
+      .limit(1)
+    if (existing) return
+    await db.insert(verification).values({
+      id: crypto.randomUUID(),
+      identifier: `one-time-token:${snapshot.ott}`,
+      value: snapshot.value,
+      expiresAt: snapshot.expiresAt,
+    })
+  } catch {
+    // A missed restore still fails closed on the next GET; the first
+    // response already carries the session cookie.
+  }
+}
+
+/** Backoff while a parallel Open GET restores the OTT row it just consumed. */
+const OPEN_HANDOFF_SNAPSHOT_RETRY_MS = [25, 50, 100] as const
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+type OpenHandoffAttempt =
+  | SignedInRedirect
+  | (Extract<OriginTransferResult, { kind: 'error' }> & { missedSnapshot: boolean })
+
+async function consumeOpenHandoffOnce(ott: string, headers?: Headers): Promise<OpenHandoffAttempt> {
+  const snapshot = await snapshotOpenHandoffOtt(ott)
+  if (!snapshot) {
+    const existing = await continueIfAlreadySignedIn('/', headers)
+    if (existing.kind === 'redirect') return existing
+    return { kind: 'error', status: 'invalid', missedSnapshot: true }
+  }
+  const first = await consumeOrContinueExistingSession(ott, '/', headers)
+  if (first.kind === 'redirect') {
+    await restoreOpenHandoffOtt(snapshot)
+    return first
+  }
+  await restoreOpenHandoffOtt(snapshot)
+  const retry = await verifyOttCookies(ott, '/', headers)
+  if (retry.kind === 'redirect') {
+    await restoreOpenHandoffOtt(snapshot)
+    return retry
+  }
+  return { ...first, missedSnapshot: false }
+}
+
+/**
+ * Consume the control-plane Open handoff. First arrival uses the immutable
+ * system host and may happen before the identity projection lands, so this
+ * path must not require a verified projection. The token stays redeemable
+ * until it expires: Visit is a GET, and a second load must still sign in.
+ *
+ * Two GETs can overlap: the second snapshot can run after the first verify
+ * deleted the row and before the first restore put it back. When the snapshot
+ * misses, wait briefly and try again so the sibling restore can land.
+ */
+export async function consumeOpenHandoff(input: {
+  ott?: string
+  returnTo?: string
+  headers?: Headers
+}): Promise<OriginTransferResult> {
+  if (!input.ott) return { kind: 'error', status: 'invalid' }
+  const result = await consumeOpenHandoffSession(input.ott, input.headers)
+  if (result.kind !== 'redirect') return result
+  return {
+    kind: 'redirect',
+    cookies: result.cookies,
+    to: await openHandoffLanding(input.returnTo, result.userId),
+  }
+}
+
+/** A same-origin path with no control characters, never the setup wizard. */
+function isSafeOpenReturnTo(returnTo: string | undefined): returnTo is string {
+  return (
+    isSafeCallbackUrl(returnTo) &&
+    // eslint-disable-next-line no-control-regex
+    !/[\u0000-\u001f\u007f]/.test(returnTo) &&
+    !/^\/onboarding(\/|\?|$)/.test(returnTo)
+  )
+}
+
+/**
+ * Where Visit workspace lands. For an admin while the launch plan is open it
+ * is the admin, where the plan is; otherwise a safe returnTo, else the workspace root (the
+ * root itself sends unfinished setup to the wizard). Open never drops a
+ * finished workspace into the wizard.
+ */
+async function openHandoffLanding(
+  returnTo: string | undefined,
+  userId: string | undefined
+): Promise<string> {
+  try {
+    if (userId) {
+      const { isLaunchPlanOpen, isWorkspaceAdmin } =
+        await import('@/lib/server/domains/onboarding/launch-landing')
+      // The plan is the owner's: only an admin-tier teammate is sent to it.
+      if ((await isWorkspaceAdmin(userId)) && (await isLaunchPlanOpen())) return '/admin'
+    }
+  } catch {
+    // Unknown plan state: fall through to the caller's own destination.
+  }
+  return isSafeOpenReturnTo(returnTo) ? returnTo : '/'
+}
+
+async function consumeOpenHandoffSession(
+  ott: string,
+  headers?: Headers
+): Promise<SignedInRedirect | Extract<OriginTransferResult, { kind: 'error' }>> {
+  const first = await consumeOpenHandoffOnce(ott, headers)
+  if (first.kind === 'redirect') return first
+  if (!first.missedSnapshot) return { kind: 'error', status: first.status }
+
+  for (const delayMs of OPEN_HANDOFF_SNAPSHOT_RETRY_MS) {
+    await wait(delayMs)
+    const retry = await consumeOpenHandoffOnce(ott, headers)
+    if (retry.kind === 'redirect') return retry
+    if (!retry.missedSnapshot) return { kind: 'error', status: retry.status }
+  }
+  return { kind: 'error', status: first.status }
+}
+
+/**
+ * Consume a one-use session handoff on the workspace's current canonical host.
+ *
+ * Replay, expiry, a missing identity projection, and a host that is not the
+ * projected origin all fail closed. The token is not touched until the host
+ * check passes, so a transfer presented on the old or system host can still
+ * succeed on the new one.
+ */
+export async function consumeOriginTransfer(input: {
+  ott?: string
+  returnTo?: string
+  host: string | null
+  headers?: Headers
+}): Promise<OriginTransferResult> {
+  const returnTo = isSafeCallbackUrl(input.returnTo) ? input.returnTo : '/admin/settings/general'
+  if (!input.ott) return { kind: 'error', status: 'invalid' }
+
+  const { db, settings } = await import('@/lib/server/db')
+  const { parseIdentityProjection } =
+    await import('@/lib/server/domains/settings/cloud/identity-projection')
+  const [row] = await db.select({ identity: settings.cloudIdentity }).from(settings).limit(1)
+  const identity = parseIdentityProjection(row?.identity)
+  if (!identity || !isCanonicalIdentityHost(input.host, identity.canonicalOrigin)) {
+    return { kind: 'error', status: 'invalid' }
+  }
+
+  return consumeOrContinueExistingSession(input.ott, returnTo, input.headers)
+}

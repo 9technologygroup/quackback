@@ -1,11 +1,17 @@
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { z } from 'zod'
-import type { InviteId, PrincipalId, UserId } from '@quackback/ids'
-import { generateId } from '@quackback/ids'
+import type { InviteId, PrincipalId, RoleId, UserId } from '@quackback/ids'
 import { db, invitation, principal, user, and, eq } from '@/lib/server/db'
+import { ROLE_RANK, assertNotWidgetScope, toSessionScope, type Role } from '@/lib/shared/roles'
+import {
+  createPrincipal,
+  setPrincipalRole,
+  syncPrincipalProfileById,
+} from '@/lib/server/domains/principals/principal.factory'
 import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
 import { getSession } from '@/lib/server/auth/session'
+import { cacheDel } from '@/lib/server/cache'
 import { logger } from '@/lib/server/logger'
 
 const log = logger.child({ component: 'invitations' })
@@ -115,8 +121,10 @@ const acceptInvitationSchema = z.object({
  * Accept a team invitation.
  *
  * This server function replaces Better Auth's organization plugin acceptInvitation.
- * It validates the invitation, creates/updates the member record, and marks the
- * invitation as accepted.
+ * Every rejection (expired, email mismatch, terminal states) is validated before
+ * the invite is claimed, so a rejected accept never mutates the invite's status.
+ * The claim and its principal/user side effects then commit atomically in one
+ * transaction, so a failure rolls the claim back rather than resetting it by hand.
  *
  * Note: Uses createServerFn directly instead of withAuth because this needs to be
  * accessible to newly authenticated users who may not yet have a member record.
@@ -126,31 +134,92 @@ export const acceptInvitationFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const { invitationId, name } = data
     log.debug({ invitation_id: invitationId }, 'accept invitation: entry')
-    // Track whether we successfully claimed the invitation so the catch
-    // block only rolls back when we actually changed its status.
-    let didClaim = false
-    try {
-      // Get current session
-      const session = await getSession()
-      if (!session?.user) {
-        log.warn('accept invitation: no session')
-        throw new Error('Your session has expired. Please sign in again using the invitation link.')
+    // Get current session
+    const session = await getSession()
+    if (!session?.user) {
+      log.warn('accept invitation: no session')
+      throw new Error('Your session has expired. Please sign in again using the invitation link.')
+    }
+
+    const userId = session.user.id as UserId
+    const userEmail = session.user.email?.toLowerCase()
+    log.debug({ user_id: userId }, 'accept invitation: session resolved')
+
+    if (!userEmail) {
+      throw new Error(
+        'Your account is missing an email address. Please contact your administrator.'
+      )
+    }
+
+    // Validate everything up front. The `kind='team'` guard ensures portal
+    // invites cannot be consumed here.
+    const inv = await db.query.invitation.findFirst({
+      where: and(eq(invitation.id, invitationId as InviteId), eq(invitation.kind, 'team')),
+    })
+
+    if (!inv) {
+      log.warn({ invitation_id: invitationId }, 'accept invitation: not found')
+      throw new Error('This invitation could not be found. It may have been cancelled.')
+    }
+
+    if (inv.status === 'accepted') {
+      throw new Error('This invitation has already been accepted')
+    }
+
+    const isExpired = inv.status === 'expired' || new Date(inv.expiresAt) < new Date()
+    if (isExpired) {
+      // Mark a stale pending invite as expired (guarded on status='pending'
+      // so a concurrent accept is never clobbered). Never reopen to 'pending'.
+      if (inv.status === 'pending') {
+        await db
+          .update(invitation)
+          .set({ status: 'expired' })
+          .where(and(eq(invitation.id, invitationId as InviteId), eq(invitation.status, 'pending')))
+      }
+      throw new Error('This invitation has expired. Please ask your administrator to resend it.')
+    }
+
+    if (inv.status !== 'pending') {
+      log.warn(
+        { invitation_id: invitationId, status: inv.status },
+        'accept invitation: invalid status'
+      )
+      throw new Error(
+        'This invitation has been cancelled. Please ask your administrator to send a new one.'
+      )
+    }
+
+    if (inv.email.toLowerCase() !== userEmail) {
+      throw new Error(
+        'This invitation was sent to a different email address. Please sign in with the correct email.'
+      )
+    }
+
+    const existingBeforeClaim = await db.query.principal.findFirst({
+      where: eq(principal.userId, userId),
+    })
+    const alreadySeated =
+      existingBeforeClaim != null &&
+      (existingBeforeClaim.role === 'admin' || existingBeforeClaim.role === 'member')
+
+    const role = (inv.role || 'member') as Role
+    const displayName = name?.trim() || undefined
+
+    // Claim the invite and apply the membership side effects atomically:
+    // a partial failure rolls the claim back, so a claimed invite can never
+    // be left without its principal/user writes. The seat backstop runs
+    // inside this transaction (settings row lock + member count) so two
+    // racing accepts cannot both create a seat.
+    const cacheKeysToBust: string[] = []
+    const claimed = await db.transaction(async (tx) => {
+      if (!alreadySeated) {
+        const { enforceSeatLimit } = await import('@/lib/server/domains/principals/seat-limit')
+        await enforceSeatLimit({ convertingInvite: true, executor: tx })
       }
 
-      const userId = session.user.id as UserId
-      const userEmail = session.user.email?.toLowerCase()
-      log.debug({ user_id: userId }, 'accept invitation: session resolved')
-
-      if (!userEmail) {
-        throw new Error(
-          'Your account is missing an email address. Please contact your administrator.'
-        )
-      }
-
-      // Atomically claim the invitation with a conditional update to prevent
-      // double-accept race conditions (e.g., double-click, network retry).
-      // The `kind='team'` guard ensures portal invites cannot be consumed here.
-      const [claimed] = await db
+      // Conditional update prevents double-accept races (double-click,
+      // network retry): zero rows means someone else changed it first.
+      const [row] = await tx
         .update(invitation)
         .set({ status: 'accepted' })
         .where(
@@ -162,118 +231,101 @@ export const acceptInvitationFn = createServerFn({ method: 'POST' })
         )
         .returning()
 
-      if (!claimed) {
-        // Either doesn't exist, already accepted, cancelled, or expired
-        const inv = await db.query.invitation.findFirst({
+      if (!row) {
+        const fresh = await tx.query.invitation.findFirst({
           where: and(eq(invitation.id, invitationId as InviteId), eq(invitation.kind, 'team')),
         })
         log.warn(
-          { invitation_id: invitationId, exists: !!inv, status: inv?.status },
+          { invitation_id: invitationId, status: fresh?.status },
           'accept invitation: claim failed'
         )
-        if (!inv) throw new Error('This invitation could not be found. It may have been cancelled.')
         throw new Error(
-          inv.status === 'accepted'
+          fresh?.status === 'accepted'
             ? 'This invitation has already been accepted'
             : 'This invitation has been cancelled. Please ask your administrator to send a new one.'
         )
       }
 
-      didClaim = true
-      log.debug({ invitation_id: invitationId, role: claimed.role }, 'accept invitation: claimed')
-
-      async function rollbackAndThrow(message: string): Promise<never> {
-        await db
-          .update(invitation)
-          .set({ status: 'pending' })
-          .where(eq(invitation.id, invitationId as InviteId))
-        throw new Error(message)
-      }
-
-      if (new Date(claimed.expiresAt) < new Date()) {
-        await rollbackAndThrow(
-          'This invitation has expired. Please ask your administrator to resend it.'
-        )
-      }
-
-      if (claimed.email.toLowerCase() !== userEmail) {
-        await rollbackAndThrow(
-          'This invitation was sent to a different email address. Please sign in with the correct email.'
-        )
-      }
-
-      const role = claimed.role || 'member'
-      const displayName = name?.trim() || undefined
-
-      const existingPrincipal = await db.query.principal.findFirst({
+      const existingPrincipal = await tx.query.principal.findFirst({
         where: eq(principal.userId, userId),
       })
 
+      // A custom-role invite (row.roleId) rides role='member'; the role
+      // writer records the workspace assignment in the same transaction.
+      // SET NULL on role deletion means a stale invite degrades to its
+      // plain legacy role.
+      // Defense-in-depth: a roleId only ever rides a member invite (send
+      // enforces it); drop it for any other stored role.
+      const assignRoleId =
+        role === 'member' ? ((row.roleId as RoleId | null) ?? undefined) : undefined
+
       if (existingPrincipal) {
-        // Update existing principal's role if the invitation grants a higher role
-        const roleHierarchy = ['user', 'member', 'admin']
-        const existingRoleIndex = roleHierarchy.indexOf(existingPrincipal.role)
-        const newRoleIndex = roleHierarchy.indexOf(role)
-
-        const updates: Record<string, unknown> = {}
-        if (newRoleIndex > existingRoleIndex) updates.role = role
-        if (displayName) updates.displayName = displayName
-
-        if (Object.keys(updates).length > 0) {
-          await db
-            .update(principal)
-            .set(updates)
-            .where(eq(principal.id, existingPrincipal.id as PrincipalId))
+        // Promote only when the invite grants a strictly higher role. An
+        // unrankable stored role sorts lowest, so it always upgrades. A
+        // custom grant also applies to an existing member (the inviter
+        // chose that role for them) — but never demotes an admin.
+        const existingRank = ROLE_RANK[existingPrincipal.role as Role] ?? -1
+        const promotes = ROLE_RANK[role] > existingRank
+        const grantsCustom =
+          assignRoleId != null && role === 'member' && existingPrincipal.role !== 'admin'
+        if (promotes || grantsCustom) {
+          const { cacheKeysToBust: keys } = await setPrincipalRole(
+            { principalId: existingPrincipal.id as PrincipalId },
+            promotes ? role : 'member',
+            { executor: tx, assignRoleId }
+          )
+          cacheKeysToBust.push(...keys)
+        }
+        if (displayName) {
+          await syncPrincipalProfileById(existingPrincipal.id as PrincipalId, { displayName }, tx)
         }
       } else {
-        // Create new principal record
-        await db.insert(principal).values({
-          id: generateId('principal'),
-          userId,
-          role,
-          displayName,
-          createdAt: new Date(),
-        })
+        // Create new principal (the user row already exists from magic-link).
+        // Plain create — NOT ensure — so a racing lazy 'user' create can't
+        // silently swallow the invited member/admin role.
+        const created = await createPrincipal(
+          { userId, role, displayName: displayName ?? null },
+          tx
+        )
+        if (assignRoleId) {
+          const { cacheKeysToBust: keys } = await setPrincipalRole(
+            { principalId: created.id as PrincipalId },
+            role,
+            { executor: tx, assignRoleId, knownUserId: userId }
+          )
+          cacheKeysToBust.push(...keys)
+        }
       }
 
       // Update user name if provided
       if (displayName) {
-        await db.update(user).set({ name: displayName }).where(eq(user.id, userId))
+        await tx.update(user).set({ name: displayName }).where(eq(user.id, userId))
       }
 
-      // The invite is accepted — revoke every token in its set so no other
-      // emailed/copied link for this invite can still sign anyone in. (The link
-      // just used was already consumed by the magic-link verify; siblings from
-      // resends/copies would otherwise stay live until their 30-day expiry.)
-      // Best-effort: the membership is already committed, so a cleanup failure
-      // here must NOT hit the outer catch and roll the accept back to pending —
-      // log it and move on (the stray tokens still expire with the invite).
-      try {
-        const { revokeMagicLinkTokens } = await import('@/lib/server/auth/magic-link-mint')
-        await revokeMagicLinkTokens(claimed.magicLinkTokens)
-      } catch (revokeError) {
-        log.error({ err: revokeError }, 'token revoke failed')
-      }
+      return row
+    })
 
-      log.info({ invitation_id: invitationId }, 'accept invitation: accepted')
-      return { invitationId: invitationId as InviteId }
-    } catch (error) {
-      log.error({ err: error }, 'accept invitation failed')
-      // Only roll back if we actually claimed the invitation. If the error
-      // came from the !claimed branch (already accepted / invalid), rolling
-      // back would incorrectly reopen it to 'pending'.
-      if (didClaim) {
-        try {
-          await db
-            .update(invitation)
-            .set({ status: 'pending' })
-            .where(eq(invitation.id, invitationId as InviteId))
-        } catch (rollbackError) {
-          log.error({ err: rollbackError }, 'rollback failed')
-        }
-      }
-      throw error
+    // Bust the principal cache only after the role write is committed.
+    await Promise.all(cacheKeysToBust.map((key) => cacheDel(key)))
+
+    log.debug({ invitation_id: invitationId, role: claimed.role }, 'accept invitation: claimed')
+
+    // The invite is accepted — revoke every token in its set so no other
+    // emailed/copied link for this invite can still sign anyone in. (The link
+    // just used was already consumed by the magic-link verify; siblings from
+    // resends/copies would otherwise stay live until their 30-day expiry.)
+    // Best-effort: the membership is already committed, so a cleanup failure
+    // here must NOT fail the accept: log it and move on (the stray tokens
+    // still expire with the invite).
+    try {
+      const { revokeMagicLinkTokens } = await import('@/lib/server/auth/magic-link-mint')
+      await revokeMagicLinkTokens(claimed.magicLinkTokens)
+    } catch (revokeError) {
+      log.error({ err: revokeError }, 'token revoke failed')
     }
+
+    log.info({ invitation_id: invitationId }, 'accept invitation: accepted')
+    return { invitationId: invitationId as InviteId }
   })
 
 /**
@@ -283,13 +335,30 @@ export const acceptInvitationFn = createServerFn({ method: 'POST' })
  * so we must call auth.api.setPassword() from a server function.
  */
 export const setPasswordFn = createServerFn({ method: 'POST' })
-  .validator(z.object({ newPassword: z.string().min(8) }))
+  .validator(
+    z.object({
+      newPassword: z.string().min(8),
+      /** Drop every session except the current one. Off by default so
+       *  complete-signup can set a first password without kicking the
+       *  just-minted session; the profile recovery form turns it on. */
+      revokeOtherSessions: z.boolean().optional(),
+    })
+  )
   .handler(async ({ data }) => {
+    const session = await getSession()
+    if (!session?.user) {
+      throw new Error('Not authenticated')
+    }
+    assertNotWidgetScope(toSessionScope(session.session.scope))
+    const headers = getRequestHeaders()
     const { auth } = await import('@/lib/server/auth')
     await auth.api.setPassword({
       body: { newPassword: data.newPassword },
-      headers: getRequestHeaders(),
+      headers,
     })
+    if (data.revokeOtherSessions) {
+      await auth.api.revokeOtherSessions({ headers })
+    }
     return { status: true }
   })
 

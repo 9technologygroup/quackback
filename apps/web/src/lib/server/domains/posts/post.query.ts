@@ -10,47 +10,29 @@ import {
   db,
   posts,
   boards,
+  postTagAssignments,
   postTags,
-  postRoadmaps,
-  tags,
-  comments,
+  postComments,
   eq,
   and,
+  or,
+  lt,
   inArray,
   asc,
+  desc,
   isNull,
+  count,
 } from '@/lib/server/db'
-import { getPublicUrlOrNull } from '@/lib/server/storage/s3'
+import { loadAuthors } from '@/lib/server/domains/principals/principal-display'
 import { realEmail } from '@/lib/shared/anonymous-email'
-import { type PostId, type PrincipalId } from '@quackback/ids'
+import { type PostId, type PostCommentId, type PrincipalId } from '@quackback/ids'
 import { NotFoundError } from '@/lib/shared/errors'
 import { buildCommentTree, toStatusChange, type CommentTreeNode } from '@/lib/shared'
 import type { PostWithDetails, PinnedComment } from './post.types'
 import { hydrateMentions } from './hydrate-mentions'
 import type { JSONContent } from '@tiptap/core'
 import type { TiptapContent } from '@/lib/shared/db-types'
-
-/**
- * Minimal read for integrations that need a post's body and demand signal.
- *
- * Separate from {@link getPostWithDetails}, which joins author, board, tags and
- * comments — none of which an issue body uses, and whose doc rightly warns it is
- * team-authed. This returns nothing that isn't already going into an external
- * issue the integration was configured to create.
- *
- * Returns null when the post is missing or soft-deleted, so a status change
- * racing a delete is a no-op rather than a thrown error inside a hook.
- */
-export async function getPostForPromotion(
-  postId: PostId
-): Promise<{ content: string; voteCount: number } | null> {
-  const post = await db.query.posts.findFirst({
-    columns: { content: true, voteCount: true, deletedAt: true },
-    where: eq(posts.id, postId),
-  })
-  if (!post || post.deletedAt) return null
-  return { content: post.content ?? '', voteCount: post.voteCount ?? 0 }
-}
+import { contentJsonForClient } from '@/lib/server/content/storage-read-urls'
 
 /**
  * Get a post with full details including board, tags, and comment count.
@@ -86,6 +68,7 @@ export async function getPostWithDetails(postId: PostId): Promise<PostWithDetail
       createdAt: true,
       updatedAt: true,
       deletedAt: true,
+      eta: true,
       isCommentsLocked: true,
       moderationState: true,
       canonicalPostId: true,
@@ -109,25 +92,21 @@ export async function getPostWithDetails(postId: PostId): Promise<PostWithDetail
     throw new NotFoundError('POST_NOT_FOUND', `Post with ID ${postId} not found`)
   }
 
-  // Get board, tags, roadmaps, and pinned comment in parallel
-  const [board, postTagsResult, roadmapsResult, pinnedCommentData] = await Promise.all([
+  // Get board, tags, and pinned comment in parallel.
+  const [board, postTagsResult, pinnedCommentData] = await Promise.all([
     db.query.boards.findFirst({ where: eq(boards.id, post.boardId) }),
     db
       .select({
-        id: tags.id,
-        name: tags.name,
-        color: tags.color,
+        id: postTags.id,
+        name: postTags.name,
+        color: postTags.color,
       })
-      .from(postTags)
-      .innerJoin(tags, eq(tags.id, postTags.tagId))
-      .where(eq(postTags.postId, postId)),
-    db
-      .select({ roadmapId: postRoadmaps.roadmapId })
-      .from(postRoadmaps)
-      .where(eq(postRoadmaps.postId, postId)),
+      .from(postTagAssignments)
+      .innerJoin(postTags, eq(postTags.id, postTagAssignments.tagId))
+      .where(eq(postTagAssignments.postId, postId)),
     post.pinnedCommentId
-      ? db.query.comments.findFirst({
-          where: eq(comments.id, post.pinnedCommentId),
+      ? db.query.postComments.findFirst({
+          where: eq(postComments.id, post.pinnedCommentId),
           with: {
             author: {
               columns: { displayName: true, avatarUrl: true, avatarKey: true },
@@ -143,20 +122,17 @@ export async function getPostWithDetails(postId: PostId): Promise<PostWithDetail
 
   let pinnedComment: PinnedComment | null = null
   if (pinnedCommentData && !pinnedCommentData.deletedAt) {
-    let avatarUrl: string | null = null
-    if (pinnedCommentData.author) {
-      if (pinnedCommentData.author.avatarKey) {
-        avatarUrl = getPublicUrlOrNull(pinnedCommentData.author.avatarKey)
-      }
-      if (!avatarUrl && pinnedCommentData.author.avatarUrl) {
-        avatarUrl = pinnedCommentData.author.avatarUrl
-      }
-    }
+    const author = (await loadAuthors([pinnedCommentData.principalId])).get(
+      pinnedCommentData.principalId
+    )
+    const avatarUrl = author?.avatarUrl ?? null
 
     const pinnedRawContentJson = pinnedCommentData.contentJson ?? null
-    const pinnedHydratedContentJson = pinnedRawContentJson
-      ? ((await hydrateMentions(pinnedRawContentJson as JSONContent)) as TiptapContent | null)
-      : null
+    const pinnedHydratedContentJson = contentJsonForClient(
+      pinnedRawContentJson
+        ? ((await hydrateMentions(pinnedRawContentJson as JSONContent)) as TiptapContent | null)
+        : null
+    )
     pinnedComment = {
       id: pinnedCommentData.id,
       content: pinnedCommentData.content,
@@ -170,9 +146,13 @@ export async function getPostWithDetails(postId: PostId): Promise<PostWithDetail
   }
 
   // Hydrate mention labels on the post body so renamed users render correctly.
-  const hydratedPostContentJson = post.contentJson
-    ? ((await hydrateMentions(post.contentJson as JSONContent)) as TiptapContent | null)
-    : post.contentJson
+  // Remint storage read tokens after that: persist stays unsigned, and posts
+  // created before private-object tokens existed still have to render.
+  const hydratedPostContentJson = contentJsonForClient(
+    post.contentJson
+      ? ((await hydrateMentions(post.contentJson as JSONContent)) as TiptapContent | null)
+      : post.contentJson
+  )
 
   // Cast needed: columns selection omits heavy internal fields (embedding, searchVector,
   // etc.) that no caller reads, but PostWithDetails extends the full Post type.
@@ -189,7 +169,6 @@ export async function getPostWithDetails(postId: PostId): Promise<PostWithDetail
       name: t.name,
       color: t.color,
     })),
-    roadmapIds: roadmapsResult.map((r) => r.roadmapId),
     pinnedComment,
     authorName: post.author?.displayName ?? null,
     // Sanitize at the source so every consumer (admin detail, v1 API, …) is safe.
@@ -217,32 +196,14 @@ export async function getCommentsWithReplies(
   postId: PostId,
   principalId?: PrincipalId
 ): Promise<CommentTreeNode[]> {
-  // Verify post exists and belongs to organization
-  const post = await db.query.posts.findFirst({ where: eq(posts.id, postId) })
-  if (!post) {
-    throw new NotFoundError('POST_NOT_FOUND', `Post with ID ${postId} not found`)
-  }
-
-  const board = await db.query.boards.findFirst({ where: eq(boards.id, post.boardId) })
-  if (!board) {
-    throw new NotFoundError('BOARD_NOT_FOUND', `Board with ID ${post.boardId} not found`)
-  }
-
-  // Collect post IDs: this post + any posts merged into it. Exclude
-  // sources whose own board has been soft-deleted — otherwise comments
-  // from a deleted board's posts surface here via the merge tree.
-  const mergedPosts = await db
-    .select({ id: posts.id })
-    .from(posts)
-    .innerJoin(boards, eq(posts.boardId, boards.id))
-    .where(
-      and(eq(posts.canonicalPostId, postId), isNull(posts.deletedAt), isNull(boards.deletedAt))
-    )
-  const postIds = [postId, ...mergedPosts.map((p) => p.id)] as PostId[]
+  const postIds = await resolveCommentPostIds(postId)
 
   // Get all comments with reactions, author info, and status changes (including from merged posts)
-  const allComments = await db.query.comments.findMany({
-    where: postIds.length === 1 ? eq(comments.postId, postId) : inArray(comments.postId, postIds),
+  const allComments = await db.query.postComments.findMany({
+    where:
+      postIds.length === 1
+        ? eq(postComments.postId, postId)
+        : inArray(postComments.postId, postIds),
     with: {
       reactions: true,
       author: {
@@ -255,7 +216,7 @@ export async function getCommentsWithReplies(
         columns: { name: true, color: true },
       },
     },
-    orderBy: asc(comments.createdAt),
+    orderBy: asc(postComments.createdAt),
   })
 
   // Build nested tree using the utility function
@@ -266,4 +227,160 @@ export async function getCommentsWithReplies(
   }))
 
   return buildCommentTree(commentsWithAuthor, principalId)
+}
+
+/**
+ * Resolve the set of post ids whose comments belong to this post's thread,
+ * after checking the post and its board exist: the unbounded read's callers
+ * rely on it for their not-found answer.
+ */
+async function resolveCommentPostIds(postId: PostId): Promise<PostId[]> {
+  // Verify post exists and belongs to organization
+  const post = await db.query.posts.findFirst({ where: eq(posts.id, postId) })
+  if (!post) {
+    throw new NotFoundError('POST_NOT_FOUND', `Post with ID ${postId} not found`)
+  }
+
+  const board = await db.query.boards.findFirst({ where: eq(boards.id, post.boardId) })
+  if (!board) {
+    throw new NotFoundError('BOARD_NOT_FOUND', `Board with ID ${post.boardId} not found`)
+  }
+
+  return resolveThreadPostIds(postId)
+}
+
+/**
+ * The post ids whose comments belong to this post's thread: the post itself
+ * plus any posts merged into it (excluding sources on a soft-deleted board).
+ */
+async function resolveThreadPostIds(postId: PostId): Promise<PostId[]> {
+  const mergedPosts = await db
+    .select({ id: posts.id })
+    .from(posts)
+    .innerJoin(boards, eq(posts.boardId, boards.id))
+    .where(
+      and(eq(posts.canonicalPostId, postId), isNull(posts.deletedAt), isNull(boards.deletedAt))
+    )
+  return [postId, ...mergedPosts.map((p) => p.id)] as PostId[]
+}
+
+/**
+ * Paginated variant of {@link getCommentsWithReplies} for the admin post
+ * detail. Keyset-paginates by ROOT comment on `(created_at, id)` ascending so
+ * a heavily-commented post no longer ships every rich-text doc in one payload.
+ * Each returned root carries its full reply subtree.
+ *
+ * The unbounded `getCommentsWithReplies` is kept for the REST/MCP contract
+ * (which promises the full list) and the merge path — this is opt-in.
+ */
+export async function getPaginatedCommentsWithReplies(
+  postId: PostId,
+  opts: { principalId?: PrincipalId; limit?: number; cursor?: string | null } = {}
+): Promise<{
+  comments: CommentTreeNode[]
+  hasMore: boolean
+  nextCursor: string | null
+  totalRootCount: number
+}> {
+  const { encodeCommentCursor, decodeCommentCursor, DEFAULT_COMMENT_PAGE_SIZE } =
+    await import('./comment-page')
+  const rootLimit = Math.max(1, opts.limit ?? DEFAULT_COMMENT_PAGE_SIZE)
+  const cursor = decodeCommentCursor(opts.cursor)
+
+  // No existence check: the only caller loads the post (and its board) in
+  // parallel and answers not-found from that.
+  const postIds = await resolveThreadPostIds(postId)
+  const postFilter =
+    postIds.length === 1 ? eq(postComments.postId, postId) : inArray(postComments.postId, postIds)
+
+  // Page of root comments (parent_id IS NULL), keyset on (created_at, id)
+  // DESCENDING so page 1 is the newest roots (matching the newest-first UI);
+  // "show more" walks toward older roots via the strict `<` compare.
+  const rootConditions = [postFilter, isNull(postComments.parentId)]
+  if (cursor) {
+    rootConditions.push(
+      or(
+        lt(postComments.createdAt, new Date(cursor.createdAt)),
+        and(
+          eq(postComments.createdAt, new Date(cursor.createdAt)),
+          lt(postComments.id, cursor.id as PostCommentId)
+        )
+      )!
+    )
+  }
+  const [rootRows, [totalRootRow]] = await Promise.all([
+    db.query.postComments.findMany({
+      where: and(...rootConditions),
+      columns: { id: true, createdAt: true },
+      orderBy: [desc(postComments.createdAt), desc(postComments.id)],
+      limit: rootLimit + 1,
+    }),
+    db
+      .select({ count: count() })
+      .from(postComments)
+      .where(and(postFilter, isNull(postComments.parentId))),
+  ])
+  const hasMore = rootRows.length > rootLimit
+  const pageRoots = hasMore ? rootRows.slice(0, rootLimit) : rootRows
+  const rootIds = pageRoots.map((r) => r.id)
+  const totalRootCount = Number(totalRootRow?.count ?? 0)
+
+  const nextCursor =
+    hasMore && pageRoots.length > 0
+      ? encodeCommentCursor(
+          pageRoots[pageRoots.length - 1].createdAt,
+          pageRoots[pageRoots.length - 1].id
+        )
+      : null
+
+  if (rootIds.length === 0) {
+    return { comments: [], hasMore, nextCursor, totalRootCount }
+  }
+
+  // Fetch the roots + all their descendants (arbitrary depth) via a recursive
+  // walk, then hydrate reactions/author/status and build the tree.
+  const descendantIds = await collectDescendantIds(rootIds as PostCommentId[])
+  const allIds = [...rootIds, ...descendantIds] as PostCommentId[]
+
+  const allComments = await db.query.postComments.findMany({
+    where: inArray(postComments.id, allIds),
+    with: {
+      reactions: true,
+      author: { columns: { displayName: true } },
+      statusChangeFrom: { columns: { name: true, color: true } },
+      statusChangeTo: { columns: { name: true, color: true } },
+    },
+    orderBy: asc(postComments.createdAt),
+  })
+
+  const commentsWithAuthor = allComments.map((c) => ({
+    ...c,
+    authorName: c.author?.displayName ?? null,
+    statusChange: toStatusChange(c.statusChangeFrom, c.statusChangeTo),
+  }))
+
+  return {
+    comments: buildCommentTree(commentsWithAuthor, opts.principalId),
+    hasMore,
+    nextCursor,
+    totalRootCount,
+  }
+}
+
+/** Breadth-first collect all descendant comment ids under the given roots. */
+async function collectDescendantIds(rootIds: PostCommentId[]): Promise<PostCommentId[]> {
+  const collected: PostCommentId[] = []
+  let frontier = rootIds
+  // Reply chains are shallow in practice; this loop terminates quickly.
+  while (frontier.length > 0) {
+    const children = await db.query.postComments.findMany({
+      where: inArray(postComments.parentId, frontier),
+      columns: { id: true },
+    })
+    const childIds = children.map((c) => c.id)
+    if (childIds.length === 0) break
+    collected.push(...childIds)
+    frontier = childIds
+  }
+  return collected
 }

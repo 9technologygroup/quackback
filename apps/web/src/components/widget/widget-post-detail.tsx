@@ -5,20 +5,26 @@ import { useIntl, FormattedMessage } from 'react-intl'
 import { TimeAgo } from '@/components/ui/time-ago'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { PostContent } from '@/components/public/post-content'
-import { fetchPublicPostDetail } from '@/lib/server/functions/portal'
-import { createCommentFn } from '@/lib/server/functions/comments'
+import { widgetFetchPublicPostDetailFn } from '@/lib/server/functions/widget/posts'
+import { widgetCreateCommentFn } from '@/lib/server/functions/widget/comments'
 import { getWidgetAuthHeaders, generateOneTimeToken } from '@/lib/client/widget-auth'
 import { buildPortalUrl } from './build-portal-url'
-import { widgetQueryKeys } from '@/lib/client/hooks/use-widget-vote'
+import { widgetQueryKeys, widgetQueryKeyPrefixEquals } from '@/lib/client/hooks/use-widget-vote'
 import type { PublicPostDetailView } from '@/lib/client/queries/portal-detail'
 import { WidgetVoteButton } from './widget-vote-button'
 import { WidgetCommentList } from './widget-comment-list'
+import { useLoadMoreWidgetComments } from '@/lib/client/mutations/load-more-comments'
+
+/** First-page root-comment count for the constrained widget viewport. */
+const WIDGET_COMMENT_PAGE_SIZE = 15
 import { useWidgetAuth } from './widget-auth-provider'
 import { sendToHost } from '@/lib/client/widget-bridge'
 import { WidgetCommentForm } from './widget-comment-form'
 import { WidgetPortalTitle } from './widget-portal-title'
+import { WidgetPostDetailSkeleton } from './widget-skeletons'
 import type { TiptapContent } from '@/lib/shared/db-types'
 import type { PostId } from '@quackback/ids'
+import { useWidgetMediaUpload } from './use-widget-image-upload'
 
 interface StatusInfo {
   id: string
@@ -33,12 +39,13 @@ interface WidgetPostDetailProps {
 
 export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
   const intl = useIntl()
+  const { upload: uploadMedia } = useWidgetMediaUpload()
   const {
     isIdentified,
     hmacRequired,
     user,
+    canPortalHandoff,
     ensureSessionThen,
-    identifyWithEmail,
     emitEvent,
     sessionVersion,
   } = useWidgetAuth()
@@ -47,43 +54,63 @@ export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
   // Widget-specific post detail query that injects Bearer headers so the server
   // can resolve principalId for reaction hasReacted highlights.
   // Re-keyed on sessionVersion so it refetches after identify.
+  const detailKey = widgetQueryKeys.postDetail.byId(postId, sessionVersion)
   const {
     data: post,
     isLoading,
     error,
   } = useQuery({
-    queryKey: widgetQueryKeys.postDetail.byId(postId, sessionVersion),
+    queryKey: detailKey,
     queryFn: async (): Promise<PublicPostDetailView> => {
-      const result = await fetchPublicPostDetail({
-        data: { postId },
+      const result = await widgetFetchPublicPostDetailFn({
+        // Smaller first page for the constrained widget viewport; further roots
+        // load via "show more".
+        data: { postId, commentsLimit: WIDGET_COMMENT_PAGE_SIZE },
         headers: getWidgetAuthHeaders(),
       })
       if (!result) throw new Error('Post not found')
       return result as PublicPostDetailView
     },
+    // Minting/identifying bumps sessionVersion mid-action (first-visit upload,
+    // reaction, comment), which re-keys this query. Keep showing the same
+    // post while the Bearer refetch runs so the comment editors and reaction
+    // chips stay mounted for the in-flight request to land in — a skeleton
+    // here would tear them down. Only for the same post: switching posts
+    // still shows the skeleton rather than the previous post.
+    placeholderData: (prev, prevQuery) =>
+      widgetQueryKeyPrefixEquals([...widgetQueryKeys.postDetail.all, postId], prevQuery?.queryKey)
+        ? prev
+        : undefined,
     staleTime: 30 * 1000,
   })
+
+  // "Show more comments" appends the next page into the same widget detail cache.
+  const {
+    loadMore: loadMoreComments,
+    isLoading: isLoadingMoreComments,
+    hasMore: hasMoreComments,
+  } = useLoadMoreWidgetComments(postId as PostId, detailKey, WIDGET_COMMENT_PAGE_SIZE)
 
   const status = post?.statusId ? (statuses.find((s) => s.id === post.statusId) ?? null) : null
 
   const handleViewOnPortal = useCallback(async () => {
     if (!post) return
-    const ott = isIdentified ? await generateOneTimeToken() : null
+    const ott = isIdentified && canPortalHandoff ? await generateOneTimeToken() : null
     const url = buildPortalUrl({
       origin: window.location.origin,
       boardSlug: post.board.slug,
       postId: post.id,
-      isIdentified,
+      isIdentified: isIdentified && canPortalHandoff,
       ott,
     })
     sendToHost({ type: 'quackback:navigate', url })
-  }, [post, isIdentified])
+  }, [post, isIdentified, canPortalHandoff])
 
   /** Submit a comment (root or reply). */
   const submitComment = useCallback(
     async (content: string, contentJson: TiptapContent | null, parentId?: string) => {
       await ensureSessionThen(async () => {
-        const result = await createCommentFn({
+        const result = await widgetCreateCommentFn({
           data: { postId, content, contentJson: contentJson ?? undefined, parentId },
           headers: getWidgetAuthHeaders(),
         })
@@ -106,7 +133,7 @@ export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
   )
 
   // Per-board vote/comment capability, computed server-side for the real actor
-  // (fetchPublicPostDetail runs with the widget's Bearer identity and the query
+  // (widgetFetchPublicPostDetailFn runs with the widget's Bearer identity and the query
   // re-keys on sessionVersion, so this refetches after identify). Replaces the
   // old workspace-wide anonymous flags, which advertised CTAs on boards whose
   // per-action tier requires sign-in (#191). Undefined (legacy/cached) → false.
@@ -133,23 +160,14 @@ export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
   const liveCommentCount = post?.comments ? countLiveComments(post.comments) : 0
 
   if (isLoading) {
-    return (
-      <div className="flex flex-col h-full px-3 pt-3">
-        <div className="space-y-3 animate-pulse">
-          <div className="h-5 bg-muted/50 rounded w-3/4" />
-          <div className="h-3 bg-muted/30 rounded w-1/3" />
-          <div className="h-20 bg-muted/30 rounded mt-2" />
-          <div className="h-3 bg-muted/30 rounded w-1/2 mt-4" />
-          <div className="space-y-2 mt-2">
-            <div className="h-12 bg-muted/20 rounded" />
-            <div className="h-12 bg-muted/20 rounded" />
-          </div>
-        </div>
-      </div>
-    )
+    return <WidgetPostDetailSkeleton />
   }
 
   if (error || !post) {
+    // "Post not found" is the one error we raise ourselves and can name; any
+    // other message is a transport/stack string a visitor can't act on, so
+    // show the generic line and keep the raw text in a tooltip for support.
+    const notFound = error instanceof Error && error.message === 'Post not found'
     return (
       <div className="flex flex-col items-center justify-center h-full px-4 text-center">
         <p className="text-sm text-muted-foreground">
@@ -158,13 +176,21 @@ export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
             defaultMessage="Could not load post"
           />
         </p>
-        <p className="text-xs text-muted-foreground/60 mt-1">
-          {error instanceof Error
-            ? error.message
-            : intl.formatMessage({
-                id: 'widget.postDetail.error.somethingWrong',
-                defaultMessage: 'Something went wrong',
-              })}
+        <p
+          className="text-xs text-muted-foreground/60 mt-1"
+          title={!notFound && error instanceof Error ? error.message : undefined}
+        >
+          {notFound ? (
+            <FormattedMessage
+              id="widget.postDetail.error.notFound"
+              defaultMessage="This post may have been removed or made private."
+            />
+          ) : (
+            <FormattedMessage
+              id="widget.postDetail.error.somethingWrong"
+              defaultMessage="Something went wrong"
+            />
+          )}
         </p>
       </div>
     )
@@ -172,7 +198,8 @@ export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
 
   return (
     <ScrollArea ref={scrollAreaRef} scrollBarClassName="w-1.5" className="flex-1 h-full">
-      <div className="px-3 pt-3 pb-4 space-y-3">
+      {/* Readable column when the host panel expands for long-form content. */}
+      <div className="mx-auto w-full max-w-2xl px-3 pt-3 pb-4 space-y-3">
         {/* Header: mirrors widget listing layout (vote left, status/title right) */}
         <div className="flex items-start gap-3">
           <div className="shrink-0 mt-0.5">
@@ -272,13 +299,22 @@ export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
           </div>
 
           {/* Identified viewer denied by the board's comment tier (segments/team)
-              — authorization, not auth: state it, no form or login prompt. */}
+              — authorization, not auth: state it, no form or login prompt. An
+              author-only board names that rule instead: the account is fine,
+              this thread just isn't the viewer's. */}
           {!post.isCommentsLocked && commentNoAccess && (
             <p className="text-xs text-muted-foreground/70 mb-3">
-              <FormattedMessage
-                id="widget.postDetail.commentNoAccess"
-                defaultMessage="You don't have access to comment on this board"
-              />
+              {post.replyPolicy === 'author-only' ? (
+                <FormattedMessage
+                  id="widget.postDetail.authorOnlyReplies"
+                  defaultMessage="Only the post author and team members can reply on this board"
+                />
+              ) : (
+                <FormattedMessage
+                  id="widget.postDetail.commentNoAccess"
+                  defaultMessage="You don't have access to comment on this board"
+                />
+              )}
             </p>
           )}
 
@@ -289,7 +325,7 @@ export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
               isIdentified={isIdentified}
               user={user}
               onSubmit={submitComment}
-              identifyWithEmail={identifyWithEmail}
+              onImageUpload={uploadMedia}
             />
           )}
 
@@ -320,7 +356,31 @@ export function WidgetPostDetail({ postId, statuses }: WidgetPostDetailProps) {
             pinnedCommentId={post.pinnedCommentId}
             canComment={canComment && !post.isCommentsLocked}
             onSubmitComment={handleSubmitReply}
+            onImageUpload={uploadMedia}
           />
+
+          {hasMoreComments && (
+            <div className="mt-3 flex justify-center">
+              <button
+                type="button"
+                disabled={isLoadingMoreComments}
+                onClick={() => void loadMoreComments()}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                {isLoadingMoreComments ? (
+                  <FormattedMessage
+                    id="widget.commentList.loadingMore"
+                    defaultMessage="Loading..."
+                  />
+                ) : (
+                  <FormattedMessage
+                    id="widget.commentList.showMore"
+                    defaultMessage="Show more comments"
+                  />
+                )}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </ScrollArea>

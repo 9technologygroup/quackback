@@ -7,6 +7,8 @@ import {
   badRequestResponse,
   handleDomainError,
 } from '@/lib/server/domains/api/responses'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import { HexColorSchema } from '@/lib/shared/schemas/taxonomy'
 
 // Input validation schema
 const createStatusSchema = z.object({
@@ -16,7 +18,7 @@ const createStatusSchema = z.object({
     .min(1, 'Slug is required')
     .max(50)
     .regex(/^[a-z0-9_]+$/, 'Slug must be lowercase with underscores only'),
-  color: z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'Color must be a valid hex color'),
+  color: HexColorSchema,
   category: z.enum(['active', 'complete', 'closed']),
   position: z.number().int().min(0).optional(),
   showOnRoadmap: z.boolean().optional().default(false),
@@ -32,7 +34,7 @@ export const Route = createFileRoute('/api/v1/statuses/')({
        */
       GET: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request)
 
           // Import service function
           const { listStatuses } = await import('@/lib/server/domains/statuses/status.service')
@@ -63,7 +65,7 @@ export const Route = createFileRoute('/api/v1/statuses/')({
        */
       POST: async ({ request }) => {
         try {
-          await withApiKeyAuth(request, { role: 'team' })
+          await withApiKeyAuth(request, { permission: PERMISSIONS.STATUS_MANAGE })
 
           // Parse and validate body
           const body = await request.json()

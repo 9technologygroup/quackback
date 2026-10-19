@@ -3,17 +3,18 @@ import {
   eq,
   asc,
   inArray,
-  comments,
+  postComments,
   posts,
   boards,
   principal,
-  type Comment,
+  type PostComment,
 } from '@/lib/server/db'
-import { type CommentId, type PostId, type PrincipalId } from '@quackback/ids'
+import { type PostCommentId, type PostId, type PrincipalId } from '@quackback/ids'
 import { NotFoundError } from '@/lib/shared/errors'
 import { realEmail } from '@/lib/shared/anonymous-email'
 import type { CommentThread } from './comment.types'
 import { buildCommentTree, toStatusChange } from '@/lib/shared'
+import { contentJsonForClient } from '@/lib/server/content/storage-read-urls'
 
 /**
  * Get a comment by ID
@@ -22,10 +23,10 @@ import { buildCommentTree, toStatusChange } from '@/lib/shared'
  * @returns Result containing the comment or an error
  */
 export async function getCommentById(
-  id: CommentId
-): Promise<Comment & { authorName: string | null; authorEmail: string | null }> {
-  const comment = await db.query.comments.findFirst({
-    where: eq(comments.id, id),
+  id: PostCommentId
+): Promise<PostComment & { authorName: string | null; authorEmail: string | null }> {
+  const comment = await db.query.postComments.findFirst({
+    where: eq(postComments.id, id),
     with: {
       author: {
         columns: { displayName: true },
@@ -86,8 +87,8 @@ export async function getCommentsByPost(
   }
 
   // Fetch all comments with reactions, author info, and status change data
-  const commentsWithReactions = await db.query.comments.findMany({
-    where: eq(comments.postId, postId),
+  const commentsWithReactions = await db.query.postComments.findMany({
+    where: eq(postComments.postId, postId),
     with: {
       reactions: true,
       author: {
@@ -100,7 +101,7 @@ export async function getCommentsByPost(
         columns: { name: true, color: true },
       },
     },
-    orderBy: asc(comments.createdAt),
+    orderBy: asc(postComments.createdAt),
   })
 
   // Batch-load the reactors' display names (for the reaction hover tooltip);
@@ -125,7 +126,7 @@ export async function getCommentsByPost(
     principalId: comment.principalId,
     authorName: comment.author?.displayName ?? null,
     content: comment.content,
-    contentJson: comment.contentJson ?? null,
+    contentJson: contentJsonForClient(comment.contentJson ?? null),
     isTeamMember: comment.isTeamMember,
     isPrivate: comment.isPrivate,
     createdAt: comment.createdAt,

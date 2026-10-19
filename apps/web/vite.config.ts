@@ -6,6 +6,9 @@ import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import { execSync } from 'child_process'
 import { readFileSync } from 'fs'
+import { CLIENT_PROTECTED_SPECIFIERS } from './src/lib/server/policy/client-import-protection'
+import { routeChunksImportTheirParent } from './src/lib/build/route-chunk-parents'
+import { serverWorkers } from './src/lib/build/server-workers'
 
 /**
  * Replace the server-only structured logger with a no-op stub in the CLIENT
@@ -33,6 +36,92 @@ function stubServerLoggerInClient(): PluginOption {
         return stub
       }
       return null
+    },
+  }
+}
+
+/**
+ * Dev only: keep SSR-only bare imports out of the CLIENT dependency optimizer.
+ *
+ * To inline route CSS into dev SSR HTML, TanStack Start's dev-server plugin
+ * serves `/@tanstack-start/styles.css?routes=…` by crawling the SSR module
+ * graph (`start-plugin-core/src/vite/dev-server-plugin/dev-styles.ts`,
+ * `findModuleDeps`). It looks every SSR dep up through the mixed
+ * `server.moduleGraph.getModuleByUrl`, which resolves the URL in the client
+ * environment as well. Server-only packages reached that way (`pino`,
+ * `jose/errors`, `postgres`, …) have no client importer, but Vite's resolver
+ * still registers them as newly discovered client deps → re-bundle →
+ * "optimized dependencies changed. reloading". Any route chunk in flight at
+ * that moment fails with `504 Outdated Optimize Dep` / "Failed to fetch
+ * dynamically imported module", which is the blank page seen when clicking
+ * into /admin from the portal right after the dev server starts or the deps
+ * cache is invalidated.
+ *
+ * A real client import always carries its importing module, whereas Vite's
+ * plugin container substitutes `<root>/index.html` when a lookup has no
+ * importer (`EnvironmentPluginContainer.resolveId`); the optimizer's own scan
+ * additionally passes `scan: true`. So a bare specifier resolved in the client
+ * environment with that placeholder importer and no scan flag can only be the
+ * crawl. Answer it with an inert virtual module: the crawl still gets a node
+ * (with nothing to descend into) and the optimizer never hears about the
+ * package. Stylesheet specifiers are left alone — the crawl needs those (e.g.
+ * `@fontsource/…/400.css`) to resolve to real files so the CSS is inlined — as
+ * are ids with a scheme (`virtual:`, `node:`), which belong to other plugins
+ * or the browser-external shim. Production builds are untouched (`apply:
+ * 'serve'`); the upstream fix is for the crawl to use the SSR environment's
+ * own module graph.
+ */
+function keepSsrOnlyDepsOutOfClientOptimizer(): PluginOption {
+  const VIRTUAL_PREFIX = '\0quackback:ssr-only-dep:'
+  // Same shape as Vite's bareImportRE: a package name, not a path.
+  const bareSpecifierRE = /^[\w@][^:]*$/
+  const stylesheetRE = /\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/
+  return {
+    name: 'quackback:keep-ssr-only-deps-out-of-client-optimizer',
+    apply: 'serve',
+    enforce: 'pre',
+    resolveId(id, importer, options) {
+      if (this.environment?.name !== 'client' || options.scan) return null
+      const placeholderImporter = path.join(this.environment.config.root, 'index.html')
+      if (importer !== undefined && importer !== placeholderImporter) return null
+      if (!bareSpecifierRE.test(id) || stylesheetRE.test(id)) return null
+      return VIRTUAL_PREFIX + id
+    },
+    load(id) {
+      if (id.startsWith(VIRTUAL_PREFIX)) return 'export {}'
+      return null
+    },
+  }
+}
+
+/**
+ * Nitro's Vite pre-middleware skips any request it classifies as a static
+ * asset (`sec-fetch-dest: image`, or a `.png`/`.jpg`/… extension without
+ * `Accept: text/html`) and marks it `_nitroHandled` so the post-middleware
+ * never sees it either. Browser `<img src="/api/storage/…/file.png">` is
+ * exactly that shape, so the splat route never runs and Vite answers
+ * `Cannot GET`. Clear the asset signals for this prefix only; Nitro's
+ * post-middleware then serves the bytes.
+ */
+function letNitroServeStorageAssets(): PluginOption {
+  return {
+    name: 'quackback:let-nitro-serve-storage-assets',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const pathname = req.url?.split('?')[0] ?? ''
+        if (!pathname.startsWith('/api/storage/')) {
+          next()
+          return
+        }
+        // Drop dest so Nitro does not take the `image`/`style` branch.
+        delete req.headers['sec-fetch-dest']
+        const accept = req.headers.accept
+        if (typeof accept !== 'string' || !/\btext\/html\b/.test(accept)) {
+          req.headers.accept = accept ? `${accept}, text/html` : 'text/html'
+        }
+        next()
+      })
     },
   }
 }
@@ -65,7 +154,12 @@ export default defineConfig(({ mode }) => {
       __BUILD_TIME__: JSON.stringify(buildInfo.buildTime),
     },
     server: {
+      host: true,
       port: Number(process.env.PORT || 3000),
+      // Without this, a taken port silently bumps to the next free one while
+      // BASE_URL/TRUSTED_ORIGINS (and every cookie/CORS check derived from
+      // them) still point at the original port — fail loudly instead.
+      strictPort: true,
       cors: mode === 'development',
       allowedHosts: true,
       hmr: {
@@ -73,67 +167,42 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
+      // PERF_UNMINIFIED=1 keeps component names readable for the perf bench's
+      // render profiler (`bun perf/bench.ts --renders`). Never for a release.
+      ...(process.env.PERF_UNMINIFIED === '1' && { minify: false }),
       rolldownOptions: {
         // TanStack Router SSR code imports node builtins (node:stream, node:async_hooks)
         // that end up in the client bundle. Mark node: imports as external since they're
         // SSR-only code paths that never execute in the browser.
         external: [/^node:/],
-        output: {
-          // TanStack Router auto-splits each route file into its own chunk.
-          // For a page like the public portal that's ~120 modulepreload links
-          // per render — each tiny, each costing a parse + HTTP round-trip.
-          // Collapse routes (and their per-section component trees) into one
-          // chunk per top-level segment so a single portal render fetches a
-          // handful of larger chunks instead of dozens of micro-ones. Browser
-          // cache benefits stay intact (the per-segment chunk is invalidated
-          // only when something inside it changes), but cold-page modulepreload
-          // count drops sharply.
-          manualChunks: (id: string) => {
-            // Only apply to first-party code under src/. node_modules vendor
-            // splitting (react, react-dom, etc.) is left to the default heuristics.
-            if (!id.includes('/src/')) return undefined
-
-            // Files dynamically imported via React.lazy() to defer heavy
-            // client-only deps (framer-motion, recharts) MUST stay in their
-            // own auto-split chunks. Otherwise manualChunks coalesces them
-            // back into the parent route bundle and the lazy() boundary is
-            // lost — the heavy lib gets statically imported by the SSR
-            // entry chunk again. Returning undefined here lets Rollup
-            // honour the dynamic-import boundary.
-            if (
-              id.endsWith('-animated.tsx') ||
-              id.endsWith('/analytics-activity-chart.tsx') ||
-              id.endsWith('/analytics-status-chart.tsx') ||
-              id.endsWith('/components/ui/chart.tsx') ||
-              id.endsWith('/components/public/similar-posts-card.tsx')
-            ) {
-              return undefined
-            }
-
-            // Lowercase-only on purpose — fail fast if a route/component dir
-            // is renamed to something with capitals so the chunk name doesn't
-            // silently diverge.
-            const routeMatch = id.match(/\/src\/routes\/(_?[a-z][a-z0-9-]*)/)
-            if (routeMatch) {
-              // Strip leading underscore so '_portal' and 'portal' bundle together.
-              return `route-${routeMatch[1].replace(/^_/, '')}`
-            }
-
-            // Sub-group components/admin/* by second segment so the admin
-            // tree (~1.6 MB of source) splits per-section — admin/settings,
-            // admin/feedback, admin/help-center, admin/users — instead of
-            // shipping as one monolithic chunk that all admin routes parse.
-            const adminMatch = id.match(/\/src\/components\/admin\/([a-z][a-z0-9-]*)/)
-            if (adminMatch) {
-              return `components-admin-${adminMatch[1]}`
-            }
-
-            const componentMatch = id.match(/\/src\/components\/([a-z][a-z0-9-]*)/)
-            if (componentMatch) {
-              return `components-${componentMatch[1]}`
-            }
-
-            return undefined
+        // NO manualChunks pinning — deliberately. Directory-pinned chunks
+        // (route-<segment>, components-admin-<section>) looked tidy but broke
+        // code-splitting app-wide: rolldown places modules shared between a
+        // pinned chunk and the entry INSIDE the pinned chunk, so the entry
+        // imported router-core/error-page helpers *from* route-admin and every
+        // page — the portal and the embeddable /widget iframe on third-party
+        // sites — eagerly downloaded the entire admin app (~1.7 MB gzipped).
+        // Usage-based splitting keeps the eager set honest (~400-500 KB gz)
+        // at the cost of more, smaller chunks (fine over HTTP/2).
+        // scripts/check-widget-bundle.ts guards the widget's eager graph in CI.
+      },
+    },
+    environments: {
+      client: {
+        build: {
+          rolldownOptions: {
+            output: {
+              codeSplitting: {
+                // Merge the client entry's static import closure into the
+                // entry chunk. Every document loads all of it before it can
+                // hydrate, so this moves no code across a lazy boundary; it
+                // only stops usage-based splitting from cutting that eager
+                // set into ~200 tiny chunks, each a request on every first
+                // load. `$initial` is rolldown's tag for exactly that set, so
+                // unlike directory pinning it cannot pull a lazy module in.
+                groups: [{ name: 'entry', tags: ['$initial'] }],
+              },
+            },
           },
         },
       },
@@ -142,10 +211,27 @@ export default defineConfig(({ mode }) => {
       tsconfigPaths: true,
     },
     plugins: [
+      // `?server-worker` imports: worker-thread scripts for server code.
+      serverWorkers(),
+      letNitroServeStorageAssets(),
+      keepSsrOnlyDepsOutOfClientOptimizer(),
       stubServerLoggerInClient(),
       tailwindcss(),
       nitro({
         preset: 'bun',
+        // The file-preview job's PDF engine loads `mupdf-wasm.wasm` from
+        // beside its own module, which a bundled chunk would not have: keep
+        // the whole package in the traced server node_modules instead.
+        traceDeps: ['mupdf*'],
+        // The bare Bun preset has no reverse proxy in front of it, so
+        // without this every static asset ships uncompressed: gzip and
+        // brotli siblings are written next to each build asset over 1 KB
+        // (nitro/dist/_build/common.mjs compressPublicAssets) and the
+        // static handler picks whichever the client's Accept-Encoding
+        // allows, setting Content-Encoding and Vary itself. Dynamic
+        // responses (SSR documents, server-function JSON) are unaffected;
+        // see compression.ts for those.
+        compressPublicAssets: { gzip: true, brotli: true },
       }),
       tanstackStart({
         srcDirectory: 'src',
@@ -155,22 +241,13 @@ export default defineConfig(({ mode }) => {
         },
         importProtection: {
           behavior: { dev: 'error', build: 'error' },
-          client: {
-            specifiers: [
-              'postgres',
-              '@quackback/db',
-              '@quackback/db/client',
-              '@quackback/db/schema',
-              'bullmq',
-              'ioredis',
-              'openai',
-              '@quackback/logger',
-              'pino',
-            ],
-          },
+          client: { specifiers: [...CLIENT_PROTECTED_SPECIFIERS] },
         },
       }),
       viteReact(),
+      // A route's chunks import the chunk of the route they render under, so
+      // what a layout shares with its pages stays in the layout's chunk.
+      routeChunksImportTheirParent(path.resolve(__dirname, 'src/routeTree.gen.ts')),
     ].filter(Boolean) as PluginOption[],
   }
 })

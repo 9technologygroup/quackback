@@ -10,7 +10,8 @@ import {
   getIntegrationActionVerb,
   getIntegrationDisplayName,
   getIntegrationItemNoun,
-} from '@/lib/shared/integrations'
+  formatExternalId,
+} from '@/components/admin/settings/integrations/integration-ui'
 
 // ============================================================================
 // Types
@@ -23,6 +24,7 @@ export interface ExternalLinkInfo {
   externalDisplayId: string | null
   externalUrl: string | null
   integrationActive: boolean
+  syncManaged: boolean
   onDeleteDefault: 'archive' | 'nothing'
 }
 
@@ -34,12 +36,6 @@ export interface CascadeChoice {
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/** Format an external ID for display (e.g., "#142") */
-function formatExternalId(integrationType: string, externalId: string): string {
-  if (integrationType === 'github') return `#${externalId}`
-  return externalId
-}
 
 /** Get the best display ID available */
 function getDisplayId(link: ExternalLinkInfo): string {
@@ -86,7 +82,8 @@ export function DeletePostDialog({
     if (open && externalLinks) {
       const defaults: Record<string, boolean> = {}
       for (const link of externalLinks) {
-        defaults[link.id] = link.integrationActive && link.onDeleteDefault === 'archive'
+        defaults[link.id] =
+          link.integrationActive && link.syncManaged && link.onDeleteDefault === 'archive'
       }
       setChoices(defaults)
     }
@@ -152,14 +149,13 @@ export function DeletePostDialog({
       {hasLinks && (
         <div className="rounded-lg border border-border/50 p-4 space-y-3">
           {externalLinks.map((link) => {
-            const disabled = !link.integrationActive
+            const disabled = !link.integrationActive || !link.syncManaged
             const checked = choices[link.id] ?? false
             const verb = getIntegrationActionVerb(link.integrationType)
             const name = getIntegrationDisplayName(link.integrationType)
             const noun = getIntegrationItemNoun(link.integrationType)
             const displayId = getDisplayId(link)
             const Icon = INTEGRATION_ICON_MAP[link.integrationType]
-            const pastTense = verb === 'Close' ? 'closed' : 'archived'
 
             return (
               <div key={link.id} className="flex items-start gap-3">
@@ -179,16 +175,20 @@ export function DeletePostDialog({
                   >
                     {Icon && <Icon className="h-4 w-4 shrink-0" />}
                     <span>
-                      {disabled
+                      {!link.integrationActive
                         ? `${name} ${noun} (disconnected)`
-                        : `${verb} linked ${name} ${noun}`}
+                        : !link.syncManaged
+                          ? `${name} ${noun} (reference only)`
+                          : `Review ${name} ${noun} for ${verb.toLowerCase() === 'close' ? 'closing' : 'archiving'}`}
                     </span>
                   </Label>
                   <p className="text-xs text-muted-foreground mt-0.5 ml-6">
                     <code className="rounded bg-muted px-1 py-0.5 text-[11px]">{displayId}</code>
-                    {disabled
-                      ? ` — integration disconnected, cannot ${verb.toLowerCase()}`
-                      : ` will be ${pastTense} in ${name}.`}
+                    {!link.integrationActive
+                      ? `: integration disconnected, cannot ${verb.toLowerCase()}.`
+                      : !link.syncManaged
+                        ? `: manage this item directly on ${name}.`
+                        : ' will be added to sync history for manual review.'}
                   </p>
                 </div>
               </div>

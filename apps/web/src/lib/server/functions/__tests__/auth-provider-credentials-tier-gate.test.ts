@@ -23,6 +23,11 @@ vi.mock('@/lib/server/domains/settings/tier-limits.service', () => ({
   getTierLimits: hoisted.mockGetTierLimits,
 }))
 
+// The save path now SSRF-validates custom-OIDC URLs; keep this suite off real DNS.
+vi.mock('@/lib/server/content/ssrf-guard', () => ({
+  checkUrlSafety: vi.fn(async () => ({ safe: true, address: '93.184.216.34', family: 4 })),
+}))
+
 import { OSS_TIER_LIMITS } from '@/lib/server/domains/settings/tier-limits.types'
 import { saveAuthProviderCredentialsFn } from '../auth-provider-credentials'
 
@@ -52,7 +57,7 @@ describe('saveAuthProviderCredentialsFn — customOidcProvider gate', () => {
     expect(hoisted.mockSavePlatformCredentials).not.toHaveBeenCalled()
   })
 
-  it('allows generic-oauth save when feature is on (Scale tier / OSS default)', async () => {
+  it('allows generic-oauth save when feature is on (Enterprise tier / OSS default)', async () => {
     hoisted.mockGetTierLimits.mockResolvedValue(OSS_TIER_LIMITS)
 
     await saveAuthProviderCredentialsFn({

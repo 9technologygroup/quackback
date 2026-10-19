@@ -1,30 +1,29 @@
-import type { IntegrationDefinition, IntegrationCatalogEntry } from './types'
-import type { HookHandler } from '../events/hook-types'
-import { slackIntegration } from './slack'
-import { discordIntegration } from './discord'
-import { linearIntegration } from './linear'
-import { jiraIntegration } from './jira'
-import { githubIntegration } from './github'
-import { intercomIntegration } from './intercom'
-import { teamsIntegration } from './teams'
-import { zendeskIntegration } from './zendesk'
-import { hubspotIntegration } from './hubspot'
-import { asanaIntegration } from './asana'
-import { clickupIntegration } from './clickup'
-import { shortcutIntegration } from './shortcut'
-import { zapierIntegration } from './zapier'
-import { azureDevOpsIntegration } from './azure-devops'
-import { notionIntegration } from './notion'
-import { trelloIntegration } from './trello'
-import { gitlabIntegration } from './gitlab'
-import { stripeIntegration } from './stripe'
-import { mondayIntegration } from './monday'
-import { freshdeskIntegration } from './freshdesk'
-import { salesforceIntegration } from './salesforce'
-import { n8nIntegration } from './n8n'
-import { makeIntegration } from './make'
-import { segmentIntegration } from './segment'
-import { ntfyIntegration } from './ntfy'
+import type { IntegrationDefinition, IntegrationCatalogEntry, IntegrationCapability } from './types'
+import { slackIntegration } from '@/integrations/slack/server'
+import { discordIntegration } from '@/integrations/discord/server'
+import { linearIntegration } from '@/integrations/linear/server'
+import { jiraIntegration } from '@/integrations/jira/server'
+import { githubIntegration } from '@/integrations/github/server'
+import { intercomIntegration } from '@/integrations/intercom/server'
+import { teamsIntegration } from '@/integrations/teams/server'
+import { zendeskIntegration } from '@/integrations/zendesk/server'
+import { hubspotIntegration } from '@/integrations/hubspot/server'
+import { asanaIntegration } from '@/integrations/asana/server'
+import { clickupIntegration } from '@/integrations/clickup/server'
+import { shortcutIntegration } from '@/integrations/shortcut/server'
+import { zapierIntegration } from '@/integrations/zapier/server'
+import { azureDevOpsIntegration } from '@/integrations/azure-devops/server'
+import { notionIntegration } from '@/integrations/notion/server'
+import { trelloIntegration } from '@/integrations/trello/server'
+import { gitlabIntegration } from '@/integrations/gitlab/server'
+import { stripeIntegration } from '@/integrations/stripe/server'
+import { mondayIntegration } from '@/integrations/monday/server'
+import { freshdeskIntegration } from '@/integrations/freshdesk/server'
+import { salesforceIntegration } from '@/integrations/salesforce/server'
+import { n8nIntegration } from '@/integrations/n8n/server'
+import { makeIntegration } from '@/integrations/make/server'
+import { segmentIntegration } from '@/integrations/segment/server'
+import { ntfyIntegration } from '@/integrations/ntfy/server'
 
 const registry = new Map<string, IntegrationDefinition>([
   [slackIntegration.id, slackIntegration],
@@ -63,20 +62,113 @@ export function listIntegrationTypes(): string[] {
   return [...registry.keys()]
 }
 
-export async function getIntegrationCatalog(): Promise<IntegrationCatalogEntry[]> {
-  const { getConfiguredIntegrationTypes } =
-    await import('@/lib/server/domains/platform-credentials/platform-credential.service')
-  const configuredTypes = await getConfiguredIntegrationTypes()
-  return Array.from(registry.values()).map((i) => ({
-    ...i.catalog,
-    available: i.platformCredentials.length === 0 || configuredTypes.has(i.id),
-    configurable: i.platformCredentials.length > 0,
-    platformCredentialFields: i.platformCredentials,
-  }))
+/**
+ * Capability badges derived from the definition's slots, flavored by the
+ * catalog category (taxonomy, not a capability claim) — so the catalog
+ * cannot advertise what a provider does not implement. Lookup providers
+ * use their context capability to describe on-demand customer details.
+ */
+function deriveCapabilities(i: IntegrationDefinition): IntegrationCapability[] {
+  const name = i.catalog.name
+  const caps: IntegrationCapability[] = []
+
+  if (i.hook) {
+    switch (i.catalog.category) {
+      case 'issue_tracking':
+        caps.push({
+          label: 'Create items from feedback',
+          description: `Automatically create ${name} items when new feedback is submitted`,
+        })
+        break
+      case 'notifications':
+        caps.push({
+          label: 'Channel notifications',
+          description: `Send feedback updates to ${name}`,
+        })
+        break
+      case 'automation':
+        caps.push({
+          label: 'Event triggers',
+          description: `Send feedback events to ${name} to power your automations`,
+        })
+        break
+      default:
+        caps.push({
+          label: 'Event delivery',
+          description: `Send subscribed events to ${name}`,
+        })
+    }
+  }
+
+  if (i.inbound && i.webhookRegistration) {
+    caps.push({
+      label:
+        i.inbound.statusMode === 'automatic' ? 'Receive status updates' : 'Review status updates',
+      description:
+        i.inbound.statusMode === 'automatic'
+          ? `Verified status changes in ${name} update linked feedback in Quackback`
+          : `Status changes from ${name} appear in Sync history for manual review`,
+    })
+  }
+
+  if (i.listExternalStatuses) {
+    caps.push({
+      label: 'Review outbound status changes',
+      description: `Review mapped Quackback status changes before applying them in ${name}`,
+    })
+  }
+
+  if (i.issues?.parseRef || i.issues?.inspect) {
+    caps.push({
+      label: 'Link existing items',
+      description: `Link posts and tickets to existing ${name} items`,
+    })
+  }
+
+  if (i.linkedItems) {
+    caps.push({
+      label: 'Review cleanup on delete',
+      description: `Review linked ${name} items for closing or archiving when feedback is deleted`,
+    })
+  }
+
+  if (i.context) {
+    caps.push({
+      label: 'Customer context',
+      description: `Look up customer details in ${name} on demand`,
+    })
+  }
+
+  if (i.userSync) {
+    caps.push({
+      label: 'User data sync',
+      description: `Sync user attributes and segment membership with ${name}`,
+    })
+  }
+
+  return caps
 }
 
-export function getIntegrationHook(type: string): HookHandler | undefined {
-  return registry.get(type)?.hook
+export async function getIntegrationCatalog(): Promise<IntegrationCatalogEntry[]> {
+  const { getConfiguredIntegrationTypes, arePlatformCredentialsManaged } =
+    await import('@/lib/server/domains/platform-credentials/platform-credential.service')
+  const configuredTypes = await getConfiguredIntegrationTypes()
+  return Promise.all(
+    Array.from(registry.values()).map(async (i) => {
+      const derived = deriveCapabilities(i)
+      const managed = await arePlatformCredentialsManaged(i.id)
+      const hasPlatformApp =
+        i.platformCredentials.length === 0 || configuredTypes.has(i.id) || managed
+      return {
+        ...i.catalog,
+        capabilities: derived.length > 0 ? derived : (i.catalog.capabilities ?? []),
+        available: hasPlatformApp,
+        managed,
+        configurable: i.platformCredentials.length > 0,
+        platformCredentialFields: i.platformCredentials,
+      }
+    })
+  )
 }
 
 export function getIntegrationInbound(type: string) {

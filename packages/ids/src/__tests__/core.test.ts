@@ -7,12 +7,14 @@ import {
   parseTypeId,
   getTypeIdPrefix,
   isValidTypeId,
+  isTypeId,
   isUuid,
   isTypeIdFormat,
   batchFromUuid,
   batchToUuid,
   normalizeToUuid,
   ensureTypeId,
+  typeIdLookupKeys,
 } from '../core'
 import { ID_PREFIXES } from '../prefixes'
 
@@ -34,11 +36,11 @@ describe('TypeID Core', () => {
     it('generates IDs with different prefixes', () => {
       const postId = generateId('post')
       const boardId = generateId('board')
-      const commentId = generateId('comment')
+      const commentId = generateId('post_comment')
 
       expect(postId).toMatch(/^post_/)
       expect(boardId).toMatch(/^board_/)
-      expect(commentId).toMatch(/^comment_/)
+      expect(commentId).toMatch(/^post_comment_/)
     })
 
     it('generates time-ordered IDs (UUIDv7)', () => {
@@ -136,7 +138,7 @@ describe('TypeID Core', () => {
     })
 
     it('works with different prefixes', () => {
-      const prefixes = ['post', 'board', 'comment', 'workspace', 'user'] as const
+      const prefixes = ['post', 'board', 'post_comment', 'workspace', 'user'] as const
 
       for (const prefix of prefixes) {
         const typeId = generateId(prefix)
@@ -272,6 +274,33 @@ describe('TypeID Core', () => {
     it('throws for wrong prefix', () => {
       const boardId = generateId('board')
       expect(() => ensureTypeId(boardId, 'post')).toThrow('Invalid post ID')
+    })
+  })
+
+  describe('article prefix alias', () => {
+    it('createId(kb_article) emits article_', () => {
+      const id = createId('kb_article')
+      expect(id).toMatch(/^article_/)
+      expect(ID_PREFIXES.kb_article).toBe('article')
+    })
+
+    it('accepts retired kb_article_ ids as article ids', () => {
+      const canonical = generateId('article')
+      const legacy = `kb_article_${canonical.slice('article_'.length)}`
+      expect(isValidTypeId(legacy, 'article')).toBe(true)
+      expect(isValidTypeId(canonical, 'article')).toBe(true)
+      expect(isTypeId(legacy, 'article')).toBe(false)
+      expect(isTypeId(canonical, 'article')).toBe(true)
+      expect(toUuid(legacy)).toBe(toUuid(canonical))
+      expect(ensureTypeId(legacy, 'article')).toBe(canonical)
+      expect(normalizeToUuid(legacy, 'article')).toBe(toUuid(canonical))
+      expect(typeIdLookupKeys(legacy, 'article')).toEqual([canonical, legacy])
+      expect(typeIdLookupKeys(canonical, 'article')).toEqual([canonical, legacy])
+    })
+
+    it('typeIdLookupKeys is only the canonical form when there is no alias', () => {
+      const postId = generateId('post')
+      expect(typeIdLookupKeys(postId, 'post')).toEqual([postId])
     })
   })
 })

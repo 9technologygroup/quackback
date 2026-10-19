@@ -14,12 +14,18 @@
     "./migrate": "./src/migrate-runtime.ts",
     "./queries/public": "./src/queries/public.ts",
     "./types": "./src/types.ts",
-    "./drizzle/*": "./drizzle/*"
+    "./drizzle/*": "./drizzle/*",
+    "./schema-version": "./src/schema-version.ts",
+    "./schema-ops": "./src/schema-ops.ts",
+    "./email/personal-email-domains": "./src/email/personal-email-domains.ts"
   },
   "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.check.json",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run src/migrate.ts",
     "db:migrate:cli": "drizzle-kit migrate",
+    "db:check-drift": "bun scripts/check-drift.ts",
+    "db:permissions": "bun scripts/generate-permissions-mirror.ts",
     "db:studio": "drizzle-kit studio",
     "db:seed": "bun src/seed.ts",
     "db:reset": "bun src/reset.ts",
@@ -28,14 +34,14 @@
   "dependencies": {
     "@quackback/ids": "workspace:*",
     "drizzle-orm": "^0.45.2",
-    "postgres": "^3.4.8"
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
-    "@faker-js/faker": "^10.4.0",
+    "@faker-js/faker": "^10.6.0",
     "@types/bcryptjs": "^3.0.0",
-    "@types/bun": "^1.3.11",
+    "@types/bun": "^1.4.2",
     "bcryptjs": "^3.0.3",
-    "dotenv": "^17.4.0",
+    "dotenv": "^18.0.8",
     "drizzle-kit": "^0.31.10"
   }
 }

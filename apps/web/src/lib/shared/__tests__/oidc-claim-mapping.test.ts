@@ -1,0 +1,242 @@
+import { describe, it, expect } from 'vitest'
+import type {
+  ClaimRoleMapping as DbClaimRoleMapping,
+  IdentityProviderClaimMapping as DbIdentityProviderClaimMapping,
+  IdentitySource as DbIdentitySource,
+  ProfileField as DbProfileField,
+} from '@/lib/shared/db-types'
+import {
+  DEFAULT_IDENTITY_SOURCES,
+  IDENTITY_SOURCES,
+  claimMappingFor,
+  profileClaimFor,
+  roleMappingFor,
+  allowsMissingEmail,
+  getClaimByPath,
+  identityMappingFor,
+  isProfileField,
+  OIDC_PROFILE_DEFAULTS,
+  PROFILE_FIELDS,
+  profileSyncEnabled,
+  type ClaimRoleMapping,
+  type IdentityProviderClaimMapping,
+  type IdentitySource,
+  type ProfileField,
+} from '../oidc-claim-mapping'
+
+type Equal<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false
+type Expect<T extends true> = T
+
+type _MappingTypesAgree = Expect<
+  Equal<DbIdentityProviderClaimMapping, IdentityProviderClaimMapping>
+>
+type _RoleTypesAgree = Expect<Equal<DbClaimRoleMapping, ClaimRoleMapping>>
+type _SourceTypesAgree = Expect<Equal<DbIdentitySource, IdentitySource>>
+type _FieldTypesAgree = Expect<Equal<DbProfileField, ProfileField>>
+type _SourceConstAgrees = Expect<Equal<IdentitySource, (typeof IDENTITY_SOURCES)[number]>>
+
+const _mappingTypesAgree: _MappingTypesAgree = true
+const _roleTypesAgree: _RoleTypesAgree = true
+const _sourceTypesAgree: _SourceTypesAgree = true
+const _fieldTypesAgree: _FieldTypesAgree = true
+const _sourceConstAgrees: _SourceConstAgrees = true
+
+/**
+ * The sectioned `claim_mapping` column, read the same way by sign-in and by the
+ * connection test. `attribute_mapping` was the role mapping under a misleading
+ * name; it is now the `role` section here, so there is one place a claim is
+ * turned into meaning rather than three.
+ */
+describe('canonical mapping types', () => {
+  it('keeps the DB and shared exported mapping types assigned to each other', () => {
+    expect(_mappingTypesAgree).toBe(true)
+    expect(_roleTypesAgree).toBe(true)
+    expect(_sourceTypesAgree).toBe(true)
+    expect(_fieldTypesAgree).toBe(true)
+    expect(_sourceConstAgrees).toBe(true)
+  })
+})
+
+describe('claimMappingFor', () => {
+  it('treats an absent column as "no configuration", not as an error', () => {
+    const m = claimMappingFor(null)
+    expect(m).toEqual({})
+    expect(profileClaimFor(null, 'email')).toBeUndefined()
+    expect(roleMappingFor(null)).toBeUndefined()
+  })
+
+  it('ignores a malformed value rather than letting it reach sign-in', () => {
+    // A hand-edited row, or a shape from a future version. Sign-in must not
+    // throw on it; the standard claims are a working fallback.
+    expect(claimMappingFor('not an object' as unknown)).toEqual({})
+    expect(claimMappingFor(42 as unknown)).toEqual({})
+    expect(claimMappingFor([] as unknown)).toEqual({})
+  })
+})
+
+describe('profileClaimFor', () => {
+  it('returns the configured claim path for a field', () => {
+    const m: IdentityProviderClaimMapping = {
+      profile: { claims: { email: 'https://acme.com/mail', name: 'preferred_username' } },
+    }
+    expect(profileClaimFor(m, 'email')).toBe('https://acme.com/mail')
+    expect(profileClaimFor(m, 'name')).toBe('preferred_username')
+  })
+
+  it('returns undefined for a field left unset so the standard claim is used', () => {
+    const m: IdentityProviderClaimMapping = { profile: { claims: { email: 'mail' } } }
+    expect(profileClaimFor(m, 'name')).toBeUndefined()
+    expect(profileClaimFor(m, 'id')).toBeUndefined()
+  })
+
+  it('treats an empty or whitespace path as unset', () => {
+    // The editor sends '' for a cleared input; that must not become a lookup
+    // for a claim literally named ''.
+    const m: IdentityProviderClaimMapping = { profile: { claims: { email: '   ', name: '' } } }
+    expect(profileClaimFor(m, 'email')).toBeUndefined()
+    expect(profileClaimFor(m, 'name')).toBeUndefined()
+  })
+})
+
+describe('identity sources', () => {
+  it('defaults to the id token then userinfo, with the access token opt-in', () => {
+    expect(DEFAULT_IDENTITY_SOURCES).toEqual(['idToken', 'userinfo'])
+    expect(claimMappingFor({}).profile?.sources).toBeUndefined()
+  })
+
+  it('keeps a configured order and drops anything unrecognised', () => {
+    const m = claimMappingFor({
+      profile: { sources: ['accessTokenJwt', 'idToken', 'telepathy'] },
+    })
+    expect(m.profile?.sources).toEqual(['accessTokenJwt', 'idToken'])
+  })
+})
+
+describe('allowsMissingEmail', () => {
+  it('is off unless the admin turned it on', () => {
+    // Minting a placeholder is one-way, so it is never the default.
+    expect(allowsMissingEmail(null)).toBe(false)
+    expect(allowsMissingEmail({})).toBe(false)
+    expect(allowsMissingEmail({ profile: {} })).toBe(false)
+  })
+
+  it('is on only for a literal true', () => {
+    expect(allowsMissingEmail({ profile: { allowMissingEmail: true } })).toBe(true)
+    expect(
+      allowsMissingEmail({ profile: { allowMissingEmail: 'yes' as unknown as boolean } })
+    ).toBe(false)
+  })
+})
+
+describe('roleMappingFor', () => {
+  it('reads the role section', () => {
+    const m: IdentityProviderClaimMapping = {
+      role: {
+        claimPath: 'realm_access.roles',
+        rules: [{ whenContains: 'staff', role: 'member' }],
+        syncOnEverySignIn: true,
+      },
+    }
+    const role = roleMappingFor(m)
+    expect(role?.claimPath).toBe('realm_access.roles')
+    expect(role?.rules).toHaveLength(1)
+    expect(role?.syncOnEverySignIn).toBe(true)
+  })
+
+  it('drops a role section with no usable claim path', () => {
+    // Rules cannot be evaluated without a path, and a half-configured mapping
+    // silently matching nothing is worse than no mapping at all.
+    expect(roleMappingFor({ role: { claimPath: '', rules: [] } })).toBeUndefined()
+  })
+
+  it('drops rules that name a role outside the known set', () => {
+    const role = roleMappingFor({
+      role: {
+        claimPath: 'groups',
+        rules: [
+          { whenContains: 'a', role: 'admin' },
+          { whenContains: 'b', role: 'superuser' as unknown as 'admin' },
+        ],
+      },
+    })
+    expect(role?.rules).toEqual([{ whenContains: 'a', role: 'admin' }])
+  })
+})
+
+describe('getClaimByPath', () => {
+  it('prefers an exact key match before treating dots as a path', () => {
+    const claims = { 'https://acme.com/email': 'ns@x.com', contact: { email: 'nested@x.com' } }
+    expect(getClaimByPath(claims, 'https://acme.com/email')).toBe('ns@x.com')
+    expect(getClaimByPath(claims, 'contact.email')).toBe('nested@x.com')
+  })
+})
+
+describe('attributes section', () => {
+  it('reads the map, override, and sync-on-sign-in flags', () => {
+    const m = claimMappingFor({
+      attributes: {
+        map: [{ claimPath: 'department', attributeKey: 'dept' }],
+        overrideExisting: true,
+        syncOnSignIn: true,
+      },
+    })
+    expect(m.attributes?.map).toEqual([{ claimPath: 'department', attributeKey: 'dept' }])
+    expect(m.attributes?.overrideExisting).toBe(true)
+    expect(m.attributes?.syncOnSignIn).toBe(true)
+  })
+})
+
+describe('avatar and username profile fields', () => {
+  it('reads image and username claim paths and the profile sync flag', () => {
+    const m = claimMappingFor({
+      profile: {
+        claims: { image: 'photo_url', username: 'user.handle' },
+        syncOnSignIn: true,
+      },
+    })
+    expect(m.profile?.claims).toEqual({ image: 'photo_url', username: 'user.handle' })
+    expect(m.profile?.syncOnSignIn).toBe(true)
+    expect(profileClaimFor({ profile: { claims: { image: ' photo_url ' } } }, 'image')).toBe(
+      'photo_url'
+    )
+  })
+
+  it('turns sync on only for a literal true', () => {
+    expect(profileSyncEnabled({ profile: { syncOnSignIn: 'true' } })).toBe(false)
+    expect(profileSyncEnabled({ profile: { syncOnSignIn: 1 } })).toBe(false)
+    expect(profileSyncEnabled(null)).toBe(false)
+    expect(profileSyncEnabled({ profile: { syncOnSignIn: true } })).toBe(true)
+  })
+
+  it('hands the image and username paths to the identity resolver', () => {
+    expect(
+      identityMappingFor({ profile: { claims: { image: 'photo_url', username: 'handle' } } })
+    ).toEqual({
+      sources: DEFAULT_IDENTITY_SOURCES,
+      imageClaim: 'photo_url',
+      usernameClaim: 'handle',
+    })
+    expect(identityMappingFor(null)).toEqual({ sources: DEFAULT_IDENTITY_SOURCES })
+  })
+})
+
+describe('profile field vocabulary', () => {
+  it('names the standard claim every profile field reads when unmapped', () => {
+    expect(OIDC_PROFILE_DEFAULTS).toEqual({
+      id: 'sub',
+      email: 'email',
+      name: 'name',
+      username: 'preferred_username',
+      image: 'picture',
+    })
+    expect(Object.keys(OIDC_PROFILE_DEFAULTS).sort()).toEqual([...PROFILE_FIELDS].sort())
+  })
+
+  it('recognises exactly the profile fields', () => {
+    for (const field of PROFILE_FIELDS) expect(isProfileField(field)).toBe(true)
+    expect(isProfileField('picture')).toBe(false)
+    expect(isProfileField('__proto__')).toBe(false)
+    expect(isProfileField(1)).toBe(false)
+  })
+})

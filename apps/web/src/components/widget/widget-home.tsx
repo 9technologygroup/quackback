@@ -24,6 +24,10 @@ function WidgetHomeFallback() {
               <input
                 type="text"
                 readOnly
+                aria-label={intl.formatMessage({
+                  id: 'widget.home.input.label',
+                  defaultMessage: 'Feedback title',
+                })}
                 placeholder={intl.formatMessage({
                   id: 'widget.home.input.placeholder',
                   defaultMessage: "What's your idea?",

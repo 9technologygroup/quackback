@@ -1,5 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import type { SitemapUrl } from '@/lib/server/sitemap'
+import { notTestPrincipal } from '@/lib/server/test-data'
+import { publicWorkspaceCacheHeaders } from '@/lib/server/workspaces/http-cache'
 
 export const Route = createFileRoute('/sitemap.xml')({
   server: {
@@ -17,13 +19,14 @@ export const Route = createFileRoute('/sitemap.xml')({
         const baseUrl = config.baseUrl
 
         // Private portals must not expose URLs to search engines.
-        const { getTenantSettings } = await import('@/lib/server/domains/settings/settings.service')
-        const tenant = await getTenantSettings()
-        if (tenant?.portalConfig?.access?.visibility === 'private') {
+        const { getWorkspaceSettings } =
+          await import('@/lib/server/domains/settings/settings.service')
+        const workspace = await getWorkspaceSettings()
+        if (workspace?.portalConfig?.access?.visibility === 'private') {
           return new Response(renderSitemap([], baseUrl, null) ?? '', {
             headers: {
               'Content-Type': 'application/xml; charset=utf-8',
-              'Cache-Control': 'public, max-age=3600',
+              ...publicWorkspaceCacheHeaders(3600),
             },
           })
         }
@@ -39,7 +42,8 @@ export const Route = createFileRoute('/sitemap.xml')({
         return new Response(xml, {
           headers: {
             'Content-Type': 'application/xml; charset=utf-8',
-            'Cache-Control': 'public, max-age=3600',
+            // The sitemap is per-workspace content on a path every workspace shares.
+            ...publicWorkspaceCacheHeaders(3600),
           },
         })
       },
@@ -52,26 +56,33 @@ async function collectUrls(baseUrl: string): Promise<SitemapUrl[]> {
     { db, changelogEntries, and, desc, eq, sql },
     { publicChangelogConditions },
     { toIsoDateOnly },
+    { getFeatureFlags },
   ] = await Promise.all([
     import('@/lib/server/db'),
     import('@/lib/server/domains/changelog/changelog.public'),
     import('@/lib/shared/utils/date'),
+    import('@/lib/server/domains/settings/settings.service'),
   ])
 
   const effectiveDisplayDate = sql<Date>`coalesce(${changelogEntries.displayDate}, ${changelogEntries.publishedAt})`
 
   const urls: SitemapUrl[] = []
+  const flags = await getFeatureFlags()
 
   // Static pages
-  urls.push({ loc: baseUrl })
-  urls.push({ loc: `${baseUrl}/roadmap` })
-  urls.push({ loc: `${baseUrl}/changelog` })
+  if (flags.feedback) {
+    urls.push({ loc: baseUrl })
+    urls.push({ loc: `${baseUrl}/roadmap` })
+  }
+  if (flags.changelog) urls.push({ loc: `${baseUrl}/changelog` })
 
-  const entries = await db
-    .select({ id: changelogEntries.id, updatedAt: changelogEntries.updatedAt })
-    .from(changelogEntries)
-    .where(and(...publicChangelogConditions(new Date())))
-    .orderBy(desc(effectiveDisplayDate))
+  const entries = flags.changelog
+    ? await db
+        .select({ id: changelogEntries.id, updatedAt: changelogEntries.updatedAt })
+        .from(changelogEntries)
+        .where(and(...publicChangelogConditions(new Date())))
+        .orderBy(desc(effectiveDisplayDate))
+    : []
 
   for (const entry of entries) {
     urls.push({
@@ -84,20 +95,23 @@ async function collectUrls(baseUrl: string): Promise<SitemapUrl[]> {
   // Sitemap is anonymous-public by definition — only boards whose view
   // tier is 'anonymous' belong here. Stricter tiers require auth and
   // should not be discoverable via Google.
-  const publicPosts = await db.query.posts.findMany({
-    where: (table, { and, isNull }) =>
-      and(
-        isNull(table.deletedAt),
-        eq(table.moderationState, 'published'),
-        isNull(table.canonicalPostId)
-      ),
-    columns: { id: true, updatedAt: true },
-    with: {
-      board: {
-        columns: { slug: true, access: true, deletedAt: true },
-      },
-    },
-  })
+  const publicPosts = flags.feedback
+    ? await db.query.posts.findMany({
+        where: (table, { and, isNull }) =>
+          and(
+            isNull(table.deletedAt),
+            eq(table.moderationState, 'published'),
+            isNull(table.canonicalPostId),
+            notTestPrincipal(table.principalId)
+          ),
+        columns: { id: true, updatedAt: true },
+        with: {
+          board: {
+            columns: { slug: true, access: true, deletedAt: true },
+          },
+        },
+      })
+    : []
 
   for (const post of publicPosts) {
     if (post.board?.slug && post.board.access?.view === 'anonymous' && !post.board.deletedAt) {

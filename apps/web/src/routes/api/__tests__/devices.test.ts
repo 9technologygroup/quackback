@@ -6,9 +6,10 @@ vi.mock('@/lib/server/auth/session', () => ({
 }))
 
 const findFirst = vi.fn()
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: { query: { principal: { findFirst: (...a: unknown[]) => findFirst(...a) } } },
-  principal: { userId: 'principal.userId' },
   eq: (col: unknown, val: unknown) => ({ __eq: [col, val] }),
 }))
 
@@ -61,6 +62,13 @@ describe('POST /api/devices', () => {
     expect(registerDevice).not.toHaveBeenCalled()
   })
 
+  it('403s a widget-scoped session', async () => {
+    getSession.mockResolvedValue({ user: { id: 'user_1' }, session: { scope: 'widget' } })
+    const res = await handleRegisterDevice(post({ token: 't', platform: 'ios' }))
+    expect(res.status).toBe(403)
+    expect(registerDevice).not.toHaveBeenCalled()
+  })
+
   it('registers the device for the resolved principal', async () => {
     getSession.mockResolvedValue({ user: { id: 'user_1' } })
     findFirst.mockResolvedValue({ id: 'principal_1' })
@@ -85,6 +93,13 @@ describe('DELETE /api/devices', () => {
   it('403s when the user has no principal', async () => {
     getSession.mockResolvedValue({ user: { id: 'user_1' } })
     findFirst.mockResolvedValue(undefined)
+    const res = await handleUnregisterDevice(del({ token: 'tok-1' }))
+    expect(res.status).toBe(403)
+    expect(unregisterDevice).not.toHaveBeenCalled()
+  })
+
+  it('403s a widget-scoped session', async () => {
+    getSession.mockResolvedValue({ user: { id: 'user_1' }, session: { scope: 'widget' } })
     const res = await handleUnregisterDevice(del({ token: 'tok-1' }))
     expect(res.status).toBe(403)
     expect(unregisterDevice).not.toHaveBeenCalled()

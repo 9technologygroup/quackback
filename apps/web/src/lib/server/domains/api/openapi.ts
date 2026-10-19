@@ -93,11 +93,11 @@ All API endpoints require authentication using an API key. Include your API key 
 Authorization: Bearer qb_your_api_key_here
 \`\`\`
 
-API keys can be created in the Quackback admin dashboard under Settings > API Keys.
+API keys can be created in the Quackback admin dashboard under Settings > Developers.
 
 ## Rate Limiting
 
-API requests are not currently rate limited, but this may change in the future.
+Requests are limited per client IP address. The default is 100 requests per minute, counted in a fixed one-minute window; some plans set a different limit. When the limit is exceeded the API responds with \`429\` and error code \`RATE_LIMITED\`, and the \`Retry-After\` header gives the number of seconds to wait before retrying.
 
 ## Pagination
 
@@ -134,10 +134,35 @@ Example: \`post_01h455vb4pex5vsknk084sn02q\`
       { name: 'Votes', description: 'Manage post votes' },
       { name: 'Tags', description: 'Manage tags' },
       { name: 'Statuses', description: 'Manage post statuses' },
-      { name: 'Members', description: 'Manage workspace members' },
+      { name: 'Members', description: 'Manage workspace team members (served at /principals)' },
+      { name: 'Webhooks', description: 'Manage webhook endpoints and signing secrets' },
+      { name: 'Help Center', description: 'Manage help center categories and articles' },
+      { name: 'Segments', description: 'Manage segment membership' },
+      { name: 'Apps', description: 'Endpoints for apps embedded in external help desks' },
+      {
+        name: 'Workspace',
+        description: 'Mention lookups and usage counters, authenticated without an API key',
+      },
+      {
+        name: 'Settings',
+        description:
+          'Read and change workspace settings by area, with revisions, approvals and undo',
+      },
       { name: 'Roadmaps', description: 'Manage roadmaps' },
       { name: 'Changelog', description: 'Manage changelog entries' },
       { name: 'Conversations', description: 'Manage support conversations' },
+      { name: 'Tickets', description: 'Manage support tickets' },
+      { name: 'Files', description: 'Upload files to attach to conversations and tickets' },
+      { name: 'Moderation', description: 'Review and moderate pending posts and comments' },
+      {
+        name: 'Status',
+        description: 'Manage the status page: components, incidents, and maintenance',
+      },
+      {
+        name: 'Approvals',
+        description:
+          'Follow requests for a person to approve a change. People decide them in the app.',
+      },
     ],
     paths: registeredPaths,
     components: {
@@ -147,6 +172,31 @@ Example: \`post_01h455vb4pex5vsknk084sn02q\`
           scheme: 'bearer',
           bearerFormat: 'API Key',
           description: 'API key authentication. Format: Bearer qb_xxx',
+        },
+        sessionCookie: {
+          type: 'apiKey',
+          in: 'cookie',
+          name: '__Secure-better-auth.session_token',
+          description:
+            'Signed-in browser session on an HTTPS deployment. Used by the mention lookup endpoints.',
+        },
+        sessionCookieHttp: {
+          type: 'apiKey',
+          in: 'cookie',
+          name: 'better-auth.session_token',
+          description:
+            'Signed-in browser session on a plain HTTP deployment, such as local development.',
+        },
+        adminToken: {
+          type: 'http',
+          scheme: 'bearer',
+          description: 'Operator token from the ADMIN_API_TOKEN environment variable.',
+        },
+        setupToken: {
+          type: 'http',
+          scheme: 'bearer',
+          description:
+            'First-run setup token: the SETUP_TOKEN environment variable, or the token the server logs once on first boot. Valid only while the workspace has no admin.',
         },
       },
     },
@@ -199,7 +249,7 @@ export function createRequestBodySchema<T extends z.ZodRawShape>(shape: T, descr
  * This works around a type inference issue between Zod v4 and zod-openapi v5
  * where different package versions cause nominal type mismatches.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 export function asSchema<T extends z.ZodTypeAny>(schema: T): any {
   return schema
 }

@@ -25,6 +25,12 @@ vi.mock('@/lib/server/utils/execute-rows', () => ({
   getExecuteRows: () => mockExecuteRows,
 }))
 
+// `withSweepLock` asks whether tenancy is pooled: under pooled tenancy a sweeper
+// tick has no workspace, so the tick fans out across the fleet instead of running
+// once. Pin the mode rather than inheriting whatever the runner happens to have,
+// so this suite tests the single-workspace path deliberately.
+vi.stubEnv('QUACKBACK_TENANCY', 'single')
+
 // ---------------------------------------------------------------------------
 // Module under test — import AFTER mocks
 // ---------------------------------------------------------------------------
@@ -92,6 +98,18 @@ describe('withSweepLock', () => {
     // The finally-block DELETE must still fire so the next interval tick
     // isn't blocked for the full TTL after a transient sweep failure.
     expect(mockExecute).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the lock row when keepUntilExpiry is true (skips the release DELETE)', async () => {
+    mockExecuteRows = [{ name: 'telemetry_ping', acquired_at: new Date() }]
+    const fn = vi.fn()
+
+    await withSweepLock('telemetry_ping', 82_800_000, fn, { keepUntilExpiry: true })
+
+    expect(fn).toHaveBeenCalledOnce()
+    // Only the INSERT runs — no release DELETE, so the row survives until
+    // its TTL expires and doubles as a "ran recently" marker.
+    expect(mockExecute).toHaveBeenCalledOnce()
   })
 
   it('does NOT call execute when lock is acquired by another instance', async () => {

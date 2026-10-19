@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // ---------------------------------------------------------------------------
 
 vi.mock('@tanstack/react-start', () => ({
+  createServerOnlyFn: <T>(fn: T) => fn,
   createServerFn: () => {
     const chain = {
       validator() {
@@ -53,7 +54,7 @@ vi.mock('@tanstack/react-router', () => ({
 
 import { Route } from '../portal-invite.$inviteId'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type LoaderFn = (ctx: any) => Promise<unknown>
 const loader = (Route as unknown as { options: { loader: LoaderFn } }).options.loader
 

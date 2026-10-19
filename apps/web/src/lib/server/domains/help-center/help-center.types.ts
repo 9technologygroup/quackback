@@ -3,7 +3,13 @@
  */
 
 import type { TiptapContent } from '@/lib/server/db'
-import type { HelpCenterCategoryId, HelpCenterArticleId, PrincipalId } from '@quackback/ids'
+import type {
+  KbCategoryId,
+  KbArticleId,
+  PrincipalId,
+  KbArticleTranslationId,
+  KbCategoryTranslationId,
+} from '@quackback/ids'
 
 // Re-export input types from shared schemas (single source of truth)
 export type {
@@ -19,14 +25,18 @@ export type {
 // ============================================================================
 
 export interface HelpCenterCategory {
-  id: HelpCenterCategoryId
-  parentId: HelpCenterCategoryId | null
+  id: KbCategoryId
+  parentId: KbCategoryId | null
   slug: string
   name: string
   description: string | null
   icon: string | null
   isPublic: boolean
+  /** Segments a public category is restricted to; [] = everyone. */
+  segmentIds: string[]
   position: number
+  /** Public numeric id used in help-center URLs. */
+  urlId: number
   createdAt: Date
   updatedAt: Date
   deletedAt?: Date | null
@@ -48,8 +58,8 @@ export interface HelpCenterCategoryWithCount extends HelpCenterCategory {
 // ============================================================================
 
 export interface HelpCenterArticle {
-  id: HelpCenterArticleId
-  categoryId: HelpCenterCategoryId
+  id: KbArticleId
+  categoryId: KbCategoryId
   slug: string
   title: string
   description: string | null
@@ -57,10 +67,14 @@ export interface HelpCenterArticle {
   content: string
   contentJson: TiptapContent | null
   principalId: PrincipalId
+  /** Segments the article is restricted to; [] = everyone. */
+  segmentIds: string[]
   publishedAt: Date | null
   viewCount: number
   helpfulCount: number
   notHelpfulCount: number
+  /** Public numeric id used in help-center URLs. */
+  urlId: number
   createdAt: Date
   updatedAt: Date
   deletedAt?: Date | null
@@ -68,7 +82,8 @@ export interface HelpCenterArticle {
 
 export interface HelpCenterArticleWithCategory extends HelpCenterArticle {
   category: {
-    id: HelpCenterCategoryId
+    id: KbCategoryId
+    urlId: number
     slug: string
     name: string
   }
@@ -87,4 +102,50 @@ export interface ArticleListResult {
   items: HelpCenterArticleWithCategory[]
   nextCursor: string | null
   hasMore: boolean
+}
+
+// ============================================================================
+// Translation Types (domains/languages §2)
+// ============================================================================
+
+/** Distinct from the DB `status` column: 'untranslated' means no row exists at all. */
+export type TranslationStatus = 'draft' | 'published' | 'untranslated'
+
+export interface HelpCenterArticleTranslation {
+  id: KbArticleTranslationId
+  articleId: KbArticleId
+  locale: string
+  title: string
+  description: string | null
+  content: string
+  contentJson: TiptapContent | null
+  status: 'draft' | 'published'
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface HelpCenterCategoryTranslation {
+  id: KbCategoryTranslationId
+  categoryId: KbCategoryId
+  locale: string
+  name: string
+  description: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+/** One row per enabled additional locale, for the admin editor's status pills. */
+export interface ArticleTranslationStatusEntry {
+  locale: string
+  status: TranslationStatus
+  updatedAt: Date | null
+  /** Auto-translation is waiting for AI allowance before it runs. */
+  autoTranslatePaused: boolean
+}
+
+export interface CategoryTranslationStatusEntry {
+  locale: string
+  /** Categories have no draft/published split -- a non-empty name IS "translated". */
+  status: 'translated' | 'untranslated'
+  updatedAt: Date | null
 }

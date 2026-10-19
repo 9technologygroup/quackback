@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, startTransition } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { BookOpenIcon } from '@heroicons/react/24/solid'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { InboxLayout } from '@/components/admin/feedback/inbox-layout'
 import { HelpCenterFiltersPanel } from './help-center-filters'
@@ -14,19 +13,17 @@ import { useDeleteArticle, useDeleteCategory } from '@/lib/client/mutations/help
 import { helpCenterQueries } from '@/lib/client/queries/help-center'
 import { collectDescendantIds } from '@/lib/shared/help-center-tree'
 import { Route } from '@/routes/admin/help-center'
-import type { HelpCenterArticleId, HelpCenterCategoryId } from '@quackback/ids'
+import type { KbArticleId, KbCategoryId } from '@quackback/ids'
 
 type CategoryDialogState =
-  | { mode: 'new'; parentId: HelpCenterCategoryId | null }
-  | { mode: 'edit'; category: TreeCategory }
-  | null
+  { mode: 'new'; parentId: KbCategoryId | null } | { mode: 'edit'; category: TreeCategory } | null
 
 export function HelpCenterList() {
   const navigate = useNavigate({ from: Route.fullPath })
   const { filters, setFilters, hasActiveFilters } = useHelpCenterFilters()
 
   const [deleteArticleDialogOpen, setDeleteArticleDialogOpen] = useState(false)
-  const [articleToDelete, setArticleToDelete] = useState<HelpCenterArticleId | null>(null)
+  const [articleToDelete, setArticleToDelete] = useState<KbArticleId | null>(null)
 
   const [categoryDialogState, setCategoryDialogState] = useState<CategoryDialogState>(null)
   const [deleteCategoryTarget, setDeleteCategoryTarget] = useState<TreeCategory | null>(null)
@@ -60,18 +57,17 @@ export function HelpCenterList() {
   }, [])
 
   const handleEdit = useCallback(
-    (id: HelpCenterArticleId) => {
+    (id: KbArticleId) => {
       startTransition(() => {
         void navigate({
-          to: '/admin/help-center/articles/$articleId',
-          params: { articleId: id },
+          search: (prev) => ({ ...prev, article: id }),
         })
       })
     },
     [navigate]
   )
 
-  const handleDeleteArticle = (id: HelpCenterArticleId) => {
+  const handleDeleteArticle = (id: KbArticleId) => {
     setArticleToDelete(id)
     setDeleteArticleDialogOpen(true)
   }
@@ -148,8 +144,7 @@ export function HelpCenterList() {
   return (
     <>
       <InboxLayout
-        headerIcon={BookOpenIcon}
-        headerTitle="Help Center"
+        headerTitle="Help center"
         filters={
           <HelpCenterFiltersPanel
             status={filters.status}
@@ -160,6 +155,10 @@ export function HelpCenterList() {
             showDeleted={filters.showDeleted}
             onShowDeletedChange={(showDeleted) =>
               setFilters({ showDeleted: showDeleted ?? undefined })
+            }
+            showPerformance={filters.showPerformance}
+            onShowPerformanceChange={(showPerformance) =>
+              setFilters({ showPerformance: showPerformance ?? undefined })
             }
           />
         }
@@ -196,6 +195,7 @@ export function HelpCenterList() {
                 description: categoryDialogState.category.description,
                 icon: categoryDialogState.category.icon,
                 isPublic: categoryDialogState.category.isPublic,
+                segmentIds: categoryDialogState.category.segmentIds,
                 parentId: categoryDialogState.category.parentId,
               }
             : undefined

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { EventEmitter } from 'node:events'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
@@ -148,6 +149,14 @@ describe('isPrivateAddress', () => {
     expect(isPrivateAddress('2001:0db8:1234::1')).toBe(true)
   })
 
+  it('blocks IPv6 transition/tunneling ranges (NAT64, 6to4, Teredo)', () => {
+    expect(isPrivateAddress('64:ff9b::0a00:0001')).toBe(true) // NAT64 embedding 10.0.0.1
+    expect(isPrivateAddress('2002:0a00:0001::')).toBe(true) // 6to4 embedding 10.0.0.1
+    expect(isPrivateAddress('2001:0000:4136:e378::1')).toBe(true) // Teredo (2nd hextet zero)
+    // A routable global 2001: (non-zero second hextet) stays allowed.
+    expect(isPrivateAddress('2001:4860:4860::8888')).toBe(false) // Google public DNS
+  })
+
   it('blocks hextet-form IPv4-mapped IPv6 private addresses', () => {
     // ::ffff:7f00:1 encodes 127.0.0.1
     expect(isPrivateAddress('::ffff:7f00:1')).toBe(true)
@@ -159,6 +168,45 @@ describe('isPrivateAddress', () => {
     expect(isPrivateAddress('::ffff:a9fe:a9fe')).toBe(true)
     // ::ffff:ac10:1 encodes 172.16.0.1
     expect(isPrivateAddress('::ffff:ac10:1')).toBe(true)
+  })
+
+  it.each([
+    ['198.18.0.1', 'benchmarking 198.18.0.0/15'],
+    ['198.19.255.254', 'benchmarking 198.18.0.0/15'],
+    ['192.0.0.8', 'IETF protocol assignments 192.0.0.0/24'],
+    ['224.0.0.1', 'multicast 224.0.0.0/4'],
+    ['239.255.255.250', 'multicast 224.0.0.0/4'],
+    ['240.0.0.1', 'reserved 240.0.0.0/4'],
+    ['255.255.255.255', 'limited broadcast'],
+    ['168.63.129.16', 'cloud host endpoint'],
+    ['fec0::1', 'site-local fec0::/10'],
+    ['feff:ffff::1', 'site-local fec0::/10'],
+    ['::7f00:1', 'IPv4-compatible ::/96, hextets'],
+    ['::127.0.0.1', 'IPv4-compatible ::/96, dotted'],
+    ['::8.8.8.8', 'IPv4-compatible ::/96 is deprecated, even for a public address'],
+    ['ff02::1', 'multicast ff00::/8'],
+    ['0:0:0:0:0:ffff:7f00:1', 'IPv4-mapped, uncompressed'],
+    ['0:0:0:0:0:0:0:1', 'loopback, uncompressed'],
+    ['FE80::1', 'link-local, upper case'],
+    ['fe80::1%eth0', 'link-local with a zone'],
+    ['not-an-address:', 'an unparseable IPv6 answer fails closed'],
+  ])('blocks %s (%s)', (address) => {
+    expect(isPrivateAddress(address)).toBe(true)
+  })
+
+  it('keeps the public neighbours of the blocked ranges public', () => {
+    for (const address of [
+      '198.17.255.255',
+      '198.20.0.1',
+      '192.0.1.1',
+      '223.255.255.255',
+      '168.63.129.17',
+      '2606:4700:4700::1111',
+      '2001:4860:4860::8888',
+      'fe00::1',
+      '::ffff:8.8.8.8',
+    ])
+      expect(isPrivateAddress(address), address).toBe(false)
   })
 
   it('allows hextet-form IPv4-mapped IPv6 public addresses', () => {

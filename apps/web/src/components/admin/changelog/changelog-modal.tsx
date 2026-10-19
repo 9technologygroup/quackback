@@ -1,14 +1,12 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useKeyboardSubmit } from '@/lib/client/hooks/use-keyboard-submit'
 import { ModalFooter } from '@/components/shared/modal-footer'
-import { useUrlModal } from '@/lib/client/hooks/use-url-modal'
 import { useForm } from 'react-hook-form'
 import { useQuery } from '@tanstack/react-query'
 import { standardSchemaResolver } from '@hookform/resolvers/standard-schema'
 import { Loader2 } from 'lucide-react'
 import { Cog6ToothIcon } from '@heroicons/react/24/solid'
 import { ModalHeader } from '@/components/shared/modal-header'
-import { UrlModalShell } from '@/components/shared/url-modal-shell'
 import { updateChangelogSchema } from '@/lib/shared/schemas/changelog'
 import type { TiptapContent } from '@/lib/shared/schemas/posts'
 import { useUpdateChangelog } from '@/lib/client/mutations/changelog'
@@ -20,25 +18,32 @@ import { ChangelogFormFields } from './changelog-form-fields'
 import { ChangelogMetadataSidebar } from './changelog-metadata-sidebar'
 import { ChangelogMetadataSidebarContent } from './changelog-metadata-sidebar-content'
 import { toPublishState, type PublishState } from '@/lib/shared/schemas/changelog'
-import { Route } from '@/routes/admin/changelog'
-import { type ChangelogId, type PostId } from '@quackback/ids'
+import {
+  type ChangelogId,
+  type PostId,
+  type ChangelogCategoryId,
+  type SegmentId,
+} from '@quackback/ids'
 import type { JSONContent } from '@tiptap/react'
-
-interface ChangelogModalProps {
-  entryId: string | undefined
-}
+import type { EditorDocument } from '@/components/ui/rich-text-editor'
 
 interface ChangelogModalContentProps {
   entryId: ChangelogId
   onClose: () => void
 }
 
-function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps) {
+export function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps) {
   const [contentJson, setContentJson] = useState<JSONContent | null>(null)
   const [linkedPostIds, setLinkedPostIds] = useState<PostId[]>([])
+  const [categoryIds, setCategoryIds] = useState<ChangelogCategoryId[]>([])
+  const [notify, setNotify] = useState(true)
+  const [segmentIds, setSegmentIds] = useState<SegmentId[]>([])
+  const [segmentIdsTouched, setSegmentIdsTouched] = useState(false)
   const [publishState, setPublishState] = useState<PublishState>({ type: 'draft' })
   const [displayDateOverride, setDisplayDateOverride] = useState<Date | undefined>(undefined)
   const [displayDateTouched, setDisplayDateTouched] = useState(false)
+  const [featuredImageUrl, setFeaturedImageUrl] = useState<string | null>(null)
+  const [featuredImageTouched, setFeaturedImageTouched] = useState(false)
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
   const [hasInitialized, setHasInitialized] = useState(false)
 
@@ -67,17 +72,22 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
       form.setValue('content', entry.content)
       setContentJson(entry.contentJson as JSONContent | null)
       setLinkedPostIds(entry.linkedPosts.map((p) => p.id))
+      setCategoryIds(entry.categories.map((c) => c.id))
       setPublishState(toPublishState(entry.status, entry.publishedAt))
       setDisplayDateOverride(entry.displayDate ? new Date(entry.displayDate) : undefined)
       setDisplayDateTouched(false)
+      setFeaturedImageUrl(entry.featuredImageUrl)
+      setFeaturedImageTouched(false)
+      setSegmentIds((entry.segmentIds ?? []) as SegmentId[])
+      setSegmentIdsTouched(false)
       setHasInitialized(true)
     }
   }, [entry, form, hasInitialized])
 
   const handleContentChange = useCallback(
-    (json: JSONContent, _html: string, markdown: string) => {
-      setContentJson(json)
-      form.setValue('content', markdown, { shouldValidate: true })
+    (document: EditorDocument) => {
+      setContentJson(document.json())
+      form.setValue('content', document.markdown(), { shouldValidate: false, shouldDirty: true })
     },
     [form]
   )
@@ -94,6 +104,16 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
     setDisplayDateTouched(true)
   }
 
+  function handleFeaturedImageChange(url: string | null) {
+    setFeaturedImageUrl(url)
+    setFeaturedImageTouched(true)
+  }
+
+  function handleSegmentIdsChange(ids: SegmentId[]) {
+    setSegmentIds(ids)
+    setSegmentIdsTouched(true)
+  }
+
   const handleSubmit = form.handleSubmit((data) => {
     const displayDatePayload = displayDateTouched
       ? displayDateOverride === undefined
@@ -108,8 +128,17 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
         content: data.content,
         contentJson: contentJson as TiptapContent | null,
         linkedPostIds,
+        categoryIds,
         publishState,
+        notify,
         ...(displayDatePayload !== undefined && { displayDate: displayDatePayload }),
+        // Only send when the admin changed it, so an untouched value isn't
+        // round-tripped and a cleared one is (null clears).
+        ...(featuredImageTouched && { featuredImageUrl }),
+        // Same touched-gate as featuredImageUrl: an untouched targeting list
+        // isn't round-tripped; an edited one (including cleared to [])
+        // replaces the stored list wholesale.
+        ...(segmentIdsTouched && { segmentIds }),
       },
       {
         onSuccess: () => {
@@ -127,11 +156,11 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
     }
     switch (publishState.type) {
       case 'draft':
-        return 'Save Draft'
+        return 'Save draft'
       case 'scheduled':
-        return 'Save Schedule'
+        return 'Save schedule'
       case 'published':
-        return 'Update & Publish'
+        return 'Update and publish'
     }
   }
 
@@ -149,7 +178,7 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
         {/* Header */}
         <ModalHeader
           section="Changelog"
-          title={entry?.title || 'Edit Entry'}
+          title={entry?.title || 'Edit entry'}
           onClose={onClose}
           viewUrl={entry?.status === 'published' ? `/changelog/${entryId}` : null}
         />
@@ -157,7 +186,7 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
         {/* Main content area - 2 column layout on desktop */}
         <div className="flex flex-1 min-h-0">
           {/* Left: Content editor */}
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChangelogFormFields
               form={form}
               contentJson={contentJson}
@@ -174,11 +203,19 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
             onPublishStateChange={setPublishState}
             linkedPostIds={linkedPostIds}
             onLinkedPostsChange={setLinkedPostIds}
+            categoryIds={categoryIds}
+            onCategoriesChange={setCategoryIds}
+            notify={notify}
+            onNotifyChange={setNotify}
+            segmentIds={segmentIds}
+            onSegmentIdsChange={handleSegmentIdsChange}
             authorName={entry?.author?.name}
             publishedAt={entry?.publishedAt}
             displayDateValue={displayDateOverride}
             onDisplayDateChange={handleDisplayDateChange}
             onDisplayDateClear={handleDisplayDateClear}
+            featuredImageUrl={featuredImageUrl}
+            onFeaturedImageChange={handleFeaturedImageChange}
           />
         </div>
 
@@ -198,7 +235,7 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
             </SheetTrigger>
             <SheetContent side="bottom" className="h-[70vh]">
               <SheetHeader>
-                <SheetTitle>Entry Settings</SheetTitle>
+                <SheetTitle>Entry settings</SheetTitle>
               </SheetHeader>
               <div className="py-4 overflow-y-auto">
                 <ChangelogMetadataSidebarContent
@@ -206,11 +243,19 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
                   onPublishStateChange={setPublishState}
                   linkedPostIds={linkedPostIds}
                   onLinkedPostsChange={setLinkedPostIds}
+                  categoryIds={categoryIds}
+                  onCategoriesChange={setCategoryIds}
+                  notify={notify}
+                  onNotifyChange={setNotify}
+                  segmentIds={segmentIds}
+                  onSegmentIdsChange={handleSegmentIdsChange}
                   authorName={entry?.author?.name}
                   publishedAt={entry?.publishedAt}
                   displayDateValue={displayDateOverride}
                   onDisplayDateChange={handleDisplayDateChange}
                   onDisplayDateClear={handleDisplayDateClear}
+                  featuredImageUrl={featuredImageUrl}
+                  onFeaturedImageChange={handleFeaturedImageChange}
                 />
               </div>
             </SheetContent>
@@ -218,27 +263,5 @@ function ChangelogModalContent({ entryId, onClose }: ChangelogModalContentProps)
         </ModalFooter>
       </form>
     </Form>
-  )
-}
-
-export function ChangelogModal({ entryId: urlEntryId }: ChangelogModalProps) {
-  const search = Route.useSearch()
-  const { open, validatedId, close } = useUrlModal<ChangelogId>({
-    urlId: urlEntryId,
-    idPrefix: 'changelog',
-    searchParam: 'entry',
-    route: '/admin/changelog',
-    search,
-  })
-
-  return (
-    <UrlModalShell
-      open={open}
-      onOpenChange={(o) => !o && close()}
-      srTitle="Edit changelog entry"
-      hasValidId={!!validatedId}
-    >
-      {validatedId && <ChangelogModalContent entryId={validatedId} onClose={close} />}
-    </UrlModalShell>
   )
 }

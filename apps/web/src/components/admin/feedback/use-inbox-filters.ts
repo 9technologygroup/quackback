@@ -3,39 +3,63 @@ import { Route } from '@/routes/admin/feedback'
 import { useMemo, useCallback } from 'react'
 import { isItemSelected, toggleItem } from '@/components/shared/filter-utils'
 import type { InboxFilters } from '@/lib/shared/types'
+import { DEFAULT_INBOX_SORT } from '@/lib/client/hooks/use-inbox-query'
 
 export type { InboxFilters }
 
+function stringList(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === 'string')
+    ? value
+    : undefined
+}
+
+function parseOptionalInt(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string' || value.length === 0) return undefined
+  const parsed = parseInt(value, 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+type FeedbackSearch = ReturnType<typeof Route.useSearch>
+
+/** The inbox filters a feedback URL's search params describe. */
+export function inboxFiltersFromSearch(search: Partial<FeedbackSearch>): InboxFilters {
+  return {
+    search: search.search,
+    status: stringList(search.status),
+    board: stringList(search.board),
+    tags: stringList(search.tags),
+    segmentIds: stringList(search.segments),
+    owner: search.owner,
+    dateFrom: search.dateFrom,
+    dateTo: search.dateTo,
+    minVotes: parseOptionalInt(search.minVotes),
+    minComments: parseOptionalInt(search.minComments),
+    responded: search.responded,
+    updatedBefore: search.updatedBefore,
+    hasDuplicates: search.hasDuplicates,
+    sort: search.sort ?? DEFAULT_INBOX_SORT,
+    showDeleted: search.deleted,
+  }
+}
+
 export function useInboxFilters() {
   const navigate = useNavigate()
-  const search = Route.useSearch()
+  // The filters alone, kept as the same object while they are unchanged:
+  // opening or closing a post over the list is a search-only navigation that
+  // changes none of them, and renders nothing that reads them.
+  const filters: InboxFilters = Route.useSearch({
+    select: inboxFiltersFromSearch,
+    structuralSharing: true,
+  })
 
-  const filters: InboxFilters = useMemo(
-    () => ({
-      search: search.search,
-      status: search.status?.length ? search.status : undefined,
-      board: search.board?.length ? search.board : undefined,
-      tags: search.tags?.length ? search.tags : undefined,
-      segmentIds: search.segments?.length ? search.segments : undefined,
-      owner: search.owner,
-      dateFrom: search.dateFrom,
-      dateTo: search.dateTo,
-      minVotes: search.minVotes ? parseInt(search.minVotes, 10) : undefined,
-      minComments: search.minComments ? parseInt(search.minComments, 10) : undefined,
-      responded: search.responded,
-      updatedBefore: search.updatedBefore,
-      hasDuplicates: search.hasDuplicates,
-      sort: search.sort,
-      showDeleted: search.deleted,
-    }),
-    [search]
-  )
-
+  // Updates start from the URL as it is when they run, the open post included.
   const setFilters = useCallback(
     (updates: Partial<InboxFilters>) => {
       void navigate({
+        from: '/admin/feedback',
         to: '/admin/feedback',
-        search: {
+        search: (search) => ({
           ...search,
           // Use 'key in updates' to check if key was explicitly passed (even if undefined)
           ...('search' in updates && { search: updates.search }),
@@ -53,22 +77,23 @@ export function useInboxFilters() {
           ...('hasDuplicates' in updates && { hasDuplicates: updates.hasDuplicates || undefined }),
           ...('sort' in updates && { sort: updates.sort }),
           ...('showDeleted' in updates && { deleted: updates.showDeleted || undefined }),
-        },
+        }),
         replace: true,
       })
     },
-    [navigate, search]
+    [navigate]
   )
 
   const clearFilters = useCallback(() => {
     void navigate({
+      from: '/admin/feedback',
       to: '/admin/feedback',
-      search: {
+      search: (search) => ({
         sort: search.sort,
-      },
+      }),
       replace: true,
     })
-  }, [navigate, search])
+  }, [navigate])
 
   const hasActiveFilters = useMemo(() => {
     return !!(

@@ -1,11 +1,11 @@
 /**
  * Regression: `unfurlLinkFn` read the feature flag off the raw settings
  * row, where `featureFlags` is an unparsed JSON *string* (text column).
- * `(string).linkPreviews` is always undefined, so the gate returned null
+ * `(string).supportInbox` is always undefined, so the gate returned null
  * for every URL and link previews never rendered, flag on or off.
  *
  * This pins the gate's behavior at the handler boundary: with the
- * tenant flag enabled the handler unfurls; with it disabled it returns
+ * workspace flag enabled the handler unfurls; with it disabled it returns
  * null without fetching.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -17,7 +17,7 @@ const hoisted = vi.hoisted(() => ({
   mockUnfurlExternalUrl: vi.fn(),
   mockCacheGet: vi.fn(),
   mockCacheSet: vi.fn(),
-  mockGetRedis: vi.fn(),
+  mockIncrementBuckets: vi.fn(),
   mockGetClientIp: vi.fn(),
 }))
 
@@ -39,10 +39,13 @@ vi.mock('@/lib/server/content/unfurl', () => ({
   unfurlExternalUrl: hoisted.mockUnfurlExternalUrl,
 }))
 
-vi.mock('@/lib/server/redis', () => ({
+vi.mock('@/lib/server/cache', () => ({
   cacheGet: hoisted.mockCacheGet,
   cacheSet: hoisted.mockCacheSet,
-  getRedis: hoisted.mockGetRedis,
+}))
+
+vi.mock('@/lib/server/utils/rate-bucket', () => ({
+  incrementBuckets: hoisted.mockIncrementBuckets,
 }))
 
 vi.mock('@/lib/server/domains/api/rate-limit', () => ({
@@ -86,10 +89,8 @@ beforeEach(async () => {
     principal: { id: 'prn_1', role: 'admin' },
   })
   hoisted.mockGetClientIp.mockReturnValue('203.0.113.7')
-  hoisted.mockGetRedis.mockReturnValue({
-    incr: vi.fn().mockResolvedValue(1),
-    expire: vi.fn().mockResolvedValue(1),
-  })
+  // Inside both windows: the flag gate, not the throttle, is this file's subject.
+  hoisted.mockIncrementBuckets.mockResolvedValue([1, 1])
   hoisted.mockCacheGet.mockResolvedValue(null)
   hoisted.mockCacheSet.mockResolvedValue(undefined)
   if (handlers.length === 0) await import('../link-preview')
@@ -97,8 +98,8 @@ beforeEach(async () => {
 })
 
 describe('unfurlLinkFn — feature flag gate', () => {
-  it('unfurls when the linkPreviews flag is enabled', async () => {
-    hoisted.mockGetSettings.mockResolvedValue(rawSettingsRow({ linkPreviews: true }))
+  it('unfurls when the supportInbox flag is enabled', async () => {
+    hoisted.mockGetSettings.mockResolvedValue(rawSettingsRow({ supportInbox: true }))
     hoisted.mockIsFeatureEnabled.mockResolvedValue(true)
     const preview = {
       url: 'https://news.example/post',
@@ -112,12 +113,12 @@ describe('unfurlLinkFn — feature flag gate', () => {
     const result = await unfurlLinkHandler({ data: { url: 'https://news.example/post' } })
 
     expect(result).toEqual(preview)
-    expect(hoisted.mockIsFeatureEnabled).toHaveBeenCalledWith('linkPreviews')
+    expect(hoisted.mockIsFeatureEnabled).toHaveBeenCalledWith('supportInbox')
     expect(hoisted.mockUnfurlExternalUrl).toHaveBeenCalledWith('https://news.example/post')
   })
 
   it('returns null without fetching when the flag is disabled', async () => {
-    hoisted.mockGetSettings.mockResolvedValue(rawSettingsRow({ linkPreviews: false }))
+    hoisted.mockGetSettings.mockResolvedValue(rawSettingsRow({ supportInbox: false }))
     hoisted.mockIsFeatureEnabled.mockResolvedValue(false)
 
     const result = await unfurlLinkHandler({ data: { url: 'https://news.example/post' } })

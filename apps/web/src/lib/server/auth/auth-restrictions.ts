@@ -23,7 +23,7 @@
  * open.
  */
 
-import { getTenantSettings } from '@/lib/server/domains/settings/settings.service'
+import { getWorkspaceSettings } from '@/lib/server/domains/settings/settings.service'
 import { isSignInMethodEnabled, normalizeMethodKey } from '@/lib/shared/signin-methods'
 import {
   findProviderForDomainEmail,
@@ -66,11 +66,11 @@ export async function isAuthMethodAllowed(
   provider: AuthProvider,
   _role: Role,
   registeredOidcProviderIds: Set<string>,
-  /** Optional pre-fetched tenant settings to skip the cache hit. Used
+  /** Optional pre-fetched workspace settings to skip the cache hit. Used
    *  by hooks.ts where the same settings already drove a hard-binding
    *  check earlier in the request — passing it through avoids a
    *  redundant Redis round-trip per sign-in attempt. */
-  tenantSettings?: Awaited<ReturnType<typeof getTenantSettings>>
+  workspaceSettings?: Awaited<ReturnType<typeof getWorkspaceSettings>>
 ): Promise<AuthMethodResult> {
   // Any registered OIDC provider is a method for every role; role governs
   // authorization, not whether the method exists. Portal-side eligibility
@@ -78,8 +78,8 @@ export async function isAuthMethodAllowed(
   // see `isSsoBlockedForRole` / `handleCallbackPolicyCleanup`.
   if (isRegisteredOidcProvider(provider, registeredOidcProviderIds)) return { allowed: true }
 
-  const tenant = tenantSettings ?? (await getTenantSettings())
-  const oauth = tenant?.authConfig?.oauth
+  const workspace = workspaceSettings ?? (await getWorkspaceSettings())
+  const oauth = workspace?.authConfig?.oauth
   const key = normalizeMethodKey(provider)
 
   if (key === 'password') {
@@ -176,14 +176,28 @@ export function isHardBound(
   providers: readonly ProviderWithDomains[] | undefined,
   registeredProviderIds: Set<string>
 ): boolean {
-  const owner = findProviderForDomainEmail(email, providers)
-  // Not at an enforced verified domain → no hard-binding.
-  if (!owner || owner.enforced !== true) return false
-  // Owner's IdP not viable right now → fail open (scoped to the owner) so a
-  // tier downgrade / missing secret can't self-lock the workspace.
-  if (!registeredProviderIds.has(owner.registrationId)) return false
+  const owner = ssoManagingProvider(email, providers, registeredProviderIds)
+  // Not at an enforced verified domain whose IdP is viable → no hard-binding.
+  if (!owner) return false
   // The owning provider's own callback IS the enforced method → exempt.
-  if (provider === owner.registrationId) return false
+  if (provider === owner) return false
   // Everything else (password, magic-link, social, a different OIDC) → block.
   return true
+}
+
+/**
+ * The registration id of the provider an address belongs to under "Require
+ * SSO", or null when the address is not hard-bound. Same rule as
+ * {@link isHardBound}, including its fail-open: an owner that is not
+ * registered right now (tier downgrade, missing secret) manages nothing.
+ */
+export function ssoManagingProvider(
+  email: string | null | undefined,
+  providers: readonly ProviderWithDomains[] | undefined,
+  registeredProviderIds: Set<string>
+): string | null {
+  const owner = findProviderForDomainEmail(email, providers)
+  if (!owner || owner.enforced !== true) return null
+  if (!registeredProviderIds.has(owner.registrationId)) return null
+  return owner.registrationId
 }

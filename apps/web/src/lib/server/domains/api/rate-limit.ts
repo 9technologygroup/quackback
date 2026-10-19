@@ -1,52 +1,115 @@
 /**
- * Simple in-memory rate limiter for API authentication
+ * Fixed-window rate limiter for API authentication, shared across replicas
+ * because the buckets are rows. Built on the shared `utils/rate-bucket`
+ * primitive so this limiter shares plumbing with the sign-in limiters rather
+ * than re-implementing bucket bookkeeping.
  *
- * Uses a sliding window algorithm to track request counts per IP.
- * Designed to prevent brute-force attacks on API key authentication.
- *
- * SECURITY NOTE: This trusts proxy headers (cf-connecting-ip, x-forwarded-for).
- * The application MUST be deployed behind a trusted reverse proxy (Cloudflare, nginx)
- * that sets these headers. Direct exposure to the internet allows header spoofing.
+ * Forwarding headers are ignored unless TRUSTED_CLIENT_IP_HEADER or
+ * TRUSTED_PROXY_HOPS is configured; see getClientIp() below for the rules.
  */
+import {
+  bucketRetryAfter,
+  getBucketCount,
+  incrementBucket,
+  incrementBuckets,
+} from '@/lib/server/utils/rate-bucket'
+import { API_MONTH_BUCKET_KEY, secondsUntilNextUtcMonth } from './monthly-usage'
+import { isIP } from 'node:net'
+import { config } from '@/lib/server/config'
+import { getRequestIP } from '@tanstack/react-start/server'
+import { logger } from '@/lib/server/logger'
+import {
+  EDGE_CLIENT_IP_HEADER,
+  checkEdgeClientIp,
+  hostnameOnly,
+  type EdgeClientIpRejection,
+} from '@/lib/server/workspaces/saas-edge-host'
 
-interface RateLimitEntry {
-  count: number
-  windowStart: number
+const log = logger.child({ component: 'rate-limit' })
+
+// One warning per process is enough to tell the operator; a per-request log
+// would flood the output of every proxied deployment.
+let warnedForwardedHeaders = false
+
+const FORWARDING_HEADERS = ['x-forwarded-for', 'cf-connecting-ip', 'x-real-ip'] as const
+
+function warnIfForwardedHeaders(headers: Headers): void {
+  if (warnedForwardedHeaders) return
+  if (!FORWARDING_HEADERS.some((name) => headers.has(name))) return
+  warnedForwardedHeaders = true
+  log.warn(
+    {},
+    'Request carries forwarding headers while TRUSTED_PROXY_HOPS is 0. If Quackback runs behind a reverse proxy, set TRUSTED_PROXY_HOPS to the number of proxies in front of it, otherwise every client shares one rate-limit bucket. If clients connect directly, ignore this and keep 0.'
+  )
 }
 
-const rateLimitStore = new Map<string, RateLimitEntry>()
+// A rejected edge visitor address sends every custom-host visitor to the edge
+// proxy's own address and so into one bucket. Warn about it at most once a
+// minute: the cause (secret drift, clock skew, origin config) persists, and
+// every request it affects carries the header.
+const EDGE_REJECTION_WARN_INTERVAL_MS = 60_000
+let lastEdgeRejectionWarnAt = 0
+
+function warnEdgeClientIpRejected(reason: EdgeClientIpRejection): void {
+  // Without the edge secret, or off a trusted origin, the header did not come
+  // through the edge proxy: it is plain client input and says nothing about
+  // configuration, and logging it would let any client fill the log.
+  if (reason === 'secret-unset' || reason === 'untrusted-origin') return
+  const now = Date.now()
+  if (now - lastEdgeRejectionWarnAt < EDGE_REJECTION_WARN_INTERVAL_MS) return
+  lastEdgeRejectionWarnAt = now
+  log.warn(
+    { reason },
+    'Ignoring a signed edge client address. Until the edge proxy and this process agree on QUACKBACK_SAAS_EDGE_SECRET, clock and trusted origin, custom-host visitors share one rate-limit bucket.'
+  )
+}
+
+// A configured client-address header that is missing or unusable sends the
+// request down the TRUSTED_PROXY_HOPS path, which behind a proxy usually means
+// the proxy's own address and one shared bucket. Warn at most once a minute:
+// a proxy that does not set the header misses it on every request. The value
+// is never logged, since it may be client-written.
+const TRUSTED_HEADER_WARN_INTERVAL_MS = 60_000
+let lastTrustedHeaderWarnAt = 0
+
+function warnTrustedClientIpHeaderUnusable(header: string, present: boolean): void {
+  const now = Date.now()
+  if (now - lastTrustedHeaderWarnAt < TRUSTED_HEADER_WARN_INTERVAL_MS) return
+  lastTrustedHeaderWarnAt = now
+  log.warn(
+    { header, present },
+    'TRUSTED_CLIENT_IP_HEADER is set but the request does not carry a single valid IP address in that header, so the client address falls back to TRUSTED_PROXY_HOPS. Check that the reverse proxy sets this header on every request.'
+  )
+}
+
+/** The address in the configured header, or null when it is not exactly one IP. */
+function trustedHeaderIp(headers: Headers, header: string): string | null {
+  const value = headers.get(header)
+  if (value === null) {
+    warnTrustedClientIpHeaderUnusable(header, false)
+    return null
+  }
+  const candidate = value.trim()
+  // A comma means the header was appended to rather than overwritten, so the
+  // proxy did not establish which entry is the client: accept none of them.
+  if (!candidate.includes(',') && isIP(candidate)) return candidate
+  warnTrustedClientIpHeaderUnusable(header, true)
+  return null
+}
 
 // Configuration
-const WINDOW_MS = 60_000 // 1 minute
+const WINDOW_SECONDS = 60 // 1 minute
 const MAX_REQUESTS = 100 // 100 requests per minute per IP — used when tier limit is null (OSS)
 const IMPORT_MIN = 2000 // Floor for import-mode caps so a tight per-minute tier doesn't choke bulk imports
-const MAX_STORE_SIZE = 50_000 // Cap store size to prevent memory exhaustion
-const CLEANUP_INTERVAL_MS = 60_000 // Cleanup every minute
 
-// Cleanup old entries periodically
-let cleanupTimer: ReturnType<typeof setInterval> | null = null
-
-function startCleanup() {
-  if (cleanupTimer) return
-  cleanupTimer = setInterval(() => {
-    const now = Date.now()
-    for (const [key, entry] of rateLimitStore.entries()) {
-      if (now - entry.windowStart > WINDOW_MS) {
-        rateLimitStore.delete(key)
-      }
-    }
-  }, CLEANUP_INTERVAL_MS)
-  // Don't prevent process from exiting
-  cleanupTimer.unref?.()
-}
-
-startCleanup()
+const rateLimitKey = (ip: string): string => `api:rl:${ip}`
+const keyFailureKey = (ip: string): string => `api:rl:key-fail:${ip}`
 
 /**
  * Check if a request is rate limited.
  *
  * @param ip - The client IP address
- * @param importMode - Whether the request is in import mode (higher limit)
+ * @param importMode - Whether the request asks for import mode (higher limit)
  * @returns Object with allowed flag and remaining requests
  *
  * Tier-aware: when settings.tier_limits has a non-null apiRequestsPerMinute,
@@ -54,6 +117,15 @@ startCleanup()
  * cap by 20 (matching the historical 100 -> 2000 ratio).
  *
  * Self-hosters with no tier_limits row get null and fall back to MAX_REQUESTS.
+ *
+ * The counter is keyed by IP only (not mode), so import-mode and
+ * normal-mode calls for the same IP share one count — only the cap
+ * chosen per call differs. Fails open on Redis errors.
+ *
+ * The check runs before the caller's key is known, so asking for import mode
+ * only admits a request up to the import cap. A request admitted past the
+ * base cap carries `overBaseLimit`, and the caller must serve it only once it
+ * has verified an admin key (see withApiKeyAuth).
  */
 export async function checkRateLimit(
   ip: string,
@@ -62,61 +134,171 @@ export async function checkRateLimit(
   allowed: boolean
   remaining: number
   retryAfter?: number
+  /** Admitted on the import cap alone: past the base cap this window. */
+  overBaseLimit?: true
 }> {
-  const now = Date.now()
   const { getTierLimits } = await import('@/lib/server/domains/settings/tier-limits.service')
   const limits = await getTierLimits()
   const baseLimit = limits.apiRequestsPerMinute ?? MAX_REQUESTS
   const maxRequests = importMode ? Math.max(baseLimit * 20, IMPORT_MIN) : baseLimit
-  const entry = rateLimitStore.get(ip)
 
-  // New IP or window expired - reset
-  if (!entry || now - entry.windowStart > WINDOW_MS) {
-    // Cap store size to prevent memory exhaustion from spoofed IPs
-    if (rateLimitStore.size >= MAX_STORE_SIZE && !entry) {
-      return { allowed: false, remaining: 0, retryAfter: 60 }
-    }
-    rateLimitStore.set(ip, { count: 1, windowStart: now })
-    return { allowed: true, remaining: maxRequests - 1 }
+  const minute = { key: rateLimitKey(ip), windowSeconds: WINDOW_SECONDS }
+  const [count] = await incrementBuckets([
+    minute,
+    { key: API_MONTH_BUCKET_KEY, windowSeconds: secondsUntilNextUtcMonth() },
+  ])
+
+  // Redis error → fail open.
+  if (count === null) return { allowed: true, remaining: maxRequests }
+
+  if (count > maxRequests) {
+    return { allowed: false, remaining: 0, retryAfter: await bucketRetryAfter(minute) }
   }
 
-  // Within window - increment and check
-  entry.count++
+  const remaining = Math.max(0, maxRequests - count)
+  return count > baseLimit
+    ? { allowed: true, remaining, overBaseLimit: true }
+    : { allowed: true, remaining }
+}
 
-  if (entry.count > maxRequests) {
-    const retryAfter = Math.ceil((entry.windowStart + WINDOW_MS - now) / 1000)
-    return { allowed: false, remaining: 0, retryAfter }
+/** Retry-After for the address's current window, for a request refused after the check. */
+export async function apiRateLimitRetryAfter(ip: string): Promise<number> {
+  return bucketRetryAfter({ key: rateLimitKey(ip), windowSeconds: WINDOW_SECONDS })
+}
+
+/**
+ * Note that `ip` asked for import mode with an API key that did not verify.
+ * An address with a failure this window gets no import allowance past the
+ * base cap, so failed key attempts never get more than the base cap.
+ */
+export async function recordApiKeyFailure(ip: string): Promise<void> {
+  await incrementBucket({ key: keyFailureKey(ip), windowSeconds: WINDOW_SECONDS })
+}
+
+/** Whether `ip` presented an API key that did not verify, in import mode, this window. */
+export async function hasRecentApiKeyFailure(ip: string): Promise<boolean> {
+  return (await getBucketCount(keyFailureKey(ip))) > 0
+}
+
+function requestHostname(source: Request | Headers, headers: Headers): string | null {
+  const host = hostnameOnly(headers.get('host'))
+  if (host || source instanceof Headers) return host
+  try {
+    return hostnameOnly(new URL(source.url).hostname)
+  } catch {
+    return null
   }
-
-  return { allowed: true, remaining: maxRequests - entry.count }
 }
 
 /**
  * Extract client IP from request headers.
- * Checks common proxy headers for the real client IP.
  *
  * Accepts a full `Request` or just `Headers` — server functions only
  * have `Headers` via `getRequestHeaders()`, so the Headers overload
- * lets them call this without forging a synthetic Request.
+ * lets them call this without forging a synthetic Request. The `source`
+ * parameter is unused when trustedHops === 0 (see below) but is kept so
+ * every call site has one signature regardless of mode.
+ *
+ * With TRUSTED_CLIENT_IP_HEADER set, the address in that header is used when
+ * it holds exactly one valid IP. It is for proxies that set or overwrite one
+ * authoritative header (nginx `proxy_set_header X-Real-IP $remote_addr`,
+ * CF-Connecting-IP), which is the only reliable source when requests cross
+ * several internal proxies of unknown count. The operator vouches that the
+ * proxy never passes a client's copy through. A missing or unusable value
+ * falls back to the rules below and logs a throttled warning.
+ *
+ * Otherwise, two resolution modes, chosen by TRUSTED_PROXY_HOPS:
+ *
+ * - hops === 0 (default, direct exposure): headers are entirely untrusted,
+ *   since any client can set X-Forwarded-For/CF-Connecting-IP/X-Real-IP on
+ *   a request they send us directly, and honoring them would let a single
+ *   attacker spread requests across unlimited rate-limit buckets. Instead
+ *   this resolves the actual TCP peer address via TanStack Start's
+ *   getRequestIP(), which reads it from the platform connection rather
+ *   than from any header. On the Bun preset this is backed by Bun's
+ *   `server.requestIP()`, so distinct clients land in distinct buckets even
+ *   with zero configured proxies.
+ * - hops > 0 (behind N trusted reverse proxies): the client IP is the
+ *   (hops)-th entry from the right of X-Forwarded-For, the standard
+ *   trusted-hop model. Each trusted proxy appends the peer address it
+ *   observed, so counting from the right lands on what the outermost
+ *   trusted proxy actually saw regardless of how many untrusted entries a
+ *   client prepends further left. Single-value headers like
+ *   CF-Connecting-IP/X-Real-IP are not consulted here: unlike
+ *   X-Forwarded-For's position-based trust, nothing in the request tells
+ *   whether such a header was set by a trusted hop or relayed unmodified
+ *   from the client. Only the operator knows, which is why reading one
+ *   takes an explicit TRUSTED_CLIENT_IP_HEADER.
+ *
+ * All of these yield to a visitor address signed by the trusted edge proxy that
+ * serves custom hostnames (see `edgeClientIp` in workspaces/saas-edge-host):
+ * that proxy is the TCP peer and the last X-Forwarded-For hop of every such
+ * request, so either rule alone would put all of its visitors in one bucket.
+ * The signed address is honored only with QUACKBACK_SAAS_EDGE_SECRET set and
+ * a verified customer host on the same request; otherwise both headers are
+ * ignored and the rules above apply unchanged.
+ *
+ * Known limitation: getRequestIP() depends on the platform exposing the
+ * socket peer address. That is true for the built Nitro/Bun server this
+ * project ships (`bun run start`), but not guaranteed for every dev/test
+ * runtime (e.g. `bun run dev`'s Vite dev server). When unavailable, this
+ * falls back to the shared 'unknown' bucket, matching pre-existing
+ * fail-safe behavior instead of trusting a spoofable header.
  */
 export function getClientIp(source: Request | Headers): string {
   const headers = source instanceof Headers ? source : source.headers
-
-  // Check Cloudflare header first
-  const cfIp = headers.get('cf-connecting-ip')
-  if (cfIp) return cfIp
-
-  // Check X-Forwarded-For (may contain comma-separated list)
-  const forwarded = headers.get('x-forwarded-for')
-  if (forwarded) {
-    const firstIp = forwarded.split(',')[0].trim()
-    if (firstIp) return firstIp
+  if (headers.has(EDGE_CLIENT_IP_HEADER)) {
+    const edge = checkEdgeClientIp(headers, requestHostname(source, headers))
+    if (edge && 'ip' in edge) return edge.ip
+    if (edge) warnEdgeClientIpRejected(edge.rejected)
+  }
+  // Startup validates config before serving traffic. Unit-level consumers may
+  // intentionally load this helper without a complete runtime environment;
+  // fail closed to direct-peer semantics in that case.
+  const trustedHeader = (() => {
+    try {
+      return config.trustedClientIpHeader
+    } catch {
+      return undefined
+    }
+  })()
+  if (trustedHeader) {
+    const ip = trustedHeaderIp(headers, trustedHeader)
+    if (ip) return ip
   }
 
-  // Check X-Real-IP
-  const realIp = headers.get('x-real-ip')
-  if (realIp) return realIp
+  const trustedHops = (() => {
+    try {
+      return config.trustedProxyHops
+    } catch {
+      return 0
+    }
+  })()
 
-  // Fallback to unknown
+  if (trustedHops === 0) {
+    // With a trusted header configured the operator has described their proxy;
+    // its own warning above covers a request that lacks it.
+    if (!trustedHeader) warnIfForwardedHeaders(headers)
+    try {
+      const peer = getRequestIP()
+      if (peer && isIP(peer)) return peer
+    } catch {
+      // Not inside a request context (e.g. some test/tooling setups), so
+      // fall through to 'unknown' rather than throwing.
+    }
+    return 'unknown'
+  }
+
+  const forwarded = headers.get('x-forwarded-for')
+  if (forwarded) {
+    const chain = forwarded
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean)
+    const candidate = chain[Math.max(0, chain.length - trustedHops)]
+    if (candidate && isIP(candidate)) return candidate
+  }
+
+  // No usable X-Forwarded-For entry at the trusted-hop position.
   return 'unknown'
 }

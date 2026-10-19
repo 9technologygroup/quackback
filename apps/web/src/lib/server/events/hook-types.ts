@@ -1,12 +1,13 @@
 /**
  * Hook system types.
  *
- * Hooks are triggered when events occur. Each hook type (Slack, Email, Discord,
- * Webhook, Linear, etc.) implements the same interface. The orchestration layer
- * decides WHICH hooks to trigger, handlers decide HOW to deliver.
+ * Built-in event handlers use HookHandler. Integration providers use the
+ * explicit IntegrationHook outcome contract in integrations/sync/outcomes.
+ * Both share event inputs; the respective queues own delivery orchestration.
  */
 
 import type { EventData } from './types'
+import type { ContactEmail } from '@/lib/server/email/recipient'
 
 /**
  * Result of running a hook.
@@ -42,25 +43,19 @@ export interface HookRunContext {
   /** BullMQ job ID for the dispatch. May be undefined for ad-hoc test
    *  callers; handlers must treat that case as "no dedup, just run". */
   jobId?: string
+  /**
+   * True when the queue will not run this job again if this attempt fails, so
+   * a handler can tell an expected, retried failure (a warning) from the one
+   * that loses the delivery (an error). Undefined for ad-hoc callers, which
+   * handlers treat as final.
+   */
+  finalAttempt?: boolean
 }
 
 /**
  * Hook handler interface.
  *
- * Each hook type (Slack, Discord, Email, Webhook, etc.) implements this interface.
- * The `run` method is called once per target.
- *
- * @example
- * ```typescript
- * export const slackHook: HookHandler = {
- *   async run(event, target, config) {
- *     const { channelId } = target
- *     const { accessToken } = config
- *     // ... send to Slack
- *     return { success: true, externalId: result.ts }
- *   }
- * }
- * ```
+ * Built-in hooks (email, notification, webhook, workflow) run once per target.
  */
 export interface HookHandler {
   /**
@@ -100,6 +95,8 @@ export interface HookTarget {
   target: unknown
   /** Hook-specific config (access token, workspace name, etc.) */
   config: Record<string, unknown>
+  /** Stable sink-owned identity used to derive an idempotent delivery job id. */
+  deliveryKey?: string
 }
 
 // ============================================================================
@@ -110,7 +107,16 @@ export interface HookTarget {
  * Email hook target and config.
  */
 export interface EmailTarget {
-  email: string
+  /**
+   * Resolved at CONSTRUCTION, in targets.ts, through resolveContactRecipients.
+   *
+   * Note the honest limit: hook targets are JSON-serialised through the outbox,
+   * so the brand does not survive the round trip and the delivery handler casts
+   * it back. The guarantee is about where the address came from, not about the
+   * type at the far end. Resolving at delivery time instead would cost a query
+   * per recipient per fan-out and break payload-based idempotency.
+   */
+  email: ContactEmail
   name?: string
   unsubscribeUrl: string
 }
@@ -125,4 +131,66 @@ export interface EmailConfig {
   commentPreview?: string
   isTeamMember?: boolean
   logoUrl?: string
+  /** Link to the portal's per-type x per-channel notification preferences
+   *  page. Not token-based — requires the recipient to be logged in. */
+  preferencesUrl?: string
+}
+
+/**
+ * Ticket lifecycle email config (support platform): its own shape instead of
+ * widening the post-specific EmailConfig — the email hook casts per branch,
+ * the same way the changelog/status branches do.
+ */
+export interface TicketEmailConfig {
+  /** Which of the seven copy-map kinds to render. */
+  kind:
+    | 'created'
+    | 'reply'
+    | 'status_resolved'
+    | 'assigned'
+    | 'assigned_team'
+    | 'sla_warning'
+    | 'sla_breach'
+  workspaceName: string
+  /** Formatted reference, e.g. "#142". */
+  ticketLabel: string
+  /** Ticket title (SLA kinds carry the counterpart identifier instead). */
+  title: string
+  ctaUrl: string
+  /** Ticket id — the deterministic threading root derives from it. */
+  ticketId?: string
+  messageBody?: string
+  authorName?: string
+  statusChange?: { previousLabel: string | null; newLabel: string }
+  /** B22: kind 'status_resolved' — a null-publicStage close ("Won't do",
+   *  "Duplicate") renders generic "was closed" copy (the internal status name
+   *  never reaches the customer). Absent/false keeps the resolved copy. */
+  closedGeneric?: boolean
+  clockLabel?: string
+  dueLabel?: string
+  /** Per-team From (resolveSendingAddress result); absent = EMAIL_FROM. */
+  from?: string
+  /** Signed per-ticket inbound reply address; absent = no reply-by-email. */
+  replyTo?: string
+  logoUrl?: string
+  preferencesUrl?: string
+}
+
+/**
+ * Internal-note @-mention email config. Its own shape rather than a widened
+ * EmailConfig (which is post-specific) or TicketEmailConfig (a note mention is
+ * conversation-scoped and carries no ticket), matching how every other
+ * non-post branch of the email hook casts.
+ */
+export interface NoteMentionEmailConfig {
+  workspaceName: string
+  conversationId: string
+  /** Display name of the teammate who wrote the note. */
+  authorName: string
+  /** Plain-text note preview, already truncated at the emit site. */
+  preview: string
+  /** Admin inbox deep link — the note body is internal, so never the portal. */
+  ctaUrl: string
+  logoUrl?: string
+  preferencesUrl?: string
 }

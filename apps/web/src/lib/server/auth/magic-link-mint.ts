@@ -1,5 +1,5 @@
 import { generateRandomString } from 'better-auth/crypto'
-import { db, verification, eq, inArray } from '@/lib/server/db'
+import { db, verification, inArray } from '@/lib/server/db'
 import { getAuth } from './index'
 
 interface MintOptions {
@@ -16,6 +16,27 @@ interface MintOptions {
 }
 
 const DEFAULT_EXPIRES_IN_SECONDS = 10 * 60
+
+/**
+ * Better-Auth 1.7.7+ keys each magic-link row as `magic-link:<token>` and parses
+ * its value with a strict `{ type: 'magic-link', email, name? }` schema. Rows
+ * written with the bare token or the older value shape fail verification.
+ */
+const MAGIC_LINK_IDENTIFIER_PREFIX = 'magic-link:'
+
+/** The verification-row identifier for a bare magic-link token. */
+function magicLinkIdentifier(token: string): string {
+  return `${MAGIC_LINK_IDENTIFIER_PREFIX}${token}`
+}
+
+/**
+ * Every identifier a token may have been stored under: the prefixed one, and
+ * the bare token for links minted before the prefix. Those legacy rows no longer
+ * verify, but they still need deleting when the link is revoked.
+ */
+function revocableIdentifiers(token: string): string[] {
+  return [magicLinkIdentifier(token), token]
+}
 
 /** Build the `/verify-magic-link?token=…` URL. */
 export function buildVerifyMagicLinkUrl(opts: {
@@ -43,10 +64,12 @@ export function buildVerifyMagicLinkUrl(opts: {
  * instead of going through `auth.api.signInMagicLink` — that endpoint
  * fires our `hooksBefore` chain (rate-limit, team magic-link toggle,
  * hard-binding) which is correct for user-initiated sign-in but wrong
- * for internal token-mint. Token format mirrors BA's magic-link
- * plugin so its `/magic-link/verify` endpoint reads our row.
+ * for internal token-mint. The row mirrors BA's magic-link plugin
+ * (see `magicLinkIdentifier`) so its `/magic-link/verify` endpoint reads it.
  */
-export async function mintMagicLinkUrl(opts: MintOptions): Promise<{ url: string; token: string }> {
+export async function mintMagicLinkUrl(
+  opts: MintOptions
+): Promise<{ url: string; token: string; sealedAddress: string }> {
   const auth = await getAuth()
   const token = generateRandomString(32, 'a-z', 'A-Z')
   const expiresInSeconds = opts.expiresInSeconds ?? DEFAULT_EXPIRES_IN_SECONDS
@@ -55,8 +78,8 @@ export async function mintMagicLinkUrl(opts: MintOptions): Promise<{ url: string
   // is a plain object. `await` handles both.
   const ctx = await auth.$context
   await ctx.internalAdapter.createVerificationValue({
-    identifier: token,
-    value: JSON.stringify({ email: opts.email, attempt: 0 }),
+    identifier: magicLinkIdentifier(token),
+    value: JSON.stringify({ type: 'magic-link', email: opts.email }),
     expiresAt: new Date(Date.now() + expiresInSeconds * 1000),
   })
 
@@ -66,10 +89,16 @@ export async function mintMagicLinkUrl(opts: MintOptions): Promise<{ url: string
     callbackPath: opts.callbackPath,
     errorCallbackPath: opts.errorCallbackPath,
   })
-  // `token` is the verification-row identifier. Callers that need to be able
-  // to invalidate the link later (invitations) persist it; sign-in callers
-  // ignore it.
-  return { url, token }
+  // `token` is the bare token: it goes in the URL and names the link for
+  // revocation. Callers that need to invalidate the link later (invitations)
+  // persist it and pass it to the revoke helpers, which find the row by its
+  // prefixed identifier. Sign-in callers ignore it.
+  //
+  // `sealedAddress` is the address actually written into the verification row
+  // above. Senders mail THAT rather than whatever string they happen to be
+  // holding, so the token can never be delivered somewhere it cannot be
+  // redeemed — or, worse, somewhere it can.
+  return { url, token, sealedAddress: opts.email }
 }
 
 /**
@@ -80,9 +109,7 @@ export async function mintMagicLinkUrl(opts: MintOptions): Promise<{ url: string
  */
 export async function revokeMagicLinkToken(token: string | null | undefined): Promise<void> {
   if (!token) return
-  // `token` is the row's `identifier` — see `createVerificationValue` in
-  // mintMagicLinkUrl above, which stores the raw token as the identifier.
-  await db.delete(verification).where(eq(verification.identifier, token))
+  await db.delete(verification).where(inArray(verification.identifier, revocableIdentifiers(token)))
 }
 
 /**
@@ -92,5 +119,7 @@ export async function revokeMagicLinkToken(token: string | null | undefined): Pr
  */
 export async function revokeMagicLinkTokens(tokens: string[]): Promise<void> {
   if (tokens.length === 0) return
-  await db.delete(verification).where(inArray(verification.identifier, tokens))
+  await db
+    .delete(verification)
+    .where(inArray(verification.identifier, tokens.flatMap(revocableIdentifiers)))
 }

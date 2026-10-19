@@ -5,7 +5,7 @@
  *   - additive: portal-only social enables are OR-ed into authConfig.oauth;
  *   - monotonic: team methods are never removed;
  *   - magic-link-safe: explicit false is preserved, while passwordless legacy
- *     tenants keep the old absent-key team fallback;
+ *     workspaces keep the old absent-key team fallback;
  *   - idempotent: a second run changes nothing.
  *
  * Each test runs inside a transaction that is rolled back so the shared test
@@ -15,7 +15,6 @@
 // Satisfy the config schema the db layer validates on first access.
 process.env.SECRET_KEY = 'test-secret-key-that-is-at-least-32-characters-long'
 process.env.BASE_URL = 'http://localhost:3000'
-process.env.REDIS_URL = 'redis://localhost:6379'
 
 import { describe, it, expect } from 'vitest'
 import { db, eq, settings } from '@/lib/server/db'

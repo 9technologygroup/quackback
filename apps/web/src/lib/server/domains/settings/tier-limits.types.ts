@@ -2,8 +2,9 @@
  * Per-workspace tier limits. Read by every enforcement seam via
  * getTierLimits(). Default (no row) is OSS_TIER_LIMITS — unlimited
  * everything, all features on. Operators can write a tighter row to
- * cap a workspace; the trusted internal endpoint at
- * /api/v1/internal/tier-limits is the canonical writer.
+ * cap a workspace; the canonical writer is the declarative config
+ * file (/etc/quackback/config.yaml), reconciled into
+ * settings.tier_limits.
  *
  * Null in any numeric field = unlimited.
  * features.* = true = feature is on.
@@ -21,12 +22,8 @@ export interface TierFeatureFlags {
   customColors: boolean
   customCss: boolean
   /** Connecting external tools (GitHub, Slack, Linear, Jira, etc.).
-   *  Pro and Scale on cloud; always on for self-hosters. */
+   *  All paid tiers on cloud; always on for self-hosters. */
   integrations: boolean
-  /** AI auto-capture: the feedback-extraction pipeline that turns
-   *  conversations from connected sources into structured feedback.
-   *  Scale-only on cloud; always on for self-hosters. */
-  aiFeedbackExtraction: boolean
 }
 
 /**
@@ -39,6 +36,8 @@ export interface TierFeatureFlags {
 export interface PlanNotice {
   /** Short badge text, e.g. "Free trial". */
   label: string
+  /** A running trial's plan name, so the trial line can be worded per language. */
+  trialPlan?: string
   /** Optional supporting copy. */
   message?: string
   /** ISO timestamp; when set the banner renders a countdown. */
@@ -46,12 +45,36 @@ export interface PlanNotice {
   /** When set the banner renders an action button linking here. */
   actionUrl?: string
   actionLabel?: string
+  /** Expired-trial strip: persistent red, no countdown. */
+  ended?: boolean
+  /** Expired-trial strip, billing managers only: when the rest of admin waits on a plan choice. */
+  choiceDueAt?: string
 }
 
 export interface TierLimits {
   maxBoards: TierLimit<number>
   maxPosts: TierLimit<number>
+  /**
+   * Cloud bills per seat rather than capping seats, so this is null on
+   * all paid cloud tiers. The seam remains for operators and the
+   * config-file channel.
+   */
   maxTeamSeats: TierLimit<number>
+  /** Active (non-deleted) status page components. */
+  maxStatusComponents: TierLimit<number>
+  /** Custom (non-system) roles. Null = unlimited, the OSS default. */
+  maxCustomRoles: TierLimit<number>
+
+  /**
+   * Sending domains a workspace may add.
+   *
+   * A cap on a shared resource rather than on a feature. Adding one creates an
+   * identity on the mail provider account this workspace shares with every
+   * other, and that account has an identity quota: without a ceiling, one
+   * workspace adding domains in a loop degrades mail for all of them. Null =
+   * unlimited, which is right for a self-hoster on their own account.
+   */
+  maxSendingDomains: TierLimit<number>
 
   /**
    * Monthly LLM token budget (input + output combined). All AI features
@@ -60,6 +83,7 @@ export interface TierLimits {
    * Embeddings are excluded (they're tracked but not billed).
    */
   aiTokensPerMonth: TierLimit<number>
+  emailsPerMonth: TierLimit<number>
 
   apiRequestsPerMonth: TierLimit<number>
   apiRequestsPerMinute: TierLimit<number>
@@ -73,8 +97,12 @@ export const OSS_TIER_LIMITS: TierLimits = {
   maxBoards: null,
   maxPosts: null,
   maxTeamSeats: null,
+  maxStatusComponents: null,
+  maxCustomRoles: null,
+  maxSendingDomains: null,
 
   aiTokensPerMonth: null,
+  emailsPerMonth: null,
 
   apiRequestsPerMonth: null,
   apiRequestsPerMinute: null,
@@ -89,6 +117,5 @@ export const OSS_TIER_LIMITS: TierLimits = {
     customColors: true,
     customCss: true,
     integrations: true,
-    aiFeedbackExtraction: true,
   },
 }

@@ -13,7 +13,7 @@
 # ============================================================================
 
 # Base image with Bun
-FROM oven/bun:1.3.11 AS base
+FROM oven/bun:1.4.0 AS base
 WORKDIR /app
 
 # ============================================================================
@@ -44,19 +44,24 @@ RUN bun run --filter @quackback/widget build
 WORKDIR /app/apps/web
 RUN bun run build
 
-# Patch Nitro's lazy SSR loading: Nitro 3.x wraps the SSR service in
-# `lazyService(() => import('./_ssr/ssr.mjs'))` which only fires the import
-# when the FIRST request arrives. That puts ~200ms of module evaluation +
-# ~1s of dependency cold-start on the critical path of every cold start.
+# Patch Nitro's lazy SSR loading: Nitro wraps the SSR renderer chunk in
+# `defineLazyEventHandler(() => import("./_chunks/ssr-renderer.mjs"))` which
+# only fires the import when the FIRST request arrives. That puts ~200ms of
+# module evaluation + ~1s of dependency cold-start on the critical path of
+# every cold start.
 #
-# Inject an unconditional `import("./_ssr/ssr.mjs")` right after the
-# services are declared. Bun fires the import as a side effect; by the
+# Inject an unconditional `import("./_chunks/ssr-renderer.mjs")` right after
+# the lazy handler is declared. Bun fires the import as a side effect; by the
 # time Knative finishes its pod-readiness propagation (~1s) and forwards
 # the buffered request, the SSR module is already in V8's module cache
-# and lazyService's loader resolves synchronously. Top-level await (TLA)
+# and the lazy handler resolves synchronously. Top-level await (TLA)
 # would also work but delays the TCP listen — losing the parallelism
 # between Bun module load and Knative routing setup.
-RUN sed -i 's|globalThis.__nitro_vite_envs__ = services;|globalThis.__nitro_vite_envs__ = services;\nimport("./_ssr/ssr.mjs").catch(() => {});|' /app/apps/web/.output/server/index.mjs
+#
+# The trailing grep turns a silent no-op into a loud build failure: if a
+# future Nitro upgrade reshapes the server entry again, the image build
+# fails here instead of shipping without the pre-warm.
+RUN sed -i 's|defineLazyEventHandler(() => import("./_chunks/ssr-renderer.mjs"));|defineLazyEventHandler(() => import("./_chunks/ssr-renderer.mjs"));\nimport("./_chunks/ssr-renderer.mjs").catch(() => {});|' /app/apps/web/.output/server/index.mjs && grep -q 'ssr-renderer.mjs").catch' /app/apps/web/.output/server/index.mjs
 
 # Bundle the migration script so the runner doesn't need /app/node_modules.
 # The CLI entrypoint at packages/db/src/migrate.ts pulls in dotenv + drizzle-orm
@@ -73,10 +78,26 @@ RUN bun build packages/db/src/migrate.ts \
     --bundle \
     --outfile=/tmp/seed.mjs
 
+# The fleet migrator, bundled the same way and for a stronger reason: under
+# pooled tenancy it is a role of this image, not a developer script. It reads
+# the control registry, claims the workspaces behind their target version and
+# migrates each one, and a release rollout invokes it between the schema step
+# and the deploy step. Left out of the image, `QUACKBACK_ROLE=migrator` is a
+# role nothing can actually run, and the migrate-then-deploy gate has no first
+# half — the whole point of building one artifact is that it carries every role
+# the fleet needs.
+#
+# It pulls in `apps/web/src/lib/server/**`, so it is bundled from the repo root
+# where the `@/` tsconfig path resolves.
+RUN bun build apps/web/scripts/fleet-migrator.ts \
+    --target=bun \
+    --bundle \
+    --outfile=/tmp/fleet-migrator.mjs
+
 # ============================================================================
 # Production runner
 # ============================================================================
-FROM oven/bun:1.3.11-alpine AS runner
+FROM oven/bun:1.4.0-alpine AS runner
 
 WORKDIR /app
 
@@ -94,6 +115,7 @@ COPY --from=builder --chown=quackback:nodejs /app/apps/web/.output ./.output
 # read at runtime by drizzle's migrator.
 COPY --from=builder --chown=quackback:nodejs /tmp/migrate.mjs ./migrate.mjs
 COPY --from=builder --chown=quackback:nodejs /tmp/seed.mjs ./seed.mjs
+COPY --from=builder --chown=quackback:nodejs /tmp/fleet-migrator.mjs ./fleet-migrator.mjs
 COPY --from=builder --chown=quackback:nodejs /app/packages/db/drizzle ./drizzle
 
 # Copy entrypoint script

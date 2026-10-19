@@ -25,6 +25,10 @@ function FeedbackHeaderFallback() {
             defaultMessage: "What's your idea?",
           })}
           readOnly
+          aria-label={intl.formatMessage({
+            id: 'portal.feedback.header.titleLabel',
+            defaultMessage: 'Feedback title',
+          })}
           className="flex-1 bg-transparent border-0 outline-none text-foreground font-semibold placeholder:text-muted-foreground/60 placeholder:font-normal"
         />
       </div>

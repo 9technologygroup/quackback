@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useSearch } from '@tanstack/react-router'
+import { toast } from 'sonner'
 import { ArrowPathIcon, CheckCircleIcon } from '@heroicons/react/24/solid'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
@@ -16,6 +17,8 @@ interface OAuthConnectionActionsProps {
   displayName: string
   /** Description for the disconnect dialog */
   disconnectDescription: string
+  /** Connect button label. Defaults to "Connect {displayName}". */
+  connectLabel?: string
 }
 
 export function OAuthConnectionActions({
@@ -25,6 +28,7 @@ export function OAuthConnectionActions({
   getConnectUrl,
   displayName,
   disconnectDescription,
+  connectLabel = `Connect ${displayName}`,
 }: OAuthConnectionActionsProps) {
   const search = useSearch({ strict: false })
   const deleteMutation = useDeleteIntegration()
@@ -34,6 +38,15 @@ export function OAuthConnectionActions({
 
   useEffect(() => {
     const searchParams = search as Record<string, string | undefined>
+    if (
+      searchParams[searchParamKey] === 'error' &&
+      searchParams.reason === 'already_connected_elsewhere'
+    ) {
+      toast.error(
+        `This ${displayName} account is already connected to another Quackback workspace.`
+      )
+      return
+    }
     if (searchParams[searchParamKey] !== 'connected') return
 
     setShowSuccess(true)
@@ -52,6 +65,7 @@ export function OAuthConnectionActions({
       window.location.href = url
     } catch (err) {
       console.error('Failed to get connect URL:', err)
+      toast.error(err instanceof Error ? err.message : "Couldn't start connection. Try again.")
       setConnecting(false)
     }
   }
@@ -66,7 +80,7 @@ export function OAuthConnectionActions({
   return (
     <>
       {showSuccess && (
-        <div className="flex items-center gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-2 text-sm text-green-600 dark:text-green-400">
+        <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-sm text-success">
           <CheckCircleIcon className="h-4 w-4" />
           <span>Connected successfully!</span>
         </div>
@@ -74,14 +88,14 @@ export function OAuthConnectionActions({
 
       <div className="flex items-center gap-2">
         {!isConnected && (
-          <Button onClick={handleConnect} disabled={connecting}>
+          <Button size="sm" onClick={handleConnect} disabled={connecting}>
             {connecting ? (
               <>
                 <ArrowPathIcon className="mr-2 h-4 w-4 animate-spin" />
                 Connecting...
               </>
             ) : (
-              'Connect'
+              connectLabel
             )}
           </Button>
         )}

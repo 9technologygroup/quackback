@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { CopyButton } from '@/components/shared/copy-button'
 import { TableCell, TableRow } from '@/components/ui/table'
+import { LocalDate } from '@/components/ui/local-date'
 import { cancelInvitationFn, resendInvitationFn } from '@/lib/server/functions/admin'
 import { formatDistanceToNow } from 'date-fns'
 import type { InviteId } from '@quackback/ids'
@@ -13,6 +14,9 @@ export interface PendingInvitation {
   email: string
   name: string | null
   role: string | null
+  /** Custom-role grant carried by the invite, when one was chosen. */
+  roleId?: string | null
+  roleName?: string | null
   createdAt: string
   lastSentAt: string | null
   expiresAt: string
@@ -34,15 +38,17 @@ export function getExpiryText(expiresAt: string) {
   const className = isExpired
     ? 'text-destructive'
     : isExpiringSoon
-      ? 'text-amber-600'
+      ? 'text-warning'
       : 'text-muted-foreground'
 
   return { text, className, isExpired }
 }
 
-export function formatInviteDate(dateStr: string) {
-  const date = new Date(dateStr)
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+const INVITE_DATE: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
+
+/** When an invitation was sent, e.g. "Oct 1", in the viewer's zone once hydrated. */
+export function InviteDate({ date }: { date: string }) {
+  return <LocalDate date={date} options={INVITE_DATE} locale="en-US" />
 }
 
 interface InvitationActionsProps {
@@ -116,7 +122,6 @@ export function InvitationActions({
         onClick={handleResend}
         disabled={resendDisabled}
         title={resendTitle}
-        className="h-9"
       >
         {loading === 'resend' ? <ArrowPathIcon className="h-4 w-4 animate-spin" /> : 'Resend'}
       </Button>
@@ -129,7 +134,7 @@ export function InvitationActions({
               size="icon"
               onClick={handleCancel}
               disabled={loading !== null}
-              className="h-9 w-9 text-muted-foreground hover:text-destructive"
+              className="text-muted-foreground hover:text-destructive"
             >
               <XMarkIcon className="h-4 w-4" />
             </Button>

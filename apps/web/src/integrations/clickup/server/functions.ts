@@ -1,0 +1,113 @@
+/**
+ * ClickUp-specific server functions.
+ */
+import { createServerFn } from '@tanstack/react-start'
+import { z } from 'zod'
+import type { PrincipalId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import { ValidationError } from '@/lib/shared/errors'
+
+export interface ClickUpOAuthState {
+  type: 'clickup_oauth'
+  workspaceId: string
+  returnDomain: string
+  principalId: PrincipalId
+  nonce: string
+  ts: number
+}
+
+export interface ClickUpSpace {
+  id: string
+  name: string
+}
+
+export interface ClickUpList {
+  id: string
+  name: string
+}
+
+interface ClickUpIntegrationConfig {
+  teamId?: string
+  workspaceName?: string
+}
+
+export const getClickUpConnectUrl = createServerFn({ method: 'GET' }).handler(
+  async (): Promise<string> => {
+    const { randomBytes } = await import('crypto')
+    const { requireAuth } = await import('@/lib/server/functions/auth-helpers')
+    const { signOAuthState } = await import('@/lib/server/auth/oauth-state')
+    const { config } = await import('@/lib/server/config')
+
+    const auth = await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
+    const { hasPlatformCredentials } =
+      await import('@/lib/server/domains/platform-credentials/platform-credential.service')
+    if (!(await hasPlatformCredentials('clickup'))) {
+      throw new ValidationError(
+        'PLATFORM_CREDENTIALS_NOT_CONFIGURED',
+        'ClickUp platform credentials not configured. Configure them in integration settings first.'
+      )
+    }
+    const returnDomain = new URL(config.baseUrl).host
+
+    const state = signOAuthState({
+      type: 'clickup_oauth',
+      workspaceId: auth.settings.id,
+      returnDomain,
+      principalId: auth.principal.id,
+      nonce: randomBytes(16).toString('base64url'),
+      ts: Date.now(),
+    } satisfies ClickUpOAuthState)
+
+    return `/oauth/clickup/connect?state=${encodeURIComponent(state)}`
+  }
+)
+
+export const fetchClickUpSpacesFn = createServerFn({ method: 'GET' }).handler(
+  async (): Promise<ClickUpSpace[]> => {
+    const { requireAuth } = await import('@/lib/server/functions/auth-helpers')
+    const { db, integrations, eq } = await import('@/lib/server/db')
+    const { getIntegrationAuth } = await import('@/lib/server/integrations/token-refresh')
+    const { listClickUpSpaces } = await import('@/integrations/clickup/server/lists')
+
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
+
+    const integration = await db.query.integrations.findFirst({
+      where: eq(integrations.integrationType, 'clickup'),
+    })
+
+    if (!integration?.secrets || integration.status !== 'active') {
+      throw new Error('ClickUp not connected')
+    }
+
+    const auth = await getIntegrationAuth(integration.id)
+    const secrets = { accessToken: auth.accessToken }
+    const cfg = (auth.config ?? {}) as ClickUpIntegrationConfig
+    if (!cfg.teamId) {
+      throw new Error('ClickUp team ID not found. Please reconnect ClickUp.')
+    }
+    return listClickUpSpaces(secrets.accessToken, cfg.teamId)
+  }
+)
+
+export const fetchClickUpListsFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ spaceId: z.string().min(1) }))
+  .handler(async ({ data: { spaceId } }): Promise<ClickUpList[]> => {
+    const { requireAuth } = await import('@/lib/server/functions/auth-helpers')
+    const { db, integrations, eq } = await import('@/lib/server/db')
+    const { getIntegrationAuth } = await import('@/lib/server/integrations/token-refresh')
+    const { listClickUpLists } = await import('@/integrations/clickup/server/lists')
+
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
+
+    const integration = await db.query.integrations.findFirst({
+      where: eq(integrations.integrationType, 'clickup'),
+    })
+
+    if (!integration?.secrets || integration.status !== 'active') {
+      throw new Error('ClickUp not connected')
+    }
+
+    const auth = await getIntegrationAuth(integration.id)
+    const secrets = { accessToken: auth.accessToken }
+    return listClickUpLists(secrets.accessToken, spaceId)
+  })

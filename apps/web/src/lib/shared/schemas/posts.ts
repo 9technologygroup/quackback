@@ -1,6 +1,8 @@
 import { z } from 'zod'
-import { boardIdSchema, statusIdSchema, tagIdsSchema } from '@quackback/ids/zod'
+import { boardIdSchema, postStatusIdSchema, tagIdsSchema } from '@quackback/ids/zod'
 import type { TiptapContent as DbTiptapContent } from '@/lib/shared/db-types'
+import { PageLimitSchema } from './taxonomy'
+import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/post-limits'
 
 /**
  * TipTap mark schema - validates mark types and their attributes
@@ -38,6 +40,7 @@ const tiptapNodeSchema: z.ZodType<DbTiptapContent> = z.lazy(() =>
       'image',
       'resizableImage',
       'youtube',
+      'video',
       'horizontalRule',
       'hardBreak',
       'table',
@@ -77,16 +80,7 @@ export const tiptapContentSchema: z.ZodType<DbTiptapContent> = z.object({
   content: z.array(tiptapNodeSchema).optional(),
 })
 
-/**
- * Maximum length of a post body, in characters.
- *
- * The `posts.content` column is `text`, so this is purely a product limit — it
- * exists to keep pathological bodies out of list payloads and imports, not to
- * satisfy the database. Every AI path truncates well below this on its own
- * (embeddings 8k, summary 6k, sentiment 3k, merge assessment 2k), so raising it
- * does not move token spend.
- */
-export const MAX_POST_CONTENT_LENGTH = 50_000
+export { MAX_POST_CONTENT_LENGTH }
 
 /**
  * Schema for admin creating a post
@@ -96,7 +90,7 @@ export const createPostSchema = z.object({
   content: z.string().max(MAX_POST_CONTENT_LENGTH),
   contentJson: tiptapContentSchema.optional(),
   boardId: boardIdSchema,
-  statusId: statusIdSchema.optional(),
+  statusId: postStatusIdSchema.optional(),
   tagIds: tagIdsSchema,
 })
 
@@ -107,7 +101,7 @@ export const editPostSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200),
   content: z.string().max(MAX_POST_CONTENT_LENGTH),
   boardId: boardIdSchema,
-  statusId: statusIdSchema.optional(),
+  statusId: postStatusIdSchema.optional(),
   tagIds: tagIdsSchema,
 })
 
@@ -115,3 +109,46 @@ export const editPostSchema = z.object({
 export type CreatePostFormData = z.infer<typeof createPostSchema>
 export type EditPostFormData = z.infer<typeof editPostSchema>
 export type { DbTiptapContent as TiptapContent }
+
+export const listPublicPostsSchema = z.object({
+  boardSlug: z.string().optional(),
+  search: z.string().optional(),
+  statusIds: z.array(z.string()).optional(),
+  statusSlugs: z.array(z.string()).optional(),
+  tagIds: z.array(z.string()).optional(),
+  sort: z.enum(['top', 'new', 'trending']).optional().default('top'),
+  page: z.number().int().min(1).optional().default(1),
+  limit: z.number().int().min(1).max(100).optional().default(20),
+  minVotes: z.number().int().min(1).optional(),
+  dateFrom: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((s) => !Number.isNaN(new Date(s).getTime()), 'Invalid calendar date')
+    .optional(),
+  responded: z.enum(['responded', 'unresponded']).optional(),
+  owner: z.string().optional(),
+  segmentIds: z.array(z.string()).optional(),
+})
+export type ListPublicPostsInput = z.infer<typeof listPublicPostsSchema>
+
+export const createPublicPostSchema = z.object({
+  boardId: z.string(),
+  title: z.string().min(1, 'Title is required').max(200),
+  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional().default(''),
+  contentJson: tiptapContentSchema.optional(),
+  metadata: z.record(z.string(), z.string()).optional(),
+  customFields: z.record(z.string(), z.unknown()).optional(),
+})
+export type CreatePublicPostInput = z.infer<typeof createPublicPostSchema>
+
+export const toggleVoteSchema = z.object({
+  postId: z.string(),
+})
+export type ToggleVoteInput = z.infer<typeof toggleVoteSchema>
+
+export const fetchPublicPostDetailSchema = z.object({
+  postId: z.string(),
+  commentsCursor: z.string().nullish(),
+  commentsLimit: PageLimitSchema,
+})
+export type FetchPublicPostDetailInput = z.infer<typeof fetchPublicPostDetailSchema>

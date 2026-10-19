@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const invalidateQueries = vi.fn()
+const setQueryData = vi.fn()
+const updateThemeFn = vi.fn(async () => ({ ok: true }))
+const updateCustomCssFn = vi.fn(async () => ({ ok: true }))
 
 vi.mock('@tanstack/react-query', async () => {
   const actual =
@@ -8,9 +11,15 @@ vi.mock('@tanstack/react-query', async () => {
   return {
     ...actual,
     useMutation: vi.fn((options: unknown) => options),
-    useQueryClient: vi.fn(() => ({ invalidateQueries })),
+    useQueryClient: vi.fn(() => ({ invalidateQueries, setQueryData })),
   }
 })
+
+vi.mock('@/lib/server/functions/settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/functions/settings')>()),
+  updateThemeFn,
+  updateCustomCssFn,
+}))
 
 describe('settings config mutations cache invalidation', () => {
   beforeEach(() => {
@@ -51,12 +60,13 @@ describe('settings config mutations cache invalidation', () => {
     expect(result).toBeInstanceOf(Promise)
   })
 
-  it('useRegenerateWidgetSecret.onSuccess awaits invalidation of the widgetSecret query', async () => {
+  it('useRegenerateWidgetSecret.onSuccess writes the new secret then awaits invalidation', async () => {
     const { useRegenerateWidgetSecret } = await import('../settings')
-    const mutation = useRegenerateWidgetSecret() as { onSuccess?: () => unknown }
+    const mutation = useRegenerateWidgetSecret() as { onSuccess?: (secret: string) => unknown }
 
-    const result = mutation.onSuccess?.()
+    const result = mutation.onSuccess?.('wgt_new')
 
+    expect(setQueryData).toHaveBeenCalledWith(['settings', 'widgetSecret'], 'wgt_new')
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['settings', 'widgetSecret'] })
     expect(result).toBeInstanceOf(Promise)
   })
@@ -69,6 +79,54 @@ describe('settings config mutations cache invalidation', () => {
 
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['settings', 'helpCenterConfig'] })
     expect(result).toBeInstanceOf(Promise)
+  })
+
+  it('useSaveBrandingTheme leaves plan refusals to the page and names other reasons', async () => {
+    const { useSaveBrandingTheme } = await import('../settings')
+    const { meta } = useSaveBrandingTheme() as unknown as {
+      meta: { autosave?: boolean; showServerMessage?: boolean; ownsError?: (e: unknown) => boolean }
+    }
+    expect(meta.autosave).toBe(true)
+    expect(meta.showServerMessage).toBe(true)
+    expect(meta.ownsError?.(Object.assign(new Error('x'), { statusCode: 402 }))).toBe(true)
+    expect(meta.ownsError?.(new Error('Custom CSS is too long.'))).toBe(false)
+  })
+
+  it('useSaveBrandingTheme persist/clear/rewrite customCss writes', async () => {
+    const { useSaveBrandingTheme } = await import('../settings')
+    const mutation = useSaveBrandingTheme() as unknown as {
+      mutationFn: (input: {
+        brandingConfig: Record<string, unknown>
+        customCss: string
+        customCssWrite: 'persist' | 'clear' | 'rewrite'
+      }) => Promise<unknown>
+    }
+
+    await mutation.mutationFn({
+      brandingConfig: { preset: 'default' },
+      customCss: '.brand { color: red; }',
+      customCssWrite: 'rewrite',
+    })
+    expect(updateThemeFn).toHaveBeenCalledOnce()
+    expect(updateCustomCssFn).toHaveBeenCalledWith({
+      data: { customCss: '.brand { color: red; }' },
+    })
+
+    await mutation.mutationFn({
+      brandingConfig: { preset: 'default' },
+      customCss: ':root { --primary: red; }',
+      customCssWrite: 'clear',
+    })
+    expect(updateCustomCssFn).toHaveBeenCalledWith({ data: { customCss: '' } })
+
+    await mutation.mutationFn({
+      brandingConfig: { preset: 'default' },
+      customCss: '.brand { color: red; }',
+      customCssWrite: 'persist',
+    })
+    expect(updateCustomCssFn).toHaveBeenCalledWith({
+      data: { customCss: '.brand { color: red; }' },
+    })
   })
 
   it('useSaveBrandingTheme.onSuccess awaits invalidation of branding and customCss queries', async () => {

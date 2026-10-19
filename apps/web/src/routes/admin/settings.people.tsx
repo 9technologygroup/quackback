@@ -1,19 +1,18 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useSuspenseQuery } from '@tanstack/react-query'
+import { PERMISSIONS } from '@/lib/shared/permissions'
+import { assertRoutePermission } from '@/lib/shared/route-permission'
 import { adminQueries } from '@/lib/client/queries/admin'
-import { UserGroupIcon } from '@heroicons/react/24/solid'
-import { BackLink } from '@/components/ui/back-link'
-import { PageHeader } from '@/components/shared/page-header'
+import { SettingsPage } from '@/components/admin/settings/settings-page'
 import { UserAttributesList } from '@/components/admin/settings/user-attributes/user-attributes-list'
-import { SegmentList } from '@/components/admin/segments/segment-list'
+import { adminPageHead } from '@/lib/client/admin-head'
 
 export const Route = createFileRoute('/admin/settings/people')({
+  head: adminPageHead('People settings'),
   loader: async ({ context }) => {
+    assertRoutePermission(context.permissions, PERMISSIONS.USER_ATTRIBUTE_VIEW)
     const { queryClient } = context
-    await Promise.all([
-      queryClient.ensureQueryData(adminQueries.userAttributes()),
-      queryClient.ensureQueryData(adminQueries.segments()),
-    ])
+    await queryClient.ensureQueryData(adminQueries.userAttributes())
     return {}
   },
   component: PeoplePage,
@@ -23,21 +22,11 @@ function PeoplePage() {
   const attrsQuery = useSuspenseQuery(adminQueries.userAttributes())
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div className="lg:hidden">
-        <BackLink to="/admin/settings">Settings</BackLink>
-      </div>
-      <PageHeader
-        icon={UserGroupIcon}
-        title="People"
-        description="Custom attributes and segments for the people who use your portal."
-      />
-
-      {/* Both lists render their own SettingsCard internally so the
-       *  header actions (New attribute / New segment / Re-evaluate)
-       *  live in the card header next to the title. */}
+    <SettingsPage
+      page="/admin/settings/people"
+      description="Custom attributes on users, used in segments."
+    >
       <UserAttributesList initialAttributes={attrsQuery.data} />
-      <SegmentList />
-    </div>
+    </SettingsPage>
   )
 }

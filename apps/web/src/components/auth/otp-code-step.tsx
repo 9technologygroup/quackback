@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { useIntl, FormattedMessage } from 'react-intl'
 import { Button } from '@/components/ui/button'
 import { FormError } from '@/components/shared/form-error'
@@ -19,6 +20,19 @@ interface OtpCodeStepProps {
   /** When true, render an inner header (full-page form). Inline-dialog
    * callers leave this off because the dialog already shows the email. */
   showInnerHeader?: boolean
+  /**
+   * The workspace has closed self-service signup, so an address with no
+   * account here will never receive a code.
+   *
+   * A fact about the WORKSPACE, never about the address that was typed: the
+   * note below renders for every address whenever this is true. The sign-in
+   * endpoint answers identically for an address it accepts and one it refuses,
+   * precisely so that nobody can read account existence out of it, and a note
+   * that appeared only for refused addresses would put that oracle back in the
+   * browser. What it buys instead is that somebody who will never get a code is
+   * told why, rather than watching an empty inbox.
+   */
+  signupClosed?: boolean
 }
 
 /**
@@ -38,8 +52,15 @@ export function OtpCodeStep({
   error,
   resendCooldown,
   showInnerHeader = false,
+  signupClosed = false,
 }: OtpCodeStepProps) {
   const intl = useIntl()
+  // The field is disabled while a code is checked, which drops focus to the
+  // page. When the check comes back wrong, put the cursor back in the field.
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (error && !loading) inputRef.current?.focus()
+  }, [error, loading])
   return (
     <form
       onSubmit={onSubmit}
@@ -59,7 +80,7 @@ export function OtpCodeStep({
           <p className="text-sm text-muted-foreground">
             <FormattedMessage
               id="portal.auth.otp.description"
-              defaultMessage="We sent a 6-digit code to {email}."
+              defaultMessage="Check {email} for your 6-digit code."
               values={{
                 email: <span className="font-medium text-foreground break-all">{email}</span>,
               }}
@@ -70,8 +91,18 @@ export function OtpCodeStep({
 
       {error && <FormError message={error} />}
 
+      {signupClosed && (
+        <p className="rounded-md bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+          <FormattedMessage
+            id="portal.auth.otp.signupClosedNote"
+            defaultMessage="This workspace is not accepting new accounts. If this address does not already have one, no code will arrive. Ask your workspace admin to invite you."
+          />
+        </p>
+      )}
+
       <div className="flex justify-center">
         <InputOTP
+          ref={inputRef}
           maxLength={6}
           value={code}
           onChange={onCodeChange}

@@ -21,7 +21,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { FilterChip, type FilterOption } from '@/components/shared/filter-chip'
 import type { RoadmapFilters } from '@/lib/shared/types'
-import type { Tag } from '@/lib/shared/db-types'
+import type { PostTag } from '@/lib/shared/db-types'
 import type { SegmentListItem } from '@/lib/client/hooks/use-segments-queries'
 
 interface FilterBarBoard {
@@ -43,7 +43,7 @@ interface PublicRoadmapFiltersBarProps {
   onFiltersChange: (updates: Partial<RoadmapFilters>) => void
   onClearAll: () => void
   boards: FilterBarBoard[]
-  tags: Tag[]
+  tags: PostTag[]
   segments?: SegmentListItem[]
   onToggleBoard: (id: string) => void
   onToggleTag: (id: string) => void
@@ -73,7 +73,10 @@ export function PublicRoadmapFiltersBar({
   return (
     <div
       role="region"
-      aria-label="Active filters"
+      aria-label={intl.formatMessage({
+        id: 'portal.roadmap.filter.activeFilters',
+        defaultMessage: 'Active filters',
+      })}
       className="flex flex-wrap gap-2 items-center py-0.5"
     >
       {activeChips.map(({ key, type, ...chipProps }) => (
@@ -110,7 +113,7 @@ export function PublicRoadmapFiltersBar({
 
 interface AddFilterButtonProps {
   boards: FilterBarBoard[]
-  tags: Tag[]
+  tags: PostTag[]
   segments?: SegmentListItem[]
   onToggleBoard: (id: string) => void
   onToggleTag: (id: string) => void
@@ -342,7 +345,7 @@ function buildActiveChips(args: {
   filters: RoadmapFilters
   onFiltersChange: (updates: Partial<RoadmapFilters>) => void
   boards: FilterBarBoard[]
-  tags: Tag[]
+  tags: PostTag[]
   segments?: SegmentListItem[]
   intl: ReturnType<typeof useIntl>
 }): ActiveChipDescriptor[] {

@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ApiKey } from '@/lib/server/domains/api-keys'
 import type { PrincipalId, ApiKeyId, UserId } from '@quackback/ids'
 
+/** DeveloperConfig for the mocked getDeveloperConfig (everything enabled). */
+const devConfig = (overrides = {}) => ({
+  mcpEnabled: true,
+  mcpPortalAccessEnabled: true,
+  oauthDynamicClientRegistrationEnabled: true,
+  ...overrides,
+})
+
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 
 vi.mock('@/lib/server/domains/api-keys/api-key.service', () => ({
@@ -9,28 +17,83 @@ vi.mock('@/lib/server/domains/api-keys/api-key.service', () => ({
 }))
 
 vi.mock('better-auth/oauth2', () => ({
-  verifyAccessToken: vi.fn(),
+  verifyAccessTokenRequest: vi.fn(),
+  requestToResourceInput: vi.fn((request: Request) => ({
+    authorizationHeader: request.headers.get('authorization'),
+    method: request.method,
+    url: request.url,
+  })),
 }))
 
 const mockFindFirst = vi.fn()
 
-vi.mock('@/lib/server/db', () => ({
+// The plan gate runs after auth and before any tool, so it sees what anything
+// recorded in that window would be attributed to.
+const entitlementGate = vi.hoisted(() => ({ seen: [] as unknown[] }))
+vi.mock('@/lib/server/domains/settings/cloud/entitlements', async (importOriginal) => {
+  const { getAuditAttribution } = await import('@/lib/server/audit/attribution')
+  return {
+    ...(await importOriginal<typeof import('@/lib/server/domains/settings/cloud/entitlements')>()),
+    requireEntitlement: async () => {
+      entitlementGate.seen.push(getAuditAttribution())
+    },
+  }
+})
+const mockAuditInsertValues = vi.fn(async () => undefined)
+
+// The key's authority (resolveApiKeyAuthority) is covered against real Postgres
+// in api-key-owner-access.db.test.ts. Here it is driven off the same principal
+// row mockFindFirst serves: the mock key is a legacy human-backed key, so that
+// row is both the key's principal and the creator it acts for.
+const mockAuthority = vi.fn(async (_key: unknown) => {
+  const record = (await mockFindFirst()) as { role?: string } | null
+  if (!record || (record.role !== 'admin' && record.role !== 'member')) return null
+  const { resolveActorPermissions } = await import('@/lib/server/policy/permissions')
+  return {
+    principal: record,
+    owner: record,
+    role: record.role,
+    permissions: resolveActorPermissions(record.role),
+  }
+})
+vi.mock('@/lib/server/domains/api-keys/api-key-authority', () => ({
+  resolveApiKeyAuthority: (key: unknown) => mockAuthority(key),
+}))
+
+// An OAuth caller's assignment-derived permissions; here the preset of the
+// role mockFindFirst serves, as for a principal with no custom role.
+vi.mock('@/lib/server/policy/permissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/server/policy/permissions')>()
+  return {
+    ...actual,
+    permissionsForPrincipal: async (_id: unknown, role: 'admin' | 'member' | 'user') =>
+      actual.permissionsForLegacyRole(role),
+  }
+})
+
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: { findFirst: (...args: unknown[]) => mockFindFirst(...args) },
     },
+    // The only insert this suite reaches is the tool-call audit row.
+    insert: () => ({ values: (...args: unknown[]) => mockAuditInsertValues(...(args as [])) }),
   },
-  principal: { id: 'id', userId: 'user_id' },
   eq: vi.fn((_a: unknown, _b: unknown) => 'eq-condition'),
 }))
 
-// Mock getTypeIdPrefix from @quackback/ids — extract prefix from underscore-separated IDs
+// Mock getTypeIdPrefix from @quackback/ids — extract everything before the last
+// underscore, matching the real TypeID split (the suffix is a fixed base32
+// block with no underscores, so this also works for compound prefixes like
+// kb_article).
 vi.mock('@quackback/ids', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
   return {
     ...actual,
     getTypeIdPrefix: vi.fn((id: string) => {
-      const underscoreIndex = id.indexOf('_')
+      const underscoreIndex = id.lastIndexOf('_')
       if (underscoreIndex === -1) throw new Error(`Invalid TypeID: ${id}`)
       return id.substring(0, underscoreIndex)
     }),
@@ -44,19 +107,18 @@ vi.mock('@/lib/server/domains/api/rate-limit', () => ({
 }))
 
 // Mock settings service so getDeveloperConfig doesn't hit the real DB.
-// `getTenantSettings` is consumed lazily by the suspension guard (which the
+// `getWorkspaceSettings` is consumed lazily by the suspension guard (which the
 // API auth chokepoint invokes); returning `null` keeps the workspace 'active'.
 vi.mock('@/lib/server/domains/settings/settings.service', () => ({
-  getDeveloperConfig: vi
-    .fn()
-    .mockResolvedValue({ mcpEnabled: true, mcpPortalAccessEnabled: false }),
-  getTenantSettings: vi.fn().mockResolvedValue(null),
+  getDeveloperConfig: vi.fn().mockResolvedValue(devConfig({ mcpPortalAccessEnabled: false })),
+  getWorkspaceSettings: vi.fn().mockResolvedValue(null),
   isFeatureEnabled: vi.fn().mockResolvedValue(true),
 }))
 
 // Mock config so baseUrl is available (used in WWW-Authenticate header)
 vi.mock('@/lib/server/config', () => ({
   config: { baseUrl: 'https://example.com' },
+  getBaseUrl: () => 'https://example.com',
 }))
 
 // Mock all domain services called by tools/resources
@@ -73,12 +135,11 @@ vi.mock('@/lib/server/domains/posts/post.query', () => ({
     commentCount: 0,
     boardId: 'board_test',
     board: { id: 'board_test', name: 'Bugs', slug: 'bugs' },
-    statusId: 'status_test',
+    statusId: 'post_status_test',
     authorName: 'Jane',
     authorEmail: 'jane@example.com',
     ownerPrincipalId: null,
     tags: [],
-    roadmapIds: [],
     pinnedComment: null,
     summaryJson: null,
     summaryUpdatedAt: null,
@@ -100,13 +161,13 @@ vi.mock('@/lib/server/domains/posts/post.service', () => ({
     id: 'post_new',
     title: 'New Post',
     boardId: 'board_test',
-    statusId: 'status_test',
+    statusId: 'post_status_test',
     createdAt: new Date('2026-01-01'),
   }),
   updatePost: vi.fn().mockResolvedValue({
     id: 'post_test',
     title: 'Test Post',
-    statusId: 'status_updated',
+    statusId: 'post_status_updated',
     ownerPrincipalId: null,
     updatedAt: new Date('2026-01-01'),
   }),
@@ -139,13 +200,6 @@ vi.mock('@/lib/server/domains/posts/post.merge', () => ({
 vi.mock('@/lib/server/domains/activity/activity.service', () => ({
   getActivityForPost: vi.fn().mockResolvedValue([]),
   createActivity: vi.fn(),
-}))
-
-vi.mock('@/lib/server/domains/feedback/pipeline/suggestion.service', () => ({
-  acceptCreateSuggestion: vi.fn().mockResolvedValue({ success: true, resultPostId: 'post_new' }),
-  acceptVoteSuggestion: vi.fn().mockResolvedValue({ success: true, resultPostId: 'post_test' }),
-  dismissSuggestion: vi.fn().mockResolvedValue(undefined),
-  restoreSuggestion: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/server/domains/merge-suggestions/merge-suggestion.service', () => ({
@@ -261,19 +315,17 @@ vi.mock('@/lib/server/domains/boards/board.service', () => ({
 vi.mock('@/lib/server/domains/statuses/status.service', () => ({
   listStatuses: vi
     .fn()
-    .mockResolvedValue([{ id: 'status_test', name: 'Open', slug: 'open', color: '#22c55e' }]),
+    .mockResolvedValue([{ id: 'post_status_test', name: 'Open', slug: 'open', color: '#22c55e' }]),
 }))
 
-vi.mock('@/lib/server/domains/tags/tag.service', () => ({
-  listTags: vi.fn().mockResolvedValue([{ id: 'tag_test', name: 'Bug', color: '#ef4444' }]),
+vi.mock('@/lib/server/domains/post-tags/post-tag.service', () => ({
+  listPostTags: vi.fn().mockResolvedValue([{ id: 'tag_test', name: 'Bug', color: '#ef4444' }]),
 }))
 
 vi.mock('@/lib/server/domains/roadmaps/roadmap.service', () => ({
   listRoadmaps: vi
     .fn()
     .mockResolvedValue([{ id: 'roadmap_test', name: 'Q1 2026', slug: 'q1-2026' }]),
-  addPostToRoadmap: vi.fn().mockResolvedValue(undefined),
-  removePostFromRoadmap: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/server/domains/principals/principal.service', () => ({
@@ -282,17 +334,17 @@ vi.mock('@/lib/server/domains/principals/principal.service', () => ({
     .mockResolvedValue([{ id: 'principal_test', name: 'Jane', role: 'admin' }]),
 }))
 
-vi.mock('@/lib/server/domains/chat/chat.query', () => ({
+vi.mock('@/lib/server/domains/conversation/conversation.query', () => ({
   listConversationsForAgent: vi.fn(),
   listMessages: vi.fn(),
   conversationToDTO: vi.fn(),
 }))
-vi.mock('@/lib/server/domains/chat/chat.service', () => ({
+vi.mock('@/lib/server/domains/conversation/conversation.service', () => ({
   assertConversationViewable: vi.fn(),
   sendAgentMessage: vi.fn(),
   setConversationStatus: vi.fn(),
 }))
-vi.mock('@/lib/server/domains/chat/chat.cards', () => ({
+vi.mock('@/lib/server/domains/conversation/conversation.cards', () => ({
   suggestPost: vi.fn(),
   sharePost: vi.fn(),
 }))
@@ -312,6 +364,7 @@ const MOCK_API_KEY: ApiKey = {
   lastUsedAt: null,
   expiresAt: null,
   revokedAt: null,
+  scopes: null,
 }
 
 const MOCK_MEMBER_RECORD = {
@@ -385,8 +438,8 @@ function oauthRequest(body: unknown, token = 'oauth_test_token_abc123'): Request
 /** Set up mocks for a valid OAuth JWT verification. */
 async function setupValidOAuth(overrides?: { role?: string; scopes?: string[] }) {
   const role = overrides?.role ?? 'admin'
-  const { verifyAccessToken } = await import('better-auth/oauth2')
-  vi.mocked(verifyAccessToken).mockResolvedValue({
+  const { verifyAccessTokenRequest } = await import('better-auth/oauth2')
+  vi.mocked(verifyAccessTokenRequest).mockResolvedValue({
     sub: MOCK_USER_ID,
     principalId: MOCK_MEMBER_ID,
     role,
@@ -421,7 +474,9 @@ describe('MCP HTTP Handler', () => {
 
       const response = await handleMcpRequest(request)
       expect(response.status).toBe(401)
-      expect(response.headers.get('www-authenticate')).toContain('resource_metadata=')
+      const challenge = response.headers.get('www-authenticate') ?? ''
+      expect(challenge).toContain('resource_metadata=')
+      expect(challenge).toContain('scope="read:feedback read:article read:chat read:settings"')
     })
 
     it('should return 401 when API key is invalid', async () => {
@@ -445,24 +500,30 @@ describe('MCP HTTP Handler', () => {
       expect(response.headers.get('www-authenticate')).toContain('resource_metadata=')
     })
 
-    it('should return 403 when member is a portal user (not team)', async () => {
+    it('should return 401 when the key creator is no longer a team member', async () => {
       const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
       vi.mocked(verifyApiKey).mockResolvedValue(MOCK_API_KEY)
-      // Return role: 'user' for the role lookup in withApiKeyAuth
+      // The creator is now a portal user, so the key is refused like an unknown key.
       mockFindFirst.mockResolvedValue({ role: 'user' })
 
       const { handleMcpRequest } = await import('../handler')
       const response = await handleMcpRequest(mcpRequest(jsonRpcRequest('initialize')))
 
-      expect(response.status).toBe(403)
+      expect(response.status).toBe(401)
+      expect(response.headers.get('www-authenticate')).toContain('resource_metadata=')
     })
 
     it('should return 401 when member record not found', async () => {
       const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
       vi.mocked(verifyApiKey).mockResolvedValue(MOCK_API_KEY)
-      // First call for role lookup in withApiKeyAuth → admin
-      // Second call for full member record → null
-      mockFindFirst.mockResolvedValueOnce({ role: 'admin' }).mockResolvedValueOnce(null)
+      // The single principal lookup in withApiKeyAuth finds no key principal;
+      // the MCP handler rejects the request off that same (reused) result.
+      mockAuthority.mockResolvedValueOnce({
+        principal: null,
+        owner: null,
+        role: 'user',
+        permissions: new Set(),
+      } as never)
 
       const { handleMcpRequest } = await import('../handler')
       const response = await handleMcpRequest(mcpRequest(jsonRpcRequest('initialize')))
@@ -519,8 +580,8 @@ describe('MCP HTTP Handler', () => {
     })
 
     it('should return 401 for expired OAuth token', async () => {
-      const { verifyAccessToken } = await import('better-auth/oauth2')
-      vi.mocked(verifyAccessToken).mockRejectedValue(new Error('token expired'))
+      const { verifyAccessTokenRequest } = await import('better-auth/oauth2')
+      vi.mocked(verifyAccessTokenRequest).mockRejectedValue(new Error('token expired'))
 
       const { handleMcpRequest } = await import('../handler')
       const response = await handleMcpRequest(oauthRequest(jsonRpcRequest('initialize')))
@@ -529,8 +590,8 @@ describe('MCP HTTP Handler', () => {
     })
 
     it('should return 401 for invalid OAuth token', async () => {
-      const { verifyAccessToken } = await import('better-auth/oauth2')
-      vi.mocked(verifyAccessToken).mockRejectedValue(new Error('token invalid'))
+      const { verifyAccessTokenRequest } = await import('better-auth/oauth2')
+      vi.mocked(verifyAccessTokenRequest).mockRejectedValue(new Error('token invalid'))
 
       const { handleMcpRequest } = await import('../handler')
       const response = await handleMcpRequest(oauthRequest(jsonRpcRequest('initialize')))
@@ -585,10 +646,7 @@ describe('MCP HTTP Handler', () => {
 
     it('should succeed for OAuth portal user when portal access enabled', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       await setupValidOAuth({ role: 'user' })
 
       const { handleMcpRequest } = await import('../handler')
@@ -657,7 +715,6 @@ describe('MCP HTTP Handler', () => {
       expect(toolNames).toContain('update_comment')
       expect(toolNames).toContain('delete_comment')
       expect(toolNames).toContain('react_to_comment')
-      expect(toolNames).toContain('manage_roadmap_post')
       expect(toolNames).toContain('merge_post')
       expect(toolNames).toContain('unmerge_post')
       expect(toolNames).toContain('delete_post')
@@ -668,7 +725,22 @@ describe('MCP HTTP Handler', () => {
       expect(toolNames).toContain('suggest_post')
       expect(toolNames).toContain('share_post')
       expect(toolNames).toContain('set_conversation_status')
-      expect(toolNames).toHaveLength(33)
+      expect(toolNames).toContain('list_tickets')
+      expect(toolNames).toContain('get_ticket')
+      expect(toolNames).toContain('create_ticket')
+      expect(toolNames).toContain('reply_to_ticket')
+      expect(toolNames).toContain('add_ticket_note')
+      expect(toolNames).toContain('link_ticket')
+      expect(toolNames).toContain('unlink_ticket')
+      expect(toolNames).toContain('upload_file')
+      expect(toolNames).toContain('widget_install_status')
+      expect(toolNames).toContain('get_settings')
+      expect(toolNames).toContain('propose_settings_change')
+      expect(toolNames).toContain('update_settings')
+      expect(toolNames).toContain('navigate_workspace')
+      expect(toolNames).toContain('get_approval')
+      expect(toolNames).toContain('list_approvals')
+      expect(toolNames).toHaveLength(46)
     })
 
     it('should handle resources/list request', async () => {
@@ -881,7 +953,7 @@ describe('MCP HTTP Handler', () => {
         mcpRequest(
           jsonRpcRequest('tools/call', {
             name: 'triage_post',
-            arguments: { postId: 'post_test', statusId: 'status_updated' },
+            arguments: { postId: 'post_test', statusId: 'post_status_updated' },
           })
         )
       )
@@ -892,7 +964,7 @@ describe('MCP HTTP Handler', () => {
       }
       const text = JSON.parse(body.result.content[0].text)
       expect(text.id).toBe('post_test')
-      expect(text.statusId).toBe('status_updated')
+      expect(text.statusId).toBe('post_status_updated')
     })
 
     // ── vote_post tool ──────────────────────────────────────────────────
@@ -1074,7 +1146,6 @@ describe('MCP HTTP Handler', () => {
         'post_test',
         'principal_voter',
         expect.any(Object),
-        null,
         expect.any(String)
       )
       // ...without running the per-target vote-tier chokepoint.
@@ -1270,30 +1341,6 @@ describe('MCP HTTP Handler', () => {
           principalType: 'user',
         })
       )
-    })
-
-    // ── manage_roadmap_post tool ────────────────────────────────────────
-
-    it('should handle tools/call for manage_roadmap_post', async () => {
-      const handleMcpRequest = await initializeSession()
-
-      const response = await handleMcpRequest(
-        mcpRequest(
-          jsonRpcRequest('tools/call', {
-            name: 'manage_roadmap_post',
-            arguments: { action: 'add', roadmapId: 'roadmap_test', postId: 'post_test' },
-          })
-        )
-      )
-
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        result: { content: Array<{ text: string }> }
-      }
-      const text = JSON.parse(body.result.content[0].text)
-      expect(text.action).toBe('add')
-      expect(text.postId).toBe('post_test')
-      expect(text.roadmapId).toBe('roadmap_test')
     })
 
     // ── merge_post tool ─────────────────────────────────────────────────
@@ -1624,7 +1671,7 @@ describe('MCP HTTP Handler', () => {
       return handleMcpRequest
     }
 
-    it('should deny search when read:feedback scope missing', async () => {
+    it('should allow search when the token holds write:feedback (write implies read)', async () => {
       const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
 
       const response = await handleMcpRequest(
@@ -1638,10 +1685,27 @@ describe('MCP HTTP Handler', () => {
 
       expect(response.status).toBe(200)
       const body = (await response.json()) as {
-        result: { isError: boolean; content: Array<{ text: string }> }
+        result: { isError?: boolean; content: Array<{ text: string }> }
       }
-      expect(body.result.isError).toBe(true)
-      expect(body.result.content[0].text).toContain('read:feedback')
+      expect(body.result.isError).not.toBe(true)
+      expect(body.result.content[0].text).toContain('posts')
+    })
+
+    it('should deny search when read:feedback scope missing', async () => {
+      const handleMcpRequest = await initializeOAuthSession(['write:changelog'])
+
+      const response = await handleMcpRequest(
+        oauthRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'search',
+            arguments: { query: 'test' },
+          })
+        )
+      )
+
+      expect(response.status).toBe(403)
+      expect(response.headers.get('www-authenticate') ?? '').toContain('error="insufficient_scope"')
+      expect(response.headers.get('www-authenticate') ?? '').toContain('scope="read:feedback"')
     })
 
     it('should deny create_post when write:feedback scope missing', async () => {
@@ -1656,12 +1720,9 @@ describe('MCP HTTP Handler', () => {
         )
       )
 
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        result: { isError: boolean; content: Array<{ text: string }> }
-      }
-      expect(body.result.isError).toBe(true)
-      expect(body.result.content[0].text).toContain('write:feedback')
+      expect(response.status).toBe(403)
+      expect(response.headers.get('www-authenticate') ?? '').toContain('error="insufficient_scope"')
+      expect(response.headers.get('www-authenticate') ?? '').toContain('scope="write:feedback"')
     })
 
     it('should deny create_changelog when write:changelog scope missing', async () => {
@@ -1676,12 +1737,25 @@ describe('MCP HTTP Handler', () => {
         )
       )
 
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        result: { isError: boolean; content: Array<{ text: string }> }
-      }
-      expect(body.result.isError).toBe(true)
-      expect(body.result.content[0].text).toContain('write:changelog')
+      expect(response.status).toBe(403)
+      expect(response.headers.get('www-authenticate') ?? '').toContain('scope="write:changelog"')
+    })
+
+    it('should deny search(articles) when read:article scope missing', async () => {
+      const handleMcpRequest = await initializeOAuthSession(['read:feedback'])
+
+      const response = await handleMcpRequest(
+        oauthRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'search',
+            arguments: { query: 'test', entity: 'articles' },
+          })
+        )
+      )
+
+      expect(response.status).toBe(403)
+      expect(response.headers.get('www-authenticate') ?? '').toContain('error="insufficient_scope"')
+      expect(response.headers.get('www-authenticate') ?? '').toContain('scope="read:article"')
     })
 
     it('should allow search with read:feedback scope', async () => {
@@ -1705,10 +1779,7 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny triage_post for OAuth portal user (role enforcement)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession([
         'read:feedback',
         'write:feedback',
@@ -1720,16 +1791,13 @@ describe('MCP HTTP Handler', () => {
         scopes: ['read:feedback', 'write:feedback', 'write:changelog'],
       })
       // Also need portal access enabled for the tool call auth
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
           jsonRpcRequest('tools/call', {
             name: 'triage_post',
-            arguments: { postId: 'post_test', statusId: 'status_updated' },
+            arguments: { postId: 'post_test', statusId: 'post_status_updated' },
           })
         )
       )
@@ -1754,12 +1822,8 @@ describe('MCP HTTP Handler', () => {
         )
       )
 
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        result: { isError: boolean; content: Array<{ text: string }> }
-      }
-      expect(body.result.isError).toBe(true)
-      expect(body.result.content[0].text).toContain('write:feedback')
+      expect(response.status).toBe(403)
+      expect(response.headers.get('www-authenticate') ?? '').toContain('scope="write:feedback"')
     })
 
     it('should deny restore_post when write:feedback scope missing', async () => {
@@ -1774,29 +1838,19 @@ describe('MCP HTTP Handler', () => {
         )
       )
 
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        result: { isError: boolean; content: Array<{ text: string }> }
-      }
-      expect(body.result.isError).toBe(true)
-      expect(body.result.content[0].text).toContain('write:feedback')
+      expect(response.status).toBe(403)
+      expect(response.headers.get('www-authenticate') ?? '').toContain('scope="write:feedback"')
     })
 
     it('should deny search posts for OAuth portal user (inbox is team-only)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1817,19 +1871,13 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny get_details(post) for OAuth portal user (inbox is team-only)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1852,19 +1900,13 @@ describe('MCP HTTP Handler', () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
       const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
       vi.mocked(isFeatureEnabled).mockResolvedValue(true)
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:article'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:article'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1887,25 +1929,19 @@ describe('MCP HTTP Handler', () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
       const { isFeatureEnabled } = await import('@/lib/server/domains/settings/settings.service')
       vi.mocked(isFeatureEnabled).mockResolvedValue(true)
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:article'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:article'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
           jsonRpcRequest('tools/call', {
             name: 'get_details',
-            arguments: { id: 'article_01jx0p1q3rh0d8t5a8j4f7y3p9' },
+            arguments: { id: 'kb_article_01jx0p1q3rh0d8t5a8j4f7y3p9' },
           })
         )
       )
@@ -1920,19 +1956,13 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny get_details(changelog) for OAuth portal user (drafts/scheduled are team-only)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1953,19 +1983,13 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny search showDeleted for OAuth portal user (role enforcement)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback', 'write:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback', 'write:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -1986,19 +2010,13 @@ describe('MCP HTTP Handler', () => {
 
     it('should deny delete_post for OAuth portal user (role enforcement)', async () => {
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['read:feedback', 'write:feedback'])
       await setupValidOAuth({
         role: 'user',
         scopes: ['read:feedback', 'write:feedback'],
       })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -2046,16 +2064,10 @@ describe('MCP HTTP Handler', () => {
       // — forcing 'admin' would early-return tierAllows for every tier and
       // set requiresApproval:false, bypassing both gates.
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
       await setupValidOAuth({ role: 'user', scopes: ['write:feedback'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const { createPost } = await import('@/lib/server/domains/posts/post.service')
 
@@ -2080,16 +2092,10 @@ describe('MCP HTTP Handler', () => {
       // canCreateComment applies the comment tier + moderation axis — forcing
       // 'admin' would bypass both via the isTeamActor early-return.
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
       await setupValidOAuth({ role: 'user', scopes: ['write:feedback'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const { createComment } = await import('@/lib/server/domains/comments/comment.service')
 
@@ -2117,16 +2123,10 @@ describe('MCP HTTP Handler', () => {
       const { NotFoundError } = await import('@/lib/shared/errors')
 
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
       await setupValidOAuth({ role: 'user', scopes: ['write:feedback'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       vi.mocked(assertCommentViewable).mockRejectedValueOnce(
         new NotFoundError('COMMENT_NOT_FOUND', 'Comment comment_1 not found')
@@ -2159,16 +2159,10 @@ describe('MCP HTTP Handler', () => {
       const { NotFoundError } = await import('@/lib/shared/errors')
 
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       const handleMcpRequest = await initializeOAuthSession(['write:feedback'])
       await setupValidOAuth({ role: 'user', scopes: ['write:feedback'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       vi.mocked(assertCommentViewable).mockRejectedValueOnce(
         new NotFoundError('COMMENT_NOT_FOUND', 'Comment comment_1 not found')
@@ -2190,6 +2184,109 @@ describe('MCP HTTP Handler', () => {
       expect(vi.mocked(deleteComment)).not.toHaveBeenCalled()
       const body = (await response.json()) as { result: { isError: boolean } }
       expect(body.result.isError).toBe(true)
+    })
+
+    // ── API-key scope enforcement (stored scopes ∩ owner authority) ──────────
+
+    /** Initialize a session authenticated by an API key carrying stored scopes. */
+    async function initializeScopedKeySession(scopes: ApiKey['scopes']) {
+      const scopedKey = { ...MOCK_API_KEY, scopes }
+      const { verifyApiKey } = await import('@/lib/server/domains/api-keys/api-key.service')
+      vi.mocked(verifyApiKey).mockResolvedValue(scopedKey)
+      mockFindFirst.mockResolvedValue(MOCK_MEMBER_RECORD)
+      const { handleMcpRequest } = await import('../handler')
+      await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('initialize', {
+            protocolVersion: '2025-03-26',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '1.0' },
+          })
+        )
+      )
+      vi.mocked(verifyApiKey).mockResolvedValue(scopedKey)
+      mockFindFirst.mockResolvedValue(MOCK_MEMBER_RECORD)
+      return handleMcpRequest
+    }
+
+    it('a read-only scoped API key is denied write tools', async () => {
+      const handleMcpRequest = await initializeScopedKeySession(['read:feedback'])
+
+      const response = await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'create_changelog',
+            arguments: { title: 'v1', content: 'New stuff' },
+          })
+        )
+      )
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        result: { isError: boolean; content: Array<{ text: string }> }
+      }
+      expect(body.result.isError).toBe(true)
+      expect(body.result.content[0].text).toContain('write:changelog')
+    })
+
+    it('a write-only scoped API key can still invoke same-domain read tools', async () => {
+      const handleMcpRequest = await initializeScopedKeySession(['write:feedback'])
+
+      const response = await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'search',
+            arguments: { query: 'test' },
+          })
+        )
+      )
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        result: { isError?: boolean; content: Array<{ text: string }> }
+      }
+      expect(body.result.isError).not.toBe(true)
+      expect(body.result.content[0].text).toContain('posts')
+    })
+
+    it('a read-only scoped API key can still invoke read tools', async () => {
+      const handleMcpRequest = await initializeScopedKeySession(['read:feedback'])
+
+      const response = await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'search',
+            arguments: { query: 'test' },
+          })
+        )
+      )
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        result: { isError?: boolean; content: Array<{ text: string }> }
+      }
+      expect(body.result.isError).not.toBe(true)
+      expect(body.result.content[0].text).toContain('posts')
+    })
+
+    it('a feedback-scoped API key is denied conversation tools (cross-domain)', async () => {
+      const handleMcpRequest = await initializeScopedKeySession(['read:feedback', 'write:feedback'])
+
+      const response = await handleMcpRequest(
+        mcpRequest(
+          jsonRpcRequest('tools/call', {
+            name: 'list_conversations',
+            arguments: {},
+          })
+        )
+      )
+
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as {
+        result: { isError: boolean; content: Array<{ text: string }> }
+      }
+      expect(body.result.isError).toBe(true)
+      expect(body.result.content[0].text).toContain('read:chat')
     })
   })
 
@@ -2270,13 +2367,14 @@ describe('MCP HTTP Handler', () => {
   })
 
   // ===========================================================================
-  // Chat tools
+  // Conversation tools
   // ===========================================================================
 
-  describe('chat tools', () => {
+  describe('conversation tools', () => {
     it('list_conversations returns conversations for a team API key', async () => {
       const handle = await initializeSession()
-      const { listConversationsForAgent } = await import('@/lib/server/domains/chat/chat.query')
+      const { listConversationsForAgent } =
+        await import('@/lib/server/domains/conversation/conversation.query')
       vi.mocked(listConversationsForAgent).mockResolvedValue({
         conversations: [
           {
@@ -2313,9 +2411,10 @@ describe('MCP HTTP Handler', () => {
 
     it('get_conversation excludes internal notes by default', async () => {
       const handle = await initializeSession()
-      const { assertConversationViewable } = await import('@/lib/server/domains/chat/chat.service')
+      const { assertConversationViewable } =
+        await import('@/lib/server/domains/conversation/conversation.service')
       const { conversationToDTO, listMessages } =
-        await import('@/lib/server/domains/chat/chat.query')
+        await import('@/lib/server/domains/conversation/conversation.query')
       vi.mocked(assertConversationViewable).mockResolvedValue({ id: 'conversation_1' } as never)
       vi.mocked(conversationToDTO).mockResolvedValue({
         id: 'conversation_1',
@@ -2357,10 +2456,11 @@ describe('MCP HTTP Handler', () => {
 
     it('reply_to_conversation calls sendAgentMessage with the caller as the agent', async () => {
       const handle = await initializeSession()
-      const { sendAgentMessage } = await import('@/lib/server/domains/chat/chat.service')
+      const { sendAgentMessage } =
+        await import('@/lib/server/domains/conversation/conversation.service')
       vi.mocked(sendAgentMessage).mockResolvedValue({
         message: {
-          id: 'chat_msg_1',
+          id: 'conversation_msg_1',
           conversationId: 'conversation_1',
           createdAt: '2026-06-05T00:00:00.000Z',
         },
@@ -2379,13 +2479,15 @@ describe('MCP HTTP Handler', () => {
         'conversation_1',
         'On it!',
         expect.objectContaining({ principalId: expect.any(String) }),
-        expect.objectContaining({ role: 'admin' })
+        expect.objectContaining({ role: 'admin' }),
+        undefined
       )
     })
 
     it('set_conversation_status transitions the conversation', async () => {
       const handle = await initializeSession()
-      const { setConversationStatus } = await import('@/lib/server/domains/chat/chat.service')
+      const { setConversationStatus } =
+        await import('@/lib/server/domains/conversation/conversation.service')
       vi.mocked(setConversationStatus).mockResolvedValue({
         id: 'conversation_1',
         status: 'closed',
@@ -2408,8 +2510,8 @@ describe('MCP HTTP Handler', () => {
 
     it('suggest_post calls suggestPost with the caller as agent', async () => {
       const handle = await initializeSession()
-      const { suggestPost } = await import('@/lib/server/domains/chat/chat.cards')
-      vi.mocked(suggestPost).mockResolvedValue({ messageId: 'chat_msg_2' } as never)
+      const { suggestPost } = await import('@/lib/server/domains/conversation/conversation.cards')
+      vi.mocked(suggestPost).mockResolvedValue({ messageId: 'conversation_msg_2' } as never)
 
       await handle(
         mcpRequest(
@@ -2440,9 +2542,9 @@ describe('MCP HTTP Handler', () => {
 
     it('share_post calls sharePost with the caller as agent', async () => {
       const handle = await initializeSession()
-      const { sharePost } = await import('@/lib/server/domains/chat/chat.cards')
+      const { sharePost } = await import('@/lib/server/domains/conversation/conversation.cards')
       vi.mocked(sharePost).mockResolvedValue({
-        message: { id: 'chat_msg_3', conversationId: 'conversation_1' },
+        message: { id: 'conversation_msg_3', conversationId: 'conversation_1' },
         conversation: { id: 'conversation_1', status: 'open' },
       } as never)
 
@@ -2495,12 +2597,9 @@ describe('MCP HTTP Handler', () => {
         )
       )
 
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        result: { isError: boolean; content: Array<{ text: string }> }
-      }
-      expect(body.result.isError).toBe(true)
-      expect(body.result.content[0].text).toContain('write:chat')
+      expect(response.status).toBe(403)
+      expect(response.headers.get('www-authenticate') ?? '').toContain('error="insufficient_scope"')
+      expect(response.headers.get('www-authenticate') ?? '').toContain('scope="write:chat"')
     })
 
     it('should deny share_post when write:chat scope missing', async () => {
@@ -2531,12 +2630,8 @@ describe('MCP HTTP Handler', () => {
         )
       )
 
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        result: { isError: boolean; content: Array<{ text: string }> }
-      }
-      expect(body.result.isError).toBe(true)
-      expect(body.result.content[0].text).toContain('write:chat')
+      expect(response.status).toBe(403)
+      expect(response.headers.get('www-authenticate') ?? '').toContain('scope="write:chat"')
     })
 
     it('should deny reply_to_conversation when write:chat scope missing', async () => {
@@ -2568,22 +2663,15 @@ describe('MCP HTTP Handler', () => {
         )
       )
 
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        result: { isError: boolean; content: Array<{ text: string }> }
-      }
-      expect(body.result.isError).toBe(true)
-      expect(body.result.content[0].text).toContain('write:chat')
+      expect(response.status).toBe(403)
+      expect(response.headers.get('www-authenticate') ?? '').toContain('scope="write:chat"')
     })
 
     it('should deny list_conversations for OAuth portal user (role enforcement)', async () => {
       // Mirror the triage_post role-denial test: a non-team (role: 'user')
       // principal must be rejected by requireTeamRole even with read:chat.
       const { getDeveloperConfig } = await import('@/lib/server/domains/settings/settings.service')
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
       await setupValidOAuth({ role: 'user', scopes: ['read:chat'] })
       const { handleMcpRequest } = await import('../handler')
       await handleMcpRequest(
@@ -2596,10 +2684,7 @@ describe('MCP HTTP Handler', () => {
         )
       )
       await setupValidOAuth({ role: 'user', scopes: ['read:chat'] })
-      vi.mocked(getDeveloperConfig).mockResolvedValueOnce({
-        mcpEnabled: true,
-        mcpPortalAccessEnabled: true,
-      })
+      vi.mocked(getDeveloperConfig).mockResolvedValueOnce(devConfig())
 
       const response = await handleMcpRequest(
         oauthRequest(
@@ -2655,6 +2740,182 @@ describe('MCP HTTP Handler', () => {
       const response = await handleMcpRequest(request)
       // Stateless: DELETE either succeeds as no-op (200) or rejects (405)
       expect([200, 405]).toContain(response.status)
+    })
+  })
+
+  // ===========================================================================
+  // Audit attribution
+  // ===========================================================================
+
+  describe('Audit attribution', () => {
+    const createPostCall = () =>
+      jsonRpcRequest('tools/call', {
+        name: 'create_post',
+        arguments: { boardId: 'board_test', title: 'Attributed' },
+      })
+
+    /** Capture the attribution the write sees at the moment it runs. */
+    async function attributionSeenByCreatePost() {
+      const { createPost } = await import('@/lib/server/domains/posts/post.service')
+      const { getAuditAttribution } = await import('@/lib/server/audit/attribution')
+      const seen: unknown[] = []
+      vi.mocked(createPost).mockImplementationOnce(async () => {
+        seen.push(getAuditAttribution())
+        return {
+          id: 'post_new',
+          title: 'Attributed',
+          boardId: 'board_test',
+          statusId: 'post_status_test',
+          createdAt: new Date('2026-01-01'),
+        } as never
+      })
+      return seen
+    }
+
+    it('runs an OAuth tool call as the client, on behalf of the user who granted it', async () => {
+      const { verifyAccessTokenRequest } = await import('better-auth/oauth2')
+      vi.mocked(verifyAccessTokenRequest).mockResolvedValue({
+        sub: MOCK_USER_ID,
+        principalId: MOCK_MEMBER_ID,
+        scope: 'read:feedback write:feedback',
+        name: 'Jane Admin',
+        email: 'jane@example.com',
+        client_id: 'client_desktop',
+        azp: 'client_desktop',
+      })
+      // The client's registered name rides on the principal re-read.
+      mockFindFirst.mockResolvedValue({ role: 'admin', clientName: 'Claude Desktop' })
+      const seen = await attributionSeenByCreatePost()
+
+      const { handleMcpRequest } = await import('../handler')
+      const response = await handleMcpRequest(oauthRequest(createPostCall()))
+
+      expect(response.status).toBe(200)
+      expect(seen).toEqual([
+        {
+          channel: 'mcp',
+          credentialKind: 'oauth_client',
+          credentialId: 'client_desktop',
+          clientName: 'Claude Desktop',
+          onBehalfOfPrincipalId: MOCK_MEMBER_ID,
+        },
+      ])
+      // One read for role and client name, never a second round-trip.
+      expect(mockFindFirst).toHaveBeenCalledTimes(1)
+      expect(mockFindFirst.mock.calls[0][0]).toHaveProperty('extras.clientName')
+    })
+
+    it('audits an OAuth write once, as the client, for the user', async () => {
+      const { verifyAccessTokenRequest } = await import('better-auth/oauth2')
+      vi.mocked(verifyAccessTokenRequest).mockResolvedValue({
+        sub: MOCK_USER_ID,
+        principalId: MOCK_MEMBER_ID,
+        scope: 'read:feedback write:feedback',
+        name: 'Jane Admin',
+        email: 'jane@example.com',
+        client_id: 'client_desktop',
+      })
+      mockFindFirst.mockResolvedValue({ role: 'admin', clientName: 'Claude Desktop' })
+
+      const { handleMcpRequest } = await import('../handler')
+      const response = await handleMcpRequest(oauthRequest(createPostCall()))
+
+      expect(response.status).toBe(200)
+      expect(mockAuditInsertValues).toHaveBeenCalledTimes(1)
+      expect(mockAuditInsertValues.mock.calls[0]).toEqual([
+        expect.objectContaining({
+          eventType: 'mcp.tool_call',
+          eventOutcome: 'success',
+          actorUserId: MOCK_USER_ID,
+          authMethod: 'oauth',
+          channel: 'mcp',
+          credentialKind: 'oauth_client',
+          credentialId: 'client_desktop',
+          clientName: 'Claude Desktop',
+          onBehalfOfPrincipalId: MOCK_MEMBER_ID,
+          metadata: { tool: 'create_post' },
+        }),
+      ])
+    })
+
+    it('does not audit a read-only tool call', async () => {
+      await setupValidAuth()
+      const { handleMcpRequest } = await import('../handler')
+      const response = await handleMcpRequest(
+        mcpRequest(jsonRpcRequest('tools/call', { name: 'search', arguments: { query: 'x' } }))
+      )
+      expect(response.status).toBe(200)
+      expect(mockAuditInsertValues).not.toHaveBeenCalled()
+    })
+
+    it('labels the request MCP from the start, so nothing in it reads as the REST API', async () => {
+      await setupValidAuth()
+      entitlementGate.seen.length = 0
+      const { runWithAuditAttribution } = await import('@/lib/server/audit/attribution')
+      const { handleMcpRequest } = await import('../handler')
+
+      // Inside the request middleware's own slot, as every request is.
+      const response = await runWithAuditAttribution(null, () =>
+        handleMcpRequest(mcpRequest(jsonRpcRequest('tools/list')))
+      )
+
+      expect(response.status).toBe(200)
+      expect(entitlementGate.seen).toEqual([
+        {
+          channel: 'mcp',
+          credentialKind: 'api_key',
+          credentialId: MOCK_API_KEY.id,
+          clientName: 'Test Key',
+          onBehalfOfPrincipalId: MOCK_API_KEY.createdById,
+        },
+      ])
+    })
+
+    it('labels an OAuth request as its client from the moment it is known', async () => {
+      const { verifyAccessTokenRequest } = await import('better-auth/oauth2')
+      vi.mocked(verifyAccessTokenRequest).mockResolvedValue({
+        sub: MOCK_USER_ID,
+        principalId: MOCK_MEMBER_ID,
+        scope: 'read:feedback',
+        client_id: 'client_desktop',
+      })
+      mockFindFirst.mockResolvedValue({ role: 'admin', clientName: 'Claude Desktop' })
+      entitlementGate.seen.length = 0
+      const { runWithAuditAttribution } = await import('@/lib/server/audit/attribution')
+      const { handleMcpRequest } = await import('../handler')
+
+      await runWithAuditAttribution(null, () =>
+        handleMcpRequest(oauthRequest(jsonRpcRequest('tools/list')))
+      )
+
+      expect(entitlementGate.seen).toEqual([
+        {
+          channel: 'mcp',
+          credentialKind: 'oauth_client',
+          credentialId: 'client_desktop',
+          clientName: 'Claude Desktop',
+          onBehalfOfPrincipalId: MOCK_MEMBER_ID,
+        },
+      ])
+    })
+
+    it('runs an API-key tool call as the key, on behalf of the teammate who created it', async () => {
+      await setupValidAuth()
+      const seen = await attributionSeenByCreatePost()
+
+      const { handleMcpRequest } = await import('../handler')
+      const response = await handleMcpRequest(mcpRequest(createPostCall()))
+
+      expect(response.status).toBe(200)
+      expect(seen).toEqual([
+        {
+          channel: 'mcp',
+          credentialKind: 'api_key',
+          credentialId: MOCK_API_KEY.id,
+          clientName: 'Test Key',
+          onBehalfOfPrincipalId: MOCK_API_KEY.createdById,
+        },
+      ])
     })
   })
 })

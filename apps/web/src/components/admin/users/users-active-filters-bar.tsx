@@ -2,18 +2,18 @@ import { useMemo, useState } from 'react'
 import {
   EnvelopeIcon,
   CalendarIcon,
-  PlusIcon,
   ChevronRightIcon,
   GlobeAltIcon,
   DocumentTextIcon,
   HandThumbUpIcon,
   ChatBubbleLeftIcon,
   AdjustmentsHorizontalIcon,
-  UserGroupIcon,
 } from '@heroicons/react/24/solid'
-import { cn, toIsoDateOnly } from '@/lib/shared/utils'
+import { cn } from '@/lib/shared/utils'
+import { formatCalendarDate } from '@/lib/shared/utils/date'
+import { DATE_PRESETS, getDateFromDaysAgo } from '@/components/shared/filter-presets'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { FilterChip, type FilterOption } from '@/components/shared/filter-chip'
+import { FilterAddButton, FilterChip, type FilterOption } from '@/components/shared/filter-chip'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -44,14 +44,7 @@ interface UsersActiveFiltersBarProps {
 }
 
 type FilterCategory =
-  | 'verified'
-  | 'date'
-  | 'emailDomain'
-  | 'postCount'
-  | 'voteCount'
-  | 'commentCount'
-  | 'customAttr'
-  | 'includeAnonymous'
+  'verified' | 'date' | 'emailDomain' | 'postCount' | 'voteCount' | 'commentCount' | 'customAttr'
 
 interface FilterCategoryDef {
   key: FilterCategory
@@ -66,22 +59,7 @@ const FILTER_CATEGORIES: FilterCategoryDef[] = [
   { key: 'postCount', label: 'Post Count', icon: DocumentTextIcon },
   { key: 'voteCount', label: 'Vote Count', icon: HandThumbUpIcon },
   { key: 'commentCount', label: 'Comment Count', icon: ChatBubbleLeftIcon },
-  { key: 'includeAnonymous', label: 'Include Anonymous', icon: UserGroupIcon },
 ]
-
-function getDateFromDaysAgo(daysAgo: number): string {
-  const date = new Date()
-  date.setHours(0, 0, 0, 0)
-  date.setDate(date.getDate() - daysAgo)
-  return toIsoDateOnly(date)
-}
-
-const DATE_PRESETS = [
-  { value: 'today', label: 'Today', daysAgo: 0 },
-  { value: '7days', label: 'Last 7 days', daysAgo: 7 },
-  { value: '30days', label: 'Last 30 days', daysAgo: 30 },
-  { value: '90days', label: 'Last 90 days', daysAgo: 90 },
-] as const
 
 const ACTIVITY_OPERATORS = [
   { value: 'gte', label: 'at least' },
@@ -116,12 +94,12 @@ function ActivityFilterInput({
   return (
     <div className="p-2 space-y-2">
       <Select value={op} onValueChange={setOp}>
-        <SelectTrigger className="h-7 text-xs">
+        <SelectTrigger size="sm">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           {ACTIVITY_OPERATORS.map((o) => (
-            <SelectItem key={o.value} value={o.value} className="text-xs">
+            <SelectItem key={o.value} value={o.value}>
               {o.label}
             </SelectItem>
           ))}
@@ -240,12 +218,12 @@ function CustomAttrFilterInput({
   return (
     <div className="p-2 space-y-2">
       <Select value={op} onValueChange={setOp}>
-        <SelectTrigger className="h-7 text-xs">
+        <SelectTrigger size="sm">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           {operators.map((o) => (
-            <SelectItem key={o.value} value={o.value} className="text-xs">
+            <SelectItem key={o.value} value={o.value}>
               {o.label}
             </SelectItem>
           ))}
@@ -254,16 +232,12 @@ function CustomAttrFilterInput({
       {!isPresenceOp &&
         (isBool ? (
           <Select value={value} onValueChange={setValue}>
-            <SelectTrigger className="h-7 text-xs">
+            <SelectTrigger size="sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="true" className="text-xs">
-                True
-              </SelectItem>
-              <SelectItem value="false" className="text-xs">
-                False
-              </SelectItem>
+              <SelectItem value="true">True</SelectItem>
+              <SelectItem value="false">False</SelectItem>
             </SelectContent>
           </Select>
         ) : (
@@ -290,7 +264,8 @@ function CustomAttrFilterInput({
   )
 }
 
-function AddFilterButton({
+/** The Filter control that opens the category menu; lives in the list toolbar. */
+export function UsersFilterButton({
   onFiltersChange,
   filters,
 }: {
@@ -331,7 +306,6 @@ function AddFilterButton({
     if (cat.key === 'postCount' && filters.postCount) return false
     if (cat.key === 'voteCount' && filters.voteCount) return false
     if (cat.key === 'commentCount' && filters.commentCount) return false
-    if (cat.key === 'includeAnonymous' && filters.includeAnonymous) return false
     return true
   })
 
@@ -362,20 +336,7 @@ function AddFilterButton({
       }}
     >
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'inline-flex items-center gap-1 px-2 py-0.5',
-            'rounded-full text-xs',
-            'border border-dashed border-border/50',
-            'text-muted-foreground hover:text-foreground',
-            'hover:border-border hover:bg-muted/30',
-            'transition-colors'
-          )}
-        >
-          <PlusIcon className="h-3 w-3" />
-          Add filter
-        </button>
+        <FilterAddButton />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-52 p-0">
         {activeCustomAttr ? (
@@ -383,7 +344,7 @@ function AddFilterButton({
             <button
               type="button"
               onClick={() => setActiveCustomAttr(null)}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] text-muted-foreground hover:text-foreground border-b border-border/50"
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-muted-foreground hover:text-foreground border-b border-border/50"
             >
               <ChevronRightIcon className="h-2.5 w-2.5 rotate-180" />
               {activeCustomAttr.label}
@@ -408,33 +369,26 @@ function AddFilterButton({
                   key={category.key}
                   type="button"
                   onClick={() => {
-                    if (category.key === 'includeAnonymous') {
-                      onFiltersChange({ includeAnonymous: true })
-                      closePopover()
-                      return
-                    }
                     setActiveCategory(category.key)
                   }}
                   className={cn(
                     'w-full flex items-center justify-between gap-2 px-2.5 py-1.5',
-                    'text-xs text-left',
+                    'text-[13px] text-left',
                     'hover:bg-muted/50 transition-colors'
                   )}
                 >
                   <span className="flex items-center gap-2">
-                    <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+                    <Icon className="size-4 text-muted-foreground" />
                     {category.label}
                   </span>
-                  {category.key !== 'includeAnonymous' && (
-                    <ChevronRightIcon className="h-3 w-3 text-muted-foreground" />
-                  )}
+                  <ChevronRightIcon className="h-3 w-3 text-muted-foreground" />
                 </button>
               )
             })}
             {availableCustomAttrs.length > 0 && (
               <>
                 <div className="border-b border-border/30 my-1" />
-                <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   Custom attributes
                 </div>
                 {availableCustomAttrs.map((attr) => (
@@ -446,12 +400,12 @@ function AddFilterButton({
                     }
                     className={cn(
                       'w-full flex items-center justify-between gap-2 px-2.5 py-1.5',
-                      'text-xs text-left',
+                      'text-[13px] text-left',
                       'hover:bg-muted/50 transition-colors'
                     )}
                   >
                     <span className="flex items-center gap-2">
-                      <AdjustmentsHorizontalIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                      <AdjustmentsHorizontalIcon className="size-4 text-muted-foreground" />
                       {attr.label}
                     </span>
                     <ChevronRightIcon className="h-3 w-3 text-muted-foreground" />
@@ -465,7 +419,7 @@ function AddFilterButton({
             <button
               type="button"
               onClick={() => setActiveCategory(null)}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] text-muted-foreground hover:text-foreground border-b border-border/50"
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[13px] text-muted-foreground hover:text-foreground border-b border-border/50"
             >
               <ChevronRightIcon className="h-2.5 w-2.5 rotate-180" />
               Back
@@ -476,14 +430,14 @@ function AddFilterButton({
                   <button
                     type="button"
                     onClick={() => handleSelectVerified(true)}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-muted/50 transition-colors"
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[13px] hover:bg-muted/50 transition-colors"
                   >
                     Verified only
                   </button>
                   <button
                     type="button"
                     onClick={() => handleSelectVerified(false)}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-muted/50 transition-colors"
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[13px] hover:bg-muted/50 transition-colors"
                   >
                     Unverified only
                   </button>
@@ -497,7 +451,7 @@ function AddFilterButton({
                       key={preset.value}
                       type="button"
                       onClick={() => handleSelectDate(preset)}
-                      className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-muted/50 transition-colors"
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[13px] hover:bg-muted/50 transition-colors"
                     >
                       {preset.label}
                     </button>
@@ -552,18 +506,13 @@ function getFilterIcon(type: string) {
     voteCount: HandThumbUpIcon,
     commentCount: ChatBubbleLeftIcon,
     customAttr: AdjustmentsHorizontalIcon,
-    includeAnonymous: UserGroupIcon,
   }
   return icons[type] ?? AdjustmentsHorizontalIcon
 }
 
+/** A date filter ("2026-10-01") as the calendar day it names, for every viewer. */
 function formatDate(dateStr: string): string {
-  try {
-    const date = new Date(dateStr)
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-  } catch {
-    return dateStr
-  }
+  return formatCalendarDate(dateStr) ?? dateStr
 }
 
 function computeActiveFilters(
@@ -571,18 +520,6 @@ function computeActiveFilters(
   onFiltersChange: (updates: Partial<UsersFilters>) => void
 ): ActiveFilter[] {
   const result: ActiveFilter[] = []
-
-  // Include anonymous filter
-  if (filters.includeAnonymous) {
-    result.push({
-      key: 'includeAnonymous',
-      type: 'includeAnonymous',
-      label: 'Users:',
-      value: 'Including anonymous',
-      valueId: 'includeAnonymous',
-      onRemove: () => onFiltersChange({ includeAnonymous: undefined }),
-    })
-  }
 
   // Verified filter
   const verifiedOptions: FilterOption[] = [
@@ -729,13 +666,7 @@ export function UsersActiveFiltersBar({
     [filters, onFiltersChange]
   )
 
-  if (activeFilters.length === 0) {
-    return (
-      <div className="flex items-center">
-        <AddFilterButton onFiltersChange={onFiltersChange} filters={filters} />
-      </div>
-    )
-  }
+  if (activeFilters.length === 0) return null
 
   return (
     <div className="flex flex-wrap gap-1 items-center">
@@ -743,14 +674,12 @@ export function UsersActiveFiltersBar({
         <FilterChip key={key} icon={getFilterIcon(type)} {...filterProps} />
       ))}
 
-      <AddFilterButton onFiltersChange={onFiltersChange} filters={filters} />
-
       {activeFilters.length > 1 && (
         <button
           type="button"
           onClick={onClearFilters}
           className={cn(
-            'text-xs text-muted-foreground hover:text-foreground',
+            'text-[13px] text-muted-foreground hover:text-foreground',
             'px-2 py-1 rounded',
             'hover:bg-muted/50',
             'transition-colors'

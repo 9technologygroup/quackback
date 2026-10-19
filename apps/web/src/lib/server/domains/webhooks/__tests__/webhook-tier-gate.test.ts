@@ -5,18 +5,19 @@ vi.mock('@/lib/server/domains/settings/tier-limits.service', () => ({
   getTierLimits: vi.fn(),
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     select: () => ({ from: () => Promise.resolve([{ count: 0 }]) }),
   },
-  webhooks: {},
   eq: vi.fn(),
   and: vi.fn(),
   isNull: vi.fn(),
   sql: { raw: vi.fn() },
 }))
 
-vi.mock('@/lib/server/redis', () => ({
+vi.mock('@/lib/server/cache', () => ({
   cacheDel: vi.fn(),
   CACHE_KEYS: { WEBHOOK_LIST: 'wl' },
 }))

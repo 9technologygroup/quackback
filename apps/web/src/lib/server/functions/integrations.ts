@@ -1,18 +1,12 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { requireAuth } from './auth-helpers'
-import {
-  db,
-  integrations,
-  integrationEventMappings,
-  slackChannelMonitors,
-  eq,
-  and,
-  sql,
-} from '@/lib/server/db'
-import type { IntegrationId, BoardId } from '@quackback/ids'
+import { db, integrations, integrationEventMappings, eq, and, sql } from '@/lib/server/db'
+import type { IntegrationId } from '@quackback/ids'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
-// cacheDel/CACHE_KEYS are imported dynamically inside handlers to keep ioredis out of the client bundle
+// cacheDel/CACHE_KEYS are imported dynamically inside handlers to keep the
+// database stack out of the client bundle
 
 const log = logger.child({ component: 'integrations' })
 
@@ -29,12 +23,6 @@ const updateIntegrationSchema = z.object({
       z.object({
         eventType: z.string(),
         enabled: z.boolean(),
-        /**
-         * Restrict this mapping to specific boards. Null/empty means "all
-         * boards" — the dispatcher only applies a board filter when
-         * `filters.boardIds` is a non-empty array (see events/targets.ts).
-         */
-        boardIds: z.array(z.string()).nullable().optional(),
       })
     )
     .optional(),
@@ -58,7 +46,7 @@ export const updateIntegrationFn = createServerFn({ method: 'POST' })
   .validator(updateIntegrationSchema)
   .handler(async ({ data }) => {
     log.debug({ integration_id: data.id }, 'update integration')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.id as IntegrationId
 
@@ -87,12 +75,6 @@ export const updateIntegrationFn = createServerFn({ method: 'POST' })
 
     // Batch upsert all event mappings in a single query
     if (data.eventMappings && data.eventMappings.length > 0) {
-      // Only overwrite `filters` when the caller is board-filter aware. Older
-      // config screens (and other integrations) send mappings without a
-      // `boardIds` key at all — for those, leave any existing filters intact
-      // rather than silently widening the mapping to every board.
-      const usesBoardFilters = data.eventMappings.some((m) => m.boardIds !== undefined)
-
       await db
         .insert(integrationEventMappings)
         .values(
@@ -101,7 +83,6 @@ export const updateIntegrationFn = createServerFn({ method: 'POST' })
             eventType: mapping.eventType,
             actionType: 'send_message' as const,
             enabled: mapping.enabled,
-            filters: mapping.boardIds?.length ? { boardIds: mapping.boardIds } : null,
           }))
         )
         .onConflictDoUpdate({
@@ -113,13 +94,12 @@ export const updateIntegrationFn = createServerFn({ method: 'POST' })
           ],
           set: {
             enabled: sql`excluded.enabled`,
-            ...(usesBoardFilters ? { filters: sql`excluded.filters` } : {}),
             updatedAt: new Date(),
           },
         })
     }
 
-    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/redis')
+    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/cache')
     await cacheDel(CACHE_KEYS.INTEGRATION_MAPPINGS)
     log.info({ integration_id: data.id }, 'integration updated')
     return { success: true }
@@ -132,7 +112,7 @@ export const deleteIntegrationFn = createServerFn({ method: 'POST' })
   .validator(deleteIntegrationSchema)
   .handler(async ({ data }) => {
     log.debug({ integration_id: data.id }, 'delete integration')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.id as IntegrationId
 
@@ -144,33 +124,49 @@ export const deleteIntegrationFn = createServerFn({ method: 'POST' })
       throw new Error('Integration not found')
     }
 
-    // Revoke tokens with the provider before deleting (dynamic import to avoid bundling @slack/web-api client-side)
-    if (integration.secrets) {
-      try {
-        const { getIntegration } = await import('@/lib/server/integrations')
-        const { decryptSecrets } = await import('@/lib/server/integrations/encryption')
-        const { getPlatformCredentials } =
-          await import('@/lib/server/domains/platform-credentials/platform-credential.service')
-        const definition = getIntegration(integration.integrationType)
-        if (definition?.onDisconnect) {
-          const secrets = decryptSecrets(integration.secrets)
-          const credentials =
-            (await getPlatformCredentials(integration.integrationType)) ?? undefined
+    // Resolve platform credentials before acquiring the provider transaction: DB
+    // credential reads must not request a second connection from a one-slot pool.
+    const { getIntegration } = await import('@/lib/server/integrations')
+    const { decryptSecrets } = await import('@/lib/server/integrations/encryption')
+    const { getPlatformCredentials } =
+      await import('@/lib/server/domains/platform-credentials/platform-credential.service')
+    const definition = getIntegration(integration.integrationType)
+    const credentials = definition?.onDisconnect
+      ? ((await getPlatformCredentials(integration.integrationType)) ?? undefined)
+      : undefined
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${`integration:${integration.integrationType}`}))`
+      )
+      const current = await tx.query.integrations.findFirst({
+        where: eq(integrations.id, integrationId),
+      })
+      if (!current) return
+      if (
+        current.secrets !== integration.secrets ||
+        current.connectedAt?.getTime() !== integration.connectedAt?.getTime()
+      )
+        throw new Error('Integration was reconnected. Reload before disconnecting.')
+      if (current.secrets && definition?.onDisconnect) {
+        try {
           await definition.onDisconnect(
-            secrets,
-            (integration.config ?? {}) as Record<string, unknown>,
+            decryptSecrets(current.secrets),
+            (current.config ?? {}) as Record<string, unknown>,
             credentials
           )
+        } catch (err) {
+          log.error({ err, integration_type: current.integrationType }, 'onDisconnect failed')
         }
-      } catch (err) {
-        log.error({ err, integration_type: integration.integrationType }, 'onDisconnect failed')
-        // Continue with deletion even if revocation fails
       }
-    }
+      const { unregisterInstall } = await import('@/lib/server/integrations/install-registry')
+      await unregisterInstall(
+        current.integrationType,
+        (current.config ?? {}) as Record<string, unknown>
+      )
+      await tx.delete(integrations).where(eq(integrations.id, integrationId))
+    })
 
-    await db.delete(integrations).where(eq(integrations.id, integrationId))
-
-    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/redis')
+    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/cache')
     await cacheDel(CACHE_KEYS.INTEGRATION_MAPPINGS)
     log.info({ integration_id: data.id }, 'integration deleted')
     return { id: data.id }
@@ -215,9 +211,11 @@ export const addNotificationChannelFn = createServerFn({ method: 'POST' })
   .validator(addNotificationChannelSchema)
   .handler(async ({ data }) => {
     log.debug({ channel_id: data.channelId }, 'add notification channel')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.integrationId as IntegrationId
+    const { validateIntegrationDestination } = await import('@/lib/server/integrations/destination')
+    await validateIntegrationDestination(integrationId, { channelId: data.channelId })
     const filters = data.boardIds?.length ? { boardIds: data.boardIds } : null
 
     await db
@@ -248,7 +246,7 @@ export const addNotificationChannelFn = createServerFn({ method: 'POST' })
         },
       })
 
-    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/redis')
+    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/cache')
     await cacheDel(CACHE_KEYS.INTEGRATION_MAPPINGS)
     log.info(
       { channel_id: data.channelId, event_count: data.events.length },
@@ -264,9 +262,11 @@ export const updateNotificationChannelFn = createServerFn({ method: 'POST' })
   .validator(updateNotificationChannelSchema)
   .handler(async ({ data }) => {
     log.debug({ channel_id: data.channelId }, 'update notification channel')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.integrationId as IntegrationId
+    const { validateIntegrationDestination } = await import('@/lib/server/integrations/destination')
+    await validateIntegrationDestination(integrationId, { channelId: data.channelId })
     const filters = data.boardIds?.length ? { boardIds: data.boardIds } : null
 
     // Upsert event mappings for this channel
@@ -308,7 +308,7 @@ export const updateNotificationChannelFn = createServerFn({ method: 'POST' })
         )
       )
 
-    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/redis')
+    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/cache')
     await cacheDel(CACHE_KEYS.INTEGRATION_MAPPINGS)
     log.info({ channel_id: data.channelId }, 'notification channel updated')
     return { success: true }
@@ -321,7 +321,7 @@ export const removeNotificationChannelFn = createServerFn({ method: 'POST' })
   .validator(removeNotificationChannelSchema)
   .handler(async ({ data }) => {
     log.debug({ channel_id: data.channelId }, 'remove notification channel')
-    await requireAuth({ roles: ['admin'] })
+    await requireAuth({ permission: PERMISSIONS.INTEGRATION_MANAGE })
 
     const integrationId = data.integrationId as IntegrationId
 
@@ -334,143 +334,8 @@ export const removeNotificationChannelFn = createServerFn({ method: 'POST' })
         )
       )
 
-    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/redis')
+    const { cacheDel, CACHE_KEYS } = await import('@/lib/server/cache')
     await cacheDel(CACHE_KEYS.INTEGRATION_MAPPINGS)
     log.info({ channel_id: data.channelId }, 'notification channel removed')
-    return { success: true }
-  })
-
-// ============================================
-// Monitored Channel CRUD (Slack Channel Monitoring)
-// ============================================
-
-const addMonitoredChannelSchema = z.object({
-  integrationId: z.string(),
-  channelId: z.string(),
-  channelName: z.string(),
-  isPrivate: z.boolean().default(false),
-  boardId: z.string().nullable().optional(),
-})
-
-const updateMonitoredChannelSchema = z.object({
-  integrationId: z.string(),
-  channelId: z.string(),
-  enabled: z.boolean().optional(),
-  boardId: z.string().nullable().optional(),
-})
-
-const removeMonitoredChannelSchema = z.object({
-  integrationId: z.string(),
-  channelId: z.string(),
-})
-
-export type AddMonitoredChannelInput = z.infer<typeof addMonitoredChannelSchema>
-export type UpdateMonitoredChannelInput = z.infer<typeof updateMonitoredChannelSchema>
-export type RemoveMonitoredChannelInput = z.infer<typeof removeMonitoredChannelSchema>
-
-/**
- * Add a channel to monitoring. Bot joins the channel automatically (public only).
- */
-export const addMonitoredChannelFn = createServerFn({ method: 'POST' })
-  .validator(addMonitoredChannelSchema)
-  .handler(async ({ data }) => {
-    log.debug({ channel_id: data.channelId }, 'add monitored channel')
-    await requireAuth({ roles: ['admin'] })
-
-    const integrationId = data.integrationId as IntegrationId
-
-    // Bot joins the channel (only works for public channels)
-    if (!data.isPrivate) {
-      try {
-        const { decryptSecrets } = await import('@/lib/server/integrations/encryption')
-        const { joinSlackChannel } = await import('@/lib/server/integrations/slack/channels')
-        const integration = await db.query.integrations.findFirst({
-          where: eq(integrations.id, integrationId),
-          columns: { secrets: true },
-        })
-        if (integration?.secrets) {
-          const secrets = decryptSecrets<{ accessToken: string }>(integration.secrets)
-          await joinSlackChannel(secrets.accessToken, data.channelId)
-        }
-      } catch (err) {
-        log.warn({ err, channel_id: data.channelId }, 'failed to join channel')
-        // Continue -- bot might already be in the channel
-      }
-    }
-
-    await db
-      .insert(slackChannelMonitors)
-      .values({
-        integrationId,
-        channelId: data.channelId,
-        channelName: data.channelName,
-        boardId: (data.boardId ?? null) as BoardId | null,
-        enabled: true,
-      })
-      .onConflictDoUpdate({
-        target: [slackChannelMonitors.integrationId, slackChannelMonitors.channelId],
-        set: {
-          channelName: data.channelName,
-          boardId: (data.boardId ?? null) as BoardId | null,
-          enabled: true,
-          updatedAt: new Date(),
-        },
-      })
-
-    log.info({ channel_id: data.channelId }, 'monitored channel added')
-    return { success: true }
-  })
-
-/**
- * Update a monitored channel (toggle enabled, change board)
- */
-export const updateMonitoredChannelFn = createServerFn({ method: 'POST' })
-  .validator(updateMonitoredChannelSchema)
-  .handler(async ({ data }) => {
-    log.debug({ channel_id: data.channelId }, 'update monitored channel')
-    await requireAuth({ roles: ['admin'] })
-
-    const integrationId = data.integrationId as IntegrationId
-    const updates: Partial<typeof slackChannelMonitors.$inferInsert> = {
-      updatedAt: new Date(),
-    }
-    if (data.enabled !== undefined) updates.enabled = data.enabled
-    if (data.boardId !== undefined) updates.boardId = (data.boardId ?? null) as BoardId | null
-
-    await db
-      .update(slackChannelMonitors)
-      .set(updates)
-      .where(
-        and(
-          eq(slackChannelMonitors.integrationId, integrationId),
-          eq(slackChannelMonitors.channelId, data.channelId)
-        )
-      )
-
-    log.info({ channel_id: data.channelId }, 'monitored channel updated')
-    return { success: true }
-  })
-
-/**
- * Remove a monitored channel
- */
-export const removeMonitoredChannelFn = createServerFn({ method: 'POST' })
-  .validator(removeMonitoredChannelSchema)
-  .handler(async ({ data }) => {
-    log.debug({ channel_id: data.channelId }, 'remove monitored channel')
-    await requireAuth({ roles: ['admin'] })
-
-    const integrationId = data.integrationId as IntegrationId
-
-    await db
-      .delete(slackChannelMonitors)
-      .where(
-        and(
-          eq(slackChannelMonitors.integrationId, integrationId),
-          eq(slackChannelMonitors.channelId, data.channelId)
-        )
-      )
-
-    log.info({ channel_id: data.channelId }, 'monitored channel removed')
     return { success: true }
   })

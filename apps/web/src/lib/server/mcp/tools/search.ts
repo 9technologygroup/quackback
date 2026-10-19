@@ -1,0 +1,606 @@
+/**
+ * Cross-entity lookup tools: `search` and `get_details`.
+ *
+ * Both dispatch on their arguments (entity kind / TypeID prefix), so they gate
+ * per-branch in the handler with requireScope / requireTeamRole rather than
+ * declaring a single scope on registerTool.
+ */
+
+import { z } from 'zod'
+import { PERMISSIONS, type PermissionKey } from '@/lib/shared/permissions'
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
+import { listInboxPosts } from '@/lib/server/domains/posts/post.inbox'
+import { getPostWithDetails, getCommentsWithReplies } from '@/lib/server/domains/posts/post.query'
+import { getMergedPosts } from '@/lib/server/domains/posts/post.merge'
+import { getChangelogById } from '@/lib/server/domains/changelog/changelog.service'
+import { listChangelogs } from '@/lib/server/domains/changelog/changelog.query'
+import {
+  listArticles,
+  getArticleById,
+  getCategoryById,
+} from '@/lib/server/domains/help-center/help-center.service'
+import { ensureTypeId, getTypeIdPrefix } from '@quackback/ids'
+import { truncate } from '@/lib/shared/utils/string'
+import { contentJsonToMarkdown } from '@/lib/server/markdown-tiptap'
+import type { CommentTreeNode } from '@/lib/shared/comment-tree'
+import type {
+  PostId,
+  BoardId,
+  PostTagId,
+  ChangelogId,
+  KbArticleId,
+  KbCategoryId,
+  PrincipalId,
+} from '@quackback/ids'
+import type { McpAuthContext } from '../types'
+import { getBaseUrl } from '@/lib/server/config'
+import {
+  registerTool,
+  requireScope,
+  requireTeamRole,
+  requireHelpCenter,
+  jsonResult,
+  compactJsonResult,
+  errorResult,
+  encodeSearchCursor,
+  decodeSearchCursor,
+  parseFlexibleDate,
+  articleResult,
+  categoryResult,
+  withAuthorFacts,
+  READ_ONLY,
+  type AuthorAt,
+} from './helpers'
+
+// ============================================================================
+// Schemas
+// ============================================================================
+
+const searchSchema = {
+  entity: z
+    .enum(['posts', 'changelogs', 'articles'])
+    .default('posts')
+    .describe('Entity type to search. Defaults to posts.'),
+  query: z.string().optional().describe('Text search across titles and content'),
+  boardId: z.string().optional().describe('Filter posts by board TypeID (ignored for changelogs)'),
+  categoryId: z
+    .string()
+    .optional()
+    .describe('Filter articles by category TypeID (ignored for posts and changelogs)'),
+  status: z
+    .string()
+    .optional()
+    .describe(
+      'Filter by status. For posts: slug like "open", "in_progress". For changelogs: "draft", "published", "scheduled", "all". For articles: "draft", "published", "all".'
+    ),
+  tagIds: z
+    .array(z.string())
+    .optional()
+    .describe('Filter posts by tag TypeIDs (ignored for changelogs)'),
+  sort: z
+    .enum(['newest', 'oldest', 'votes'])
+    .default('newest')
+    .describe('Sort order. "votes" only applies to posts.'),
+  showDeleted: z
+    .boolean()
+    .default(false)
+    .describe('Show only soft-deleted posts instead of active ones (team only, last 30 days)'),
+  dateFrom: z
+    .string()
+    .optional()
+    .describe(
+      'Created on or after this time. ISO 8601 (e.g. "2024-06-01") or a relative window: 7d, 30d, 24h, this_week, this_month, today.'
+    ),
+  dateTo: z
+    .string()
+    .optional()
+    .describe(
+      'ISO 8601 date string for filtering posts created on or before this date (e.g. "2024-06-30")'
+    ),
+  limit: z.number().min(1).max(100).default(20).describe('Max results per page'),
+  cursor: z.string().optional().describe('Pagination cursor from previous response'),
+  authorPrincipalId: z
+    .string()
+    .optional()
+    .describe('Filter posts by author TypeID, or "me" for the authenticated teammate'),
+  authorEmail: z
+    .string()
+    .optional()
+    .describe('Filter posts by author email, or "me" for the authenticated teammate'),
+}
+
+/** What each search entity reveals, matching the REST list endpoints. */
+const SEARCH_PERMISSIONS: Record<SearchArgs['entity'], PermissionKey> = {
+  posts: PERMISSIONS.POST_VIEW_PRIVATE,
+  changelogs: PERMISSIONS.CHANGELOG_VIEW_DRAFT,
+  articles: PERMISSIONS.HELP_CENTER_MANAGE,
+}
+
+/** What each get_details entity reveals; an unparseable or unsupported id needs none. */
+const DETAIL_PERMISSIONS: Record<string, PermissionKey> = {
+  post: PERMISSIONS.POST_VIEW_PRIVATE,
+  changelog: PERMISSIONS.CHANGELOG_VIEW_DRAFT,
+  article: PERMISSIONS.HELP_CENTER_MANAGE,
+  kb_article: PERMISSIONS.HELP_CENTER_MANAGE,
+  kb_category: PERMISSIONS.HELP_CENTER_MANAGE,
+}
+
+function detailPermissions(id: string): PermissionKey[] {
+  try {
+    const permission = DETAIL_PERMISSIONS[getTypeIdPrefix(id)]
+    return permission ? [permission] : []
+  } catch {
+    return []
+  }
+}
+
+const getDetailsSchema = {
+  id: z
+    .string()
+    .describe(
+      'TypeID of the entity to fetch (e.g., post_01abc..., changelog_01xyz...). Entity type is auto-detected from the prefix.'
+    ),
+}
+
+// ============================================================================
+// Type aliases — manually defined to avoid deep Zod type recursion.
+// WARNING: These must stay in sync with the Zod schemas above.
+// If you add/remove/rename a field in a schema, update the matching type here.
+// ============================================================================
+
+type SearchArgs = {
+  entity: 'posts' | 'changelogs' | 'articles'
+  query?: string
+  boardId?: string
+  categoryId?: string
+  status?: string
+  tagIds?: string[]
+  dateFrom?: string
+  dateTo?: string
+  showDeleted: boolean
+  sort: 'newest' | 'oldest' | 'votes'
+  limit: number
+  cursor?: string
+  authorPrincipalId?: string
+  authorEmail?: string
+}
+
+type GetDetailsArgs = { id: string }
+
+// ============================================================================
+// Tool registration
+// ============================================================================
+
+export function registerSearchTools(server: McpServer, auth: McpAuthContext) {
+  registerTool<SearchArgs>(server, auth, {
+    name: 'search',
+    // Every branch is team-only; the per-branch scope gates stay in the handler.
+    teamOnly: true,
+    permissions: (args) => [SEARCH_PERMISSIONS[args.entity ?? 'posts']],
+    description: `Search feedback posts, changelog entries, or help center articles. Returns paginated results with a cursor for fetching more.
+
+Examples:
+- Search all posts: search()
+- Search by text: search({ query: "dark mode" })
+- Filter by board and status: search({ boardId: "board_01abc...", status: "open" })
+- Search changelogs: search({ entity: "changelogs", status: "published" })
+- Search articles: search({ entity: "articles", query: "getting started" })
+- Filter articles by category: search({ entity: "articles", categoryId: "kb_category_01abc..." })
+- Sort by votes: search({ sort: "votes", limit: 10 })
+- Posts created by the authenticated teammate: search({ authorPrincipalId: "me" })
+- Posts created by an email: search({ authorEmail: "ada@acme.com" })`,
+    schema: searchSchema,
+    annotations: READ_ONLY,
+    handler: async (args) => {
+      if (args.entity === 'articles') {
+        const flagDenied = await requireHelpCenter()
+        if (flagDenied) return flagDenied
+        const denied = requireScope(auth, 'read:article')
+        if (denied) return denied
+        // Help-center MCP read surfaces unpublished drafts and articles
+        // under categories an admin marked private. The public help
+        // center site already serves the published+isPublic slice for
+        // anonymous and portal users; gating MCP read on team role
+        // matches the team-only intent of the inbox-style tools.
+        const roleDenied = requireTeamRole(auth)
+        if (roleDenied) return roleDenied
+        return searchArticles(args)
+      }
+
+      const denied = requireScope(auth, 'read:feedback')
+      if (denied) return denied
+      // Posts and changelogs inbox-style listings expose pending /
+      // soft-deleted / draft / scheduled content alongside published
+      // rows. Gating these on team role keeps OAuth portal users out
+      // of the admin moderation surface.
+      const roleDenied = requireTeamRole(auth)
+      if (roleDenied) return roleDenied
+      if (args.entity === 'changelogs') {
+        return searchChangelogs(args)
+      }
+      return searchPosts(args, auth)
+    },
+  })
+
+  registerTool<GetDetailsArgs>(server, auth, {
+    name: 'get_details',
+    // Every branch is team-only; the per-branch scope gates stay in the handler.
+    teamOnly: true,
+    permissions: (args) => detailPermissions(args.id),
+    description: `Get full details for any entity by TypeID. Entity type is auto-detected from the ID prefix.
+
+Examples:
+- Get a post: get_details({ id: "post_01abc..." })
+- Get a changelog: get_details({ id: "changelog_01xyz..." })
+- Get an article: get_details({ id: "article_01abc..." })
+- Get a category: get_details({ id: "kb_category_01abc..." })`,
+    schema: getDetailsSchema,
+    annotations: READ_ONLY,
+    handler: async (args) => {
+      // Per-branch error mapping: an unparseable TypeID gets a format hint
+      // rather than the generic errorResult wrapping.
+      let prefix: string
+      try {
+        prefix = getTypeIdPrefix(args.id)
+      } catch {
+        return errorResult(
+          new Error(
+            `Invalid TypeID format: "${args.id}". Expected format: prefix_base32suffix (e.g., post_01abc..., article_01abc...)`
+          )
+        )
+      }
+
+      switch (prefix) {
+        case 'post': {
+          const denied = requireScope(auth, 'read:feedback')
+          if (denied) return denied
+          // Posts here surface moderation/inbox fields (deletedAt,
+          // moderationState, pinnedCommentId, summaryJson...). Gate to
+          // team — portal users should hit the public portal API.
+          const roleDenied = requireTeamRole(auth)
+          if (roleDenied) return roleDenied
+          return getPostDetails(args.id as PostId)
+        }
+        case 'changelog': {
+          const denied = requireScope(auth, 'read:feedback')
+          if (denied) return denied
+          // get_details returns the raw entry including drafts /
+          // scheduled rows. Team-only matches the search gate.
+          const roleDenied = requireTeamRole(auth)
+          if (roleDenied) return roleDenied
+          return getChangelogDetails(args.id as ChangelogId)
+        }
+        case 'article':
+        case 'kb_article': {
+          const flagDenied = await requireHelpCenter()
+          if (flagDenied) return flagDenied
+          const denied = requireScope(auth, 'read:article')
+          if (denied) return denied
+          // getArticleById doesn't enforce publishedAt or
+          // category.isPublic — so a portal user with the help-center
+          // OAuth scope could fetch drafts or private-category
+          // articles. The public help-center site has its own
+          // unauthenticated path for the published slice.
+          const roleDenied = requireTeamRole(auth)
+          if (roleDenied) return roleDenied
+          return getArticleDetails(ensureTypeId(args.id, 'article'))
+        }
+        case 'kb_category': {
+          const flagDenied = await requireHelpCenter()
+          if (flagDenied) return flagDenied
+          const denied = requireScope(auth, 'read:article')
+          if (denied) return denied
+          // getCategoryById returns private categories too — keep
+          // symmetric with the article path.
+          const roleDenied = requireTeamRole(auth)
+          if (roleDenied) return roleDenied
+          return getCategoryDetails(args.id as KbCategoryId)
+        }
+        default:
+          return errorResult(
+            new Error(
+              `Unsupported entity type: "${prefix}". Supported: post, changelog, article, kb_category`
+            )
+          )
+      }
+    },
+  })
+}
+
+// ============================================================================
+// Search dispatchers
+// ============================================================================
+
+/** Map "me" to the authenticated teammate; pass through TypeIDs and emails. */
+export function resolvePostAuthorFilter(
+  args: Pick<SearchArgs, 'authorPrincipalId' | 'authorEmail'>,
+  auth: Pick<McpAuthContext, 'principalId'>
+): { authorId?: PrincipalId; authorEmail?: string } {
+  if (args.authorPrincipalId === 'me' || args.authorEmail === 'me') {
+    return { authorId: auth.principalId }
+  }
+  if (args.authorPrincipalId) {
+    return { authorId: args.authorPrincipalId as PrincipalId }
+  }
+  if (args.authorEmail) return { authorEmail: args.authorEmail }
+  return {}
+}
+
+async function searchPosts(args: SearchArgs, auth: McpAuthContext): Promise<CallToolResult> {
+  const decoded = decodeSearchCursor(args.cursor)
+  // Reject cursors from a different entity
+  if (args.cursor && decoded.entity && decoded.entity !== 'posts') {
+    return errorResult(
+      new Error('Cursor is from a different entity type. Do not reuse cursors across entity types.')
+    )
+  }
+  // The cursor value is a PostId string from the previous page's last item
+  const cursorValue = typeof decoded.value === 'string' ? decoded.value : undefined
+  const author = resolvePostAuthorFilter(args, auth)
+
+  const result = await listInboxPosts({
+    search: args.query,
+    excludeTest: true,
+    boardIds: args.boardId ? [args.boardId as BoardId] : undefined,
+    statusSlugs: args.status ? [args.status] : undefined,
+    tagIds: args.tagIds as PostTagId[] | undefined,
+    dateFrom: parseFlexibleDate(args.dateFrom),
+    dateTo: (() => {
+      if (!args.dateTo) return undefined
+      const d = new Date(args.dateTo)
+      // Treat date-only dateTo (e.g. "2024-06-30") as end-of-day so the full day is included
+      if (/^\d{4}-\d{2}-\d{2}$/.test(args.dateTo)) d.setUTCHours(23, 59, 59, 999)
+      return d
+    })(),
+    showDeleted: args.showDeleted || undefined,
+    sort: args.sort,
+    cursor: cursorValue,
+    limit: args.limit,
+    ...author,
+  })
+
+  // Encode nextCursor with entity type to prevent cross-entity misuse
+  const lastItem = result.items[result.items.length - 1]
+  const nextCursor = result.hasMore && lastItem ? encodeSearchCursor('posts', lastItem.id) : null
+
+  const origin = getBaseUrl()
+  return compactJsonResult({
+    posts: result.items.map((p) => ({
+      id: p.id,
+      title: p.title,
+      url: `${origin}/b/${encodeURIComponent(p.board.slug)}/posts/${p.id}`,
+      excerpt: p.content ? truncate(p.content, 200) : '',
+      voteCount: p.voteCount,
+      commentCount: p.commentCount,
+      boardId: p.boardId,
+      boardName: p.board?.name,
+      statusId: p.statusId,
+      authorName: p.authorName,
+      ownerPrincipalId: p.ownerPrincipalId,
+      tags: p.tags?.map((t) => ({ id: t.id, name: t.name })),
+      summary: p.summaryJson?.summary ?? null,
+      canonicalPostId: p.canonicalPostId ?? null,
+      isCommentsLocked: p.isCommentsLocked,
+      createdAt: p.createdAt,
+      deletedAt: p.deletedAt ?? null,
+    })),
+    nextCursor,
+    hasMore: result.hasMore,
+  })
+}
+
+async function searchChangelogs(args: SearchArgs): Promise<CallToolResult> {
+  const decoded = decodeSearchCursor(args.cursor)
+  // Reject cursors from a different entity
+  if (args.cursor && decoded.entity && decoded.entity !== 'changelogs') {
+    return errorResult(
+      new Error('Cursor is from a different entity type. Do not reuse cursors across entity types.')
+    )
+  }
+  const cursorValue = typeof decoded.value === 'string' ? decoded.value : undefined
+
+  // Map status param — changelogs support draft/published/scheduled/all
+  const validStatuses = new Set(['draft', 'published', 'scheduled', 'all'])
+  const status = validStatuses.has(args.status ?? '')
+    ? (args.status as 'draft' | 'published' | 'scheduled' | 'all')
+    : undefined
+
+  const result = await listChangelogs({
+    status,
+    cursor: cursorValue,
+    limit: args.limit,
+  })
+
+  // Encode next cursor using the last item's ID
+  const lastItem = result.items[result.items.length - 1]
+  const nextCursor =
+    result.hasMore && lastItem ? encodeSearchCursor('changelogs', lastItem.id) : null
+
+  const changelogAuthors = result.items.map((c, i): AuthorAt => [`changelogs[${i}]`, c.author?.id])
+  return withAuthorFacts(
+    compactJsonResult({
+      changelogs: result.items.map((c) => ({
+        id: c.id,
+        title: c.title,
+        excerpt: c.content ? truncate(c.content, 200) : '',
+        status: c.status,
+        authorName: c.author?.name ?? null,
+        linkedPosts: c.linkedPosts.map((p) => ({
+          id: p.id,
+          title: p.title,
+          voteCount: p.voteCount,
+        })),
+        publishedAt: c.publishedAt,
+        displayDate: c.displayDate,
+        createdAt: c.createdAt,
+      })),
+      nextCursor,
+      hasMore: result.hasMore,
+    }),
+    changelogAuthors
+  )
+}
+
+async function searchArticles(args: SearchArgs): Promise<CallToolResult> {
+  const decoded = decodeSearchCursor(args.cursor)
+  if (args.cursor && decoded.entity && decoded.entity !== 'articles') {
+    return errorResult(
+      new Error('Cursor is from a different entity type. Do not reuse cursors across entity types.')
+    )
+  }
+  const cursorValue = typeof decoded.value === 'string' ? decoded.value : undefined
+
+  const validStatuses = new Set(['draft', 'published', 'all'])
+  const status = validStatuses.has(args.status ?? '')
+    ? (args.status as 'draft' | 'published' | 'all')
+    : undefined
+
+  const result = await listArticles({
+    categoryId: args.categoryId,
+    status,
+    search: args.query,
+    cursor: cursorValue,
+    limit: args.limit,
+  })
+
+  const lastItem = result.items[result.items.length - 1]
+  const nextCursor = result.hasMore && lastItem ? encodeSearchCursor('articles', lastItem.id) : null
+
+  return withAuthorFacts(
+    compactJsonResult({
+      articles: result.items.map((a) => ({
+        id: a.id,
+        slug: a.slug,
+        title: a.title,
+        excerpt: a.content ? truncate(a.content, 200) : '',
+        description: a.description,
+        status: a.publishedAt ? 'published' : 'draft',
+        categoryId: a.category.id,
+        categoryName: a.category.name,
+        categorySlug: a.category.slug,
+        authorName: a.author?.name ?? null,
+        publishedAt: a.publishedAt,
+        createdAt: a.createdAt,
+        updatedAt: a.updatedAt,
+      })),
+      nextCursor,
+      hasMore: result.hasMore,
+    }),
+    result.items.map((a, i): AuthorAt => [`articles[${i}]`, a.author?.id])
+  )
+}
+
+// ============================================================================
+// Get details dispatchers
+// ============================================================================
+
+function serializeMcpComment(c: CommentTreeNode): Record<string, unknown> {
+  return {
+    id: c.id,
+    postId: c.postId,
+    parentId: c.parentId,
+    content: contentJsonToMarkdown(c.contentJson, c.content),
+    authorName: c.authorName,
+    principalId: c.principalId,
+    isTeamMember: c.isTeamMember,
+    isPrivate: c.isPrivate,
+    createdAt: c.createdAt,
+    deletedAt: c.deletedAt,
+    replies: c.replies.map(serializeMcpComment),
+  }
+}
+
+/** Each comment's path in the result and its author, replies included. */
+function commentAuthors(comments: CommentTreeNode[], prefix: string): AuthorAt[] {
+  return comments.flatMap((c, i): AuthorAt[] => [
+    [`${prefix}[${i}]`, c.principalId],
+    ...commentAuthors(c.replies, `${prefix}[${i}].replies`),
+  ])
+}
+
+async function getPostDetails(postId: PostId): Promise<CallToolResult> {
+  const [post, comments, mergedPosts] = await Promise.all([
+    getPostWithDetails(postId),
+    getCommentsWithReplies(postId),
+    getMergedPosts(postId),
+  ])
+
+  const authors = commentAuthors(comments, 'comments')
+  if (post.pinnedComment) authors.push(['pinnedComment', post.pinnedComment.principalId])
+  const result = jsonResult({
+    id: post.id,
+    title: post.title,
+    content: contentJsonToMarkdown(post.contentJson, post.content),
+    voteCount: post.voteCount,
+    commentCount: post.commentCount,
+    boardId: post.boardId,
+    boardName: post.board?.name,
+    boardSlug: post.board?.slug,
+    statusId: post.statusId,
+    authorName: post.authorName,
+    ownerPrincipalId: post.ownerPrincipalId,
+    tags: post.tags?.map((t) => ({ id: t.id, name: t.name, color: t.color })),
+    pinnedComment: post.pinnedComment
+      ? {
+          id: post.pinnedComment.id,
+          content: contentJsonToMarkdown(
+            post.pinnedComment.contentJson,
+            post.pinnedComment.content
+          ),
+          authorName: post.pinnedComment.authorName,
+          createdAt: post.pinnedComment.createdAt,
+        }
+      : null,
+    summaryJson: post.summaryJson ?? null,
+    summaryUpdatedAt: post.summaryUpdatedAt ?? null,
+    canonicalPostId: post.canonicalPostId ?? null,
+    mergedAt: post.mergedAt ?? null,
+    isCommentsLocked: post.isCommentsLocked,
+    mergedPosts: mergedPosts.map((mp) => ({
+      id: mp.id,
+      title: mp.title,
+      voteCount: mp.voteCount,
+      authorName: mp.authorName,
+      mergedAt: mp.mergedAt,
+    })),
+    createdAt: post.createdAt,
+    updatedAt: post.updatedAt,
+    deletedAt: post.deletedAt ?? null,
+    comments: comments.map(serializeMcpComment),
+  })
+  return withAuthorFacts(result, authors)
+}
+
+async function getChangelogDetails(changelogId: ChangelogId): Promise<CallToolResult> {
+  const entry = await getChangelogById(changelogId)
+
+  const result = jsonResult({
+    id: entry.id,
+    title: entry.title,
+    content: contentJsonToMarkdown(entry.contentJson, entry.content),
+    status: entry.status,
+    authorName: entry.author?.name ?? null,
+    linkedPosts: entry.linkedPosts.map((p) => ({
+      id: p.id,
+      title: p.title,
+      voteCount: p.voteCount,
+      status: p.status,
+    })),
+    publishedAt: entry.publishedAt,
+    displayDate: entry.displayDate,
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt,
+  })
+  return withAuthorFacts(result, [['', entry.author?.id]])
+}
+
+async function getArticleDetails(articleId: KbArticleId): Promise<CallToolResult> {
+  const article = await getArticleById(articleId)
+  return articleResult(article)
+}
+
+async function getCategoryDetails(categoryId: KbCategoryId): Promise<CallToolResult> {
+  const category = await getCategoryById(categoryId)
+  return categoryResult(category)
+}

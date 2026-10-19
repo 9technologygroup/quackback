@@ -14,13 +14,18 @@ import { db } from '@/lib/server/db'
 
 const hoisted = vi.hoisted(() => ({
   mockGetSession: vi.fn(),
+  mockFindSettingsCached: vi.fn(),
 }))
 
 vi.mock('@/lib/server/auth/session', () => ({ getSession: hoisted.mockGetSession }))
+vi.mock('@/lib/server/domains/settings/settings.helpers', () => ({
+  findSettingsCached: hoisted.mockFindSettingsCached,
+}))
 
-vi.mock('@/lib/server/db', () => ({
+// Spread the real db module so tables/operators stay current; override only what this suite drives.
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: { query: { settings: { findFirst: vi.fn() }, principal: { findFirst: vi.fn() } } },
-  principal: {},
   eq: vi.fn(),
 }))
 
@@ -28,7 +33,9 @@ vi.mock('@/lib/server/logger', () => ({
   logger: { child: () => ({ debug: vi.fn(), error: vi.fn(), warn: vi.fn(), info: vi.fn() }) },
 }))
 
-type AnyHandler = (args: { data: { allowedRoles: string[] } }) => Promise<unknown>
+type AnyHandler = (args: {
+  data: { allowedRoles: string[]; callbackUrl?: string }
+}) => Promise<unknown>
 
 const handlers: AnyHandler[] = []
 vi.mock('@tanstack/react-start', () => ({
@@ -86,7 +93,7 @@ describe('requireWorkspaceRole redirect target', () => {
 
   it('redirects wrong-role callers to sign-in dialog with not_team_member error', async () => {
     hoisted.mockGetSession.mockResolvedValue({ user: { id: 'user_001' } })
-    ;(db.query.settings.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1 })
+    hoisted.mockFindSettingsCached.mockResolvedValue({ id: 1 })
     ;(db.query.principal.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ role: 'user' })
 
     const err = await requireWorkspaceRole({ data: { allowedRoles: ['admin', 'member'] } })
@@ -98,5 +105,57 @@ describe('requireWorkspaceRole redirect target', () => {
     expect(search?.auth).toBe('signin')
     expect(search?.callbackUrl).toBe('/admin')
     expect(search?.error).toBe('not_team_member')
+  })
+
+  it('keeps the full deep link (path and query) the caller was opening', async () => {
+    hoisted.mockGetSession.mockResolvedValue(null)
+
+    const err = await requireWorkspaceRole({
+      data: {
+        allowedRoles: ['admin', 'member'],
+        callbackUrl: '/admin/status?view=components',
+      },
+    })
+      .then(() => null)
+      .catch((e) => e as RedirectErr)
+
+    const search = err?.search ?? err?.options?.search
+    expect(search?.auth).toBe('signin')
+    expect(search?.callbackUrl).toBe('/admin/status?view=components')
+  })
+
+  it('keeps the deep link when a signed-in non-teammate is bounced', async () => {
+    hoisted.mockGetSession.mockResolvedValue({ user: { id: 'user_001' } })
+    hoisted.mockFindSettingsCached.mockResolvedValue({ id: 1 })
+    ;(db.query.principal.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ role: 'user' })
+
+    const err = await requireWorkspaceRole({
+      data: { allowedRoles: ['admin', 'member'], callbackUrl: '/admin/inbox?c=conv_1' },
+    })
+      .then(() => null)
+      .catch((e) => e as RedirectErr)
+
+    const search = err?.search ?? err?.options?.search
+    expect(search?.callbackUrl).toBe('/admin/inbox?c=conv_1')
+    expect(search?.error).toBe('not_team_member')
+  })
+
+  it.each([
+    ['another host', 'https://evil.example/admin'],
+    ['a protocol-relative host', '//evil.example/admin'],
+    ['a tab-smuggled host', '/\t/evil.example/admin'],
+    ['a portal page', '/b/roadmap'],
+    ['an admin lookalike', '/administrator'],
+  ])('falls back to /admin when the deep link is %s', async (_label, callbackUrl) => {
+    hoisted.mockGetSession.mockResolvedValue(null)
+
+    const err = await requireWorkspaceRole({
+      data: { allowedRoles: ['admin', 'member'], callbackUrl },
+    })
+      .then(() => null)
+      .catch((e) => e as RedirectErr)
+
+    const search = err?.search ?? err?.options?.search
+    expect(search?.callbackUrl).toBe('/admin')
   })
 })

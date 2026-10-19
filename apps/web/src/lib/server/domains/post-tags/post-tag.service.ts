@@ -1,0 +1,251 @@
+/**
+ * PostTag Service - Business logic for tag operations
+ *
+ * This module handles all tag-related business logic including:
+ * - PostTag creation and updates
+ * - PostTag deletion
+ * - PostTag retrieval and listing
+ * - Validation
+ *
+ * Note: Authorization is handled at the action/API layer, not in services.
+ */
+
+import { sql } from 'drizzle-orm'
+import {
+  db,
+  eq,
+  and,
+  ne,
+  isNull,
+  asc,
+  type PostTag,
+  postTags,
+  boards,
+  postTagAssignments,
+  posts,
+} from '@/lib/server/db'
+import type { PostTagId, BoardId } from '@quackback/ids'
+import { NotFoundError, ValidationError, ConflictError, InternalError } from '@/lib/shared/errors'
+import { TAXONOMY_DEFAULT_COLOR } from '@/lib/shared/schemas/taxonomy'
+import { assertHexColor, assertTrimmedName } from '@/lib/server/utils'
+import type { CreateTagInput, UpdateTagInput } from './post-tag.types'
+import { isTeamActor, ANONYMOUS_ACTOR, type Actor } from '@/lib/server/policy'
+import { logger } from '@/lib/server/logger'
+
+const log = logger.child({ component: 'tags' })
+
+/**
+ * Create a new tag
+ *
+ * Validates that:
+ * - PostTag name is valid and unique within the organization
+ * - Color is valid
+ *
+ * Note: Authorization should be checked at the action/API layer before calling this.
+ */
+export async function createPostTag(input: CreateTagInput): Promise<PostTag> {
+  log.debug({ name: input.name }, 'create tag')
+  const trimmedName = assertTrimmedName(input.name, {
+    required: 'PostTag name is required',
+    tooLong: 'PostTag name must not exceed 50 characters',
+  })
+
+  // Includes soft-deleted rows — the name unique check spans archived tags.
+  const duplicate = await db.query.postTags.findFirst({
+    where: sql`lower(${postTags.name}) = ${trimmedName.toLowerCase()}`,
+  })
+  if (duplicate) {
+    throw new ConflictError('DUPLICATE_NAME', `A tag with name "${trimmedName}" already exists`)
+  }
+
+  const color = assertHexColor(
+    input.color || TAXONOMY_DEFAULT_COLOR,
+    'Color must be a valid hex color (e.g., #6b7280)'
+  )
+
+  // Create the tag
+  const [tag] = await db
+    .insert(postTags)
+    .values({
+      name: trimmedName,
+      color,
+      description: input.description?.trim() || null,
+      aiPrompt: input.aiPrompt?.trim() || null,
+      isPublic: input.isPublic ?? true,
+    })
+    .returning()
+
+  return tag
+}
+
+/**
+ * Update an existing tag
+ *
+ * Validates that:
+ * - PostTag exists
+ * - Update data is valid
+ *
+ * Note: Authorization should be checked at the action/API layer before calling this.
+ */
+export async function updatePostTag(id: PostTagId, input: UpdateTagInput): Promise<PostTag> {
+  log.debug({ tag_id: id }, 'update tag')
+  // Get existing tag
+  const existingTag = await db.query.postTags.findFirst({
+    where: eq(postTags.id, id),
+  })
+  if (!existingTag) {
+    throw new NotFoundError('TAG_NOT_FOUND', `PostTag with ID ${id} not found`)
+  }
+
+  if (input.name !== undefined) {
+    const trimmedName = assertTrimmedName(input.name, {
+      required: 'PostTag name cannot be empty',
+      tooLong: 'PostTag name must not exceed 50 characters',
+    })
+    const duplicate = await db.query.postTags.findFirst({
+      where: and(sql`lower(${postTags.name}) = ${trimmedName.toLowerCase()}`, ne(postTags.id, id)),
+    })
+    if (duplicate) {
+      throw new ConflictError('DUPLICATE_NAME', `A tag with name "${trimmedName}" already exists`)
+    }
+  }
+
+  if (input.color !== undefined) {
+    assertHexColor(input.color, 'Color must be a valid hex color (e.g., #6b7280)')
+  }
+
+  // Build update data
+  const updateData: Partial<PostTag> = {}
+  if (input.name !== undefined) updateData.name = input.name.trim()
+  if (input.color !== undefined) updateData.color = input.color
+  if (input.description !== undefined) updateData.description = input.description?.trim() || null
+  if (input.aiPrompt !== undefined) updateData.aiPrompt = input.aiPrompt?.trim() || null
+  if (input.isPublic !== undefined) updateData.isPublic = input.isPublic
+
+  // Update the tag
+  const [updatedTag] = await db
+    .update(postTags)
+    .set(updateData)
+    .where(eq(postTags.id, id))
+    .returning()
+
+  if (!updatedTag) {
+    throw new NotFoundError('TAG_NOT_FOUND', `PostTag with ID ${id} not found`)
+  }
+
+  return updatedTag
+}
+
+/**
+ * Soft delete a tag
+ *
+ * Validates that:
+ * - PostTag exists and is not already deleted
+ *
+ * Note: Sets deletedAt timestamp instead of removing the row.
+ * Authorization should be checked at the action/API layer before calling this.
+ */
+export async function deletePostTag(id: PostTagId): Promise<void> {
+  log.debug({ tag_id: id }, 'delete tag')
+  // Soft delete the tag by setting deletedAt
+  const result = await db
+    .update(postTags)
+    .set({ deletedAt: new Date() })
+    .where(and(eq(postTags.id, id), isNull(postTags.deletedAt)))
+    .returning()
+
+  if (result.length === 0) {
+    throw new NotFoundError('TAG_NOT_FOUND', `PostTag with ID ${id} not found`)
+  }
+}
+
+/**
+ * Get a tag by ID
+ */
+export async function getTagById(id: PostTagId): Promise<PostTag> {
+  log.debug({ tag_id: id }, 'get tag by id')
+  const tag = await db.query.postTags.findFirst({
+    where: eq(postTags.id, id),
+  })
+  if (!tag) {
+    throw new NotFoundError('TAG_NOT_FOUND', `PostTag with ID ${id} not found`)
+  }
+
+  return tag
+}
+
+/**
+ * List all tags for the organization (excludes soft-deleted)
+ */
+export async function listPostTags(): Promise<PostTag[]> {
+  log.debug('list tags')
+  const tagList = await db.query.postTags.findMany({
+    where: isNull(postTags.deletedAt),
+    orderBy: [asc(postTags.name)],
+  })
+
+  return tagList
+}
+
+/**
+ * Get all tags used in a specific board
+ *
+ * This returns only tags that are actually used by posts in the board.
+ */
+export async function getPostTagsByBoard(boardId: BoardId): Promise<PostTag[]> {
+  log.debug({ board_id: boardId }, 'get tags by board')
+  // Validate board exists
+  const board = await db.query.boards.findFirst({
+    where: eq(boards.id, boardId),
+  })
+  if (!board) {
+    throw new ValidationError('VALIDATION_ERROR', `Board with ID ${boardId} not found`)
+  }
+
+  // Get unique tag IDs used by non-deleted posts in this board
+  const tagResults = await db
+    .selectDistinct({ id: postTags.id })
+    .from(postTags)
+    .innerJoin(postTagAssignments, eq(postTags.id, postTagAssignments.tagId))
+    .innerJoin(posts, eq(postTagAssignments.postId, posts.id))
+    .where(and(eq(posts.boardId, boardId), isNull(posts.deletedAt)))
+
+  if (tagResults.length === 0) {
+    return []
+  }
+
+  // Fetch full tag details
+  const tagIds = tagResults.map((t) => t.id)
+  const tagList = await db.query.postTags.findMany({
+    where: (tags, { inArray }) => inArray(postTags.id, tagIds),
+    orderBy: [asc(postTags.name)],
+  })
+
+  return tagList
+}
+
+/**
+ * List tags visible to a portal viewer.
+ *
+ * Team actors see every non-deleted tag (they assign internal tags from the
+ * portal too); everyone else only sees tags marked `isPublic`. Ordered by name.
+ * Used for public endpoints like feedback portal filtering.
+ */
+export async function listPublicPostTags(actor: Actor = ANONYMOUS_ACTOR): Promise<PostTag[]> {
+  log.debug('list public tags')
+  try {
+    return await db.query.postTags.findMany({
+      where: isTeamActor(actor)
+        ? isNull(postTags.deletedAt)
+        : and(isNull(postTags.deletedAt), eq(postTags.isPublic, true)),
+      orderBy: [asc(postTags.name)],
+    })
+  } catch (error) {
+    log.error({ err: error }, 'list public tags failed')
+    throw new InternalError(
+      'DATABASE_ERROR',
+      `Failed to fetch tags: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      error
+    )
+  }
+}

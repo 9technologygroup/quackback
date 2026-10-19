@@ -9,13 +9,14 @@ vi.mock('@/lib/server/auth', () => ({
   },
 }))
 
-vi.mock('@/lib/server/db', () => ({
+vi.mock('@/lib/server/db', async (importOriginal) => ({
+  // Spread the real db module so tables/operators stay current; override only what this suite drives.
+  ...(await importOriginal<typeof import('@/lib/server/db')>()),
   db: {
     query: {
       principal: { findFirst: vi.fn() },
     },
   },
-  principal: {},
   eq: vi.fn(),
 }))
 
@@ -26,7 +27,7 @@ vi.mock('@/lib/server/storage/s3', async () => {
 
 import { auth } from '@/lib/server/auth'
 import { db } from '@/lib/server/db'
-import { isS3Configured, uploadObject, generateStorageKey } from '@/lib/server/storage/s3'
+import { isS3Usable, uploadObject, generateStorageKey } from '@/lib/server/storage/s3'
 import { handleAdminUpload } from '../image'
 
 function makeRequest(file?: File, prefix?: string): Request {
@@ -50,7 +51,7 @@ const userPrincipal = mockPrincipal({ role: 'user' })
 describe('POST /api/upload/image', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(isS3Configured).mockReturnValue(true)
+    vi.mocked(isS3Usable).mockReturnValue(true)
   })
 
   it('returns 401 when no session', async () => {
@@ -79,7 +80,7 @@ describe('POST /api/upload/image', () => {
   it('returns 503 when S3 is not configured', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(adminSession)
     vi.mocked(db.query.principal.findFirst).mockResolvedValueOnce(adminPrincipal)
-    vi.mocked(isS3Configured).mockReturnValue(false)
+    vi.mocked(isS3Usable).mockReturnValue(false)
     const res = await handleAdminUpload({ request: makeRequest() })
     expect(res.status).toBe(503)
   })
@@ -148,7 +149,7 @@ describe('POST /api/upload/image', () => {
       await handleAdminUpload({ request: makeRequest(file, prefix) })
       expect(generateStorageKey).toHaveBeenCalledWith(prefix, expect.any(String))
       vi.clearAllMocks()
-      vi.mocked(isS3Configured).mockReturnValue(true)
+      vi.mocked(isS3Usable).mockReturnValue(true)
     }
   })
 

@@ -1,104 +1,140 @@
 // @vitest-environment happy-dom
+// @vitest-environment-options { "settings": { "disableIframePageLoading": true, "handleDisabledFileLoadingAsSuccess": true } }
 /**
  * <WidgetPreview> — admin widget settings live preview.
  *
- * Covers the Chat tab integration (the preview must mirror the real widget's
- * tab set so admins see an accurate representation):
- *   - A chat-only config renders the chat view ("Chat with us" heading) and
- *     reflects the configured teamName + welcomeMessage, with no tab bar.
- *   - With multiple tabs enabled, a "Chat" tab button appears and selecting it
- *     switches to the chat view.
- *   - Chat is not rendered when tabs.chat is off.
+ * The preview embeds the real `/widget` app in an iframe and the real SDK
+ * launcher (createLauncher) in the fake page:
+ *   - The iframe targets /widget with the selected theme forced via ?theme=.
+ *   - The launcher button toggles the panel open/closed.
+ *   - Panel and launcher share a bottom corner (panel above, button below).
+ *   - An optional greeting bubble sits above the closed launcher.
+ *   - The widget's own close button messages its host (quackback:close);
+ *     the preview honours it like the SDK would, but only from its own origin.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { WidgetPreview } from '../widget-preview'
 
-describe('WidgetPreview — chat tab', () => {
-  it('renders the chat view with configured team name + welcome message when chat is the only tab', () => {
-    render(
-      <WidgetPreview
-        position="bottom-right"
-        tabs={{ feedback: false, changelog: false, help: false, chat: true }}
-        chat={{ teamName: 'Acme Support', welcomeMessage: 'Hi! How can we help you today?' }}
-      />
-    )
+function sendClose(origin: string) {
+  fireEvent(window, new MessageEvent('message', { data: { type: 'quackback:close' }, origin }))
+}
 
-    expect(screen.getByText('Chat with us')).toBeTruthy()
-    expect(screen.getByText('Hi! How can we help you today?')).toBeTruthy()
-    expect(screen.getByText('Acme Support')).toBeTruthy()
-    // Single tab → no tab bar.
-    expect(screen.queryByRole('button', { name: /Chat tab/i })).toBeNull()
+function launcher() {
+  return screen.getByRole('button', { name: /feedback widget/i })
+}
+
+describe('WidgetPreview', () => {
+  beforeEach(() => {
+    try {
+      sessionStorage.clear()
+    } catch {
+      /* ignore */
+    }
   })
 
-  it('exposes a Chat tab and switches to the chat view when selected', () => {
-    render(
-      <WidgetPreview
-        position="bottom-right"
-        tabs={{ feedback: true, changelog: false, help: false, chat: true }}
-        chat={{ teamName: 'Acme Support', welcomeMessage: 'Welcome aboard!' }}
-      />
-    )
+  it('embeds the real widget with the selected theme forced', () => {
+    render(<WidgetPreview position="bottom-right" theme="dark" />)
 
-    // Starts on feedback.
-    expect(screen.getByText('Share your ideas')).toBeTruthy()
-
-    const chatTab = screen.getByRole('button', { name: /Chat tab/i })
-    fireEvent.click(chatTab)
-
-    expect(screen.getByText('Chat with us')).toBeTruthy()
-    expect(screen.getByText('Welcome aboard!')).toBeTruthy()
+    const iframe = screen.getByTitle<HTMLIFrameElement>('Widget preview')
+    expect(iframe.getAttribute('src')).toBe('/widget?theme=dark')
   })
 
-  it('does not render the chat view when chat tab is off', () => {
-    render(
-      <WidgetPreview
-        position="bottom-right"
-        tabs={{ feedback: true, changelog: true, help: false, chat: false }}
-        chat={{ teamName: 'Acme Support', welcomeMessage: 'Welcome aboard!' }}
-      />
-    )
+  it('uses the real SDK launcher button', () => {
+    render(<WidgetPreview position="bottom-right" />)
 
-    expect(screen.queryByText('Chat with us')).toBeNull()
-    expect(screen.queryByRole('button', { name: /Chat tab/i })).toBeNull()
+    const btn = launcher()
+    expect(btn.querySelector('svg')).toBeTruthy()
+    expect(btn.style.position).toBe('absolute')
+    expect(btn.getAttribute('aria-expanded')).toBe('true')
+    expect(btn.className).not.toContain('bg-primary')
+    expect(btn.style.backgroundColor).toBeTruthy()
   })
 
-  it('renders the availability presence strip in the chat view (mirrors the real widget)', () => {
-    render(
-      <WidgetPreview
-        position="bottom-right"
-        tabs={{ feedback: false, changelog: false, help: false, chat: true }}
-        chat={{ teamName: 'Acme Support', welcomeMessage: 'Hi!' }}
-      />
-    )
+  it('turns the real launcher into a pill when a label is set', () => {
+    render(<WidgetPreview position="bottom-right" label="Feedback" />)
 
-    expect(screen.getByText(/We're online/i)).toBeTruthy()
+    expect(launcher().textContent).toContain('Feedback')
+    expect(launcher().style.borderRadius).toBe('24px')
   })
 
-  it('shows the empty-state prompt instead of a fabricated greeting when no welcome message is set', () => {
-    render(
-      <WidgetPreview
-        position="bottom-right"
-        tabs={{ feedback: false, changelog: false, help: false, chat: true }}
-        chat={{ teamName: 'Acme Support', welcomeMessage: '' }}
-      />
-    )
+  it('toggles the panel via the launcher button', () => {
+    render(<WidgetPreview position="bottom-right" />)
 
-    // The real widget shows the empty-state prompt — not an invented greeting.
-    expect(screen.getByText(/Send us a message/i)).toBeTruthy()
-    expect(screen.queryByText(/How can we help/i)).toBeNull()
+    fireEvent.click(launcher())
+    expect(screen.queryByTitle('Widget preview')).toBeNull()
+
+    fireEvent.click(launcher())
+    expect(screen.getByTitle('Widget preview')).toBeTruthy()
   })
 
-  it('omits the agent name label when no team name is configured (matches the real ChatBubble)', () => {
-    render(
-      <WidgetPreview
-        position="bottom-right"
-        tabs={{ feedback: false, changelog: false, help: false, chat: true }}
-        chat={{ welcomeMessage: 'Hello there' }}
-      />
-    )
+  it('closes the panel when the widget posts quackback:close from our origin', () => {
+    render(<WidgetPreview position="bottom-right" />)
 
-    expect(screen.getByText('Hello there')).toBeTruthy()
-    expect(screen.queryByText('Support')).toBeNull()
+    sendClose(window.location.origin)
+    expect(screen.queryByTitle('Widget preview')).toBeNull()
+  })
+
+  it('ignores quackback:close from foreign origins', () => {
+    render(<WidgetPreview position="bottom-right" />)
+
+    sendClose('https://evil.example')
+    expect(screen.getByTitle('Widget preview')).toBeTruthy()
+  })
+
+  it('places the launcher on the configured side', () => {
+    render(<WidgetPreview position="bottom-left" />)
+
+    expect(launcher().style.left).toBe('0px')
+    expect(launcher().style.right).toBe('')
+  })
+
+  it('stacks the open panel above the launcher in the same corner', () => {
+    render(<WidgetPreview position="bottom-right" />)
+
+    const panel = screen.getByTitle('Widget preview').parentElement
+    const btn = launcher()
+    expect(panel?.className).toContain('bottom-[88px]')
+    expect(btn.style.bottom).toBe('0px')
+    expect(btn.style.right).toBe('0px')
+    expect(panel?.parentElement?.className).toContain('w-[400px]')
+    expect(panel?.parentElement?.parentElement?.className).toContain('items-center')
+    expect(panel?.parentElement?.parentElement?.className).toContain('justify-center')
+  })
+
+  it('shows the launcher greeting bubble while the panel is closed', () => {
+    render(<WidgetPreview position="bottom-right" greeting="Need a hand?" />)
+
+    const bubble = () => screen.getByText('Need a hand?').parentElement
+    expect(bubble()?.style.display).toBe('none')
+    fireEvent.click(launcher())
+    expect(bubble()?.style.display).toBe('flex')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(bubble()?.style.display).toBe('none')
+  })
+
+  it('opens the panel when the greeting bubble is clicked', () => {
+    render(<WidgetPreview position="bottom-right" greeting="Hi there" />)
+
+    fireEvent.click(launcher())
+    expect(screen.queryByTitle('Widget preview')).toBeNull()
+
+    fireEvent.click(screen.getByText('Hi there'))
+    expect(screen.getByTitle('Widget preview')).toBeTruthy()
+    expect(screen.getByText('Hi there').parentElement?.style.display).toBe('none')
+  })
+
+  it('places the greeting bubble on the same side as the launcher', () => {
+    render(<WidgetPreview position="bottom-left" greeting="Hello" />)
+
+    fireEvent.click(launcher())
+    expect(screen.getByText('Hello').parentElement?.style.left).toBe('0px')
+  })
+
+  it('does not persist greeting dismiss to the host-page session key', () => {
+    render(<WidgetPreview position="bottom-right" greeting="Need a hand?" />)
+    fireEvent.click(launcher())
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(sessionStorage.getItem('quackback:launcher-greeting-dismissed')).toBeNull()
   })
 })

@@ -1,18 +1,12 @@
-import { useMemo, useState, useEffect } from 'react'
-import {
-  Squares2X2Icon,
-  TagIcon,
-  UserGroupIcon,
-  MagnifyingGlassIcon,
-  PlusIcon,
-  ChevronRightIcon,
-  XMarkIcon,
-} from '@heroicons/react/24/solid'
+import { useMemo, useState } from 'react'
+import { Squares2X2Icon, TagIcon, UserGroupIcon, ChevronRightIcon } from '@heroicons/react/24/solid'
 import { cn } from '@/lib/shared/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { FilterChip, type FilterOption } from '@/components/shared/filter-chip'
+import { AdminListHeader } from '@/components/admin/admin-list-header'
+import { useDebouncedSearch } from '@/lib/client/hooks/use-debounced-search'
+import { FilterAddButton, FilterChip, type FilterOption } from '@/components/shared/filter-chip'
 import type { RoadmapFilters } from '@/lib/shared/types'
-import type { Tag } from '@/lib/shared/db-types'
+import type { PostTag } from '@/lib/shared/db-types'
 import type { SegmentListItem } from '@/lib/client/hooks/use-segments-queries'
 
 // ---------------------------------------------------------------------------
@@ -30,7 +24,7 @@ export interface RoadmapFiltersBarProps {
   onFiltersChange: (updates: Partial<RoadmapFilters>) => void
   onClearAll: () => void
   boards: FilterBarBoard[]
-  tags: Tag[]
+  tags: PostTag[]
   segments?: SegmentListItem[]
   onToggleBoard: (id: string) => void
   onToggleTag: (id: string) => void
@@ -47,9 +41,9 @@ type RoadmapFilterType = 'board' | 'tags' | 'segment'
 // ---------------------------------------------------------------------------
 
 const SORT_OPTIONS = [
-  { value: 'votes' as const, label: 'Votes' },
-  { value: 'newest' as const, label: 'Newest' },
-  { value: 'oldest' as const, label: 'Oldest' },
+  { value: 'votes', label: 'Votes' },
+  { value: 'newest', label: 'Newest' },
+  { value: 'oldest', label: 'Oldest' },
 ]
 
 const FILTER_ICON_MAP: Record<RoadmapFilterType, IconComponent> = {
@@ -65,7 +59,7 @@ const FILTER_CATEGORIES: { key: FilterCategory; label: string; icon: IconCompone
 ]
 
 const MENU_BUTTON_STYLES =
-  'w-full flex items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-muted/50 transition-colors'
+  'w-full flex items-center gap-2 px-2.5 py-1.5 text-[13px] hover:bg-muted/50 transition-colors'
 
 // ---------------------------------------------------------------------------
 // Internal components
@@ -98,7 +92,7 @@ interface ActiveFilter {
 function computeActiveFilters(
   filters: RoadmapFilters,
   boards: FilterBarBoard[],
-  tags: Tag[],
+  tags: PostTag[],
   segments: SegmentListItem[] | undefined,
   onFiltersChange: (updates: Partial<RoadmapFilters>) => void
 ): ActiveFilter[] {
@@ -188,6 +182,7 @@ function computeActiveFilters(
 // AddFilterButton
 // ---------------------------------------------------------------------------
 
+/** The Filter control that opens the category menu; lives in the list toolbar. */
 function AddFilterButton({
   boards,
   tags,
@@ -197,7 +192,7 @@ function AddFilterButton({
   onToggleSegment,
 }: {
   boards: FilterBarBoard[]
-  tags: Tag[]
+  tags: PostTag[]
   segments?: SegmentListItem[]
   onToggleBoard: (id: string) => void
   onToggleTag: (id: string) => void
@@ -228,20 +223,7 @@ function AddFilterButton({
       }}
     >
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'inline-flex items-center gap-1 px-2 py-0.5',
-            'rounded-full text-xs',
-            'border border-dashed border-border/50',
-            'text-muted-foreground hover:text-foreground',
-            'hover:border-border hover:bg-muted/30',
-            'transition-colors'
-          )}
-        >
-          <PlusIcon className="h-3 w-3" />
-          Add filter
-        </button>
+        <FilterAddButton />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-48 p-0">
         {activeCategory === null ? (
@@ -255,12 +237,12 @@ function AddFilterButton({
                   onClick={() => setActiveCategory(category.key)}
                   className={cn(
                     'w-full flex items-center justify-between gap-2 px-2.5 py-1.5',
-                    'text-xs text-left',
+                    'text-[13px] text-left',
                     'hover:bg-muted/50 transition-colors'
                   )}
                 >
                   <span className="flex items-center gap-2">
-                    <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+                    <Icon className="size-4 text-muted-foreground" />
                     {category.label}
                   </span>
                   <ChevronRightIcon className="h-3 w-3 text-muted-foreground" />
@@ -273,7 +255,7 @@ function AddFilterButton({
             <button
               type="button"
               onClick={() => setActiveCategory(null)}
-              className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-muted-foreground hover:text-foreground border-b border-border/50"
+              className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] text-muted-foreground hover:text-foreground border-b border-border/50"
             >
               <ChevronRightIcon className="h-2.5 w-2.5 rotate-180" />
               Back
@@ -330,7 +312,7 @@ function AddFilterButton({
 }
 
 // ---------------------------------------------------------------------------
-// RoadmapFiltersBar (unified for admin and public)
+// RoadmapFiltersBar: the standard list toolbar (search, sort, filter)
 // ---------------------------------------------------------------------------
 
 export function RoadmapFiltersBar({
@@ -344,102 +326,25 @@ export function RoadmapFiltersBar({
   onToggleTag,
   onToggleSegment,
 }: RoadmapFiltersBarProps) {
-  const [searchValue, setSearchValue] = useState(filters.search || '')
-  const [searchOpen, setSearchOpen] = useState(false)
-
-  useEffect(() => {
-    setSearchValue(filters.search || '')
-  }, [filters.search])
+  const { value: searchValue, setValue: setSearchValue } = useDebouncedSearch({
+    externalValue: filters.search,
+    onChange: (next) => onFiltersChange({ search: next }),
+  })
 
   const activeFilters = useMemo(
     () => computeActiveFilters(filters, boards, tags, segments, onFiltersChange),
     [filters, boards, tags, segments, onFiltersChange]
   )
 
-  const handleSearchSubmit = () => {
-    onFiltersChange({ search: searchValue.trim() || undefined })
-    setSearchOpen(false)
-  }
-
-  const currentSort = filters.sort ?? 'votes'
-
   return (
-    <div className="flex flex-col gap-1.5">
-      {/* Search and sort row */}
-      <div className="flex items-center gap-2">
-        <Popover open={searchOpen} onOpenChange={setSearchOpen}>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className={cn(
-                'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-colors',
-                filters.search
-                  ? 'bg-foreground/10 text-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-              )}
-            >
-              <MagnifyingGlassIcon className="h-3.5 w-3.5" />
-              {filters.search || 'Search'}
-              {filters.search && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onFiltersChange({ search: undefined })
-                  }}
-                  className="ml-0.5 hover:text-foreground"
-                >
-                  <XMarkIcon className="h-3 w-3" />
-                </button>
-              )}
-            </button>
-          </PopoverTrigger>
-          <PopoverContent align="start" className="w-64 p-2">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                handleSearchSubmit()
-              }}
-            >
-              <input
-                type="text"
-                value={searchValue}
-                onChange={(e) => setSearchValue(e.target.value)}
-                placeholder="Search posts..."
-                className="w-full px-2 py-1.5 text-sm border border-border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-                autoFocus
-              />
-            </form>
-          </PopoverContent>
-        </Popover>
-
-        <div className="h-4 w-px bg-border/50" />
-
-        <div className="flex items-center gap-0.5">
-          {SORT_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => onFiltersChange({ sort: opt.value })}
-              className={cn(
-                'px-2 py-1 rounded-md text-xs transition-colors',
-                currentSort === opt.value
-                  ? 'bg-foreground/10 text-foreground font-medium'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-              )}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Active filters + add button */}
-      <div className="flex flex-wrap gap-1 items-center">
-        {activeFilters.map(({ key, type, ...filterProps }) => (
-          <FilterChip key={key} icon={FILTER_ICON_MAP[type]} {...filterProps} />
-        ))}
-
+    <AdminListHeader
+      searchValue={searchValue}
+      onSearchChange={setSearchValue}
+      searchPlaceholder="Search posts..."
+      sortOptions={SORT_OPTIONS}
+      activeSort={filters.sort ?? 'votes'}
+      onSortChange={(sort) => onFiltersChange({ sort: sort as RoadmapFilters['sort'] })}
+      filters={
         <AddFilterButton
           boards={boards}
           tags={tags}
@@ -448,22 +353,30 @@ export function RoadmapFiltersBar({
           onToggleTag={onToggleTag}
           onToggleSegment={onToggleSegment}
         />
+      }
+    >
+      {activeFilters.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1 items-center">
+          {activeFilters.map(({ key, type, ...filterProps }) => (
+            <FilterChip key={key} icon={FILTER_ICON_MAP[type]} {...filterProps} />
+          ))}
 
-        {activeFilters.length > 1 && (
-          <button
-            type="button"
-            onClick={onClearAll}
-            className={cn(
-              'text-[11px] text-muted-foreground hover:text-foreground',
-              'px-1.5 py-0.5 rounded',
-              'hover:bg-muted/50',
-              'transition-colors'
-            )}
-          >
-            Clear all
-          </button>
-        )}
-      </div>
-    </div>
+          {activeFilters.length > 1 && (
+            <button
+              type="button"
+              onClick={onClearAll}
+              className={cn(
+                'text-[13px] text-muted-foreground hover:text-foreground',
+                'px-1.5 py-0.5 rounded',
+                'hover:bg-muted/50',
+                'transition-colors'
+              )}
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+      )}
+    </AdminListHeader>
   )
 }

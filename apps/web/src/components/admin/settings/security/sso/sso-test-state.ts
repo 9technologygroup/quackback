@@ -14,12 +14,11 @@ import type { HandshakeResult } from '@/lib/server/auth/sso-test-handshake'
 /**
  * Wire-shape of a handshake result: the failure branch's `raw?: unknown`
  * debug field is stripped by the callback route before it's written to
- * Redis (TanStack's serializable-input check rejects unknown shapes),
+ * the KV store (TanStack's serializable-input check rejects unknown shapes),
  * so what the modal ever sees is structurally this narrower type.
  */
 export type WireResult =
-  | Extract<HandshakeResult, { ok: true }>
-  | Omit<Extract<HandshakeResult, { ok: false }>, 'raw'>
+  Extract<HandshakeResult, { ok: true }> | Omit<Extract<HandshakeResult, { ok: false }>, 'raw'>
 
 export type SsoTestPhase = 'closed' | 'prompt' | 'testing' | 'result'
 

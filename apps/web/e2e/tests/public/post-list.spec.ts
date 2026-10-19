@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 test.describe('Public Post List', () => {
   test.beforeEach(async ({ page }) => {
-    // Navigate to the public portal (tenant subdomain)
+    // Navigate to the public portal (workspace subdomain)
     await page.goto('/')
   })
 
@@ -566,7 +566,7 @@ test.describe('Public Post List', () => {
       await filterButton.click()
 
       // The checkbox for "open" status should be checked
-      const openCheckbox = page.locator('button[role="checkbox"][data-state="checked"]')
+      const openCheckbox = page.locator('[role="checkbox"][data-checked]')
       await expect(openCheckbox.first()).toBeVisible()
     })
 

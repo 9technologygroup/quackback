@@ -3,13 +3,7 @@
  */
 import 'zod-openapi'
 import { z } from 'zod'
-import {
-  registerPath,
-  TypeIdSchema,
-  createItemResponseSchema,
-  createPaginatedResponseSchema,
-  asSchema,
-} from '../openapi'
+import { registerPath, TypeIdSchema, createItemResponseSchema, asSchema } from '../openapi'
 import {
   TimestampSchema,
   UnauthorizedErrorSchema,
@@ -28,20 +22,39 @@ const TeamMemberSchema = z.object({
   createdAt: TimestampSchema,
 })
 
-// Team Member list item (simplified)
-const TeamMemberListItemSchema = z.object({
-  id: TypeIdSchema,
-  name: z.string().nullable(),
-  email: z.string(),
-  image: z.string().nullable(),
-})
-
 // Request body schemas
 const UpdateMemberRoleSchema = z
   .object({
     role: z.enum(['admin', 'member']).meta({ description: 'New role for the member' }),
+    roleId: TypeIdSchema.optional().meta({
+      description:
+        "Custom role to grant (from the roles table). Requires role='member'; the Owner preset is rejected.",
+    }),
   })
   .meta({ description: 'Update member role request body' })
+
+type PathMethods = Parameters<typeof registerPath>[1]
+
+/**
+ * Register a team-member operation at its real `/principals` path and at the
+ * deprecated `/members` alias, which serves the same handlers.
+ */
+function registerMemberPath(suffix: string, methods: PathMethods) {
+  registerPath(`/principals${suffix}`, methods)
+  const aliased = Object.fromEntries(
+    Object.entries(methods).map(([method, operation]) => [
+      method,
+      {
+        ...(operation as object),
+        deprecated: true,
+        description:
+          `Deprecated alias of ${method.toUpperCase()} /principals${suffix}; use that path instead. ` +
+          ((operation as { description?: string }).description ?? ''),
+      },
+    ])
+  ) as PathMethods
+  registerPath(`/members${suffix}`, aliased)
+}
 
 // Error response schemas
 const ForbiddenErrorSchema = z
@@ -53,8 +66,20 @@ const ForbiddenErrorSchema = z
   })
   .meta({ description: 'Forbidden error' })
 
-// Register GET /members
-registerPath('/members', {
+const SeatLimitErrorSchema = z
+  .object({
+    error: z.literal('tier_limit_exceeded'),
+    limit: z.literal('maxTeamSeats'),
+    message: z.string(),
+    current: z.number().optional(),
+    max: z.number().optional(),
+    needed: z.number().meta({ description: 'Seats the request needs' }),
+    free: z.number().meta({ description: 'Seats free on the plan' }),
+  })
+  .meta({ description: 'Seat limit error' })
+
+// Register GET /principals (and the deprecated /members alias)
+registerMemberPath('', {
   get: {
     tags: ['Members'],
     summary: 'List team members',
@@ -64,7 +89,7 @@ registerPath('/members', {
         description: 'List of team members',
         content: {
           'application/json': {
-            schema: createPaginatedResponseSchema(TeamMemberListItemSchema, 'List of team members'),
+            schema: z.object({ data: z.array(TeamMemberSchema) }),
           },
         },
       },
@@ -76,8 +101,8 @@ registerPath('/members', {
   },
 })
 
-// Register GET /members/{principalId}
-registerPath('/members/{principalId}', {
+// Register GET /principals/{principalId} (and the deprecated /members alias)
+registerMemberPath('/{principalId}', {
   get: {
     tags: ['Members'],
     summary: 'Get a team member',
@@ -112,12 +137,15 @@ registerPath('/members/{principalId}', {
   },
 })
 
-// Register PATCH /members/{principalId}
-registerPath('/members/{principalId}', {
+// Register PATCH /principals/{principalId} (and the deprecated /members alias)
+registerMemberPath('/{principalId}', {
   patch: {
     tags: ['Members'],
     summary: 'Update a team member',
-    description: "Update a team member's role. Cannot modify your own role.",
+    description:
+      "Update a team member's role, or add a portal user to the team by giving them a role. " +
+      'A portal user must have signed in (a provider account or a portal session); they join ' +
+      'at once and take a seat. Only an admin key grants the admin role or changes an admin. Cannot modify your own role.',
     parameters: [
       {
         name: 'principalId',
@@ -152,8 +180,13 @@ registerPath('/members/{principalId}', {
         description: 'Unauthorized',
         content: { 'application/json': { schema: UnauthorizedErrorSchema } },
       },
+      402: {
+        description: 'Adding a portal user needs a seat and none is free',
+        content: { 'application/json': { schema: SeatLimitErrorSchema } },
+      },
       403: {
-        description: 'Cannot modify own role or last admin',
+        description:
+          'Cannot modify own role or last admin, or the role is above what the key may grant (GRANT_CEILING)',
         content: { 'application/json': { schema: ForbiddenErrorSchema } },
       },
       404: {
@@ -164,13 +197,13 @@ registerPath('/members/{principalId}', {
   },
 })
 
-// Register DELETE /members/{principalId}
-registerPath('/members/{principalId}', {
+// Register DELETE /principals/{principalId} (and the deprecated /members alias)
+registerMemberPath('/{principalId}', {
   delete: {
     tags: ['Members'],
     summary: 'Remove a team member',
     description:
-      'Remove a team member from the workspace (converts them to a portal user). Cannot remove yourself or the last admin.',
+      'Remove a team member from the workspace (converts them to a portal user). Cannot remove yourself or the last admin; only an admin key removes an admin.',
     parameters: [
       {
         name: 'principalId',

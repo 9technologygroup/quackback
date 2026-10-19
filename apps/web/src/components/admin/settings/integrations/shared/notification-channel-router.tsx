@@ -16,10 +16,20 @@ import {
   ChevronRightIcon,
   MagnifyingGlassIcon,
   ChevronUpDownIcon,
+  CheckIcon,
 } from '@heroicons/react/24/solid'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from '@/components/ui/command'
 import {
   Dialog,
   DialogContent,
@@ -29,7 +39,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { BoardFilterCombobox } from './board-filter-combobox'
+import { cn } from '@/lib/shared/utils'
 import {
   useAddNotificationChannel,
   useUpdateNotificationChannel,
@@ -160,7 +170,7 @@ function getBoardSummary(channel: NotificationChannel, boards: Board[]): string 
  * and the grid would silently collapse.
  */
 function tableGridStyle(eventCount: number): CSSProperties {
-  return { gridTemplateColumns: `minmax(0,1fr) ${'5rem '.repeat(eventCount).trim()}` }
+  return { gridTemplateColumns: `minmax(12rem,1fr) ${'5rem '.repeat(eventCount).trim()}` }
 }
 
 // ============================================
@@ -250,14 +260,7 @@ function ChannelPicker<TChannel extends Channel>({
           <ChevronUpDownIcon className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent
-        className="w-(--radix-popover-trigger-width) p-0"
-        align="start"
-        onOpenAutoFocus={(e) => {
-          e.preventDefault()
-          inputRef.current?.focus()
-        }}
-      >
+      <PopoverContent className="w-(--anchor-width) p-0" align="start" initialFocus={inputRef}>
         <div className="flex items-center gap-2 border-b px-3 py-2">
           <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
           <input
@@ -304,6 +307,108 @@ function ChannelPicker<TChannel extends Channel>({
             ))
           )}
         </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+// ============================================
+// Board Filter (searchable multi-select)
+// ============================================
+
+function BoardFilterCombobox({
+  boardIds,
+  boards,
+  onBoardIdsChange,
+  disabled,
+  ariaLabel = 'Board filter',
+}: {
+  boardIds: string[] | null
+  boards: Board[]
+  onBoardIdsChange: (boardIds: string[] | null) => void
+  disabled?: boolean
+  ariaLabel?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const isAllBoards = !boardIds?.length
+  const selectedSet = useMemo(() => new Set(boardIds ?? []), [boardIds])
+
+  const triggerLabel = useMemo(() => {
+    if (isAllBoards) return 'All boards'
+    if (boardIds!.length === 1) {
+      return boards.find((b) => b.id === boardIds![0])?.name ?? '1 board'
+    }
+    return `${boardIds!.length} boards`
+  }, [isAllBoards, boardIds, boards])
+
+  const toggleBoard = (id: string) => {
+    if (selectedSet.has(id)) {
+      const next = (boardIds ?? []).filter((b) => b !== id)
+      onBoardIdsChange(next.length > 0 ? next : null)
+    } else {
+      onBoardIdsChange([...(boardIds ?? []), id])
+    }
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-label={ariaLabel}
+          aria-expanded={open}
+          disabled={disabled}
+          className="w-full justify-between font-normal"
+        >
+          <span className={cn('truncate', isAllBoards && 'text-muted-foreground')}>
+            {triggerLabel}
+          </span>
+          <ChevronUpDownIcon className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-(--anchor-width) p-0">
+        {open && (
+          <Command>
+            <CommandInput placeholder="Search boards..." />
+            <CommandList>
+              <CommandEmpty>No boards found.</CommandEmpty>
+              <CommandGroup>
+                <CommandItem
+                  value="__all_boards__"
+                  onSelect={() => {
+                    onBoardIdsChange(null)
+                    setOpen(false)
+                  }}
+                >
+                  <CheckIcon
+                    className={cn('mr-2 h-4 w-4', isAllBoards ? 'opacity-100' : 'opacity-0')}
+                  />
+                  All boards
+                </CommandItem>
+              </CommandGroup>
+              {boards.length > 0 && <CommandSeparator />}
+              <CommandGroup>
+                {boards.map((board) => (
+                  <CommandItem
+                    key={board.id}
+                    value={board.name}
+                    onSelect={() => toggleBoard(board.id)}
+                  >
+                    <CheckIcon
+                      className={cn(
+                        'mr-2 h-4 w-4',
+                        selectedSet.has(board.id) ? 'opacity-100' : 'opacity-0'
+                      )}
+                    />
+                    <span className="truncate">{board.name}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        )}
       </PopoverContent>
     </Popover>
   )
@@ -393,10 +498,10 @@ function ChannelRow<TChannel extends Channel>({
               }`}
             />
             {renderChannelIcon(channelInfo)}
-            <div className="min-w-0 flex items-center gap-2">
-              <span className="text-sm font-medium truncate">{channelName}</span>
+            <div className="min-w-0 flex flex-col items-start gap-0.5">
+              <span className="max-w-full text-sm font-medium truncate">{channelName}</span>
               {hasFilter && (
-                <span className="text-[11px] text-muted-foreground shrink-0">
+                <span className="max-w-full text-[11px] text-muted-foreground truncate">
                   {getBoardSummary(channel, boards)}
                 </span>
               )}
@@ -412,6 +517,7 @@ function ChannelRow<TChannel extends Channel>({
                 onClick={(e) => e.stopPropagation()}
               >
                 <Checkbox
+                  aria-label={`${event.label} for #${channelName}`}
                   checked={enabled}
                   onCheckedChange={(checked) => handleEventToggle(event.id, checked === true)}
                   disabled={disabled || saving}
@@ -494,54 +600,61 @@ function RoutingTable<TChannel extends Channel>({
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   return (
-    <div className="rounded-lg border border-border/50 overflow-hidden">
-      <div
-        className="grid items-end bg-muted/40 border-b border-border/50"
-        style={tableGridStyle(events.length)}
-      >
-        <div className="px-4 py-2 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-          Channel
-        </div>
-        {events.map((event) => (
-          <div
-            key={event.id}
-            className="py-2 text-[11px] font-medium text-muted-foreground text-center leading-tight"
-            title={event.description}
-          >
-            {event.shortLabel}
-          </div>
-        ))}
-      </div>
-
-      {notificationChannels.map((nc, idx) => (
-        <ChannelRow<TChannel>
-          key={nc.channelId}
-          channel={nc}
-          channelInfo={channelInfoList.find((c) => c.id === nc.channelId)}
-          integrationId={integrationId}
-          disabled={disabled}
-          expanded={expandedId === nc.channelId}
-          onToggleExpand={() =>
-            setExpandedId((prev) => (prev === nc.channelId ? null : nc.channelId))
-          }
-          boards={boards}
-          hasBorder={idx < notificationChannels.length - 1 || expandedId === nc.channelId}
-          events={events}
-          renderChannelIcon={renderChannelIcon}
-        />
-      ))}
-
-      {onAddChannel && (
-        <button
-          type="button"
-          className="flex items-center gap-1.5 px-4 py-2.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/10 transition-colors w-full border-t border-border/50"
-          onClick={onAddChannel}
-          disabled={disabled}
+    <div
+      className="rounded-lg border border-border/50 overflow-x-auto"
+      role="region"
+      aria-label="Notification channel routing"
+      tabIndex={0}
+    >
+      <div style={{ minWidth: `${12 + events.length * 5}rem` }}>
+        <div
+          className="grid items-end bg-muted/40 border-b border-border/50"
+          style={tableGridStyle(events.length)}
         >
-          <PlusIcon className="h-3.5 w-3.5" />
-          Add channel
-        </button>
-      )}
+          <div className="px-4 py-2 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            Channel
+          </div>
+          {events.map((event) => (
+            <div
+              key={event.id}
+              className="py-2 text-[11px] font-medium text-muted-foreground text-center leading-tight"
+              title={event.description}
+            >
+              {event.shortLabel}
+            </div>
+          ))}
+        </div>
+
+        {notificationChannels.map((nc, idx) => (
+          <ChannelRow<TChannel>
+            key={nc.channelId}
+            channel={nc}
+            channelInfo={channelInfoList.find((c) => c.id === nc.channelId)}
+            integrationId={integrationId}
+            disabled={disabled}
+            expanded={expandedId === nc.channelId}
+            onToggleExpand={() =>
+              setExpandedId((prev) => (prev === nc.channelId ? null : nc.channelId))
+            }
+            boards={boards}
+            hasBorder={idx < notificationChannels.length - 1 || expandedId === nc.channelId}
+            events={events}
+            renderChannelIcon={renderChannelIcon}
+          />
+        ))}
+
+        {onAddChannel && (
+          <button
+            type="button"
+            className="flex items-center gap-1.5 px-4 py-2.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/10 transition-colors w-full border-t border-border/50"
+            onClick={onAddChannel}
+            disabled={disabled}
+          >
+            <PlusIcon className="h-3.5 w-3.5" />
+            Add channel
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -653,6 +766,7 @@ function AddChannelDialog<TChannel extends Channel>({
                         [event.id]: checked === true,
                       }))
                     }
+                    data-in-label
                   />
                   {event.label}
                 </label>

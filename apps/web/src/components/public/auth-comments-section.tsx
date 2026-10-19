@@ -1,20 +1,28 @@
 import { useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useRouter, useRouteContext } from '@tanstack/react-router'
+import { useRouter } from '@tanstack/react-router'
 import { CommentThread } from './comment-thread'
 import { useAuthPopoverSafe } from '@/components/auth/auth-popover-context'
 import { useAuthBroadcast } from '@/lib/client/hooks/use-auth-broadcast'
 import { useEnsureAnonSession } from '@/lib/client/hooks/use-ensure-anon-session'
-import { useCreateComment } from '@/lib/client/mutations'
+import { useCreateComment } from '@/lib/client/mutations/portal-comments'
 import type { PublicCommentView } from '@/lib/client/queries/portal-detail'
-import type { CommentId, PostId, PrincipalId } from '@quackback/ids'
+import type { ReplyPolicy } from '@/lib/shared/db-types'
+import type { PostCommentId, PostId, PrincipalId } from '@quackback/ids'
 import { resolveCommentingState } from '@/components/public/comment-permission'
+import { useSessionContext, useWorkspaceSettings } from '@/lib/client/hooks/use-root-context'
+import { shownName } from '@/lib/shared/greeting-name'
 
 interface AuthCommentsSectionProps {
   postId: PostId
   comments: PublicCommentView[]
   /** Server-determined: user is authenticated member who can comment */
   allowCommenting?: boolean
+  /**
+   * Server-reported board reply rule. Only used to explain a denial; the
+   * decision itself already lives in `allowCommenting`. Undefined = 'anyone'.
+   */
+  replyPolicy?: ReplyPolicy
   user?: { name: string | null; email: string; principalId?: PrincipalId }
   /** Message to show when comments are locked (overrides "Sign in to comment") */
   lockedMessage?: string
@@ -24,7 +32,7 @@ interface AuthCommentsSectionProps {
   /** Enable comment pinning (admin only) */
   canPinComments?: boolean
   /** Callback when comment is pinned */
-  onPinComment?: (commentId: CommentId) => void
+  onPinComment?: (commentId: PostCommentId) => void
   /** Callback when comment is unpinned */
   onUnpinComment?: () => void
   /** Whether pin/unpin is in progress */
@@ -36,16 +44,22 @@ interface AuthCommentsSectionProps {
   currentStatusId?: string | null
   /** Whether the current user is a team member */
   isTeamMember?: boolean
+  /** Link comment authors to a profile behind a hover card. */
+  linkAuthors?: boolean
+  /** Destination for author links. Admin uses the enriched hover card. */
+  authorLinkTo?: 'portal' | 'admin'
   /** Hide the comment form area entirely (for readonly previews) */
   hideCommentForm?: boolean
   /** Callback when a comment is deleted */
-  onDeleteComment?: (commentId: CommentId) => void
+  onDeleteComment?: (commentId: PostCommentId) => void
   /** ID of the comment currently being deleted */
-  deletingCommentId?: CommentId | null
+  deletingCommentId?: PostCommentId | null
   /** Callback when a comment is restored (team only) */
-  onRestoreComment?: (commentId: CommentId) => void
+  onRestoreComment?: (commentId: PostCommentId) => void
   /** ID of the comment currently being restored */
-  restoringCommentId?: CommentId | null
+  restoringCommentId?: PostCommentId | null
+  onImageUpload?: (file: File) => Promise<string>
+  canModerate?: boolean
 }
 
 /**
@@ -59,6 +73,7 @@ export function AuthCommentsSection({
   postId,
   comments,
   allowCommenting: serverAllowCommenting = false,
+  replyPolicy,
   user: serverUser,
   lockedMessage,
   pinnedCommentId,
@@ -69,15 +84,20 @@ export function AuthCommentsSection({
   statuses,
   currentStatusId,
   isTeamMember,
+  linkAuthors = false,
+  authorLinkTo = 'portal',
   hideCommentForm,
   onDeleteComment,
   deletingCommentId,
   onRestoreComment,
   restoringCommentId,
+  onImageUpload,
+  canModerate = false,
 }: AuthCommentsSectionProps) {
   const router = useRouter()
   const queryClient = useQueryClient()
-  const { session, settings } = useRouteContext({ from: '__root__' })
+  const session = useSessionContext()
+  const settings = useWorkspaceSettings()
   // Use safe version - returns null in admin context where provider isn't available
   const authPopover = useAuthPopoverSafe()
 
@@ -103,7 +123,11 @@ export function AuthCommentsSection({
 
   // User info from session, falling back to server-provided user
   const userData = user
-    ? { name: user.name ?? null, email: user.email ?? '', principalId: serverUser?.principalId }
+    ? {
+        name: shownName(user.name, user.email),
+        email: user.email ?? '',
+        principalId: serverUser?.principalId,
+      }
     : serverUser
 
   const ensureAnonSession = useEnsureAnonSession()
@@ -146,6 +170,7 @@ export function AuthCommentsSection({
       comments={comments}
       allowCommenting={allowCommenting}
       noAccess={noAccess}
+      replyPolicy={replyPolicy}
       user={userData}
       teamBadgeLogoUrl={settings?.brandingData?.logoUrl ?? undefined}
       teamBadgeLabel={settings?.brandingData?.name ?? settings?.name ?? undefined}
@@ -160,11 +185,15 @@ export function AuthCommentsSection({
       statuses={statuses}
       currentStatusId={currentStatusId}
       isTeamMember={isTeamMember}
+      linkAuthors={linkAuthors}
+      authorLinkTo={authorLinkTo}
       hideCommentForm={hideCommentForm}
       onDeleteComment={onDeleteComment}
       deletingCommentId={deletingCommentId}
       onRestoreComment={onRestoreComment}
       restoringCommentId={restoringCommentId}
+      onImageUpload={onImageUpload}
+      canModerate={canModerate}
     />
   )
 }

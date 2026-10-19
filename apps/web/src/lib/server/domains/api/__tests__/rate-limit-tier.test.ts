@@ -4,6 +4,14 @@ vi.mock('@/lib/server/domains/settings/tier-limits.service', () => ({
   getTierLimits: vi.fn(),
 }))
 
+const mockIncrementBuckets = vi.fn()
+const mockBucketRetryAfter = vi.fn()
+
+vi.mock('@/lib/server/utils/rate-bucket', () => ({
+  incrementBuckets: (...args: unknown[]) => mockIncrementBuckets(...args),
+  bucketRetryAfter: (...args: unknown[]) => mockBucketRetryAfter(...args),
+}))
+
 import { checkRateLimit } from '../rate-limit'
 import { getTierLimits } from '@/lib/server/domains/settings/tier-limits.service'
 import { OSS_TIER_LIMITS } from '@/lib/server/domains/settings/tier-limits.types'
@@ -15,23 +23,63 @@ describe('checkRateLimit — tier-aware', () => {
 
   it('uses apiRequestsPerMinute from tier when set', async () => {
     vi.mocked(getTierLimits).mockResolvedValue({ ...OSS_TIER_LIMITS, apiRequestsPerMinute: 5 })
-    // 5 requests allowed; 6th blocked.
-    for (let i = 0; i < 5; i++) {
-      const r = await checkRateLimit('1.1.1.1')
-      expect(r.allowed).toBe(true)
-    }
+    mockIncrementBuckets.mockResolvedValueOnce([5, 1])
+    const allowed = await checkRateLimit('1.1.1.1')
+    expect(allowed).toEqual({ allowed: true, remaining: 0 })
+
+    mockIncrementBuckets.mockResolvedValueOnce([6, 1])
+    mockBucketRetryAfter.mockResolvedValueOnce(60)
     const blocked = await checkRateLimit('1.1.1.1')
-    expect(blocked.allowed).toBe(false)
+    expect(blocked).toEqual({ allowed: false, remaining: 0, retryAfter: 60 })
   })
 
   it('falls back to OSS default cap when tier limit is null', async () => {
     vi.mocked(getTierLimits).mockResolvedValue(OSS_TIER_LIMITS)
-    // Default cap is 100 — first 100 should be allowed.
-    for (let i = 0; i < 100; i++) {
-      const r = await checkRateLimit('2.2.2.2')
-      expect(r.allowed).toBe(true)
-    }
+    mockIncrementBuckets.mockResolvedValueOnce([100, 1])
+    const allowed = await checkRateLimit('2.2.2.2')
+    expect(allowed).toEqual({ allowed: true, remaining: 0 })
+
+    mockIncrementBuckets.mockResolvedValueOnce([101, 1])
+    mockBucketRetryAfter.mockResolvedValueOnce(60)
     const blocked = await checkRateLimit('2.2.2.2')
-    expect(blocked.allowed).toBe(false)
+    expect(blocked).toEqual({ allowed: false, remaining: 0, retryAfter: 60 })
+  })
+
+  it('uses a shared per-IP key regardless of import mode', async () => {
+    vi.mocked(getTierLimits).mockResolvedValue(OSS_TIER_LIMITS)
+    mockIncrementBuckets.mockResolvedValueOnce([1, 1])
+    await checkRateLimit('3.3.3.3', true)
+    expect(mockIncrementBuckets).toHaveBeenCalledWith([
+      { key: 'api:rl:3.3.3.3', windowSeconds: 60 },
+      expect.objectContaining({ key: 'api:month' }),
+    ])
+  })
+
+  it('applies the import-mode multiplier with a 2000 floor', async () => {
+    vi.mocked(getTierLimits).mockResolvedValue({ ...OSS_TIER_LIMITS, apiRequestsPerMinute: 5 })
+    mockIncrementBuckets.mockResolvedValueOnce([2000, 1])
+    const result = await checkRateLimit('4.4.4.4', true)
+    // Admitted on the import cap alone, so the caller must still verify an admin key.
+    expect(result).toEqual({ allowed: true, remaining: 0, overBaseLimit: true })
+  })
+
+  it('marks only import-mode admissions past the base cap', async () => {
+    vi.mocked(getTierLimits).mockResolvedValue({ ...OSS_TIER_LIMITS, apiRequestsPerMinute: 5 })
+    mockIncrementBuckets.mockResolvedValueOnce([5, 1])
+    expect(await checkRateLimit('6.6.6.6', true)).toEqual({ allowed: true, remaining: 1995 })
+
+    mockIncrementBuckets.mockResolvedValueOnce([6, 1])
+    expect(await checkRateLimit('6.6.6.6', true)).toEqual({
+      allowed: true,
+      remaining: 1994,
+      overBaseLimit: true,
+    })
+  })
+
+  it('fails open when the primitive reports a Redis error (null count)', async () => {
+    vi.mocked(getTierLimits).mockResolvedValue(OSS_TIER_LIMITS)
+    mockIncrementBuckets.mockResolvedValueOnce([null, 1])
+    const result = await checkRateLimit('5.5.5.5')
+    expect(result).toEqual({ allowed: true, remaining: 100 })
   })
 })

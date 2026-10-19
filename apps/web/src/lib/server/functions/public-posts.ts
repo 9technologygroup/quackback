@@ -3,17 +3,26 @@
  */
 
 import { z } from 'zod'
-import { createServerFn } from '@tanstack/react-start'
+import { createServerFn, createServerOnlyFn } from '@tanstack/react-start'
 import {
   type PostId,
   type BoardId,
-  type StatusId,
-  type TagId,
+  type PostStatusId,
+  type PostTagId,
   type PrincipalId,
   type RoadmapId,
+  type SegmentId,
   type UserId,
 } from '@quackback/ids'
-import { tiptapContentSchema } from '@/lib/shared/schemas/posts'
+import {
+  tiptapContentSchema,
+  listPublicPostsSchema,
+  createPublicPostSchema,
+  toggleVoteSchema,
+  type ListPublicPostsInput,
+  type CreatePublicPostInput,
+  type ToggleVoteInput,
+} from '@/lib/shared/schemas/posts'
 import { sanitizeTiptapContent } from '@/lib/server/sanitize-tiptap'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import {
@@ -31,7 +40,8 @@ import {
 } from '@/lib/server/domains/posts/post.public.utils'
 import { createPost } from '@/lib/server/domains/posts/post.service'
 import { voteOnPost } from '@/lib/server/domains/posts/post.voting'
-import { checkAnonVoteRateLimit } from '@/lib/server/utils/anon-rate-limit'
+import { checkAnonVoteRateLimit, reserveAnonPostSlot } from '@/lib/server/utils/anon-rate-limit'
+import { getClientIp } from '@/lib/server/domains/api/rate-limit'
 import { getPostPermissions } from '@/lib/server/domains/posts/post.permissions'
 import { userEditPost, softDeletePost } from '@/lib/server/domains/posts/post.user-actions'
 import { getPublicBoardById } from '@/lib/server/domains/boards/board.public'
@@ -40,34 +50,14 @@ import { getMemberByUser } from '@/lib/server/domains/principals/principal.servi
 import { listPublicRoadmaps } from '@/lib/server/domains/roadmaps/roadmap.service'
 import { getPublicRoadmapPosts } from '@/lib/server/domains/roadmaps/roadmap.query'
 import { resolvePortalAccessForRequest } from './portal-access'
+import { can } from '@/lib/server/policy/authorize'
+import { PERMISSIONS } from '@/lib/shared/permissions'
 import { logger } from '@/lib/server/logger'
+import { toIsoStringOrNull } from '@/lib/shared/utils'
+import { roadmapIdSchema, postStatusIdSchema } from '@quackback/ids/zod'
 import { MAX_POST_CONTENT_LENGTH } from '@/lib/shared/schemas/posts'
 
 const log = logger.child({ component: 'public-posts' })
-
-// ============================================
-// Schemas
-// ============================================
-
-// tiptapContentSchema imported from shared schemas
-
-const listPublicPostsSchema = z.object({
-  boardSlug: z.string().optional(),
-  search: z.string().optional(),
-  statusIds: z.array(z.string()).optional(),
-  statusSlugs: z.array(z.string()).optional(),
-  tagIds: z.array(z.string()).optional(),
-  sort: z.enum(['top', 'new', 'trending']).optional().default('top'),
-  page: z.number().int().min(1).optional().default(1),
-  limit: z.number().int().min(1).max(100).optional().default(20),
-  minVotes: z.number().int().min(1).optional(),
-  dateFrom: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .refine((s) => !Number.isNaN(new Date(s).getTime()), 'Invalid calendar date')
-    .optional(),
-  responded: z.enum(['responded', 'unresponded']).optional(),
-})
 
 const getPostPermissionsSchema = z.object({
   postId: z.string(),
@@ -84,21 +74,10 @@ const userDeletePostSchema = z.object({
   postId: z.string(),
 })
 
-const toggleVoteSchema = z.object({
-  postId: z.string(),
-})
-
-const createPublicPostSchema = z.object({
-  boardId: z.string(),
-  title: z.string().min(1, 'Title is required').max(200),
-  content: z.string().max(MAX_POST_CONTENT_LENGTH).optional().default(''),
-  contentJson: tiptapContentSchema.optional(),
-  metadata: z.record(z.string(), z.string()).optional(),
-})
-
 const getPublicRoadmapPostsSchema = z.object({
-  roadmapId: z.string(),
-  statusId: z.string().optional(),
+  roadmapId: roadmapIdSchema,
+  statusId: postStatusIdSchema.optional(),
+  bucketId: z.string().max(20).optional(),
   limit: z.number().int().min(1).max(100).optional().default(20),
   offset: z.number().int().min(0).optional().default(0),
 })
@@ -117,12 +96,9 @@ const getVoteSidebarDataSchema = z.object({
 // Type Exports
 // ============================================
 
-export type ListPublicPostsInput = z.infer<typeof listPublicPostsSchema>
 export type GetPostPermissionsInput = z.infer<typeof getPostPermissionsSchema>
 export type UserEditPostInput = z.infer<typeof userEditPostSchema>
 export type UserDeletePostInput = z.infer<typeof userDeletePostSchema>
-export type ToggleVoteInput = z.infer<typeof toggleVoteSchema>
-export type CreatePublicPostInput = z.infer<typeof createPublicPostSchema>
 export type GetPublicRoadmapPostsInput = z.infer<typeof getPublicRoadmapPostsSchema>
 export type GetRoadmapPostsByStatusInput = z.infer<typeof getRoadmapPostsByStatusSchema>
 export type GetVoteSidebarDataInput = z.infer<typeof getVoteSidebarDataSchema>
@@ -138,54 +114,68 @@ export type GetVoteSidebarDataInput = z.infer<typeof getVoteSidebarDataSchema>
  * portal-access resolver denies. The per-board audience filter inside
  * `listPublicPosts` still runs as the inner layer for granted callers.
  */
+export const runListPublicPosts = createServerOnlyFn(async function runListPublicPosts(
+  auth: Awaited<ReturnType<typeof getOptionalAuth>>,
+  data: ListPublicPostsInput
+) {
+  log.debug({ sort: data.sort, board_slug: data.boardSlug || 'all' }, 'list public posts')
+  // Resolve the actor so per-board audience + per-post moderation
+  // filters apply from the caller's perspective. Without this,
+  // listPublicPosts defaulted to ANONYMOUS_ACTOR and authenticated /
+  // segment members saw only public-audience boards even when they
+  // were entitled to more.
+  const actor = await policyActorFromAuth(auth)
+
+  // Team-only filters (owner, segments) are honoured only for callers who
+  // hold post.view_private, resolved through the policy seam. Everyone else
+  // has these dropped, so a crafted request can never surface owner/segment
+  // structure or widen the public feed. `owner: 'unassigned'` → null match.
+  const canViewPrivate = can(actor, PERMISSIONS.POST_VIEW_PRIVATE)
+  const ownerId = canViewPrivate
+    ? data.owner === 'unassigned'
+      ? null
+      : (data.owner as PrincipalId | undefined)
+    : undefined
+  const segmentIds =
+    canViewPrivate && data.segmentIds?.length ? (data.segmentIds as SegmentId[]) : undefined
+
+  const result = await listPublicPosts({
+    boardSlug: data.boardSlug,
+    search: data.search,
+    statusIds: data.statusIds as PostStatusId[] | undefined,
+    statusSlugs: data.statusSlugs,
+    tagIds: data.tagIds as PostTagId[] | undefined,
+    sort: data.sort,
+    page: data.page,
+    limit: data.limit,
+    minVotes: data.minVotes,
+    dateFrom: data.dateFrom,
+    responded: data.responded,
+    ownerId,
+    segmentIds,
+    actor,
+  })
+
+  log.debug({ count: result.items.length }, 'list public posts results')
+  // Serialize Date fields
+  return {
+    ...result,
+    items: result.items.map((post) => ({
+      ...post,
+      createdAt: post.createdAt.toISOString(),
+    })),
+  }
+})
+
 export const listPublicPostsFn = createServerFn({ method: 'GET' })
   .validator(listPublicPostsSchema)
   .handler(async ({ data }: { data: ListPublicPostsInput }) => {
-    log.debug({ sort: data.sort, board_slug: data.boardSlug || 'all' }, 'list public posts')
-    try {
-      // Outer gate: private portal + unauthorized caller → no portal data.
-      const access = await resolvePortalAccessForRequest()
-      if (!access.granted) {
-        log.debug('portal access denied, returning empty')
-        return { items: [], hasMore: false, total: 0 }
-      }
-
-      // Resolve the actor so per-board audience + per-post moderation
-      // filters apply from the caller's perspective. Without this,
-      // listPublicPosts defaulted to ANONYMOUS_ACTOR and authenticated /
-      // segment members saw only public-audience boards even when they
-      // were entitled to more.
-      const auth = await getOptionalAuth()
-      const actor = await policyActorFromAuth(auth)
-
-      const result = await listPublicPosts({
-        boardSlug: data.boardSlug,
-        search: data.search,
-        statusIds: data.statusIds as StatusId[] | undefined,
-        statusSlugs: data.statusSlugs,
-        tagIds: data.tagIds as TagId[] | undefined,
-        sort: data.sort,
-        page: data.page,
-        limit: data.limit,
-        minVotes: data.minVotes,
-        dateFrom: data.dateFrom,
-        responded: data.responded,
-        actor,
-      })
-
-      log.debug({ count: result.items.length }, 'list public posts results')
-      // Serialize Date fields
-      return {
-        ...result,
-        items: result.items.map((post) => ({
-          ...post,
-          createdAt: post.createdAt.toISOString(),
-        })),
-      }
-    } catch (error) {
-      log.error({ err: error }, 'list public posts failed')
-      throw error
+    const access = await resolvePortalAccessForRequest()
+    if (!access.granted) {
+      log.debug('portal access denied, returning empty')
+      return { items: [], hasMore: false, total: 0 }
     }
+    return runListPublicPosts(await getOptionalAuth(), data)
   })
 
 /**
@@ -255,50 +245,45 @@ export const userEditPostFn = createServerFn({ method: 'POST' })
   .validator(userEditPostSchema)
   .handler(async ({ data }: { data: UserEditPostInput }) => {
     log.debug({ post_id: data.postId }, 'user edit post')
-    try {
-      // Portal-visibility gate — see toggleVoteFn / createPublicPostFn
-      // for rationale. Denied callers must not mutate inside a portal
-      // they can't view.
-      const access = await resolvePortalAccessForRequest()
-      if (!access.granted) {
-        throw new Error('Portal access required')
-      }
-      const ctx = await requireAuth()
-      const { postId: postIdRaw, title, content, contentJson } = data
-      const postId = postIdRaw as PostId
+    // Portal-visibility gate — see toggleVoteFn / createPublicPostFn
+    // for rationale. Denied callers must not mutate inside a portal
+    // they can't view.
+    const access = await resolvePortalAccessForRequest()
+    if (!access.granted) {
+      throw new Error('Portal access required')
+    }
+    const ctx = await requireAuth()
+    const { postId: postIdRaw, title, content, contentJson } = data
+    const postId = postIdRaw as PostId
 
-      // Per-post audience gate — see assertPostViewable. The author-check
-      // inside userEditPost is sufficient for "only the author edits",
-      // but we still need to refuse to confirm existence to callers who
-      // can't see the post under its board's audience.
-      const { assertPostViewable } = await import('@/lib/server/domains/posts/post.access')
-      const policyActor = await policyActorFromAuth(ctx)
-      await assertPostViewable(postId, policyActor)
+    // Per-post audience gate — see assertPostViewable. The author-check
+    // inside userEditPost is sufficient for "only the author edits",
+    // but we still need to refuse to confirm existence to callers who
+    // can't see the post under its board's audience.
+    const { assertPostViewable } = await import('@/lib/server/domains/posts/post.access')
+    const policyActor = await policyActorFromAuth(ctx)
+    await assertPostViewable(postId, policyActor)
 
-      // Build actor info for permission check
-      const actor = {
-        principalId: ctx.principal.id,
-        role: ctx.principal.role,
-      }
+    // Build actor info for permission check
+    const actor = {
+      principalId: ctx.principal.id,
+      role: ctx.principal.role,
+    }
 
-      const sanitizedContentJson = contentJson ? sanitizeTiptapContent(contentJson) : undefined
-      const result = await userEditPost(
-        postId,
-        { title, content, contentJson: sanitizedContentJson },
-        actor
-      )
+    const sanitizedContentJson = contentJson ? sanitizeTiptapContent(contentJson) : undefined
+    const result = await userEditPost(
+      postId,
+      { title, content, contentJson: sanitizedContentJson },
+      actor
+    )
 
-      log.info({ post_id: result.id }, 'user edited post')
-      // Serialize Date fields
-      return {
-        ...result,
-        createdAt: result.createdAt.toISOString(),
-        updatedAt: result.updatedAt.toISOString(),
-        deletedAt: result.deletedAt?.toISOString() || null,
-      }
-    } catch (error) {
-      log.error({ err: error }, 'user edit post failed')
-      throw error
+    log.info({ post_id: result.id }, 'user edited post')
+    // Serialize Date fields
+    return {
+      ...result,
+      createdAt: result.createdAt.toISOString(),
+      updatedAt: result.updatedAt.toISOString(),
+      deletedAt: result.deletedAt?.toISOString() || null,
     }
   })
 
@@ -309,232 +294,229 @@ export const userDeletePostFn = createServerFn({ method: 'POST' })
   .validator(userDeletePostSchema)
   .handler(async ({ data }: { data: UserDeletePostInput }) => {
     log.debug({ post_id: data.postId }, 'user delete post')
-    try {
-      // Portal-visibility gate — see toggleVoteFn / createPublicPostFn.
-      const access = await resolvePortalAccessForRequest()
-      if (!access.granted) {
-        throw new Error('Portal access required')
-      }
-      const ctx = await requireAuth()
-      const postId = data.postId as PostId
-
-      // Per-post audience gate (404 on deny).
-      const { assertPostViewable } = await import('@/lib/server/domains/posts/post.access')
-      const policyActor = await policyActorFromAuth(ctx)
-      await assertPostViewable(postId, policyActor)
-
-      // Build actor info for permission check
-      const actor = {
-        principalId: ctx.principal.id,
-        role: ctx.principal.role,
-        userId: ctx.user.id,
-      }
-
-      await softDeletePost(postId, actor)
-
-      log.info({ post_id: postId }, 'user deleted post')
-      return { id: postId }
-    } catch (error) {
-      log.error({ err: error }, 'user delete post failed')
-      throw error
+    // Portal-visibility gate — see toggleVoteFn / createPublicPostFn.
+    const access = await resolvePortalAccessForRequest()
+    if (!access.granted) {
+      throw new Error('Portal access required')
     }
+    const ctx = await requireAuth()
+    const postId = data.postId as PostId
+
+    // Per-post audience gate (404 on deny).
+    const { assertPostViewable } = await import('@/lib/server/domains/posts/post.access')
+    const policyActor = await policyActorFromAuth(ctx)
+    await assertPostViewable(postId, policyActor)
+
+    // Build actor info for permission check
+    const actor = {
+      principalId: ctx.principal.id,
+      role: ctx.principal.role,
+      userId: ctx.user.id,
+    }
+
+    await softDeletePost(postId, actor)
+
+    log.info({ post_id: postId }, 'user deleted post')
+    return { id: postId }
   })
+
+/** The caller's address, resolved through the trusted-proxy rules, as the
+ *  anonymous rate limits key on it. */
+function clientIp(): string {
+  return getClientIp(getRequestHeaders())
+}
 
 /**
  * Toggle vote on a post. Requires authentication (including anonymous sessions).
  * Anonymous users sign in via Better Auth's anonymous plugin on the client side
  * before calling this function.
  */
+export const runToggleVote = createServerOnlyFn(async function runToggleVote(
+  ctx: Awaited<ReturnType<typeof requireAuth>>,
+  data: ToggleVoteInput
+): Promise<{ voted: boolean; voteCount: number }> {
+  log.debug({ post_id: data.postId }, 'toggle vote')
+  // Per-post audience gate: portal-access alone is not enough — an
+  // authenticated caller could still vote on a team-only / segment-
+  // restricted post if they knew the id. `assertPostVotable`
+  // composes view (404 on deny) + the per-board vote tier
+  // (403 on "viewable but not votable").
+  const { assertPostVotable } = await import('@/lib/server/domains/posts/post.access')
+  const actor = await policyActorFromAuth(ctx)
+  await assertPostVotable(data.postId as PostId, actor)
+
+  // Block anonymous users unless the workspace allows anonymous
+  // interaction. The per-board vote tier was already enforced
+  // above by assertPostVotable; this is the workspace-wide
+  // master switch (collapsed in migration 0084 from the legacy
+  // anonymousVoting/Commenting/Posting trio).
+  if (ctx.principal.type === 'anonymous') {
+    // Fail closed on a missing flag — read the raw config, not
+    // getPortalConfig's permissive merged default (matches
+    // createPublicPostFn / the vote-sidebar gate). The per-board vote
+    // tier was already enforced above by assertPostVotable.
+    const settings = await getSettings()
+    if (!workspaceAllowsAnonymous(settings?.portalConfig)) {
+      throw new Error('Anonymous interaction is not enabled')
+    }
+
+    // Rate limit anonymous voters by IP. Resolved the same way as the
+    // `ipAddress` Better Auth records on the anonymous sessions it counts.
+    if (!(await checkAnonVoteRateLimit(clientIp()))) {
+      throw new Error('Too many votes, please try again later')
+    }
+  }
+
+  const result = await voteOnPost(data.postId as PostId, ctx.principal.id)
+  log.debug(
+    { voted: result.voted, count: result.voteCount, principal_type: ctx.principal.type },
+    'toggle vote results'
+  )
+  return result
+})
+
 export const toggleVoteFn = createServerFn({ method: 'POST' })
   .validator(toggleVoteSchema)
   .handler(
     async ({ data }: { data: ToggleVoteInput }): Promise<{ voted: boolean; voteCount: number }> => {
-      log.debug({ post_id: data.postId }, 'toggle vote')
-      try {
-        // Portal-visibility gate: a denied caller (signed-in but not on
-        // the allowlist of a private portal) must not be able to vote.
-        // Read-side gating happens at list / detail; write paths need
-        // the same check or the caller could mutate state from inside a
-        // portal they're not entitled to view.
-        const access = await resolvePortalAccessForRequest()
-        if (!access.granted) {
-          throw new Error('Portal access required')
-        }
-        const ctx = await requireAuth()
-        // Per-post audience gate: portal-access alone is not enough — an
-        // authenticated caller could still vote on a team-only / segment-
-        // restricted post if they knew the id. `assertPostVotable`
-        // composes view (404 on deny) + the per-board vote tier
-        // (403 on "viewable but not votable").
-        const { assertPostVotable } = await import('@/lib/server/domains/posts/post.access')
-        const actor = await policyActorFromAuth(ctx)
-        await assertPostVotable(data.postId as PostId, actor)
-
-        // Block anonymous users unless the workspace allows anonymous
-        // interaction. The per-board vote tier was already enforced
-        // above by assertPostVotable; this is the workspace-wide
-        // master switch (collapsed in migration 0084 from the legacy
-        // anonymousVoting/Commenting/Posting trio).
-        if (ctx.principal.type === 'anonymous') {
-          // Fail closed on a missing flag — read the raw config, not
-          // getPortalConfig's permissive merged default (matches
-          // createPublicPostFn / the vote-sidebar gate). The per-board vote
-          // tier was already enforced above by assertPostVotable.
-          const settings = await getSettings()
-          if (!workspaceAllowsAnonymous(settings?.portalConfig)) {
-            throw new Error('Anonymous interaction is not enabled')
-          }
-
-          // Rate limit anonymous voters by IP
-          const headers = getRequestHeaders()
-          const ip =
-            headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-            headers.get('x-real-ip') ||
-            '0.0.0.0'
-          if (!(await checkAnonVoteRateLimit(ip))) {
-            throw new Error('Too many votes, please try again later')
-          }
-        }
-
-        const result = await voteOnPost(data.postId as PostId, ctx.principal.id)
-        log.debug(
-          { voted: result.voted, count: result.voteCount, principal_type: ctx.principal.type },
-          'toggle vote results'
-        )
-        return result
-      } catch (error) {
-        log.error({ err: error }, 'toggle vote failed')
-        throw error
+      const access = await resolvePortalAccessForRequest()
+      if (!access.granted) {
+        throw new Error('Portal access required')
       }
+      return runToggleVote(await requireAuth(), data)
     }
   )
 
 /**
  * Create a post on a public board.
  */
+export const runCreatePublicPost = createServerOnlyFn(async function runCreatePublicPost(
+  ctx: Awaited<ReturnType<typeof requireAuth>>,
+  data: CreatePublicPostInput
+) {
+  log.debug({ board_id: data.boardId }, 'create public post')
+  const { boardId: boardIdRaw, title, content, contentJson, metadata, customFields } = data
+  const boardId = boardIdRaw as BoardId
+
+  // Resolve the actor first so getPublicBoardById can apply
+  // canViewBoard internally — a "not found" framing for any
+  // audience denial preserves the previous behaviour (don't leak
+  // existence). createPost will re-check via canCreatePost with
+  // the same actor, so this stays as defense in depth.
+  const actor = await policyActorFromAuth(ctx)
+
+  // Run remaining independent lookups in parallel
+  const [board, principalRecord, defaultStatus, settings] = await Promise.all([
+    getPublicBoardById(boardId, actor),
+    getMemberByUser(ctx.user.id as UserId),
+    getDefaultStatus(),
+    getSettings(),
+  ])
+
+  if (!board) {
+    throw new Error('Board not found')
+  }
+
+  if (!settings) {
+    throw new Error('Organization settings not found')
+  }
+  if (actor.testFeedback && !actor.testFeedback.active) {
+    throw new Error('insufficient_permission:post.create')
+  }
+
+  // Block anonymous users unless the workspace master switch allows
+  // anonymous interaction. Per-board submit tiers are checked
+  // downstream inside createPost via canCreatePost; this is the
+  // workspace-wide ceiling (collapsed in migration 0084).
+  if (ctx.principal.type === 'anonymous') {
+    // Fail closed on a missing flag (single source of truth; the per-board
+    // submit tier is the inner gate, existing workspaces carry an explicit
+    // value from migration 0084).
+    if (!actor.testFeedback?.canSubmit && !workspaceAllowsAnonymous(settings.portalConfig)) {
+      throw new Error('Anonymous interaction is not enabled')
+    }
+    // Boards can take ideas without an account, so cap how many one address
+    // can post in an hour, across every anonymous identity it mints.
+    if (!actor.testFeedback?.canSubmit && !(await reserveAnonPostSlot(clientIp()))) {
+      throw new Error('Too many ideas, please try again later')
+    }
+  } else if (!principalRecord) {
+    throw new Error('You must be a member to submit feedback.')
+  }
+
+  // Build author info (use ctx.principal for anonymous users who don't have a member record)
+  const author = {
+    principalId: (principalRecord?.id ?? ctx.principal.id) as PrincipalId,
+    userId: ctx.user.id as UserId,
+    name: ctx.user.name || ctx.user.email,
+    email: ctx.user.email,
+    actor,
+  }
+
+  // Create the post (events dispatched by service layer)
+  const post = await createPost(
+    {
+      boardId,
+      title,
+      content,
+      contentJson: contentJson ? sanitizeTiptapContent(contentJson) : undefined,
+      statusId: defaultStatus?.id,
+      widgetMetadata: metadata,
+      customFields,
+    },
+    author,
+    { headers: getRequestHeaders() }
+  )
+
+  log.info({ post_id: post.id }, 'created public post')
+  return {
+    id: post.id,
+    title: post.title,
+    content: post.content,
+    statusId: post.statusId,
+    voteCount: post.voteCount,
+    createdAt: post.createdAt.toISOString(),
+    board: {
+      id: board.id,
+      name: board.name,
+      slug: board.slug,
+    },
+  }
+})
+
 export const createPublicPostFn = createServerFn({ method: 'POST' })
   .validator(createPublicPostSchema)
   .handler(async ({ data }: { data: CreatePublicPostInput }) => {
-    log.debug({ board_id: data.boardId }, 'create public post')
-    try {
-      // Portal-visibility gate: a denied caller must not be able to
-      // create posts inside a portal they're not entitled to view. The
-      // per-board audience check inside getPublicBoardById still runs
-      // as the inner layer for granted callers.
-      const access = await resolvePortalAccessForRequest()
-      if (!access.granted) {
-        throw new Error('Portal access required')
-      }
-      const ctx = await requireAuth()
-      const { boardId: boardIdRaw, title, content, contentJson, metadata } = data
-      const boardId = boardIdRaw as BoardId
-
-      // Resolve the actor first so getPublicBoardById can apply
-      // canViewBoard internally — a "not found" framing for any
-      // audience denial preserves the previous behaviour (don't leak
-      // existence). createPost will re-check via canCreatePost with
-      // the same actor, so this stays as defense in depth.
-      const actor = await policyActorFromAuth(ctx)
-
-      // Run remaining independent lookups in parallel
-      const [board, principalRecord, defaultStatus, settings] = await Promise.all([
-        getPublicBoardById(boardId, actor),
-        getMemberByUser(ctx.user.id as UserId),
-        getDefaultStatus(),
-        getSettings(),
-      ])
-
-      if (!board) {
-        throw new Error('Board not found')
-      }
-
-      if (!settings) {
-        throw new Error('Organization settings not found')
-      }
-
-      // Block anonymous users unless the workspace master switch allows
-      // anonymous interaction. Per-board submit tiers are checked
-      // downstream inside createPost via canCreatePost; this is the
-      // workspace-wide ceiling (collapsed in migration 0084).
-      if (ctx.principal.type === 'anonymous') {
-        // Fail closed on a missing flag (single source of truth; the per-board
-        // submit tier is the inner gate, existing tenants carry an explicit
-        // value from migration 0084).
-        if (!workspaceAllowsAnonymous(settings.portalConfig)) {
-          throw new Error('Anonymous interaction is not enabled')
-        }
-      } else if (!principalRecord) {
-        throw new Error('You must be a member to submit feedback.')
-      }
-
-      // Build author info (use ctx.principal for anonymous users who don't have a member record)
-      const author = {
-        principalId: (principalRecord?.id ?? ctx.principal.id) as PrincipalId,
-        userId: ctx.user.id as UserId,
-        name: ctx.user.name || ctx.user.email,
-        email: ctx.user.email,
-        actor,
-      }
-
-      // Create the post (events dispatched by service layer)
-      const post = await createPost(
-        {
-          boardId,
-          title,
-          content,
-          contentJson: contentJson ? sanitizeTiptapContent(contentJson) : undefined,
-          statusId: defaultStatus?.id,
-          widgetMetadata: metadata,
-        },
-        author,
-        { headers: getRequestHeaders() }
-      )
-
-      log.info({ post_id: post.id }, 'created public post')
-      return {
-        id: post.id,
-        title: post.title,
-        content: post.content,
-        statusId: post.statusId,
-        voteCount: post.voteCount,
-        createdAt: post.createdAt.toISOString(),
-        board: {
-          id: board.id,
-          name: board.name,
-          slug: board.slug,
-        },
-      }
-    } catch (error) {
-      log.error({ err: error }, 'create public post failed')
-      throw error
+    const access = await resolvePortalAccessForRequest()
+    if (!access.granted) {
+      throw new Error('Portal access required')
     }
+    return runCreatePublicPost(await requireAuth(), data)
   })
 
 /**
  * Get all post IDs the user has voted on (optional auth, includes anonymous sessions).
  */
+export const runGetVotedPosts = createServerOnlyFn(async function runGetVotedPosts(
+  ctx: Awaited<ReturnType<typeof getOptionalAuth>>
+): Promise<{ votedPostIds: string[] }> {
+  log.debug('get voted posts')
+  if (!ctx?.user || !ctx?.principal) {
+    log.debug('no auth context')
+    return { votedPostIds: [] }
+  }
+
+  const result = await getAllUserVotedPostIds(ctx.principal.id)
+  log.debug({ count: result.size }, 'get voted posts results')
+  return { votedPostIds: Array.from(result) }
+})
+
 export const getVotedPostsFn = createServerFn({ method: 'GET' }).handler(
   async (): Promise<{ votedPostIds: string[] }> => {
-    log.debug('get voted posts')
-    try {
-      if (!hasAuthCredentials()) {
-        log.debug('no session cookie, skipping auth')
-        return { votedPostIds: [] }
-      }
-
-      const ctx = await getOptionalAuth()
-      if (!ctx?.user || !ctx?.principal) {
-        log.debug('no auth context')
-        return { votedPostIds: [] }
-      }
-
-      const result = await getAllUserVotedPostIds(ctx.principal.id)
-      log.debug({ count: result.size }, 'get voted posts results')
-      return { votedPostIds: Array.from(result) }
-    } catch (error) {
-      log.error({ err: error }, 'get voted posts failed')
-      throw error
+    if (!hasAuthCredentials()) {
+      return { votedPostIds: [] }
     }
+    return runGetVotedPosts(await getOptionalAuth())
   }
 )
 
@@ -546,33 +528,43 @@ export const getVotedPostsFn = createServerFn({ method: 'GET' }).handler(
  */
 export const listPublicRoadmapsFn = createServerFn({ method: 'GET' }).handler(async () => {
   log.debug('list public roadmaps')
-  try {
-    // Outer gate: private portal + unauthorized caller → no portal data.
-    const access = await resolvePortalAccessForRequest()
-    if (!access.granted) {
-      log.debug('portal access denied, returning empty')
-      return []
-    }
-
-    // No auth needed - this is public data
-    const result = await listPublicRoadmaps()
-
-    log.debug({ count: result.length }, 'list public roadmaps results')
-    // Serialize branded types to plain strings for turbo-stream
-    return result.map((roadmap) => ({
-      id: String(roadmap.id),
-      name: roadmap.name,
-      slug: roadmap.slug,
-      description: roadmap.description,
-      isPublic: roadmap.isPublic,
-      position: roadmap.position,
-      createdAt: roadmap.createdAt.toISOString(),
-      updatedAt: roadmap.updatedAt.toISOString(),
-    }))
-  } catch (error) {
-    log.error({ err: error }, 'list public roadmaps failed')
-    throw error
+  // Outer gate: private portal + unauthorized caller → no portal data.
+  const access = await resolvePortalAccessForRequest()
+  if (!access.granted) {
+    log.debug('portal access denied, returning empty')
+    return []
   }
+
+  const auth = hasAuthCredentials() ? await getOptionalAuth() : null
+  const actor = await policyActorFromAuth(auth)
+  const result = await listPublicRoadmaps(actor)
+
+  log.debug({ count: result.length }, 'list public roadmaps results')
+  // Serialize branded types to plain strings for turbo-stream
+  return result.map((roadmap) => ({
+    id: String(roadmap.id),
+    name: roadmap.name,
+    slug: roadmap.slug,
+    description: roadmap.description,
+    type: roadmap.type,
+    baseFilter: roadmap.baseFilter,
+    dateSource: roadmap.dateSource,
+    frequency: roadmap.frequency,
+    visibility: roadmap.visibility,
+    visibleSegmentIds: roadmap.visibleSegmentIds as SegmentId[] | null,
+    position: roadmap.position,
+    columns: roadmap.columns.map((column) => ({
+      id: String(column.id),
+      roadmapId: String(column.roadmapId),
+      statusId: String(column.statusId),
+      name: column.name,
+      icon: column.icon,
+      color: column.color,
+      position: column.position,
+    })),
+    createdAt: roadmap.createdAt.toISOString(),
+    updatedAt: roadmap.updatedAt.toISOString(),
+  }))
 })
 
 /**
@@ -585,57 +577,49 @@ export const getPublicRoadmapPostsFn = createServerFn({ method: 'GET' })
   .validator(getPublicRoadmapPostsSchema)
   .handler(async ({ data }: { data: GetPublicRoadmapPostsInput }) => {
     log.debug({ roadmap_id: data.roadmapId }, 'get public roadmap posts')
-    try {
-      // Outer gate: private portal + unauthorized caller → no portal data.
-      const access = await resolvePortalAccessForRequest()
-      if (!access.granted) {
-        log.debug('portal access denied, returning empty')
-        return { items: [], hasMore: false, total: 0 }
-      }
+    // Outer gate: private portal + unauthorized caller → no portal data.
+    const access = await resolvePortalAccessForRequest()
+    if (!access.granted) {
+      log.debug('portal access denied, returning empty')
+      return { items: [], hasMore: false, total: 0 }
+    }
 
-      // Resolve actor so per-board audience filters apply — a team
-      // member viewing the public roadmap should see posts from
-      // team-only boards (since they're entitled), while an anonymous
-      // viewer should not.
-      const auth = await getOptionalAuth()
-      const actor = await policyActorFromAuth(auth)
+    // Resolve actor so per-board audience filters apply — a team
+    // member viewing the public roadmap should see posts from
+    // team-only boards (since they're entitled), while an anonymous
+    // viewer should not.
+    const auth = await getOptionalAuth()
+    const actor = await policyActorFromAuth(auth)
 
-      const { roadmapId, statusId, limit, offset } = data
+    const { roadmapId, statusId, bucketId, limit, offset } = data
 
-      const result = await getPublicRoadmapPosts(
-        roadmapId as RoadmapId,
-        {
-          statusId: statusId as StatusId | undefined,
-          limit,
-          offset,
+    const result = await getPublicRoadmapPosts(
+      roadmapId as RoadmapId,
+      {
+        statusId: statusId as PostStatusId | undefined,
+        bucketId,
+        limit,
+        offset,
+      },
+      actor
+    )
+    log.debug({ count: result.items.length }, 'get public roadmap posts results')
+
+    // Serialize branded types to plain strings for turbo-stream
+    return {
+      ...result,
+      items: result.items.map((item) => ({
+        id: String(item.id),
+        title: item.title,
+        voteCount: item.voteCount,
+        statusId: item.statusId ? String(item.statusId) : null,
+        eta: toIsoStringOrNull(item.eta),
+        board: {
+          id: String(item.board.id),
+          name: item.board.name,
+          slug: item.board.slug,
         },
-        actor
-      )
-      log.debug({ count: result.items.length }, 'get public roadmap posts results')
-
-      // Serialize branded types to plain strings for turbo-stream
-      return {
-        ...result,
-        items: result.items.map((item) => ({
-          id: String(item.id),
-          title: item.title,
-          voteCount: item.voteCount,
-          statusId: item.statusId ? String(item.statusId) : null,
-          board: {
-            id: String(item.board.id),
-            name: item.board.name,
-            slug: item.board.slug,
-          },
-          roadmapEntry: {
-            postId: String(item.roadmapEntry.postId),
-            roadmapId: String(item.roadmapEntry.roadmapId),
-            position: item.roadmapEntry.position,
-          },
-        })),
-      }
-    } catch (error) {
-      log.error({ err: error }, 'get public roadmap posts failed')
-      throw error
+      })),
     }
   })
 
@@ -649,42 +633,37 @@ export const getRoadmapPostsByStatusFn = createServerFn({ method: 'GET' })
   .validator(getRoadmapPostsByStatusSchema)
   .handler(async ({ data }: { data: GetRoadmapPostsByStatusInput }) => {
     log.debug({ status_id: data.statusId }, 'get roadmap posts by status')
-    try {
-      // Outer gate: private portal + unauthorized caller → no portal data.
-      const access = await resolvePortalAccessForRequest()
-      if (!access.granted) {
-        log.debug('portal access denied, returning empty')
-        return { items: [], hasMore: false, total: 0 }
-      }
+    // Outer gate: private portal + unauthorized caller → no portal data.
+    const access = await resolvePortalAccessForRequest()
+    if (!access.granted) {
+      log.debug('portal access denied, returning empty')
+      return { items: [], hasMore: false, total: 0 }
+    }
 
-      // Resolve the actor so per-board audience + per-post moderation
-      // filters apply. The legacy roadmap-by-status view used to default
-      // to ANONYMOUS_ACTOR even for authenticated team members, hiding
-      // posts on non-public boards they were entitled to see.
-      const auth = await getOptionalAuth()
-      const actor = await policyActorFromAuth(auth)
+    // Resolve the actor so per-board audience + per-post moderation
+    // filters apply. The legacy roadmap-by-status view used to default
+    // to ANONYMOUS_ACTOR even for authenticated team members, hiding
+    // posts on non-public boards they were entitled to see.
+    const auth = await getOptionalAuth()
+    const actor = await policyActorFromAuth(auth)
 
-      const { statusId, page, limit } = data
+    const { statusId, page, limit } = data
 
-      const result = await getPublicRoadmapPostsPaginated({
-        statusId: statusId as StatusId,
-        page,
-        limit,
-        actor,
-      })
-      log.debug({ count: result.items.length }, 'get roadmap posts by status result')
+    const result = await getPublicRoadmapPostsPaginated({
+      statusId: statusId as PostStatusId,
+      page,
+      limit,
+      actor,
+    })
+    log.debug({ count: result.items.length }, 'get roadmap posts by status result')
 
-      // Serialize branded types to plain strings for turbo-stream
-      return {
-        ...result,
-        items: result.items.map((item) => ({
-          ...item,
-          statusId: item.statusId ? String(item.statusId) : null,
-        })),
-      }
-    } catch (error) {
-      log.error({ err: error }, 'get roadmap posts by status failed')
-      throw error
+    // Serialize branded types to plain strings for turbo-stream
+    return {
+      ...result,
+      items: result.items.map((item) => ({
+        ...item,
+        statusId: item.statusId ? String(item.statusId) : null,
+      })),
     }
   })
 
@@ -696,125 +675,117 @@ export const getVoteSidebarDataFn = createServerFn({ method: 'GET' })
   .validator(getVoteSidebarDataSchema)
   .handler(async ({ data }) => {
     log.debug({ post_id: data.postId }, 'get vote sidebar data')
+    const postId = data.postId as PostId
+    const noSub = { subscribed: false, level: 'none' as const, reason: null }
+    const denied = { isMember: false, canVote: false, hasVoted: false, subscriptionStatus: noSub }
+
+    // Portal-visibility gate: a caller who can't see the portal must
+    // not learn whether they've voted, whether they're a member, or
+    // anything about the post. Sibling write paths (toggleVoteFn,
+    // createPublicPostFn) gate similarly; reads return the safe
+    // default rather than throwing.
+    const access = await resolvePortalAccessForRequest()
+    if (!access.granted) {
+      log.debug('portal access denied')
+      return denied
+    }
+
+    // Per-post audience gate: portal-granted callers can still be
+    // probing a post on a team-only / segment-restricted board. Treat
+    // a NotFound from assertPostViewable as denial (same shape — the
+    // sidebar UI degrades to the read-only state).
+    const probeAuth = await getOptionalAuth()
+    const probeActor = await policyActorFromAuth(probeAuth)
     try {
-      const postId = data.postId as PostId
-      const noSub = { subscribed: false, level: 'none' as const, reason: null }
-      const denied = { isMember: false, canVote: false, hasVoted: false, subscriptionStatus: noSub }
-
-      // Portal-visibility gate: a caller who can't see the portal must
-      // not learn whether they've voted, whether they're a member, or
-      // anything about the post. Sibling write paths (toggleVoteFn,
-      // createPublicPostFn) gate similarly; reads return the safe
-      // default rather than throwing.
-      const access = await resolvePortalAccessForRequest()
-      if (!access.granted) {
-        log.debug('portal access denied')
+      const { assertPostViewable } = await import('@/lib/server/domains/posts/post.access')
+      await assertPostViewable(postId, probeActor)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'NotFoundError') {
+        log.debug('post not viewable')
         return denied
       }
+      throw err
+    }
 
-      // Per-post audience gate: portal-granted callers can still be
-      // probing a post on a team-only / segment-restricted board. Treat
-      // a NotFound from assertPostViewable as denial (same shape — the
-      // sidebar UI degrades to the read-only state).
-      const probeAuth = await getOptionalAuth()
-      const probeActor = await policyActorFromAuth(probeAuth)
-      try {
-        const { assertPostViewable } = await import('@/lib/server/domains/posts/post.access')
-        await assertPostViewable(postId, probeActor)
-      } catch (err) {
-        if (err instanceof Error && err.name === 'NotFoundError') {
-          log.debug('post not viewable')
-          return denied
-        }
-        throw err
-      }
+    // Per-board vote tier gate: a board can be public-to-view but
+    // authenticated-only-to-vote (modern "Public" preset). Resolve the
+    // board.access alongside the post and run canVotePost so the UI
+    // can render the right CTA (sign-in prompt vs. enabled button)
+    // instead of letting an anonymous click learn the truth on submit.
+    // The workspace anonymousVoting flag is composed below as a ceiling.
+    const { loadBoardAccessForPost } = await import('@/lib/server/domains/posts/post.access')
+    const { canVotePost } = await import('@/lib/server/policy')
+    const boardAccess = await loadBoardAccessForPost(postId)
+    if (!boardAccess) {
+      // Race: post or board deleted between assertPostViewable and now.
+      log.debug('post or board vanished mid-call')
+      return denied
+    }
 
-      // Per-board vote tier gate: a board can be public-to-view but
-      // authenticated-only-to-vote (modern "Public" preset). Resolve the
-      // board.access alongside the post and run canVotePost so the UI
-      // can render the right CTA (sign-in prompt vs. enabled button)
-      // instead of letting an anonymous click learn the truth on submit.
-      // The workspace anonymousVoting flag is composed below as a ceiling.
-      const { loadBoardAccessForPost } = await import('@/lib/server/domains/posts/post.access')
-      const { canVotePost } = await import('@/lib/server/policy')
-      const boardAccess = await loadBoardAccessForPost(postId)
-      if (!boardAccess) {
-        // Race: post or board deleted between assertPostViewable and now.
-        log.debug('post or board vanished mid-call')
-        return denied
-      }
+    // canVotePost composes canViewPost internally, but assertPostViewable
+    // already proved view-allowed for this actor; pass moderationState=
+    // 'published' here so the inner view check is a no-op and the
+    // decision reflects the vote tier specifically.
+    const voteDecision = canVotePost(
+      probeActor,
+      { moderationState: 'published', principalId: null },
+      { access: boardAccess }
+    )
 
-      // canVotePost composes canViewPost internally, but assertPostViewable
-      // already proved view-allowed for this actor; pass moderationState=
-      // 'published' here so the inner view check is a no-op and the
-      // decision reflects the vote tier specifically.
-      const voteDecision = canVotePost(
-        probeActor,
-        { moderationState: 'published', principalId: null },
-        { access: boardAccess }
-      )
-
-      // No session cookie — fall back to the workspace anonymous master
-      // switch (collapsed from the legacy anonymousVoting flag in
-      // migration 0084). The per-board vote tier is the inner ceiling.
-      if (!hasAuthCredentials()) {
-        const settings = await getSettings()
-        const anonEnabled = workspaceAllowsAnonymous(settings?.portalConfig)
-        const canVote = anonEnabled && voteDecision.allowed
-        log.debug(
-          { can_vote: canVote, anon_enabled: anonEnabled, vote_allowed: voteDecision.allowed },
-          'vote sidebar data, no session'
-        )
-        return {
-          isMember: false,
-          canVote,
-          hasVoted: false,
-          subscriptionStatus: noSub,
-        }
-      }
-
-      // Has session (could be regular or anonymous)
-      const ctx = await getOptionalAuth()
-      if (!ctx?.user || !ctx?.principal) {
-        log.debug('invalid session')
-        return { isMember: false, canVote: false, hasVoted: false, subscriptionStatus: noSub }
-      }
-
-      const isAnonymous = ctx.principal.type === 'anonymous'
-
-      // Re-check the workspace allowAnonymous master switch for existing
-      // anonymous sessions (sign-in cookie present but principal is anon).
-      let canVote = voteDecision.allowed
-      if (isAnonymous) {
-        const settings = await getSettings()
-        const anonEnabled = workspaceAllowsAnonymous(settings?.portalConfig)
-        canVote = anonEnabled && voteDecision.allowed
-      }
-
-      const { hasVoted, subscription } = await getVoteAndSubscriptionStatus(
-        postId,
-        ctx.principal.id
-      )
-
+    // No session cookie — fall back to the workspace anonymous master
+    // switch (collapsed from the legacy anonymousVoting flag in
+    // migration 0084). The per-board vote tier is the inner ceiling.
+    if (!hasAuthCredentials()) {
+      const settings = await getSettings()
+      const anonEnabled = workspaceAllowsAnonymous(settings?.portalConfig)
+      const canVote = anonEnabled && voteDecision.allowed
       log.debug(
-        { is_member: !isAnonymous, has_voted: hasVoted, can_vote: canVote },
-        'vote sidebar data resolved'
+        { can_vote: canVote, anon_enabled: anonEnabled, vote_allowed: voteDecision.allowed },
+        'vote sidebar data, no session'
       )
       return {
-        isMember: !isAnonymous,
+        isMember: false,
         canVote,
-        hasVoted,
-        subscriptionStatus: isAnonymous
-          ? noSub
-          : {
-              subscribed: subscription.subscribed,
-              level: subscription.level,
-              reason: subscription.reason,
-            },
+        hasVoted: false,
+        subscriptionStatus: noSub,
       }
-    } catch (error) {
-      log.error({ err: error }, 'get vote sidebar data failed')
-      throw error
+    }
+
+    // Has session (could be regular or anonymous)
+    const ctx = await getOptionalAuth()
+    if (!ctx?.user || !ctx?.principal) {
+      log.debug('invalid session')
+      return { isMember: false, canVote: false, hasVoted: false, subscriptionStatus: noSub }
+    }
+
+    const isAnonymous = ctx.principal.type === 'anonymous'
+
+    // Re-check the workspace allowAnonymous master switch for existing
+    // anonymous sessions (sign-in cookie present but principal is anon).
+    let canVote = voteDecision.allowed
+    if (isAnonymous) {
+      const settings = await getSettings()
+      const anonEnabled = workspaceAllowsAnonymous(settings?.portalConfig)
+      canVote = anonEnabled && voteDecision.allowed
+    }
+
+    const { hasVoted, subscription } = await getVoteAndSubscriptionStatus(postId, ctx.principal.id)
+
+    log.debug(
+      { is_member: !isAnonymous, has_voted: hasVoted, can_vote: canVote },
+      'vote sidebar data resolved'
+    )
+    return {
+      isMember: !isAnonymous,
+      canVote,
+      hasVoted,
+      subscriptionStatus: isAnonymous
+        ? noSub
+        : {
+            subscribed: subscription.subscribed,
+            level: subscription.level,
+            reason: subscription.reason,
+          },
     }
   })
 
@@ -865,7 +836,7 @@ function toRawResult(row: {
   id: PostId | string
   title: string
   voteCount: number
-  statusId: StatusId | string | null
+  statusId: PostStatusId | string | null
   boardId: BoardId | string
   score: number
 }): RawSearchResult {
@@ -905,7 +876,7 @@ export const findSimilarPostsFn = createServerFn({ method: 'GET' })
         return []
       }
 
-      const { db, posts, boards, postStatuses, eq, and, isNull, desc, sql, inArray } =
+      const { db, posts, boards, postStatuses, eq, and, isNull, desc, asc, sql, inArray } =
         await import('@/lib/server/db')
       const { generateEmbedding } =
         await import('@/lib/server/domains/embeddings/embedding.service')
@@ -983,7 +954,7 @@ export const findSimilarPostsFn = createServerFn({ method: 'GET' })
                 sql`1 - (${posts.embedding} <=> ${vectorStr}::vector) >= 0.35`
               )
             )
-            .orderBy(desc(sql`1 - (${posts.embedding} <=> ${vectorStr}::vector)`))
+            .orderBy(asc(sql`${posts.embedding} <=> ${vectorStr}::vector`))
             .limit(fetchLimit)
 
           log.debug({ count: matches.length }, 'vector search results')
@@ -1042,7 +1013,7 @@ export const findSimilarPostsFn = createServerFn({ method: 'GET' })
       // Fetch status and board info for matched posts
       const statusIds = [
         ...new Set(merged.filter((r) => r.statusId).map((r) => r.statusId!)),
-      ] as StatusId[]
+      ] as PostStatusId[]
       const boardIds = [...new Set(merged.map((r) => r.boardId))] as BoardId[]
 
       const [statusesResult, boardsResult] = await Promise.all([
